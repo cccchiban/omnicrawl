@@ -6,6 +6,10 @@
 //!
 //! 模型连接沿用内核 `initialize.model` 给的那条（与 `subagent::child_model_config` 同一做法），
 //! 只把 model 名换成 `[tool_output_compression].model_key`；请求是旁路调用：不流式、不写会话。
+//!
+//! 一批里有多条合格结果时**并发**压缩（一个任务一个线程、各自建运行时），并逐条把
+//! `started` / `finished` / `failed` 报给宿主；失败（含超时）也上报，宿主会在工具卡上
+//! 显示「压缩超时…」/「压缩失败…」。
 
 use omnicrawl_config::core::runtime::{get_section, load_config_data, ConfigEnvironment};
 use omnicrawl_config::features::tool_output_compression::load_tool_output_compression_config;
@@ -23,7 +27,8 @@ use crate::session::build_model_runtime_with_key;
 
 /// 压缩的阶段事件（内核 → 宿主通知用）。
 ///
-/// 只带压缩的计量事实，界面文案由宿主决定（宿主侧同款：`正在压缩…` / `已压缩 a → b`）。
+/// `started` / `finished` 只带计量事实（界面文案由宿主决定），`failed` 直接带**已备好的
+/// 展示文案**（超时/错误只有内核知道超时秒数与上游错误文本，宿主拿到就能显示）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionPhase<'a> {
     Started {
@@ -39,10 +44,26 @@ pub enum CompressionPhase<'a> {
         /// 压缩后的正文：宿主拿它替换卡片里的原始输出（用户要求「压缩后替换原内容」）。
         text: &'a str,
     },
+    /// 压缩失败（含超时）：保留原始输出，宿主把 `message` 显示在工具卡上。
+    Failed {
+        call_id: &'a str,
+        tool: &'a str,
+        before_chars: usize,
+        message: &'a str,
+    },
 }
 
-pub struct KernelCompressor {
-    runtime: Box<dyn ModelRuntime>,
+/// 单次压缩所需的全部输入（`Clone` + `Send`）：并发压缩时每个任务各自一份。
+///
+/// 为什么不共用一条 `ModelRuntime`：运行时是**顺序**会话（`run_turn` 一次跑一个），
+/// 共用就只能一个个排队，而用户要求「多个工具调用＝多个压缩请求同时在飞」。
+/// 因此每个任务在自己的工作线程里按同一份连接配置各建一个运行时
+/// （Python 侧同样是「每轮 acquire 一个 runtime」的池化模型）。
+#[derive(Clone)]
+struct CompressionJob {
+    config: KernelModelConfig,
+    api_key: String,
+    /// 实际发给上游的模型名（`apply_model_selection` 解析后的）。
     model: String,
     /// 解析后的 Profile：只用于 prompt-cache 身份（与 Python 同一份字段）。
     profile: String,
@@ -52,6 +73,89 @@ pub struct KernelCompressor {
     max_output_chars: usize,
     timeout_seconds: f64,
     options: GenerationOptions,
+}
+
+impl CompressionJob {
+    /// 该工具结果是否值得压缩（与 Python `_should_compact` 同规则）。
+    fn should_compress(&self, tool_name: &str, output: &str) -> bool {
+        compression_logic::should_compact(tool_name, output, self.min_chars)
+    }
+
+    /// 在工作线程里自建运行时后跑一次压缩（运行时不是 `Send`，不能跨线程搬）。
+    fn run(
+        &self,
+        tool_name: &str,
+        arguments_summary: &str,
+        task_hint: &str,
+        output: &str,
+    ) -> Result<String, String> {
+        let runtime = build_model_runtime_with_key(&self.config, self.api_key.clone())
+            .map_err(|error| error.message().to_string())?;
+        self.request(runtime.as_ref(), tool_name, arguments_summary, task_hint, output)
+    }
+
+    /// 单次请求的请求体构造与响应校验；模型返回工具调用或空文本、请求失败都返回 `Err`。
+    fn request(
+        &self,
+        runtime: &dyn ModelRuntime,
+        tool_name: &str,
+        arguments_summary: &str,
+        task_hint: &str,
+        output: &str,
+    ) -> Result<String, String> {
+        if output.trim().is_empty() {
+            return Err("工具输出为空，无需压缩。".to_string());
+        }
+        let sampled = compression_logic::sample_output(output, self.max_input_chars);
+        let messages =
+            compression_logic::build_messages(tool_name, arguments_summary, task_hint, &sampled);
+        let conversation: Vec<ConversationMessage> = conversation_from_openai_messages(&messages);
+        let identity: BTreeMap<String, String> = BTreeMap::from([
+            (
+                "scope".to_string(),
+                "omnicrawl-tool-output-compression".to_string(),
+            ),
+            ("profile".to_string(), self.profile.clone()),
+            ("model".to_string(), self.model.clone()),
+        ]);
+        let input = ChatRequestInput {
+            model: &self.model,
+            system_prompt: &self.system_prompt,
+            messages: &conversation,
+            tools: &[],
+            options: &self.options,
+            profile_request_timeout_seconds: self.timeout_seconds,
+            prompt_cache_capable: false,
+            prompt_cache_identity: &identity,
+        };
+        let reply = runtime
+            .run_turn(&input, &mut DiscardSink)
+            .map_err(|error| error.message.clone())?;
+        if !reply.tool_calls.is_empty() {
+            return Err("压缩模型返回了工具调用。".to_string());
+        }
+        let text = compression_logic::clean_reply_text(reply.content.as_str());
+        if text.is_empty() {
+            return Err("压缩模型返回了空文本。".to_string());
+        }
+        Ok(compression_logic::bound_text(&text, self.max_output_chars))
+    }
+}
+
+/// 压缩失败的展示文案：超时单独说「压缩超时」，其余按「压缩失败」（用户要求）。
+fn compression_failure_message(error: &str, timeout_seconds: f64) -> String {
+    let lowered = error.to_lowercase();
+    let timeout =
+        error.contains("超时") || lowered.contains("timeout") || lowered.contains("timed out");
+    if timeout {
+        format!("压缩超时（{timeout_seconds:.0} 秒），保留原始输出：{error}")
+    } else {
+        format!("压缩失败，保留原始输出：{error}")
+    }
+}
+
+pub struct KernelCompressor {
+    job: CompressionJob,
 }
 
 /// 解析压缩模型：返回（要用的内核模型连接, Profile id, API Key）。
@@ -131,7 +235,6 @@ impl KernelCompressor {
             eprintln!("[kernel] 工具输出压缩缺少凭据（{selection}），已跳过压缩。");
             return None;
         }
-        let runtime = build_model_runtime_with_key(&child, api_key).ok()?;
 
         let effort = compression_logic::effective_reasoning_effort(
             config.thinking_enabled,
@@ -143,76 +246,27 @@ impl KernelCompressor {
         };
 
         Some(Self {
-            runtime,
-            model: child.model.clone(),
-            profile,
-            system_prompt: compression_logic::system_prompt_text(),
-            min_chars: config.min_chars.max(0) as usize,
-            max_input_chars: config.max_input_chars.max(0) as usize,
-            max_output_chars: config.max_output_chars.max(0) as usize,
-            timeout_seconds: config.timeout_seconds.max(0) as f64,
-            options,
+            job: CompressionJob {
+                model: child.model.clone(),
+                config: child,
+                api_key,
+                profile,
+                system_prompt: compression_logic::system_prompt_text(),
+                min_chars: config.min_chars.max(0) as usize,
+                max_input_chars: config.max_input_chars.max(0) as usize,
+                max_output_chars: config.max_output_chars.max(0) as usize,
+                timeout_seconds: config.timeout_seconds.max(0) as f64,
+                options,
+            },
         })
     }
 
-    /// 该工具结果是否值得压缩（与 Python `_should_compact` 同规则）。
-    pub fn should_compress(&self, tool_name: &str, output: &str) -> bool {
-        compression_logic::should_compact(tool_name, output, self.min_chars)
-    }
-    /// 单次压缩；模型返回工具调用或空文本、请求失败都返回 `Err`，由调用方保留原文。
-    pub fn compress(
-        &self,
-        tool_name: &str,
-        arguments_summary: &str,
-        task_hint: &str,
-        output: &str,
-    ) -> Result<String, String> {
-        if output.trim().is_empty() {
-            return Err("工具输出为空，无需压缩。".to_string());
-        }
-        let sampled = compression_logic::sample_output(output, self.max_input_chars);
-        let messages =
-            compression_logic::build_messages(tool_name, arguments_summary, task_hint, &sampled);
-        let conversation: Vec<ConversationMessage> = conversation_from_openai_messages(&messages);
-        let identity: BTreeMap<String, String> = BTreeMap::from([
-            (
-                "scope".to_string(),
-                "omnicrawl-tool-output-compression".to_string(),
-            ),
-            ("profile".to_string(), self.profile.clone()),
-            ("model".to_string(), self.model.clone()),
-        ]);
-        let input = ChatRequestInput {
-            model: &self.model,
-            system_prompt: &self.system_prompt,
-            messages: &conversation,
-            tools: &[],
-            options: &self.options,
-            profile_request_timeout_seconds: self.timeout_seconds,
-            prompt_cache_capable: false,
-            prompt_cache_identity: &identity,
-        };
-        let reply = self
-            .runtime
-            .run_turn(&input, &mut DiscardSink)
-            .map_err(|error| error.message.clone())?;
-        if !reply.tool_calls.is_empty() {
-            return Err("压缩模型返回了工具调用。".to_string());
-        }
-        let text = compression_logic::clean_reply_text(reply.content.as_str());
-        if text.is_empty() {
-            return Err("压缩模型返回了空文本。".to_string());
-        }
-        Ok(compression_logic::bound_text(&text, self.max_output_chars))
-    }
 
     /// 把压缩结果写回观察：模型没压小就保留原文（与 Python `_compress_one` 同规则）。
     ///
-    /// 返回真正采纳的下标，供调用方记录/展示。
-    /// 压缩阶段回调：宿主据此在界面上显示「正在压缩」/「已压缩 a → b」。
-    ///
-    /// 取引用而不是闭包所有权：`apply_observations` 是 `&self` 方法，调用方要能在回调里
-    /// 借用自己（例如内核借 `Conn` 发通知）。
+    /// 一批里有多条合格结果时**并发**压缩（每条一个线程），完成顺序即回报顺序；
+    /// `on_phase` 只在调用线程上被调用——宿主在回调里借用 `Conn` 发通知，而 `Conn` 不是
+    /// `Send`，所以通知只能留在调用线程。返回真正采纳的下标，供调用方记录/展示。
     pub fn apply_observations(
         &self,
         observations: &mut [omnicrawl_core::AgentLoopObservation],
@@ -220,14 +274,15 @@ impl KernelCompressor {
         cancelled: &dyn Fn() -> bool,
         on_phase: &dyn Fn(CompressionPhase<'_>),
     ) -> Vec<usize> {
-        let mut applied = Vec::new();
-        for (index, observation) in observations.iter_mut().enumerate() {
+        // 1) 挑出合格结果，并立刻把「正在压缩…」发给宿主（每条调用各自的进度）。
+        let mut jobs: Vec<(usize, String, String, usize, String)> = Vec::new();
+        for (index, observation) in observations.iter().enumerate() {
             if cancelled() {
-                break;
+                return Vec::new();
             }
             let tool_name = observation.tool_call.name.clone();
             let output = observation.result.output.clone();
-            if !self.should_compress(&tool_name, &output) {
+            if !self.job.should_compress(&tool_name, &output) {
                 continue;
             }
             let summary = compression_logic::arguments_summary(&serde_json::Value::Object(
@@ -239,41 +294,87 @@ impl KernelCompressor {
                 tool: &tool_name,
                 before_chars,
             });
-            let compacted = match self.compress(&tool_name, &summary, task_hint, &output) {
-                Ok(text) => text,
-                Err(error) => {
-                    eprintln!("[kernel] 工具输出压缩失败，保留原始输出：{tool_name}：{error}");
-                    continue;
-                }
-            };
-            if compacted.chars().count() >= output.chars().count() {
-                eprintln!("[kernel] 工具输出压缩未缩小结果，保留原始输出：{tool_name}");
-                continue;
-            }
-            let after_chars = compacted.chars().count();
-            on_phase(CompressionPhase::Finished {
-                call_id: &observation.tool_call.id,
-                tool: &tool_name,
-                before_chars,
-                after_chars,
-                text: &compacted,
+            jobs.push((index, tool_name, summary, before_chars, output));
+        }
+        if jobs.is_empty() {
+            return Vec::new();
+        }
+
+        // 2) 一个任务一个线程并发跑：多个工具调用就是多个压缩请求同时在飞。
+        //    线程是**分离**的（不 join）：回合被取消时主线程立刻返回，慢请求在后台自生自灭；
+        //    它只往通道里塞结果、不碰 `Conn`（通知只在主线程发）。
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let hint = task_hint.to_string();
+        for (index, tool_name, summary, before_chars, output) in jobs {
+            let job = self.job.clone();
+            let sender = sender.clone();
+            let hint = hint.clone();
+            std::thread::spawn(move || {
+                let result = job.run(&tool_name, &summary, &hint, &output);
+                let _ = sender.send((index, tool_name, before_chars, result));
             });
-            let full = compression_logic::compacted_display(
-                &compacted,
-                after_chars,
-                before_chars,
-                &self.model,
-            );
-            let tool_call = observation.tool_call.clone();
-            observation.result.output = compacted.clone();
-            observation.result.full_output = full;
-            observation.message = omnicrawl_session::tool_result_message(
-                &tool_call.name,
-                observation.result.ok,
-                &compacted,
-                &tool_call.id,
-            );
-            applied.push(index);
+        }
+        drop(sender);
+
+        // 3) 主线程按完成顺序收结果并回报（先回来的先显示，不必等最慢的那个）。
+        let mut applied = Vec::new();
+        for (index, tool_name, before_chars, result) in receiver {
+            if cancelled() {
+                break;
+            }
+            let call_id = observations[index].tool_call.id.clone();
+            match result {
+                Ok(compacted) => {
+                    let after_chars = compacted.chars().count();
+                    if after_chars >= before_chars {
+                        let message = format!(
+                            "压缩未缩小结果（{before_chars} → {after_chars} 字符），保留原始输出。"
+                        );
+                        eprintln!("[kernel] 工具输出压缩未缩小结果，保留原始输出：{tool_name}");
+                        on_phase(CompressionPhase::Failed {
+                            call_id: &call_id,
+                            tool: &tool_name,
+                            before_chars,
+                            message: &message,
+                        });
+                        continue;
+                    }
+                    on_phase(CompressionPhase::Finished {
+                        call_id: &call_id,
+                        tool: &tool_name,
+                        before_chars,
+                        after_chars,
+                        text: &compacted,
+                    });
+                    let full = compression_logic::compacted_display(
+                        &compacted,
+                        after_chars,
+                        before_chars,
+                        &self.job.model,
+                    );
+                    let observation = &mut observations[index];
+                    let tool_call = observation.tool_call.clone();
+                    observation.result.output = compacted.clone();
+                    observation.result.full_output = full;
+                    observation.message = omnicrawl_session::tool_result_message(
+                        &tool_call.name,
+                        observation.result.ok,
+                        &compacted,
+                        &tool_call.id,
+                    );
+                    applied.push(index);
+                }
+                Err(error) => {
+                    let message = compression_failure_message(&error, self.job.timeout_seconds);
+                    eprintln!("[kernel] 工具输出压缩失败，保留原始输出：{tool_name}：{error}");
+                    on_phase(CompressionPhase::Failed {
+                        call_id: &call_id,
+                        tool: &tool_name,
+                        before_chars,
+                        message: &message,
+                    });
+                }
+            }
         }
         applied
     }

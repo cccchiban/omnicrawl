@@ -1171,6 +1171,9 @@ impl App {
     }
 
     fn handle_batch_step(&mut self, request_id: Id, step: BatchStep) {
+        // 批次推进可能已经在宿主内定调了某些调用（update_todos / pause_work / ask_user）：
+        // 它们不经过执行层，卡片要在这里补上终态，否则会一直停在「调用中」并继续计时。
+        self.state.settle_internal_batch_calls();
         match step {
             BatchStep::Awaiting => {
                 // 插件守卫先于人工审批：被拒的调用不再弹审批面板。
@@ -1498,7 +1501,19 @@ impl App {
         let interactive = self.state.waiting().is_none();
         // 按住 Shift 的拖选留给终端自己做（Windows Terminal 支持），否则会与应用抢选择。
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        // 点输入区边框上的 `[ ESC ]` 等同于按键盘 Esc（取消回合）——不受「等审批」限制。
+        let on_esc = self
+            .state
+            .runtime_esc_area()
+            .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)));
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if on_esc => {
+                if self.state.selection().is_some() {
+                    self.state.clear_selection();
+                } else if self.state.turn.is_running() {
+                    self.cancel_turn();
+                }
+            }
             MouseEventKind::Moved => self.update_conversation_hover(mouse.column, mouse.row),
             MouseEventKind::ScrollUp => self.state.scroll_by(-WHEEL_STEP),
             MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
@@ -1600,31 +1615,19 @@ impl App {
         }
     }
 
-    /// 鼠标移动：只关心会话流里运行状态行尾的 `[ ESC ]`，命中则点亮为淡黄色。
+    /// 鼠标移动：只关心输入区方框上边框里的 `[ ESC ]`，命中则点亮为淡黄色。
     ///
-    /// `[ ESC ]` 只在回合运行期间存在，空闲时直接复位，不必每移动一格就重算整段
-    /// 显示行（长会话下那是一次不便宜的折行）。
+    /// 位置由渲染路径登记（`AppState::runtime_esc_area`），所以这里不必重算显示行——
+    /// 长会话下那是一次不便宜的折行。
     fn update_conversation_hover(&mut self, column: u16, row: u16) {
         if !self.state.turn.is_running() {
             self.state.runtime_esc_hover = false;
             return;
         }
-        let areas = ui::layout(self.viewport, &self.state);
-        let point = Position::new(column, row);
-        let hover = if areas.conversation.contains(point) {
-            let relative = (row - areas.conversation.y) as usize;
-            matches!(
-                conversation::hit_test(
-                    &self.state,
-                    areas.conversation,
-                    self.state.scroll_from_bottom,
-                    relative,
-                ),
-                Some(LineHit::RuntimeEsc)
-            )
-        } else {
-            false
-        };
+        let hover = self
+            .state
+            .runtime_esc_area()
+            .is_some_and(|area| area.contains(Position::new(column, row)));
         self.state.runtime_esc_hover = hover;
     }
 
@@ -1693,15 +1696,6 @@ impl App {
             }
             Some(LineHit::Reasoning { index }) => {
                 self.state.toggle_reasoning_expanded(index);
-            }
-            // 点击 `[ ESC ]` 与键盘 Esc 等价：运行中取消当前回合，空闲时聚焦输入框。
-            Some(LineHit::RuntimeEsc) => {
-                if self.state.turn.is_running() {
-                    self.cancel_turn();
-                } else {
-                    self.state.composer.clear();
-                    self.state.scroll_to_bottom();
-                }
             }
             None => {}
         }

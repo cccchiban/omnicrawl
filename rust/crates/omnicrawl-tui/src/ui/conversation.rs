@@ -59,8 +59,6 @@ pub enum LineHit {
     ToolCard { call_id: String },
     /// 思考段：点击在折叠与展开之间切换（`index` 是该记录在消息流里的下标）。
     Reasoning { index: usize },
-    /// 运行状态行尾部的 `[ ESC ]`：点击等价于按键盘 Esc（取消当前回合 / 空闲时聚焦输入框）。
-    RuntimeEsc,
 }
 
 /// 显示行 + 它承载的点击目标。
@@ -331,32 +329,46 @@ fn build_display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
     lines
 }
 
-/// 运行状态（`⠋ 正在调用 [ ESC ]`）：交给输入区方框画在**上边框**上。
-///
-/// 按用户要求，它不再作为会话流里的一行：`display_lines` 已经不输出状态行，
-/// 输入区方框的 `title_top` 用这里的 spans（对映 Python 把运行状态显示在输入框区域）。
-pub fn runtime_status_spans(state: &AppState) -> Option<Vec<Span<'static>>> {
-    let line = runtime_status_line(state, usize::MAX)?;
-    Some(line.line.spans)
+/// 运行状态行（`⠋ 正在调用` + `[ ESC ]`）：交给输入区方框画在**上边框**上。
+pub struct RuntimeStatus {
+    /// 整行的 spans（开头带一格右移）。
+    pub spans: Vec<Span<'static>>,
+    /// `[ ESC ]` 相对状态行起点的（列偏移, 显示宽度）：宿主据此登记可悬停/可点的格子。
+    pub esc: Option<(u16, u16)>,
 }
 
-/// 运行状态行的构造：spinner + 状态文本 + `[ ESC ]` 提示（对映 Python `RuntimeStatus`）。
+/// 构造运行状态行（画在输入区方框上边框）；没有状态时返回 `None`。
 ///
-/// 配色对映 `.message.runtime-status-message { color: $terminal-text-muted;
-/// text-style: bold }`，提示段对映 `#runtime-status-esc-hint` 的 `bold dim`。
+/// 按用户要求：整行右移一位（不贴着 `╭`）、状态文字白色加粗、只有 `[ ESC ]` 是灰色，
+/// 鼠标悬停 `[ ESC ]` 时转成淡黄加粗。
+pub fn runtime_status(state: &AppState, width: usize) -> Option<RuntimeStatus> {
+    let line = runtime_status_line(state, width)?;
+    Some(RuntimeStatus {
+        spans: line.spans,
+        esc: line.esc,
+    })
+}
+
+/// 运行状态行的构造：右移一格 + spinner + 状态文本 + `[ ESC ]` 提示。
+///
+/// 与 Python `RuntimeStatus` 的差异是用户指定的配色：状态文字白色加粗（Python 用
+/// muted），只有 `[ ESC ]` 保持灰色，悬停时才提亮成淡黄。
 /// 状态文本按可用宽度收尾（Textual 会折行；这里保持单行不撑高消息区）。
-fn runtime_status_line(state: &AppState, width: usize) -> Option<DisplayLine> {
+fn runtime_status_line(state: &AppState, width: usize) -> Option<RuntimeStatusLine> {
     let text = match (&state.status, state.turn.is_running(), state.paused) {
         (Some(message), _, _) => message.clone(),
         (None, true, _) => "正在调用".to_string(),
         (None, false, true) => "已暂停：输入新消息即可继续".to_string(),
         (None, false, false) => return None,
     };
-    let style = theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD);
+    let style = theme::rich_style(theme::ACCENT_WHITE).add_modifier(Modifier::BOLD);
     let running = state.turn.is_running();
-    let hint = " [ ESC ]";
+    let hint = "[ ESC ]";
+    let hint_width = display_width(hint);
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
+    // 右移一位：紧贴 `╭` 的状态看着像挤在角上（用户要求）。
+    let mut used = 1usize;
+    spans.push(Span::raw(" "));
     if running {
         let frame_index = state
             .turn_started
@@ -366,28 +378,35 @@ fn runtime_status_line(state: &AppState, width: usize) -> Option<DisplayLine> {
         used += display_width(&spinner);
         spans.push(Span::styled(spinner, style));
     }
-    let reserve = if running { display_width(hint) } else { 0 };
+    // 预留「空格 + `[ ESC ]`」两段宽度，状态文本超出就收尾。
+    let reserve = if running { 1 + hint_width } else { 0 };
     let room = width.saturating_sub(used + reserve).max(1);
-    spans.push(Span::styled(fit(&text, room), style));
+    let status_text = fit(&text, room);
+    used += display_width(&status_text);
+    spans.push(Span::styled(status_text, style));
+    let mut esc = None;
     if running {
-        // 鼠标悬停 `[ ESC ]` 时染成淡黄色加粗（对映 Python `:hover` 的提亮效果），
-        // 离开恢复灰色 dim。
+        spans.push(Span::raw(" "));
+        // 悬停才提亮成黄色（用户要求：只有 ESC 是灰的，鼠标放上去显示黄色）。
         let hint_style = if state.runtime_esc_hover {
-            Style::default()
-                .fg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD)
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            style.add_modifier(Modifier::DIM)
+            // 显式灰色：主题表里只有 `bright_black` 是显式灰（那是边框 token），
+            // 这里直接写颜色，避免为了文案去动「与 Python 同名同值」的主题表。
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
         };
-        spans.push(Span::styled(hint, hint_style));
+        esc = Some(((used + 1) as u16, hint_width as u16));
+        spans.push(Span::styled(hint.to_string(), hint_style));
     }
-    let line = Line::from(spans);
-    Some(if running {
-        // 只有运行中的状态行才带可点的 `[ ESC ]`。
-        DisplayLine::with_hit(line, LineHit::RuntimeEsc)
-    } else {
-        DisplayLine::plain(line)
-    })
+    Some(RuntimeStatusLine { spans, esc })
+}
+
+/// [`runtime_status_line`] 的返回值：spans 与 `[ ESC ]` 的位置。
+struct RuntimeStatusLine {
+    spans: Vec<Span<'static>>,
+    esc: Option<(u16, u16)>,
 }
 
 /// 欢迎 Logo 的显示行：绝对定位覆盖层（对映 CSS `#welcome-logo { position: absolute;
@@ -760,11 +779,17 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
 
     // 压缩提示：灰色一行，画在工具结果上方；**工具调用完成后才显示**（用户要求），
     // 压缩进行中先不打扰，跑完连同「已压缩 a → b 字符」一起出现。
-    if let Some(note) = streaming
+    if let Some((note, failed)) = streaming
         .filter(|_| !running)
-        .and_then(|entry| entry.compression.as_deref())
+        .and_then(|entry| entry.compression.as_deref().map(|note| (note, entry.compression_failed)))
     {
-        let text = StyledText::styled(note, theme::TEXT_MUTED);
+        // 正常计量提示是灰的；压缩超时/失败用红色，别的错误情况一眼能看到（用户要求）。
+        let style = if failed {
+            theme::ACCENT_RED
+        } else {
+            theme::TEXT_MUTED
+        };
+        let text = StyledText::styled(note, style);
         lines.push(DisplayLine::with_hit(
             message_line(&text, width),
             LineHit::ToolCard {
@@ -975,6 +1000,37 @@ mod tests {
         );
         let lines = display_lines(&state, 60);
         (state, lines)
+    }
+
+    #[test]
+    fn status_line_is_white_with_a_grey_esc() {
+        // 用户要求：状态右移一位、状态文字白色、只有 `[ ESC ]` 灰色；渲染登记它的格子。
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        let status = runtime_status(&state, 60).expect("运行中应当有状态行");
+        assert_eq!(status.spans.first().map(|span| span.content.as_ref()), Some(" "));
+        let text_span = &status.spans[1];
+        assert_eq!(text_span.style.fg, Some(Color::White), "状态文字要白色");
+        let last = status.spans.last().expect("要有 ESC 提示");
+        assert_eq!(last.content.as_ref(), "[ ESC ]");
+        assert_eq!(last.style.fg, Some(Color::DarkGray), "只有 ESC 是灰色");
+        let (offset, width) = status.esc.expect("运行中要登记 ESC 位置");
+        assert_eq!(width as usize, display_width("[ ESC ]"));
+        // 右移一位 + spinner 两格 + 「正在调用」八列 + 一个空格 = 12 列。
+        assert_eq!(offset as usize, 1 + 2 + display_width("正在调用") + 1);
+
+        // 悬停时转黄色。
+        state.runtime_esc_hover = true;
+        let hovered = runtime_status(&state, 60).expect("运行中应当有状态行");
+        assert_eq!(
+            hovered.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::Yellow)),
+            "悬停时 ESC 要变黄"
+        );
     }
 
     #[test]

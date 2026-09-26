@@ -1128,6 +1128,7 @@ impl ToolBatchHost for RemoteTools {
                                 before_chars,
                                 after_chars: 0,
                                 output: String::new(),
+                                error: String::new(),
                             }),
                             CompressionPhase::Finished {
                                 call_id,
@@ -1142,6 +1143,22 @@ impl ToolBatchHost for RemoteTools {
                                 before_chars,
                                 after_chars,
                                 output: text.to_string(),
+                                error: String::new(),
+                            }),
+                            // 失败/超时也报给宿主：卡片上显示「压缩超时…」/「压缩失败…」。
+                            CompressionPhase::Failed {
+                                call_id,
+                                tool,
+                                before_chars,
+                                message,
+                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                                call_id: call_id.to_string(),
+                                tool: tool.to_string(),
+                                phase: "failed".to_string(),
+                                before_chars,
+                                after_chars: 0,
+                                output: String::new(),
+                                error: message.to_string(),
                             }),
                         };
                         self.conn.borrow_mut().notify(event);

@@ -265,7 +265,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.model_request_error` | `{error, model}` | 模型请求以 `AgentProtocolError` 终结（`_request_agent_reply` 里 `model.request.error`）；宿主据此分发 `model.request.error` |
 | `turn.tool_call_started` | `{call_id, tool}` | 无（Rust 侧新增）：模型开始吐一个工具调用，参数还在流里 |
 | `turn.tool_call_arguments` | `{call_id, delta}` | 无（Rust 侧新增）：工具调用参数的增量，可能是半截 JSON |
-| `turn.tool_output_compression` | `{call_id, tool, phase, before_chars, after_chars, output}` | 无（Rust 侧新增）：工具输出压缩的 `started` / `finished` 两个阶段，`finished` 带压缩后的正文 |
+| `turn.tool_output_compression` | `{call_id, tool, phase, before_chars, after_chars, output, error}` | 无（Rust 侧新增）：工具输出压缩的 `started` / `finished` 两个阶段，`finished` 带压缩后的正文 |
 | `tool.started` | `{step, call}` | `on_tool_start` |
 | `tool.finished` | `{call, result}` | `on_tool_result` |
 | `tool.output_update` | `{call, result}` | `on_tool_output_update` |

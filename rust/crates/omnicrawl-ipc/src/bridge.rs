@@ -162,7 +162,7 @@ pub struct ToolCallArgumentsPayload {
 pub struct ToolOutputCompressionPayload {
     pub call_id: String,
     pub tool: String,
-    /// `started` / `finished`。
+    /// `started` / `finished` / `failed`。
     pub phase: String,
     #[serde(default)]
     pub before_chars: usize,
@@ -171,6 +171,9 @@ pub struct ToolOutputCompressionPayload {
     /// 压缩后的正文（只有 `phase = finished` 才带）：宿主用它替换卡片里的原始输出。
     #[serde(default)]
     pub output: String,
+    /// 失败文案（只有 `phase = failed` 才带）：已备好展示的文本，宿主直接显示在工具卡上。
+    #[serde(default)]
+    pub error: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

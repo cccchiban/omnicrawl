@@ -41,49 +41,110 @@ fn tool_call_stream(name: &str, arguments: &str) -> String {
     )
 }
 
+/// 一条 assistant 消息里的两个并发工具调用（`call-1` / `call-2`）。
+fn two_tool_call_stream() -> String {
+    let first = json!({"index": 0, "id": "call-1", "type": "function",
+        "function": {"name": "bash", "arguments": "{\"command\":\"cat a.log\"}"}});
+    let second = json!({"index": 1, "id": "call-2", "type": "function",
+        "function": {"name": "bash", "arguments": "{\"command\":\"cat b.log\"}"}});
+    format!(
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"tool_calls": [first, second]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+    )
+}
+
 /// 回环服务端：按请求内容决定回应——压缩请求回精简文本，主模型第一次回工具调用、之后回终稿。
 struct StubServer {
     addr: String,
     requests: Arc<Mutex<Vec<Value>>>,
     /// 每次请求的 `Authorization` 头，用来验证凭据确实换了渠道。
     auths: Arc<Mutex<Vec<String>>>,
+    /// 压缩请求的**到达**时刻（按到达顺序）。
+    compression_arrivals: Arc<Mutex<Vec<std::time::Instant>>>,
+    /// 压缩响应的**写出**时刻（按写出顺序）。
+    compression_responses: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 
 impl StubServer {
     fn spawn() -> Self {
+        Self::spawn_with(Duration::ZERO, false)
+    }
+
+    /// 两个并发工具调用 + 把**第一个**压缩响应延后 `delay`：用来验证并发压缩
+    /// （第二个压缩请求必须在第一个响应之前到达，否则就是排队跑）。
+    fn spawn_parallel_compressions(delay: Duration) -> Self {
+        Self::spawn_with(delay, true)
+    }
+
+    fn spawn_with(delay: Duration, two_calls: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("无法监听回环端口");
         let addr = listener.local_addr().expect("无法取本地地址");
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&requests);
         let auths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded_auths = Arc::clone(&auths);
+        let arrivals: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let responses: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let main_requests: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
+        // 一个连接一个线程：并发压缩要求服务端能同时接住多条连接。
+        let recorded = Arc::clone(&requests);
+        let recorded_auths = Arc::clone(&auths);
+        let recorded_arrivals = Arc::clone(&arrivals);
+        let recorded_responses = Arc::clone(&responses);
+        let shared_main = Arc::clone(&main_requests);
         thread::spawn(move || {
-            let mut main_requests = 0usize;
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break };
-                let (raw, auth) = read_request(&mut stream);
-                recorded_auths.lock().expect("记录锁").push(auth);
-                let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                recorded.lock().expect("记录锁").push(body.clone());
-                let is_compression = body.to_string().contains("<<<TOOL_OUTPUT_START>>>");
-                let payload = if is_compression {
-                    text_stream(COMPRESSED_TEXT)
-                } else {
-                    main_requests += 1;
-                    if main_requests == 1 {
-                        tool_call_stream("bash", "{\"command\":\"cat big.log\"}")
+                let Ok(stream) = stream else { break };
+                let recorded = Arc::clone(&recorded);
+                let recorded_auths = Arc::clone(&recorded_auths);
+                let recorded_arrivals = Arc::clone(&recorded_arrivals);
+                let recorded_responses = Arc::clone(&recorded_responses);
+                let shared_main = Arc::clone(&shared_main);
+                thread::spawn(move || {
+                    let mut stream = stream;
+                    let (raw, auth) = read_request(&mut stream);
+                    recorded_auths.lock().expect("记录锁").push(auth);
+                    let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    recorded.lock().expect("记录锁").push(body.clone());
+                    let is_compression = body.to_string().contains("<<<TOOL_OUTPUT_START>>>");
+                    let payload = if is_compression {
+                        let index = {
+                            let mut list = recorded_arrivals.lock().expect("记录锁");
+                            list.push(std::time::Instant::now());
+                            list.len()
+                        };
+                        // 只拖住第一条：如果内核是排队压缩，第二条请求只会在它之后才到。
+                        if index == 1 && !delay.is_zero() {
+                            thread::sleep(delay);
+                        }
+                        text_stream(COMPRESSED_TEXT)
                     } else {
-                        text_stream(FINAL_TEXT)
+                        let mut count = shared_main.lock().expect("记录锁");
+                        *count += 1;
+                        if *count == 1 {
+                            if two_calls {
+                                two_tool_call_stream()
+                            } else {
+                                tool_call_stream("bash", "{\"command\":\"cat big.log\"}")
+                            }
+                        } else {
+                            text_stream(FINAL_TEXT)
+                        }
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(reply.as_bytes());
+                    let _ = stream.flush();
+                    if is_compression {
+                        recorded_responses
+                            .lock()
+                            .expect("记录锁")
+                            .push(std::time::Instant::now());
                     }
-                };
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\
-                     Connection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(reply.as_bytes());
-                let _ = stream.flush();
+                });
             }
         });
 
@@ -91,6 +152,8 @@ impl StubServer {
             addr: format!("http://{addr}/v1"),
             requests,
             auths,
+            compression_arrivals: arrivals,
+            compression_responses: responses,
         }
     }
 
@@ -100,6 +163,14 @@ impl StubServer {
 
     fn auths(&self) -> Vec<String> {
         self.auths.lock().expect("记录锁").clone()
+    }
+
+    fn compression_arrivals(&self) -> Vec<std::time::Instant> {
+        self.compression_arrivals.lock().expect("记录锁").clone()
+    }
+
+    fn compression_responses(&self) -> Vec<std::time::Instant> {
+        self.compression_responses.lock().expect("记录锁").clone()
     }
 }
 
@@ -302,6 +373,60 @@ fn write_config(name: &str, min_chars: usize) -> PathBuf {
     )
     .expect("写配置失败");
     path
+}
+
+/// 用户要求：多个工具调用**同时**发多个压缩请求，而不是一个压完才开始下一个。
+#[test]
+fn parallel_compressions_run_at_the_same_time() {
+    let server = StubServer::spawn_parallel_compressions(Duration::from_millis(900));
+    let config = write_config("parallel", 100);
+    let mut kernel = Kernel::spawn(&config);
+    kernel.initialize(model_config(&server));
+
+    let long_output = "日志行内容".repeat(200);
+    kernel.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": "看两个日志"},
+    }));
+    loop {
+        let frame = kernel.next_frame();
+        if frame["method"] == "tool.batch" {
+            let params = frame["params"].clone();
+            let id = frame["id"].clone();
+            // 整批回填：两条超长观察。
+            let observations: Vec<Value> = params["calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|call| {
+                    json!({
+                        "tool_call": call,
+                        "result": {"ok": true, "output": long_output, "full_output": long_output},
+                        "message": {"role": "tool", "tool_call_id": call["id"], "content": long_output},
+                        "followup_messages": [],
+                    })
+                })
+                .collect();
+            assert_eq!(observations.len(), 2, "一条消息里的两个工具调用要打包成一个批次");
+            kernel.send(json!({"jsonrpc": "2.0", "id": id, "result": {"observations": observations}}));
+            continue;
+        }
+        if frame["method"] == "turn.finished" {
+            break;
+        }
+    }
+
+    let arrivals = server.compression_arrivals();
+    let responses = server.compression_responses();
+    assert!(
+        arrivals.len() >= 2 && responses.len() >= 2,
+        "两条超长观察应当各发一次压缩请求：到达 {arrivals:?} 写出 {responses:?}"
+    );
+    assert!(
+        arrivals[1] < responses[0],
+        "第二个压缩请求必须在第一个响应之前到达（并发压缩，而不是排队）：到达 {arrivals:?} 写出 {responses:?}"
+    );
 }
 
 #[test]

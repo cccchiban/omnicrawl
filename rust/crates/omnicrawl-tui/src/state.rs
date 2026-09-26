@@ -90,8 +90,10 @@ pub struct StreamingTool {
     pub text: String,
     /// 容错解析出来的参数：流式阶段标题行与文件预览都从这里取。
     pub arguments: serde_json::Value,
-    /// 压缩阶段提示（`正在压缩…` / `已压缩 a → b 字符`）。
+    /// 压缩阶段提示（`正在压缩…` / `已压缩 a → b 字符`）或失败文案（压缩超时/压缩失败）。
     pub compression: Option<String>,
+    /// 提示是不是失败文案：渲染时用红色，好和正常的计量提示区分。
+    pub compression_failed: bool,
     /// 是否仍在写参数（批次执行开始后置 false，卡片正文改由真实载荷驱动）。
     pub streaming: bool,
 }
@@ -625,6 +627,11 @@ pub struct AppState {
     selection: Option<TextSelection>,
     /// 会话流末尾 `[ ESC ]` 提示是否被鼠标悬停（悬停时染成淡黄色）。
     pub runtime_esc_hover: bool,
+    /// 输入区方框上边框里 `[ ESC ]` 的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
+    ///
+    /// 状态行搬到方框边框后就不再走会话流的命中测试，只能由渲染路径把位置记下来：
+    /// 渲染函数拿的是 `&AppState`，所以用 `Cell`（与设置面板的 `hits` 同一思路）。
+    runtime_esc_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
     /// `/sessions` 在输入框上方打开的可选列表。
     pub sessions_menu: SessionsMenu,
 }
@@ -666,6 +673,7 @@ impl AppState {
             carousel_lines: load_carousel_message_lines(),
             selection: None,
             runtime_esc_hover: false,
+            runtime_esc_area: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
         };
         // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
@@ -927,6 +935,7 @@ impl AppState {
                         text: String::new(),
                         arguments: serde_json::Value::Object(serde_json::Map::new()),
                         compression: None,
+                        compression_failed: false,
                         streaming: true,
                     },
                 );
@@ -976,9 +985,14 @@ impl AppState {
                         text: String::new(),
                         arguments: serde_json::Value::Object(serde_json::Map::new()),
                         compression: None,
+                        compression_failed: false,
                         streaming: false,
-                    })
-                    .compression = Some(if finished {
+                    });
+                // 失败/超时：内核把备好的文案放在 `error` 里（用户要求「压缩超时要显示压缩超时」）。
+                let failed = payload.phase == "failed";
+                let note = if failed {
+                    payload.error.clone()
+                } else if finished {
                     format!(
                         "已压缩 {} → {} 字符",
                         thousands(payload.before_chars),
@@ -986,7 +1000,11 @@ impl AppState {
                     )
                 } else {
                     "正在压缩…".to_string()
-                });
+                };
+                if let Some(entry) = self.streaming_tools.get_mut(&payload.call_id) {
+                    entry.compression = Some(note);
+                    entry.compression_failed = failed;
+                }
             }
             HostEvent::ToolStarted(payload) => {
                 // 流式阶段已经建过卡片的（同 call_id）：就地更新，保持卡片出现的先后顺序，
@@ -1040,27 +1058,7 @@ impl AppState {
                 self.streaming_tools.clear();
                 // 回合结束时仍停在「调用中」的卡片一律收口：这类卡片拿不到结果了
                 // （流被截断、批次被丢弃、工具超时后结果被丢弃），留着就会永远转圈。
-                // 文案与重放路径的兜底一致。
-                let now = Instant::now();
-                let pending: Vec<String> = self
-                    .records
-                    .iter()
-                    .filter_map(|record| match record {
-                        Record::Tool(card) if card.status == ToolStatus::Running => {
-                            Some(card.call_id.clone())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                for call_id in pending {
-                    if let Some(card) = self.tool_card_mut(&call_id) {
-                        card.status = ToolStatus::Failed;
-                        card.elapsed = Some(now.saturating_duration_since(card.started));
-                        if card.body.is_empty() {
-                            card.body = vec!["工具调用在回合结束前未收到结果。".to_string()];
-                        }
-                    }
-                }
+                self.close_running_cards("工具调用在回合结束前未收到结果。");
                 self.turn = TurnState::Idle;
                 self.turn_started = None;
                 self.status = None;
@@ -1503,6 +1501,8 @@ impl AppState {
         self.turn = TurnState::Idle;
         self.turn_started = None;
         self.status = None;
+        // 回合失败/取消时不能留下一直转圈的卡片。
+        self.close_running_cards("工具调用在回合结束前未收到结果。");
         self.records.push(Record::Notice(message));
     }
 
@@ -1702,6 +1702,68 @@ impl AppState {
     }
 
     /// 执行阶段开始：先落一张「运行中」工具卡。
+    /// 把仍在「调用中」的卡片收口为失败并补一句原因（回合结束、回合失败时用）。
+    fn close_running_cards(&mut self, message: &str) {
+        let now = Instant::now();
+        let pending: Vec<String> = self
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) if card.status == ToolStatus::Running => {
+                    Some(card.call_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for call_id in pending {
+            if let Some(card) = self.tool_card_mut(&call_id) {
+                card.status = ToolStatus::Failed;
+                card.elapsed = Some(now.saturating_duration_since(card.started));
+                if card.body.is_empty() {
+                    card.body = vec![message.to_string()];
+                }
+            }
+        }
+    }
+
+    /// 批次里**已经有结果**、但卡片还停在「调用中」的调用收口；返回收口的数量。
+    ///
+    /// `update_todos` / `pause_work` / `ask_user` 由批次推进逻辑在宿主内直接写结果
+    /// （`PendingBatch::advance` / `answer`），从不经过执行层，也就永远不会走到
+    /// `finish_tool_run`——卡片于是停在「调用中」、计时一直涨。用户报的
+    /// 「ask_user 提问结束后不显示结束、还在计时」就是这个成因。
+    pub fn settle_internal_batch_calls(&mut self) -> usize {
+        let Some(batch) = self.batch.as_ref() else {
+            return 0;
+        };
+        let pairs: Vec<(omnicrawl_core::ToolCall, omnicrawl_core::ToolResult)> = batch
+            .calls()
+            .iter()
+            .zip(batch.results())
+            .filter_map(|(call, result)| result.clone().map(|result| (call.clone(), result)))
+            .collect();
+        let now = Instant::now();
+        let mut settled = 0;
+        for (call, result) in pairs {
+            // 空 id 不能参与匹配（`tool_card_mut` 对空 id 的语义是「最近一张运行中的卡」）。
+            if call.id.is_empty() {
+                continue;
+            }
+            let pending = match self.tool_card(&call.id) {
+                Some(card) => card.status == ToolStatus::Running,
+                // 卡片不存在也补一张：这些调用在 Python 侧本来就有工具卡。
+                None => true,
+            };
+            if !pending {
+                continue;
+            }
+            self.begin_tool_run(&call, now);
+            self.finish_tool_run(&call, &result, now);
+            settled += 1;
+        }
+        settled
+    }
+
     pub fn begin_tool_run(&mut self, call: &omnicrawl_core::ToolCall, now: Instant) {
         // 流式阶段（`turn.tool_call_started`）可能已经为这次调用立过卡片：
         // 同一 `call_id` 只保留**一张**卡片并就地置为执行中。否则会留下两张卡，
@@ -1778,6 +1840,27 @@ impl AppState {
     }
 
     /// 按 `call_id` 找最近一张工具卡；调用没有 id 时退化为最近一张仍在运行的工具卡。
+    /// 输入区边框上 `[ ESC ]` 的屏幕矩形（上一帧渲染登记的，没有则为 `None`）。
+    pub fn runtime_esc_area(&self) -> Option<ratatui::layout::Rect> {
+        self.runtime_esc_area.get()
+    }
+
+    /// 渲染路径登记 `[ ESC ]` 的位置（渲染只拿 `&AppState`，因此用 `Cell` 写入）。
+    pub fn set_runtime_esc_area(&self, area: Option<ratatui::layout::Rect>) {
+        self.runtime_esc_area.set(area);
+    }
+
+    /// 只读取工具卡（按 `call_id`；空 id 不匹配，避免误命中别的调用）。
+    pub fn tool_card(&self, call_id: &str) -> Option<&ToolCard> {
+        if call_id.is_empty() {
+            return None;
+        }
+        self.records.iter().rev().find_map(|record| match record {
+            Record::Tool(card) if card.call_id == call_id => Some(card),
+            _ => None,
+        })
+    }
+
     fn tool_card_mut(&mut self, call_id: &str) -> Option<&mut ToolCard> {
         self.records.iter_mut().rev().find_map(|record| {
             let Record::Tool(card) = record else {
@@ -3114,6 +3197,11 @@ mod streaming_tests {
                 } else {
                     String::new()
                 },
+                error: if phase == "failed" {
+                    "压缩超时（120 秒），保留原始输出：请求超时。".to_string()
+                } else {
+                    String::new()
+                },
             })
         };
         state.apply(&phase("started", 12_345, 0), now);
@@ -3136,6 +3224,97 @@ mod streaming_tests {
             other => panic!("应当有工具卡：{other:?}"),
         };
         assert_eq!(card.body, vec!["压缩后的正文".to_string()]);
+    }
+
+    #[test]
+    fn internal_calls_are_settled_after_the_question_is_answered() {
+        // 回归（用户报）：ask_user 由批次推进在宿主内直接定调结果，从不经过执行层，
+        // 卡片因此一直停在「调用中」并继续计时。update_todos 同理。
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let call = |name: &str, arguments: serde_json::Value| omnicrawl_core::ToolCall {
+            name: name.to_string(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            id: format!("call-{name}"),
+            function_name: name.to_string(),
+        };
+        let todos = call(
+            "update_todos",
+            json!({"todos": [{"step": "写骨架", "completed": false}]}),
+        );
+        let ask = call(
+            "ask_user",
+            json!({"question": "要不要继续？", "options": ["继续", "停下"]}),
+        );
+        let _ = state.start_batch(
+            omnicrawl_ipc::Id::Number(1),
+            vec![todos.clone(), ask.clone()],
+        );
+        // 推进到提问点：任务清单已在宿主内定调，提问还在等答案。
+        state.settle_internal_batch_calls();
+        assert_eq!(
+            state.tool_card(&todos.id).map(|card| card.status),
+            Some(ToolStatus::Ok),
+            "update_todos 是内部定调的，应当立刻收口"
+        );
+        assert!(
+            state.tool_card(&ask.id).is_none(),
+            "提问在回答前不该有终态卡片"
+        );
+
+        state.answer_question("继续".to_string()).expect("应当在等提问");
+        assert_eq!(
+            state.settle_internal_batch_calls(),
+            1,
+            "回答之后提问卡片要收口"
+        );
+        let card = state.tool_card(&ask.id).expect("提问应当有卡片");
+        assert_eq!(
+            card.status,
+            ToolStatus::Ok,
+            "提问结束后不能再停在「调用中」"
+        );
+        assert!(
+            card.body.iter().any(|line| line.contains("继续")),
+            "卡片正文带回答：{:?}",
+            card.body
+        );
+    }
+
+    #[test]
+    fn compression_failure_note_is_shown_on_the_card() {
+        // 用户要求：压缩超时显示「压缩超时」，其他错误显示错误（以前只 eprintln，界面看不到）。
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+                phase: "failed".to_string(),
+                before_chars: 100_000,
+                after_chars: 0,
+                output: String::new(),
+                error: "压缩超时（120 秒），保留原始输出：请求超时。".to_string(),
+            }),
+            now,
+        );
+        let entry = state.streaming_tool("call-1").expect("应当有侧信道条目");
+        assert!(
+            entry
+                .compression
+                .as_deref()
+                .unwrap_or_default()
+                .contains("压缩超时"),
+            "卡片上要显示压缩超时：{:?}",
+            entry.compression
+        );
+        assert!(entry.compression_failed, "失败提示要走错误样式");
     }
 
     #[test]
