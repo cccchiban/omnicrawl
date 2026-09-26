@@ -79,6 +79,13 @@ assistant 原文里的 `function.name`）。所以除了线上那一层，内核
 Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` 不做任何收敛），带 MCP 的
 会话在严格网关上必然失败——这是 Rust 单侧的修正，不是新增功能。
 
+## 并发工具调用的回合顺序
+
+一条 assistant 消息里的并发工具调用会打包成**一个** `tool.batch` 交给宿主，内核等这个批次的
+完整响应（每条调用一条观察，数量不符即 `ObservationMismatch`）之后才发下一轮模型请求——
+不会出现「上一个工具还没完就开始下一轮」；宿主侧的 `PendingBatch` 也只在每条调用都回填结果后
+才产出观察。
+
 ## 工具调用的流式通知
 
 模型流的 `ToolCallStarted` / `ToolCallArgumentsDelta` 会转成 `turn.tool_call_started` /

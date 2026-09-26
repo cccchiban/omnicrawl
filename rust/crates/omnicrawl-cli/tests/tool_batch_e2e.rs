@@ -963,3 +963,78 @@ fn tool_call_arguments_stream_to_the_host() {
     );
     assert_eq!(arguments, r#"{"path": "a.txt"}"#, "参数增量拼起来应当等于模型给的那份");
 }
+
+/// 同一回合里的两个并发工具调用：内核必须等**整批**都回来才发下一次模型请求。
+///
+/// 这正是用户要求的行为：并发调用工具要等这一批全部完成后才能打包发给 AI 开始下一轮。
+#[test]
+fn concurrent_tool_calls_wait_for_the_whole_batch() {
+    // 一个 SSE 流里给两个 tool_call（同一条 assistant 消息，模型侧的并发调用）。
+    let body = format!(
+        "data: {}
+
+data: {}
+
+data: [DONE]
+
+",
+        json!({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call-1", "type": "function",
+             "function": {"name": "read_file", "arguments": "{\"path\": \"a.txt\"}"}},
+            {"index": 1, "id": "call-2", "type": "function",
+             "function": {"name": "read_file", "arguments": "{\"path\": \"b.txt\"}"}}
+        ]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+    );
+    let server = StubServer::spawn(vec![Reply::Raw(body), Reply::Text(FINAL_TEXT.to_string())]);
+    let root = temp_root("concurrent-batch");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": "读两个文件"},
+    }));
+
+    let mut batches = 0usize;
+    let mut calls_in_batch = 0usize;
+    loop {
+        let frame = kernel.next_frame();
+        if frame.get("method") == Some(&json!("tool.batch")) {
+            batches += 1;
+            let calls = frame["params"]["calls"].as_array().cloned().unwrap_or_default();
+            calls_in_batch = calls.len();
+            // 一次性回答整批两条观察（顺序与模型调用一致）。
+            let observations: Vec<Value> = calls
+                .iter()
+                .map(|call| {
+                    json!({
+                        "tool_call": call,
+                        "result": {"ok": true, "output": TOOL_OUTPUT, "full_output": TOOL_OUTPUT},
+                        "message": {"role": "tool", "tool_call_id": call["id"], "content": TOOL_OUTPUT},
+                        "followup_messages": [],
+                    })
+                })
+                .collect();
+            kernel.send(json!({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"observations": observations},
+            }));
+            continue;
+        }
+        if frame.get("method") == Some(&json!("turn.finished")) {
+            break;
+        }
+    }
+
+    assert_eq!(batches, 1, "两个并发调用应当打包成**一个**批次交给宿主");
+    assert_eq!(calls_in_batch, 2, "批次里应当有两条调用");
+    // 第二次模型请求（下一轮）里必须同时带上两条工具结果——证明内核是等整批回来才继续的。
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 2, "整个回合只应有两次模型请求：首轮 + 拿到整批后的下一轮");
+    let follow_up = bodies.last().cloned().unwrap_or_default().to_string();
+    assert!(follow_up.contains("call-1"), "下一轮请求带上了第一条结果：{follow_up}");
+    assert!(follow_up.contains("call-2"), "下一轮请求带上了第二条结果：{follow_up}");
+}

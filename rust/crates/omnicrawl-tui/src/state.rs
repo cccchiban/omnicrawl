@@ -1038,6 +1038,29 @@ impl AppState {
             }
             HostEvent::TurnFinished(payload) => {
                 self.streaming_tools.clear();
+                // 回合结束时仍停在「调用中」的卡片一律收口：这类卡片拿不到结果了
+                // （流被截断、批次被丢弃、工具超时后结果被丢弃），留着就会永远转圈。
+                // 文案与重放路径的兜底一致。
+                let now = Instant::now();
+                let pending: Vec<String> = self
+                    .records
+                    .iter()
+                    .filter_map(|record| match record {
+                        Record::Tool(card) if card.status == ToolStatus::Running => {
+                            Some(card.call_id.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for call_id in pending {
+                    if let Some(card) = self.tool_card_mut(&call_id) {
+                        card.status = ToolStatus::Failed;
+                        card.elapsed = Some(now.saturating_duration_since(card.started));
+                        if card.body.is_empty() {
+                            card.body = vec!["工具调用在回合结束前未收到结果。".to_string()];
+                        }
+                    }
+                }
                 self.turn = TurnState::Idle;
                 self.turn_started = None;
                 self.status = None;
@@ -1680,11 +1703,31 @@ impl AppState {
 
     /// 执行阶段开始：先落一张「运行中」工具卡。
     pub fn begin_tool_run(&mut self, call: &omnicrawl_core::ToolCall, now: Instant) {
+        // 流式阶段（`turn.tool_call_started`）可能已经为这次调用立过卡片：
+        // 同一 `call_id` 只保留**一张**卡片并就地置为执行中。否则会留下两张卡，
+        // 而流式那张永远停在「调用中」——看起来就像工具调用一直不结束，
+        // 也像「上一个工具还没完就开始跑下一轮」。
+        if let Some(entry) = self.streaming_tools.get_mut(&call.id) {
+            // 批次真正开始执行：参数以卡片上的真实载荷为准，不再用半截 JSON 预览。
+            entry.streaming = false;
+        }
+        let arguments = serde_json::Value::Object(call.arguments.clone());
+        let summary = host::summarize_arguments(&call.arguments);
+        if !call.id.is_empty() {
+            if let Some(card) = self.tool_card_mut(&call.id) {
+                card.name = call.name.clone();
+                card.summary = summary;
+                card.arguments = arguments;
+                card.status = ToolStatus::Running;
+                card.elapsed = None;
+                return;
+            }
+        }
         self.records.push(Record::Tool(ToolCard {
             call_id: call.id.clone(),
             name: call.name.clone(),
-            summary: host::summarize_arguments(&call.arguments),
-            arguments: serde_json::Value::Object(call.arguments.clone()),
+            summary,
+            arguments,
             status: ToolStatus::Running,
             elapsed: None,
             started: now,
@@ -3093,6 +3136,125 @@ mod streaming_tests {
             other => panic!("应当有工具卡：{other:?}"),
         };
         assert_eq!(card.body, vec!["压缩后的正文".to_string()]);
+    }
+
+    #[test]
+    fn a_streamed_call_keeps_one_card_and_gets_finished() {
+        // 回归：流式阶段立过卡片后，批次执行**不能**再推一张卡片，
+        // 否则流式那张永远停在「调用中」（用户报「工具调用一直不结束」）。
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        let call = omnicrawl_core::ToolCall {
+            name: "bash".to_string(),
+            arguments: json!({"command": "ls"}).as_object().cloned().unwrap_or_default(),
+            id: "call-1".to_string(),
+            function_name: "bash".to_string(),
+        };
+        state.begin_tool_run(&call, now);
+        state.begin_tool_run(&call, now);
+        let cards: Vec<&ToolCard> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) if card.call_id == "call-1" => Some(card),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cards.len(), 1, "同一 call_id 只应有一张卡片");
+        assert!(!state.streaming_tool("call-1").unwrap().streaming, "批次执行后不再是流式态");
+
+        // 结果回填后卡片进入终态（不会一直是「调用中」）。
+        state.finish_tool_run(
+            &call,
+            &omnicrawl_core::ToolResult {
+                ok: true,
+                output: "文件内容：42".to_string(),
+                full_output: String::new(),
+                error_code: None,
+                retryable: false,
+            },
+            now,
+        );
+        let card = match state
+            .records
+            .iter()
+            .find(|record| matches!(record, Record::Tool(_)))
+        {
+            Some(Record::Tool(card)) => card,
+            other => panic!("应当有工具卡：{other:?}"),
+        };
+        assert_eq!(card.status, ToolStatus::Ok, "完成后状态必须是终态");
+    }
+
+    #[test]
+    fn turn_end_closes_cards_still_marked_running() {
+        // 回合结束仍停在「调用中」的卡片必须收口（用户报「工具调用一直不结束」）。
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        state.apply(
+            &omnicrawl_ipc::HostEvent::TurnFinished(omnicrawl_ipc::bridge::TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: String::new(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 1,
+                paused: false,
+            }),
+            now,
+        );
+        let card = match state
+            .records
+            .iter()
+            .find(|record| matches!(record, Record::Tool(_)))
+        {
+            Some(Record::Tool(card)) => card,
+            other => panic!("应当有工具卡：{other:?}"),
+        };
+        assert_eq!(card.status, ToolStatus::Failed, "回合结束不能再停在调用中");
+        assert_eq!(card.body, vec!["工具调用在回合结束前未收到结果。".to_string()]);
+    }
+
+    #[test]
+    fn batch_waits_for_every_call_before_observations() {
+        // 并发工具调用：整批**全部**回填后才打包成观察交给下一轮模型请求。
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let calls: Vec<omnicrawl_core::ToolCall> = ["call-1", "call-2"]
+            .iter()
+            .map(|id| omnicrawl_core::ToolCall {
+                name: "read_file".to_string(),
+                arguments: json!({"path": "a.py"}).as_object().cloned().unwrap_or_default(),
+                id: (*id).to_string(),
+                function_name: "read_file".to_string(),
+            })
+            .collect();
+        let _ = state.start_batch(omnicrawl_ipc::Id::Number(1), calls.clone());
+        let result = omnicrawl_core::ToolResult {
+            ok: true,
+            output: "文件内容：42".to_string(),
+            full_output: String::new(),
+            error_code: None,
+            retryable: false,
+        };
+        assert!(!state.record_tool_result(0, result.clone(), None), "只回填一条时整批未就绪");
+        assert!(state.take_observations(false).is_none(), "未整批回填时不能打包观察");
+        assert!(state.record_tool_result(1, result, None), "两条都回填后整批就绪");
+        let observations = state.take_observations(false).expect("整批就绪后应当能取观察");
+        assert_eq!(observations.len(), 2, "观察按模型调用顺序整批产出");
+        let _ = &calls;
     }
 
     /// 半截 JSON：字符串与对象都没闭合（模型流中断在这一刻的样子）。
