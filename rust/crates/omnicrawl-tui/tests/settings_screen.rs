@@ -369,6 +369,52 @@ fn channels_page_renders_list_then_form() {
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }
 
+/// 「模型 ID」自动检测出的候选列表：超出一屏时窗口跟着游标走，前后各留一行省略提示。
+#[test]
+fn channel_model_candidates_scroll_with_the_selection() {
+    let mut state =
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_channels(
+            vec![channel("gpt-main", "主渠道", "openai", "gpt-5.2", true)],
+            "gpt-main",
+            channel("新渠道", "新渠道", "openai", "gpt-5.2", true),
+        ));
+    while state.selected_key() != "channels" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Enter); // 编辑渠道
+    for _ in 0..6 {
+        state.handle_key(KeyCode::Down); // 走到「模型 ID」字段
+    }
+    state.handle_key(KeyCode::Enter); // 请宿主检测；这里直接回填结果
+    let models: Vec<String> = (1..=30).map(|index| format!("model-{index:02}")).collect();
+    state.set_channel_models(models, String::new());
+
+    let head = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(head.contains("model-01"), "窗口起点是最前面的候选：{head}");
+    assert!(
+        head.contains("... 后面 22 个"),
+        "超出一屏时给出尾部条目数：{head}"
+    );
+    assert!(
+        !head.contains("... 前面"),
+        "游标还在第一项时不该有前省略行：{head}"
+    );
+
+    for _ in 0..10 {
+        state.handle_key(KeyCode::Down);
+    }
+    let scrolled = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(
+        scrolled.contains("model-11"),
+        "游标走到第 11 项时该候选必须可见：{scrolled}"
+    );
+    assert!(
+        scrolled.contains("... 前面 6 个"),
+        "窗口跟着游标下移：{scrolled}"
+    );
+}
+
 #[test]
 fn very_short_terminal_still_renders() {
     let state = state();

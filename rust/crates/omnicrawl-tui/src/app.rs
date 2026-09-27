@@ -36,7 +36,9 @@ use omnicrawl_config::features::advisor::{
 use omnicrawl_config::features::agent_workspace::{
     load_agent_workspace_config, save_agent_workspace_config, AgentWorkspaceConfig,
 };
-use omnicrawl_config::features::context_compaction::load_context_compaction_config;
+use omnicrawl_config::features::context_compaction::{
+    load_context_compaction_config,
+};
 use omnicrawl_config::features::desensitization::{
     load_desensitization_config, save_desensitization_config, DesensitizationConfig,
 };
@@ -76,7 +78,8 @@ use omnicrawl_config::models::vision::{
     load_vision_configuration, resolve_native_vision, save_native_vision,
     save_vision_configuration, VisionConfiguration,
 };
-use omnicrawl_controllers::settings::context_compaction_trigger_tokens;
+use omnicrawl_controllers::memory::user_data_root;
+use omnicrawl_controllers::settings::{context_compaction_trigger_tokens, kernel_compaction_settings};
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
 use omnicrawl_controllers::subagents::tasks::is_terminal;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
@@ -136,6 +139,12 @@ use omnicrawl_tts::voices::{
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// 有活动（回合在跑、后台结果在途）时的等待上限：状态行 spinner 与工具耗时按 80ms 换帧，
+/// 取 20ms 保证帧率充足，又不会在「回车 → 首字」区间白等一整个节拍。
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// 真正空闲时的等待上限：没有任何东西会定时变（没有回合、没有动画、没有在途结果），
+/// 键盘、鼠标与内核帧都会立刻唤醒 `event::poll`，因此这里可以放心久睡。
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// 方向键滚动步长与翻页步长（行）。
 const SCROLL_STEP: isize = 1;
 const PAGE_STEP: isize = 10;
@@ -273,7 +282,11 @@ fn load_prompt_runtime(
     prompt_options.workspace_detection_summary =
         omnicrawl_config::core::context::detect_project_context(environment, None)
             .detection_summary();
-    prompt_options.system_prompt_override = Some(options.system_prompt.clone());
+    // system prompt 是**显式覆盖**才传：`None` 时 `PromptRuntime` 读
+    // `rust/assets/templates/system_prompt.md` 模板（工作守则、工具协议、文档索引）。
+    // 曾经这里无条件传 `Some(options.system_prompt)`，而它有个一行默认值兜底，
+    // 于是模板永远被那句话顶掉——模型收到的是占位文案而不是真正的系统提示词。
+    prompt_options.system_prompt_override = options.system_prompt.clone();
     prompt_options.advisor_active = options.advisor.enabled;
     prompt_options.advisor_blacklisted = options
         .advisor
@@ -285,7 +298,7 @@ fn load_prompt_runtime(
         Err(error) => {
             eprintln!("[tui] 系统提示词装配失败，改用命令行给的文本：{error}");
             let mut fallback = PromptOptions::new(workspace.to_path_buf());
-            fallback.system_prompt_override = Some(options.system_prompt.clone());
+            fallback.system_prompt_override = options.system_prompt.clone();
             PromptRuntime::load(environment, fallback)
                 .map_err(|error| format!("系统提示词装配失败：{error}"))
         }
@@ -338,22 +351,42 @@ fn build_review_options(
 ///
 /// 内核把 `[kernel] 回合失败：…` 一类诊断写到 stderr；只有这些行值得占用会话流，
 /// 常规信息（如「会话已就绪」）直接丢弃。
+///
+/// `panicked` 必须收：release 档是 `panic = "abort"`，内核 panic 会**直接结束进程**，
+/// Rust 的 panic 首行既不带「失败/错误/异常」也没有任何中文提示词——按老口径过滤掉，
+/// 用户就只能看到「内核进程已退出」而看不到原因（已发生过一次：脱敏层字节切片越界）。
 fn kernel_error_notice(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let is_error = ["失败", "错误", "异常", "无法"]
+    let is_error = ["失败", "错误", "异常", "无法", "panicked", "RUST_BACKTRACE"]
         .iter()
         .any(|keyword| trimmed.contains(keyword));
     is_error.then(|| trimmed.to_string())
 }
+
+/// 内核进程消失时的收尾文案。
+///
+/// 措辞保持原样：提示行、插件 `turn.error` 与流程测试都按它检索。
+const KERNEL_LOST_MESSAGE: &str = "内核进程已退出。";
+
+/// 内核消失后常显在运行状态行的退出指引。
+///
+/// 写在状态行而不是提示行：用户滚动回看现场时，退出方式不会跟着滚走。
+const KERNEL_LOST_STATUS: &str =
+    "内核已退出：按 Enter / Esc 退出（会话已保存，可用 --resume 恢复）";
 
 pub struct App {
     pub state: AppState,
     pub options: Options,
     pub kernel: KernelClient,
     pub quit: bool,
+    /// 内核异常退出（连接断开）的闩锁。
+    ///
+    /// 以前这里直接 `quit = true`：`main` 画完那一帧就离屏退出，用户只看到界面一闪，
+    /// 既看不到原因、也留不住现场。现在只收尾一次并把界面停在原处，等用户按键再退。
+    pub kernel_lost: bool,
     /// 宿主工作区根：`initialize` 交给内核，供回合快照（`/undo`）使用。
     pub workspace: PathBuf,
     /// 提示词运行时：system prompt、AGENTS.md 合并结果与 Skill 索引（`initialize` 与
@@ -391,6 +424,10 @@ pub struct App {
     llm: LlmConfig,
     /// 最近一帧的终端区域：鼠标命中判定与渲染共用同一套布局计算（[`ui::layout`]）。
     viewport: Rect,
+    /// 上一帧实际画出去的「三块刷新版本号」与终端尺寸。
+    ///
+    /// `None` 表示还没画过任何一帧：首帧必须画，不能用「没变化」把自己跳过。
+    drawn: Option<(ui::RefreshVersions, Rect)>,
     /// 插件运行期：与 API 同源（配置 → `PluginRuntime`），Hook 在回合与工具边界上分发。
     plugins: Arc<PluginHost>,
     /// 审查运行期（`approval.mode = review` 时用）：与 Python `_review_tool_call` 同源。
@@ -583,8 +620,9 @@ impl App {
         let mut state = AppState::new(project, options.model.clone(), options.approval);
         state.telemetry.context_window = options.context_window_tokens;
         // 思考显示是纯界面开关：启动期按 `ui.show_thinking` 定初值，设置面板里可即时改。
-        state.show_thinking =
-            load_show_thinking(&ConfigEnvironment::from_process(), None).unwrap_or(true);
+        state.set_show_thinking(
+            load_show_thinking(&ConfigEnvironment::from_process(), None).unwrap_or(true),
+        );
         state.mcp_servers = registry
             .mcp()
             .map(|manager| manager.config().enabled_servers().len() as u64)
@@ -624,6 +662,7 @@ impl App {
             options,
             kernel,
             quit: false,
+            kernel_lost: false,
             workspace: workspace.to_path_buf(),
             prompt,
             registry,
@@ -641,6 +680,7 @@ impl App {
             prompt_request: None,
             llm,
             viewport: Rect::default(),
+            drawn: None,
             plugins,
             review,
             review_context: omnicrawl_host::review::ReviewContext::default(),
@@ -703,6 +743,28 @@ impl App {
     /// 记录当前终端区域（每帧由事件循环在渲染前更新）。
     pub fn set_viewport(&mut self, area: Rect) {
         self.viewport = area;
+    }
+
+    /// 本帧是否需要重画：三个刷新块（会话 / 输入框 / 底部）自上次绘制以来是否变过，
+    /// 再加上终端是否换过尺寸。
+    ///
+    /// 全都没变时返回 `false`，事件循环就整帧跳过 `terminal.draw`——空闲时 TUI
+    /// 不再以 20fps 空转（三块的内容也不会被无谓地重建）。
+    /// 模态弹层（设置 / 配置对话 / 文件选择）自己铺满整屏，仍按老规矩每帧重画。
+    pub fn needs_redraw(&mut self) -> bool {
+        let current = (self.state.refresh_versions(), self.viewport);
+        if self.settings.is_some()
+            || self.config_chat.is_some()
+            || self.file_picker.is_some()
+        {
+            self.drawn = Some(current);
+            return true;
+        }
+        if self.drawn != Some(current) {
+            self.drawn = Some(current);
+            return true;
+        }
+        false
     }
 
     /// 把当前对话记录投影成顾问可见的工作分支（user/assistant 文本，保持顺序）。
@@ -830,13 +892,36 @@ impl App {
                 self.llm.request_retry_count.max(1) as u32
             },
         };
+        let context_window = effective_context_window(self.options.context_window_tokens, &self.llm);
+        let environment = ConfigEnvironment::from_process();
+        // 压缩策略整段下发：读不到配置时降级为「内核默认」，但要明说一声，
+        // 否则用户只会看到「模型摘要未通过校验」而不知道策略根本没生效。
+        let compaction = match load_context_compaction_config(&environment, None) {
+            Ok(config) => Some(kernel_compaction_settings(context_window, &config)),
+            Err(error) => {
+                self.state.notice(format!(
+                    "上下文压缩配置读取失败：{}（本会话按内核默认压缩策略运行）",
+                    error.message()
+                ));
+                None
+            }
+        };
+        // 记忆根同理：内核不知道用户把记忆放在哪儿，不给就等于关掉压缩回写与自动召回；
+        // 开关与工具表同源（`[memory] enabled`，缺省开启）。
+        let memory_root = load_feature_enabled(&environment, "memory", true, None, None)
+            .unwrap_or(true)
+            .then(|| {
+                user_data_root(environment.home())
+                    .to_string_lossy()
+                    .to_string()
+            });
         let session = self.options.session_root.as_ref().map(|root| {
             Box::new(KernelSessionConfig {
                 root: root.to_string_lossy().to_string(),
                 session_id: String::new(),
-                memory_root: None,
+                memory_root: memory_root.clone(),
                 workspace_root: Some(self.workspace.to_string_lossy().to_string()),
-                compaction: None,
+                compaction: compaction.clone(),
             })
         });
         let params = InitializeParams {
@@ -899,6 +984,8 @@ impl App {
     /// 游标按经过时间换算帧号；动画落定后这里不再做任何事。
     pub fn tick_welcome_logo_animation(&mut self, now: Instant) {
         if self.state.logo.is_playing() {
+            // 空会话首屏那幅块字是按帧拼接的：动画没停就都是会话区的内容变化。
+            self.state.touch_conversation();
             self.state.logo.tick(now);
         }
     }
@@ -915,8 +1002,37 @@ impl App {
     /// 推进活跃子任务进度树的运行耗时（对映 Python 的 80ms 耗时定时器）。
     ///
     /// 只刷新仍有非终态任务的树：批次收口后树的耗时不再变化，不必每帧重算。
+    /// 状态行 spinner 与运行中工具卡的耗时也在这里推进；空闲时两者都不动，
+    /// 三块版本号不变，事件循环因此能整帧跳过绘制。
     pub fn tick_subagent_trees(&mut self) {
         self.state.refresh_subagent_trees();
+        self.state.tick_activity();
+    }
+
+    /// 本次等待终端事件的时长预算：按「下一件要做的事」定，而不是固定节拍。
+    ///
+    /// 固定 50ms 节拍在「回车 → 首字」这段最要紧的区间里最多白等一整个节拍，
+    /// 空闲时又白醒一次做整帧判断。这里：
+    ///
+    /// - 有回合在跑、有在途后台结果 → 按活动帧率短睡；
+    /// - 欢迎 Logo 动画或轮播解密动画在播 → 精确睡到下一帧到期时刻；
+    /// - 其余（真正空闲）→ 睡到上限，靠终端事件唤醒。
+    pub fn poll_budget(&self, now: Instant) -> Duration {
+        let active = self.state.turn.is_running()
+            || self.config_chat.is_some()
+            || self.slow_task.is_some()
+            || self.tts_task.is_some()
+            || self.channel_models_task.is_some()
+            || self.state.has_running_activity();
+        let mut budget = if active {
+            ACTIVE_POLL_INTERVAL
+        } else {
+            IDLE_POLL_INTERVAL
+        };
+        if let Some(due) = self.state.next_animation_frame(now) {
+            budget = budget.min(due);
+        }
+        budget
     }
 
     /// 收干内核帧与工具执行结果；内核退出时收尾退出。
@@ -932,12 +1048,41 @@ impl App {
         self.drain_kernel_logs();
         self.drain_channel_models();
         self.enforce_tool_deadline();
-        if self.kernel.is_closed() && !self.quit {
-            self.state.fail_turn("内核进程已退出。".to_string());
+        // 内核退出只收尾一次（本函数每 50ms 跑一遍），且**不**顺手退出界面：
+        // 退出前用户必须有机会看清原因与会话现场。
+        if self.kernel.is_closed() && !self.quit && !self.kernel_lost {
+            self.kernel_lost = true;
+            // 先关卡：内核没了，工具批次与排队中的提交都不可能再落地，留着只会产生
+            // 「回工具批次失败」「工具超时」这类二次噪音。
+            self.tool_deadline = None;
+            self.state.cancel_batch();
+            // 模态页先收起来：设置/配置对话/文件选择都要靠内核落地，留着只会盖住报错。
+            self.file_picker = None;
+            self.config_chat = None;
+            self.settings = None;
+            self.state.fail_turn(KERNEL_LOST_MESSAGE.to_string());
             self.plugins
-                .turn_error("内核进程已退出。", None, self.current_turn_id().as_deref());
-            self.quit = true;
+                .turn_error(KERNEL_LOST_MESSAGE, None, self.current_turn_id().as_deref());
+            // 现场仍在（消息流、工具卡、报错都在原位），再补一条「怎么退出、怎么恢复」。
+            self.state.notice(self.kernel_lost_hint());
+            self.state.set_status(Some(KERNEL_LOST_STATUS.to_string()));
         }
+    }
+
+    /// 内核退出后写在会话流里的自救指引：现场还在、怎么退出、怎么恢复，一次说清。
+    ///
+    /// 会话 id 为空（还没握手出会话）时退回占位写法：不能因为拿不到 id 就把指引省了。
+    fn kernel_lost_hint(&self) -> String {
+        let session = self.current_session_id();
+        let resume = if session.is_empty() {
+            "omnicrawl --resume <会话 id>".to_string()
+        } else {
+            format!("omnicrawl --resume {session}")
+        };
+        format!(
+            "界面停在原处以保留现场（消息、工具卡与报错都还在）。按 Enter / Esc / Ctrl+Q 退出；\
+             本会话已保存在本地，重启后用 `{resume}` 恢复。"
+        )
     }
 
     /// 把内核 stderr 里的运行期报错转成会话区提示。
@@ -1447,6 +1592,14 @@ impl App {
 
     /// 处理一个终端事件。
     pub fn handle_event(&mut self, event: Event) {
+        // 用户输入一律视为「输入块脏」：键盘/鼠标/粘贴都可能改输入框、命令菜单、
+        // 排队预览、悬停态或拖选。没有输入、也没有内核帧时，事件循环可以整帧跳过绘制。
+        if matches!(
+            event,
+            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::Resize(..)
+        ) {
+            self.state.touch_composer();
+        }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // 文件选择弹层是最上层模态：它开着时按键都归它。
@@ -1481,7 +1634,7 @@ impl App {
                     }
                 }
             }
-            Event::Paste(text) if self.settings.is_none() => {
+            Event::Paste(text) if self.settings.is_none() && !self.kernel_lost => {
                 // 多行粘贴折成 `[粘贴 #n +N 行]`（提交时还原），否则大段文本会把输入框撑爆。
                 self.state.composer.insert_paste(&text)
             }
@@ -1720,6 +1873,20 @@ impl App {
             _ => {}
         }
 
+        if self.kernel_lost {
+            // 内核已退出：只剩「看现场」与「退出」两件事。Enter / Esc 与 Ctrl+Q 同义，
+            // 上下翻页照旧滚动（好读清报错），其余按键吞掉——输入框不再接受文本，
+            // 免得用户以为消息还能发出去、或误按 Enter 以为是在提交。
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.start_shutdown();
+                    return;
+                }
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {}
+                _ => return,
+            }
+        }
+
         if self.handle_waiting_key(key, ctrl) {
             return;
         }
@@ -1740,7 +1907,10 @@ impl App {
             // `_submit_composer_text` 的分叉一致。
             KeyCode::Enter => self.submit_or_queue(),
             KeyCode::Char('j') if ctrl => self.state.composer.newline(),
-            KeyCode::Char('l') if ctrl => self.state.records.clear(),
+            KeyCode::Char('l') if ctrl => {
+                self.state.records.clear();
+                self.state.touch_conversation();
+            }
             KeyCode::Esc => {
                 // 先清选区（有选区时 Esc 不该顺手取消回合）。
                 if self.state.selection().is_some() {
@@ -1958,6 +2128,11 @@ impl App {
     /// 命中注册表即交给命令层（未命中的输入照旧当成一轮对话）；需要内核往返的两条
     /// （`/undo`、`/compact`）先在宿主侧拦下来异步下发。
     fn dispatch_submission(&mut self, text: String) {
+        // 内核没了就什么都不发：界面已常显退出指引，往死连接里写只会刷出「发送失败」噪音。
+        // 键盘路径到不了这里（Enter 在该状态下是退出），这是给鼠标等旁路的兜底。
+        if self.kernel_lost {
+            return;
+        }
         if let Some(parsed) = command_registry().parse(&text) {
             self.dispatch_command(text, parsed);
             return;
@@ -1976,6 +2151,9 @@ impl App {
         self.state.begin_turn(turn_id.clone(), text.clone());
         // 用户提交的文本是审查模型判断授权边界的最新事实（与 host 侧 `record_user_text` 同位）。
         self.review_context.record_user_text(&text);
+        // 新回合开始：清掉上一回合 Esc 留下的取消标记。工具表的取消令牌跨回合沿用
+        // （重建工具表 / 切工作区都不换），不复位会让本回合每个 `bash` 一启动就被判为已取消。
+        self.registry.cancel_token().reset();
         self.send(Command::TurnSubmit(omnicrawl_ipc::TurnSubmitParams {
             turn_id,
             user_text: text,
@@ -2046,7 +2224,7 @@ impl App {
             self.state.subagent_stream = false;
         }
         if let Some(status) = result.working_status.take() {
-            self.state.status = Some(status);
+            self.state.set_status(Some(status));
         }
         // 打开类命令（`/settings`、`/settings --chat`）不追加提示：Python 在
         // `open_settings` / `open_config_chat` 分支里直接 return，`message`（如
@@ -2054,6 +2232,8 @@ impl App {
         // 否则会多出一条「· 打开设置面板」这类纯提醒。
         if result.clear_conversation {
             self.state.records.clear();
+            // 清空会话是整块内容变化：缓存整体失效。
+            self.state.touch_conversation();
             self.state.scroll_to_bottom();
         }
         if result.open_config_chat {
@@ -2118,7 +2298,7 @@ impl App {
                 return;
             }
         }
-        self.state.status = Some(kind.working_status().to_string());
+        self.state.set_status(Some(kind.working_status().to_string()));
         // `/review` 运行期间子代理事件进流式对话面板（面板按 batch_id 挂进消息流）。
         if matches!(kind, KernelCommand::Review { .. }) {
             self.state.subagent_stream = true;
@@ -2152,7 +2332,7 @@ impl App {
     /// 内核对宿主命令的响应 → 界面消息；失败时原样透出内核的中文原因。
     fn finish_kernel_command(&mut self, command: KernelCommand, frame: &Frame) {
         // 回执到了就收起状态行：命令已经不在执行中。
-        self.state.status = None;
+        self.state.set_status(None);
         if matches!(command, KernelCommand::Review { .. }) {
             self.state.subagent_stream = false;
         }
@@ -2940,7 +3120,7 @@ impl App {
         let environment = ConfigEnvironment::from_process();
         let path = save_show_thinking(&environment, enabled, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        self.state.show_thinking = enabled;
+        self.state.set_show_thinking(enabled);
         Ok(format!(
             "思考显示已{}，已保存到 {}。",
             if enabled { "开启" } else { "关闭" },
@@ -3646,7 +3826,8 @@ impl App {
                 prepared,
             });
         });
-        self.state.status = Some(SlowTaskKind::WorkspaceSwitch.working_status().to_string());
+        self.state
+            .set_status(Some(SlowTaskKind::WorkspaceSwitch.working_status().to_string()));
         self.state
             .notice(WORKSPACE_SWITCH_PENDING_MESSAGE.to_string());
         self.slow_task = Some(SlowTask {
@@ -3676,7 +3857,8 @@ impl App {
             };
             let _ = sender.send(SlowOutcome::McpStatus(text));
         });
-        self.state.status = Some(SlowTaskKind::McpStatus.working_status().to_string());
+        self.state
+            .set_status(Some(SlowTaskKind::McpStatus.working_status().to_string()));
         self.slow_task = Some(SlowTask {
             kind: SlowTaskKind::McpStatus,
             outcome: receiver,
@@ -3695,14 +3877,14 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // 线程崩了：不能把状态行永远留在「正在准备…」。
                 self.slow_task = None;
-                self.state.status = None;
+                self.state.set_status(None);
                 self.state
                     .notice("慢命令后台任务意外结束，请重试。".to_string());
                 return;
             }
         };
         self.slow_task = None;
-        self.state.status = None;
+        self.state.set_status(None);
         match outcome {
             SlowOutcome::McpStatus(text) => self.state.notice(text),
             SlowOutcome::WorkspacePrepared {
@@ -4482,7 +4664,7 @@ impl App {
             }
             return;
         }
-        self.state.status = Some("正在重放会话…".to_string());
+        self.state.set_status(Some("正在重放会话…".to_string()));
         let id = self.send(Command::SessionEvents);
         self.pending_commands.insert(
             id,
@@ -5264,7 +5446,15 @@ fn tool_label(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-/// 上下文设置对应的内核压缩配置（阈值 Token 由窗口与百分比换算）。
+/// 压缩配置 → 内核协议字段。
+///
+/// `[context_compaction]` 是压缩策略的唯一真源（与 Python 侧读同一份配置）：命中百分比时
+/// 只改触发阈值与窗口，其余字段内核保持握手时的值。
+///
+/// 历史上握手这里发的是 `None`，内核便退回 `CompactionConfig::default()`，于是
+/// `target_summary_tokens` 变成默认的 2000、`recent_turns` 变成 3、推理强度变成 medium：
+/// 用户配的 0（无预算上限）被丢掉，摘要随即被 token 预算卡住并被校验拒绝（完整性要求与
+/// 预算直接冲突）。现在整段下发，内核侧不会再出现「配置写了却不生效」。
 fn compaction_settings(window: i64, percent: i64) -> KernelCompactionConfig {
     KernelCompactionConfig {
         trigger_context_tokens: Some(context_compaction_trigger_tokens(window, percent)),
@@ -5655,6 +5845,9 @@ mod tests {
         );
     }
 
+    /// 握手必须把 `[context_compaction]` 整段转发：映射本身在
+    /// `omnicrawl_controllers::settings::kernel_compaction_settings`（那边有用例钉住逐字段），
+    /// 这里钉住「热更新只带本次要改的两个字段」这一条，避免把握手时的字段覆盖回空值。
     #[test]
     fn compaction_settings_convert_percent_to_tokens() {
         let settings = compaction_settings(200_000, 80);
@@ -5663,6 +5856,10 @@ mod tests {
         assert_eq!(
             settings.recent_turns, None,
             "只带本次要改的字段，其余交给内核保留原值"
+        );
+        assert_eq!(
+            settings.target_summary_tokens, None,
+            "热更新以不覆盖握手时下发的摘要预算"
         );
     }
 

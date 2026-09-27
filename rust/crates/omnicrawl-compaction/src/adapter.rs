@@ -1,8 +1,10 @@
 //! `omnicrawl/agent/context_compaction/summary.py` 的模型面：把摘要请求接到内核运行时。
 //!
 //! 与主请求共享同一份系统提示词、消息前缀与工具声明（逐字复用才能命中前缀缓存），
-//! 只有 `tool_choice` 不同：工具面照带，但模型不允许调用工具。没有前缀时不发请求——
-//! 待压缩正文只存在于复用前缀里，缺前缀既命不中缓存也拿不到正文。
+//! 只有 `tool_choice` 不同：工具面照带，但模型不允许调用工具。工具声明在发送前会做
+//! 与主请求相同的线上名收敛（MCP 的 `server.tool` 等非法字符会被网关 400）——收敛是
+//! 确定性的，同一份工具表每次得到同一组线上名，工具块仍与主请求逐字相同。
+//! 没有前缀时不发请求——待压缩正文只存在于复用前缀里，缺前缀既命不中缓存也拿不到正文。
 
 use std::collections::BTreeMap;
 
@@ -13,8 +15,8 @@ use omnicrawl_controllers::context_compaction::{
 };
 use omnicrawl_llm::{ChatRequestInput, ModelRuntime, SinkFlow, TurnSink};
 use omnicrawl_protocol::{
-    conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions,
-    ModelStreamEvent,
+    conform_tool_names, conversation_from_openai_messages, tool_spec_from_openai_item,
+    GenerationOptions, ModelStreamEvent,
 };
 use serde_json::Value;
 
@@ -91,11 +93,19 @@ impl SummaryModelCall for SummaryModelAdapter {
         let mut all = self.prefix.clone();
         all.extend(messages.iter().cloned());
         let conversation = conversation_from_openai_messages(&all);
-        let tools: Vec<_> = self
+        // 与主请求（`KernelModelPort` / `BackgroundModelPort`）同一套线上名收敛：
+        // MCP 暴露的名字是 `server.tool`、`mcp_read_resource__<uri>`，原样上送会被上游的
+        // `^[a-zA-Z0-9_-]+$` 直接 400（`tools[0]` 往往正是第一个 MCP 工具）。
+        //
+        // 收敛是确定性的（同一份工具表 → 同一组线上名），而主请求发的也是这套名字，
+        // 所以工具块与主请求逐字相同，摘要请求仍能命中主请求建立的前缀缓存——
+        // 「沿用原上下文 + 沿用缓存做压缩」的设计因此不受影响。
+        let declared: Vec<_> = self
             .tools
             .iter()
             .filter_map(tool_spec_from_openai_item)
             .collect();
+        let (tools, _name_map) = conform_tool_names(&declared);
         let options = GenerationOptions {
             tool_choice: SUMMARY_TOOL_CHOICE.to_string(),
             ..self.options.clone()

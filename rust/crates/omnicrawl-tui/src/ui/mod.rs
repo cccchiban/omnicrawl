@@ -36,6 +36,42 @@ pub const HUD_HEIGHT: u16 = 1;
 /// 输入框上方那行瞬时提示（拖选复制等）占一行：不进会话流，几秒后自散。
 pub const NOTICE_LINE_HEIGHT: u16 = 1;
 
+/// 三块刷新的内容版本号（用户要求把刷新分成**会话 / 输入框 / 底部**三块）。
+///
+/// 每块一个版本号：任何会改变该块显示内容的操作都要递增对应版本。事件循环把三块合起来
+/// 判断「自上次绘制以来有没有变」，没变就整帧跳过绘制——空闲时 TUI 不再以 20fps 空转。
+///
+/// 三块的边界与 [`render`] 的分块函数一一对应：
+///
+/// | 块 | 内容 | 脏源 |
+/// | --- | --- | --- |
+/// | `conversation` | 消息流（含欢迎 Logo 与选区高亮） | 记录增删改、展开态、思考显示、Logo 动画 |
+/// | `composer` | 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上的状态行）与待决面板 | 键盘鼠标输入、清单/队列/面板变化、状态行 spinner |
+/// | `bottom` | 底部单行轮播 HUD | 轮播换页与解密扫描 |
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RefreshVersions {
+    /// 会话区。
+    pub conversation: u64,
+    /// 输入区整组与待决面板。
+    pub composer: u64,
+    /// 底部轮播 HUD。
+    pub bottom: u64,
+}
+
+impl RefreshVersions {
+    pub fn bump_conversation(&mut self) {
+        self.conversation = self.conversation.wrapping_add(1);
+    }
+
+    pub fn bump_composer(&mut self) {
+        self.composer = self.composer.wrapping_add(1);
+    }
+
+    pub fn bump_bottom(&mut self) {
+        self.bottom = self.bottom.wrapping_add(1);
+    }
+}
+
 /// 一帧的各区几何：渲染与鼠标命中判定共用同一套布局计算，两者永远一致。
 ///
 /// 与 Python 的 `#shell` 一致，自上而下是：会话区（吃剩余高度）→ 待决面板 →
@@ -128,16 +164,24 @@ pub fn render(
     let width = area.width;
     let regions = layout(area, state);
 
+    // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块各自的内容只在对应版本变化时才重建。
     conversation::render(frame, regions.conversation, state);
+    render_composer_block(frame, regions, state, width);
+    hud::render(frame, regions.hud, state);
+}
+
+/// 输入块：待决面板 + 输入区整组（任务清单 → 排队预览 → 瞬时提示 → 命令菜单 → 输入本体，
+/// 外框上边框写运行状态）。
+///
+/// 组内顺序与 Python `#composer-wrap` 一致：先画方框（含状态），再往框内写各组内容。
+fn render_composer_block(frame: &mut Frame, regions: UiAreas, state: &AppState, width: u16) {
     panels::render_panel(frame, regions.panel, state, width);
-    // 先画输入区方框（含上边框上的运行状态），再往框内写各组内容。
     composer::render_box(frame, regions.composer_box, state);
     panels::render_todos(frame, regions.todos, state, width);
     queue::render(frame, regions.queue, state);
     render_notice_line(frame, regions.notice, state);
     composer::render_menu(frame, regions.menu, state);
     composer::render(frame, regions.composer, state);
-    hud::render(frame, regions.hud, state);
 }
 
 /// 输入框上方那行瞬时提示（拖选复制等）：不进会话流，也不占消息区。

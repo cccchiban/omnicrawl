@@ -7,6 +7,8 @@
 
 use serde_json::Value;
 
+use crate::context_compaction::SourceEvent;
+
 pub const ARGUMENTS_PREVIEW_CHARS: usize = 600;
 
 pub const MAX_PARALLEL_COMPRESSIONS: usize = 4;
@@ -65,6 +67,10 @@ pub fn arguments_summary(arguments: &Value) -> String {
 /// 压缩器使用的内置系统提示模板（与 Python 同名文件逐字节一致，编译期嵌入）。
 const SYSTEM_TEMPLATE: &str =
     include_str!("../../../../rust/assets/templates/tool_output_compression_system.md");
+
+/// 回合末「全部工具调用」概括的系统提示模板。
+const TURN_SUMMARY_TEMPLATE: &str =
+    include_str!("../../../../rust/assets/templates/tool_call_summary_system.md");
 
 /// 原始输出在提示词里的包裹标记。
 pub const OUTPUT_OPEN: &str = "<<<TOOL_OUTPUT_START>>>";
@@ -184,4 +190,359 @@ pub fn bound_text(text: &str, max_chars: usize) -> String {
 /// 异常是否看起来是取消：类型名或消息里含 `cancel`（大小写折叠）。
 pub fn looks_like_cancellation(type_name: &str, message: &str) -> bool {
     type_name.to_lowercase().contains("cancel") || message.to_lowercase().contains("cancel")
+}
+
+// ── 回合结束的整轮工具调用概括 ─────────────────────────────────────────────
+
+/// 本轮工具调用在概括提示里的包裹标记。
+pub const CALLS_OPEN: &str = "<<<TOOL_CALLS_START>>>";
+pub const CALLS_CLOSE: &str = "<<<TOOL_CALLS_END>>>";
+
+/// 回合末概括的系统提示。
+pub fn turn_summary_system_prompt() -> String {
+    TURN_SUMMARY_TEMPLATE.trim().to_string()
+}
+
+/// 一次工具调用在概括输入里的形状：调用请求 + 执行结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnCallRecord {
+    pub tool: String,
+    pub arguments: String,
+    pub ok: bool,
+    pub output: String,
+}
+
+/// 把整轮调用渲染成概括提示的正文（不可信数据段）。
+pub fn render_turn_calls(calls: &[TurnCallRecord]) -> String {
+    let mut sections: Vec<String> = Vec::with_capacity(calls.len());
+    for (index, call) in calls.iter().enumerate() {
+        let arguments = call.arguments.trim();
+        let arguments = if arguments.is_empty() {
+            "（无参数）"
+        } else {
+            arguments
+        };
+        sections.push(format!(
+            "### 第 {} 次调用\n工具：{}\n参数：{arguments}\n状态：{}\n输出：\n{}",
+            index + 1,
+            call.tool,
+            if call.ok { "成功" } else { "失败" },
+            call.output.trim()
+        ));
+    }
+    sections.join("\n\n")
+}
+
+/// 构造回合概括请求：任务背景 + 整轮调用。
+pub fn build_turn_summary_messages(calls: &[TurnCallRecord], task_hint: &str) -> Vec<Value> {
+    let task_text = task_hint.trim();
+    let task_text = if task_text.is_empty() {
+        "（未提供）"
+    } else {
+        task_text
+    };
+    let body = render_turn_calls(calls);
+    let content = format!(
+        "请把下面这一轮的全部工具调用概括成一段内容。\n\n\
+## 当前任务\n{task_text}\n\n\
+## 本轮工具调用（共 {} 次）\n{CALLS_OPEN}\n{body}\n{CALLS_CLOSE}\n",
+        calls.len()
+    );
+    vec![serde_json::json!({"role": "user", "content": content})]
+}
+
+/// 原始调用原文的落盘说明：告知模型内容没有丢，只是换了存放位置。
+pub fn archived_notice(path: &str, chars: usize) -> String {
+    format!(
+        "\n\n（本轮工具调用原文共 {chars} 字符已存放于：{path}；\
+         需要逐字核对原始输出时读取该文件。）"
+    )
+}
+
+/// 把两次压缩结果拼成一段接在系统提示词后的上下文文本。
+///
+/// 顺序固定：先工具调用压缩，再模型回复压缩；空段跳过，两段都空返回 `None`。
+pub fn join_compaction_sections(tools: &str, replies: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let tools = tools.trim();
+    if !tools.is_empty() {
+        parts.push(format!("## 工具调用压缩\n{tools}"));
+    }
+    let replies = replies.trim();
+    if !replies.is_empty() {
+        parts.push(format!("## 模型回复压缩\n{replies}"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n\n"))
+}
+
+// ── 阈值触发的模型回复压缩 ─────────────────────────────────────────────────
+
+/// 模型回复压缩的系统提示模板。
+const REPLY_COMPACTION_TEMPLATE: &str =
+    include_str!("../../../../rust/assets/templates/model_reply_compaction_system.md");
+
+/// 历史回复在压缩提示里的包裹标记。
+pub const REPLIES_OPEN: &str = "<<<MODEL_REPLIES_START>>>";
+pub const REPLIES_CLOSE: &str = "<<<MODEL_REPLIES_END>>>";
+
+/// 模型回复压缩的系统提示。
+pub fn reply_compaction_system_prompt() -> String {
+    REPLY_COMPACTION_TEMPLATE.trim().to_string()
+}
+
+/// 构造模型回复压缩请求：任务背景 + 待压缩的全部历史回复。
+pub fn build_reply_compaction_messages(replies: &[String], task_hint: &str) -> Vec<Value> {
+    let task_text = task_hint.trim();
+    let task_text = if task_text.is_empty() {
+        "（未提供）"
+    } else {
+        task_text
+    };
+    let body = replies
+        .iter()
+        .enumerate()
+        .map(|(index, reply)| {
+            format!(
+                "### 第 {} 条回复\n{}",
+                index + 1,
+                reply.trim()
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n\n");
+    let content = format!(
+        "请把下面这些模型回复概括成一段内容。\n\n\
+## 当前任务\n{task_text}\n\n\
+## 待压缩的模型回复（共 {} 条）\n{REPLIES_OPEN}\n{body}\n{REPLIES_CLOSE}\n",
+        replies.len()
+    );
+    vec![serde_json::json!({"role": "user", "content": content})]
+}
+
+// ── 阈值触发的双段压缩 ────────────────────────────────────────────────────
+
+/// 一次双段压缩的输入：被压缩的工具调用、模型回复与落盘位置。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DualCompactionInput {
+    pub tool_calls: Vec<TurnCallRecord>,
+    pub replies: Vec<String>,
+    pub task_hint: String,
+    /// 工作区根：原始工具调用落盘到它下的临时目录。
+    pub workspace_root: String,
+    pub session_id: String,
+}
+
+/// 一次双段压缩的结果：拼接后的正文与落盘事实。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DualCompactionOutput {
+    /// 两段拼接后的正文（工具调用压缩在前，模型回复压缩在后）。
+    pub text: String,
+    /// 原始工具调用的落盘路径（空表示没有落盘）。
+    pub archive_path: String,
+    pub raw_chars: usize,
+}
+
+/// 双段压缩端口：宿主实现（两次请求并发发起），失败返回可读错误。
+pub trait DualCompactionPort {
+    fn compact(&self, input: &DualCompactionInput) -> Result<DualCompactionOutput, String>;
+}
+
+/// 从事件窗口里挑出工具调用：`tool_call_requested` 与配对的 `tool_result` 合成一条。
+///
+/// 配不上结果的调用也保留（状态为失败、输出留空），否则模型看不到「调用过但没有结果」。
+pub fn collect_tool_calls(events: &[SourceEvent]) -> Vec<TurnCallRecord> {
+    let mut records: Vec<TurnCallRecord> = Vec::new();
+    for event in events {
+        if event.event_type != "tool_call_requested" {
+            continue;
+        }
+        let tool = payload_text(&event.payload, "tool");
+        if tool.is_empty() {
+            continue;
+        }
+        let call_id = payload_text(&event.payload, "tool_call_id");
+        let paired = events
+            .iter()
+            .find(|candidate| {
+                candidate.event_type == "tool_result"
+                    && !call_id.is_empty()
+                    && payload_text(&candidate.payload, "tool_call_id") == call_id
+            })
+            .or_else(|| {
+                // 没有 call_id 的旧事件按工具名就近配对。
+                events.iter().find(|candidate| {
+                    candidate.event_type == "tool_result"
+                        && payload_text(&candidate.payload, "tool") == tool
+                })
+            });
+        let (ok, output) = match paired {
+            Some(result) => (
+                result
+                    .payload
+                    .get("ok")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                result_output_text(&result.payload),
+            ),
+            None => (false, String::new()),
+        };
+        records.push(TurnCallRecord {
+            tool,
+            arguments: arguments_preview(&event.payload),
+            ok,
+            output,
+        });
+    }
+    records
+}
+
+/// 窗口里的模型回复（按发生顺序）；空白内容跳过。
+pub fn collect_assistant_replies(events: &[SourceEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|event| event.event_type == "assistant_message")
+        .filter_map(|event| {
+            event
+                .payload
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// 工具相关的事件 ID（请求 / 结果 / 拒绝）：概括边界据此把它们从上下文里剔除。
+pub fn tool_event_ids(events: &[SourceEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "tool_call_requested" | "tool_result" | "tool_call_denied"
+            )
+        })
+        .map(|event| event.event_id.clone())
+        .collect()
+}
+
+/// 工具结果的模型可见正文：与投影同一优先级。
+fn result_output_text(payload: &Value) -> String {
+    for key in ["model_output", "output_preview", "output"] {
+        if let Some(text) = payload.get(key).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// 工具参数摘要：优先用落盘的公开投影，其次用请求参数；超长按字符截断。
+fn arguments_preview(payload: &Value) -> String {
+    for key in ["arguments_json", "arguments"] {
+        let Some(value) = payload.get(key) else {
+            continue;
+        };
+        let text = match value {
+            Value::String(text) => text.clone(),
+            Value::Null => continue,
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        return bound_preview(&text);
+    }
+    String::new()
+}
+
+fn bound_preview(text: &str) -> String {
+    if text.chars().count() <= ARGUMENTS_PREVIEW_CHARS {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(ARGUMENTS_PREVIEW_CHARS).collect();
+    format!("{head}…")
+}
+
+fn payload_text(payload: &Value, key: &str) -> String {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod dual_compaction_tests {
+    use super::*;
+    use crate::context_compaction::SourceEvent;
+    use serde_json::json;
+
+    fn event(event_id: &str, event_type: &str, payload: Value) -> SourceEvent {
+        SourceEvent {
+            event_id: event_id.to_string(),
+            event_type: event_type.to_string(),
+            payload,
+        }
+    }
+
+    /// 工具调用与配对结果合成一条；没有结果的调用也保留（状态失败、输出为空）。
+    #[test]
+    fn tool_calls_pair_with_results_and_keep_orphans() {
+        let events = vec![
+            event("e1", "tool_call_requested", json!({"tool": "bash", "tool_call_id": "c1"})),
+            event("e2", "tool_result", json!({"tool": "bash", "tool_call_id": "c1", "ok": true, "output": "done"})),
+            event("e3", "tool_call_requested", json!({"tool": "grep", "tool_call_id": "c2"})),
+            event("e4", "assistant_message", json!({"content": "回复"})),
+        ];
+        let calls = collect_tool_calls(&events);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].output, "done");
+        assert!(calls[0].ok);
+        assert!(calls[1].output.is_empty(), "没有结果的调用输出留空");
+        assert!(!calls[1].ok);
+
+        let replies = collect_assistant_replies(&events);
+        assert_eq!(replies, vec!["回复".to_string()]);
+    }
+
+    /// 工具事件 ID 只含请求 / 结果 / 拒绝三类：概括边界据此剔除上下文。
+    #[test]
+    fn tool_event_ids_cover_requests_results_and_denials() {
+        let events = vec![
+            event("e1", "tool_call_requested", json!({})),
+            event("e2", "tool_result", json!({})),
+            event("e3", "tool_call_denied", json!({})),
+            event("e4", "assistant_message", json!({})),
+        ];
+        assert_eq!(tool_event_ids(&events), vec!["e1", "e2", "e3"]);
+    }
+
+    /// 两段拼接固定顺序，空段跳过；原文落盘说明跟在工具段之后。
+    #[test]
+    fn sections_join_in_a_fixed_order_and_skip_empty_ones() {
+        let joined = join_compaction_sections("工具段", "回复段").expect("两段都非空");
+        let tool_at = joined.find("## 工具调用压缩").expect("工具段在前");
+        let reply_at = joined.find("## 模型回复压缩").expect("回复段在后");
+        assert!(tool_at < reply_at);
+
+        let only_replies = join_compaction_sections("  ", "回复段").expect("只剩回复段");
+        assert!(!only_replies.contains("工具调用压缩"));
+        assert!(join_compaction_sections("", "").is_none());
+    }
+
+    /// 落盘说明给出路径与字符数，模型据此知道原文没有丢。
+    #[test]
+    fn archived_notice_carries_the_path_and_size() {
+        let notice = archived_notice(".omnicrawl/.agent_tmp/files/a.txt", 1234);
+        assert!(notice.contains(".omnicrawl/.agent_tmp/files/a.txt"));
+        assert!(notice.contains("1234"));
+    }
 }

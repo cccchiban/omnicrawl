@@ -104,12 +104,36 @@ class SourceEvent:
     def to_index_dict(self, *, preview_chars: int = 200) -> dict[str, Any]:
         """ID、类型与短预览：正文留在复用的原文上下文里。"""
 
+        return {
+            "event_id": self.event_id,
+            "type": self.type,
+            "preview": self._preview(preview_chars),
+        }
+
+    def to_ref_index_dict(
+        self, reference: str, *, preview_chars: int = 200
+    ) -> dict[str, Any]:
+        """与 ``to_index_dict`` 同形，但把不透明的 24 位事件 ID 换成短引用（如 ``E12``）。
+
+        摘要模型逐字复制 24 位十六进制 ID 的失败率很高（实测会整段编造，一处不符就让整份
+        摘要作废），短引用则易抄且由代码还原真 ID：索引里不再出现真 ID，模型也就无从抄错。
+        """
+
+        return {
+            "ref": reference,
+            "type": self.type,
+            "preview": self._preview(preview_chars),
+        }
+
+    def _preview(self, preview_chars: int) -> str:
+        """索引里的内容预览：超长时截断并补省略号。"""
+
         serialized = json.dumps(
             dict(self.payload), ensure_ascii=False, separators=(",", ":")
         )
         if 0 < preview_chars < len(serialized):
             serialized = serialized[:preview_chars] + "…"
-        return {"event_id": self.event_id, "type": self.type, "preview": serialized}
+        return serialized
 
 
 @dataclass(frozen=True)

@@ -145,6 +145,10 @@ impl TurnHistoryProjector {
                 self.feed_compact_summary(event);
                 return;
             }
+            "tool_call_summary" => {
+                self.feed_tool_call_summary(event);
+                return;
+            }
             "assistant_message" | "turn_cancelled" | "run_guard_paused" => {
                 self.flush_tool_group();
             }
@@ -309,6 +313,34 @@ impl TurnHistoryProjector {
         next.extend(recent);
         self.entries = next;
     }
+    /// 回合末工具调用概括边界：本轮全部工具调用被压成一段，原逐条请求/结果从上下文剔除。
+    ///
+    /// `covered_event_ids` 列出被概括的事件；它们从已有条目里删掉，概括文本按边界位置就地插入。
+    /// 概括之前的事件（用户消息、更早的助手消息）与概括之后的最终回复都不受影响——
+    /// 用户要求保留最后一段模型输出。
+    fn feed_tool_call_summary(&mut self, event: &SessionEvent) {
+        self.flush_tool_group();
+        let Some(covered) = payload_string_ids(event.payload.get("covered_event_ids")) else {
+            return;
+        };
+        self.entries
+            .retain(|(anchor, _)| !covered.contains(anchor.as_str()));
+        if let Some(message) = event_to_model_message(event) {
+            self.entries.push((event.event_id.clone(), message));
+        }
+    }
+}
+
+/// 事件载荷里的字符串 ID 列表；形状不合法时返回 `None`。
+fn payload_string_ids(value: Option<&Value>) -> Option<BTreeSet<String>> {
+    let items = value?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// 把有效事件流投影为（锚点事件 id，消息）序列。
@@ -490,5 +522,73 @@ fn python_truthy(value: &Value) -> bool {
         Value::String(text) => !text.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Object(map) => !map.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tool_call_summary_tests {
+    use super::*;
+    use crate::event::SessionEvent;
+
+    fn event(event_type: &str, payload: Value) -> SessionEvent {
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        SessionEvent::create(
+            "20260101-000000-abcdef",
+            event_type,
+            payload,
+            None,
+            chrono::Utc::now(),
+        )
+        .expect("事件可构造")
+    }
+
+    /// 概括边界把被覆盖的工具事件从上下文剔除，并就地插入概括文本。
+    #[test]
+    fn summary_removes_covered_tool_events_and_inserts_the_paragraph() {
+        let user = event("user_message", json!({"content": "任务"}));
+        let call = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c1"}),
+        );
+        let result = event(
+            "tool_result",
+            json!({"tool": "bash", "tool_call_id": "c1", "ok": true, "output": "很长很长"}),
+        );
+        let summary = event(
+            "tool_call_summary",
+            json!({"content": "做了什么", "covered_event_ids": [call.event_id, result.event_id]}),
+        );
+        let events = vec![user.clone(), call, result, summary];
+        let projected = project_history_messages(&events);
+        let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
+
+        assert_eq!(messages.len(), 2, "概括替换掉两条工具事件：{messages:?}");
+        assert_eq!(messages[0]["content"], "任务");
+        assert!(
+            messages[1]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("本轮工具调用概括："),
+            "概括按前缀插入：{messages:?}"
+        );
+    }
+
+    /// 概括之后落盘的最终回复（结果报告）照旧保留在上下文的最后一段。
+    #[test]
+    fn the_final_reply_after_the_summary_stays_last() {
+        let call = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c1"}),
+        );
+        let summary = event(
+            "tool_call_summary",
+            json!({"content": "做了什么", "covered_event_ids": [call.event_id]}),
+        );
+        let final_reply = event("assistant_message", json!({"content": "结果报告"}));
+        let projected = project_history_messages(&[call, summary, final_reply]);
+        let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"], "结果报告", "最后一段模型输出保持在末尾");
     }
 }

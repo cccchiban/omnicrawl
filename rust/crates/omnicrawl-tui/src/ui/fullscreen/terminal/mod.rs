@@ -2,3 +2,4 @@
 
 pub mod console_heal;
 pub mod theme;
+pub mod timer_resolution;

@@ -19034,14 +19034,14 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
           ],
           "ok": true,
           "error": null,
           "prompts": [
             {
-              "len": 3861,
-              "sha256": "0c8eef2a06aeeed2ccfee8f2818b5c0a25155f1a5432bfeb563dcbc280a201e8",
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
               "text": null
             }
           ],
@@ -19111,26 +19111,26 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"extract_chunk\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":2,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
-            "{\"operation\":\"extract_chunk\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":2,\"chunk_count\":2,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
+            "{\"operation\":\"extract_chunk\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":2,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
+            "{\"operation\":\"extract_chunk\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":2,\"chunk_count\":2,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
             "{\"operation\":\"merge_chunks\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[],\"partial_summaries\":[{\"objective\":[\"目标\"],\"current_state\":[\"状态\"]},{\"objective\":[\"目标\"],\"current_state\":[\"状态\"]}],\"validation_feedback\":[\"上次不行\"]}"
           ],
           "ok": true,
           "error": null,
           "prompts": [
             {
-              "len": 3714,
-              "sha256": "53266398ecb4c0db088ccdea5bba2d5f298f8f4a1e21fc91e9995de589925c08",
+              "len": 3908,
+              "sha256": "5c7e29fb540f32983f0c03ad879463e9789975c4917d1308373776ade597f639",
               "text": null
             },
             {
-              "len": 3708,
-              "sha256": "9ce39eb4da4a39c5fcfc7565e548d63390c2624e7751ec9169b94cba8eecc0ec",
+              "len": 3907,
+              "sha256": "162041bda81f8ed9d8a38478ed4329bdb28855ffae0e8d4a31562ec291473dba",
               "text": null
             },
             {
-              "len": 3648,
-              "sha256": "6c071254d8a8212ce9e647df484fa70dc9c357f62954f32e8b26899f5036e442",
+              "len": 3852,
+              "sha256": "5780d671315432d948e3d0c05125ae1c3b0d549b6abd53271c24a46f53c7cb9b",
               "text": null
             }
           ],
@@ -19196,20 +19196,20 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应不是合法 JSON：Expecting property name enclosed in double quotes\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应不是合法 JSON：Expecting property name enclosed in double quotes\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
           ],
           "ok": true,
           "error": null,
           "prompts": [
             {
-              "len": 3861,
-              "sha256": "0c8eef2a06aeeed2ccfee8f2818b5c0a25155f1a5432bfeb563dcbc280a201e8",
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
               "text": null
             },
             {
-              "len": 3943,
-              "sha256": "e450ad30e71a646b6e86ca56fb2d2e2c6df67f024c03d6895b85ba98b95e38d7",
+              "len": 4132,
+              "sha256": "39dc1230d28cfcb22cf29d6c9a5c8fd46c00844916cef95fc7352798b5359019",
               "text": null
             }
           ],
@@ -19275,20 +19275,20 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应里出现了工具调用；本请求禁止调用工具，只允许输出 JSON 对象。\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应里出现了工具调用；本请求禁止调用工具，只允许输出 JSON 对象。\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
           ],
           "ok": true,
           "error": null,
           "prompts": [
             {
-              "len": 3861,
-              "sha256": "0c8eef2a06aeeed2ccfee8f2818b5c0a25155f1a5432bfeb563dcbc280a201e8",
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
               "text": null
             },
             {
-              "len": 3943,
-              "sha256": "e450ad30e71a646b6e86ca56fb2d2e2c6df67f024c03d6895b85ba98b95e38d7",
+              "len": 4132,
+              "sha256": "39dc1230d28cfcb22cf29d6c9a5c8fd46c00844916cef95fc7352798b5359019",
               "text": null
             }
           ],
@@ -19354,20 +19354,20 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应不是合法 JSON：Expecting value\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}",
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"],\"response_error\":\"摘要响应不是合法 JSON：Expecting value\",\"instruction\":\"上次响应不是合法 JSON 对象，请严格按 Schema 重试。\"}"
           ],
           "ok": false,
           "error": "摘要模型连续返回无效结构：摘要响应不是合法 JSON：Expecting value",
           "prompts": [
             {
-              "len": 3861,
-              "sha256": "0c8eef2a06aeeed2ccfee8f2818b5c0a25155f1a5432bfeb563dcbc280a201e8",
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
               "text": null
             },
             {
-              "len": 3943,
-              "sha256": "e450ad30e71a646b6e86ca56fb2d2e2c6df67f024c03d6895b85ba98b95e38d7",
+              "len": 4132,
+              "sha256": "39dc1230d28cfcb22cf29d6c9a5c8fd46c00844916cef95fc7352798b5359019",
               "text": null
             }
           ],
@@ -19414,14 +19414,14 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
           ],
           "ok": false,
           "error": "模型炸了",
           "prompts": [
             {
-              "len": 3861,
-              "sha256": "0c8eef2a06aeeed2ccfee8f2818b5c0a25155f1a5432bfeb563dcbc280a201e8",
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
               "text": null
             }
           ]
@@ -19467,14 +19467,14 @@
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":null,\"budget_limited\":false,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":null,\"budget_limited\":false,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
           ],
           "ok": true,
           "error": null,
           "prompts": [
             {
-              "len": 3862,
-              "sha256": "fc1e379c8ae50762ca4efaa1519b746fc30bb95880ae891e67dfa65ca9c4c77c",
+              "len": 4051,
+              "sha256": "64fe4483ddec12a5d97933c163c7621d08efdf0e3e7b93f5ad8050bf5e0459ce",
               "text": null
             }
           ],
@@ -19484,6 +19484,81 @@
             ],
             "current_state": [
               "状态"
+            ]
+          },
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_input_tokens": 0
+          },
+          "profile": "",
+          "provider": "",
+          "attempts": 1
+        },
+        {
+          "label": "短引用展开成事件 ID",
+          "max_input_tokens": 64000,
+          "target_summary_tokens": 1500,
+          "validation_feedback": [
+            "上次不行"
+          ],
+          "events": [
+            {
+              "event_id": "e1",
+              "type": "user_message",
+              "payload": {
+                "content": "用户原文"
+              }
+            },
+            {
+              "event_id": "e2",
+              "type": "assistant_message",
+              "payload": {
+                "content": "回答"
+              }
+            },
+            {
+              "event_id": "e3",
+              "type": "tool_call_requested",
+              "payload": {
+                "tool": "write_file",
+                "tool_call_id": "c1",
+                "arguments": {
+                  "path": "src/a.py"
+                }
+              }
+            }
+          ],
+          "responses": [
+            {
+              "content": "{\"objective\": [\"目标\"], \"constraints\": [{\"text\": \"约束\", \"source_event_ids\": [\"E2\", \"E9\"]}]}",
+              "tool_calls": 0
+            }
+          ],
+          "payloads": [
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[\"上次不行\"]}"
+          ],
+          "ok": true,
+          "error": null,
+          "prompts": [
+            {
+              "len": 4050,
+              "sha256": "951a21efff9f05d92110dad6a83181a13a27470529b89c960a44f74fda353358",
+              "text": null
+            }
+          ],
+          "structured": {
+            "objective": [
+              "目标"
+            ],
+            "constraints": [
+              {
+                "text": "约束",
+                "source_event_ids": [
+                  "e2",
+                  "E9"
+                ]
+              }
             ]
           },
           "usage": {
@@ -19539,13 +19614,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3855,
-              "sha256": "64464bdfa20bb4d0ebf847d8153962cbb5b19b6a7696101edaebd13d84f54591",
+              "len": 4044,
+              "sha256": "f6236757e8e77258ebe6129f8e5fb87f4e53e4e1039963e0aa39598d2d937fa5",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19598,13 +19673,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3855,
-              "sha256": "64464bdfa20bb4d0ebf847d8153962cbb5b19b6a7696101edaebd13d84f54591",
+              "len": 4044,
+              "sha256": "f6236757e8e77258ebe6129f8e5fb87f4e53e4e1039963e0aa39598d2d937fa5",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19657,13 +19732,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3855,
-              "sha256": "64464bdfa20bb4d0ebf847d8153962cbb5b19b6a7696101edaebd13d84f54591",
+              "len": 4044,
+              "sha256": "f6236757e8e77258ebe6129f8e5fb87f4e53e4e1039963e0aa39598d2d937fa5",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19716,13 +19791,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3855,
-              "sha256": "64464bdfa20bb4d0ebf847d8153962cbb5b19b6a7696101edaebd13d84f54591",
+              "len": 4044,
+              "sha256": "f6236757e8e77258ebe6129f8e5fb87f4e53e4e1039963e0aa39598d2d937fa5",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19785,13 +19860,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3872,
-              "sha256": "3083fa8a18e71a13fb4b1357db179630a070e1fc86383a5ddb645438289869c4",
+              "len": 4061,
+              "sha256": "79ebdbe3eb3a09c981548725d7374a2c8b9416ce5d42a199354ae36defe5a7b4",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":{\"objective\":[\"旧目标\"]},\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":{\"objective\":[\"旧目标\"]},\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19848,13 +19923,13 @@
           "error": null,
           "prompts": [
             {
-              "len": 3879,
-              "sha256": "90665832c25a7fcbb00656031a2be88adf6c6c379fbaa2a952f8074fda21f7ae",
+              "len": 4068,
+              "sha256": "ae23f9aab17b67c0c5a0e607184a4ba66fb710e74c161d078b5e479d3b40cbcf",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":{\"legacy_content\":\"旧的确定性摘要\"},\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":{\"legacy_content\":\"旧的确定性摘要\"},\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19909,13 +19984,86 @@
           "error": null,
           "prompts": [
             {
-              "len": 3855,
-              "sha256": "64464bdfa20bb4d0ebf847d8153962cbb5b19b6a7696101edaebd13d84f54591",
+              "len": 4044,
+              "sha256": "f6236757e8e77258ebe6129f8e5fb87f4e53e4e1039963e0aa39598d2d937fa5",
               "text": null
             }
           ],
           "payloads": [
-            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"event_id\":\"e1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"event_id\":\"e2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"event_id\":\"e3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":null,\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
+          ],
+          "structured": {
+            "objective": [
+              "目标"
+            ],
+            "current_state": [
+              "状态"
+            ]
+          }
+        },
+        {
+          "label": "上次摘要带事件 ID",
+          "previous_summary": {
+            "structured": {
+              "constraints": [
+                {
+                  "text": "旧约束",
+                  "source_event_ids": [
+                    "e7",
+                    "e1"
+                  ]
+                }
+              ]
+            }
+          },
+          "target_summary_tokens": 1500,
+          "previous_covered_event_ids": [
+            "e9"
+          ],
+          "events": [
+            {
+              "event_id": "e1",
+              "type": "user_message",
+              "payload": {
+                "content": "用户原文"
+              }
+            },
+            {
+              "event_id": "e2",
+              "type": "assistant_message",
+              "payload": {
+                "content": "回答"
+              }
+            },
+            {
+              "event_id": "e3",
+              "type": "tool_call_requested",
+              "payload": {
+                "tool": "write_file",
+                "tool_call_id": "c1",
+                "arguments": {
+                  "path": "src/a.py"
+                }
+              }
+            }
+          ],
+          "responses": [
+            {
+              "content": "{\"objective\": [\"目标\"], \"current_state\": [\"状态\"]}",
+              "tool_calls": 0
+            }
+          ],
+          "ok": true,
+          "error": null,
+          "prompts": [
+            {
+              "len": 4103,
+              "sha256": "c05efc62308d32ff023c3e2ffa5f669bdf93b7dae3f53aeec0d74022d8748d08",
+              "text": null
+            }
+          ],
+          "payloads": [
+            "{\"operation\":\"merge_summary\",\"target_summary_tokens\":1500,\"budget_limited\":true,\"chunk_index\":1,\"chunk_count\":1,\"previous_summary\":{\"constraints\":[{\"text\":\"旧约束\",\"source_event_ids\":[\"E4\",\"E1\"]}]},\"events_index\":[{\"ref\":\"E1\",\"type\":\"user_message\",\"preview\":\"{\\\"content\\\":\\\"用户原文\\\"}\"},{\"ref\":\"E2\",\"type\":\"assistant_message\",\"preview\":\"{\\\"content\\\":\\\"回答\\\"}\"},{\"ref\":\"E3\",\"type\":\"tool_call_requested\",\"preview\":\"{\\\"tool\\\":\\\"write_file\\\",\\\"tool_call_id\\\":\\\"c1\\\",\\\"arguments\\\":{\\\"path\\\":\\\"src/a.py\\\"}}\"}],\"partial_summaries\":[],\"validation_feedback\":[]}"
           ],
           "structured": {
             "objective": [
@@ -19933,10 +20081,10 @@
       },
       "tool_choice": "none",
       "prompt_text": {
-        "len": 3348,
-        "sha256": "68f504515777e899eadd374db362847e80723a23591480ec1c42ecd457caf84b",
+        "len": 3552,
+        "sha256": "e87d677c8cb74301e26914379171dd401b6712ca9dd6ca3e240310ebea13d321",
         "head": "你是会话状态压缩器，不是任务执行者。\n\n将上一份结构化摘要与新增 Session 事件合并为一份可验证的工作摘要。\n\n本",
-        "tail": "ce\": [{\"text\": \"必须逐字保留的证据\", \"source_event_ids\": [\"事件ID\"]}]\n}"
+        "tail": "nce\": [{\"text\": \"必须逐字保留的证据\", \"source_event_ids\": [\"E12\"]}]\n}"
       },
       "max_index_chunk_tokens": 128000,
       "summary_output_reserve_tokens": 16000

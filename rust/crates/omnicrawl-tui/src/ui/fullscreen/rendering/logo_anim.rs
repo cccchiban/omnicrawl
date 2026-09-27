@@ -12,7 +12,7 @@
 //! `█`/`▒` 都是单宽字符，乱码按列原位替换不会破坏块字对齐；行首缩进与内部空格
 //! 是字形定位，必须保留为空格，不做乱码化。
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::ui::fullscreen::random::Rng;
 use crate::ui::fullscreen::rendering::welcome_logo::{
@@ -197,6 +197,20 @@ impl LogoAnimation {
     /// 是否正在播放（供事件循环跳过无谓的帧推进）。
     pub fn is_playing(&self) -> bool {
         self.frame.is_some()
+    }
+
+    /// 距下一帧还有多久；未播放或已播完时返回 `None`（事件循环据此不再为动画设唤醒点）。
+    ///
+    /// `started_at` 在播完后仍然留着（`frame` 才是"还在播"的判据），因此不能只看它。
+    pub fn next_frame_delay(&self, now: Instant) -> Option<Duration> {
+        if !self.is_playing() {
+            return None;
+        }
+        let started_at = self.started_at?;
+        let elapsed = now.saturating_duration_since(started_at).as_secs_f64();
+        let frame = (elapsed / LOGO_ANIM_FRAME_SECONDS).floor() * LOGO_ANIM_FRAME_SECONDS;
+        let remaining = (frame + LOGO_ANIM_FRAME_SECONDS - elapsed).max(0.001);
+        Some(Duration::from_secs_f64(remaining))
     }
 
     pub fn total_frames(&self) -> usize {

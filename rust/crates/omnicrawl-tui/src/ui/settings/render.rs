@@ -21,6 +21,7 @@ use super::state::{
 };
 use super::{channel_field_value, row_label};
 use crate::ui::fullscreen::terminal::theme;
+use omnicrawl_config::models::channels::{protocol_label, provider_label};
 use helpers::{fit, left_column_width, window_offset};
 
 /// 左栏的期望宽度（对映 CSS 的 `width: 30`）。
@@ -271,53 +272,68 @@ fn render_channels(frame: &mut Frame, area: Rect, state: &SettingsState, focused
     );
 }
 
-/// 渠道列表：`› 名称（provider · 模型）  已启用（当前）`。
+/// 渠道列表：对映 Python `ChannelManagerPane._row_text` 的两行行式。
+///
+/// ```text
+/// › [x] 渠道名 [默认]
+///     OpenAI / Chat Completions  gpt-5.2  https://api.example.com/v1
+/// ```
+///
+/// 游标 `›` 只在选中行出现，启用态用 `[x]` / `[ ]` 勾选框表达（与 Python 一致），
+/// 默认渠道后追加 ` [默认]`；第二行缩进 4 格，给出「请求方式 / 请求协议」的中文标签、
+/// 模型 ID 与 Base URL。选中行沿用 Python 的琥珀色加粗。
 fn render_channel_list(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     let rows = state.channel_rows();
     let reserved = 4u16.min(area.height);
     let list_height = area.height.saturating_sub(reserved) as usize;
-    let offset = window_offset(state.channel_selected(), rows.len(), list_height);
+    // 一条渠道占两行（Python 的 `.channel-row { height: 2 }`）。
+    let visible_rows = (list_height / 2).max(1);
+    let offset = window_offset(state.channel_selected(), rows.len(), visible_rows);
+    let default_key = state.channel_default_key();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
+    for (index, row) in rows.iter().enumerate().skip(offset).take(visible_rows) {
+        let top = lines.len() as u16;
+        // 命中区覆盖两行：鼠标落在标题行或明细行都算选中这条渠道。
         state.record_hit(
-            row_hit(
-                Rect {
-                    x: area.x + 1,
-                    width: area.width.saturating_sub(1),
-                    ..area
-                },
-                index - offset,
-            ),
+            Rect {
+                x: area.x + 1,
+                y: area.y + top,
+                width: area.width.saturating_sub(1),
+                height: 2,
+            },
             HitAction::PaneRow(index),
         );
         let selected = index == state.channel_selected();
-        let marker = if selected { "›" } else { " " };
-        let current = if row.key == state.channel_default_key() {
-            "（当前）"
+        let cursor = if selected { "›" } else { " " };
+        let checked = if row.enabled { "x" } else { " " };
+        let default_mark = if row.key == default_key {
+            " [默认]"
         } else {
             ""
         };
-        let text = format!(
-            "{marker} {}  {} · {}{current}  {}",
-            row.name,
-            row.provider,
-            row.model_id,
-            if row.enabled {
-                "已启用"
-            } else {
-                "已关闭"
-            }
-        );
         let style = if selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
             theme::rich_style(theme::TEXT_SECONDARY)
         };
-        lines.push(Line::styled(text, style));
+        lines.push(Line::styled(
+            format!("{cursor} [{checked}] {}{default_mark}", row.name),
+            style,
+        ));
+        lines.push(Line::styled(
+            format!(
+                "    {} / {}  {}  {}",
+                provider_label(&row.provider),
+                protocol_label(&row.protocol),
+                row.model_id,
+                row.base_url
+            ),
+            style,
+        ));
     }
     if lines.is_empty() {
         lines.push(Line::styled(
-            fit("（配置里还没有渠道；按 N 新建一条）", area.width as usize),
+            fit("尚无渠道，按 N 新建第一条渠道。", area.width as usize),
             theme::rich_style(theme::TEXT_MUTED),
         ));
     }
@@ -325,7 +341,7 @@ fn render_channel_list(frame: &mut Frame, area: Rect, state: &SettingsState, foc
         Rect {
             x: area.x + 1,
             width: area.width.saturating_sub(1),
-            height: area.height.min(list_height as u16),
+            height: area.height.min(list_height.max(1) as u16),
             ..area
         },
         frame.buffer_mut(),
@@ -379,21 +395,52 @@ fn render_channel_form(
             Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
         ]));
     }
+    let visible = area.height.saturating_sub(4) as usize;
     // 展开的候选排在表单下面（内联列表，不做 Python 的浮层下拉框）。
     if let Some(dropdown) = form.dropdown {
-        lines.push(Line::raw(""));
-        for (index, option) in dropdown.options.iter().enumerate() {
-            state.record_hit(row_hit(area, lines.len()), HitAction::Option(index));
-            let highlighted = index == dropdown.selected;
-            let style = if highlighted {
-                Style::default().bg(Color::Yellow)
+        // 字段行、候选之间的空行与「新渠道」提示行先占掉，剩下的才是候选列表的高度；
+        // 连一行候选都放不下时不展开，免得只剩一个省略行。
+        let reserved = lines.len() + 1 + usize::from(form.is_new);
+        let available = visible.max(1).saturating_sub(reserved);
+        if available > 0 {
+            lines.push(Line::raw(""));
+            // 窗口固定占满可用行；放得下两行省略提示时才画前后提示（与压缩页选择器同款）。
+            let options = dropdown.options.len();
+            let show_ellipsis = options > available && available >= 3;
+            let window_size = if show_ellipsis {
+                available.saturating_sub(2).max(1)
             } else {
-                theme::rich_style(theme::TEXT_PRIMARY)
+                available
             };
-            lines.push(Line::styled(
-                fit(&format!("  {option}"), area.width as usize),
-                style,
-            ));
+            let (start, end) = window_bounds(options, dropdown.selected, window_size);
+            if show_ellipsis && start > 0 {
+                lines.push(Line::styled(
+                    fit(&format!("  ... 前面 {start} 个"), area.width as usize),
+                    theme::rich_style(theme::TEXT_MUTED),
+                ));
+            }
+            for (index, option) in dropdown.options.iter().enumerate().take(end).skip(start) {
+                state.record_hit(row_hit(area, lines.len()), HitAction::Option(index));
+                let highlighted = index == dropdown.selected;
+                let style = if highlighted {
+                    Style::default().bg(Color::Yellow)
+                } else {
+                    theme::rich_style(theme::TEXT_PRIMARY)
+                };
+                lines.push(Line::styled(
+                    fit(&format!("  {option}"), area.width as usize),
+                    style,
+                ));
+            }
+            if show_ellipsis && end < options {
+                lines.push(Line::styled(
+                    fit(
+                        &format!("  ... 后面 {} 个", options - end),
+                        area.width as usize,
+                    ),
+                    theme::rich_style(theme::TEXT_MUTED),
+                ));
+            }
         }
     }
     if form.is_new {
@@ -402,7 +449,6 @@ fn render_channel_form(
             theme::rich_style(theme::TEXT_MUTED),
         ));
     }
-    let visible = area.height.saturating_sub(4) as usize;
     lines.truncate(visible.max(1));
     Paragraph::new(lines).render(
         Rect {

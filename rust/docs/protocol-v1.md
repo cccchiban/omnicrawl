@@ -119,6 +119,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `session_id` 空则由内核新建一条会话。
 - `memory_root` 是会话级记忆的用户数据根；空则不做记忆回写与自动召回。
 - `compaction` 缺字段一律用内核默认值；阈值取自「回合结束后实际上下文」的估算与供应商回报的较大值。
+  **宿主应把用户的 `[context_compaction]` 整段下发**（内核不读配置文件，缺字段就是默认值：摘要预算
+  2000 token，会把「`target_summary_tokens = 0` 不限预算」变成「只能写 2000」），映射见
+  `omnicrawl-controllers` 的 `settings::kernel_compaction_settings`；`memory_root` 同理，不给就等于
+  关掉压缩后的记忆回写与自动召回。
 - 压缩发生后，内核发出的下一轮请求只带「摘要 + 保留窗口 + 当前输入」，被摘要取代的旧消息不再进上下文。
 - 上游判定上下文超限时，内核压缩当前未完成回合、把续接指令（`请依据上方的结构化工作摘要继续完成当前任务。`）
   写进会话并重试同一回合；恢复失败则把原错误返回给宿主。
@@ -255,6 +259,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.delta` | `{text}` | `on_delta` |
 | `turn.reasoning_delta` | `{text}` | `on_reasoning_delta` |
 | `turn.status` | `{message}` | `on_status` |
+| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（当前用于出网脱敏的占位符还原告警）。Python 侧同类告警也经 `on_status`，Rust 侧为避免顶掉状态行另立了这条通知 |
 | `turn.retry_status` | `{message}` | `on_retry_status` |
 | `turn.protocol_wait` | `{}` | `on_protocol_wait` |
 | `turn.stream_rollback` | `{}` | `on_stream_rollback` |
@@ -307,6 +312,9 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 - **工具输出压缩的阶段提示**：内核压缩旁路在每个被压缩的观察前后发
   `turn.tool_output_compression`（`phase=started` 时不带计量，`finished` 带 `before_chars` /
   `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」/「已压缩 a → b 字符」。
+- **会话区提示**：`turn.notice` 与 `turn.status` 的差别只在宿主落点——前者是「一条已经落在
+  对话里的提示」（当前用于出网脱敏的占位符还原告警），宿主应追加进对话流；后者是「正在做什么」
+  的运行状态，宿主写状态行。把前者当状态发会让它顶掉「正在调用」。
 - 一个连接同时只跑一个回合；第二个 `turn.submit` 回 `-32002`。
 - 通知不带 `id`；响应必须带回对应请求的 `id`，`id` 允许整数或字符串。
 
@@ -355,7 +363,7 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 事件归属按「信息在哪一侧产生」划分：
 
 - **内核发出**（`omnicrawl-llm` 已接线，内核自带 provider runtime）：`turn.delta`、`turn.reasoning_delta`、
-  `turn.token_usage`、`turn.status`、`turn.retry_status`、`turn.stream_rollback`、`turn.finished`。给了
+  `turn.token_usage`、`turn.status`、`turn.notice`、`turn.retry_status`、`turn.stream_rollback`、`turn.finished`。给了
   `initialize.model` 后模型请求由内核自己发，增量也由内核转出。
 - **内核自产的收尾事件**：`turn.finished`、`turn.context_compaction`、`turn.model_response_after`、
   `turn.model_request_error`。`turn.context_compaction` 的触发点在回合收尾的压缩判定

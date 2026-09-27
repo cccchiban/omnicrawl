@@ -30,7 +30,9 @@ use super::ner_weights::NerWeights;
 use super::plan_cache::{MaskPlanCache, PlanCacheStats};
 use super::rules::{build_enabled_rules, PatternRule};
 use super::stream::StreamRestorer;
-use super::{collect_placeholder_numbers, DesensitizationStats, SequenceRegistry};
+use super::{
+    collect_placeholder_numbers, DesensitizationError, DesensitizationStats, SequenceRegistry,
+};
 use crate::errors::RuntimeError;
 use crate::request::ChatRequestInput;
 use crate::runtime::{ModelRuntime, SinkFlow, TurnSink};
@@ -254,37 +256,32 @@ impl DesensitizationRuntime {
             prompt_cache_identity: input.prompt_cache_identity,
         };
 
-        let mut collector = CollectSink::default();
+        // 逐条还原并**立即外发**（与 Python `yield from self._inner.stream_turn(...)` 同序）：
+        // 流式节奏是用户可见语义，先把整段回复收齐再转发会让界面在整段生成期间毫无输出
+        // （实测：分片间隔 250ms 的四段增量会在同一时刻到达，思考与正文只能一次蹦出来）。
         // 失败或取消：周期保持开放，好让调用方重试时复用同一批序号（与 Python 一致）。
-        self.inner.run_turn(&masked_input, &mut collector)?;
-
         let mut restorer = StreamRestorer::new(&cycle, &mut stats, self.options.strict_restore);
-        let mut events: Vec<ModelStreamEvent> = Vec::new();
-        for event in &collector.events {
-            let mapped = match crate::desensitization::middleware::map_event(
-                event,
-                &mut restorer,
-                &registry,
-            ) {
-                Ok(items) => items,
-                Err(error) => return Err(desensitization_error(error.message())),
-            };
-            for item in mapped {
-                if emit(&mut events, sink, item) == SinkFlow::Cancel {
-                    return Err(RuntimeError::cancelled());
-                }
-            }
-            for warning in restorer.take_warnings() {
-                if emit(
-                    &mut events,
-                    sink,
-                    ModelStreamEvent::ProviderWarning(warning),
-                ) == SinkFlow::Cancel
-                {
-                    return Err(RuntimeError::cancelled());
-                }
-            }
+        let mut forward = ForwardingSink {
+            restorer: &mut restorer,
+            registry: &registry,
+            sink,
+            events: Vec::new(),
+            error: None,
+        };
+        let result = self.inner.run_turn(&masked_input, &mut forward);
+        let ForwardingSink {
+            events: emitted,
+            error,
+            sink,
+            ..
+        } = forward;
+        // 还原 / 映射失败优先于内层结果上报：映射报错时我们只能让内层按取消收尾
+        // （`TurnSink::on_event` 回不了错误），真正的原因记在 sink 里。
+        if let Some(error) = error {
+            return Err(desensitization_error(error.message()));
         }
+        result?;
+        let mut events: Vec<ModelStreamEvent> = emitted;
 
         let (text_tail, reasoning_tail) = match restorer.flush() {
             Ok(tails) => tails,
@@ -337,16 +334,65 @@ impl ModelRuntime for DesensitizationRuntime {
     }
 }
 
-/// 收集内层事件的接收端：本层先拿全量事件，再统一还原后转发给外层。
-#[derive(Default)]
-struct CollectSink {
+/// 逐条转发内层事件的接收端：就地还原，并立即交给外层 sink。
+///
+/// 这是「流式语义」的落点——文本 / 推理 / 工具参数的增量必须在事件到达时外发，
+/// 不能等内层跑完再统一转发（那会把整段生成压成一次输出）。
+///
+/// 映射 / 还原失败经 `TurnSink::on_event` 传不出去（返回类型只有 [`SinkFlow`]），
+/// 因此先记进 `error` 并回 [`SinkFlow::Cancel`] 让内层尽快收尾，由调用方按原错误上报。
+struct ForwardingSink<'s, 'a, 'b> {
+    restorer: &'a mut StreamRestorer<'s>,
+    registry: &'a SequenceRegistry,
+    sink: &'b mut dyn TurnSink,
+    /// 已外发的事件：流结束后仍要归并成 [`ModelReply`]（顺序与外发顺序一致）。
     events: Vec<ModelStreamEvent>,
+    error: Option<DesensitizationError>,
 }
 
-impl TurnSink for CollectSink {
-    fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
-        self.events.push(event);
+impl ForwardingSink<'_, '_, '_> {
+    /// 还原一条事件并立即外发；返回 `Cancel` 表示外层要求中止（或本层已记录错误）。
+    fn forward(&mut self, event: &ModelStreamEvent) -> SinkFlow {
+        let mapped = match crate::desensitization::middleware::map_event(
+            event,
+            self.restorer,
+            self.registry,
+        ) {
+            Ok(items) => items,
+            Err(error) => {
+                self.error = Some(error);
+                return SinkFlow::Cancel;
+            }
+        };
+        for item in mapped {
+            if emit(&mut self.events, self.sink, item) == SinkFlow::Cancel {
+                return SinkFlow::Cancel;
+            }
+        }
+        // 告警在每条事件之后立即上报（与 Python 的 `for warning in restorer.take_warnings()` 同序）。
+        let warnings = self.restorer.take_warnings();
+        for warning in warnings {
+            if emit(
+                &mut self.events,
+                self.sink,
+                ModelStreamEvent::ProviderWarning(warning),
+            ) == SinkFlow::Cancel
+            {
+                return SinkFlow::Cancel;
+            }
+        }
         SinkFlow::Continue
+    }
+}
+
+impl TurnSink for ForwardingSink<'_, '_, '_> {
+    fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
+        self.forward(&event)
+    }
+
+    /// 取消语义必须透传：外层（界面 / 回合注册表）停流时内层要立刻看见。
+    fn cancelled(&self) -> bool {
+        self.sink.cancelled()
     }
 }
 

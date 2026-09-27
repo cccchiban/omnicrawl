@@ -373,10 +373,14 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   否则邮箱会被多屏蔽一次；泄露检查必须在**独立注册表**上生成，否则期望值的序号依赖前六条消息的
   处理顺序，无法独立重放。
   **运行时装饰器已落地**（`desensitization/live.rs`）：`DesensitizationRuntime` 包住任意
-  `ModelRuntime`——出站请求先屏蔽再发、入站事件逐条还原（工具参数照旧做 fail-closed 检查），
+  `ModelRuntime`——出站请求先屏蔽再发、入站事件**逐条**还原并立即外发（工具参数照旧做 fail-closed 检查），
   `maybe_wrap` 在未启用时零成本原样返回；最外层归并结果由还原后的事件重新聚合，因此调用方拿到的是
-  还原态回复。验收见 `tests/desensitization_runtime.rs`（4 例：屏蔽与还原、未启用透传、
-  未注册序号保留 + 告警、工具参数还原）。
+  还原态回复。验收见 `tests/desensitization_runtime.rs`（5 例：屏蔽与还原、未启用透传、
+  未注册序号保留 + 告警、工具参数还原、**增量在流结束前到达外层 sink**）。
+  **流式语义是硬约束**：曾把内层事件先收进 `CollectSink`、等 `inner.run_turn` 返回后再统一还原外发，
+  结果整段回复被压成一次输出——界面上表现为「思考内容与正文一口气全蹦出来」（分片间隔 250ms 的
+  实测中，四条增量会在同一毫秒到达）。`ForwardingSink` 就是为这条约束存在的：`on_event` 里就地
+  还原 + 外发，`cancelled()` 透传给外层（取消要立刻被内层看见）。
   两处实现差异（语义等价）：**不复用**上一周期的掩码请求（总是重新脱敏——稳定序号索引保证同值同号，
   代价只是重复扫描）；计数分两层（周期计数在注册表里，屏蔽 / 还原计数在装饰器里）。
   逐消息屏蔽缓存与屏蔽计划缓存都已接线：历史里逐字未变的消息走 `MessageMaskMemo`（命中即复用，
@@ -390,6 +394,13 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 编译期适配里（`\Z` → `\z`；非量词的 `{` / `}` 转义），且适配只用于编译不过的模式——能原样编译的一律不动。
 出厂配置里 `gitleaks_enabled = true`，内核侧 `DesensitizationOptions.gitleaks_enabled` 默认仍为关，
 等配置层搬完再对齐出厂默认。
+
+**首次构造要并行编译**：221 条模式在 release 下串行编译约 5.6s、debug 下约 27s，而规则表是
+进程内一次性常量（`OnceLock`）——串行版本会让「启用脱敏后的第一个回合」在发出请求前静默卡住，
+观感上等同于「很久没反应」。`parallel_map` 按 `available_parallelism` 切块并行编译（不引入
+rayon：本 crate 的链路刻意保持同步、无运行时），块内保序、按块序拼回，结果与串行逐条一致；
+release 实测 5.6s → 1.4s。
+
 旁路一次性脱敏器（`OneShotMasker`）的两层可选脱敏都由调用方注入，与 Python `oneshot.py` 一致：
 `with_gitleaks` 给 gitleaks 规则，`with_ner` 给 NER 兜底层——权重装载与池化不在本模块，
 调用方用 `build_runtime_ner_layer(&NerLayerOptions)` 拿到层（进程级抽取器池，审查请求与运行时共用同一份），

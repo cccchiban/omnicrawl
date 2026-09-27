@@ -30,14 +30,13 @@ use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
 use omnicrawl_tui::paste;
 use omnicrawl_tui::ui;
 use omnicrawl_tui::ui::fullscreen::terminal::console_heal::heal_console_input_mode;
+use omnicrawl_tui::ui::fullscreen::terminal::timer_resolution::TimerResolutionGuard;
 use omnicrawl_tui::ui::splash::{self, LogLevel, StartupLogSink};
 use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, prepare_isolated_workspace, start_background_isolation_sweep,
     IsolationOptions,
 };
 
-/// 事件轮询间隔：既决定界面刷新率，也决定内核帧的处理延迟。
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// 退出时等内核自己收尾的时间。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// 启动准备完成后进入工作台前的停留秒数：给日志框留一段可读窗口（加载完停 1 秒）。
@@ -93,6 +92,9 @@ fn run() -> Result<ExitCode, String> {
     )?;
 
     let mut guard = TerminalGuard::start()?;
+    // 事件循环按时间窗等待终端事件：Windows 默认计时器粒度约 15.6ms，睡 20ms 可能变成 31ms，
+    // 这段白等待直接叠加在「回车 → 首字」上。提升到 1ms，随进程退出恢复。
+    let timer_resolution = TimerResolutionGuard::acquire();
     let backend = CrosstermBackend::new(stdout());
     let mut terminal =
         Terminal::new(backend).map_err(|error| format!("初始化终端失败：{error}"))?;
@@ -105,6 +107,7 @@ fn run() -> Result<ExitCode, String> {
     // 内核已退出（或已被强杀）：补发 `session.close.after`，与 Python
     // `close()` 里 before → 写事件 → after 的顺序对齐。
     app.finish_session_close();
+    drop(timer_resolution);
     drop(guard);
     result?;
     Ok(ExitCode::SUCCESS)
@@ -178,49 +181,76 @@ fn event_loop(
     app: &mut App,
     guard: &mut TerminalGuard,
 ) -> Result<(), String> {
+    // 终端尺寸只在「首次」与「收到 `Event::Resize`」时读：Windows 上 `terminal.size()`
+    // 是一次控制台往返，空闲时每帧问一次纯属浪费，而尺寸变化一定会以 resize 事件到达。
+    let mut viewport: Option<Rect> = None;
     loop {
-        // 鼠标命中判定与渲染共用同一套布局：区域每帧在渲染前刷新一次。
-        let size = terminal
-            .size()
-            .map_err(|error| format!("读取终端尺寸失败：{error}"))?;
-        app.set_viewport(Rect::new(0, 0, size.width, size.height));
-        app.tick_welcome_logo_animation(Instant::now());
+        if viewport.is_none() {
+            viewport = Some(terminal_viewport(terminal)?);
+            app.set_viewport(viewport.expect("刚写入视口"));
+        }
+        let now = Instant::now();
+        app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
         app.tick_tts_tasks();
         // 底部单行轮播：遥测 → 工作区路径 → 留言，各 10s，切换时解密扫描。
-        app.tick_carousel(Instant::now());
+        app.tick_carousel(now);
         // 输入框上方那行瞬时提示（拖选复制等）到时自散。
-        app.state.tick_notice_line(Instant::now());
+        app.state.tick_notice_line(now);
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
         app.tick_config_chat();
-        app.tick_monitor_events(Instant::now());
+        app.tick_monitor_events(now);
         app.drain_frames();
-        terminal
-            .draw(|frame| {
-                ui::render(
-                    frame,
-                    &app.state,
-                    app.settings.as_ref(),
-                    app.file_picker.as_ref(),
-                    app.config_chat.as_ref(),
-                )
-            })
-            .map_err(|error| format!("渲染失败：{error}"))?;
+        // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块自上次绘制以来都没变时
+        // 整帧跳过绘制——空闲的 TUI 不再以 20fps 空转，也不重算任何一块的内容。
+        // 尺寸变化（resize 事件）与模态弹层都由 `needs_redraw` 一并覆盖。
+        if app.needs_redraw() {
+            terminal
+                .draw(|frame| {
+                    ui::render(
+                        frame,
+                        &app.state,
+                        app.settings.as_ref(),
+                        app.file_picker.as_ref(),
+                        app.config_chat.as_ref(),
+                    )
+                })
+                .map_err(|error| format!("渲染失败：{error}"))?;
+        }
         if app.quit {
             return Ok(());
         }
-        if guard.heal_if_needed(Instant::now()) && guard.notice_due(Instant::now()) {
+        let now = Instant::now();
+        if guard.heal_if_needed(now) && guard.notice_due(now) {
             // 不再直接写终端（会盖住底部输入框）：改成会话流里的提示行。
             app.state
-                .notice("控制台输入模式被外部重置，已恢复鼠标与键盘协议。".to_string());
+                .notice("控制台输入模式被重置，已恢复鼠标与键盘协议。".to_string());
         }
-        if event::poll(POLL_INTERVAL).map_err(|error| format!("读取终端事件失败：{error}"))?
+        // 等待时长按「下一件要做的事」定：空闲（无回合、无动画、无在途结果）时久睡，
+        // 有活动时按活动帧率短睡，避免固定 50ms 节拍白等。
+        let wait = app.poll_budget(Instant::now());
+        if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))?
         {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
+            if matches!(event, Event::Resize(..)) {
+                let resized = terminal_viewport(terminal)?;
+                viewport = Some(resized);
+                app.set_viewport(resized);
+            }
             handle_event(app, event);
         }
     }
+}
+
+/// 读一次终端尺寸并折成渲染区域。
+fn terminal_viewport(
+    terminal: &Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> Result<Rect, String> {
+    let size = terminal
+        .size()
+        .map_err(|error| format!("读取终端尺寸失败：{error}"))?;
+    Ok(Rect::new(0, 0, size.width, size.height))
 }
 
 /// 处理一个终端事件，并顺带识别「一串按键形式的粘贴」。

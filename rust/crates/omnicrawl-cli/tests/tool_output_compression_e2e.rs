@@ -106,7 +106,10 @@ impl StubServer {
                     recorded_auths.lock().expect("记录锁").push(auth);
                     let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
                     recorded.lock().expect("记录锁").push(body.clone());
-                    let is_compression = body.to_string().contains("<<<TOOL_OUTPUT_START>>>");
+                    // 压缩旁路的两段请求：工具调用概括与模型回复压缩（两者都走主渠道）。
+                    let text_body = body.to_string();
+                    let is_compression = text_body.contains("<<<TOOL_CALLS_START>>>")
+                        || text_body.contains("<<<MODEL_REPLIES_START>>>");
                     let payload = if is_compression {
                         let index = {
                             let mut list = recorded_arrivals.lock().expect("记录锁");
@@ -283,10 +286,15 @@ impl Kernel {
         }
     }
 
-    fn initialize(&mut self, model: Value) {
+    fn initialize(&mut self, model: Value, session: Option<Value>) {
         self.send(json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocol_version": "1.0", "client": {"name": "compression-e2e"}, "model": model},
+            "params": {
+                "protocol_version": "1.0",
+                "client": {"name": "compression-e2e"},
+                "model": model,
+                "session": session,
+            },
         }));
         let response = self.next_frame();
         assert!(
@@ -357,6 +365,22 @@ fn model_config(server: &StubServer) -> Value {
     })
 }
 
+/// 带会话根目录的模型配置：回合末的整轮概括只在**内核自持会话**时执行。
+fn session_config(dir: &std::path::Path) -> Value {
+    session_config_with_trigger(dir, None)
+}
+
+/// 带压缩触发阈值的会话配置：给了阈值就一定会触发（用于阈值路径的两段并发压缩）。
+fn session_config_with_trigger(dir: &std::path::Path, trigger: Option<i64>) -> Value {
+    let root = dir.join(".omnicrawl");
+    std::fs::create_dir_all(root.join("sessions")).expect("建会话目录");
+    let mut config = json!({"root": root.to_string_lossy().replace(char::from(92), "/")});
+    if let Some(trigger) = trigger {
+        config["compaction"] = json!({"trigger_context_tokens": trigger});
+    }
+    config
+}
+
 /// 写一份启用压缩的 config.toml，返回路径。
 fn write_config(name: &str, min_chars: usize) -> PathBuf {
     let dir =
@@ -377,11 +401,20 @@ fn write_config(name: &str, min_chars: usize) -> PathBuf {
 
 /// 用户要求：多个工具调用**同时**发多个压缩请求，而不是一个压完才开始下一个。
 #[test]
-fn parallel_compressions_run_at_the_same_time() {
+fn both_compactions_run_at_the_same_time() {
+    // 回合末的两段压缩必须并发：工具调用压缩的响应被拖住时，
+    // 模型回复压缩的请求仍应先到达（否则就是排队执行）。
+    // 阈值必然触发：两段压缩（工具调用 + 模型回复）在回合末并发发起。
     let server = StubServer::spawn_parallel_compressions(Duration::from_millis(900));
     let config = write_config("parallel", 100);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server));
+    kernel.initialize(
+        model_config(&server),
+        Some(session_config_with_trigger(
+            config.parent().expect("配置目录"),
+            Some(1),
+        )),
+    );
 
     let long_output = "日志行内容".repeat(200);
     kernel.send(json!({
@@ -393,7 +426,6 @@ fn parallel_compressions_run_at_the_same_time() {
         if frame["method"] == "tool.batch" {
             let params = frame["params"].clone();
             let id = frame["id"].clone();
-            // 整批回填：两条超长观察。
             let observations: Vec<Value> = params["calls"]
                 .as_array()
                 .cloned()
@@ -408,7 +440,7 @@ fn parallel_compressions_run_at_the_same_time() {
                     })
                 })
                 .collect();
-            assert_eq!(observations.len(), 2, "一条消息里的两个工具调用要打包成一个批次");
+            assert_eq!(observations.len(), 2, "一条消息里的两个工具调用打一个批次");
             kernel.send(json!({"jsonrpc": "2.0", "id": id, "result": {"observations": observations}}));
             continue;
         }
@@ -421,20 +453,21 @@ fn parallel_compressions_run_at_the_same_time() {
     let responses = server.compression_responses();
     assert!(
         arrivals.len() >= 2 && responses.len() >= 2,
-        "两条超长观察应当各发一次压缩请求：到达 {arrivals:?} 写出 {responses:?}"
+        "两段压缩各发一次请求：到达 {arrivals:?} 写出 {responses:?}"
     );
     assert!(
         arrivals[1] < responses[0],
-        "第二个压缩请求必须在第一个响应之前到达（并发压缩，而不是排队）：到达 {arrivals:?} 写出 {responses:?}"
+        "两次压缩必须并发：到达 {arrivals:?} 写出 {responses:?}"
     );
 }
 
 #[test]
-fn long_tool_output_is_compressed_before_next_request() {
+fn tool_calls_are_summarized_once_after_the_turn() {
+    // 新粒度：批内不再逐条压缩，整轮结束把全部工具调用压成一段注入上下文。
     let server = StubServer::spawn();
     let config = write_config("enabled", 100);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server));
+    kernel.initialize(model_config(&server), Some(session_config(config.parent().expect("配置目录"))));
 
     let long_output = "日志行内容".repeat(200);
     let frames = kernel.run_turn("看一下日志", &long_output);
@@ -448,33 +481,46 @@ fn long_tool_output_is_compressed_before_next_request() {
     let bodies = server.bodies();
     let compression = bodies
         .iter()
-        .find(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
-        .expect("应当发出一次压缩请求");
-    let compression_text = compression.to_string();
+        .find(|body| body.to_string().contains("<<<TOOL_CALLS_START>>>"))
+        .expect("应当发出一次整轮概括请求");
+    let text = compression.to_string();
     assert!(
-        compression_text.contains("请压缩下面这次工具调用的原始输出。"),
-        "压缩请求要带任务与调用背景：{compression_text}"
-    );
-    assert!(
-        compression_text.contains("工具输出压缩"),
-        "压缩请求的系统提示来自内置模板：{compression_text}"
+        text.contains("请把下面这一轮的全部工具调用概括成一段内容。"),
+        "概括请求要带任务背景：{text}"
     );
 
-    let follow_up = bodies
-        .iter()
-        .rfind(|body| !body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
-        .expect("应当有后续主请求");
-    let follow_up_text = follow_up.to_string();
+    // 会话转录里落下概括事件，投影据此剔除逐条工具事件。
+    let events = read_session_events(&config);
     assert!(
-        follow_up_text.contains(COMPRESSED_TEXT),
-        "后续主请求应带精简文本：{follow_up_text}"
-    );
-    assert!(
-        !follow_up_text.contains(&long_output[..long_output.len() / 2]),
-        "原始长输出不应再进上下文"
+        events.iter().any(|event| event["type"] == "tool_call_summary"),
+        "应当写入 tool_call_summary 事件：{events:?}"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+/// 读最近一条会话转录的事件类型与载荷。
+fn read_session_events(config: &std::path::Path) -> Vec<Value> {
+    let root = config.parent().expect("配置目录").join(".omnicrawl").join("sessions");
+    let mut found: Vec<Value> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                found.push(value);
+            }
+        }
+    }
+    found
 }
 
 #[test]
@@ -485,7 +531,7 @@ fn compression_model_key_is_resolved_through_the_profile_connection() {
     let server = StubServer::spawn();
     let config = write_config_with_profile("profile-key", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server));
+    kernel.initialize(model_config(&server), Some(session_config(config.parent().expect("配置目录"))));
 
     let long_output = "日志行内容".repeat(200);
     kernel.run_turn("看一下日志", &long_output);
@@ -493,31 +539,22 @@ fn compression_model_key_is_resolved_through_the_profile_connection() {
     let bodies = server.bodies();
     let compression = bodies
         .iter()
-        .find(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
-        .expect("应当发出一次压缩请求");
+        .find(|body| body.to_string().contains("<<<TOOL_CALLS_START>>>"))
+        .expect("应当发出一次整轮概括请求");
     assert_eq!(
         compression["model"].as_str(),
         Some("sub-model-x"),
         "压缩请求应带解析后的模型名，而不是 `stub/sub-model-x` 这个 key：{compression}"
     );
-    // 连接也跟着被选中的 Profile 走（请求真到了本回环服务端才可能被记下来）。
-    assert!(
-        compression["messages"].is_array(),
-        "压缩请求应是一份正常对话：{compression}"
-    );
-    // 凭据：压缩渠道写着 api_key_env = OMNICRAWL_TEST_KEY，而宿主为「主渠道」注入的环境变量
-    // 也是同一个名字（真实场景里是 OPENAI_API_KEY）。这里必须用渠道自己的明文 key，
-    // 否则就是把主渠道的 key 发去压缩渠道 → HTTP 401（用户报的那个错）。
     let auths = server.auths();
-    let compression_index = server
-        .bodies()
+    let index = bodies
         .iter()
-        .position(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
-        .expect("压缩请求下标");
+        .position(|body| body.to_string().contains("<<<TOOL_CALLS_START>>>"))
+        .expect("概括请求下标");
     assert_eq!(
-        auths[compression_index],
+        auths[index],
         format!("Bearer {LITERAL_KEY}"),
-        "压缩请求必须用渠道明文 key，而不是环境变量里的那个：{auths:?}"
+        "压缩请求必须用渠道明文 key：{auths:?}"
     );
     assert_eq!(
         auths[0],
@@ -533,24 +570,32 @@ fn write_config_with_profile(name: &str, base_url: &str, min_chars: usize) -> Pa
         std::env::temp_dir().join(format!("omnicrawl-compress-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("建临时配置目录");
     let path = dir.join("config.toml");
+    let literal = format!("api_key = \"{LITERAL_KEY}\"");
     std::fs::write(
         &path,
         format!(
-            "version = 2\n\
-             [llm]\n\
-             [llm.active_model]\n\
-             source = \"detected\"\n\
-             profile = \"stub\"\n\
-             model_id = \"main-model\"\n\
-             protocol = \"openai_chat_completions\"\n\
-             [llm.profiles.stub]\n\
-             provider = \"openai\"\n\
-             base_url = \"{base_url}\"\n\
-             api_key_env = \"OMNICRAWL_TEST_KEY\"\n\
-             api_key = \"{LITERAL_KEY}\"\n\
-             [tool_output_compression]\nenabled = true\nmodel_key = \"stub/sub-model-x\"\n\
-             thinking_enabled = false\nreasoning_effort = \"high\"\nmin_chars = {min_chars}\n\
-             max_input_chars = 4000\nmax_output_chars = 400\ntimeout_seconds = 5\n"
+            "version = 2
+             [llm]
+             [llm.active_model]
+             source = \"detected\"
+             profile = \"stub\"
+             model_id = \"main-model\"
+             protocol = \"openai_chat_completions\"
+             [llm.profiles.stub]
+             provider = \"openai\"
+             base_url = \"{base_url}\"
+             api_key_env = \"OMNICRAWL_TEST_KEY\"
+             {literal}
+             [tool_output_compression]
+enabled = true
+model_key = \"stub/sub-model-x\"
+             thinking_enabled = false
+reasoning_effort = \"high\"
+min_chars = {min_chars}
+             max_input_chars = 4000
+max_output_chars = 400
+timeout_seconds = 5
+"
         ),
     )
     .expect("写配置失败");
@@ -558,12 +603,16 @@ fn write_config_with_profile(name: &str, base_url: &str, min_chars: usize) -> Pa
 }
 
 #[test]
-fn short_tool_output_is_left_alone() {
+fn every_tool_call_participates_regardless_of_length() {
+    // 新粒度不再按工具名与长度筛选：短输出同样进整轮概括，
+    // 概括粒度由模型决定，长度由 `max_output_chars` 兜底。
     let server = StubServer::spawn();
-    // 门槛高于观察长度：不该发出压缩请求。
-    let config = write_config("threshold", 100_000);
+    let config = write_config("short", 100_000);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server));
+    kernel.initialize(
+        model_config(&server),
+        Some(session_config(config.parent().expect("配置目录"))),
+    );
 
     let frames = kernel.run_turn("看一下日志", "短的输出");
     assert!(frames
@@ -572,10 +621,10 @@ fn short_tool_output_is_left_alone() {
 
     let bodies = server.bodies();
     assert!(
-        !bodies
+        bodies
             .iter()
-            .any(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>")),
-        "未达门槛不应压缩：{bodies:?}"
+            .any(|body| body.to_string().contains("<<<TOOL_CALLS_START>>>")),
+        "短输出同样参与整轮概括：{bodies:?}"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();

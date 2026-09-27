@@ -36,6 +36,12 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （`/plan`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
 **不写进会话转录**（它们是本轮读到的环境，不是历史）。
 
+`PromptOptions.system_prompt_override` 只在**显式覆盖**时有值（TUI 的 `--system-prompt` /
+`OMNICRAWL_SYSTEM_PROMPT`、嵌入方的自备文本）；它是 `Option` 就是为此——曾经那条调用链把
+「没给」也回落成一句占位文案再传进来，于是模板永远被顶掉，模型收到的 system 只有那一句。
+无头宿主（本地 API）恒传 `None`：`config.toml` 的 `llm.system_prompt` 是语音客户端的文案，
+不参与 Agent 提示词（与 Python 一致）。
+
 ## 进程树回收
 
 两条互补路径，`bash` / `powershell` 与 `monitor` 三处共用：
@@ -59,6 +65,10 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - 工具开关只影响这张表，所以设置面板改开关时重建工具表会把旧表的 `monitors` / `cancel` 两个句柄
   带进新表（`RegistryOptions.monitors` / `.cancel`）：否则一次开关会把正在跑的后台命令从宿主账上抹掉、
   并丢掉回合取消的进程树回收语义。宿主若不传这两个字段，新表照旧各建一份。
+- 取消令牌（`tools::command::CancelToken`）既然跨回合、跨重建沿用，**就必须在每回合开始时复位**
+  （`CancelToken::reset`）：TUI 在 `dispatch_submission` 发 `turn.submit` 前复位，无头运行器在
+  `TurnRunner::run_turn` 开头复位。不复位时「`Esc` 取消后继续对话」的下一回合里，每个
+  `bash` / `powershell` 都会在子进程刚起来时被判定为已取消——令牌只置位不回零，是跨回合状态。
 
 ## 与两端的边界
 
@@ -78,24 +88,27 @@ let outcome = runner.submit("你好", &control, &mut interactor, &mut |event| { 
 ```
 
 - `TurnControl` 是跨线程取消开关：置位后 `submit` 先发 `turn.cancel`，再回收本回合的进程树与后台任务，
-  最后以 `TurnError::Cancelled` 收尾。
+  最后以 `TurnError::Cancelled` 收尾。运行器与工具表跨回合复用（API 服务持同一份 `TurnRunner`），
+  因此 `run_turn` 开头会复位工具表的取消令牌；取消只对当回合生效，下一回合照常执行命令。
 - `Interactor` 是唯一的「问人」入口：`decide`（审批）与 `answer`（提问）。API 侧的实现会阻塞等待
   HTTP 提交的决定；`None` 一律按拒绝/未作答处理，与 Python 的超时语义一致。
 - 事件出口收到的是协议通知原文（[`omnicrawl_ipc::bridge::HostEvent`]），另加宿主产生的
   `tool.started` / `tool.finished` / `todo.update`（协议规定工具生命周期由宿主发出）。
   每个调用只报一次开始与一次完成：清单工具成功时不产生工具卡，只发 `todo.update`。
 - 批次超时按**绝对截止时间**算（与 Python 一致）：到点未回填的调用写成超时结果，后台线程继续跑但结果被丢弃。
+- `RunnerOptions.prompt` 给 `Some(PromptRuntime)` 时，握手以它为准发 system prompt 与
+  `context_messages`；`None`（嵌入与测试自备运行器）才用 `KernelModelConfig.system_prompt`。
 
 ## 验证
 
 ```bash
 cd rust
-cargo test -p omnicrawl-host        # 147 个单元测试 + tests/turn_flow.rs 的 5 组流程测试
+cargo test -p omnicrawl-host        # 176 个单元测试 + tests/turn_flow.rs 的 6 组流程测试
 cargo clippy -p omnicrawl-host --all-targets -- -D warnings
 ```
 
 `tests/turn_flow.rs` 用一对内存管道做脚本化假内核，钉住握手（含被拒）、整批工具定调、
-提问作答、取消与内核退出五条路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
+提问作答、取消、取消后继续与内核退出六条路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
 `crates/omnicrawl-tui/tests/*_parity.rs`（按原路径驱动本 crate 的工具表）。
 
 ## 插件运行期
@@ -140,8 +153,12 @@ let text = plugins.turn_start(text, session, Some(&turn_id))?;   // 可改写 us
   等内核退出后发 after。内核在两者之间补写 `session_closed` 并丢弃空占位。会话切换走的是重建内核
   （不是关闭当前会话），因此不触发这对钩子。
 - `initialize.model.prompt_cache_identity` 在 `TurnRunner::handshake` 里装配：工具表就位后按
-  system prompt / 工作区 / 空项目规范与空 Skill 索引 / 工具声明算出七字段身份。无头宿主当前不做
-  AGENTS.md 与 Skill 组装，空集与它实际发给模型的稳定前缀一致。
+  system prompt / 工作区 / 项目规范 / Skill 索引 / 工具声明算出七字段身份。`RunnerOptions.prompt`
+  有值（API 与 TUI 都走这条路）时用**真实的**项目规范与 Skill 索引参与哈希；嵌入了自备
+  `TurnRunner` 且没给装配结果时按空集，与它实际发出的稳定前缀一致。
+- `RunnerOptions.prompt` 是提示词装配结果的入口：有它时握手用装配出来的 system prompt 与
+  `context_messages`（模板 / AGENTS.md / Skill 索引 / 运行环境），无装配运行期才沿用
+  `KernelModelConfig` 里的文本。无头宿主与 TUI 因此共用同一份提示词口径。
 - `resume` / `undo` 之外的会话动作仍由内核与 `omnicrawl-session` 承担，这里不做会话落盘。
 - 工具声明的 `update_todos` 成功路径不发 `tool.finished`（对齐 Python），失败路径仍发。
 - `pause_work` 不产生工具生命周期事件（Python 会发一次开始/完成）；当前 API 未使用该工具。

@@ -230,6 +230,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         client_name: "omnicrawl-api-test".to_string(),
         plugins: None,
         review: None,
+        prompt: None,
     }
 }
 

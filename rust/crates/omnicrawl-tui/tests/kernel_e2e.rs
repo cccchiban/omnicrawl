@@ -146,7 +146,7 @@ fn real_kernel_streams_a_turn_into_the_ui() {
         model: "stub-model".to_string(),
         base_url: server.base_url.clone(),
         api_key_env: "OMNICRAWL_TUI_E2E_KEY".to_string(),
-        system_prompt: "你是端到端测试助手。".to_string(),
+        system_prompt: Some("你是端到端测试助手。".to_string()),
         session_root: None,
         context_window_tokens: Some(128_000),
         approval: ApprovalMode::Manual,
@@ -279,7 +279,7 @@ fn real_kernel_executes_an_approved_tool_call() {
         model: "stub-model".to_string(),
         base_url: server.base_url.clone(),
         api_key_env: "OMNICRAWL_TUI_E2E_TOOLS_KEY".to_string(),
-        system_prompt: "你是端到端测试助手。".to_string(),
+        system_prompt: Some("你是端到端测试助手。".to_string()),
         session_root: None,
         context_window_tokens: Some(128_000),
         approval: ApprovalMode::Manual,
@@ -399,7 +399,7 @@ fn drive_tool_turn(
         model: "stub-model".to_string(),
         base_url: server.base_url.clone(),
         api_key_env: "OMNICRAWL_TUI_E2E_TOOL_KEY".to_string(),
-        system_prompt: "你是端到端测试助手。".to_string(),
+        system_prompt: Some("你是端到端测试助手。".to_string()),
         session_root: None,
         context_window_tokens: Some(128_000),
         approval: ApprovalMode::Manual,
@@ -549,7 +549,7 @@ fn drive_tool_turn_in(
         model: "stub-model".to_string(),
         base_url: server.base_url.clone(),
         api_key_env: "OMNICRAWL_TUI_E2E_TOOL_KEY".to_string(),
-        system_prompt: "你是端到端测试助手。".to_string(),
+        system_prompt: Some("你是端到端测试助手。".to_string()),
         // 内核自持会话，且会话数据放在工作区之外：工作区里多出任何文件都会让撤销时的
         // 冲突检测（对比本轮结束快照）判定“被改过”而拒绝回退。
         session_root: Some({

@@ -137,6 +137,17 @@ impl Harness {
     }
 
     fn start_with_timeout(script: &str, approval: ApprovalMode, tool_timeout_seconds: i64) -> Self {
+        Self::start_with_prompt(script, approval, tool_timeout_seconds, options(approval).system_prompt)
+    }
+
+    /// 指定 system prompt 覆盖值的版本：`None` 表示不给 `--system-prompt`，
+    /// 此时装配应当落到内置模板。
+    fn start_with_prompt(
+        script: &str,
+        approval: ApprovalMode,
+        tool_timeout_seconds: i64,
+        system_prompt: Option<String>,
+    ) -> Self {
         let handle = ScriptHandle::new(script);
         let recorder = Recorder::default();
         let kernel = KernelClient::from_streams(
@@ -153,6 +164,7 @@ impl Harness {
         .expect("写测试文件");
         let mut options = options(approval);
         options.tool_timeout_seconds = tool_timeout_seconds;
+        options.system_prompt = system_prompt;
         let app = App::new(options, kernel, &workspace).expect("工具表应当构建成功");
         Self {
             app,
@@ -233,7 +245,7 @@ fn options(approval: ApprovalMode) -> Options {
         model: "stub-model".to_string(),
         base_url: "http://127.0.0.1:1/v1".to_string(),
         api_key_env: "OMNICRAWL_TUI_TEST_KEY".to_string(),
-        system_prompt: "你是测试助手。".to_string(),
+        system_prompt: Some("你是测试助手。".to_string()),
         session_root: None,
         context_window_tokens: Some(128_000),
         approval,
@@ -351,7 +363,7 @@ fn manual_mode_runs_file_and_search_tools_without_approval() {
 }
 
 #[test]
-fn denial_reports_denied_and_kernel_close_ends_session() {
+fn denial_reports_denied_and_kernel_close_keeps_the_scene_for_a_keypress() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
     harness.send(&tool_batch(
@@ -368,10 +380,24 @@ fn denial_reports_denied_and_kernel_close_ends_session() {
         Some(DENIED)
     );
 
-    // 关掉假内核等于内核退出：宿主收尾并退出。
+    // 关掉假内核等于内核退出：宿主收尾但停在界面保留现场，等用户按键才退。
     harness.close_kernel();
-    harness.expect_ready(|app| app.quit, "内核退出后宿主要跟着退出");
+    harness.expect_ready(|app| app.kernel_lost, "内核退出后宿主应停在界面并留下报错");
+    assert!(
+        !harness.app.quit,
+        "内核退出不该直接把界面带走（用户要先看清原因）"
+    );
     assert!(!harness.app.state.turn.is_running());
+    assert!(
+        harness
+            .app
+            .state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("按 Enter / Esc 退出")),
+        "运行状态行应常显退出指引：{:?}",
+        harness.app.state.status
+    );
     assert!(
         harness.app.state.records.iter().any(
             |record| matches!(record, Record::Notice(text) if text.contains("内核进程已退出"))
@@ -379,6 +405,22 @@ fn denial_reports_denied_and_kernel_close_ends_session() {
         "应把内核退出写进消息流：{:?}",
         harness.app.state.records
     );
+    assert!(
+        harness.app.state.records.iter().any(
+            |record| matches!(record, Record::Notice(text) if text.contains("--resume"))
+        ),
+        "应给出恢复会话的指引：{:?}",
+        harness.app.state.records
+    );
+    // 内核已死：输入框不再收字，也不该再往死连接里发任何帧。
+    let before = harness.frames().len();
+    harness.press(KeyCode::Char('x'));
+    harness.app.drain_frames();
+    assert!(harness.app.state.composer.text().is_empty(), "输入框应被冻住");
+    assert_eq!(harness.frames().len(), before, "内核已退出，不该再发帧");
+    // 一次按键放行退出。
+    harness.press(KeyCode::Enter);
+    harness.expect_ready(|app| app.quit, "按 Enter 后应退出");
 }
 
 #[test]
@@ -1492,6 +1534,48 @@ fn handshake_carries_system_prompt_and_context_messages() {
     assert!(
         joined.contains("agent_tmp"),
         "运行环境那条 user 提示词要带上临时目录：{joined}"
+    );
+}
+
+/// 没给 `--system-prompt` 时必须发**内置模板**（而不是一行占位文案）。
+///
+/// 曾经的 bug：`load_prompt_runtime` 无条件把 `options.system_prompt` 当显式覆盖传下去，
+/// 而它有「你是 OmniCrawl 助手，回答保持简洁。」的默认值兜底，于是
+/// `rust/assets/templates/system_prompt.md` 永远不生效——模型收到的 system 只有那一句话。
+#[test]
+fn handshake_falls_back_to_the_template_without_an_explicit_prompt() {
+    let mut harness =
+        Harness::start_with_prompt(HANDSHAKE, ApprovalMode::Manual, 120, None);
+    harness.app.handshake().expect("握手应当成功");
+    let initialize = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("initialize"))
+        .expect("应发出 initialize");
+    let model = initialize.params.clone().unwrap_or(Value::Null)["model"].clone();
+    let prompt = model["system_prompt"].as_str().unwrap_or_default();
+
+    assert!(
+        prompt.contains("OmniCrawl 是一个能够长期处理本地项目任务的 Agent"),
+        "没给 --system-prompt 时 system prompt 必须是内置模板，实际：{prompt}"
+    );
+    assert!(
+        prompt.contains("工作守则"),
+        "模板正文（工作守则）必须在里面：{prompt}"
+    );
+    assert!(
+        !prompt.contains("回答保持简洁"),
+        "占位文案不能顶掉模板：{prompt}"
+    );
+    // 稳定前缀身份要跟着模板走，否则缓存 key 与实际前缀脱节。
+    let identity = &model["prompt_cache_identity"];
+    assert_eq!(
+        identity["agent_prompt_version"],
+        json!("2026-06-22.top-level-tools-v1")
+    );
+    assert!(
+        identity["system_prompt_hash"].as_str().is_some_and(|hash| hash.len() == 64),
+        "system_prompt_hash 应是 sha256：{identity}"
     );
 }
 

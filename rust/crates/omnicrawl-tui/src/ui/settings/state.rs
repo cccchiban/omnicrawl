@@ -370,7 +370,8 @@ impl ChannelField {
     pub fn label(self) -> &'static str {
         match self {
             Self::Name => "渠道名称",
-            Self::Provider => "Provider",
+            // 对映 Python `ChannelEditorScreen` 的「请求方式」标签（选项值仍是 provider key）。
+            Self::Provider => "请求方式",
             Self::Protocol => "请求协议",
             Self::BaseUrl => "Base URL",
             Self::ApiKey => "API Key",

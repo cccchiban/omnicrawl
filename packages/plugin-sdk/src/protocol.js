@@ -37,6 +37,7 @@ export const METHOD = Object.freeze({
   TURN_DELTA: 'turn.delta',
   TURN_REASONING_DELTA: 'turn.reasoning_delta',
   TURN_STATUS: 'turn.status',
+  TURN_NOTICE: 'turn.notice',
   TURN_RETRY_STATUS: 'turn.retry_status',
   TURN_PROTOCOL_WAIT: 'turn.protocol_wait',
   TURN_STREAM_ROLLBACK: 'turn.stream_rollback',

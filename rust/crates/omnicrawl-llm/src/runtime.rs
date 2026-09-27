@@ -123,7 +123,7 @@ impl OpenAiChatRuntime {
     pub fn new(endpoint: ChatEndpoint) -> Self {
         Self {
             endpoint,
-            agent: transport::build_agent(),
+            agent: transport::shared_agent().clone(),
         }
     }
 
@@ -337,7 +337,7 @@ impl AnthropicRuntime {
         Self {
             endpoint,
             descriptor_max_output_tokens,
-            agent: transport::build_agent(),
+            agent: transport::shared_agent().clone(),
         }
     }
 
@@ -500,7 +500,7 @@ impl ResponsesRuntime {
     pub fn new(endpoint: ChatEndpoint) -> Self {
         Self {
             endpoint,
-            agent: transport::build_agent(),
+            agent: transport::shared_agent().clone(),
             tool_history_unsupported: AtomicBool::new(false),
         }
     }
@@ -773,7 +773,7 @@ impl GeminiRuntime {
     pub fn new(endpoint: ChatEndpoint) -> Self {
         Self {
             endpoint,
-            agent: transport::build_agent(),
+            agent: transport::shared_agent().clone(),
         }
     }
 

@@ -76,7 +76,12 @@ SO_REUSEPORT 绑定同一端口（等价 uvicorn 的多 worker）。不支持 SO
 - `omnicrawl-host`：`MonitorManager` 新增查询面（`tasks()` / `task()` / `poll_view()` /
   `wait_for_events()` 与三个对外视图结构）；`TurnRunner` 新增 `set_approval_mode`、
   `apply_session_settings`、`compact_session`、`manage_subagents`、`drain_notifications`、
-  `rebuild_registry`（运行期重建工具表，供 MCP 设置热更新用）；`RunnerOptions` 加 `Clone`。
+  `rebuild_registry`（运行期重建工具表，供 MCP 设置热更新用）；`RunnerOptions` 加 `Clone` 与
+  `prompt`（提示词装配结果，见下）。
+- `omnicrawl-host` 的 `prompt.rs`：`options_from_process` 与 TUI 走同一套 `PromptRuntime`
+  装配（模板 / AGENTS.md / Skill 索引 / 运行环境），结果放进 `ServiceOptions.prompt` 交给
+  `TurnRunner`；system prompt 与 `context_messages` 因此与 TUI 同源，稳定前缀身份也用真实的
+  项目规范与 Skill 索引参与哈希。切工作区（重起内核）时按新根重算一次。
 - `omnicrawl-ipc`：协议新增 `session.compact` 与 `subagent.query`（命令表与往返测试样本同步更新）。
 - `omnicrawl-cli`：内核处理 `session.compact`（压完把历史换成摘要 + 保留窗口，回
   `{summary, compacted}`）与 `subagent.query`（复用 `SubAgentTaskManager` 的 list/get/cancel，
@@ -161,6 +166,11 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
   `POST /sessions/{id}/resume` 与 `/sessions/current/archive` 返回 Rust 版会话状态视图
   （索引元数据 + 转录投影 + `pending_user_text` / `todo_items`）。
 - 会话根已对齐 Python 的 `~/.OmniCrawl/.agent_sessions`（不绑工作区）。
+- 交给内核的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled`
+  缺省开启时；与 `/memory/clean` 同一个根），`compaction` 由 `[context_compaction]` 整段映射（触发阈值
+  优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）。内核不读配置文件，
+  不给就是默认值（摘要预算 2000 token、记忆回写关闭）；启动与「切会话 / 切工作区重起内核」共用同一份
+  口径（`service::session_config_defaults`）。运行期切模型时窗口与阈值成对下发，避免「新窗口 + 旧阈值」。
 - 请求体 JSON 本身语法错误时，axum 的 `Json` 拒绝体是纯文本 `400`，Python 回 `422` 校验信封。
 - `PUT /settings/context` 与 `/settings/context_compaction` 的边界取值报错类型按
   `greater_than_equal` / `less_than_equal` 给出，Pydantic 对 `gt=0` 用的是 `greater_than`。

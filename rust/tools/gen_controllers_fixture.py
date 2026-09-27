@@ -6054,6 +6054,16 @@ def _summary_compactor_cases():
         compact_case("两次都非法", ["nope", "still nope"], 64000),
         compact_case("模型调用失败", ["raise"], 64000),
         compact_case("无摘要预算上限", [valid], 64000, target_tokens=0),
+        # 索引里给的是短引用（E1/E2…），模型回写短引用后由代码展开成真事件 ID；
+        # 认不出的引用（E9）原样保留，交给 validator 判「引用了不存在的事件」。
+        compact_case(
+            "短引用展开成事件 ID",
+            [
+                '{"objective": ["目标"], "constraints": [{"text": "约束",'
+                ' "source_event_ids": ["E2", "E9"]}]}'
+            ],
+            64000,
+        ),
     ]
 
     def budget_case(label, extra):
@@ -6142,6 +6152,18 @@ def _summary_compactor_cases():
         previous_case("结构化上次摘要", {"structured": {"objective": ["旧目标"]}}),
         previous_case("旧版文本上次摘要", {"content": "  旧的确定性摘要  "}),
         previous_case("空上次摘要", {}),
+        # 上次摘要里的真 ID 也要换成短引用（本次批次里没有 e7，所以它排在批次之后编号），
+        # 否则模型面前又是一堆 24 位 ID。
+        previous_case(
+            "上次摘要带事件 ID",
+            {
+                "structured": {
+                    "constraints": [
+                        {"text": "旧约束", "source_event_ids": ["e7", "e1"]}
+                    ]
+                }
+            },
+        ),
     ]
 
     invalid_ctor = outcome(compactor_class, lambda _messages: None, max_input_tokens=0)

@@ -350,7 +350,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 ## 9. 长会话压缩
 
-> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，不设回合间隔冷却。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
+> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，不设回合间隔冷却。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。`[context_compaction]` 整段由宿主在握手时经协议下发（内核不读用户配置，缺字段一律回落 `CompactionConfig::default()`：摘要预算 2000 token、记忆回写关闭——「配置里写了却不生效」正是缺了这一步），映射见 `omnicrawl-controllers` 的 `settings::kernel_compaction_settings`，协议字段见 `rust/docs/protocol-v1.md`。
 >
 > 触发点：完整回合结束后测量实际上下文（稳定上下文 + 既有摘要 + 全部历史，不含下一轮用户预留），达到 ``trigger_context_tokens`` 时先分发 ``context.compaction.after_turn`` Hook（notify，仅供观察），再由宿主执行压缩；Hook 缺失、被拒绝或分发异常都不影响压缩执行。测量同时取「本地估算」与「供应商回报的最近一次请求输入 token」中的较大值：本地估算按 CJK 1 token/字、其余 4 字符 1 token 折算，代码/JSON 密集的工具结果会低估近一倍，只看估算时阈值永远达不到；测量事件的 `provider_input_tokens` 记录该真实值，0 表示本次没有可用数据（此时退回纯估算口径，行为与旧版一致）。
 >
@@ -362,7 +362,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 >
 > 配置 `archive_compacted_events` 时，被压缩窗口的原始事件归档到 `.agent_sessions/archive/compacted/<session>/`（第二级存储），`compact_summary` 事件记录 archive_id，任意被压缩事件均可按需精确恢复；配置 `auto_memory_recall` 时，压缩完成后自动检索长期记忆并把命中结果注入后续上下文（`compaction_memory_recall` 事件留痕）。`context_compaction_measurement` 事件包含覆盖度指标（coverage_ratio、字段计数、退休 token）与归档信息。
 >
-> 摘要请求沿用原请求前缀：系统提示词、最近一次主请求的逐字消息与工具声明原样重发，缓存身份与主请求一致，用于命中提供方前缀缓存；被压缩事件只以 `events_index`（event_id / type / 截断预览）附在末尾，正文靠前缀对齐。工具块在 prompt 里排在前缀最前面，少带工具会让第一次摘要请求无法复用主请求已建立的前缀缓存，因此该请求带同一份工具声明并固定 `tool_choice=none`，同时用提示词强约束「只输出一个 JSON 对象、禁止调用工具」；一旦模型返回工具调用，带反馈重试一次，仍失败则走既有降级路径。`events_index` 的单块预算在运行态按「摘要模型窗口 − 前缀 − 输出预留」放大（索引只是目录，正文在前缀里），只有窗口余额不足时才分块并追加一次 `merge_chunks`。
+> 摘要请求沿用原请求前缀：系统提示词、最近一次主请求的逐字消息与工具声明原样重发，缓存身份与主请求一致，用于命中提供方前缀缓存；被压缩事件只以 `events_index`（**短引用 ref** / type / 截断预览）附在末尾，正文靠前缀对齐。索引里**不出现** 24 位事件 ID：模型逐字复制不透明 ID 的失败率很高（实测会把 ID 编成“长得像十六进制”的另一串，校验只要发现一处不存在就让整份摘要作废），因此索引只给 `E1`、`E2`… 短引用，模型回写的 `source_event_ids` 在返回前由代码展开成真 ID —— 上游（校验、投影、归档、记忆）看到的仍是真事件 ID，口径与旧版完全一致；上次摘要里的真 ID 同样先改写成短引用再发给模型，分块与 `merge_chunks` 共用同一张引用表。工具块在 prompt 里排在前缀最前面，少带工具会让第一次摘要请求无法复用主请求已建立的前缀缓存，因此该请求带同一份工具声明并固定 `tool_choice=none`，同时用提示词强约束「只输出一个 JSON 对象、禁止调用工具」；一旦模型返回工具调用，带反馈重试一次，仍失败则走既有降级路径。`events_index` 的单块预算在运行态按「摘要模型窗口 − 前缀 − 输出预留」放大（索引只是目录，正文在前缀里），只有窗口余额不足时才分块并追加一次 `merge_chunks`。
 
 当前实现已经采用“摘要替换 + 最近窗口”，并将 `compact_summary` 追加到 Session 转录；本节保留初始设计内容用于追溯。
 

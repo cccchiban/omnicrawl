@@ -23,6 +23,10 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
         ),
         (method::TURN_STATUS, json!({"message": "正在压缩上下文"})),
         (
+            method::TURN_NOTICE,
+            json!({"message": "检测到 1 处疑似畸形脱敏占位符，已按原样保留。"}),
+        ),
+        (
             method::TURN_RETRY_STATUS,
             json!({"message": "网关超时，正在重试"}),
         ),

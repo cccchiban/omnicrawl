@@ -180,19 +180,35 @@ impl SourceEvent {
 
     /// ID、类型与短预览：正文留在复用的原文上下文里。
     pub fn to_index_dict(&self, preview_chars: usize) -> Value {
-        let mut serialized = compact_serialize(&self.payload);
-        let length = serialized.chars().count();
-        if preview_chars > 0 && preview_chars < length {
-            serialized = format!(
+        let mut map = Map::new();
+        map.insert("event_id".to_string(), Value::from(self.event_id.clone()));
+        map.insert("type".to_string(), Value::from(self.event_type.clone()));
+        map.insert("preview".to_string(), Value::from(self.preview(preview_chars)));
+        Value::Object(map)
+    }
+
+    /// 与 [`Self::to_index_dict`] 同形，但把不透明的 24 位事件 ID 换成短引用（如 `E12`）。
+    ///
+    /// 摘要模型逐字复制 24 位十六进制 ID 的失败率很高（实测会整段编造，一处不符就让整份摘要
+    /// 作废），短引用则易抄且由代码还原真 ID：索引里不再出现真 ID，模型也就无从抄错。
+    pub fn to_ref_index_dict(&self, reference: &str, preview_chars: usize) -> Value {
+        let mut map = Map::new();
+        map.insert("ref".to_string(), Value::from(reference));
+        map.insert("type".to_string(), Value::from(self.event_type.clone()));
+        map.insert("preview".to_string(), Value::from(self.preview(preview_chars)));
+        Value::Object(map)
+    }
+
+    /// 索引里的内容预览：超长时截断并补省略号。
+    fn preview(&self, preview_chars: usize) -> String {
+        let serialized = compact_serialize(&self.payload);
+        if preview_chars > 0 && preview_chars < serialized.chars().count() {
+            return format!(
                 "{}…",
                 serialized.chars().take(preview_chars).collect::<String>()
             );
         }
-        let mut map = Map::new();
-        map.insert("event_id".to_string(), Value::from(self.event_id.clone()));
-        map.insert("type".to_string(), Value::from(self.event_type.clone()));
-        map.insert("preview".to_string(), Value::from(serialized));
-        Value::Object(map)
+        serialized
     }
 }
 

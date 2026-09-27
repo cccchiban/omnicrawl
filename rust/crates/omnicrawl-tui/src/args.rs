@@ -6,9 +6,6 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::approval::load_approval_mode;
 use omnicrawl_config::models::llm::load_llm_config;
 
-/// 阶段一的默认系统提示词；给了 `--system-prompt` 或环境变量时以它们为准。
-const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 助手，回答保持简洁。";
-
 // 审批模式归宿主执行层所有（批次定调要用），这里再导出给启动参数与界面用。
 pub use omnicrawl_host::approval::ApprovalMode;
 
@@ -19,7 +16,10 @@ pub struct Options {
     pub model: String,
     pub base_url: String,
     pub api_key_env: String,
-    pub system_prompt: String,
+    /// system prompt 的**显式覆盖**：`--system-prompt` 或 `OMNICRAWL_SYSTEM_PROMPT` 给了才有值。
+    /// `None` 表示没给，提示词装配走 `rust/assets/templates/system_prompt.md` 模板——
+    /// 这里不能回落成默认文案，否则模板会被一句话顶掉（曾经的 bug）。
+    pub system_prompt: Option<String>,
     pub session_root: Option<PathBuf>,
     pub context_window_tokens: Option<u64>,
     pub approval: ApprovalMode,
@@ -87,7 +87,7 @@ pub const USAGE: &str = "\
                            再退回 config.toml 里的当前模型）
   --base-url <地址>        模型接口基地址（默认 $OPENAI_BASE_URL）
   --api-key-env <变量名>   存放凭据的环境变量名（默认 OPENAI_API_KEY）
-  --system-prompt <文本>   系统提示词
+  --system-prompt <文本>   系统提示词；给了就整段替换内置模板
   --session-root <目录>    会话根目录；给了就让内核自己持有会话
   --context-window <N>     HUD 上下文占用条的分母（token）
   --approval <manual|review|auto>
@@ -263,9 +263,7 @@ fn parse_with(
         api_key_env: api_key_env
             .or_else(|| non_empty(env("OMNICRAWL_API_KEY_ENV")))
             .unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
-        system_prompt: system_prompt
-            .or_else(|| non_empty(env("OMNICRAWL_SYSTEM_PROMPT")))
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string()),
+        system_prompt: system_prompt.or_else(|| non_empty(env("OMNICRAWL_SYSTEM_PROMPT"))),
         session_root: session_root
             .or_else(|| non_empty(env("OMNICRAWL_SESSION_ROOT")).map(PathBuf::from)),
         context_window_tokens: context_window,

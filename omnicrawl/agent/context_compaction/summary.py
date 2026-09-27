@@ -272,6 +272,91 @@ class RuntimeSummaryModelAdapter:
             manager.close()
 
 
+class _EventRefs:
+    """事件引用表：送给模型的索引里只出现 ``E1``、``E2`` 这类短引用，真事件 ID 只留在代码里。
+
+    让模型逐字复制 24 位不透明十六进制 ID 是不可靠的（实测会整段编造出「像 ID 的串」，
+    而校验只要发现一处不存在就让整份摘要作废）；短引用既短又易抄，展开成真 ID 后校验口径
+    与「模型直接写 ID」完全相同：真 ID 是否属于本会话仍由 validator 判定。
+    """
+
+    def __init__(self, events: Sequence[SourceEvent] = ()) -> None:
+        self.references: dict[str, str] = {}
+        self.ids: dict[str, str] = {}
+        for event in events:
+            self.register(event.event_id)
+
+    def register(self, event_id: Any) -> str | None:
+        """登记一个事件 ID 并返回它的短引用；空白 ID 不参与（与 covered_event_ids 同样跳过）。"""
+
+        if not isinstance(event_id, str) or not event_id.strip():
+            return None
+        existing = self.references.get(event_id)
+        if existing is not None:
+            return existing
+        reference = f"E{len(self.references) + 1}"
+        self.references[event_id] = reference
+        self.ids[reference] = event_id
+        return reference
+
+    def reference_of(self, event_id: Any) -> str | None:
+        if not isinstance(event_id, str):
+            return None
+        return self.references.get(event_id)
+
+    def register_previous(
+        self, previous: Mapping[str, Any] | None
+    ) -> Mapping[str, Any] | None:
+        """上次摘要里的真 ID 也要先登记：这些事件通常已不在本次批次里，
+        照原样发过去等于又把一堆 24 位 ID 摆在模型面前让它抄。"""
+
+        if previous is None:
+            return None
+        for event_id in _collect_source_event_ids(previous):
+            self.register(event_id)
+        return _map_source_event_ids(previous, self.references)
+
+
+def _collect_source_event_ids(value: Any) -> list[str]:
+    """收集摘要结构里所有 ``source_event_ids`` 的取值（按出现顺序，含嵌套字段）。"""
+
+    collected: list[str] = []
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key == "source_event_ids" and _is_sequence(item):
+                collected.extend(entry for entry in item if isinstance(entry, str))
+            collected.extend(_collect_source_event_ids(item))
+    elif _is_sequence(value):
+        for item in value:
+            collected.extend(_collect_source_event_ids(item))
+    return collected
+
+
+def _map_source_event_ids(value: Any, mapping: Mapping[str, str]) -> Any:
+    """深度遍历摘要结构，把 ``source_event_ids`` 的取值按 ``mapping`` 改写：
+    未命中的保持原样，于是未知取值依旧会被 validator 判为「引用了不存在的事件」。"""
+
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "source_event_ids" and _is_sequence(item):
+                item = [
+                    mapping.get(entry, entry) if isinstance(entry, str) else entry
+                    for entry in item
+                ]
+            result[key] = _map_source_event_ids(item, mapping)
+        return result
+    if _is_sequence(value):
+        return [_map_source_event_ids(item, mapping) for item in value]
+    return value
+
+
+def _is_sequence(value: Any) -> bool:
+    """是否是需要逐项展开的序列（字符串与映射不算）。"""
+
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
 class ModelSummaryCompactor:
     """只负责生成结构化摘要；来源与事实校验由 validator 执行。"""
 
@@ -307,6 +392,10 @@ class ModelSummaryCompactor:
         validation_feedback: Sequence[str] = (),
     ) -> ModelSummaryResult:
         previous = _previous_structured(batch.previous_summary)
+        # 引用表在分块之前建好：分块只是把索引切开，引用编号对整批事件稳定，
+        # 合并步骤里模型看到的也只是这些短引用。
+        references = _EventRefs(batch.events)
+        previous = references.register_previous(previous)
         chunks = _chunk_events(batch.events, self._chunk_budget())
         if not chunks:
             raise SummaryGenerationError("没有可供模型摘要的事件。")
@@ -325,6 +414,7 @@ class ModelSummaryCompactor:
                 operation="extract_chunk" if len(chunks) > 1 else "merge_summary",
                 chunk_index=chunk_index,
                 chunk_count=len(chunks),
+                references=references,
             )
             aggregate_usage = aggregate_usage.add(
                 result.usage.input_tokens,
@@ -337,35 +427,36 @@ class ModelSummaryCompactor:
             partials.append(result.structured)
 
         if len(partials) == 1:
-            return ModelSummaryResult(
-                structured=partials[0],
-                usage=aggregate_usage,
-                profile=profile,
-                provider=provider,
-                attempts=attempts,
+            structured = partials[0]
+        else:
+            merged = self._request_structured(
+                previous_summary=previous,
+                source_events=(),
+                partial_summaries=partials,
+                target_summary_tokens=target_summary_tokens,
+                validation_feedback=validation_feedback,
+                operation="merge_chunks",
+                chunk_index=1,
+                chunk_count=1,
+                references=references,
             )
-
-        merged = self._request_structured(
-            previous_summary=previous,
-            source_events=(),
-            partial_summaries=partials,
-            target_summary_tokens=target_summary_tokens,
-            validation_feedback=validation_feedback,
-            operation="merge_chunks",
-            chunk_index=1,
-            chunk_count=1,
-        )
-        aggregate_usage = aggregate_usage.add(
-            merged.usage.input_tokens,
-            merged.usage.output_tokens,
-            merged.usage.cached_input_tokens,
-        )
+            aggregate_usage = aggregate_usage.add(
+                merged.usage.input_tokens,
+                merged.usage.output_tokens,
+                merged.usage.cached_input_tokens,
+            )
+            structured = merged.structured
+            profile = merged.profile or profile
+            provider = merged.provider or provider
+            attempts += merged.attempts
+        # 短引用在这里还原成真事件 ID：后续的校验、投影与落盘拿到的都是真 ID，
+        # 与早先「模型直接写 ID」的输入形状完全一致。
         return ModelSummaryResult(
-            structured=merged.structured,
+            structured=_map_source_event_ids(structured, references.ids),
             usage=aggregate_usage,
-            profile=merged.profile or profile,
-            provider=merged.provider or provider,
-            attempts=attempts + merged.attempts,
+            profile=profile,
+            provider=provider,
+            attempts=attempts,
         )
 
     def _request_structured(
@@ -379,7 +470,9 @@ class ModelSummaryCompactor:
         chunk_index: int,
         chunk_count: int,
         partial_summaries: Sequence[Mapping[str, Any]] = (),
+        references: _EventRefs | None = None,
     ) -> ModelSummaryResult:
+        references = references or _EventRefs()
         base_payload = {
             "operation": operation,
             # 0 表示无摘要预算上限：向模型传 null + budget_limited=false，
@@ -391,8 +484,13 @@ class ModelSummaryCompactor:
             "chunk_index": chunk_index,
             "chunk_count": chunk_count,
             "previous_summary": previous_summary,
-            # 事件正文随复用的原请求前缀一起发送，这里只给模型 ID、类型与预览索引。
-            "events_index": [event.to_index_dict() for event in source_events],
+            # 事件正文随复用的原请求前缀一起发送，这里只给模型引用、类型与预览索引；
+            # 真事件 ID 不出现在提示词里（见 _EventRefs）。
+            "events_index": [
+                event.to_ref_index_dict(reference)
+                for event in source_events
+                if (reference := references.reference_of(event.event_id)) is not None
+            ],
             "partial_summaries": list(partial_summaries),
             "validation_feedback": list(validation_feedback),
         }

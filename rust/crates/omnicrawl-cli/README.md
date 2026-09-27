@@ -76,6 +76,12 @@ Expected a string that matches the pattern '^[a-zA-Z0-9_-]+$'.
 assistant 原文里的 `function.name`）。所以除了线上那一层，内核派发、宿主工具表与审批、
 审计、转录事件与界面上的工具卡看到的都还是 `server.tool`。
 
+上下文压缩的摘要请求（`omnicrawl-compaction` 的 `SummaryModelAdapter`）走同一个收敛：
+它刻意复用主请求的工具面（工具块排在提示词前缀最前，少带就没法命中主请求已建立的前缀缓存），
+但也必须收敛过才发——收敛是确定性的，同一份工具表得到同一组线上名，工具块与主请求逐字相同，
+「沿用原上下文、沿用缓存压缩」的省钱设计不受影响。先前只有两个模型端口做了收敛、摘要适配器
+漏了，于是带 MCP 的会话一进压缩就 400（`tools[0]` 正是第一个 MCP 工具）。
+
 Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` 不做任何收敛），带 MCP 的
 会话在严格网关上必然失败——这是 Rust 单侧的修正，不是新增功能。
 
@@ -106,6 +112,14 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 因此能跟着模型输出一起长出来。压缩旁路另外发 `turn.tool_output_compression` 的阶段通知
 （`started` / `finished` + 压缩前后字符数，`finished` 还带**压缩后的正文**），
 宿主据此显示「已压缩 a → b 字符」并把卡片正文替换成压缩后的内容（用户要求「压缩后替换原内容」）。
+
+## 会话区提示（`turn.notice`）
+
+出网脱敏的还原告警（`desensitization_unresolved` / `desensitization_malformed`）由
+`provider_warning_event` 映射成 `turn.notice`，其余 Provider 告警仍走 `turn.status`。
+分流的理由：还原告警说的是**已经落到对话里**的内容（占位符被原样保留），属于会话流里的一条
+提示；当成状态发出去会顶掉输入框上边框的「正在调用」，让人以为回合停了。宿主（TUI）收到
+`turn.notice` 后写进会话流（`Record::Notice`），不动状态行。
 
 ## 工具输出压缩旁路
 

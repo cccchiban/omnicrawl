@@ -15,6 +15,7 @@ use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::load_feature_enabled;
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
+use omnicrawl_config::features::context_compaction::load_context_compaction_config;
 use omnicrawl_config::features::approval::{
     load_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW,
 };
@@ -23,18 +24,21 @@ use omnicrawl_config::models::model_catalog::{
     build_catalog, detect_model_options, ensure_current_model_option, Catalog, CatalogPorts,
     CatalogRequest, DiscoveryCache, ModelOption, MODEL_LIST_TIMEOUT_SECONDS,
 };
+use omnicrawl_controllers::memory::user_data_root;
+use omnicrawl_controllers::settings::{context_compaction_trigger_tokens, kernel_compaction_settings};
 use omnicrawl_controllers::tool_args::public_tool_arguments;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_extensions::skill::SkillManager;
 use omnicrawl_host::approval::ApprovalMode;
 use omnicrawl_host::kernel::{frame_api_key_env, kernel_credentials_env, KernelClient};
 use omnicrawl_host::plugins::PluginHost;
+use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::tools::monitor::{MonitorManager, MonitorPollView, MonitorTaskView};
 use omnicrawl_host::tools::{MemoryOptions, RegistryOptions};
 use omnicrawl_host::turn::{Interactor, RunnerOptions, TurnControl, TurnError, TurnRunner};
 use omnicrawl_ipc::bridge::{
-    HostEvent, KernelModelConfig, KernelSessionConfig, SessionModelSettings, SessionSettingsParams,
-    SubagentEventPayload,
+    HostEvent, KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, SessionModelSettings,
+    SessionSettingsParams, SubagentEventPayload,
 };
 use omnicrawl_mcp::client::McpClientManager;
 use omnicrawl_session::redaction::redact_sensitive_values;
@@ -131,6 +135,9 @@ pub struct ServiceOptions {
     /// 主 Agent 隔离区会话：`close()` 时 apply 变更 + 按策略清理（对映 Python `attach_isolation_session`）。
     /// 用 `Mutex` 承载是为了在 `&self` 的收尾路径里取走它，保证只收尾一次。
     pub isolation: Mutex<Option<IsolationSession>>,
+    /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境），交给 `TurnRunner` 使用；
+    /// `None` 表示本进程不做装配（嵌入与测试），system prompt 取 `model.system_prompt`。
+    pub prompt: Option<Arc<PromptRuntime>>,
 }
 
 impl ServiceOptions {
@@ -156,6 +163,7 @@ impl ServiceOptions {
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
+            prompt: None,
         }
     }
 }
@@ -797,6 +805,12 @@ impl AgentService {
                 "status.changed".to_string(),
                 json!({"message": payload.message}),
             ),
+            // 会话区提示（脱敏占位符还原告警等）：与 `turn.status` 的差别只在宿主的落点
+            // （对话流 vs 运行状态行），对外仍是同一个「消息变更」事件——公开事件清单不变。
+            HostEvent::Notice(payload) => (
+                "status.changed".to_string(),
+                json!({"message": payload.message}),
+            ),
             HostEvent::RetryStatus(payload) => (
                 "status.changed".to_string(),
                 json!({"message": payload.message}),
@@ -889,8 +903,17 @@ impl AgentService {
                 }
                 return;
             }
-            // 隐藏推理与工具输出增量都不进 SSE。
-            HostEvent::ReasoningDelta(_) | HostEvent::ToolOutputUpdate(_) => return,
+            // 界面增量渲染专用的事件都不进 SSE：隐藏推理、工具输出增量，以及流式工具卡的
+            // 三段（`tool_call_started` / `tool_call_arguments` / `tool_output_compression`）。
+            // 后者是内核为了让 TUI 在模型还在写参数时就把卡片立起来而新增的协议通知，
+            // Python 侧 API 只订阅 `run_stream` 的固定回调集（不含这三个），公开事件清单
+            // 里也没有对应事件名；工具的公开形态仍是 `tool.started`（批次执行时）与
+            // `tool.completed`（整批回填后），批量增长中的半截参数不属于对外契约。
+            HostEvent::ReasoningDelta(_)
+            | HostEvent::ToolOutputUpdate(_)
+            | HostEvent::ToolCallStarted(_)
+            | HostEvent::ToolCallArguments(_)
+            | HostEvent::ToolOutputCompression(_) => return,
         };
         let _ = self.store.append_event(run_id, &name, data);
     }
@@ -1137,8 +1160,8 @@ pub fn resolve_kernel_program(env: &ConfigEnvironment, explicit: Option<&Path>) 
 /// 从本地配置与进程环境组装服务选项（对应 Python 的 `create_default_agent`）。
 ///
 /// 模型与审批模式读 `config.toml`（`llm` / `approval` 段），会话根取工作区下的
-/// `.agent_sessions`（与 Python 同一套布局）。系统提示词先用配置或兜底文本——
-/// AGENTS.md、Skill 与模式提示词的完整组装还没有 Rust 版，见 crate README 的已知缺口。
+/// `.agent_sessions`（与 Python 同一套布局）。系统提示词与上下文消息走 `PromptRuntime`
+/// 装配（模板 / AGENTS.md / Skill / 运行环境），装不出来才回落到配置文本。
 pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, String> {
     let llm = load_llm_config(env).map_err(|error| error.to_string())?;
     if llm.model.trim().is_empty() {
@@ -1172,6 +1195,18 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     } else {
         llm.system_prompt.clone()
     };
+    // 提示词装配：与 TUI 同源（模板 + AGENTS.md + Skill 索引 + 运行环境 + 模式切换）。
+    // 装配成功时它以 `RunnerOptions.prompt` 覆盖 system prompt 与上下文消息；下面那份
+    // 文本只作为装不出来时的兜底，避免 API 与 TUI 两头各有一套提示词口径。
+    //
+    // **不**把 `llm.system_prompt` 当显式覆盖：那份文案是语音客户端的默认值
+    // （`config/models/llm.py` 的 `LLMConfig.system_prompt`），Python 的 Agent 从来不读它，
+    // 提示词一律来自包内模板。
+    let prompt = build_prompt_runtime(env, &workspace, &llm.model);
+    let system_prompt = match prompt.as_ref() {
+        Some(runtime) => runtime.system_prompt(),
+        None => system_prompt,
+    };
     let model = KernelModelConfig {
         model: llm.model.clone(),
         provider: llm.provider.clone(),
@@ -1204,6 +1239,7 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     options.session_root = Some(user_config_dir(env).join(".agent_sessions"));
     options.approval = approval;
     options.native_vision = llm.native_vision.unwrap_or(false);
+    options.prompt = prompt;
     options.env = env.clone();
     // MCP 是增量能力：配置读不到只告警；管理器建好后同时进工具表与 `/mcp` 状态。
     let mcp = build_mcp_manager(env, &options.workspace_root);
@@ -1291,17 +1327,17 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
     RunnerOptions {
         workspace_root: options.workspace_root.clone(),
         model: options.model.clone(),
-        session: options
-            .session_root
-            .as_ref()
-            .map(|root| KernelSessionConfig {
+        session: options.session_root.as_ref().map(|root| {
+            let (memory_root, compaction) = session_config_defaults(options);
+            KernelSessionConfig {
                 root: root.to_string_lossy().to_string(),
                 // 新会话：内核建好后经 stderr 报 ID，本进程后续回合沿用同一个内核连接。
                 session_id: String::new(),
-                memory_root: None,
+                memory_root,
                 workspace_root: Some(options.workspace_root.to_string_lossy().to_string()),
-                compaction: None,
-            }),
+                compaction,
+            }
+        }),
         approval: options.approval,
         command_timeout_seconds: options.command_timeout_seconds,
         tool_timeout_seconds: options.tool_timeout_seconds,
@@ -1312,6 +1348,82 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         plugins: options.plugins.clone(),
         // 审查运行期与 `options_from_process` 装配的那份同源（嵌入与测试可直接填 `None`）。
         review: options.review.clone(),
+        // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。
+        prompt: options.prompt.clone(),
+    }
+}
+
+/// 内核会话块里与配置有关的两项：记忆根与压缩策略。
+///
+/// 两者都必须由宿主下发：内核读不到用户配置，缺省就是 `CompactionConfig::default()`
+/// （摘要预算 2000 token、记忆回写关闭），于是 `[context_compaction]` / `[memory]`
+/// 就成了「配置写了却不生效」。启动与重起内核必须用同一份口径，否则切换会话或工作区后
+/// 策略会悄悄退回默认值。
+fn session_config_defaults(
+    options: &ServiceOptions,
+) -> (Option<String>, Option<KernelCompactionConfig>) {
+    let env = &options.env;
+    // 开关与工具表同源（`[memory] enabled`，缺省开启）：关掉记忆就不该再写记忆目录。
+    let memory_root = load_feature_enabled(env, "memory", true, None, None)
+        .unwrap_or(true)
+        .then(|| user_data_root(env.home()).to_string_lossy().to_string());
+    let compaction = match load_context_compaction_config(env, None) {
+        Ok(config) => Some(kernel_compaction_settings(
+            options.model.context_window_tokens,
+            &config,
+        )),
+        Err(error) => {
+            // 无头宿主没有界面可提示，只能落到 stderr；降级为内核默认而不是让启动失败。
+            eprintln!(
+                "[api] 上下文压缩配置读取失败：{}（本会话按内核默认压缩策略运行）",
+                error.message()
+            );
+            None
+        }
+    };
+    (memory_root, compaction)
+}
+
+/// 窗口变化后要下发的压缩阈值：只带这两个字段，其余字段由内核保留现值。
+fn window_compaction_settings(options: &ServiceOptions, window: i64) -> Option<KernelCompactionConfig> {
+    let config = load_context_compaction_config(&options.env, None).ok()?;
+    let percent = config.trigger_context_percent?;
+    Some(KernelCompactionConfig {
+        trigger_context_tokens: Some(context_compaction_trigger_tokens(window, percent)),
+        context_window_tokens: Some(window),
+        ..KernelCompactionConfig::default()
+    })
+}
+
+/// 按工作区装配提示词运行时（与 TUI 的 `load_prompt_runtime` 同一套输入）。
+///
+/// `system_prompt_override` 恒为 `None`：API 没有「命令行提示词」这个概念，`config.toml`
+/// 的 `llm.system_prompt` 也不参与 Agent 提示词（Python 侧只给语音客户端用）。
+/// 装配失败时返回 `None` 并告警，由调用方沿用配置文本——无头服务不该因为提示词
+/// 装不出来就起不来。
+fn build_prompt_runtime(
+    env: &ConfigEnvironment,
+    workspace: &Path,
+    model: &str,
+) -> Option<Arc<PromptRuntime>> {
+    let mut options = PromptOptions::new(workspace.to_path_buf());
+    options.agent_temp_dir = omnicrawl_host::prompt::DEFAULT_AGENT_TEMP_DIR.to_string();
+    options.workspace_detection_summary = detect_project_context(env, None).detection_summary();
+    options.system_prompt_override = None;
+    // 顾问准则只在顾问真正可用（已启用且未命中黑名单）时追加，与 Python 同判据。
+    let advisor = omnicrawl_config::features::advisor::load_advisor_config(env, None)
+        .unwrap_or_default();
+    options.advisor_active = advisor.enabled;
+    options.advisor_blacklisted = advisor
+        .disabled_for_models
+        .iter()
+        .any(|name| name == model);
+    match PromptRuntime::load(env, options) {
+        Ok(runtime) => Some(Arc::new(runtime)),
+        Err(error) => {
+            eprintln!("[api] 提示词装配失败，改用配置里的系统提示词：{error}");
+            None
+        }
     }
 }
 
@@ -1563,12 +1675,28 @@ impl AgentService {
             })
             .unwrap_or_default();
         spawner.runner.workspace_root = workspace.clone();
+        // 提示词跟着工作区走：模板不变，但 AGENTS.md 与 Skill 目录都在工作区里，
+        // 不重算就会把旧工作区的规范继续发给模型。
+        if let Some(prompt) = spawner.runner.prompt.as_ref() {
+            let model_name = spawner.runner.model.model.clone();
+            let env = self.options.env.clone();
+            match build_prompt_runtime(&env, &workspace, &model_name) {
+                Some(rebuilt) => spawner.runner.prompt = Some(rebuilt),
+                None => {
+                    // 装配失败保持旧运行期：它至少还能发模板正文，比整段丢空强。
+                    eprintln!("[api] 切换工作区后提示词装配失败，沿用上一份（不含新工作区规范）");
+                    let _ = prompt;
+                }
+            }
+        }
+        // 重起内核的会话块与启动时同源：漏了这两项就会悄悄回到内核默认策略。
+        let (memory_root, compaction) = session_config_defaults(&self.options);
         spawner.runner.session = Some(KernelSessionConfig {
             root: session_root,
             session_id: session_id.to_string(),
-            memory_root: None,
+            memory_root,
             workspace_root: Some(workspace.to_string_lossy().to_string()),
-            compaction: None,
+            compaction,
         });
 
         let ready = Arc::new(Mutex::new(String::new()));
@@ -1893,9 +2021,12 @@ impl AgentService {
             base_url: non_empty(&llm.base_url),
             api_key_env: non_empty(&llm.api_key_env),
         };
+        // 窗口变了要同步触发阈值：「窗口的百分之几时压缩」是一个配置关系，
+        // 只改窗口会留下「新窗口 + 旧阈值」的自相矛盾组合（TUI 侧同样成对下发）。
+        let compaction = window_compaction_settings(&self.options, llm.context_window_tokens);
         self.apply_session_settings(SessionSettingsParams {
             model: Some(Box::new(settings)),
-            compaction: None,
+            compaction,
         })?;
         self.set_current_model(&llm.model);
         Ok(())
@@ -2424,5 +2555,86 @@ fn session_store_error(error: SessionStoreError) -> ApiError {
         ApiError::new("NOT_FOUND", message, StatusCode::NOT_FOUND, None)
     } else {
         ApiError::new("INVALID_REQUEST", message, StatusCode::BAD_REQUEST, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 隔离出一个「读不到用户配置」的家目录：走的就是 `[context_compaction]` / `[memory]` 的默认值。
+    fn isolated_environment(label: &str) -> ConfigEnvironment {
+        let home = std::env::temp_dir().join(format!(
+            "omnicrawl-api-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&home).expect("临时主目录");
+        ConfigEnvironment::new(home, std::env::consts::OS.to_string())
+    }
+
+    /// 启动时的会话块必须带记忆根与整段压缩策略：缺了这两项，用户配置就「写了却不生效」
+    /// ——内核会回落到 `CompactionConfig::default()`（摘要预算 2000 token、记忆回写关闭）。
+    #[test]
+    fn runner_options_deliver_compaction_and_memory_root() {
+        let environment = isolated_environment("session-block");
+        let home = environment.home().to_path_buf();
+        let model: KernelModelConfig = serde_json::from_value(json!({
+            "model": "test-model",
+            "context_window_tokens": 1_000,
+        }))
+        .expect("模型视图");
+        let mut options = ServiceOptions::new(home.join("workspace"), model);
+        options.env = environment;
+        options.session_root = Some(home.join(".agent_sessions"));
+
+        let runner = runner_options(&options);
+        let session = runner.session.expect("给了 session_root 就有会话块");
+        let memory_root = session
+            .memory_root
+            .expect("记忆开关缺省开启，必须下发记忆根");
+        assert!(
+            memory_root.replace('\\', "/").ends_with(".omnicrawl"),
+            "记忆根应当是用户数据根：{memory_root}"
+        );
+        let compaction = session.compaction.expect("压缩策略必须整段下发");
+        assert_eq!(
+            compaction.target_summary_tokens,
+            Some(6_000),
+            "配置默认的摘要预算"
+        );
+        assert_eq!(
+            compaction.trigger_context_tokens,
+            Some(800),
+            "默认 80% × 当前窗口"
+        );
+        assert_eq!(compaction.context_window_tokens, Some(1_000));
+        assert_eq!(compaction.archive_compacted_events, Some(true));
+        assert_eq!(compaction.auto_memory_recall, Some(true));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 窗口变化时同步阈值（「窗口的百分之几时压缩」是配置关系），且只带这两个字段，
+    /// 避免把握手时下发的摘要预算等字段覆盖回空值。
+    #[test]
+    fn window_changes_recompute_the_trigger() {
+        let environment = isolated_environment("window-change");
+        let home = environment.home().to_path_buf();
+        let mut options = ServiceOptions::new(
+            home.join("workspace"),
+            serde_json::from_value(json!({"model": "test-model"})).expect("模型视图"),
+        );
+        options.env = environment;
+
+        let settings = window_compaction_settings(&options, 2_000).expect("默认配置带百分比");
+        assert_eq!(settings.trigger_context_tokens, Some(1_600));
+        assert_eq!(settings.context_window_tokens, Some(2_000));
+        assert_eq!(
+            settings.target_summary_tokens, None,
+            "热更新只带本次要改的两个字段"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

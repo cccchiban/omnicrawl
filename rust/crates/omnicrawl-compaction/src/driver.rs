@@ -10,11 +10,17 @@ use serde_json::{json, Map, Value};
 use omnicrawl_controllers::context_compaction::{
     estimate_json_tokens, ContextCompactionService, MeasureInput, SourceEvent, TokenUsageSample,
 };
+use omnicrawl_controllers::compression::{
+    collect_assistant_replies, collect_tool_calls, DualCompactionInput, DualCompactionPort,
+};
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_RECOVERY_PROMPT;
 use omnicrawl_controllers::turn::compaction::{
     archive_compacted_event_ids, compaction_memory_requests, compaction_recall_event_payload,
     compaction_recall_hits, compaction_recall_query, compaction_recall_text,
     format_compaction_notice, RECALL_MAX_RESULTS,
+};
+use omnicrawl_controllers::context_compaction::{
+    event_to_model_message, latest_final_reply_event,
 };
 use omnicrawl_session::{project_compaction_boundary_history, utc_now, MemoryStore, SessionStore};
 
@@ -59,6 +65,10 @@ pub struct TurnBoundary<'a> {
     pub tool_schemas: &'a [Value],
     pub usage: TokenUsageSample,
     pub last_request_input_tokens: i64,
+    /// 工作区根：双段压缩的原文落盘到它下面的临时目录。
+    pub workspace_root: &'a str,
+    /// 本轮任务文本：作为两段压缩请求的任务背景。
+    pub task_hint: &'a str,
 }
 
 /// 回合结束边界的处理结果。
@@ -80,6 +90,8 @@ pub struct CompactionDriver {
     service: ContextCompactionService,
     config: CompactionConfig,
     memory: Option<MemoryStore>,
+    /// 阈值触发的双段压缩端口：接上时替代结构化摘要，两段文本拼接后注入上下文。
+    dual: Option<Box<dyn DualCompactionPort>>,
 }
 
 impl CompactionDriver {
@@ -93,6 +105,7 @@ impl CompactionDriver {
             service,
             config,
             memory: None,
+            dual: None,
         }
     }
 
@@ -100,6 +113,53 @@ impl CompactionDriver {
     pub fn with_memory(mut self, memory: MemoryStore) -> Self {
         self.memory = Some(memory);
         self
+    }
+
+    /// 双段压缩端口：接上后阈值触发改走「工具调用压缩 + 模型回复压缩」，不再请求结构化摘要。
+    pub fn with_dual_compaction(mut self, dual: Box<dyn DualCompactionPort>) -> Self {
+        self.dual = Some(dual);
+        self
+    }
+
+    /// 阈值触发的双段压缩：两段正文拼接后作为一条 assistant 消息注入历史。
+    ///
+    /// 历史整体清空、只保留最后一段模型输出（结果报告）：用户要求「最后一段模型输出不被压缩
+    /// 并且带进上下文的最后一段」。
+    fn dual_compaction_history(
+        &self,
+        boundary: &TurnBoundary<'_>,
+        events: &[SourceEvent],
+        report: &mut AfterTurnReport,
+    ) -> Result<bool, String> {
+        let Some(dual) = self.dual.as_ref() else {
+            return Ok(false);
+        };
+        let input = DualCompactionInput {
+            tool_calls: collect_tool_calls(events),
+            replies: collect_assistant_replies(events),
+            task_hint: boundary.task_hint.to_string(),
+            workspace_root: boundary.workspace_root.to_string(),
+            session_id: boundary.session_id.to_string(),
+        };
+        let output = match dual.compact(&input) {
+            Ok(output) => output,
+            Err(detail) => {
+                report.diagnostic = detail;
+                return Ok(false);
+            }
+        };
+        // 历史只留两段：拼接后的压缩正文，以及压缩触发前最后一段模型输出（结果报告）。
+        let mut history: Vec<Value> = vec![json!({"role": "assistant", "content": output.text})];
+        if let Some(final_reply) = latest_final_reply_event(events) {
+            if let Some(message) = event_to_model_message(final_reply) {
+                history.push(message);
+            }
+        }
+        report.compacted = true;
+        report.history = Some(history);
+        report.summary = String::new();
+        report.notice = None;
+        Ok(true)
     }
 
     /// 回合结束边界：实际上下文达到阈值时压缩，并返回可见提示与重建后的历史。
@@ -134,6 +194,23 @@ impl CompactionDriver {
             diagnostic: outcome.diagnostic.clone(),
             ..AfterTurnReport::default()
         };
+        // 接上双段端口后阈值触发只走双段路径：测量与判定仍用同一套预算口径，只是产出口径不同。
+        if self.dual.is_some() {
+            let triggered = report
+                .measurement_payload
+                .get("trigger_reached")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !triggered || !self.dual_compaction_history(boundary, &events, &mut report)? {
+                report.history = None;
+            }
+            self.append_event(
+                boundary.session_id,
+                "context_compaction_measurement",
+                &report.measurement_payload,
+            )?;
+            return Ok(report);
+        }
         let Some(compact_payload) = outcome.compact_payload.clone() else {
             // 未触发压缩的回合同样写入测量事件：转录与投影依赖逐回合的上下文计量。
             self.append_event(

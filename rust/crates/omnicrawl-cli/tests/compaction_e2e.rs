@@ -117,8 +117,9 @@ Connection: close
     }
 }
 
-/// 摘要请求的提示词里带着 `events_index`（event_id / type / preview）；
+/// 摘要请求的提示词里带着 `events_index`（短引用 ref / type / preview）；
 /// 这里按它合成一份通过校验的结构化摘要：用户消息逐字覆盖，其余字段引用真实事件。
+/// 引用一律用 ref（真事件 ID 由内核展开，提示词里根本不出现 ID）。
 fn summary_from_request(body: &Value) -> Option<String> {
     let prompt = body["messages"]
         .as_array()?
@@ -132,7 +133,7 @@ fn summary_from_request(body: &Value) -> Option<String> {
     let mut user_items: Vec<Value> = Vec::new();
     let mut other_items: Vec<Value> = Vec::new();
     for entry in index {
-        let id = entry["event_id"].as_str()?.to_string();
+        let id = entry["ref"].as_str()?.to_string();
         let kind = entry["type"].as_str()?.to_string();
         let preview = entry["preview"].as_str()?;
         let text = serde_json::from_str::<Value>(preview)

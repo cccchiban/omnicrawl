@@ -13,6 +13,7 @@ use omnicrawl_ipc::{HostEvent, Id};
 
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
+use crate::ui::conversation::ConversationCache;
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::{SessionMenuItem, SessionsMenu};
 use crate::ui::fullscreen::random::Rng;
@@ -24,6 +25,7 @@ use crate::ui::fullscreen::status::indicators::{
     Carousel, CarouselPage, CarouselSource, CarouselTick, CAROUSEL_ANIMATION_FRAME_SECONDS,
 };
 use crate::ui::fullscreen::text::StyledText;
+use crate::ui::RefreshVersions;
 
 /// 相邻增量间隔超过这个时长视为待机（工具执行、模型停顿），不计入输出时长。
 const IDLE_GAP: Duration = Duration::from_secs(2);
@@ -118,6 +120,15 @@ pub enum Record {
 ///
 /// `stopped`（被显式终止）归「成功」是因为它同样是终态；用词不精确但原始状态字符串
 /// 仍在卡片正文里（`Monitor · id · stopped`），不必为了措辞新增一个渲染分支。
+/// 距固定帧长的下一帧还有多久：帧号按 `started` 起算，返回值至少 1ms（避免忙等）。
+
+fn frame_delay(now: Instant, started: Instant, frame_seconds: f64) -> Duration {
+    let elapsed = now.saturating_duration_since(started).as_secs_f64();
+    let frame = (elapsed / frame_seconds).floor() * frame_seconds;
+    let remaining = (frame + frame_seconds - elapsed).max(0.001);
+    Duration::from_secs_f64(remaining)
+}
+
 fn monitor_status(status: &str) -> ToolStatus {
     match status {
         "running" => ToolStatus::Running,
@@ -634,6 +645,15 @@ pub struct AppState {
     runtime_esc_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
     /// `/sessions` 在输入框上方打开的可选列表。
     pub sessions_menu: SessionsMenu,
+    /// 三块刷新的内容版本号（会话 / 输入框 / 底部）。
+    ///
+    /// 事件循环用它决定要不要重画：三块都没变就整帧跳过（见 `App::needs_redraw`）。
+    refresh: RefreshVersions,
+    /// 会话区显示行的分块增量缓存。
+    ///
+    /// 渲染与命中测试只拿得到 `&AppState`，所以用 `RefCell` 装
+    /// （与 `runtime_esc_area` 用 `Cell` 同一思路）。
+    conversation_cache: std::cell::RefCell<ConversationCache>,
 }
 
 impl AppState {
@@ -675,11 +695,157 @@ impl AppState {
             runtime_esc_hover: false,
             runtime_esc_area: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
+            refresh: RefreshVersions::default(),
+            conversation_cache: std::cell::RefCell::new(ConversationCache::default()),
         };
         // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
         // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
         state.refresh_carousel(Instant::now(), "");
+        // 首帧把轮播置脏，保证第一帧一定会画出来。
+        state.refresh.bump_bottom();
         state
+    }
+
+    // ---- 三块刷新：版本号与缓存失效 -----------------------------------------------
+
+    /// 当前的三块刷新版本号。
+    pub fn refresh_versions(&self) -> RefreshVersions {
+        self.refresh
+    }
+
+    /// 输入块置脏（键盘鼠标输入、清单/队列/面板/状态行变化）。
+    pub fn touch_composer(&mut self) {
+        self.refresh.bump_composer();
+    }
+
+    /// 写运行状态行（画在输入区方框的上边框上）。
+    ///
+    /// 状态行属于输入块，写入时必须置脏；`status` 字段直接赋值仍可用，但会漏掉重画。
+    pub fn set_status(&mut self, status: Option<String>) {
+        self.status = status;
+        self.touch_composer();
+    }
+
+    /// 底部块置脏（轮播换页与解密扫描）。
+    pub fn touch_bottom(&mut self) {
+        self.refresh.bump_bottom();
+    }
+
+    /// 会话块整块失效：记录被清空/重放、展开态或思考显示变化时用。
+    ///
+    /// 下次渲染会从第一条记录起重建显示行（缓存的水位归零）。
+    pub fn touch_conversation(&mut self) {
+        self.refresh.bump_conversation();
+        self.conversation_cache.get_mut().mark_all_dirty();
+    }
+
+    /// 会话区需要重画，但**显示行缓存仍然有效**（滚动、拖选高亮这类只影响「怎么画」）。
+    pub fn touch_conversation_view(&mut self) {
+        self.refresh.bump_conversation();
+    }
+
+    /// 会话区尾部追加了一条记录：显示行只需补算新记录，但界面要重画。
+    fn touch_appended(&mut self) {
+        self.refresh.bump_conversation();
+    }
+
+    /// 第 `index` 条记录的内容变了：从它开始重算显示行（增量），并标记会话块要重画。
+    fn touch_record(&mut self, index: usize) {
+        self.refresh.bump_conversation();
+        self.conversation_cache.get_mut().mark_record_dirty(index);
+    }
+
+    /// 会话区显示行缓存（`ui::conversation` 内部使用）。
+    pub(crate) fn conversation_cache(&self) -> &std::cell::RefCell<ConversationCache> {
+        &self.conversation_cache
+    }
+
+    /// 按 `call_id` 找工具卡在消息流里的下标。
+    ///
+    /// 匹配规则与 [`Self::tool_card_mut`] 完全一致（包括「空 id 退化为最近的运行中卡片」），
+    /// 因此可以用它定位就地修改过的卡片、做增量失效；没有命中时返回 `None`。
+    fn tool_card_slot(&self, call_id: &str) -> Option<usize> {
+        self.records
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, record)| {
+                let Record::Tool(card) = record else {
+                    return None;
+                };
+                let hit = if call_id.is_empty() {
+                    card.status == ToolStatus::Running
+                } else {
+                    card.call_id == call_id
+                };
+                hit.then_some(index)
+            })
+    }
+
+    /// 让仍在运行的工具卡保持「活」的耗时显示。
+    ///
+    /// 卡片标题里的耗时（`<1s` 时是毫秒）逐帧在变，而显示行是缓存的：
+    /// 有回合在跑时逐帧把这些卡片重新置脏，帧率与以前一致，代价只落在这一两张卡上。
+    fn touch_running_tools(&mut self) {
+        let dirty: Vec<usize> = self
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| {
+                matches!(record, Record::Tool(card) if card.status == ToolStatus::Running)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in dirty {
+            self.touch_record(index);
+        }
+    }
+
+    /// 每帧的活动计时：回合在跑时状态行 spinner（每 80ms 换帧）与工具卡耗时在变。
+    ///
+    /// 空闲时什么都不做，三块版本号不变，事件循环因此可以整帧跳过绘制。
+    /// 子代理进度树的耗时由 [`Self::refresh_subagent_trees`] 自己按记录置脏，不在这里重复处理。
+    pub fn tick_activity(&mut self) {
+        if !self.turn.is_running() {
+            return;
+        }
+        self.touch_composer();
+        self.touch_running_tools();
+    }
+
+    /// 是否存在需要按帧推进的活动（运行中的工具卡 / 子代理树 / 回合状态行）。
+    ///
+    /// 事件循环用它决定等待上限：没有活动就不必按活动帧率唤醒。
+    pub fn has_running_activity(&self) -> bool {
+        self.turn.is_running()
+            || self
+                .records
+                .iter()
+                .any(|record| match record {
+                    Record::Tool(card) => card.status == ToolStatus::Running,
+                    Record::SubagentTree(tree) => tree.is_active(),
+                    _ => false,
+                })
+    }
+
+    /// 下一个动画帧的到期时刻距现在还有多久；没有动画在播时返回 `None`。
+    ///
+    /// 欢迎 Logo 与轮播解密扫描都按固定帧长换帧：事件循环据此精确睡到下一帧，
+    /// 既不会早醒空转，也不会晚到掉帧。
+    pub fn next_animation_frame(&self, now: Instant) -> Option<Duration> {
+        let mut due: Option<Duration> = None;
+        if let Some(delay) = self.logo.next_frame_delay(now) {
+            due = Some(delay);
+        }
+        // 只在动画真的还在播时才算帧：轮播落定后 `carousel_anim_at` 仍留着上一次的时间戳，
+        // 不看 `is_animating()` 会把每个空闲帧都当成「下一帧马上到」而忙等。
+        if self.carousel.is_animating() {
+            if let Some(last) = self.carousel_anim_at {
+                let remaining = frame_delay(now, last, CAROUSEL_ANIMATION_FRAME_SECONDS);
+                due = Some(due.map_or(remaining, |known| known.min(remaining)));
+            }
+        }
+        due
     }
 
     /// 轮播数据源快照。<`reasoning_effort`> 不在界面状态里（它属于模型配置），
@@ -705,6 +871,8 @@ impl AppState {
     ///
     /// 定时器由装配层持有（对映 Python 把停留/帧定时器交给 Textual 的做法），
     /// 这里只吃「现在几点」并更新 [`AppState::carousel_text`]。
+    ///
+    /// 文本没变时不写回、不标脏：空闲时底部块因此保持干净，事件循环可以整帧跳过绘制。
     pub fn refresh_carousel(&mut self, now: Instant, reasoning_effort: &str) {
         let source = self.carousel_source(reasoning_effort);
         if self.carousel.is_animating() {
@@ -723,9 +891,9 @@ impl AppState {
                 &self.carousel_lines,
                 &mut self.carousel_rand,
             ) {
-                CarouselTick::Frame(text) => self.carousel_text = text,
+                CarouselTick::Frame(text) => self.set_carousel_text(text),
                 CarouselTick::Settled(text) => {
-                    self.carousel_text = text;
+                    self.set_carousel_text(text);
                     // 动画收口后重新开始本页的停留计时。
                     self.carousel_since = now;
                 }
@@ -753,9 +921,19 @@ impl AppState {
         }
         // 稳态：每帧按最新遥测重建当前页（对映 Python 的 `_carousel_refresh`，
         // 否则 token 计数要在下一次换页才会追上）。
-        self.carousel_text =
-            self.carousel
-                .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
+        let next = self
+            .carousel
+            .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
+        self.set_carousel_text(next);
+    }
+
+    /// 写回轮播文本：内容真的变了才置脏底部块。
+    fn set_carousel_text(&mut self, text: StyledText) {
+        if self.carousel_text == text {
+            return;
+        }
+        self.carousel_text = text;
+        self.touch_bottom();
     }
 
     /// 当前轮播页（测试与调试用）。
@@ -787,11 +965,14 @@ impl AppState {
     /// 开始一个回合：用户消息落进消息流，输入框清空，滚动回到底部。
     pub fn begin_turn(&mut self, turn_id: String, text: String) {
         self.records.push(Record::User(text));
+        self.touch_appended();
         self.turn = TurnState::Running { turn_id };
         self.turn_started = Some(Instant::now());
         self.status = None;
         self.paused = false;
         self.scroll_from_bottom = 0;
+        // 状态行（方框上边框）与排队预览都跟着回合状态变。
+        self.touch_composer();
     }
 
     /// 提交输入框内容；空输入返回 `None`。
@@ -799,13 +980,16 @@ impl AppState {
         if self.composer.is_empty() {
             return None;
         }
-        Some(self.composer.take())
+        let text = self.composer.take();
+        self.touch_composer();
+        Some(text)
     }
 
     /// 生成期间按 Enter：把输入排进 FIFO 队列（对映 Python `_pending_inputs.append`）。
     pub fn queue_pending(&mut self, text: String) {
         self.pending_inputs.push_back(text);
         self.sync_queue_expanded();
+        self.touch_composer();
     }
 
     /// 撤回第 `index` 条排队消息并回填输入框；返回是否真的撤回。
@@ -825,6 +1009,7 @@ impl AppState {
         };
         self.composer.set_text(&text);
         self.sync_queue_expanded();
+        self.touch_composer();
         true
     }
 
@@ -834,6 +1019,7 @@ impl AppState {
             return;
         }
         self.pending_queue_expanded = !self.pending_queue_expanded;
+        self.touch_composer();
     }
 
     /// 队列缩回可见上限内时退出展开态，避免残留无效的展开/收起行。
@@ -853,6 +1039,7 @@ impl AppState {
         }
         let text = self.pending_inputs.pop_front()?;
         self.sync_queue_expanded();
+        self.touch_composer();
         Some(text)
     }
 
@@ -860,6 +1047,7 @@ impl AppState {
     pub fn clear_pending(&mut self) {
         self.pending_inputs.clear();
         self.pending_queue_expanded = false;
+        self.touch_composer();
     }
 
     /// 展开一张工具卡的完整正文；提示行点击触发。
@@ -868,6 +1056,10 @@ impl AppState {
             return;
         }
         self.expanded_tools.insert(call_id.to_string());
+        // 展开态只影响这一张卡片：增量重算它本身，不用整块重排。
+        if let Some(index) = self.tool_card_slot(call_id) {
+            self.touch_record(index);
+        }
     }
 
     /// 点开着的工具卡收起；返回是否真的从展开态收了回去。
@@ -875,10 +1067,13 @@ impl AppState {
     /// 对映 Python `ToolDisclosure.on_click`：缩略态点卡片不做任何事（展开只能
     /// 通过提示行），所以这里没有 toggle，只有单向收起。
     pub fn collapse_tool(&mut self, call_id: &str) -> bool {
-        if call_id.is_empty() {
+        if call_id.is_empty() || !self.expanded_tools.remove(call_id) {
             return false;
         }
-        self.expanded_tools.remove(call_id)
+        if let Some(index) = self.tool_card_slot(call_id) {
+            self.touch_record(index);
+        }
+        true
     }
 
     pub fn is_tool_expanded(&self, call_id: &str) -> bool {
@@ -887,11 +1082,15 @@ impl AppState {
 
     /// 点击思考段：在折叠与展开之间切换；返回切换后的展开态。
     pub fn toggle_reasoning_expanded(&mut self, index: usize) -> bool {
-        if self.expanded_reasoning.remove(&index) {
-            return false;
-        }
-        self.expanded_reasoning.insert(index);
-        true
+        let expanded = if self.expanded_reasoning.remove(&index) {
+            false
+        } else {
+            self.expanded_reasoning.insert(index);
+            true
+        };
+        // 展开态变了：只需要重算这一段思考。
+        self.touch_record(index);
+        expanded
     }
 
     pub fn is_reasoning_expanded(&self, index: usize) -> bool {
@@ -912,10 +1111,15 @@ impl AppState {
             HostEvent::Status(payload) | HostEvent::RetryStatus(payload) => {
                 self.status = Some(payload.message.clone());
             }
+            // 会话区提示（脱敏占位符还原告警等）：写进对话流，**不动**输入框上的状态行——
+            // 这类提示说的是已经落到对话里的内容，用它顶掉「正在调用」会让回合看起来停了。
+            HostEvent::Notice(payload) => self.notice(payload.message.clone()),
             HostEvent::ProtocolWait => self.status = Some("等待协议…".to_string()),
             HostEvent::StreamRollback => {
                 if matches!(self.records.last(), Some(Record::Assistant(_))) {
                     self.records.pop();
+                    // 回滚会把最后一条正文整段抽掉：缓存多出来的块要一并丢掉（罕见路径，整块重算）。
+                    self.touch_conversation();
                 }
                 self.telemetry.rate.rollback();
             }
@@ -939,17 +1143,22 @@ impl AppState {
                         streaming: true,
                     },
                 );
-                if self.tool_card_mut(&payload.call_id).is_none() {
-                    self.records.push(Record::Tool(ToolCard {
-                        call_id: payload.call_id.clone(),
-                        name: payload.tool.clone(),
-                        summary: String::new(),
-                        arguments: serde_json::Value::Object(serde_json::Map::new()),
-                        status: ToolStatus::Running,
-                        elapsed: None,
-                        started: now,
-                        body: Vec::new(),
-                    }));
+                match self.tool_card_slot(&payload.call_id) {
+                    // 已存在的卡片现在改用「流式参数」渲染标题：重算这一条。
+                    Some(index) => self.touch_record(index),
+                    None => {
+                        self.records.push(Record::Tool(ToolCard {
+                            call_id: payload.call_id.clone(),
+                            name: payload.tool.clone(),
+                            summary: String::new(),
+                            arguments: serde_json::Value::Object(serde_json::Map::new()),
+                            status: ToolStatus::Running,
+                            elapsed: None,
+                            started: now,
+                            body: Vec::new(),
+                        }));
+                        self.touch_appended();
+                    }
                 }
             }
             HostEvent::ToolCallArguments(payload) => {
@@ -961,11 +1170,15 @@ impl AppState {
                     entry.arguments = partial_arguments(&entry.text);
                     entry.arguments.clone()
                 };
-                if let Some(card) = self.tool_card_mut(&payload.call_id) {
-                    card.summary = parsed
-                        .as_object()
-                        .map(host::summarize_arguments)
-                        .unwrap_or_default();
+                if let Some(index) = self.tool_card_slot(&payload.call_id) {
+                    if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                        card.summary = parsed
+                            .as_object()
+                            .map(host::summarize_arguments)
+                            .unwrap_or_default();
+                    }
+                    // 参数逐段到达：只重算这一张卡片（流式渲染的关键路径）。
+                    self.touch_record(index);
                 }
             }
             HostEvent::ToolOutputCompression(payload) => {
@@ -1005,19 +1218,25 @@ impl AppState {
                     entry.compression = Some(note);
                     entry.compression_failed = failed;
                 }
+                // 压缩提示与正文替换都画在这张卡片上：重算这一条。
+                if let Some(index) = self.tool_card_slot(&payload.call_id) {
+                    self.touch_record(index);
+                }
             }
             HostEvent::ToolStarted(payload) => {
+                if let Some(entry) = self.streaming_tools.get_mut(&payload.call.id) {
+                    entry.streaming = false;
+                }
                 // 流式阶段已经建过卡片的（同 call_id）：就地更新，保持卡片出现的先后顺序，
                 // 用户已经看到的行也不会闪一下再重排。
-                if self.streaming_tools.contains_key(&payload.call.id) {
-                    if let Some(entry) = self.streaming_tools.get_mut(&payload.call.id) {
-                        entry.streaming = false;
+                if let Some(index) = self.tool_card_slot(&payload.call.id) {
+                    if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                        card.name = payload.call.name.clone();
+                        card.arguments =
+                            serde_json::Value::Object(payload.call.arguments.clone());
+                        card.summary = host::summarize_arguments(&payload.call.arguments);
                     }
-                }
-                if let Some(card) = self.tool_card_mut(&payload.call.id) {
-                    card.name = payload.call.name.clone();
-                    card.arguments = serde_json::Value::Object(payload.call.arguments.clone());
-                    card.summary = host::summarize_arguments(&payload.call.arguments);
+                    self.touch_record(index);
                     return;
                 }
                 self.records.push(Record::Tool(ToolCard {
@@ -1030,6 +1249,7 @@ impl AppState {
                     started: now,
                     body: Vec::new(),
                 }));
+                self.touch_appended();
             }
             HostEvent::ToolFinished(payload) => {
                 self.update_tool(&payload.call, &payload.result, now);
@@ -1038,10 +1258,16 @@ impl AppState {
                 if let Some(entry) = self.streaming_tools.get_mut(&payload.call.id) {
                     entry.streaming = false;
                 }
+                if let Some(index) = self.tool_card_slot(&payload.call.id) {
+                    self.touch_record(index);
+                }
             }
             HostEvent::ToolOutputUpdate(payload) => {
-                if let Some(card) = self.tool_card_mut(&payload.call.id) {
-                    card.body = body_lines(&payload.result.output);
+                if let Some(index) = self.tool_card_slot(&payload.call.id) {
+                    if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                        card.body = body_lines(&payload.result.output);
+                    }
+                    self.touch_record(index);
                 }
             }
             HostEvent::SubagentEvent(payload) => {
@@ -1052,10 +1278,14 @@ impl AppState {
                     let mut map = serde_json::Map::new();
                     map.insert("todos".to_string(), serde_json::Value::Array(items.clone()));
                     self.todos = host::parse_todos(&map);
+                    // 任务清单画在输入块里。
+                    self.touch_composer();
                 }
             }
             HostEvent::TurnFinished(payload) => {
+                // 清掉侧信道会让卡片上的压缩提示消失：会话块整块重算（每回合一次）。
                 self.streaming_tools.clear();
+                self.touch_conversation();
                 // 回合结束时仍停在「调用中」的卡片一律收口：这类卡片拿不到结果了
                 // （流被截断、批次被丢弃、工具超时后结果被丢弃），留着就会永远转圈。
                 self.close_running_cards("工具调用在回合结束前未收到结果。");
@@ -1064,10 +1294,13 @@ impl AppState {
                 self.status = None;
                 // 状态行随回合结束消失：悬停态一并复位，避免下一回合复用旧高亮。
                 self.runtime_esc_hover = false;
+                // 状态行（方框上边框）也在输入块里。
+                self.touch_composer();
                 if payload.paused {
                     self.records.push(Record::Notice(
                         "已被模型暂停：本回合不再自动继续。".to_string(),
                     ));
+                    self.touch_appended();
                 }
             }
             // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
@@ -1081,6 +1314,7 @@ impl AppState {
     /// 追加一条系统消息；不改动回合状态。
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
+        self.touch_appended();
     }
 
     /// 当前文本选区（鼠标拖选）；没有选区时返回 `None`。
@@ -1094,6 +1328,7 @@ impl AppState {
             anchor: (line, column),
             head: (line, column),
         });
+        self.touch_conversation_view();
     }
 
     /// 拖动中：把选区的另一端移到新位置。
@@ -1101,16 +1336,19 @@ impl AppState {
         if let Some(selection) = self.selection.as_mut() {
             selection.head = (line, column);
         }
+        self.touch_conversation_view();
     }
 
     /// 清掉选区（Esc / 点击空白 / 复制完成后）。
     pub fn clear_selection(&mut self) {
         self.selection = None;
+        self.touch_conversation_view();
     }
 
     /// 打开 `/sessions` 的会话选择菜单（输入框上方）。
     pub fn open_sessions_menu(&mut self, items: Vec<SessionMenuItem>) {
         self.sessions_menu.open(items);
+        self.touch_composer();
     }
 
     /// 追加一条后台任务日志（工具卡形状）；不改动回合状态。
@@ -1129,6 +1367,7 @@ impl AppState {
             started: Instant::now(),
             body: text.lines().map(str::to_string).collect(),
         }));
+        self.touch_appended();
     }
 
     /// 用内核回给的会话历史重建对话视图（`/resume` 与 `/undo` 后的重放）。
@@ -1139,6 +1378,8 @@ impl AppState {
     /// 非字符串的消息跳过，不把 JSON 塞进消息流。
     pub fn replay_history(&mut self, history: &[serde_json::Value]) {
         self.records.clear();
+        // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
+        self.touch_conversation();
         for message in history {
             let role = message
                 .get("role")
@@ -1168,6 +1409,8 @@ impl AppState {
     /// 清空视图，而不是保留旧消息。
     pub fn replay_events(&mut self, events: &[serde_json::Value]) {
         self.records.clear();
+        // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
+        self.touch_conversation();
         // 未收口的工具卡：`(call_id, tool, 记录下标, 请求时间)`。没有 call id 的旧事件按
         // 工具名延后匹配（与 Python 的 `pending_by_id` / `pending_by_tool` 同口径）。
         let mut pending: Vec<(String, String, usize, Option<DateTime<Utc>>)> = Vec::new();
@@ -1370,32 +1613,27 @@ impl AppState {
             .unwrap_or_else(|| format!("batch-{task_id}"));
         let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
         let description = payload_text(payload, "description");
-        let tree = match self
-            .records
-            .iter_mut()
-            .rev()
-            .find_map(|record| match record {
-                Record::SubagentTree(tree) if tree.batch_id == batch_id => Some(tree),
-                _ => None,
-            }) {
-            Some(tree) => tree,
+        // 先定位（必要时新建）这条批次对应的进度树：改完按下标做增量失效。
+        let index = match self.records.iter().rposition(|record| {
+            matches!(record, Record::SubagentTree(tree) if tree.batch_id == batch_id)
+        }) {
+            Some(index) => index,
             None => {
                 self.records
                     .push(Record::SubagentTree(SubAgentProgressTree::new(&batch_id)));
-                match self.records.last_mut() {
-                    Some(Record::SubagentTree(tree)) => tree,
-                    // 刚压入的记录类型不会变；这里只作为不可能路径的兜底。
-                    _ => return,
-                }
+                self.records.len() - 1
             }
         };
-        tree.update_task(
-            task_id,
-            agent_type,
-            description.unwrap_or(task_id),
-            status,
-            None,
-        );
+        if let Some(Record::SubagentTree(tree)) = self.records.get_mut(index) {
+            tree.update_task(
+                task_id,
+                agent_type,
+                description.unwrap_or(task_id),
+                status,
+                None,
+            );
+        }
+        self.touch_record(index);
     }
 
     /// 子代理对话流事件 → 按批次挂一块流式对话面板。
@@ -1408,25 +1646,21 @@ impl AppState {
         let batch_id = payload_text(payload, "batch_id")
             .map(str::to_string)
             .unwrap_or_else(|| format!("batch-{task_id}"));
-        let has_panel = self.records.iter().any(|record| {
+        let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
+        // 定位（必要时新建）这条批次对应的对话面板：改完按下标做增量失效。
+        let index = match self.records.iter().rposition(|record| {
             matches!(record, Record::SubagentConversation(panel) if panel.batch_id == batch_id)
-        });
-        if !has_panel {
-            let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
-            self.records
-                .push(Record::SubagentConversation(SubAgentConversation::new(
-                    &batch_id, agent_type,
-                )));
-        }
-        let Some(panel) = self
-            .records
-            .iter_mut()
-            .rev()
-            .find_map(|record| match record {
-                Record::SubagentConversation(panel) if panel.batch_id == batch_id => Some(panel),
-                _ => None,
-            })
-        else {
+        }) {
+            Some(index) => index,
+            None => {
+                self.records
+                    .push(Record::SubagentConversation(SubAgentConversation::new(
+                        &batch_id, agent_type,
+                    )));
+                self.records.len() - 1
+            }
+        };
+        let Some(Record::SubagentConversation(panel)) = self.records.get_mut(index) else {
             return;
         };
         match name {
@@ -1477,6 +1711,7 @@ impl AppState {
             "subagent.task.failed" => panel.finish(&subagent_failure_line(payload)),
             _ => {}
         }
+        self.touch_record(index);
     }
 
     /// 推进仍活跃的进度树的运行耗时（对映 Python 的耗时 tick）：终态树不再重绘。
@@ -1485,13 +1720,20 @@ impl AppState {
     /// 相同的刷新由 [`SubAgentProgressTree::refresh_elapsed`] 内部自行跳过重绘。
     pub fn refresh_subagent_trees(&mut self) -> bool {
         let mut active = false;
-        for record in self.records.iter_mut() {
+        let mut changed: Vec<usize> = Vec::new();
+        for (index, record) in self.records.iter_mut().enumerate() {
             if let Record::SubagentTree(tree) = record {
                 if tree.is_active() {
                     active = true;
-                    tree.refresh_elapsed(None);
+                    // 耗时跨过整秒前可见文本不变：只有真变了才置脏（缓存因此不被空转刷新打破）。
+                    if tree.refresh_elapsed(None) {
+                        changed.push(index);
+                    }
                 }
             }
+        }
+        for index in changed {
+            self.touch_record(index);
         }
         active
     }
@@ -1504,6 +1746,20 @@ impl AppState {
         // 回合失败/取消时不能留下一直转圈的卡片。
         self.close_running_cards("工具调用在回合结束前未收到结果。");
         self.records.push(Record::Notice(message));
+        self.touch_appended();
+        self.touch_composer();
+    }
+
+    /// 是否在消息流里显示思考段（`ui.show_thinking`）。
+    ///
+    /// 这是个纯界面开关，但会改变会话区的显示行（思考段整段出现/消失），
+    /// 因此必须走 setter 让缓存整块失效。
+    pub fn set_show_thinking(&mut self, enabled: bool) {
+        if self.show_thinking == enabled {
+            return;
+        }
+        self.show_thinking = enabled;
+        self.touch_conversation();
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
@@ -1512,15 +1768,19 @@ impl AppState {
         } else {
             self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(delta as usize);
         }
+        // 滚动只换窗口、不动显示行：缓存不用重算，但画面要重画。
+        self.touch_conversation_view();
     }
 
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_from_bottom = 0;
+        self.touch_conversation_view();
     }
 
     /// 在输入框上方那一行显示一条瞬时提示（拖选复制等）。
     pub fn show_notice_line(&mut self, text: impl Into<String>, now: Instant) {
         self.notice_line = Some((text.into(), now));
+        self.touch_composer();
     }
 
     /// 当前该显示的提示行文本；超过存活时间返回 `None`。
@@ -1541,6 +1801,8 @@ impl AppState {
     pub fn tick_notice_line(&mut self, now: Instant) {
         if self.notice_line.is_some() && self.notice_line_text(now).is_none() {
             self.notice_line = None;
+            // 提示行淡出后输入区组高会少一行：布局要重算。
+            self.touch_composer();
         }
     }
 
@@ -1556,6 +1818,8 @@ impl AppState {
             batch.advance(&mut ctx)
         };
         self.batch = Some(batch);
+        // 待决面板与任务清单都在输入块里。
+        self.touch_composer();
         step
     }
 
@@ -1563,6 +1827,7 @@ impl AppState {
         if let Some(batch) = self.batch.as_mut() {
             batch.select_question(delta);
         }
+        self.touch_composer();
     }
 
     /// 回答待决提问；返回下一步（派发执行或整批结束）。
@@ -1574,6 +1839,8 @@ impl AppState {
         };
         let step = step?;
         self.batch = Some(batch);
+        // 待决面板与任务清单都在输入块里。
+        self.touch_composer();
         Some(step)
     }
 
@@ -1586,6 +1853,7 @@ impl AppState {
         };
         let step = step?;
         self.batch = Some(batch);
+        self.touch_composer();
         Some(step)
     }
 
@@ -1595,10 +1863,12 @@ impl AppState {
         index: usize,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        match self.batch.as_mut() {
+        let changed = match self.batch.as_mut() {
             Some(batch) => batch.rewrite_arguments(index, arguments),
             None => false,
-        }
+        };
+        self.touch_composer();
+        changed
     }
 
     /// 插件守卫当前待决审批。
@@ -1608,6 +1878,18 @@ impl AppState {
     /// 与 `decide_approval(false)` 的差别只在拒绝文案来源）。返回值 `Some(step)` 表示
     /// 批次已被推进，调用方要接着按新步骤处理。
     pub fn guard_pending_approval<F>(&mut self, guard: F) -> Option<host::BatchStep>
+    where
+        F: FnOnce(
+            &omnicrawl_core::ToolCall,
+        ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String>,
+    {
+        // 插件改写参数或拒绝都会重绘待决面板：包一层统一置脏。
+        let step = self.guard_pending_approval_inner(guard);
+        self.touch_composer();
+        step
+    }
+
+    fn guard_pending_approval_inner<F>(&mut self, guard: F) -> Option<host::BatchStep>
     where
         F: FnOnce(
             &omnicrawl_core::ToolCall,
@@ -1653,10 +1935,13 @@ impl AppState {
         result: omnicrawl_core::ToolResult,
         vision: Option<host::VisionPayload>,
     ) -> bool {
-        match self.batch.as_mut() {
+        let ready = match self.batch.as_mut() {
             Some(batch) => batch.record_result(index, result, vision),
             None => false,
-        }
+        };
+        // 待决面板的进度（还差几个工具）画在输入块里。
+        self.touch_composer();
+        ready
     }
 
     /// 整批就绪时取走观察并卸下批次；`attach_images` 决定是否把图片注入下一步请求。
@@ -1699,30 +1984,31 @@ impl AppState {
     /// 取消当前批次（`Esc`）：批次卸下，已在执行的工具由取消令牌回收。
     pub fn cancel_batch(&mut self) {
         self.batch = None;
+        self.touch_composer();
     }
 
     /// 执行阶段开始：先落一张「运行中」工具卡。
     /// 把仍在「调用中」的卡片收口为失败并补一句原因（回合结束、回合失败时用）。
     fn close_running_cards(&mut self, message: &str) {
         let now = Instant::now();
-        let pending: Vec<String> = self
+        let pending: Vec<usize> = self
             .records
             .iter()
-            .filter_map(|record| match record {
-                Record::Tool(card) if card.status == ToolStatus::Running => {
-                    Some(card.call_id.clone())
-                }
+            .enumerate()
+            .filter_map(|(index, record)| match record {
+                Record::Tool(card) if card.status == ToolStatus::Running => Some(index),
                 _ => None,
             })
             .collect();
-        for call_id in pending {
-            if let Some(card) = self.tool_card_mut(&call_id) {
+        for index in pending {
+            if let Some(Record::Tool(card)) = self.records.get_mut(index) {
                 card.status = ToolStatus::Failed;
                 card.elapsed = Some(now.saturating_duration_since(card.started));
                 if card.body.is_empty() {
                     card.body = vec![message.to_string()];
                 }
             }
+            self.touch_record(index);
         }
     }
 
@@ -1823,19 +2109,31 @@ impl AppState {
             Record::Assistant(_) => !reasoning,
             _ => false,
         };
-        match self.records.last_mut() {
-            Some(record) if target(record) => match record {
-                Record::Reasoning(body) | Record::Assistant(body) => body.push_str(text),
-                _ => unreachable!("target 只匹配思考与正文记录"),
-            },
-            _ => {
-                let body = text.to_string();
-                self.records.push(if reasoning {
-                    Record::Reasoning(body)
-                } else {
-                    Record::Assistant(body)
-                });
+        // 记录尾部可能压着一条会话区提示（`turn.notice`）：它插在正文中间只是中间多一行说明，
+        // 但正文合并必须跳过它，否则一段回复会被拆成两条记录、中间硬生生断开。
+        let target_index = self
+            .records
+            .iter()
+            .rposition(|record| !matches!(record, Record::Notice(_)));
+        if matches!(target_index.and_then(|index| self.records.get(index)), Some(record) if target(record))
+        {
+            let index = target_index.expect("目标记录存在");
+            if let Some(record) = self.records.get_mut(index) {
+                match record {
+                    Record::Reasoning(body) | Record::Assistant(body) => body.push_str(text),
+                    _ => unreachable!("target 只匹配思考与正文记录"),
+                }
             }
+            // 正文逐片追加：只重算这一条记录（分块增量缓存的关键路径）。
+            self.touch_record(index);
+        } else {
+            let body = text.to_string();
+            self.records.push(if reasoning {
+                Record::Reasoning(body)
+            } else {
+                Record::Assistant(body)
+            });
+            self.touch_appended();
         }
     }
 
@@ -1881,16 +2179,19 @@ impl AppState {
         result: &omnicrawl_core::ToolResult,
         now: Instant,
     ) {
-        let Some(card) = self.tool_card_mut(&call.id) else {
+        let Some(index) = self.tool_card_slot(&call.id) else {
             return;
         };
-        card.status = match (result.ok, result.error_code.as_deref()) {
-            (true, _) => ToolStatus::Ok,
-            (false, Some(host::DENIED)) => ToolStatus::Denied,
-            (false, _) => ToolStatus::Failed,
-        };
-        card.elapsed = Some(now.saturating_duration_since(card.started));
-        card.body = body_lines(&result.output);
+        if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+            card.status = match (result.ok, result.error_code.as_deref()) {
+                (true, _) => ToolStatus::Ok,
+                (false, Some(host::DENIED)) => ToolStatus::Denied,
+                (false, _) => ToolStatus::Failed,
+            };
+            card.elapsed = Some(now.saturating_duration_since(card.started));
+            card.body = body_lines(&result.output);
+        }
+        self.touch_record(index);
     }
 }
 
@@ -2332,6 +2633,70 @@ mod tests {
         assert_eq!(state.status, None);
         assert_eq!(state.telemetry.input_tokens, 10);
         assert_eq!(state.telemetry.cached_input_tokens, 5);
+    }
+
+    /// 会话区提示不能走状态行：状态行要留着显示「正在调用」等运行状态。
+    #[test]
+    fn notice_events_go_to_the_conversation_and_keep_the_status_line() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string());
+        state.apply(
+            &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
+                message: "正在调用".to_string(),
+            }),
+            now,
+        );
+        state.apply(
+            &HostEvent::Notice(omnicrawl_ipc::bridge::MessagePayload {
+                message: "检测到 1 处疑似畸形脱敏占位符，已按原样保留。".to_string(),
+            }),
+            now,
+        );
+        assert_eq!(
+            state.status.as_deref(),
+            Some("正在调用"),
+            "会话区提示不得覆盖运行状态行"
+        );
+        assert!(
+            state.records.iter().any(|record| matches!(
+                record,
+                Record::Notice(text) if text.contains("疑似畸形")
+            )),
+            "会话区应当出现这条提示：{:?}",
+            state.records
+        );
+    }
+
+    /// 提示插在流式正文中间时不能把一段回复拆成两条记录。
+    #[test]
+    fn notice_mid_stream_does_not_split_the_reply() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string());
+        state.apply(&HostEvent::Delta(TextPayload { text: "前半".into() }), now);
+        state.apply(
+            &HostEvent::Notice(omnicrawl_ipc::bridge::MessagePayload {
+                message: "检测到 1 处疑似畸形脱敏占位符，已按原样保留。".to_string(),
+            }),
+            now,
+        );
+        state.apply(&HostEvent::Delta(TextPayload { text: "后半".into() }), now);
+
+        let assistants: Vec<String> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Assistant(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            assistants,
+            vec!["前半后半".to_string()],
+            "提示不得把一段回复拆开：{:?}",
+            state.records
+        );
     }
 
     #[test]
@@ -3438,4 +3803,109 @@ mod streaming_tests {
 
     /// 半截 JSON：字符串与对象都没闭合（模型流中断在这一刻的样子）。
     const HALF_JSON: &str = r#"{"path": "a.py", "content": "第一\n第二"#;
+
+    // ---- 三块刷新（会话 / 输入框 / 底部） ------------------------------------------
+
+    fn three_block_state() -> AppState {
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        state
+    }
+
+    /// 只读操作（取行、取窗口、算滚动条）不能把任何一块置脏。
+    ///
+    /// 事件循环就是靠「三块都没变」来跳过整帧绘制；空转刷新一旦置脏，
+    /// 2000 行的会话又会回到每帧重画。
+    #[test]
+    fn idle_reads_never_mark_any_block_dirty() {
+        let state = three_block_state();
+        let before = state.refresh_versions();
+        for _ in 0..10 {
+            let _ = crate::ui::conversation::display_lines(&state, 80);
+            let _ = crate::ui::conversation::visible_window(&state, 80, 20, 0);
+            let _ = state.carousel_page();
+        }
+        assert_eq!(state.refresh_versions(), before, "只读跟踪不得置脏");
+    }
+
+    /// 三块各管各的：改会话不会带脏底部，换轮播不会把会话整块失效。
+    #[test]
+    fn the_three_blocks_are_versioned_independently() {
+        let mut state = three_block_state();
+        let _ = crate::ui::conversation::display_lines(&state, 80);
+        let base = state.refresh_versions();
+        let rebuilds = state.conversation_cache().borrow().rebuilds;
+
+        // 底部轮播换页：只有底部版本动，会话的显示行缓存连一行都不重算。
+        state.touch_bottom();
+        let after_bottom = state.refresh_versions();
+        assert_eq!(after_bottom.bottom, base.bottom + 1);
+        assert_eq!(after_bottom.conversation, base.conversation);
+        assert_eq!(after_bottom.composer, base.composer);
+
+        // 会话区滚动：只换窗口，不是内容变化。
+        state.scroll_by(-4);
+        let after_scroll = state.refresh_versions();
+        assert_eq!(after_scroll.conversation, after_bottom.conversation + 1);
+        assert_eq!(after_scroll.bottom, after_bottom.bottom);
+        let _ = crate::ui::conversation::display_lines(&state, 80);
+        assert_eq!(
+            state.conversation_cache().borrow().rebuilds,
+            rebuilds,
+            "滚动不得触发显示行重算"
+        );
+
+        // 拖选同理：只加高亮。
+        state.begin_selection(1, 0);
+        state.extend_selection(2, 3);
+        state.clear_selection();
+        let after_selection = state.refresh_versions();
+        assert_eq!(after_selection.conversation, after_scroll.conversation + 3);
+        assert_eq!(after_selection.composer, after_scroll.composer);
+
+        // 新记录：会话与输入框都变（输入框上是排队/状态信息），底部不变。
+        state.notice("提示".to_string());
+        let after_notice = state.refresh_versions();
+        assert_eq!(after_notice.conversation, after_selection.conversation + 1);
+        assert_eq!(after_notice.bottom, after_selection.bottom);
+    }
+
+    /// 空闲时 `tick_activity` 什么也不做；回合在跑时它维持 spinner 与活动耗时。
+    #[test]
+    fn activity_tick_only_runs_while_a_turn_is_in_flight() {
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        // 空闲：一条版本都不动。
+        let idle = state.refresh_versions();
+        state.tick_activity();
+        assert_eq!(state.refresh_versions(), idle, "空闲时不该有活动刷新");
+
+        // 回合在跑：状态行 spinner 与运行中卡片耗时都要重画。
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        let running = state.refresh_versions();
+        state.tick_activity();
+        let ticked = state.refresh_versions();
+        assert_eq!(ticked.composer, running.composer + 1, "spinner 在输入框上边框");
+        assert_eq!(ticked.conversation, running.conversation, "没有运行中的卡片就不动会话");
+
+        // 有一张运行中的卡片：它的耗时按帧重算。
+        let mut state = three_block_state();
+        let _ = crate::ui::conversation::display_lines(&state, 80);
+        let rebuilds = state.conversation_cache().borrow().rebuilds;
+        let call = omnicrawl_core::ToolCall {
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "pytest -q"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            id: "c1".to_string(),
+            function_name: "bash".to_string(),
+        };
+        state.begin_tool_run(&call, Instant::now());
+        state.tick_activity();
+        let _ = crate::ui::conversation::display_lines(&state, 80);
+        assert!(
+            state.conversation_cache().borrow().rebuilds > rebuilds,
+            "运行中卡片的耗时应当被重新算过"
+        );
+    }
 }

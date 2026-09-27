@@ -326,3 +326,98 @@ fn restores_tool_call_arguments() {
         "工具参数里的占位符应还原成原文：{restored:?}"
     );
 }
+
+/// 流式语义回归：增量必须**在流跑完之前**就到达外层 sink。
+///
+/// 曾经的实现把内层事件全收进 `CollectSink`，等 `inner.run_turn` 返回后才统一还原外发，
+/// 于是整段回复被压成一次输出（界面上表现为「思考内容一口气全出来」）。这里用一个
+/// 「发完每个分片就回调一次」的内层替身，在回调里检查外层 sink 已经收到了对应增量：
+/// 若又退回攒批实现，回调时外层 sink 仍是空的，断言会直接失败。
+#[test]
+fn deltas_reach_outer_sink_before_the_stream_ends() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 每个分片发完后调用 `probe`：此时外层 sink 应已收到该分片。
+    struct StreamingStub {
+        chunks: Vec<String>,
+        probe: Arc<dyn Fn(usize) + Send + Sync>,
+    }
+
+    impl ModelRuntime for StreamingStub {
+        fn run_turn(
+            &self,
+            _input: &ChatRequestInput<'_>,
+            sink: &mut dyn TurnSink,
+        ) -> Result<ModelReply, RuntimeError> {
+            let mut events: Vec<ModelStreamEvent> = Vec::new();
+            for (index, chunk) in self.chunks.iter().enumerate() {
+                let event = ModelStreamEvent::TextDelta(TextDelta::new(chunk));
+                if sink.on_event(event.clone()) == SinkFlow::Cancel {
+                    return Err(RuntimeError::cancelled());
+                }
+                events.push(event);
+                (self.probe)(index);
+            }
+            events.push(ModelStreamEvent::Finished {
+                finish_reason: "stop".to_string(),
+            });
+            Ok(aggregate_stream_events(events))
+        }
+    }
+
+    let seen_count = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&seen_count);
+    let probe = Arc::new(move |_index: usize| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let runtime = DesensitizationRuntime::new(
+        Box::new(StreamingStub {
+            chunks: vec!["第一".to_string(), "第二".to_string(), "第三".to_string()],
+            probe,
+        }),
+        DesensitizationOptions::default(),
+    );
+
+    // sink 自己记录「到达时机」：每条增量到达时记下当前已经发过几条内层分片。
+    struct TimingSink {
+        counter: Arc<AtomicUsize>,
+        arrivals: Vec<(usize, String)>,
+    }
+    impl TurnSink for TimingSink {
+        fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
+            if let ModelStreamEvent::TextDelta(delta) = event {
+                self.arrivals
+                    .push((self.counter.load(Ordering::SeqCst), delta.text));
+            }
+            SinkFlow::Continue
+        }
+    }
+
+    let mut sink = TimingSink {
+        counter: Arc::clone(&seen_count),
+        arrivals: Vec::new(),
+    };
+    let fixture = Fixture::with_text("普通提问");
+    runtime
+        .run_turn(&fixture.input(), &mut sink)
+        .expect("回合应当成功");
+
+    assert_eq!(
+        sink.arrivals.len(),
+        3,
+        "三条增量都应外发：{:?}",
+        sink.arrivals
+    );
+    // 每条增量都在**自己那一片**发完时就已到达（到达时内层刚好发过 index 片）。
+    // 攒批实现下三条会全部等到流跑完才出现，计数一律是 3。
+    assert_eq!(
+        sink.arrivals,
+        vec![
+            (0, "第一".to_string()),
+            (1, "第二".to_string()),
+            (2, "第三".to_string()),
+        ],
+        "增量应逐条即时外发，而不是等到流结束：{:?}",
+        sink.arrivals
+    );
+}

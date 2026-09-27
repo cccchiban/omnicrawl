@@ -56,6 +56,8 @@ pub mod method {
     pub const TURN_DELTA: &str = "turn.delta";
     pub const TURN_REASONING_DELTA: &str = "turn.reasoning_delta";
     pub const TURN_STATUS: &str = "turn.status";
+    /// 会话区提示（不是运行状态行）：宿主应把它作为一条提示追加进对话流。
+    pub const TURN_NOTICE: &str = "turn.notice";
     pub const TURN_RETRY_STATUS: &str = "turn.retry_status";
     pub const TURN_PROTOCOL_WAIT: &str = "turn.protocol_wait";
     pub const TURN_STREAM_ROLLBACK: &str = "turn.stream_rollback";
@@ -237,6 +239,8 @@ pub enum HostEvent {
     ReasoningDelta(TextPayload),
     /// 状态提示。
     Status(MessagePayload),
+    /// 会话区提示：与 [`Self::Status`] 的区别在于落点——宿主把它写进对话流而不是状态行。
+    Notice(MessagePayload),
     /// 重试状态提示。
     RetryStatus(MessagePayload),
     /// 协议等待（宿主可忽略，用于界面提示）。
@@ -277,6 +281,7 @@ impl HostEvent {
         method::TURN_DELTA,
         method::TURN_REASONING_DELTA,
         method::TURN_STATUS,
+        method::TURN_NOTICE,
         method::TURN_RETRY_STATUS,
         method::TURN_PROTOCOL_WAIT,
         method::TURN_STREAM_ROLLBACK,
@@ -300,6 +305,7 @@ impl HostEvent {
             Self::Delta(_) => method::TURN_DELTA,
             Self::ReasoningDelta(_) => method::TURN_REASONING_DELTA,
             Self::Status(_) => method::TURN_STATUS,
+            Self::Notice(_) => method::TURN_NOTICE,
             Self::RetryStatus(_) => method::TURN_RETRY_STATUS,
             Self::ProtocolWait => method::TURN_PROTOCOL_WAIT,
             Self::StreamRollback => method::TURN_STREAM_ROLLBACK,
@@ -322,7 +328,9 @@ impl HostEvent {
     pub fn params(&self) -> Value {
         match self {
             Self::Delta(payload) | Self::ReasoningDelta(payload) => payload_value(payload),
-            Self::Status(payload) | Self::RetryStatus(payload) => payload_value(payload),
+            Self::Status(payload) | Self::RetryStatus(payload) | Self::Notice(payload) => {
+                payload_value(payload)
+            }
             Self::ProtocolWait | Self::StreamRollback => json!({}),
             Self::TokenUsage(payload) => payload_value(payload),
             Self::ToolStarted(payload) => payload_value(payload),
@@ -354,6 +362,7 @@ impl HostEvent {
             method::TURN_DELTA => Ok(Self::Delta(from_params(params)?)),
             method::TURN_REASONING_DELTA => Ok(Self::ReasoningDelta(from_params(params)?)),
             method::TURN_STATUS => Ok(Self::Status(from_params(params)?)),
+            method::TURN_NOTICE => Ok(Self::Notice(from_params(params)?)),
             method::TURN_RETRY_STATUS => Ok(Self::RetryStatus(from_params(params)?)),
             method::TURN_PROTOCOL_WAIT => Ok(Self::ProtocolWait),
             method::TURN_STREAM_ROLLBACK => Ok(Self::StreamRollback),

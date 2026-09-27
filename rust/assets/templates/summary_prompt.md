@@ -11,18 +11,21 @@
   不允许输出工具调用或函数调用语法。
 - 只允许输出一个 JSON 对象：不要 Markdown 围栏、不要前后说明、不要思考过程，
   响应从第一个 "{" 到最后一个 "}"，中间不含其他字符。
-- 输入里的 events_index 只给出待压缩事件的 event_id、type 与内容预览（预览已截断）；
+- 输入里的 events_index 只给出待压缩事件的 ref、type 与内容预览（预览已截断）；
   完整正文就在上面的原上下文中，按类型与预览对齐到具体消息，不要凭预览补全被截断的内容。
+- 引用事件一律使用 ref（形如 E12）：它很短，可以逐字抄写。source_event_ids 里只填 ref，
+  不要输出事件 ID 原文，也不要自己拼造引用标记；partial_summaries 里已经出现的 ref 可以直接沿用。
 
 规则：
 1. 保留当前目标、用户约束、已确认决策、已验证进展、当前状态、未完成事项和产物引用。
 2. 不把计划写成已完成，不把推测写成事实。
 3. 新用户指令优先于旧摘要；冲突时在 decisions 中说明覆盖关系。
-4. exact_evidence 中的错误、数字、命令、路径和标识符必须逐字复制，并引用真实 source_event_ids。
+4. exact_evidence 中的错误、数字、命令、路径和标识符必须逐字复制，并引用对应的 ref。
 5. constraints、decisions、completed、open_issues、artifacts、exact_evidence、
    read_files、modified_files、failed_attempts、excluded_approaches 中的每一项
-   都必须包含 source_event_ids。
-6. 只能引用 events_index 中存在的事件 ID，不得编造来源。
+   都必须包含 source_event_ids（取值为 events_index 或 partial_summaries 里出现过的 ref）。
+6. 只能引用 events_index（或 partial_summaries 中已出现）的 ref，不得编造来源；
+   拿不准对应哪个事件时宁可不写这一条，也不要写一个不存在的 ref。
 7. 不输出密钥、Cookie、Token 或其他敏感值；输入已经脱敏时保持脱敏文本。
 8. 只输出一个 JSON 对象，不要输出 Markdown 围栏或额外说明。
 9. 当输入中的 target_summary_tokens 为 null 或 0（budget_limited=false）时，表示本次摘要无预算上限：
@@ -47,7 +50,7 @@
 8. 当前工作（最近在做什么，要最详细）→ current_state
 9. 可能的下一步（接下来打算做什么）→ next_steps
 
-15. user_messages 必须包含被压缩窗口内所有用户消息的原文，逐字保留：不得改写、截断、概括或合并，每条引用对应的 user_message 事件。
+15. user_messages 必须包含被压缩窗口内所有用户消息的原文，逐字保留：不得改写、截断、概括或合并，每条引用对应的 user_message 事件（ref）。
 16. key_concepts 记录讨论过的重要技术概念、术语及其要点。
 17. problem_solving_process 按时间顺序记录解决问题的思路、方法和关键转折，避免后续重新论证。
 18. next_steps 记录接下来打算做什么（计划中的行动，区别于已完成事项）。
@@ -56,19 +59,19 @@
 输出结构：
 {
   "objective": ["当前目标（主要请求和意图）"],
-  "constraints": [{"text": "约束", "source_event_ids": ["事件ID"]}],
-  "decisions": [{"text": "决策及原因（含修复方式）", "source_event_ids": ["事件ID"]}],
-  "completed": [{"text": "已验证事项", "source_event_ids": ["事件ID"]}],
+  "constraints": [{"text": "约束", "source_event_ids": ["E12"]}],
+  "decisions": [{"text": "决策及原因（含修复方式）", "source_event_ids": ["E12"]}],
+  "completed": [{"text": "已验证事项", "source_event_ids": ["E12"]}],
   "current_state": ["当前状态（最近正在做什么，最详细）"],
-  "open_issues": [{"text": "未完成事项或风险（待办任务）", "source_event_ids": ["事件ID"]}],
-  "artifacts": [{"text": "文件、命令、测试或产物", "source_event_ids": ["事件ID"]}],
-  "read_files": [{"path": "文件路径", "description": "为什么读/读到了什么", "source_event_ids": ["事件ID"]}],
-  "modified_files": [{"path": "文件路径", "description": "改了什么", "source_event_ids": ["事件ID"]}],
-  "failed_attempts": [{"text": "试过什么、为什么失败", "source_event_ids": ["事件ID"]}],
-  "excluded_approaches": [{"text": "已排除的方案及原因", "source_event_ids": ["事件ID"]}],
-  "key_concepts": [{"text": "关键技术概念及要点", "source_event_ids": ["事件ID"]}],
-  "problem_solving_process": [{"text": "问题解决思路与方法", "source_event_ids": ["事件ID"]}],
-  "user_messages": [{"text": "用户消息原文（逐字）", "source_event_ids": ["事件ID"]}],
-  "next_steps": [{"text": "可能的下一步", "source_event_ids": ["事件ID"]}],
-  "exact_evidence": [{"text": "必须逐字保留的证据", "source_event_ids": ["事件ID"]}]
+  "open_issues": [{"text": "未完成事项或风险（待办任务）", "source_event_ids": ["E12"]}],
+  "artifacts": [{"text": "文件、命令、测试或产物", "source_event_ids": ["E12"]}],
+  "read_files": [{"path": "文件路径", "description": "为什么读/读到了什么", "source_event_ids": ["E12"]}],
+  "modified_files": [{"path": "文件路径", "description": "改了什么", "source_event_ids": ["E12"]}],
+  "failed_attempts": [{"text": "试过什么、为什么失败", "source_event_ids": ["E12"]}],
+  "excluded_approaches": [{"text": "已排除的方案及原因", "source_event_ids": ["E12"]}],
+  "key_concepts": [{"text": "关键技术概念及要点", "source_event_ids": ["E12"]}],
+  "problem_solving_process": [{"text": "问题解决思路与方法", "source_event_ids": ["E12"]}],
+  "user_messages": [{"text": "用户消息原文（逐字）", "source_event_ids": ["E12"]}],
+  "next_steps": [{"text": "可能的下一步", "source_event_ids": ["E12"]}],
+  "exact_evidence": [{"text": "必须逐字保留的证据", "source_event_ids": ["E12"]}]
 }

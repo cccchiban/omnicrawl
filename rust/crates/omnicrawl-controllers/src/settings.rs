@@ -6,6 +6,8 @@
 //! 失败回滚」这一整套事务留在 Python；这里只收校验、归一化与阈值换算。
 
 use crate::error::AgentError;
+use omnicrawl_config::features::context_compaction::ContextCompactionConfig;
+use omnicrawl_ipc::KernelCompactionConfig;
 
 // 审批模式与推理强度的别名表只有配置域一份实现（Python 侧同样只有
 // `config/features/approval.py` 与 `config/models/llm.py`），这里改为复用。
@@ -283,4 +285,88 @@ pub fn mcp_apply_failed(cause: &str) -> AgentError {
 
 pub fn plugin_apply_failed(cause: &str) -> AgentError {
     AgentError::new(format!("Plugin 设置应用失败：{cause}"))
+}
+
+/// `[context_compaction]` 整段映射成内核协议的压缩策略字段。
+///
+/// 宿主必须在握手时下发：内核只认协议字段，缺字段一律回落到 `CompactionConfig::default()`
+/// （摘要预算 2000 token、记忆回写关闭），于是用户的 `[context_compaction]` 就会「写了却不生效」。
+/// 触发阈值优先按配置里的百分比用当前窗口换算（与 Python 运行期
+/// `context_compaction_trigger_percent` 的联动一致），没有百分比才用固定的
+/// `trigger_context_tokens`：两条口径都对应「窗口的百分之几时压缩」这一个配置关系。
+pub fn kernel_compaction_settings(
+    context_window_tokens: i64,
+    config: &ContextCompactionConfig,
+) -> KernelCompactionConfig {
+    let trigger_context_tokens = match config.trigger_context_percent {
+        Some(percent) => context_compaction_trigger_tokens(context_window_tokens, percent),
+        None => config.trigger_context_tokens,
+    };
+    KernelCompactionConfig {
+        recent_turns: Some(config.recent_turns),
+        // 0 = 无摘要预算上限：必须原样传给内核，否则会被默认的 2000 顶掉。
+        target_summary_tokens: Some(config.target_summary_tokens),
+        next_user_reserve_tokens: Some(config.next_user_reserve_tokens),
+        trigger_context_tokens: Some(trigger_context_tokens),
+        context_window_tokens: Some(context_window_tokens),
+        emergency_context_ratio: Some(config.emergency_context_ratio),
+        reasoning_effort: Some(config.reasoning_effort.clone()),
+        preserve_exact_evidence: Some(config.preserve_exact_evidence),
+        archive_compacted_events: Some(config.archive_compacted_events),
+        auto_memory_recall: Some(config.auto_memory_recall),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 配置里写了的字段必须逐项落到协议字段上：漏一个就是「配置写了却不生效」。
+    #[test]
+    fn kernel_compaction_settings_carry_the_whole_section() {
+        let config = ContextCompactionConfig {
+            trigger_context_percent: Some(20),
+            trigger_context_tokens: 999_999,
+            next_user_reserve_tokens: 4096,
+            emergency_context_ratio: 0.85,
+            reasoning_effort: "low".to_string(),
+            recent_turns: 6,
+            target_summary_tokens: 0,
+            preserve_exact_evidence: true,
+            archive_compacted_events: true,
+            auto_memory_recall: true,
+            ..ContextCompactionConfig::default()
+        };
+        let settings = kernel_compaction_settings(1_024_000, &config);
+        assert_eq!(
+            settings.trigger_context_tokens,
+            Some(204_800),
+            "有百分比时按窗口换算，忽略可能过期的固定阈值"
+        );
+        assert_eq!(settings.context_window_tokens, Some(1_024_000));
+        assert_eq!(settings.recent_turns, Some(6));
+        assert_eq!(
+            settings.target_summary_tokens,
+            Some(0),
+            "0 表示不设摘要预算上限，不能被默认值顶掉"
+        );
+        assert_eq!(settings.next_user_reserve_tokens, Some(4096));
+        assert_eq!(settings.emergency_context_ratio, Some(0.85));
+        assert_eq!(settings.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(settings.preserve_exact_evidence, Some(true));
+        assert_eq!(settings.archive_compacted_events, Some(true));
+        assert_eq!(settings.auto_memory_recall, Some(true));
+    }
+
+    /// 没有百分比时用固定的 `trigger_context_tokens`（Python 侧「精确恢复阈值」的等价语义）。
+    #[test]
+    fn kernel_compaction_settings_fall_back_to_fixed_tokens() {
+        let config = ContextCompactionConfig {
+            trigger_context_percent: None,
+            trigger_context_tokens: 300_000,
+            ..ContextCompactionConfig::default()
+        };
+        let settings = kernel_compaction_settings(1_024_000, &config);
+        assert_eq!(settings.trigger_context_tokens, Some(300_000));
+    }
 }

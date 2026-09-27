@@ -174,17 +174,62 @@ fn build_rules(document: &toml::Value) -> Vec<GitleaksRule> {
         .or_else(|| document.get("allowlists"));
     let (global_secret, global_match, global_stopwords) = allowlist_parts(global_allowlist);
 
-    let mut rules: Vec<GitleaksRule> = Vec::new();
-    for raw in as_mappings(document.get("rules")) {
-        build_rule(
-            raw,
-            &global_secret,
-            &global_match,
-            &global_stopwords,
-            &mut rules,
-        );
+    let sources = as_mappings(document.get("rules"));
+    // 规则表整体是常量，只在进程内第一次构造时解析一次；但 221 条模式的正则编译在
+    // release 下要 ~5s、debug 下 ~27s，串行编译会让「启用脱敏后的第一个回合」在发请求前
+    // 静默卡住（用户报的「很久没反应，然后一口气全出来」里有一半是它）。这里按核数切成
+    // 若干块并行编译，块内保持原顺序，最后按块序拼回——结果与串行逐条一致。
+    let compiled: Vec<Vec<GitleaksRule>> = parallel_map(&sources, |chunk| {
+        let mut rules: Vec<GitleaksRule> = Vec::new();
+        for raw in chunk {
+            build_rule(
+                raw,
+                &global_secret,
+                &global_match,
+                &global_stopwords,
+                &mut rules,
+            );
+        }
+        rules
+    });
+    compiled.into_iter().flatten().collect()
+}
+
+/// 把切片按可用并行度切块，交给 [`std::thread::scope`] 并行处理，再按块序拼回。
+///
+/// 不引入 rayon 之类的依赖（本 crate 的传输/解析链路都刻意保持同步、无运行时）；
+/// 并行度取 `available_parallelism`，块数不超过元素数，元素少时退化为串行。
+fn parallel_map<T, R, F>(items: &[T], work: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&[T]) -> R + Sync,
+{
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(items.len().max(1));
+    if workers <= 1 {
+        return vec![work(items)];
     }
-    rules
+    // 向上取整分块：前 `remainder` 块各多 1 个元素，保证「块序拼回 == 原顺序」。
+    let chunk_size = items.len().div_ceil(workers);
+    let chunks: Vec<&[T]> = items.chunks(chunk_size).collect();
+    let results: Vec<R> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                let work = &work;
+                scope.spawn(move || work(chunk))
+            })
+            .collect();
+        // 线程 panic 时对应结果丢弃（编译期规则构造不该 panic，真发生也不该让整进程崩）。
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    });
+    results
 }
 
 fn build_rule(
@@ -343,13 +388,22 @@ fn allowlist_parts(value: Option<&toml::Value>) -> AllowlistParts {
         } else {
             &mut secret
         };
-        for item in as_array(entry.get("regexes")) {
-            if let Some(pattern) = item.as_str() {
-                let normalized = normalize_gitleaks_pattern(pattern);
-                if let Some(regex) = compile(&normalized) {
-                    bucket.push((normalized, regex));
-                }
-            }
+        let patterns: Vec<String> = as_array(entry.get("regexes"))
+            .into_iter()
+            .filter_map(toml::Value::as_str)
+            .map(normalize_gitleaks_pattern)
+            .collect();
+        // 豁免模式同样要编译正则，且全局豁免表会被每条规则复用：并行编译缩短首次构造时间。
+        for (normalized, regex) in parallel_map(&patterns, |chunk| {
+            chunk
+                .iter()
+                .filter_map(|pattern| compile(pattern).map(|regex| (pattern.clone(), regex)))
+                .collect::<Vec<AllowlistPattern>>()
+        })
+        .into_iter()
+        .flatten()
+        {
+            bucket.push((normalized, regex));
         }
     }
     (secret, match_any, stopwords)

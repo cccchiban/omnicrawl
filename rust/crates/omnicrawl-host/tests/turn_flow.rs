@@ -166,6 +166,7 @@ fn runner(client: KernelClient, root: &Path) -> TurnRunner {
         client_name: "omnicrawl-host-test".to_string(),
         plugins: None,
         review: None,
+        prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
 }
@@ -377,6 +378,82 @@ fn cancel_sends_turn_cancel_and_reports_cancelled() {
         "取消必须请内核停止：{:?}",
         recorder.methods()
     );
+    pipe.close();
+}
+
+#[test]
+fn a_turn_after_cancel_runs_shell_commands_again() {
+    // 回归：Esc 取消一个回合后继续对话，`bash` 不能再被令牌判成「命令已取消」。
+    let has_bash = omnicrawl_host::tools::command::find_bash_executable(&|name| {
+        std::env::var(name).ok()
+    })
+    .is_some();
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("cancel-resume");
+    let mut subject = runner(client, &root);
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+
+    // 回合 1：提交后由另一条线程置位取消开关。
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    let control = TurnControl::new();
+    let cancel_from = control.clone();
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        cancel_from.request_cancel();
+    });
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    let cancelled = subject
+        .submit("长任务", &control, &mut interactor, &mut |_| {})
+        .expect_err("取消时应当报错");
+    canceller.join().expect("取消线程应当结束");
+    assert_eq!(cancelled, TurnError::Cancelled);
+    assert!(
+        subject.registry().cancel_token().is_cancelled(),
+        "取消后令牌应当置位"
+    );
+
+    // 回合 2：未取消的新回合，必须重新拉起命令并拿到真实退出码。
+    pipe.push(r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+    pipe.push(concat!(
+        r#"{"jsonrpc":"2.0","id":4,"method":"tool.batch","params":{"turn_id":"turn-2","step":1,"calls":["#,
+        r#"{"name":"bash","arguments":{"command":"echo hi"},"id":"c1","function_name":"bash"}]}}"#,
+    ));
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-2","final_text":"好","reasoning":"","model_turns":1,"tool_calls":1,"paused":false}}"#,
+    );
+    let outcome = subject
+        .submit("继续", &TurnControl::new(), &mut interactor, &mut |_| {})
+        .expect("取消后的新回合应当跑完");
+    assert_eq!(outcome.turn_id, "turn-2");
+    assert!(
+        !subject.registry().cancel_token().is_cancelled(),
+        "新回合开始必须复位取消标记"
+    );
+
+    let result =
+        ToolBatchResult::from_result(&recorder.result(4)).expect("宿主回的应当是工具批次结果");
+    assert_eq!(result.observations.len(), 1);
+    let output = &result.observations[0].result.output;
+    assert!(
+        !output.contains("命令已取消"),
+        "取消后的新回合不能再报已取消：{output}"
+    );
+    if has_bash {
+        assert!(
+            result.observations[0].result.ok,
+            "新回合的命令必须真的执行：{output}"
+        );
+        assert!(output.contains("退出码：0"), "{output}");
+    } else {
+        // 没装 Git Bash 的机器上只能验证「不是被取消」；具体报缺 shell 是可接受的。
+        assert!(output.contains("Git Bash"), "{output}");
+    }
     pipe.close();
 }
 

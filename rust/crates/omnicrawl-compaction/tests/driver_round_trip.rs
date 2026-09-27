@@ -128,6 +128,7 @@ fn after_turn_compacts_archives_and_rebuilds_history() {
         tool_schemas: &[json!({"type": "function", "function": {"name": "bash"}})],
         usage: TokenUsageSample::new(100, 20, 50).expect("用量非负"),
         last_request_input_tokens: 0,
+        workspace_root: "/workspace",
     };
     let report = driver.after_turn(&boundary).expect("压缩不抛错");
 
@@ -191,6 +192,7 @@ fn below_threshold_only_records_measurement() {
         tool_schemas: &[],
         usage: TokenUsageSample::new(10, 2, 0).expect("用量非负"),
         last_request_input_tokens: 0,
+        workspace_root: "/workspace",
     };
     let report = driver.after_turn(&boundary).expect("测量不抛错");
 

@@ -4,6 +4,7 @@
 //! 用量累计。真实请求（复用主请求前缀、`tool_choice=none`）由宿主持有，内核侧实现见
 //! `omnicrawl-compaction` 的 `SummaryModelAdapter`。
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
@@ -108,6 +109,116 @@ pub struct ModelSummaryResult {
     pub attempts: i64,
 }
 
+/// 事件引用表：送给模型的索引里只出现 `E1`、`E2` 这类短引用，真事件 ID 只留在代码里。
+///
+/// 让模型逐字复制 24 位不透明十六进制 ID 是不可靠的（实测会整段编造出「像 ID 的串」，
+/// 而校验只要发现一处不存在就让整份摘要作废）；短引用既短又易抄，展开成真 ID 后校验口径
+/// 与「模型直接写 ID」完全相同：真 ID 是否属于本会话仍由 validator 判定。
+#[derive(Debug, Default, Clone)]
+struct EventRefs {
+    /// 真事件 ID → 短引用。
+    references: HashMap<String, String>,
+    /// 短引用 → 真事件 ID。
+    ids: HashMap<String, String>,
+}
+
+impl EventRefs {
+    /// 按批次事件顺序编号（`E1`、`E2`…），跳过空 ID 与重复项。
+    fn for_batch(batch: &CompactionBatch) -> Self {
+        let mut refs = Self::default();
+        for event in &batch.events {
+            refs.register(&event.event_id);
+        }
+        refs
+    }
+
+    /// 登记一个事件 ID 并返回它的短引用；空白 ID 不参与（与 `covered_event_ids` 同样跳过）。
+    fn register(&mut self, event_id: &str) -> Option<String> {
+        if event_id.trim().is_empty() {
+            return None;
+        }
+        if let Some(existing) = self.references.get(event_id) {
+            return Some(existing.clone());
+        }
+        let reference = format!("E{}", self.references.len() + 1);
+        self.references
+            .insert(event_id.to_string(), reference.clone());
+        self.ids.insert(reference.clone(), event_id.to_string());
+        Some(reference)
+    }
+
+    fn reference_of(&self, event_id: &str) -> Option<&str> {
+        self.references.get(event_id).map(String::as_str)
+    }
+}
+
+/// 上次摘要里的真 ID 也要先登记：这些事件通常已不在本次批次里，照原样发过去等于
+/// 又把一堆 24 位 ID 摆在模型面前让它抄。
+fn register_previous_refs(references: &mut EventRefs, previous: &Value) {
+    let mut collected: Vec<String> = Vec::new();
+    collect_source_event_ids(previous, &mut collected);
+    for event_id in collected {
+        references.register(&event_id);
+    }
+}
+
+/// 收集摘要结构里所有 `source_event_ids` 的取值（按出现顺序，含嵌套字段）。
+fn collect_source_event_ids(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(entries) => {
+            for (key, item) in entries.iter() {
+                if key == "source_event_ids" {
+                    if let Value::Array(values) = item {
+                        for entry in values.iter() {
+                            if let Some(text) = entry.as_str() {
+                                out.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+                collect_source_event_ids(item, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter() {
+                collect_source_event_ids(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 深度遍历摘要结构，把 `source_event_ids` 的取值按 `mapping` 改写：未命中的保持原样，
+/// 于是未知取值依旧会被 validator 判为「引用了不存在的事件」，不会静默放过。
+fn map_source_event_ids(value: &mut Value, mapping: &HashMap<String, String>) {
+    match value {
+        Value::Object(entries) => {
+            for (key, item) in entries.iter_mut() {
+                if key == "source_event_ids" {
+                    if let Value::Array(values) = item {
+                        for entry in values.iter_mut() {
+                            let mapped = entry
+                                .as_str()
+                                .and_then(|text| mapping.get(text))
+                                .map(|text| Value::from(text.as_str()));
+                            if let Some(mapped) = mapped {
+                                *entry = mapped;
+                            }
+                        }
+                    }
+                }
+                map_source_event_ids(item, mapping);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                map_source_event_ids(item, mapping);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 只负责生成结构化摘要；来源与事实校验由 validator 执行。
 pub struct ModelSummaryCompactor {
     call_model: Box<dyn SummaryModelCall>,
@@ -157,6 +268,15 @@ impl ModelSummaryCompactor {
         validation_feedback: &[String],
     ) -> Result<ModelSummaryResult, SummaryGenerationError> {
         let previous = previous_structured(batch.previous_summary.as_ref());
+        // 引用表在分块之前建好：分块只是把索引切开，引用编号对整批事件稳定，
+        // 合并步骤里模型看到的也只是这些短引用。
+        let mut references = EventRefs::for_batch(batch);
+        let previous = previous.map(|value| {
+            register_previous_refs(&mut references, &value);
+            let mut value = value;
+            map_source_event_ids(&mut value, &references.references);
+            value
+        });
         let chunks = chunk_events(&batch.events, self.chunk_budget());
         if chunks.is_empty() {
             return Err(SummaryGenerationError::new("没有可供模型摘要的事件。"));
@@ -187,6 +307,7 @@ impl ModelSummaryCompactor {
                 },
                 chunk_index,
                 chunk_count,
+                references: &references,
             })?;
             aggregate_usage = aggregate_usage.add(
                 result.usage.input_tokens,
@@ -203,45 +324,49 @@ impl ModelSummaryCompactor {
             partials.push(result.structured);
         }
 
-        if partials.len() == 1 {
-            return Ok(ModelSummaryResult {
-                structured: partials.remove(0),
-                usage: aggregate_usage,
-                profile,
-                provider,
-                attempts,
-            });
-        }
-
-        let merged = self.request_structured(&StructuredRequest {
-            previous_summary: previous.as_ref(),
-            source_events: &[],
-            partial_summaries: partials,
-            target_summary_tokens,
-            validation_feedback,
-            operation: "merge_chunks",
-            chunk_index: 1,
-            chunk_count: 1,
-        })?;
-        aggregate_usage = aggregate_usage.add(
-            merged.usage.input_tokens,
-            merged.usage.output_tokens,
-            merged.usage.cached_input_tokens,
-        );
+        let (mut structured, profile, provider, attempts) = if partials.len() == 1 {
+            (partials.remove(0), profile, provider, attempts)
+        } else {
+            let merged = self.request_structured(&StructuredRequest {
+                previous_summary: previous.as_ref(),
+                source_events: &[],
+                partial_summaries: partials,
+                target_summary_tokens,
+                validation_feedback,
+                operation: "merge_chunks",
+                chunk_index: 1,
+                chunk_count: 1,
+                references: &references,
+            })?;
+            aggregate_usage = aggregate_usage.add(
+                merged.usage.input_tokens,
+                merged.usage.output_tokens,
+                merged.usage.cached_input_tokens,
+            );
+            (
+                merged.structured,
+                if merged.profile.is_empty() {
+                    profile
+                } else {
+                    merged.profile
+                },
+                if merged.provider.is_empty() {
+                    provider
+                } else {
+                    merged.provider
+                },
+                attempts + merged.attempts,
+            )
+        };
+        // 短引用在这里还原成真事件 ID：后续的校验、投影与落盘拿到的都是真 ID，
+        // 与早先「模型直接写 ID」的输入形状完全一致。
+        map_source_event_ids(&mut structured, &references.ids);
         Ok(ModelSummaryResult {
-            structured: merged.structured,
+            structured,
             usage: aggregate_usage,
-            profile: if merged.profile.is_empty() {
-                profile
-            } else {
-                merged.profile
-            },
-            provider: if merged.provider.is_empty() {
-                provider
-            } else {
-                merged.provider
-            },
-            attempts: attempts + merged.attempts,
+            profile,
+            provider,
+            attempts,
         })
     }
 
@@ -277,7 +402,14 @@ impl ModelSummaryCompactor {
                 request
                     .source_events
                     .iter()
-                    .map(|event| event.to_index_dict(INDEX_PREVIEW_CHARS))
+                    .filter_map(|event| {
+                        request
+                            .references
+                            .reference_of(&event.event_id)
+                            .map(|reference| {
+                                event.to_ref_index_dict(reference, INDEX_PREVIEW_CHARS)
+                            })
+                    })
                     .collect(),
             ),
         );
@@ -368,6 +500,8 @@ struct StructuredRequest<'a> {
     operation: &'a str,
     chunk_index: i64,
     chunk_count: i64,
+    /// 事件索引与上次摘要都说短引用（`E1`…），真 ID 不发给模型。
+    references: &'a EventRefs,
 }
 
 /// 读取摘要提示词模板；空模板按空串返回（提示词组装方负责判定）。

@@ -21,7 +21,7 @@ use omnicrawl_protocol::ProviderWarning;
 use serde_json::Value;
 
 use super::ner::NerLayer;
-use super::plan_cache::{stage_counter_field, MaskPlanBuilder, MaskPlanCache};
+use super::plan_cache::{stage_counter_field, MaskPlanBuilder, MaskPlanCache, PlanSpan};
 use super::rules::{scan_pattern_rules, shannon_entropy_bits, PatternRule};
 use super::{match_placeholder, DesensitizationStats, PlaceholderCycle, PLACEHOLDER_MARKER};
 
@@ -550,8 +550,29 @@ impl MaskContext<'_> {
         let cache = self.plan_cache.clone()?;
         let plan = cache.get(text)?;
         let mut result = text.to_string();
-        for stage in &plan.stages {
-            for span in stage.iter().rev() {
+        for (stage_index, stage) in plan.stages.iter().enumerate() {
+            // 阶段内按起点降序应用：区间替换会改变长度，靠后区间的坐标只在它右侧文本未被动过时成立。
+            // 规则层 / 熵兜底层 / NER 层逆序应用替换、记录顺序也是降序；结构层正序记录，
+            // 靠这里排序纠正。不看记录顺序，是因为各阶段的记录方向并不一致。
+            let mut ordered: Vec<&PlanSpan> = stage.iter().collect();
+            ordered.sort_by(|left, right| right.start.cmp(&left.start));
+            for span in ordered {
+                // 区间必须先与当前文本对齐再切片；不对齐就按未命中收场。
+                //
+                // 为什么不只是「防御式编程」：计划与当前文本一旦错位，下标就会落在错误位置。
+                // Python 侧下标是码点，偏了只会取到错值、再由下面的序号比对判为失效；
+                // Rust 侧下标是字节，偏了会落在多字节字符中间 —— `panic = "abort"` 下直接
+                // 干掉整个内核进程。真实现场：一段带中文地名的文本第二次屏蔽时命中计划，
+                // 内核静默退出。
+                if span.start > span.end
+                    || span.end > result.len()
+                    || !result.is_char_boundary(span.start)
+                    || !result.is_char_boundary(span.end)
+                {
+                    report_plan_misalignment(text, stage_index, span, &result);
+                    cache.note_invalid();
+                    return None;
+                }
                 let value = result[span.start..span.end].to_string();
                 let before = self.stats.values_masked;
                 let placeholder = self.placeholder_for(&value);
@@ -570,6 +591,43 @@ impl MaskContext<'_> {
         }
         Some(result)
     }
+}
+
+/// 计划与文本不对齐时的诊断（默认关闭，`OMNICRAWL_MASK_PLAN_DIAG=1` 打开）。
+///
+/// 这条路径上的失配过去是静默的：Python 侧下标是码点，错位只取错值；Rust 侧是字节，
+/// 错位会 `panic` 打断整个内核进程。现在失配一律退回完整屏蔽，但要能查到「为什么失配」，
+/// 所以留一个只打长度与位置的开关（不打印文本正文，只给一个很短的转义窗口）。
+fn report_plan_misalignment(
+    text: &str,
+    stage_index: usize,
+    span: &super::plan_cache::PlanSpan,
+    result: &str,
+) {
+    // 开关只读一次：失配在 CJK 文本上是常规路径（见上），不能让每段文本都去查环境变量。
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| {
+        std::env::var("OMNICRAWL_MASK_PLAN_DIAG").ok().as_deref() == Some("1")
+    }) {
+        return;
+    }
+    let key = super::plan_cache::text_key(text);
+    let key_hex: String = key[..6].iter().map(|byte| format!("{byte:02x}")).collect();
+    let window_start = span.start.saturating_sub(8).min(result.len());
+    let window_end = (window_start + 16).min(result.len());
+    let window = result
+        .get(window_start..window_end)
+        .map(|slice| slice.escape_debug().to_string())
+        .unwrap_or_else(|| "<窗口本身不是字符边界>".to_string());
+    eprintln!(
+        "[kernel] [mask-plan] 计划与文本不对齐，已退回完整屏蔽：key={key_hex} text_len={} result_len={} stage={stage_index} span={}..{} seq={} counter={:?} window={window:?}",
+        text.len(),
+        result.len(),
+        span.start,
+        span.end,
+        span.seq,
+        span.counter
+    );
 }
 
 /// 按阶段标签把「本周期首次登记」计入对应计数口径。
@@ -692,6 +750,21 @@ fn mask_ner_text(text: &str, ctx: &mut MaskContext<'_>, layer: &NerLayer) -> Str
     if byte_spans.is_empty() {
         return text.to_string();
     }
+    // 重叠实体只保留先命中的一条（与规则层「重叠区间由先命中者占位」同一口径）。
+    // NER 解码本身通常不产重叠；这里兼作兜底，保证「记下的计划一定能逆序原地重放」——
+    // 重叠会让后面那条的坐标在替换过程中失效，Python 侧下标是码点只取错值，
+    // Rust 侧是字节则会 panic。
+    let mut accepted: Vec<(usize, usize)> = Vec::with_capacity(byte_spans.len());
+    for (start, end) in byte_spans {
+        if accepted
+            .iter()
+            .any(|(known_start, known_end)| start < *known_end && *known_start < end)
+        {
+            continue;
+        }
+        accepted.push((start, end));
+    }
+    let byte_spans = accepted;
     ctx.begin_stage("ner");
     let mut result = text.to_string();
     for (start, end) in byte_spans.iter().rev() {
@@ -1428,6 +1501,34 @@ mod plan_cache_tests {
         assert_eq!(stats.lookups, 1);
     }
 
+    /// 计划坐标落进多字节字符中间时必须按未命中收场，而不是直接切片。
+    ///
+    /// Rust 的 `String` 下标是字节，错位就会落在多字节字符中间；release 档是
+    /// `panic = "abort"`，一次 panic 会把整个内核进程带走（现场表现为「内核进程已退出」）。
+    /// 这类失配在 CJK 文本里第一次真实发生过，这里把它钉住。
+    #[test]
+    fn misaligned_plan_falls_back_instead_of_panicking() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let text = "API_KEY=A1b2C3d4E5f6G7h8 广东省".to_string();
+        let province = text.find('省').expect("用例包含多字节字符");
+        cache.put(
+            &text,
+            MaskPlan {
+                stages: vec![vec![PlanSpan {
+                    start: province + 1,
+                    end: province + 2,
+                    seq: 1,
+                    counter: String::new(),
+                }]],
+            },
+        );
+        let expected = run(&[text.as_str()], None);
+        let replayed = run(&[&text], Some(Arc::clone(&cache)));
+        assert_eq!(replayed, expected, "失配后回落到完整屏蔽");
+        assert_eq!(cache.stats().invalid, 1);
+        assert_eq!(cache.stats().hits, 0, "失配的那次记作未命中");
+    }
+
     /// 值类型规则层与熵兜底同样按阶段记录：命中后各层计数口径不变。
     #[test]
     fn stage_counters_survive_replay() {
@@ -1438,5 +1539,24 @@ mod plan_cache_tests {
         let stats = cache.stats();
         assert_eq!(stats.hits, 1, "邮箱命中落在规则阶段，计划可重放");
         assert_eq!(stats.invalid, 0);
+    }
+
+    /// 同层多区间（规则层多命中）必须能命中缓存：阶段内的区间逆序记录，重放需按同一方向应用。
+    ///
+    /// 修复前的重放会正序消费这些区间：前一个占位符与原文长度不同，后一个区间的坐标随之偏掉，
+    /// 计划被判失效——这类文本永远命不中缓存，白白损失速度。
+    #[test]
+    fn multi_span_rules_stage_replays_without_misalignment() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let first = ["alice", "@", "corp.local"].concat();
+        let second = ["bob", "@", "corp.local"].concat();
+        let text = format!("联系 {first} 与 {second}");
+        let outputs = run(&[&text, &text], Some(Arc::clone(&cache)));
+        assert_eq!(outputs[0], outputs[1], "重放结果必须与首次屏蔽一致");
+        assert!(!outputs[0].contains(&first) && !outputs[0].contains(&second));
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1, "同层多区间的计划也要能重放");
+        assert_eq!(stats.invalid, 0, "重放不应错位");
+        assert_eq!(stats.misses, 1);
     }
 }

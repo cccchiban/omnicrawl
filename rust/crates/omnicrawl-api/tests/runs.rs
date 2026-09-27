@@ -217,6 +217,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         plugins: None,
         // 无审查模型：review 模式下的需审查调用按 fail-closed 拒绝。
         review: None,
+        prompt: None,
     }
 }
 

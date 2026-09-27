@@ -12,6 +12,8 @@
 //! 点击目标的解析不能只看「第几条记录」——同一条记录会折成多行，因此命中信息跟着
 //! 显示行一起产出。
 
+use std::cell::Ref;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -86,13 +88,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     }
     let text = text_area(area);
-    let lines = display_lines(state, text.width);
-    let (start, end) = window_range(lines.len(), text.height as usize, state.scroll_from_bottom);
+    // 窗口只取屏幕上真的要看的那几行：成本与总行数（2000 行）无关。
+    let visible = visible_window(
+        state,
+        text.width,
+        text.height as usize,
+        state.scroll_from_bottom,
+    );
     // 可见窗口内套上选区反显（鼠标拖选）；没有选区时就是原行。
-    let window: Vec<Line<'static>> = lines[start..end]
+    let window: Vec<Line<'static>> = visible
+        .lines
         .iter()
         .enumerate()
-        .map(|(offset, rendered)| match selection_columns(state, start + offset) {
+        .map(|(offset, rendered)| match selection_columns(state, visible.start + offset) {
             Some((from, to)) => highlight_columns(rendered.line.clone(), from, to),
             None => rendered.line.clone(),
         })
@@ -101,7 +109,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     render_scrollbar(
         frame,
         area,
-        lines.len(),
+        visible.total,
         text.height as usize,
         state.scroll_from_bottom,
     );
@@ -205,16 +213,20 @@ pub fn selection_text(state: &AppState, width: u16) -> Option<String> {
         return None;
     }
     let ((start_line, start_col), (end_line, end_col)) = selection.normalized();
-    let lines = display_lines(state, width);
-    if start_line >= lines.len() {
+    let cache = cache_of(state, width);
+    let total = cache.visible_len();
+    if start_line >= total {
         return None;
     }
-    let last = end_line.min(lines.len().saturating_sub(1));
+    // 只取选区覆盖的那几行，不再为了复制而重建整段会话。
+    let last = end_line.min(total.saturating_sub(1));
+    let lines = cache.visible_slice(start_line, last + 1);
     let mut parts: Vec<String> = Vec::new();
-    for index in start_line..=last {
+    for (offset, line) in lines.iter().enumerate() {
+        let index = start_line + offset;
         let from = if index == start_line { start_col } else { 0 };
         let to = if index == last { end_col.max(1) } else { usize::MAX };
-        parts.push(slice_columns(&lines[index].line, from, to));
+        parts.push(slice_columns(&line.line, from, to));
     }
     while parts.first().is_some_and(|line| line.trim().is_empty()) {
         parts.remove(0);
@@ -275,57 +287,247 @@ fn render_scrollbar(
     frame.render_stateful_widget(bar, column, &mut scrollbar);
 }
 
-/// 全部记录的显示行（已按宽度折行）。
-///
-/// 没有任何记录时（空会话首屏）只展示欢迎 Logo，与 Python 侧 `#welcome-logo`
-/// 在首条消息出现前可见、清空会话后重新出现的语义一致。
-///
-/// 末尾追加运行状态行（对映 `.message.runtime-status-message`）：它是会话流里的
-/// 最后一条临时消息，因此会随消息一起滚动。
-pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
-    let mut lines = build_display_lines(state, width);
-    // 会话区显示上限：只保留**最新的** 2000 行，更早的内容不再显示（用户要求）。
-    if lines.len() > CONVERSATION_MAX_LINES {
-        lines.drain(..lines.len() - CONVERSATION_MAX_LINES);
-    }
-    lines
-}
-
 /// 会话区显示行数上限（用户要求 2000 行，超出部分不再显示）。
 pub const CONVERSATION_MAX_LINES: usize = 2000;
 
-/// 未截断的全量显示行（[`display_lines`] 在其上做 2000 行截断）。
-fn build_display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
-    if state.records.is_empty() {
-        return welcome_logo_lines(state, width);
+/// 会话区显示行的**分块增量缓存**（性能核心）。
+///
+/// 每条记录渲染出的显示行单独存一块，块与 `AppState::records` 的前缀一一对应；
+/// 只有被打上脏标记的记录之后的部分才会重算。于是：
+///
+/// - 流式追加正文只重算**最后一条记录**，而不是每次增量都重排整段会话；
+/// - 帧渲染、鼠标命中、选区抽取与滚动条计算共用同一份行，不再各自重建；
+/// - 2000 行上限只在取窗口时剪裁，不复制整份行。
+///
+/// 缓存装在 `AppState` 里（`RefCell`）是因为渲染路径只拿得到 `&AppState`，
+/// 与 `runtime_esc_area` 用 `Cell` 是同一思路。
+#[derive(Default)]
+pub struct ConversationCache {
+    /// 缓存对应的文本区宽度：宽度变了整块重算（软折行结果依赖列宽）。
+    width: u16,
+    /// 缓存的是「空会话首屏的欢迎 Logo」还是记录流：两者是两套内容，切换时整块重算。
+    empty: bool,
+    /// 块 i = 记录 i 的显示行（含它前面那条分隔空行）；空会话时只有一块 Logo。
+    chunks: Vec<Vec<DisplayLine>>,
+    /// 块 i 的起始显示行号（未截断的行号空间）。
+    starts: Vec<usize>,
+    /// 未截断的总显示行数（记录流含末尾那条空行）。
+    total: usize,
+    /// 还需要重算的起始块下标；等于 `chunks.len()` 时缓存是干净的。
+    dirty_from: usize,
+    /// 已重算的记录块数（**只给测试**：钉住「流式只重算最后一条」的性能约定）。
+    #[cfg(test)]
+    pub rebuilds: usize,
+}
+
+impl ConversationCache {
+    /// 标记第 `index` 条记录（含）之后需要重算。
+    pub fn mark_record_dirty(&mut self, index: usize) {
+        self.dirty_from = self.dirty_from.min(index);
     }
-    let width = width.max(1) as usize;
-    let mut lines: Vec<DisplayLine> = Vec::new();
-    for (index, record) in state.records.iter().enumerate() {
-        // 「思考显示」关闭时思考段整段不出现（连它上面那行空行也不占位）。
-        if matches!(record, Record::Reasoning(_)) && !state.show_thinking {
-            continue;
-        }
-        lines.push(DisplayLine::plain(Line::raw("")));
-        match record {
-            Record::User(text) => push_user(&mut lines, text, width),
-            Record::Assistant(text) => push_assistant(&mut lines, text, width),
-            Record::Reasoning(text) => push_reasoning(
-                &mut lines,
-                text,
-                width,
-                index,
-                state.is_reasoning_expanded(index),
-            ),
-            Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
-            Record::Tool(card) => push_tool(&mut lines, card, width, state),
-            Record::SubagentTree(tree) => push_subagent_tree(&mut lines, tree),
-            Record::SubagentConversation(panel) => {
-                push_subagent_conversation(&mut lines, panel, width)
+
+    /// 整块失效：记录被清空/重放、全局开关（思考显示、展开态）变化时用。
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty_from = 0;
+    }
+
+    /// 会话区被 2000 行上限裁掉的行数。
+    fn trimmed_offset(&self) -> usize {
+        self.total.saturating_sub(CONVERSATION_MAX_LINES)
+    }
+
+    /// 应用 2000 行上限之后仍可见的显示行数。
+    fn visible_len(&self) -> usize {
+        self.total.min(CONVERSATION_MAX_LINES)
+    }
+
+    /// 取可见行区间 `[start, end)`（行号是「裁掉旧行之后」的空间）。
+    ///
+    /// 只复制这一段：复制量与窗口高（屏幕上真的要看的那几行）成正比，与总行数无关。
+    fn visible_slice(&self, start: usize, end: usize) -> Vec<DisplayLine> {
+        let end = end.min(self.visible_len());
+        let start = start.min(end);
+        let offset = self.trimmed_offset();
+        let mut out: Vec<DisplayLine> = Vec::with_capacity(end - start);
+        let mut from = offset + start;
+        let to = offset + end;
+        for (chunk_index, chunk) in self.chunks.iter().enumerate() {
+            let chunk_start = self.starts[chunk_index];
+            let chunk_end = chunk_start + chunk.len();
+            if chunk_end <= from {
+                continue;
+            }
+            if chunk_start >= to {
+                break;
+            }
+            let begin = from.max(chunk_start) - chunk_start;
+            let finish = to.min(chunk_end) - chunk_start;
+            out.extend(chunk[begin..finish].iter().cloned());
+            from = chunk_end;
+            if from >= to {
+                break;
             }
         }
+        // 末尾空行落在窗口里时补上（它不属于任何块）。
+        while out.len() + start < end {
+            out.push(DisplayLine::plain(Line::raw("")));
+        }
+        out
+    }
+
+    /// 把缓存同步到 `state.records` 的当前内容；只重算脏掉的块。
+    fn sync(&mut self, state: &AppState, width: u16) {
+        let width = width.max(1);
+        let empty = state.records.is_empty();
+        if self.width != width || self.empty != empty {
+            self.width = width;
+            self.empty = empty;
+            self.chunks.clear();
+            self.starts.clear();
+            self.total = 0;
+            self.dirty_from = 0;
+        }
+        if empty {
+            // 空会话首屏只画欢迎 Logo：内容只随入场动画变化（由 `mark_all_dirty` 触发重算）。
+            if self.chunks.is_empty() || self.dirty_from == 0 {
+                let lines = welcome_logo_lines(state, width);
+                #[cfg(test)]
+                {
+                    self.rebuilds += 1;
+                }
+                self.total = lines.len();
+                self.starts.clear();
+                self.starts.push(0);
+                self.chunks.clear();
+                self.chunks.push(lines);
+                self.dirty_from = 1;
+            }
+            return;
+        }
+        // 记录被回滚 / 重放而变少：多出来的块丢掉，并从新的尾部起重算。
+        if self.chunks.len() > state.records.len() {
+            self.chunks.truncate(state.records.len());
+            self.starts.truncate(state.records.len());
+            // 尾部被砍掉时 `total` 必须跟着收：此时 `dirty_from` 可能已经是「干净」的，
+            // 下面的早退分支不会再重算它。
+            self.total = self
+                .chunks
+                .last()
+                .map(|chunk| self.starts[self.chunks.len() - 1] + chunk.len())
+                .unwrap_or(0)
+                + 1;
+        }
+        self.dirty_from = self.dirty_from.min(self.chunks.len());
+        if self.dirty_from == self.chunks.len() && self.chunks.len() == state.records.len() {
+            return;
+        }
+        self.chunks.truncate(self.dirty_from);
+        self.starts.truncate(self.dirty_from);
+        let mut cursor = match self.dirty_from {
+            0 => 0,
+            last => self.starts[last - 1] + self.chunks[last - 1].len(),
+        };
+        for index in self.dirty_from..state.records.len() {
+            let chunk = record_lines(state, index, width);
+            #[cfg(test)]
+            {
+                self.rebuilds += 1;
+            }
+            self.starts.push(cursor);
+            cursor += chunk.len();
+            self.chunks.push(chunk);
+        }
+        // 记录流末尾还有一条空行（对映 Python 消息流段落之间的留白）。
+        self.total = cursor + 1;
+        self.dirty_from = state.records.len();
+    }
+}
+
+/// 取出会话区显示行缓存（必要时增量重建），返回只读句柄。
+///
+/// `sync` 只读 `records` / 展开态等字段，不会回头再借用缓存本身，因此这里
+/// 「先 `borrow_mut` 同步、再 `borrow` 读出」不会重入。
+fn cache_of(state: &AppState, width: u16) -> Ref<'_, ConversationCache> {
+    let cell = state.conversation_cache();
+    {
+        let mut cache = cell.borrow_mut();
+        cache.sync(state, width);
+    }
+    cell.borrow()
+}
+
+/// 全部记录的显示行（已按宽度折行，并应用 2000 行上限）。
+///
+/// 没有任何记录时（空会话首屏）只展示欢迎 Logo，与 Python 侧 `#welcome-logo`
+/// 在首条消息出现前可见、清空会话后重新出现的语义一致。
+pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
+    let cache = cache_of(state, width);
+    let len = cache.visible_len();
+    cache.visible_slice(0, len)
+}
+
+/// 会话区显示行总数（已应用 2000 行上限）。
+pub fn display_line_count(state: &AppState, width: u16) -> usize {
+    cache_of(state, width).visible_len()
+}
+
+/// 会话区当前可见窗口：滚动条、选区高亮与渲染共用同一套窗口数学。
+pub struct VisibleWindow {
+    /// 窗口首行在显示行里的下标。
+    pub start: usize,
+    /// 显示行总数（已应用 2000 行上限）。
+    pub total: usize,
+    /// 窗口内的显示行。
+    pub lines: Vec<DisplayLine>,
+}
+
+/// 取会话区可见窗口：只复制屏幕上真的要看的那几行，与总行数无关。
+pub fn visible_window(
+    state: &AppState,
+    width: u16,
+    height: usize,
+    scroll_from_bottom: usize,
+) -> VisibleWindow {
+    let cache = cache_of(state, width);
+    let total = cache.visible_len();
+    let (start, end) = window_range(total, height, scroll_from_bottom);
+    VisibleWindow {
+        start,
+        total,
+        lines: cache.visible_slice(start, end),
+    }
+}
+
+/// 单条记录的显示行：先放一条分隔空行，再按记录类型铺内容。
+///
+/// 「思考显示」关闭时思考段整块不出现（连它上面那行空行也不占位），因此这里可能返回空块。
+fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> {
+    let width = width.max(1) as usize;
+    let mut lines: Vec<DisplayLine> = Vec::new();
+    let Some(record) = state.records.get(index) else {
+        return lines;
+    };
+    if matches!(record, Record::Reasoning(_)) && !state.show_thinking {
+        return lines;
     }
     lines.push(DisplayLine::plain(Line::raw("")));
+    match record {
+        Record::User(text) => push_user(&mut lines, text, width),
+        Record::Assistant(text) => push_assistant(&mut lines, text, width),
+        Record::Reasoning(text) => push_reasoning(
+            &mut lines,
+            text,
+            width,
+            index,
+            state.is_reasoning_expanded(index),
+        ),
+        Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
+        Record::Tool(card) => push_tool(&mut lines, card, width, state),
+        Record::SubagentTree(tree) => push_subagent_tree(&mut lines, tree),
+        Record::SubagentConversation(panel) => {
+            push_subagent_conversation(&mut lines, panel, width)
+        }
+    }
     lines
 }
 
@@ -471,7 +673,7 @@ pub fn scroll_offset_for_row(state: &AppState, area: Rect, row: u16) -> Option<u
     if height == 0 {
         return Some(0);
     }
-    let total = display_lines(state, text.width).len();
+    let total = display_line_count(state, text.width);
     let max_offset = total.saturating_sub(height);
     if max_offset == 0 {
         return Some(0);
@@ -502,9 +704,17 @@ pub fn hit_test(
     row: usize,
 ) -> Option<LineHit> {
     let text = text_area(area);
-    let lines = display_lines(state, text.width);
-    let index = line_index(state, area, scroll_from_bottom, row)?;
-    lines.get(index).and_then(|line| line.hit.clone())
+    let cache = cache_of(state, text.width);
+    let (start, end) = window_range(
+        cache.visible_len(),
+        text.height as usize,
+        scroll_from_bottom,
+    );
+    let index = start.checked_add(row)?;
+    if index >= end {
+        return None;
+    }
+    cache.visible_slice(index, index + 1).into_iter().next()?.hit
 }
 
 /// 会话区第 `row` 行（区内相对行号）对应的显示行下标；越界返回 `None`。
@@ -517,8 +727,8 @@ pub fn line_index(
     row: usize,
 ) -> Option<usize> {
     let text = text_area(area);
-    let lines = display_lines(state, text.width);
-    let (start, end) = window_range(lines.len(), text.height as usize, scroll_from_bottom);
+    let total = display_line_count(state, text.width);
+    let (start, end) = window_range(total, text.height as usize, scroll_from_bottom);
     let index = start.checked_add(row)?;
     (index < end).then_some(index)
 }
@@ -1686,6 +1896,490 @@ mod tests {
         assert!(second.trim_start().starts_with('/'), "续行接着参数文本：{second:?}");
     }
 
+    // ---- 分块增量缓存：正确性与增量性 --------------------------------------------
+
+    /// 不走缓存的全量显示行（**只给下面对拍用**）。
+    ///
+    /// 与 `record_lines` + 2000 行上限同源，因此「缓存结果 == 这里的结果」足以证明
+    /// 增量重算没有漏掉任何一条记录的改动。
+    fn display_lines_uncached(state: &AppState, width: u16) -> Vec<DisplayLine> {
+        if state.records.is_empty() {
+            return welcome_logo_lines(state, width);
+        }
+        let mut lines: Vec<DisplayLine> = Vec::new();
+        for index in 0..state.records.len() {
+            lines.extend(record_lines(state, index, width));
+        }
+        lines.push(DisplayLine::plain(Line::raw("")));
+        if lines.len() > CONVERSATION_MAX_LINES {
+            lines.drain(..lines.len() - CONVERSATION_MAX_LINES);
+        }
+        lines
+    }
+
+    /// 单行 → `(文本, 命中目标)`：文本与交互一起对拍。
+    fn snapshot(lines: &[DisplayLine]) -> Vec<(String, Option<LineHit>)> {
+        lines
+            .iter()
+            .map(|line| (without_live_timers(&text_of(&line.line)), line.hit.clone()))
+            .collect()
+    }
+
+    /// 把「实时耗时」换成占位符。
+    ///
+    /// 缓存快照与全量重算快照是先后两次调用，运行中的卡片耗时必然差几毫秒
+    /// （`live_elapsed_seconds` 读的是墙钟），这不是缓存错位。
+    fn without_live_timers(text: &str) -> String {
+        use std::sync::OnceLock;
+        static TIMER: OnceLock<regex::Regex> = OnceLock::new();
+        let pattern = TIMER.get_or_init(|| {
+            regex::Regex::new(r"\d+(?:\.\d+)?(?:ms|s)|\d+m \d+s").expect("耗时正则")
+        });
+        pattern.replace_all(text, "<t>").to_string()
+    }
+
+    /// 断言增量缓存与「从零重算」逐行一致。
+    fn assert_cache_matches(state: &AppState, width: u16, label: &str) {
+        let cached = snapshot(&display_lines(state, width));
+        let fresh = snapshot(&display_lines_uncached(state, width));
+        assert_eq!(cached.len(), fresh.len(), "行数不一致（{label}）");
+        for (index, (left, right)) in cached.iter().zip(fresh.iter()).enumerate() {
+            assert_eq!(left, right, "第 {index} 行不一致（{label}）");
+        }
+    }
+
+    fn cache_rebuilds(state: &AppState) -> usize {
+        state.conversation_cache().borrow().rebuilds
+    }
+
+    fn running_tool_state() -> AppState {
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        state.begin_turn("t1".to_string(), "跑工具".to_string());
+        state
+    }
+
+    /// 超讨缩略阀值的工具输出：展开/收起真的会改变显示行。
+    fn long_output() -> String {
+        (1..=20)
+            .map(|index| format!("第 {index} 行输出\n"))
+            .collect()
+    }
+
+    /// 把真实会话里会出现的状态变化走一遍，每一步都对拍缓存与全量重算。
+    ///
+    /// 这个用例是增量失效的**总闸**：任何一个变更点忘了打脏标记，
+    /// 下一次取行时缓存就会与真实内容不一致，在这里被拓出来。
+    #[test]
+    fn cache_matches_a_full_rebuild_across_every_mutation() {
+        use omnicrawl_ipc::bridge::{
+            HostEvent, SubagentEventPayload, TextPayload, TodoUpdatePayload, ToolCallArgumentsPayload,
+            ToolCallStartedPayload, ToolEventPayload, ToolOutputCompressionPayload,
+            ToolStartedPayload,
+        };
+        let now = Instant::now();
+        let width = 64u16;
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+
+        // 空会话首屏的欢迎 Logo（含入场动画逐帧推进）。
+        assert_cache_matches(&state, width, "空会话 Logo");
+        state.logo.start(now);
+        for step in 0..6 {
+            if state.logo.is_playing() {
+                state.touch_conversation();
+                state.logo.tick(now + std::time::Duration::from_millis(40 * step));
+            }
+            assert_cache_matches(&state, width, "Logo 动画");
+        }
+
+        state.begin_turn("t1".to_string(), "第一个问题".to_string());
+        assert_cache_matches(&state, width, "begin_turn");
+
+        for chunk in ["第一段", "**加粗**", " `code`"] {
+            state.apply(
+                &HostEvent::Delta(TextPayload {
+                    text: chunk.to_string(),
+                }),
+                now,
+            );
+            assert_cache_matches(&state, width, "正文流式追加");
+        }
+        for chunk in ["想一下", "再想想"] {
+            state.apply(
+                &HostEvent::ReasoningDelta(TextPayload {
+                    text: chunk.to_string(),
+                }),
+                now,
+            );
+            assert_cache_matches(&state, width, "思考流式追加");
+        }
+
+        // 思考段展开/收起，以及「思考显示」开关（会整段增删行）。
+        state.toggle_reasoning_expanded(1);
+        assert_cache_matches(&state, width, "展开思考");
+        state.toggle_reasoning_expanded(1);
+        assert_cache_matches(&state, width, "收起思考");
+        let with_thinking = snapshot(&display_lines(&state, width));
+        state.set_show_thinking(false);
+        let hidden = snapshot(&display_lines(&state, width));
+        assert_cache_matches(&state, width, "关闭思考显示");
+        assert!(
+            hidden.len() < with_thinking.len(),
+            "关闭思考显示应当真的少掉思考段（否则这条用例是空的）"
+        );
+        state.set_show_thinking(true);
+        let shown = snapshot(&display_lines(&state, width));
+        assert_cache_matches(&state, width, "开启思考显示");
+        assert_eq!(shown, with_thinking, "重新开启应当完全回到原样");
+
+        // 工具调用的整条生命周期。
+        let call = omnicrawl_core::ToolCall {
+            name: "bash".to_string(),
+            arguments: json!({"command": "pytest -q"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            id: "c1".to_string(),
+            function_name: "bash".to_string(),
+        };
+        state.apply(
+            &HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "c1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "工具调用立卡");
+        for delta in ["{\"command\":", " \"pytest\""] {
+            state.apply(
+                &HostEvent::ToolCallArguments(ToolCallArgumentsPayload {
+                    call_id: "c1".to_string(),
+                    delta: delta.to_string(),
+                }),
+                now,
+            );
+            assert_cache_matches(&state, width, "参数逐段到达");
+        }
+        state.apply(
+            &HostEvent::ToolStarted(ToolStartedPayload {
+                step: 1,
+                call: call.clone(),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "工具开始执行");
+        state.apply(
+            &HostEvent::ToolOutputUpdate(ToolEventPayload {
+                call: call.clone(),
+                result: omnicrawl_core::ToolResult {
+                    ok: true,
+                    output: "一半输出\n".to_string(),
+                    full_output: String::new(),
+                    error_code: None,
+                    retryable: false,
+                },
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "工具输出增量");
+        state.apply(
+            &HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                call_id: "c1".to_string(),
+                tool: "bash".to_string(),
+                phase: "started".to_string(),
+                before_chars: 0,
+                after_chars: 0,
+                output: String::new(),
+                error: String::new(),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "压缩开始");
+        state.apply(
+            &HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                call_id: "c1".to_string(),
+                tool: "bash".to_string(),
+                phase: "finished".to_string(),
+                before_chars: 4096,
+                after_chars: 120,
+                output: long_output(),
+                error: String::new(),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "压缩完成（正文被替换）");
+        state.apply(
+            &HostEvent::ToolFinished(ToolEventPayload {
+                call: call.clone(),
+                result: omnicrawl_core::ToolResult {
+                    ok: true,
+                    output: long_output(),
+                    full_output: String::new(),
+                    error_code: None,
+                    retryable: false,
+                },
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "工具收口");
+
+        // 工具卡展开/收起：正文确实超过缩略阀值，两态的行数与提示行都不同。
+        let collapsed = snapshot(&display_lines(&state, width));
+        state.expand_tool("c1");
+        assert_cache_matches(&state, width, "展开工具卡");
+        assert_ne!(
+            collapsed,
+            snapshot(&display_lines(&state, width)),
+            "展开工具卡必须真的改变显示行（否则这条用例是空的）"
+        );
+        state.collapse_tool("c1");
+        assert_cache_matches(&state, width, "收起工具卡");
+
+        // 监视器批次、系统提示、会话区提示（协议 `turn.notice`）。
+        state.push_monitor_batch("m1", "running", "第一行\n第二行".to_string());
+        assert_cache_matches(&state, width, "监视器批次");
+        state.notice("一句系统提示".to_string());
+        assert_cache_matches(&state, width, "系统提示");
+        state.apply(
+            &HostEvent::Notice(omnicrawl_ipc::bridge::MessagePayload {
+                message: "检测到 1 处疑似畸形脱敏占位符，已按原样保留。".to_string(),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "会话区提示");
+
+        // 任务清单（画在输入块，但同一帧里不能把会话块带脏）。
+        state.apply(
+            &HostEvent::TodoUpdate(TodoUpdatePayload {
+                todos: json!([
+                    {"id": "1", "content": "第一步", "status": "completed"},
+                    {"id": "2", "content": "第二步", "status": "pending"},
+                ]),
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "任务清单更新");
+
+        // 子任务进度树：同一个批次反复更新（含耗时刷新）。
+        for (name, status) in [
+            ("subagent.task.queued", "queued"),
+            ("subagent.task.started", "running"),
+            ("subagent.task.completed", "completed"),
+        ] {
+            state.apply(
+                &HostEvent::SubagentEvent(SubagentEventPayload {
+                    name: name.to_string(),
+                    payload: json!({
+                        "task_id": "t1",
+                        "batch_id": "b1",
+                        "agent_type": "reviewer",
+                        "description": "审查",
+                        "status": status,
+                    }),
+                }),
+                now,
+            );
+            assert_cache_matches(&state, width, "子任务进度树");
+        }
+        state.refresh_subagent_trees();
+        assert_cache_matches(&state, width, "进度树耗时刷新");
+
+        // 子代理流式对话面板。
+        state.subagent_stream = true;
+        for name in [
+            "subagent.task.queued",
+            "subagent.turn.text",
+            "subagent.tool.started",
+            "subagent.tool.completed",
+            "subagent.task.completed",
+        ] {
+            state.apply(
+                &HostEvent::SubagentEvent(SubagentEventPayload {
+                    name: name.to_string(),
+                    payload: json!({
+                        "task_id": "t2",
+                        "batch_id": "b2",
+                        "agent_type": "reviewer",
+                        "text": "子代理说了一句话",
+                        "tool": "git",
+                        "arguments": {"action": "status"},
+                        "ok": true,
+                        "duration_seconds": 0.5,
+                        "output": "输出第一行\n输出第二行",
+                    }),
+                }),
+                now,
+            );
+            assert_cache_matches(&state, width, "子代理对话面板");
+        }
+        state.subagent_stream = false;
+
+        // 活跃卡片的活动耗时：每帧重算也不允许跑偏。
+        state.apply(
+            &HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "c2".to_string(),
+                tool: "read".to_string(),
+            }),
+            now,
+        );
+        state.tick_activity();
+        assert_cache_matches(&state, width, "运行中卡片的活动耗时");
+
+        // 滚动与拖选：只换窗口/加高亮，不能影响显示行本身。
+        for delta in [-3isize, 5, -1] {
+            state.scroll_by(delta);
+            assert_cache_matches(&state, width, "滚动");
+        }
+        state.begin_selection(1, 0);
+        state.extend_selection(3, 5);
+        assert_cache_matches(&state, width, "拖选");
+        state.clear_selection();
+        assert_cache_matches(&state, width, "清选区");
+
+        // 宽度变化会改变全部软折行结果：缓存必须整体重算。
+        for width in [40u16, 100, 40, 20, 72] {
+            assert_cache_matches(&state, width, "宽度变化");
+        }
+        let width = 72u16;
+
+        // 回合结束（清侧信道 + 收口运行中的卡片 + 可选暂停提示）。
+        state.apply(
+            &HostEvent::TurnFinished(omnicrawl_ipc::bridge::TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "最后一句话".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 1,
+                paused: true,
+            }),
+            now,
+        );
+        assert_cache_matches(&state, width, "回合结束");
+
+        // 流回滚会把最后一条正文整段抽掉。
+        state.apply(&HostEvent::Delta(TextPayload { text: "半截".to_string() }), now);
+        assert_cache_matches(&state, width, "回滚前补一段正文");
+        state.apply(&HostEvent::StreamRollback, now);
+        assert_cache_matches(&state, width, "流回滚");
+
+        // 直接改 `records`（宿主里也有这样的写法）：缓存要靠长度自己发现追加。
+        state.records.push(Record::Assistant("直接压进去的正文".to_string()));
+        assert_cache_matches(&state, width, "直接追加记录");
+        // 直接截断（不经过任何打脏 API）：行数与总长都要跟着收。
+        state.records.truncate(2);
+        assert_cache_matches(&state, width, "直接截断记录");
+
+        // 回合失败。
+        state.fail_turn("回合失败".to_string());
+        assert_cache_matches(&state, width, "回合失败");
+
+        // 回放历史 / 回放事件（整体重建）。
+        state.replay_history(&[json!({"role": "user", "content": "历史里的问题"}), json!({
+            "role": "assistant",
+            "content": "历史里的回答"
+        })]);
+        assert_cache_matches(&state, width, "回放历史");
+        state.replay_events(&[
+            json!({"type": "user_message", "payload": {"content": "事件里的问题"}}),
+            json!({"type": "assistant_message", "payload": {"content": "事件里的回答"}}),
+        ]);
+        assert_cache_matches(&state, width, "回放事件");
+
+        // 清空（`Ctrl+L` / `/new` 的路径）。
+        state.records.clear();
+        state.touch_conversation();
+        assert_cache_matches(&state, width, "清空会话");
+    }
+
+    /// 性能约定：缓存只在真的变脏时才重算，而且流式追加只重算**最后一条**记录。
+    ///
+    /// 这是「2000 行也不卡」的根据：若哪天有人把水位退化成「每次整块失效」，
+    /// 这里会直接失败。
+    #[test]
+    fn cache_recomputes_only_the_stale_records() {
+        let mut state = running_tool_state();
+        for index in 0..8 {
+            state.notice(format!("第 {index} 行"));
+        }
+        state.touch_conversation();
+        let _ = display_lines(&state, 60);
+        let baseline = cache_rebuilds(&state);
+        assert_eq!(baseline, state.records.len(), "首次渲染把每条记录各算了一遍");
+
+        // 内容没变时反复取行/取窗口：一次都不该重算。
+        for _ in 0..50 {
+            let _ = display_lines(&state, 60);
+            let _ = visible_window(&state, 60, 20, 0);
+            let _ = display_line_count(&state, 60);
+        }
+        assert_eq!(cache_rebuilds(&state), baseline, "空转刷新不应触发重算");
+
+        // 流式追加正文：只重算最后一条记录。
+        state.begin_turn("t2".to_string(), "第二个问题".to_string());
+        let _ = display_lines(&state, 60);
+        let after_turn = cache_rebuilds(&state);
+        assert_eq!(after_turn - baseline, 1, "追加记录只补算新记录");
+        for _ in 0..20 {
+            state.apply(
+                &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                    text: "片".to_string(),
+                }),
+                Instant::now(),
+            );
+            let _ = display_lines(&state, 60);
+        }
+        assert_eq!(
+            cache_rebuilds(&state) - after_turn,
+            20,
+            "每片正文只应重算一条记录"
+        );
+
+        // 宽度变了才整块重算。
+        let before = cache_rebuilds(&state);
+        let _ = display_lines(&state, 41);
+        assert_eq!(cache_rebuilds(&state) - before, state.records.len());
+    }
+
+    /// 可见窗口只复制屏幕上那几行：返回的行数就是窗口高，与总行数无关。
+    #[test]
+    fn visible_window_copies_only_the_screenful() {
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        for index in 0..3000 {
+            state.records.push(Record::Notice(format!("第 {index} 行")));
+        }
+        state.touch_conversation();
+        let window = visible_window(&state, 80, 12, 0);
+        assert_eq!(window.lines.len(), 12);
+        assert_eq!(window.total, CONVERSATION_MAX_LINES);
+        assert!(
+            text_of(&window.lines[10].line).ends_with("第 2999 行"),
+            "贴底时窗口倒数第二行是最新一条记录：{:?}",
+            text_of(&window.lines[10].line)
+        );
+        assert_eq!(
+            text_of(&window.lines[11].line),
+            "",
+            "最后一行是记录流末尾的空行"
+        );
+        // 滚到顶：窗口落在最新的 2000 行里的第一行（记录 2000 的正文行）。
+        let top = visible_window(&state, 80, 12, usize::MAX);
+        assert!(
+            text_of(&top.lines[0].line).ends_with("第 2000 行"),
+            "滚到顶是可见区的第一行：{:?}",
+            text_of(&top.lines[0].line)
+        );
+    }
 }
 
 #[cfg(test)]

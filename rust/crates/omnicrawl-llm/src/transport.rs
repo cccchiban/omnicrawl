@@ -7,6 +7,7 @@
 //! （不是整个响应体的总时限，否则长回复会被拦腰截断）。
 
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use ureq::http::Response;
@@ -69,6 +70,17 @@ pub fn build_agent() -> ureq::Agent {
         .http_status_as_error(false)
         .build()
         .into()
+}
+
+/// 进程级共享 agent：连接池与 TLS 会话跨回合、跨运行时复用。
+///
+/// 每个运行时各持一个 agent 时，每次重建运行时（回合边界、渠道切换）都会丢掉连接池，
+/// 于是每次模型请求都要重做 TCP 握手与 TLS 握手——这段开销全部落在「回车 → 首字」的
+/// 区间里。连接池按 `scheme://authority` 分键，不同 Base URL 之间不会串连接；
+/// 池里的连接取出前会探测存活，服务端已关闭的连接不会被复用。
+pub fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(build_agent)
 }
 
 pub fn send(

@@ -287,6 +287,12 @@ fn build_driver(
     let service = ContextCompactionService::new().with_compactor(Box::new(compactor));
     let mut driver =
         CompactionDriver::new(Arc::clone(&session.store), service, session.config.clone());
+    if let Some(compressor) = crate::compression::KernelCompressor::load(model) {
+        // 阈值触发的两段压缩用 Low 思考深度（用户要求），与逐条路径的配置无关。
+        driver = driver.with_dual_compaction(Box::new(
+            crate::dual_compaction::KernelDualCompaction::new(compressor.with_low_reasoning()),
+        ));
+    }
     if let Some(root) = session.memory_root.as_ref() {
         if let Ok(path) = session_memory_root(root, &session.session_id) {
             driver = driver.with_memory(MemoryStore::open(path));
@@ -305,6 +311,7 @@ pub fn compact_after_turn(
     last_request_input_tokens: i64,
     last_request_messages: &[Value],
     history_messages: &[Value],
+    task_hint: &str,
 ) -> Result<AfterTurnReport, String> {
     let driver = build_driver(session, model, api_key, last_request_messages)?;
     let boundary = TurnBoundary {
@@ -315,6 +322,8 @@ pub fn compact_after_turn(
         tool_schemas: &model.tools,
         usage,
         last_request_input_tokens,
+        workspace_root: session.workspace.as_deref().unwrap_or_default(),
+        task_hint: task_hint,
     };
     driver.after_turn(&boundary)
 }
@@ -396,4 +405,56 @@ fn failure_envelope(code: &str, message: &str) -> (bool, String) {
         "truncated": false,
     });
     (false, python_dumps_compact(&value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 宿主下发的压缩策略字段必须逐个落到 `CompactionConfig` 上。
+    ///
+    /// 这条契约曾静默失守：宿主握手时只发 `trigger_context_tokens`，`target_summary_tokens`
+    /// 留空就走内核默认的 2000，于是「0 = 无摘要预算上限」变成「只能写 2000 token」，
+    /// 摘要被完整性校验与预算互相卡死、每次压缩都以校验失败告终。
+    #[test]
+    fn host_compaction_settings_reach_the_driver_verbatim() {
+        let config = compaction_config(Some(&KernelCompactionConfig {
+            recent_turns: Some(6),
+            target_summary_tokens: Some(0),
+            next_user_reserve_tokens: Some(4096),
+            trigger_context_tokens: Some(204_800),
+            context_window_tokens: Some(1_024_000),
+            emergency_context_ratio: Some(0.85),
+            reasoning_effort: Some("low".to_string()),
+            preserve_exact_evidence: Some(true),
+            archive_compacted_events: Some(true),
+            auto_memory_recall: Some(true),
+        }));
+        assert_eq!(config.recent_turns, 6);
+        assert_eq!(
+            config.target_summary_tokens, 0,
+            "0 表示无预算上限，不能被默认值覆盖"
+        );
+        assert_eq!(config.next_user_reserve_tokens, 4096);
+        assert_eq!(config.trigger_context_tokens, 204_800);
+        assert_eq!(config.context_window_tokens, 1_024_000);
+        assert_eq!(config.emergency_context_ratio, 0.85);
+        assert_eq!(config.reasoning_effort, "low");
+        assert!(config.preserve_exact_evidence);
+        assert!(config.archive_compacted_events);
+        assert!(config.auto_memory_recall);
+    }
+
+    /// 缺字段（旧宿主不给整段配置）时保留内核默认值，不因缺项把配置清零。
+    #[test]
+    fn missing_compaction_fields_keep_the_kernel_defaults() {
+        let default = CompactionConfig::default();
+        let config = compaction_config(Some(&KernelCompactionConfig {
+            trigger_context_tokens: Some(50_000),
+            ..KernelCompactionConfig::default()
+        }));
+        assert_eq!(config.trigger_context_tokens, 50_000);
+        assert_eq!(config.target_summary_tokens, default.target_summary_tokens);
+        assert_eq!(config.recent_turns, default.recent_turns);
+    }
 }

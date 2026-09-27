@@ -17,8 +17,73 @@
 | `src/clipboard.rs` | 拖选复制的写剪切板（Windows 走宿主 Win32 `CF_UNICODETEXT` 实现，其余平台 `pbcopy`/`wl-copy`/`xclip`） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
-| `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
+| `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
+
+## 渲染与刷新（性能）
+
+全屏工作台的刷新按用户要求拆成**三块**（[`ui::RefreshVersions`](src/ui/mod.rs)），每块各有自己的
+内容版本号；事件循环按「三块是不是都自上次绘制以来没变」决定要不要整帧跳过绘制
+（`App::needs_redraw`）：
+
+| 块 | 内容 | 脏源 |
+| --- | --- | --- |
+| 会话 | 消息流（含欢迎 Logo、拖选高亮）与右缘滚动条 | 记录增删改、工具卡展开、思考显示、Logo 入场动画 |
+| 输入框 | 待决面板 + 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上边框的运行状态） | 键盘与鼠标输入、清单与队列变化、状态行 spinner |
+| 底部 | 单行轮播 HUD | 轮播换页与解密扫描（文本真的变了才置脏） |
+
+三块都干净时**一帧都不画**：空闲的 TUI 不再以 20fps 空转（以前每 50ms 都要把整段会话
+从头渲染一遍）。模态弹层（设置 / 配置对话 / 文件选择）铺满整屏，自己每帧重画。
+
+### 会话区的分块增量缓存
+
+[`ConversationCache`](src/ui/conversation.rs) 按**记录**分块缓存显示行；在此之前每帧都要把
+整段会话重新渲染一遍（Markdown + LaTeX 归一 + 代码高亮 + 文件 diff 预览），行数越多越慢：
+
+- 块 `i` = 第 `i` 条记录的显示行，与 `AppState::records` 的前缀一一对应；
+- 变更按下标打脏（`AppState::touch_record` / `touch_conversation`），只重算它之后的部分；
+  纯追加（新消息、流式分片落在最后一条）只补算新记录；
+- 帧渲染、鼠标命中、拖选抽取与滚动条计算都从同一份缓存里**只复制屏幕上那几行**，
+  成本与总行数无关；
+- 2000 行上限（`CONVERSATION_MAX_LINES`）只在取窗口时裁剪，不复制整份行。
+
+整块失效（`mark_all_dirty`）只留给这些情况：记录被清空或重放、`ui.show_thinking` 变化、
+文本区宽度变化、回合结束清侧信道。时间相关的量单独驱动：回合在跑时 `AppState::tick_activity`
+逐帧把运行中的工具卡重新置脏（标题里的耗时在变），空闲时什么都不做。
+
+实测（`--release`，201 条记录 / 顶到 **2000 行**上限的满会话，180 列宽 × 40 行窗口，
+`TestBackend` 计时；“改前”= 每次强制整块失效以复现旧行为）：
+
+| 指标 | 改前（每帧全量重算） | 改后 |
+| --- | --- | --- |
+| 取会话可见窗口 | 13.1ms | 11µs |
+| 整帧 `ui::render`（120×40） | 14.3ms | 0.41ms |
+| 流式一片增量到达后到上屏 | 全量重算 | 0.22ms（只重算最后一条记录） |
+| 空闲帧 | 每 50ms 重算一遍 | 一帧都不画 |
+
+### 事件循环的等待与唤醒
+
+三块刷新把「画不画」省下来了，但事件循环仍要决定「等多久」，这段等待直接加在
+「回车 → 首字」与「首字到达 → 上屏」上（`App::poll_budget`）：
+
+- 固定 50ms 节拍在回合进行中最多白等一整个节拍才处理刚到的帧；现在有活动
+  （回合在跑、有待轮询的后台结果）时按 `ACTIVE_POLL_INTERVAL`（20ms）短睡；
+- 欢迎 Logo 与轮播解密动画由 `AppState::next_animation_frame` 算出下一帧的到期时刻，
+  精确睡到那一刻，既不早醒空转也不掉帧；
+- 其余（真正空闲）睡到 `IDLE_POLL_INTERVAL`（250ms），键盘 / 鼠标 / 内核帧仍会立刻唤醒；
+- 终端尺寸只在首次与收到 `Event::Resize` 时读一次：Windows 上 `terminal.size()` 是控制台
+  往返，不必每帧问；
+- Windows 上进程启动时把系统计时器粒度抬到 1ms（`terminal::timer_resolution`，退出恢复）：
+  默认粒度约 15.6ms，睡 20ms 实际可能变成 31ms。
+
+以前的 14.3ms/帧 已经超过 16.7ms 的单帧预算，而且是在 20fps 下持续消耗；现在整帧 0.41ms，
+而且窗口成本与总行数无关。
+
+正确性由两条回归钉住：`cache_matches_a_full_rebuild_across_every_mutation` 把真实会话里会
+出现的变化（流式分片、工具卡全生命周期、展开/收起、清单、子代理进度树与对话面板、回滚、
+重放、清空、宽度变化…）走一遍，每一步都对拍「增量结果 == 从零重算」；
+`cache_recomputes_only_the_stale_records` 用 `ConversationCache::rebuilds`（仅测试可见）
+钉住「流式追加只重算一条记录、空转刷新一次都不重算」的性能约定。
 
 ## 工具执行层
 
@@ -58,6 +123,17 @@
 审批语义与 Python `_approve_tool_call` 对齐：`manual` 模式**只对 shell 命令（`bash` / `powershell`）与
 非只读 git 操作弹确认**，文件、搜索与后台监控类工具直接放行（`auto` 全部放行）。同一批审批完成后工具并发执行，
 最后按模型调用顺序回观察（顺序与数量都不能变）。`Esc` 取消会先回收正在跑的进程树。
+
+取消只针对当回合：工具表的取消令牌跨回合沿用（重建工具表、切换工作区都不换），所以新回合提交前
+（`dispatch_submission` 发 `turn.submit` 之前）会调用 `CancelToken::reset` 清掉上一回合的取消标记。
+不复位时 `Esc` 之后继续对话，每个 `bash` / `powershell` 都会在子进程刚起来时被判成「命令已取消」。
+
+内核进程意外退出（崩溃、被外部 `taskkill`、僵死后被杀）时不再「静默自杀」：宿主收尾当前回合、
+把原因写进消息流（`Record::Notice`）与运行状态行，并**停在原处**保留现场等一次按键——`Enter` /
+`Esc` / `Ctrl+Q` 三者等价，其余按键被冻住（输入框不再收字、也不再往死连接发帧）。
+停住而不直接退出，是因为原来 `quit = true` 之后 `main` 画完那一帧就离屏，用户既看不到原因、
+也留不住现场；会话数据本就在本地，状态行会一并给出 `omnicrawl --resume <会话 id>` 的恢复写法。
+（`tests/host_flow.rs` 钉住了这条：内核断开后 `quit` 仍为假、报告与指引到位、按键后才退出。）
 
 拒绝结果与 Python 对齐：文案取 `user_cancelled_reason`（「用户取消执行：<工具>。」），回观察时带
 `error_code = denied`，内核据此把这次拒绝落成会话事件（`tool_call_denied`）。
@@ -165,7 +241,7 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 - **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
 - **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
 - **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 插件 `workspace.switch.before`（拒绝即中止，旧 Worker 不动；失败时补发 `workspace.switch.error`）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。与 Python 的已知差异：`before`/`after` 由 `PluginHost::switch_workspace` 一次发出，因此钩子相对「候选装配」的先后与 Python 不同源（见「本阶段的边界」）。
-- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 进度树与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。
+- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 进度树与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。握手时下发的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled` 缺省开启时），`compaction` 由 `[context_compaction]` 整段映射（触发阈值优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）—— 内核不读配置文件，不给就等于回落默认值（摘要预算 2000 token、记忆回写关闭），用户配置形同没写。
   内核按 Python 的口径把工具事件一并落进转录：每次模型请求工具先落 `tool_call_requested`（公开参数 + 本批 assistant 原文的 `assistant_content` / 思考回传字段 / `function_name`），整批执行且输出预算/视觉/压缩处理过之后落 `tool_result`（`output` 展示全文、`model_output` 模型可见输出，超长输出由会话存储落 artifact），被拒绝的调用另有 `tool_call_denied`；因此回放出的历史页能还原工具卡，`/undo` 的 `event_ids` 也自然覆盖这些事件。已知缺口只剩两处：`tool_call_approved` 仍未落盘（审批在宿主侧完成，协议里还没有宿主→内核的审批通知），以及宿主协议观察不带 `ui_artifact`，事件里按 Python 缺省写 `{}`。子代理内部的工具调用**不落父会话**（Python 的 `persist_session_events=False` 口径）。
 - **异步内核往返**：命令层的接口是同步的、内核链路是异步帧，因此 `/undo`、`/compact` 与 `/review` 由宿主在进命令层之前拦下、异步下发（响应按请求 id 回填，状态行随回执收起）。`/review` 必须走异步：评审子 Agent 的工具批次要回到宿主执行，同步等待会与 `tool.batch` 互相卡死；它先在宿主侧跑 git 预检（复用命令层的 `check_review_preconditions`），回执到了先渲染报告、再发一条 `session.append` 把报告注入内核上下文（下一轮请求可见）。
 - **同步往返**：只读或本地毫秒级的几条用宿主侧快速往返（`/tasks`、`/task`、`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume`）；等待期间让路的帧收进 `deferred_frames`，下次 `drain_frames` 按原顺序处理，通知不丢。
@@ -278,6 +354,12 @@ OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字
 
 **压缩失败的提示**：`turn.tool_output_compression` 的 `failed` 阶段会带来内核备好的文案
 （`压缩超时（…）/ 压缩失败…`），卡片上用**红色**显示，与灰色的正常计量提示区分。
+
+**会话区提示（`turn.notice`）**：出网脱敏的还原告警（`检测到 N 处疑似畸形脱敏占位符…`、
+`模型返回了未注册的…`）说的是**已经落到对话里**的内容，因此内核把它发成 `turn.notice` 而不是
+`turn.status`，宿主写进会话流（`Record::Notice`，灰色一行），**不占用**输入框上边框的运行状态行——
+否则这条提示会顶掉「正在调用」，让人以为回合停了。其余告警（网关降级重试等）仍是进行中的
+状态，继续走状态行。
 
 **一张卡片一条调用**：流式阶段立过卡片后，批次执行时**就地更新同一张卡片**
 （同一 `call_id` 只保留一张），不会出现「流式那张永远停在 `调用中`」——这正是用户报的
@@ -402,7 +484,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
 | 模型 | 已实现（离线版） | 候选 = config.toml 的 profiles + models.toml 条目合成的渠道（`load_channel_configuration`），显示渠道名、取值是渠道 key；选定后写 `llm.active_model`（legacy 配置写 `llm.model`）并把模型 id + 整条渠道（Provider/协议/基地址/凭据变量名）推给内核，本会话即刻生效。**未迁**：Python 那套双列选择器（左列渠道 + 右列远端自动发现的模型） |
-| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**模型 ID 自动检测的凭据**：先读 `api_key_env` 指向的环境变量，没设时退回该行的内联密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径；只把密钥留在 config.toml 的用户也能拉到模型列表）。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
+| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**模型 ID 自动检测的凭据**：先读 `api_key_env` 指向的环境变量，没设时退回该行的内联密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径；只把密钥留在 config.toml 的用户也能拉到模型列表）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（与压缩页双列选择器同款的 `window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
 | 上下文 | 已实现 | 两个下拉：上下文长度（32K–2048K，折算到最近档）与压缩阈值（5%–95%，5% 一档，按当前窗口换算 Token）；写回 `llm.context_window_tokens` 与 `context_compaction.trigger_context_*` |
 | 推理强度 | 已实现 | 六档（关闭/低/中/高/超高/最大）；写回 `llm.reasoning_effort`，并经 `session.settings` 推给内核的生成选项 |
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
@@ -595,12 +677,31 @@ cargo test -p omnicrawl-tui
 分片到达节奏（排障用）：内核 `ProtocolSink` 每收到一个模型分片就发一条 `turn.delta` 并立即 flush
 （`Conn::send` 每帧 `write_all + flush`），宿主读线程逐行转发、界面每 50 ms 排空一次——**链路本身
 不做批处理**。本地复现：起一个分片间带延迟的假 SSE 端点，直接驱动内核二进制并打印 `turn.delta`
-的到达时刻（实测端点 450 ms 间隔 → 落点 94/547/1000 ms）。若界面上正文「整块一次性出现」，先怀疑
-网关把 SSE 攒成一整块，或模型先长时间思考再一次性吐正文（底行轮播的 `t/s` 会在末尾突刺）。
+的到达时刻（实测端点 450 ms 间隔 → 落点 94/547/1000 ms）。若界面上正文「整块一次性出现」，按下面
+三条依次排查：
+
+1. **`[desensitization] enabled = true` 时先看内核侧的脱敏装饰器**（曾真实踩过）：它一度把内层事件
+   全收进 `CollectSink`、等流读完再统一还原外发，于是分片间隔 250 ms 的四段增量会在**同一毫秒**
+   到达——表现就是「很久没反应，然后思考与正文一口气全蹦出来」。现在 `desensitization/live.rs` 的
+   `ForwardingSink` 逐条就地还原外发，并有回归用例钉住这条语义。**用 Python 侧对照时别被迷惑**：
+   Python 的 `DesensitizationRuntime.stream_turn` 本来就是 `yield from`，一直是流式的。
+2. 网关把 SSE 攒成一整块；
+3. 模型先长时间思考再一次性吐正文（底行轮播的 `t/s` 会在末尾突刺）。
+
+另外，**启用脱敏后的第一个回合**还要付一次 gitleaks 规则表构造钱（221 条正则编译，release 约 1.4 s、
+debug 约 7 s 量级）：这部分发生在发出请求**之前**，界面上是「提交后静默一段」。规则表是进程内
+`OnceLock` 常量，只有第一个回合付这一次；`gitleaks.rs` 已把它并行化（串行时 release 5.6 s、
+debug 27 s，实测很像是卡死）。
 
 测试分五层：
 
-- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、轮播装配与底部行截断、消息流各消息类型（用户标签/思考底色/工具卡无边框 + 正文来源与折叠规律）、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；
+- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、轮播装配与底部行截断、消息流各消息类型（用户标签/思考底色/工具卡无边框 + 正文来源与折叠规律）、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；**渲染热路径另有四条专门的回归**：
+  `ui::conversation::tests::cache_matches_a_full_rebuild_across_every_mutation` 把真实会话里会出现的
+  变化逐步对拍「增量显示行 == 从零重算」（哪个变更点漏打脏标记就会在这里失败）；
+  `cache_recomputes_only_the_stale_records` 钉住「流式追加只重算一条记录、空转刷新一次都不重算」；
+  `visible_window_copies_only_the_screenful` 钉住「取窗口只复制一屏」；
+  `state::tests::the_three_blocks_are_versioned_independently` 与 `idle_reads_never_mark_any_block_dirty`
+  钉住三块刷新互不牵连、只读刷新不置脏；
 - `tests/workspace_tools_parity.rs`：与 Python 真实现的对照（声明逐字、read/write/edit 用例、采样、
   已记录的定位缺口）；
 - `tests/search_tools_parity.rs`：list / find / grep / git 的对照（mtime 钉死、落盘随机文件名归一、
@@ -611,7 +712,7 @@ cargo test -p omnicrawl-tui
   3 例纯文本标题，每条都比对纯文本与 `(样式, 文本)` 运行段——diff 的 `+/−` 着色与
   「read / 记忆 / 知识库正文为空」两个约束都在运行段里）；
 - `tests/host_flow.rs`：脚本化假内核驱动完整宿主流程（握手、审批、真执行、提问、拒绝、慢工具超时收口、
-  后台命令监控的 start/poll/stop 三批、内核退出、斜杠命令分派：菜单补全→`/settings` 打开面板、`/quit` 退出、
+  后台命令监控的 start/poll/stop 三批、内核退出后停在现场等按键退出、斜杠命令分派：菜单补全→`/settings` 打开面板、`/quit` 退出、
   未支持命令给出原因而不发 `turn.submit`、`/tasks` 查询内核回执、`/undo` 异步下发与回执回填）；
 - `tests/render_smoke.rs`：`TestBackend` 渲染断言底部轮播/消息流（用户标签行、工具卡、计划条）/面板/输入卡与光标位置、滚动窗口与命令菜单（菜单紧贴输入卡上方）；
 - `tests/settings_screen.rs`：设置面板的 `TestBackend` 回归——两栏与准星边框随焦点转移、上下文候选

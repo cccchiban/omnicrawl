@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::event::SessionEvent;
-use crate::naming::{clean_title, COMPACT_SUMMARY_PREFIX};
+use crate::naming::{clean_title, COMPACT_SUMMARY_PREFIX, TOOL_CALL_SUMMARY_PREFIX};
 
 pub const TOOL_CALL_CONTEXT_PREFIX: &str = "工具调用请求：";
 pub const TOOL_RESULT_CONTEXT_PREFIX: &str = "工具执行结果：";
@@ -222,6 +222,17 @@ pub fn event_to_model_message(event: &SessionEvent) -> Option<Value> {
             Some(json_message(
                 "assistant",
                 &format!("{COMPACT_SUMMARY_PREFIX}{content}"),
+            ))
+        }
+        // 回合末的工具调用概括：整轮全部工具调用压成一段，替换掉原来的逐条请求与结果。
+        "tool_call_summary" => {
+            let content = payload.get("content").and_then(Value::as_str)?;
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(json_message(
+                "assistant",
+                &format!("{TOOL_CALL_SUMMARY_PREFIX}{content}"),
             ))
         }
         "tool_call_requested" => context_message(tool_call_context(payload)),

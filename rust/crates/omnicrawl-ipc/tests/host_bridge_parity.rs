@@ -21,12 +21,13 @@ const KERNEL_ORIGIN_EVENTS: &[&str] = &[
 ];
 
 /// **Rust 侧新增**（Python 没有对映）的事件：工具调用随模型流增量渲染、
-/// 工具输出压缩的阶段计量。Python 只在批次执行时才画卡片，也不外发压缩进度，
-/// 所以这三条没有 Python 回调可对应，断言时按「已声明但无回调」放行。
+/// 工具输出压缩的阶段计量、会话区提示（脱敏告警落点）。Python 只在批次执行时才画卡片，
+/// 也不外发压缩进度与这条提示，所以它们没有 Python 回调可对应，断言时按「已声明但无回调」放行。
 const RUST_ONLY_EVENTS: &[&str] = &[
     method::TURN_TOOL_CALL_STARTED,
     method::TURN_TOOL_CALL_ARGUMENTS,
     method::TURN_TOOL_OUTPUT_COMPRESSION,
+    method::TURN_NOTICE,
 ];
 
 /// Python 回调名 → 协议 v1 方法名。

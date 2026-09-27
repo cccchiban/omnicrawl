@@ -11,7 +11,8 @@ use omnicrawl_compaction::{SummaryAdapterSettings, SummaryModelAdapter};
 use omnicrawl_controllers::context_compaction::{SummaryModelCall, TokenUsageSample};
 use omnicrawl_llm::{ChatRequestInput, ModelRuntime, RuntimeError, TurnSink};
 use omnicrawl_protocol::{
-    ConversationMessage, GenerationOptions, ModelReply, ModelStreamEvent, Role, UsageReported,
+    conform_tool_names, tool_spec_from_openai_item, ConversationMessage, GenerationOptions,
+    ModelReply, ModelStreamEvent, Role, UsageReported,
 };
 use serde_json::{json, Value};
 
@@ -21,6 +22,7 @@ struct SeenRequest {
     system_prompt: String,
     message_count: usize,
     tool_count: usize,
+    tool_names: Vec<String>,
     tool_choice: String,
 }
 
@@ -40,6 +42,7 @@ impl ModelRuntime for FakeRuntime {
             system_prompt: input.system_prompt.to_string(),
             message_count: input.messages.len(),
             tool_count: input.tools.len(),
+            tool_names: input.tools.iter().map(|tool| tool.name.clone()).collect(),
             tool_choice: input.options.tool_choice.clone(),
         });
         sink.on_event(ModelStreamEvent::UsageReported(UsageReported {
@@ -116,6 +119,40 @@ fn summary_request_reuses_prefix_and_forbids_tools() {
         prefix.len() + 1,
         "请求 = 复用前缀 + 摘要提示词"
     );
+}
+
+#[test]
+fn dotted_mcp_tool_names_are_conformed_on_the_wire() {
+    // 回归：MCP 的 `server.tool` 当 `function.name` 原样发会被上游 400
+    // （`Invalid 'tools[0].function.name'`）。摘要请求必须与主请求同一套线上名。
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let tools = vec![
+        json!({"type": "function", "function": {"name": "fathom.search"}}),
+        json!({"type": "function", "function": {"name": "read"}}),
+    ];
+    let adapter = build_adapter(
+        Rc::clone(&seen),
+        vec![json!({"role": "user", "content": "用户原文"})],
+        tools.clone(),
+        128_000,
+    );
+    adapter
+        .call(&[json!({"role": "user", "content": "摘要提示词"})])
+        .expect("摘要请求成功");
+
+    let recorded = seen.borrow();
+    let request = recorded.first().expect("发出过一次请求");
+    assert_eq!(
+        request.tool_names,
+        vec!["fathom_search".to_string(), "read".to_string()],
+        "非法字符必须收敛成 `_`"
+    );
+
+    // 与主请求发的是同一组线上名：工具块逐字相同，前缀缓存不会被改写。
+    let declared: Vec<_> = tools.iter().filter_map(tool_spec_from_openai_item).collect();
+    let (expected, _) = conform_tool_names(&declared);
+    let expected: Vec<String> = expected.into_iter().map(|tool| tool.name).collect();
+    assert_eq!(request.tool_names, expected, "摘要请求的工具名必须与主请求同源");
 }
 
 #[test]

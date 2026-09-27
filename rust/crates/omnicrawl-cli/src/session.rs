@@ -40,7 +40,7 @@ use omnicrawl_ipc::bridge::{
     ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
     SessionRenameParams, SessionResumeParams, SessionSettingsParams, SubagentEventPayload,
     SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch,
-    ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload, ToolOutputCompressionPayload,
+    ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload,
     TurnCancelParams, TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
@@ -58,7 +58,7 @@ use omnicrawl_llm::{
 };
 use omnicrawl_protocol::{
     conform_tool_names, conversation_from_openai_messages, tool_spec_from_openai_item,
-    GenerationOptions, ModelReply, ModelStreamEvent, ToolSpec,
+    GenerationOptions, ModelReply, ModelStreamEvent, ToolNameMap, ToolSpec,
 };
 use serde_json::{json, Map, Value};
 
@@ -80,9 +80,11 @@ use omnicrawl_controllers::subagents::tasks::{
 use omnicrawl_controllers::subagents::worktrees::{
     artifact_lines, discard_guard, WorktreeArtifacts,
 };
+use omnicrawl_controllers::context_compaction::SourceEvent;
 use omnicrawl_session::{tool_result_message, utc_now, SessionListQuery, SessionStore};
 
-use crate::compression::{CompressionPhase, KernelCompressor};
+use crate::compression::KernelCompressor;
+use crate::turn_summary::{summarize_turn, TurnSummaryRequest};
 use crate::subagent::{PreparedTask, SubAgentExecution, SubAgentRuntime};
 use crate::vision_proxy::KernelVisionProxy;
 
@@ -175,6 +177,12 @@ struct Conn {
     background_receiver: mpsc::Receiver<BackgroundRequest>,
     /// 后台任务管理器：首次 `action=spawn` 时创建。
     tasks: Option<SubAgentTaskManager>,
+    /// 跨回合复用的模型运行时：按构建键缓存最后一个。
+    ///
+    /// 回合边界原本都会重建运行时，于是出网脱敏的逐消息缓存、屏蔽计划缓存与 ureq
+    /// 连接池全部清零，模型请求要重做 TCP + TLS 握手——这些都落在「回车 → 首字」区间。
+    /// 只保留一份：同一时刻只有一条模型配置在生效，换渠道/换 Key 时构建键变化即重建。
+    runtime_cache: Option<Rc<KernelModelRuntime>>,
 }
 
 /// 一个回合内的模型用量累计与最近一次请求的逐字消息。
@@ -266,6 +274,28 @@ impl Conn {
             Some(session) => session.switch_workspace(path).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// 取跨回合复用的模型运行时：构建键一致就复用，否则重建并替换缓存。
+    ///
+    /// `build` 只在未命中时调用一次；构建失败（缺凭据、协议不合法等）不写缓存，
+    /// 下一次请求会再试，行为与逐回合重建时一致。
+    fn model_runtime(
+        &mut self,
+        key: &RuntimeBuildKey,
+        build: impl FnOnce() -> Result<Box<dyn ModelRuntime>, LoopError>,
+    ) -> Result<Rc<KernelModelRuntime>, LoopError> {
+        if let Some(cached) = self.runtime_cache.as_ref() {
+            if cached.key == *key {
+                return Ok(Rc::clone(cached));
+            }
+        }
+        let runtime = Rc::new(KernelModelRuntime {
+            key: key.clone(),
+            runtime: build()?,
+        });
+        self.runtime_cache = Some(Rc::clone(&runtime));
+        Ok(runtime)
     }
 
     /// 完成握手：版本不匹配回 `-32001`。
@@ -474,6 +504,75 @@ struct KernelModelPort {
     usage: Rc<RefCell<TurnUsage>>,
     /// 本批 assistant 原文：工具批次落 `tool_call_requested` 时取协议字段。
     active_assistant: ActiveAssistantSlot,
+    /// 本回合的模型运行时句柄：从 [`Conn`] 的跨回合缓存里取（首帧惰性取一次）。
+    ///
+    /// 语义基准是 Python `ModelRuntimeManager.acquire_turn()`：一个回合只取一次快照，
+    /// 之后「首次请求 + 每次工具观察后的后续请求」共用同一份运行时。若每个请求都重建，
+    /// 出网脱敏装饰器的逐消息缓存（`memo`）与屏蔽计划缓存都会清零，同一段历史会被
+    /// 反复扫描；ureq 连接池也会被丢掉。
+    runtime: RefCell<Option<Rc<KernelModelRuntime>>>,
+    /// 本回合的请求侧派生数据（工具声明、生成选项）：两者在回合内不变，构建一次即可。
+    request: RefCell<Option<TurnRequestParts>>,
+}
+
+/// 一个可跨回合复用的运行时，连同它的构建键。
+///
+/// `key` 覆盖影响运行时构造的全部字段（含凭据），配置变了就地重建。
+struct KernelModelRuntime {
+    key: RuntimeBuildKey,
+    runtime: Box<dyn ModelRuntime>,
+}
+
+/// 运行时构建键：这些字段任一变化都必须重建运行时（凭据也在内，换 Key 要立刻生效）。
+///
+/// `session_id` 是会话级脱敏序号映射的绑定线索（`/new`、`/resume` 换会话时不能把上一条
+/// 会话的「序号 → 原文」映射带过去），因此它也是键的一部分。
+#[derive(Clone, PartialEq, Eq)]
+struct RuntimeBuildKey {
+    session_id: String,
+    provider: String,
+    protocol: String,
+    base_url: String,
+    model: String,
+    user_agent: String,
+    api_key_env: String,
+    context_window_tokens: i64,
+    api_key: String,
+}
+
+impl RuntimeBuildKey {
+    fn of(config: &KernelModelConfig, session_id: &str, api_key: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            provider: config.provider.clone(),
+            protocol: config.protocol.clone(),
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            user_agent: config.user_agent.clone(),
+            api_key_env: config.api_key_env.clone(),
+            context_window_tokens: config.context_window_tokens,
+            api_key: api_key.to_string(),
+        }
+    }
+}
+
+/// 回合内不变的请求侧派生数据。
+struct TurnRequestParts {
+    options: GenerationOptions,
+    tools: Vec<ToolSpec>,
+    name_map: ToolNameMap,
+}
+
+impl TurnRequestParts {
+    fn build(config: &KernelModelConfig) -> Result<Self, LoopError> {
+        let options = parse_options(config)?;
+        let (tools, name_map) = conform_tool_names(&parse_tools(config));
+        Ok(Self {
+            options,
+            tools,
+            name_map,
+        })
+    }
 }
 
 impl ReplySource for KernelModelPort {
@@ -487,11 +586,13 @@ impl ReplySource for KernelModelPort {
             usage.last_request_messages = messages.clone();
             usage.last_request_input_tokens = 0;
         }
-        let runtime = self.runtime()?;
-        let options = parse_options(&self.config)?;
-        // 线上名收敛：MCP 的 `server.tool`（以及资源名的 `:`/`/`）会被上游的
-        // `^[a-zA-Z0-9_-]+$` 拒掉，这里换成合法名并把模型回传的调用名还原。
-        let (tools, name_map) = conform_tool_names(&parse_tools(&self.config));
+        // 运行时在本回合内只构建一次，整段循环（含失败重试）都借用同一实例；
+        // 跨回合仍命中同一实例时连构建都省掉（见 `Conn::runtime_cache`）。
+        let runtime = self.runtime_handle()?;
+        let runtime: &dyn ModelRuntime = runtime.runtime.as_ref();
+        let parts = self.request_parts()?;
+        let (tools, name_map) = (&parts.tools, &parts.name_map);
+        let options = &parts.options;
         let conversation = conversation_from_openai_messages(messages);
         let identity = self.config.prompt_cache_identity.clone();
         let input = ChatRequestInput {
@@ -578,11 +679,42 @@ impl ReplySource for KernelModelPort {
 }
 
 impl KernelModelPort {
-    /// 凭据只从环境读；端点与协议缺省时用内核工厂的默认值。
+    /// 取本回合的模型运行时：命中本连接的缓存则直接复用，缺失或配置变了才重建。
     ///
-    /// 返回 trait 对象：Provider 实现与将来的装饰器（出网脱敏）都从这里换入。
-    fn runtime(&self) -> Result<Box<dyn ModelRuntime>, LoopError> {
-        build_model_runtime(&self.config)
+    /// 凭据只从环境读；端点与协议缺省时用内核工厂的默认值。
+    fn runtime_handle(&self) -> Result<Rc<KernelModelRuntime>, LoopError> {
+        if let Some(cached) = self.runtime.borrow().clone() {
+            return Ok(cached);
+        }
+        let api_key = read_api_key(&self.config)?;
+        let session_id = self
+            .conn
+            .borrow()
+            .session
+            .as_ref()
+            .map(|session| session.session_id.clone())
+            .unwrap_or_default();
+        let key = RuntimeBuildKey::of(&self.config, &session_id, &api_key);
+        let cached = self.conn.borrow_mut().model_runtime(&key, || {
+            build_model_runtime_with_key(&self.config, api_key)
+        })?;
+        *self.runtime.borrow_mut() = Some(Rc::clone(&cached));
+        Ok(cached)
+    }
+
+    /// 取本回合的请求侧派生数据（工具声明、生成选项）。
+    ///
+    /// 两者在回合内不变，而热路径上一轮会调用多次（每次工具观察之后都会再来一次）：
+    /// `KernelModelPort` 持有的是回合开始时定下的配置快照，回合中途不会被改写，
+    /// 因此构建一次即可。
+    fn request_parts(&self) -> Result<std::cell::Ref<'_, TurnRequestParts>, LoopError> {
+        if self.request.borrow().is_none() {
+            let built = TurnRequestParts::build(&self.config)?;
+            *self.request.borrow_mut() = Some(built);
+        }
+        Ok(std::cell::Ref::map(self.request.borrow(), |slot| {
+            slot.as_ref().expect("回合请求部件刚被写入")
+        }))
     }
 
     fn notify_retry(&self, message: String) {
@@ -697,9 +829,7 @@ impl TurnSink for ProtocolSink {
                 }));
             }
             ModelStreamEvent::ProviderWarning(warning) => {
-                connection.notify(HostEvent::Status(MessagePayload {
-                    message: warning.message,
-                }));
+                connection.notify(provider_warning_event(&warning));
             }
             // 工具调用随模型流一起给宿主：宿主先把卡片立起来、逐段补参数
             // （Python 只在批次执行时才画卡片，这是 Rust 侧刻意的增量渲染）。
@@ -722,6 +852,24 @@ impl TurnSink for ProtocolSink {
 
     fn cancelled(&self) -> bool {
         self.conn.borrow().cancel.load(Ordering::SeqCst)
+    }
+}
+
+/// Provider 告警 → 宿主事件。
+///
+/// 出网脱敏的还原类告警（`desensitization_*`）说的是一段**已经落到对话里**的内容
+/// （畸形/未注册占位符被原样保留），属于会话流里的一条提示，不是「正在做什么」的
+/// 运行状态；映射成 `turn.status` 会让它顶掉输入框上边框的状态行，甚至盖住
+/// 「正在调用」而看不出回合还在跑。因此它走 `turn.notice`，由宿主写进会话流。
+/// 其余告警（网关降级重试等）本就是进行中的状态，继续走状态行。
+fn provider_warning_event(warning: &omnicrawl_protocol::ProviderWarning) -> HostEvent {
+    let payload = MessagePayload {
+        message: warning.message.clone(),
+    };
+    if warning.code.starts_with("desensitization_") {
+        HostEvent::Notice(payload)
+    } else {
+        HostEvent::Status(payload)
     }
 }
 
@@ -941,14 +1089,10 @@ struct RemoteTools {
     turn_id: String,
     /// 隔离根：子任务把工具批次指到 worktree 里执行；主回合与共享子任务为 `None`。
     workspace_root: Option<String>,
-    /// 工具输出压缩旁路：配置未启用时为 `None`，此时整批观察原样返回。
-    compressor: Option<Rc<KernelCompressor>>,
     /// 独立视觉模型代理的连接配置：真有带图观察时才装配（`[vision]` 未启用时 `load` 返回 `None`）。
     vision_model: Option<KernelModelConfig>,
     /// 本轮 undo 账本：记录工具副作用，回合收尾时落 `turn_snapshot`。后台批次不记账。
     undo: Option<Rc<RefCell<crate::undo::TurnUndo>>>,
-    /// 本轮任务文本，作为压缩请求的任务背景。
-    task_hint: String,
     /// 本轮执行清单：`update_todos` 调用按内核投影写进来，供 run_guard 续跑判定读。
     todos: Option<Rc<RefCell<Vec<TodoItem>>>>,
     /// 工具事件落盘开关与来源：`Some` 时本批写 `tool_call_requested` / `tool_result`，
@@ -1106,66 +1250,8 @@ impl ToolBatchHost for RemoteTools {
             }
         }
 
-        // 超长工具观察交给压缩旁路：未启用、失败或没压小都保留原文。
-        if let Some(compressor) = &self.compressor {
-            let cancel_source = Rc::clone(&self.conn);
-            let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
-            if !cancelled() {
-                compressor.apply_observations(
-                    &mut ordered,
-                    &self.task_hint,
-                    &cancelled,
-                    &|phase| {
-                        let event = match phase {
-                            CompressionPhase::Started {
-                                call_id,
-                                tool,
-                                before_chars,
-                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
-                                call_id: call_id.to_string(),
-                                tool: tool.to_string(),
-                                phase: "started".to_string(),
-                                before_chars,
-                                after_chars: 0,
-                                output: String::new(),
-                                error: String::new(),
-                            }),
-                            CompressionPhase::Finished {
-                                call_id,
-                                tool,
-                                before_chars,
-                                after_chars,
-                                text,
-                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
-                                call_id: call_id.to_string(),
-                                tool: tool.to_string(),
-                                phase: "finished".to_string(),
-                                before_chars,
-                                after_chars,
-                                output: text.to_string(),
-                                error: String::new(),
-                            }),
-                            // 失败/超时也报给宿主：卡片上显示「压缩超时…」/「压缩失败…」。
-                            CompressionPhase::Failed {
-                                call_id,
-                                tool,
-                                before_chars,
-                                message,
-                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
-                                call_id: call_id.to_string(),
-                                tool: tool.to_string(),
-                                phase: "failed".to_string(),
-                                before_chars,
-                                after_chars: 0,
-                                output: String::new(),
-                                error: message.to_string(),
-                            }),
-                        };
-                        self.conn.borrow_mut().notify(event);
-                    },
-                );
-            }
-        }
+        // 工具输出压缩改成「回合结束整体概括」：批次内不再逐条压缩，这里原样保留观察，
+        // 由回合收尾统一处理（见 `run_session_tail`）。
         // `tool_result` 落盘（Python `_execute_tool_batch` 的落盘点在同一个位置）：写的是
         // **处理过**的观察，事件里的 output / model_output 与回填模型的文本同源；超长输出的
         // artifact 化由会话存储负责。被拒绝的调用也有结果事件（观察本身就是拒绝结果）。
@@ -1495,6 +1581,7 @@ fn run_background_task(
         batch_id: task.batch_id.clone(),
         agent_type: task.agent_type.clone(),
         stream: stream_conversation,
+        runtime: None,
     };
     let mut tools = BackgroundTools {
         sender: sender.clone(),
@@ -2186,6 +2273,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
             config,
             usage: Rc::clone(&usage),
             active_assistant: Rc::clone(&active_assistant),
+            runtime: RefCell::new(None),
+            request: RefCell::new(None),
         }),
         None => Box::new(RemoteModelPort {
             conn: Rc::clone(conn),
@@ -2193,10 +2282,6 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
             active_assistant: Rc::clone(&active_assistant),
         }),
     };
-    let compressor = model_config
-        .clone()
-        .and_then(|config| KernelCompressor::load(&config))
-        .map(Rc::new);
     // 本轮 undo 账本：工作区来自 initialize 的 session 配置，非 Git 仓库时自动不记账。
     let undo_workspace = {
         let connection = conn.borrow();
@@ -2221,10 +2306,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         conn: Rc::clone(conn),
         turn_id: turn_id.clone(),
         workspace_root: None,
-        compressor,
         vision_model: model_config.clone(),
         undo: Some(Rc::clone(&undo)),
-        task_hint: user_text.clone(),
         todos: Some(Rc::clone(&active_todos)),
         active_assistant: Some(active_assistant),
     };
@@ -2359,6 +2442,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
                     &run_guard,
                     &messages,
                     &final_text,
+                    &user_text,
                     &turn_id,
                 );
                 conn.borrow_mut().session = Some(session);
@@ -2515,6 +2599,75 @@ fn recover_context_overflow(
     projection
 }
 
+/// 回合末的整轮工具调用概括：把本轮全部工具调用压成一段写进转录。
+///
+/// 投影会据此剔除原来的逐条 `tool_call_requested` / `tool_result` 并插入概括文本；
+/// 未启用、没有调用或概括失败时什么都不写，上下文保持原样。
+fn summarize_turn_after_turn(
+    conn: &Rc<RefCell<Conn>>,
+    session: &KernelSession,
+    task_hint: &str,
+    turn_id: &str,
+) {
+    let model = conn.borrow().model.clone();
+    let Some(model) = model else {
+        return;
+    };
+    let Some(compressor) = KernelCompressor::load(&model) else {
+        return;
+    };
+    let events = match session.store.read_active_events(&session.session_id) {
+        Ok(events) => events,
+        Err(error) => {
+            eprintln!(
+                "[kernel] 读取会话事件失败，跳过本轮工具调用概括：{}",
+                error.message()
+            );
+            return;
+        }
+    };
+    let source: Vec<SourceEvent> = events
+        .into_iter()
+        .map(|event| SourceEvent {
+            event_id: event.event_id,
+            event_type: event.event_type,
+            payload: Value::Object(event.payload),
+        })
+        .collect();
+    let request = TurnSummaryRequest {
+        events: &source,
+        task_hint,
+        workspace_root: session.workspace.as_deref().unwrap_or_default(),
+        session_id: &session.session_id,
+    };
+    let Some(outcome) = summarize_turn(&compressor, &request) else {
+        return;
+    };
+    let payload = json!({
+        "content": outcome.content,
+        "covered_event_ids": outcome.covered_event_ids,
+        "archive_path": outcome.archive_path,
+        "tool_call_count": outcome.tool_calls,
+        "raw_chars": outcome.raw_chars,
+        "turn_id": turn_id,
+    });
+    if let Err(detail) = session.append("tool_call_summary", payload) {
+        eprintln!("[kernel] 会话写入工具调用概括失败：{detail}");
+        return;
+    }
+    // 本轮末一条状态：替代原先逐条工具卡上的「正在压缩…」，只报概括条数与原文位置。
+    let notice = if outcome.archive_path.is_empty() {
+        format!("已概括本轮 {} 次工具调用。", outcome.tool_calls)
+    } else {
+        format!(
+            "已概括本轮 {} 次工具调用，原文见：{}",
+            outcome.tool_calls, outcome.archive_path
+        )
+    };
+    conn.borrow_mut()
+        .notify(HostEvent::Status(MessagePayload { message: notice }));
+}
+
 /// 回合收尾：落会话事件（用户消息与最终回复）→ 跑一次压缩 → 通知提示并更新运行期历史。
 fn run_session_tail(
     conn: &Rc<RefCell<Conn>>,
@@ -2522,6 +2675,7 @@ fn run_session_tail(
     run_guard: &TurnRunGuard,
     working_messages: &[Value],
     final_text: &str,
+    task_hint: &str,
     turn_id: &str,
 ) {
     // `user_message` 已在发请求之前落盘（见 `run_turn`），这里只写本轮终态与续跑痕迹。
@@ -2553,6 +2707,7 @@ fn run_session_tail(
         }
     }
 
+
     let model = conn.borrow().model.clone();
     let Some(model) = model else {
         // 没有模型配置就没有可发的摘要请求：保留转录，历史按转录重建。
@@ -2579,6 +2734,7 @@ fn run_session_tail(
         last_request_input_tokens,
         &last_request_messages,
         working_messages,
+        task_hint,
     ) {
         Ok(report) => {
             if !report.compacted && !report.diagnostic.is_empty() {
@@ -2624,12 +2780,18 @@ fn run_session_tail(
                     }
                 }
             }
+            // 阈值触发的压缩已经把整轮工具调用概括过：它写在 `compact_summary` 边界里，
+            // 再写一条 `tool_call_summary` 只会重复。未触发时由这里补上回合末概括。
+            if !report.compacted {
+                summarize_turn_after_turn(conn, session, task_hint, turn_id);
+            }
         }
         Err(detail) => {
             eprintln!("[kernel] 上下文压缩失败，已跳过本回合：{detail}");
             if let Err(detail) = session.reload_history() {
                 eprintln!("[kernel] 重建运行期历史失败：{detail}");
             }
+            summarize_turn_after_turn(conn, session, task_hint, turn_id);
         }
     }
 }
@@ -3606,6 +3768,7 @@ pub fn run_stdio() -> Result<(), String> {
         background: background_sender,
         background_receiver,
         tasks: None,
+        runtime_cache: None,
         next_id: 0,
     }));
 
@@ -3721,23 +3884,14 @@ fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
             workspace_root,
             reply,
         } => {
-            // 后台子任务批次也走压缩旁路：模型连接取当前进程的协议配置。
-            let compressor = conn
-                .borrow()
-                .model
-                .clone()
-                .and_then(|config| KernelCompressor::load(&config))
-                .map(Rc::new);
             let mut tools = RemoteTools {
                 conn: Rc::clone(conn),
                 turn_id,
                 workspace_root,
-                compressor,
                 vision_model: conn.borrow().model.clone(),
                 undo: None,
                 // 后台子任务批次没有自己的执行清单（run_guard 只看主回合）。
                 todos: None,
-                task_hint: String::new(),
                 // 子代理的工具调用不落父会话：Python 在子代理循环里传
                 // `persist_session_events=False`。
                 active_assistant: None,
@@ -3846,13 +4000,19 @@ struct BackgroundModelPort {
     agent_type: String,
     /// 是否流式上报子代理对话（与工具端口同一开关）。
     stream: bool,
+    /// 本任务内的模型运行时：子代理回合同样会「首次请求 + 每次工具观察后再来一次」，
+    /// 复用同一实例才能保住出网脱敏的逐消息缓存（每次重建都会把 memo 清空重扫）。
+    runtime: Option<Box<dyn ModelRuntime>>,
 }
 
 impl ReplySource for BackgroundModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
         // 子代理的模型请求同样先过 `model.request.before`（由主循环代跑）。
         self.run_request_hook(messages)?;
-        let runtime = build_model_runtime(&self.config)?;
+        if self.runtime.is_none() {
+            self.runtime = Some(build_model_runtime(&self.config)?);
+        }
+        let runtime = self.runtime.as_ref().expect("运行时刚被构建");
         let options = parse_options(&self.config)?;
         // 与主回合同一套线上名收敛（子 Agent 也能拿到 MCP 工具）。
         let (tools, name_map) = conform_tool_names(&parse_tools(&self.config));
@@ -3976,9 +4136,7 @@ impl TurnSink for BackgroundSink {
             ModelStreamEvent::ReasoningDelta(delta) => {
                 Some(HostEvent::ReasoningDelta(TextPayload { text: delta.text }))
             }
-            ModelStreamEvent::ProviderWarning(warning) => Some(HostEvent::Status(MessagePayload {
-                message: warning.message,
-            })),
+            ModelStreamEvent::ProviderWarning(warning) => Some(provider_warning_event(&warning)),
             _ => None,
         };
         if let Some(event) = forwarded {
@@ -4058,7 +4216,9 @@ mod runtime_selection_tests {
 
 #[cfg(test)]
 mod session_tests {
-    use super::cancelled_turn_summary;
+    use super::{cancelled_turn_summary, provider_warning_event};
+    use omnicrawl_ipc::bridge::HostEvent;
+    use omnicrawl_protocol::ProviderWarning;
 
     #[test]
     fn cancelled_summary_counts_executed_tools() {
@@ -4082,6 +4242,23 @@ mod session_tests {
         assert_eq!(
             cancelled_turn_summary(&["  ".to_string()]),
             "（上一回合被取消，未生成最终回复，未执行任何工具）"
+        );
+    }
+
+    #[test]
+    fn desensitization_warnings_become_notices_not_status() {
+        let warning = ProviderWarning::new(
+            "desensitization_malformed",
+            "检测到 1 处疑似畸形脱敏占位符，已按原样保留。",
+        );
+        assert!(
+            matches!(provider_warning_event(&warning), HostEvent::Notice(_)),
+            "脱敏还原告警要进会话流，不能顶掉运行状态行"
+        );
+        let warning = ProviderWarning::new("prompt_cache_unsupported", "网关不支持缓存键。");
+        assert!(
+            matches!(provider_warning_event(&warning), HostEvent::Status(_)),
+            "网关降级告警仍是进行中状态"
         );
     }
 }

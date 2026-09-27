@@ -94,6 +94,19 @@ impl CancelToken {
         }
     }
 
+    /// 新回合开始：清掉上一回合的取消标记，让本回合的命令能真正执行。
+    ///
+    /// 令牌随工具表长期存活（registry 重建与工作区切换都刻意沿用同一份，见
+    /// `RegistryOptions::cancel`），所以「取消一个回合」不能把令牌永久置位——否则用户
+    /// 按 Esc 之后继续对话，每个 `bash` 都会在生成进程的瞬间被判定为已取消。
+    ///
+    /// 只清标记、**不动已登记的子进程**：正在收尾的旧回合进程由各自的调用路径注销，
+    /// `cancel` 之外还有 kill-on-close Job 兜底（宿主退出时由操作系统递归回收）；在这里
+    /// 清空列表反而会让那些进程从账上消失，之后再也回收不掉。
+    pub fn reset(&self) {
+        self.inner.cancelled.store(false, Ordering::SeqCst);
+    }
+
     fn register(&self, pid: u32) {
         self.inner
             .children
@@ -523,5 +536,44 @@ mod tests {
         cancel.cancel();
         assert!(cancel.is_cancelled());
         cancel.unregister(999_999);
+    }
+
+    #[test]
+    fn reset_clears_the_cancel_mark_for_the_next_turn() {
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(cancel.is_cancelled());
+        cancel.reset();
+        assert!(
+            !cancel.is_cancelled(),
+            "新回合必须能继续执行命令（Esc 后继续对话的回归）"
+        );
+    }
+
+    #[test]
+    fn a_turn_after_a_cancelled_one_really_runs() {
+        // 端到端最小回归：取消 → 复位 → 同一条命令必须真的跑起来并拿到正常退出码。
+        let env = |name: &str| std::env::var(name).ok();
+        if find_bash_executable(&env).is_none() {
+            // 没装 Git Bash 的机器上只能验到标记层；跨平台 CI 上必须真跑。
+            return;
+        }
+        let root = std::env::temp_dir().join("omnicrawl-tui-command-cancel-reset");
+        let _ = std::fs::create_dir_all(&root);
+        let runner = CommandRunner::new(&root, DEFAULT_COMMAND_TIMEOUT_SECONDS);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let cancelled = runner
+            .run_shell(&args(json!({"command": "echo hi"})), Shell::Bash, &cancel)
+            .expect("取消必须回结果而不是错误");
+        assert!(!cancelled.ok);
+        assert_eq!(cancelled.output, "命令已取消。");
+
+        cancel.reset();
+        let resumed = runner
+            .run_shell(&args(json!({"command": "echo hi"})), Shell::Bash, &cancel)
+            .expect("复位后必须能执行");
+        assert!(resumed.ok, "{}", resumed.output);
+        assert!(resumed.output.contains("退出码：0"), "{}", resumed.output);
     }
 }

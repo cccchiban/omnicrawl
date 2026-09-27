@@ -29,6 +29,7 @@ use crate::approval::ApprovalMode;
 use crate::host::{self, BatchContext, BatchStep, PendingBatch, TodoItem, VisionPayload, Waiting};
 use crate::kernel::KernelClient;
 use crate::plugins::PluginHost;
+use crate::prompt::PromptRuntime;
 use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::{RegistryOptions, ToolRegistry};
@@ -61,6 +62,11 @@ pub struct RunnerOptions {
     /// 审查模型（`approval.mode = review` 时用）；`None` 表示没有审查运行期，
     /// 此模式下需审查的调用会 fail-closed 拒绝。
     pub review: Option<ReviewOptions>,
+    /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
+    ///
+    /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
+    /// 与 Skill 索引算稳定前缀身份；`None` 时沿用 `model` 里的文本（嵌入与测试）。
+    pub prompt: Option<Arc<PromptRuntime>>,
 }
 
 /// 需要用户决定的交互：本地 API 接审批/提问的 HTTP，TUI 接键盘。
@@ -203,9 +209,24 @@ impl TurnRunner {
     }
 
     /// 握手：`initialize` 带上模型配置（内核自己发请求）、工具声明与可选的会话块。
+    ///
+    /// 有 `prompt` 装配结果时，system prompt 与 `context_messages` 以它为准（对映 TUI
+    /// 的同一套装配），`options.model` 里的文本只作为无装配运行期（嵌入/测试）的输入。
     pub fn handshake(&mut self, on_event: &mut dyn FnMut(HostEvent)) -> Result<(), String> {
         let mut model = self.options.model.clone();
         model.tools = self.registry.declarations();
+        if let Some(prompt) = self.options.prompt.clone() {
+            let tool_count = model.tools.len();
+            model.system_prompt = prompt.system_prompt();
+            model.context_messages = prompt
+                .context_messages_with_plugins(
+                    tool_count > 0,
+                    self.options.plugins.as_deref(),
+                    None,
+                    None,
+                )
+                .map_err(|error| format!("上下文装配失败：{error}"))?;
+        }
         // 稳定前缀身份必须在工具表就位后组装：`tool_schema_hash` 参与哈希，而
         // `options.model` 里从 `options_from_process` 拿到的工具表还是空的。
         model.prompt_cache_identity = self.prompt_cache_identity(&model);
@@ -254,19 +275,25 @@ impl TurnRunner {
 
     /// 组装稳定 prompt 前缀的身份指纹（`initialize.model.prompt_cache_identity`）。
     ///
-    /// 无头宿主（本地 API）当前不做 AGENTS.md / Skill 组装，system prompt 取自配置，
-    /// 因此项目规范与 Skill 索引按空集参与；这与发往模型的稳定前缀保持一致，
-    /// 同一会话内每轮得到同一个 `prompt_cache_key`。哈希算法复用
-    /// [`build_prompt_cache_identity`]，与 TUI 及 Python 逐字节对齐。
+    /// 有 `prompt` 装配结果时用**真实的**项目规范与 Skill 索引参与哈希——它们真的会进
+    /// `context_messages`，身份必须跟着它们走；无装配运行期（嵌入/测试）才按空集。
+    /// 哈希算法复用 [`build_prompt_cache_identity`]，与 TUI 及 Python 逐字节对齐。
     fn prompt_cache_identity(
         &self,
         model: &KernelModelConfig,
     ) -> std::collections::BTreeMap<String, String> {
+        let (project_instructions, skills) = match self.options.prompt.as_ref() {
+            Some(prompt) => (
+                prompt.project_instructions().unwrap_or_default(),
+                prompt.skill_metas(),
+            ),
+            None => (String::new(), Vec::new()),
+        };
         build_prompt_cache_identity(
             &model.system_prompt,
             &self.options.workspace_root,
-            "",
-            &[],
+            &project_instructions,
+            &skills,
             &[],
             &model.tools,
         )
@@ -441,6 +468,10 @@ impl TurnRunner {
         on_event: &mut dyn FnMut(HostEvent),
     ) -> Result<TurnOutcome, TurnError> {
         self.registry.set_monitor_scope(Some(turn_id));
+        // 新回合开始：清掉上一回合取消（`TurnControl::request_cancel`）留下的取消标记。
+        // 运行器与工具表跨回合复用（API 服务持有同一份 `TurnRunner`），不复位会让取消后的
+        // 下一个回合里所有 `bash` / `powershell` 一启动就被判定成已取消。
+        self.registry.cancel_token().reset();
         let id = self.kernel.next_id();
         let frame = Command::TurnSubmit(TurnSubmitParams {
             turn_id: turn_id.to_string(),

@@ -46,7 +46,11 @@ pub struct PlanSpan {
     pub counter: String,
 }
 
-/// 一次屏蔽的匹配计划：阶段按执行顺序排列，阶段内的区间按记录顺序（应用顺序）排列。
+/// 一次屏蔽的匹配计划：阶段按执行顺序排列，阶段内的区间都按**该阶段输入文本**的坐标记录。
+///
+/// 阶段内区间互不重叠（各层记录前已去重），但**记录顺序并不统一**：结构层正序记录；
+/// 规则层 / 熵兜底层 / NER 层是逆序应用替换（靠后的区间先换），记录顺序也就是逆序。
+/// 因此重放不能照搬记录顺序，必须显式按起点降序应用（见 `MaskContext::replay_plan`）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MaskPlan {
     pub stages: Vec<Vec<PlanSpan>>,

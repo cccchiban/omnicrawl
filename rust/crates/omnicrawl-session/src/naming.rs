@@ -17,6 +17,8 @@ use crate::error::SessionStoreError;
 pub const SESSION_EVENT_VERSION: u32 = 1;
 /// 压缩摘要写回会话时使用的正文前缀。
 pub const COMPACT_SUMMARY_PREFIX: &str = "会话压缩摘要：\n";
+/// 回合末工具调用概括写回上下文时使用的正文前缀。
+pub const TOOL_CALL_SUMMARY_PREFIX: &str = "本轮工具调用概括：\n";
 pub const MESSAGE_EVENT_TYPES: &[&str] = &["user_message", "assistant_message"];
 pub const MODEL_CONTEXT_EVENT_TYPES: &[&str] = &[
     "user_message",
