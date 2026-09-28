@@ -649,7 +649,8 @@ fn monitor_batches_start_poll_and_stop_a_background_task() {
 
     // 界面的增量日志（对映 Python `_refresh_monitor_events`）：适配器从游标 0 起读，
     // 把整批事件渲染成一张工具卡；游标推后后同一批事件不再重复追回。
-    // 用 `monitor:` 前缀把界面卡与工具调用卡（call_id="c1"）区分开。
+    // 同一个任务的后续批次也归并进同一张卡（Rust 侧刻意与 Python 不同：不逐批新卡），
+    // 用 `monitor:` 前缀既做归并键，也把界面卡与工具调用卡（call_id="c1"）区分开。
     let monitor_body = |harness: &Harness| -> Vec<String> {
         harness
             .app
@@ -1606,5 +1607,118 @@ fn pasted_multiline_text_is_folded_then_submitted_in_full() {
         submitted.params.clone().unwrap_or(Value::Null)["user_text"],
         json!(pasted),
         "提交的必须是还原后的原文"
+    );
+}
+
+/// 输入框的上下键回看：提交过的消息按 bash 式回看，未提交的草稿切走还能切回来。
+///
+/// 覆盖用户要求的四点：①上下键能取回之前发过的消息；②输入框里有文本时切走再切回
+/// 内容不丢；③已发消息记入历史、斜杠命令不记；④光标停在取回文本的末尾。
+#[test]
+fn composer_up_down_browses_sent_messages_and_restores_the_draft() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    // 两次真实提交（都不是斜杠命令）→ 进历史。每条提交后先把回合收尾，否则下一条
+    // 会按「生成期间 Enter」进排队队列而不是直接提交。
+    for (index, text) in ["第一问", "第二问"].into_iter().enumerate() {
+        harness.app.state.composer.insert(text);
+        harness.press(KeyCode::Enter);
+        let turn_id = format!("turn-{}", index + 1);
+        harness.send(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{{\"turn_id\":\"{turn_id}\",\
+             \"final_text\":\"\",\"reasoning\":\"\",\"model_turns\":1,\"tool_calls\":0,\"paused\":false}}}}\n"
+        ));
+        harness.expect_ready(
+            |app| !app.state.turn.is_running(),
+            "回合应当收尾",
+        );
+    }
+    let submitted: Vec<String> = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .filter_map(|frame| frame.params.clone())
+        .map(|params| params["user_text"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(submitted, vec!["第一问", "第二问"], "两次提交都应发给内核");
+
+    // 草稿：还没发出去的内容。
+    harness.app.state.composer.insert("半截草稿");
+
+    // 上键：回到最新一条已发消息，光标落在末尾（全角三字按显示宽度占 6 列）。
+    harness.press(KeyCode::Up);
+    assert_eq!(harness.app.state.composer.text(), "第二问");
+    assert_eq!(
+        harness.app.state.composer.cursor_position(80),
+        (0, 6),
+        "光标应在取回文本的末尾"
+    );
+    assert_eq!(
+        harness.app.state.scroll_from_bottom, 0,
+        "历史被消费时不该同时滚会话"
+    );
+
+    harness.press(KeyCode::Up);
+    assert_eq!(harness.app.state.composer.text(), "第一问");
+
+    // 下键逐条回来，再按一次恢复草稿。
+    harness.press(KeyCode::Down);
+    assert_eq!(harness.app.state.composer.text(), "第二问");
+    harness.press(KeyCode::Down);
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "半截草稿",
+        "草稿切走再切回不能丢"
+    );
+}
+
+/// 斜杠命令不进历史，且命令菜单打开时上下键仍优先服务菜单。
+#[test]
+fn command_menu_keeps_arrow_keys_and_commands_are_not_recorded() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    harness.app.state.composer.insert("问一句");
+    harness.press(KeyCode::Enter);
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{\"turn_id\":\"turn-1\",\
+         \"final_text\":\"\",\"reasoning\":\"\",\"model_turns\":1,\"tool_calls\":0,\"paused\":false}}\n",
+    );
+    harness.expect_ready(|app| !app.state.turn.is_running(), "回合应当收尾");
+    // `/mcp` 走命令层：不产生 turn.submit，也不该进历史。
+    type_text(&mut harness, "/mcp");
+    harness.press(KeyCode::Enter);
+
+    // 命令菜单开着时上下键只移动候选，不碰历史。
+    harness.app.state.composer.clear();
+    type_text(&mut harness, "/se");
+    assert!(harness.app.state.composer.menu().is_open());
+    let matches = harness.app.state.composer.menu().matches().len();
+    assert!(matches >= 1, "/se 应命中候选：{matches}");
+    harness.press(KeyCode::Up);
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "/se",
+        "菜单打开时上下键不该改写输入框"
+    );
+    assert!(
+        !harness.app.state.composer.is_browsing_history(),
+        "按键应由命令菜单消费，不能落到历史回看"
+    );
+    assert_eq!(
+        harness.app.state.scroll_from_bottom, 0,
+        "也不该同时滚会话"
+    );
+
+    // 收起菜单后回看：只有那条非命令消息。
+    harness.app.state.composer.clear();
+    harness.press(KeyCode::Up);
+    assert_eq!(harness.app.state.composer.text(), "问一句");
+    harness.press(KeyCode::Up);
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "问一句",
+        "斜杠命令不进历史，所以上键到此为止"
     );
 }

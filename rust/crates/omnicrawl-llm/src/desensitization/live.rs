@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use omnicrawl_protocol::{
-    aggregate_stream_events, ModelReply, ModelStreamEvent, ReasoningDelta, TextDelta,
+    aggregate_stream_events_ref, ModelReply, ModelStreamEvent, ReasoningDelta, TextDelta,
     ToolCallArgumentsDelta,
 };
 
@@ -320,7 +320,7 @@ impl DesensitizationRuntime {
         if usable {
             registry.close_cycle(&cycle);
         }
-        Ok(aggregate_stream_events(events))
+        Ok(aggregate_stream_events_ref(&events))
     }
 }
 

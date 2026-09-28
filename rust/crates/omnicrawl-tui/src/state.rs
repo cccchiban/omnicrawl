@@ -217,6 +217,12 @@ pub struct Composer {
     /// 提交时按占位符还原，删除时整块删掉。
     pastes: Vec<(String, String)>,
     paste_sequence: usize,
+    /// 已发送消息的历史，供上下键回看（对映 Python `Composer._history`）。
+    history: Vec<String>,
+    /// -1 表示输入框里是用户自己的草稿；>= 0 表示正在浏览第 N 条历史。
+    history_index: isize,
+    /// 进入历史浏览前输入框里的内容，翻到最新一条之后再按一次下键即恢复。
+    history_draft: String,
 }
 
 /// 粘贴折叠的阈值：超过这么多行就折成一个占位符（对映 Python `_PASTE_COMPACT_LINE_THRESHOLD`）。
@@ -254,6 +260,7 @@ impl Composer {
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
+        self.exit_browse_mode();
         self.refresh_menu();
     }
 
@@ -262,7 +269,77 @@ impl Composer {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
         self.prune_pastes();
+        self.exit_browse_mode();
         self.refresh_menu();
+    }
+
+    /// 记录一条已发送消息供上下键回看；与最近一条重复时不重复入列。
+    ///
+    /// 提交即退出浏览态：无论是否新入列，下一条上键都从最新一条开始。
+    pub fn history_record(&mut self, text: &str) {
+        if !text.is_empty() && self.history.last().map(String::as_str) != Some(text) {
+            self.history.push(text.to_string());
+        }
+        self.exit_browse_mode();
+    }
+
+    /// 是否正在浏览已发送消息。
+    pub fn is_browsing_history(&self) -> bool {
+        self.history_index >= 0
+    }
+
+    /// 退出历史浏览态（用户手动编辑输入框、或输入框被程序化重写时调用）。
+    pub fn exit_browse_mode(&mut self) {
+        self.history_index = -1;
+        self.history_draft.clear();
+    }
+
+    /// 按上下键浏览已发送消息；返回 `true` 表示按键已被历史浏览消费。
+    ///
+    /// `direction` 为 -1（上键，向更早翻）或 1（下键，向更新翻）。进入浏览前先把
+    /// 输入框当前内容存成草稿；下键翻过最新一条之后再按一次即恢复草稿并退出浏览，
+    /// 与 bash readline 一致。没有历史、或下键时本就不在浏览态时返回 `false`，
+    /// 让调用方回退到会话滚动。
+    pub fn navigate_history(&mut self, direction: isize) -> bool {
+        if self.history.is_empty() {
+            return false;
+        }
+        if direction < 0 {
+            if self.history_index < 0 {
+                self.history_draft = self.text.clone();
+                self.history_index = self.history.len() as isize - 1;
+            } else if self.history_index > 0 {
+                self.history_index -= 1;
+            } else {
+                // 已在最早一条：消费按键但不改变内容。
+                return true;
+            }
+        } else {
+            if self.history_index < 0 {
+                return false;
+            }
+            if self.history_index >= self.history.len() as isize - 1 {
+                let draft = std::mem::take(&mut self.history_draft);
+                self.history_index = -1;
+                self.replace_history_text(&draft);
+                return true;
+            }
+            self.history_index += 1;
+        }
+        let text = self.history[self.history_index as usize].clone();
+        self.replace_history_text(&text);
+        true
+    }
+
+    /// 浏览历史时替换全文并把光标移到末尾；此时**不刷新命令菜单**。
+    ///
+    /// 否则以 `/` 开头的历史条目会弹出候选菜单，接下来的上下键被菜单抢走、
+    /// 连续浏览被打断（对映 Python `_replace_history_text` + `_hide_command_menu`）。
+    fn replace_history_text(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.cursor = self.text.chars().count();
+        self.prune_pastes();
+        self.menu.hide();
     }
 
     /// 取走内容并清空；提交时用。
@@ -274,6 +351,7 @@ impl Composer {
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
+        self.exit_browse_mode();
         self.refresh_menu();
         text
     }
@@ -374,6 +452,7 @@ impl Composer {
     }
 
     pub fn insert(&mut self, text: &str) {
+        self.exit_browse_mode();
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let mut chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
@@ -393,6 +472,7 @@ impl Composer {
         if self.cursor == 0 {
             return;
         }
+        self.exit_browse_mode();
         // 光标左侧落在粘贴折叠块里：整块删掉，而不是逐字符删。
         if self.remove_placeholder(self.cursor - 1) {
             return;
@@ -411,6 +491,7 @@ impl Composer {
         if self.cursor >= chars.len() {
             return;
         }
+        self.exit_browse_mode();
         // 光标右侧落在粘贴折叠块里：整块删掉（含块首与块内）。
         if self.remove_placeholder(self.cursor) {
             return;
@@ -1351,21 +1432,50 @@ impl AppState {
         self.touch_composer();
     }
 
-    /// 追加一条后台任务日志（工具卡形状）；不改动回合状态。
+    /// 归并一条后台任务日志（工具卡形状）；不改动回合状态。
     ///
-    /// 对映 Python 把 Monitor 增量批次当 `tool` 消息追加进对话区：`call_id` 用
-    /// `monitor:<id>` 前缀，避免与真实工具调用的 id 相撞（工具卡靠它做展开/收起）。
+    /// 与 Python 的差异（Rust 侧刻意）：Python 把每个 Monitor 批次当 `tool` 消息追加进
+    /// 对话区，同一个任务每 0.5 秒就多一条卡片；这里按 `monitor_id` 归并到同一张卡片——
+    /// 状态行原地替换为最新快照，事件行追加到正文尾部。因此一个后台任务在会话流里
+    /// 始终只占一张卡。`call_id` 用 `monitor:<id>` 前缀既做归并键，也避免与真实工具
+    /// 调用的 id 相撞（工具卡靠它做展开/收起）。
+    ///
+    /// `text` 是 `format_monitor_display_batch` 的输出：首行是状态行，其余是本次事件行。
     pub fn push_monitor_batch(&mut self, monitor_id: &str, status: &str, text: String) {
+        let call_id = format!("monitor:{monitor_id}");
+        let mut lines = text.lines();
+        // 首行是任务状态行，其余是本次增量的事件行。
+        let header = lines.next().unwrap_or_default().to_string();
+        let events: Vec<String> = lines.map(str::to_string).collect();
+        let status = monitor_status(status);
+        if let Some(index) = self.tool_card_slot(&call_id) {
+            if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                card.status = status;
+                // 状态行原地替换为最新快照，事件行接在尾部。
+                if card.body.is_empty() {
+                    card.body.push(header);
+                } else {
+                    card.body[0] = header;
+                }
+                card.body.extend(events);
+                // 终态后不再计时：卡片会一直留在会话流里，不能让耗时继续涨。
+                if status != ToolStatus::Running {
+                    card.elapsed = Some(Instant::now().saturating_duration_since(card.started));
+                }
+            }
+            self.touch_record(index);
+            return;
+        }
         self.records.push(Record::Tool(ToolCard {
-            call_id: format!("monitor:{monitor_id}"),
+            call_id,
             name: "monitor".to_string(),
             summary: monitor_id.to_string(),
             // Monitor 批次不是模型发起的工具调用，没有参数可拼标题。
             arguments: serde_json::Value::Null,
-            status: monitor_status(status),
+            status,
             elapsed: None,
             started: Instant::now(),
-            body: text.lines().map(str::to_string).collect(),
+            body: std::iter::once(header).chain(events).collect(),
         }));
         self.touch_appended();
     }
@@ -2582,6 +2692,78 @@ mod tests {
         }
     }
 
+    /// 同一个后台任务的每批增量都落在同一张卡上：状态行换新、事件行累积。
+    #[test]
+    fn monitor_batches_merge_into_one_card_per_task() {
+        let mut state = state();
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[system] 已启动，shell=bash。".to_string(),
+        );
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[stdout] ready in 300ms".to_string(),
+        );
+        state.push_monitor_batch(
+            "m1",
+            "completed",
+            "Monitor · m1 · completed\n[stdout] done".to_string(),
+        );
+
+        let cards: Vec<&ToolCard> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) => Some(card),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cards.len(), 1, "一个后台任务只占一张卡：{cards:?}");
+        assert_eq!(cards[0].call_id, "monitor:m1");
+        assert_eq!(cards[0].status, ToolStatus::Ok, "终态跟随最新快照");
+        assert_eq!(
+            cards[0].body,
+            vec![
+                "Monitor · m1 · completed".to_string(),
+                "[system] 已启动，shell=bash。".to_string(),
+                "[stdout] ready in 300ms".to_string(),
+                "[stdout] done".to_string(),
+            ],
+            "状态行原地替换，事件行按批追加"
+        );
+        assert!(cards[0].elapsed.is_some(), "终态卡片的耗时要落定");
+    }
+
+    /// 不同后台任务各自一张卡，互不覆盖。
+    #[test]
+    fn monitor_batches_of_different_tasks_keep_separate_cards() {
+        let mut state = state();
+        state.push_monitor_batch("m1", "running", "Monitor · m1 · running".to_string());
+        state.push_monitor_batch("m2", "running", "Monitor · m2 · running".to_string());
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[stdout] 一行".to_string(),
+        );
+
+        let ids: Vec<&str> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) => Some(card.call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["monitor:m1", "monitor:m2"]);
+        let m1 = match &state.records[0] {
+            Record::Tool(card) => card,
+            other => panic!("第一张应是 m1 的卡：{other:?}"),
+        };
+        assert_eq!(m1.body.len(), 2, "m1 的第二批追加到自己的卡上");
+    }
+
     #[test]
     fn stream_rollback_drops_half_streamed_record() {
         let mut state = state();
@@ -3458,6 +3640,119 @@ mod paste_tests {
         composer.insert_paste(&pasted(7));
         composer.insert("（请按这个格式）");
         assert_eq!(composer.take(), format!("{}（请按这个格式）", pasted(7)));
+    }
+}
+
+/// 已发送消息的上下键回看（对映 Python `input/composer.py` 的历史浏览部分）。
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn composer_with(entries: &[&str]) -> Composer {
+        let mut composer = Composer::default();
+        for entry in entries {
+            composer.history_record(entry);
+        }
+        composer
+    }
+
+    #[test]
+    fn without_history_up_key_is_not_consumed() {
+        let mut composer = Composer::default();
+        assert!(!composer.navigate_history(-1), "没有历史要让位给会话滚动");
+        assert!(!composer.navigate_history(1));
+    }
+
+    #[test]
+    fn down_key_without_browsing_is_not_consumed() {
+        let mut composer = composer_with(&["第一条", "第二条"]);
+        assert!(
+            !composer.navigate_history(1),
+            "未在浏览时下键不该被消费（否则会话滚不下去）"
+        );
+    }
+
+    #[test]
+    fn repeated_submissions_are_recorded_once() {
+        let mut composer = Composer::default();
+        composer.history_record("同一句");
+        composer.history_record("同一句");
+        composer.history_record("");
+        assert_eq!(composer.history.len(), 1, "重复与空提交不入列");
+    }
+
+    #[test]
+    fn up_key_walks_backwards_and_down_key_restores_the_draft() {
+        let mut composer = composer_with(&["第一条", "第二条"]);
+        composer.insert("还没发出去的草稿");
+
+        // 上键：从草稿进入最新一条。
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "第二条");
+        // 全角按显示宽度计列：三个全角字占 6 列。
+        assert_eq!(composer.cursor_position(40), (0, 6), "光标要落在末尾");
+
+        // 再上：向更早翻；到头后停在最早一条。
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "第一条");
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "第一条", "到头不循环");
+
+        // 下键逐条回来，翻过最新一条后恢复草稿并退出浏览态。
+        assert!(composer.navigate_history(1));
+        assert_eq!(composer.text(), "第二条");
+        assert!(composer.is_browsing_history());
+        assert!(composer.navigate_history(1));
+        assert_eq!(composer.text(), "还没发出去的草稿", "草稿要能切回来");
+        assert!(!composer.is_browsing_history());
+    }
+
+    #[test]
+    fn submit_exits_browse_so_next_up_starts_from_the_latest() {
+        let mut composer = composer_with(&["第一条", "第二条"]);
+        composer.navigate_history(-1);
+        composer.navigate_history(-1);
+        assert_eq!(composer.text(), "第一条");
+
+        composer.history_record("第三条");
+        assert!(!composer.is_browsing_history(), "提交即退出浏览态");
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "第三条", "下一条上键从最新一条开始");
+    }
+
+    #[test]
+    fn manual_edit_ends_browsing_and_keeps_the_edited_text() {
+        let mut composer = composer_with(&["第一条", "第二条"]);
+        composer.navigate_history(-1);
+        composer.insert("补充");
+
+        assert!(!composer.is_browsing_history(), "手动编辑结束浏览态");
+        assert_eq!(composer.text(), "第二条补充");
+        // 再上键从最新一条重新开始（草稿是编辑后的内容）。
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "第二条");
+        assert!(composer.navigate_history(1));
+        assert_eq!(composer.text(), "第二条补充");
+    }
+
+    #[test]
+    fn browsing_does_not_leave_the_command_menu_open() {
+        let mut composer = Composer::default();
+        composer.set_commands(crate::commands::command_options());
+        composer.history_record("/settings");
+        composer.insert("/ne");
+        assert!(composer.menu().is_open(), "正常输入时菜单照常弹出");
+
+        // 回看以 `/` 开头的历史时菜单必须收起，否则接下来的上下键会被菜单抢走。
+        assert!(composer.navigate_history(-1));
+        assert_eq!(composer.text(), "/settings");
+        assert!(!composer.menu().is_open(), "浏览历史不该弹出候选菜单");
+
+        // 手动编辑才让菜单回来：退回到 `/se` 前缀，候选立即重新出现。
+        while composer.text() != "/se" {
+            composer.backspace();
+        }
+        assert!(composer.menu().is_open(), "手动编辑后菜单要恢复刷新");
     }
 }
 

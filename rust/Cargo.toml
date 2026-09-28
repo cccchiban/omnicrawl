@@ -81,3 +81,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+# 目标机上没有调试器：把「debug 断言」与溢出检查关掉，并让 LLVM 放心内联/展开。
+# `debug_assertions = false` 是 release 默认值，这里显式写出以免将来被 profile
+# 覆盖（`overflow-checks` 在 release 下默认也关，同样显式固定）。
+debug-assertions = false
+overflow-checks = false
+# 无回溯需求（`panic = "abort"`），省掉展开表。
+strip = "symbols"

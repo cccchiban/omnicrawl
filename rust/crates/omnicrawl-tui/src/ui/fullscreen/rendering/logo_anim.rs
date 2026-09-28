@@ -20,7 +20,7 @@ use crate::ui::fullscreen::rendering::welcome_logo::{
 };
 use crate::ui::fullscreen::round_half_even;
 use crate::ui::fullscreen::terminal::theme::TEXT_MUTED;
-use crate::ui::fullscreen::text::StyledText;
+use crate::ui::fullscreen::text::{StyleRuns, StyledText};
 
 /// 复用底部轮播的解密字符集，保证两处「解密」特效风格一致。
 pub const GARBLE_CHARS: &str =
@@ -80,20 +80,20 @@ pub fn welcome_logo_frame(progress: f64, rand: &mut Rng) -> StyledText {
         // 保证动画收口与静态 Logo 逐字符一致。
         return welcome_logo_text();
     }
-    let mut rendered = StyledText::new();
+    let mut runs = StyleRuns::new();
     for (row_index, line) in welcome_logo_lines().iter().enumerate() {
         if row_index > 0 {
-            rendered.push("\n", "");
+            runs.push_str("\n", "");
         }
         let row_prog = row_progress(progress, row_index);
         // 行尚未进入扫描窗：字形先以乱码形态占位（行首缩进/内部空格保留），
-        // 待行进度进入 (0,1) 后由白色字形波前从左到右解出。
+        // 待行进度进入 (0,1) 后由清晰字形波前从左到右解出。
         if row_prog <= 0.0 {
             for ch in line.chars() {
                 if ch == ' ' {
-                    rendered.push(" ", TEXT_MUTED);
+                    runs.push_char(' ', TEXT_MUTED);
                 } else {
-                    rendered.push(&garble(rand).to_string(), TEXT_MUTED);
+                    runs.push_char(garble(rand), TEXT_MUTED);
                 }
             }
             continue;
@@ -103,22 +103,22 @@ pub fn welcome_logo_frame(progress: f64, rand: &mut Rng) -> StyledText {
         let mut glyph_col: usize = 0;
         for ch in line.chars() {
             if ch == ' ' {
-                rendered.push(" ", TEXT_MUTED);
+                runs.push_char(' ', TEXT_MUTED);
                 continue;
             }
             let col_prog = col_progress(row_prog, glyph_col, visible_len);
             glyph_col += 1;
             if col_prog >= 1.0 {
-                rendered.push(&ch.to_string(), LOGO_STYLE);
+                runs.push_char(ch, LOGO_STYLE);
             } else if col_prog > 0.0 && rand.random() < SHIMMER_CHANCE {
                 // 波前：未解密部分偶发闪现真实字符。
-                rendered.push(&ch.to_string(), LOGO_STYLE);
+                runs.push_char(ch, LOGO_STYLE);
             } else {
-                rendered.push(&garble(rand).to_string(), TEXT_MUTED);
+                runs.push_char(garble(rand), TEXT_MUTED);
             }
         }
     }
-    rendered
+    runs.finish()
 }
 
 /// 入场动画的播放游标（对映 Python `app/core.py` 的 `_logo_anim_*` 状态位）。

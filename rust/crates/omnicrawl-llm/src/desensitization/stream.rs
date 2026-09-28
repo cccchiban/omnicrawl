@@ -14,9 +14,9 @@ use omnicrawl_protocol::ProviderWarning;
 use serde_json::Value;
 
 use super::{
-    char_offsets, find_placeholders, match_placeholder, matches_marker, skip_whitespace,
-    DesensitizationError, DesensitizationStats, PlaceholderCycle, FULLWIDTH_OPEN_BRACE,
-    PLACEHOLDER_MARKER,
+    char_offsets, find_placeholders, has_open_brace, match_placeholder, matches_marker,
+    skip_whitespace, DesensitizationError, DesensitizationStats, PlaceholderCycle,
+    FULLWIDTH_OPEN_BRACE, PLACEHOLDER_MARKER,
 };
 
 /// Provider 以「正常结束」形态表达输出被截断的 finish_reason 值。
@@ -137,6 +137,15 @@ impl<'a> StreamRestorer<'a> {
         if chunk.is_empty() {
             return Ok(String::new());
         }
+        // 常见情形：上次没有挂起尾串。此时不必「读出旧缓冲 + 拼上分片」再整体扫描，
+        // 直接对分片本身走一次折叠（分片通常也正是无花括号的纯文本，命中快路径）。
+        if self.channel(channel).is_empty() {
+            let (emitted, hold) = self.fold(chunk, false)?;
+            if !hold.is_empty() {
+                *self.channel_mut(channel) = hold;
+            }
+            return Ok(emitted);
+        }
         let mut combined = self.channel(channel).to_string();
         combined.push_str(chunk);
         let (emitted, hold) = self.fold(&combined, false)?;
@@ -145,11 +154,18 @@ impl<'a> StreamRestorer<'a> {
     }
 
     /// 把缓冲折叠为「可安全输出的文本 + 需继续挂起的尾串」。
+    ///
+    /// 绝大多数分片既不含完整占位符、也不以「疑似前缀」结尾，此时输出就是输入本身
+    /// （原样借用，不再复制）。因此这里先做一次廉价判定：不含花括号、且不是疑似前缀尾
+    /// 的文本直接整体外发，跳过「拼串 → 逐字符建表 → 扫描」的整条重活。
     fn fold(
         &mut self,
         buffer: &str,
         flush: bool,
     ) -> Result<(String, String), DesensitizationError> {
+        if !flush && !has_open_brace(buffer) {
+            return Ok((buffer.to_string(), String::new()));
+        }
         let mut emitted = String::new();
         let mut rest = buffer;
         while let Some((start, end, seq)) = find_first_placeholder(rest) {
@@ -193,6 +209,10 @@ impl<'a> StreamRestorer<'a> {
     fn emit_literal(&mut self, text: &str) -> Result<String, DesensitizationError> {
         if text.is_empty() {
             return Ok(String::new());
+        }
+        // 没有花括号就不可能有疑似成形的占位符：直接外发，跳过逐字符扫描。
+        if !has_open_brace(text) {
+            return Ok(text.to_string());
         }
         let count = count_placeholder_prefixes(text);
         if count > 0 {

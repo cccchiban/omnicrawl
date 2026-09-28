@@ -16,7 +16,8 @@ use std::thread;
 use std::time::Duration;
 
 use omnicrawl_protocol::{
-    aggregate_stream_events, parse_arguments_object, ModelReply, ModelStreamEvent, ProviderWarning,
+    aggregate_stream_events_ref, parse_arguments_object, ModelReply, ModelStreamEvent,
+    ProviderWarning,
     ReasoningDelta, TextDelta, ToolCallCompleted, ToolCallStarted, UsageReported,
 };
 use serde_json::Value;
@@ -307,7 +308,7 @@ impl OpenAiChatRuntime {
         if emit(events, sink, event) == SinkFlow::Cancel {
             return Err(RuntimeError::cancelled());
         }
-        Ok(aggregate_stream_events(events.iter().cloned()))
+        Ok(aggregate_stream_events_ref(events.iter()))
     }
 }
 
@@ -443,7 +444,7 @@ impl AnthropicRuntime {
                 return Err(RuntimeError::cancelled());
             }
         }
-        Ok(aggregate_stream_events(events.iter().cloned()))
+        Ok(aggregate_stream_events_ref(events.iter()))
     }
 }
 
@@ -710,7 +711,7 @@ impl ResponsesRuntime {
                 return Err(RuntimeError::cancelled());
             }
         }
-        Ok(aggregate_stream_events(events))
+        Ok(aggregate_stream_events_ref(events.iter()))
     }
 }
 
@@ -877,7 +878,7 @@ impl GeminiRuntime {
                 return Err(RuntimeError::cancelled());
             }
         }
-        Ok(aggregate_stream_events(events.iter().cloned()))
+        Ok(aggregate_stream_events_ref(events.iter()))
     }
 }
 

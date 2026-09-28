@@ -2,7 +2,8 @@
 //!
 //! 这里只保存**仅属于本界面**的日志消费游标与工作区切换暂停状态：后台任务的进程、
 //! 日志缓冲与事件序号都在 `MonitorManager` 里。本模块不启动定时器、也不渲染组件——
-//! `App` 按 `MONITOR_POLL_INTERVAL` 调度 `refresh`，再把返回的结构化批次追加进消息流。
+//! `App` 按 `MONITOR_POLL_INTERVAL` 调度 `refresh`，再把返回的结构化批次按任务归并进
+//! 消息流的同一张卡片（`AppState::push_monitor_batch`）。
 //!
 //! 这样本地 API、模型工具与其他消费者各自持有独立的消费游标，互不影响。
 

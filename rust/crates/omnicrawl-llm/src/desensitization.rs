@@ -108,7 +108,13 @@ pub fn format_placeholder(seq: u64) -> String {
 /// 解析占位符，返回 `(起始字节, 结束字节, 序号)`。
 ///
 /// 生成端用全角，还原端兼容半角、冒号变体（`:` 与 `：`）、大小写与序号两侧空白。
+///
+/// 占位符必以花括号开头，因此先做一次廉价预判：不含任何花括号的文本（绝大多数）
+/// 直接返回，不再为它分配字符表与偏移表。
 pub fn find_placeholders(text: &str) -> Vec<(usize, usize, u64)> {
+    if !has_open_brace(text) {
+        return Vec::new();
+    }
     let characters: Vec<char> = text.chars().collect();
     let offsets = char_offsets(&characters);
     let mut found = Vec::new();
@@ -124,8 +130,16 @@ pub fn find_placeholders(text: &str) -> Vec<(usize, usize, u64)> {
     found
 }
 
+/// 文本里是否出现开括号（半角或全角）——占位符存在的必要条件。
+pub fn has_open_brace(text: &str) -> bool {
+    text.contains(['{', FULLWIDTH_OPEN_BRACE])
+}
+
 /// 疑似占位符前缀（用于识别「半截 / 畸形」文本：保留原文并告警）。
 pub fn has_placeholder_prefix(text: &str) -> bool {
+    if !has_open_brace(text) {
+        return false;
+    }
     let characters: Vec<char> = text.chars().collect();
     let mut index = 0;
     while index < characters.len() {

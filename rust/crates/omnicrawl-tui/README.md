@@ -629,7 +629,9 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    `ui/fullscreen/support/monitor.py`——本界面自持日志消费游标，主循环每帧调
    `App::tick_monitor_events` 并按 `MONITOR_POLL_INTERVAL`（0.5 秒，与 Python 同值）节流，
    把增量批次按 `Monitor · id · status` + `[流] 文本` 渲染成可折叠的工具卡（`call_id`
-   加 `monitor:` 前缀，与真实工具调用区分）；单任务取不到（已被回收）静默跳过且不推进
+   加 `monitor:` 前缀，与真实工具调用区分）；与 Python 的差异：**同一个任务只占一张卡**，
+   后续批次的状态行原地换成最新快照、事件行追加到正文尾部（Python 每批新开一条 `tool`
+   消息，长时间任务会刷出成百上千条卡片）；单任务取不到（已被回收）静默跳过且不推进
    游标，下一轮重试。工作区切换的暂停/恢复（`suspend_for_workspace_switch` /
    `resume_polling`）已随切换接线：`/workspace` 提交前暂停并废弃旧工作区游标，提交完成后恢复；后台进程的
    kill-on-close Job 已与 `command` 工具对齐（见「Windows Job Object」段）；

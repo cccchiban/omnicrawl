@@ -95,21 +95,23 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         text.height as usize,
         state.scroll_from_bottom,
     );
-    // 可见窗口内套上选区反显（鼠标拖选）；没有选区时就是原行。
+    let total = visible.total;
+    let start = visible.start;
+    // 可见窗口内套上选区反显（鼠标拖选）；没有选区时直接搬走原行（按值消费，不再克隆一次）。
     let window: Vec<Line<'static>> = visible
         .lines
-        .iter()
+        .into_iter()
         .enumerate()
-        .map(|(offset, rendered)| match selection_columns(state, visible.start + offset) {
-            Some((from, to)) => highlight_columns(rendered.line.clone(), from, to),
-            None => rendered.line.clone(),
+        .map(|(offset, rendered)| match selection_columns(state, start + offset) {
+            Some((from, to)) => highlight_columns(rendered.line, from, to),
+            None => rendered.line,
         })
         .collect();
     frame.render_widget(Paragraph::new(window), text);
     render_scrollbar(
         frame,
         area,
-        visible.total,
+        total,
         text.height as usize,
         state.scroll_from_bottom,
     );
@@ -751,7 +753,7 @@ pub fn collapsed_body(
     }
     let effective: Vec<&StyledText> = parts
         .iter()
-        .filter(|line| !line.plain().trim().is_empty())
+        .filter(|line| !line.is_blank())
         .collect();
     if effective.len() <= TOOL_BODY_LIMIT {
         return (parts, 0, Vec::new());
@@ -1116,7 +1118,7 @@ fn tool_body_rows(line: &StyledText, width: usize, hint: bool) -> Vec<Line<'stat
     let indent_width = display_width(&indent);
     let base = theme::rich_style(theme::TOOL_TEXT);
     let mut spans: Vec<Span<'static>> = Vec::new();
-    if !line.plain().trim().is_empty() {
+    if !line.is_blank() {
         // 对映 `_indent_body_lines`：只给非空行加缩进。
         let style = if hint {
             base.add_modifier(Modifier::ITALIC)
@@ -2145,6 +2147,22 @@ mod tests {
         // 监视器批次、系统提示、会话区提示（协议 `turn.notice`）。
         state.push_monitor_batch("m1", "running", "第一行\n第二行".to_string());
         assert_cache_matches(&state, width, "监视器批次");
+        // 同一任务的后续批次归并进同一张卡：它记录的行在中间被就地改写（状态行）
+        // 又在尾部追加（事件行），缓存必须从这张卡起重算、不能只补尾部。
+        state.push_monitor_batch("m1", "completed", "第三行\n第四行".to_string());
+        assert_cache_matches(&state, width, "监视器批次归并");
+        assert_eq!(
+            state
+                .records
+                .iter()
+                .filter(
+                    |record| matches!(record, Record::Tool(card) if card.call_id == "monitor:m1")
+                )
+                .count(),
+            1,
+            "同一任务只占一张卡：{:?}",
+            state.records
+        );
         state.notice("一句系统提示".to_string());
         assert_cache_matches(&state, width, "系统提示");
         state.apply(

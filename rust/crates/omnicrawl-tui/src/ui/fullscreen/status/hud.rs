@@ -10,7 +10,7 @@ use crate::ui::fullscreen::round_half_even;
 use crate::ui::fullscreen::terminal::theme::{
     ACCENT_GREEN, BORDER_MUTED, TEXT_MUTED, TEXT_PRIMARY,
 };
-use crate::ui::fullscreen::text::StyledText;
+use crate::ui::fullscreen::text::{span_char_styles, StyleRuns, StyledText};
 
 /// 底部轮播留言页的候选文本文件（与代码同目录）。
 pub const CAROUSEL_MESSAGES_FILE: &str = "carousel_messages.txt";
@@ -157,14 +157,12 @@ fn is_wide_char(ch: char) -> bool {
 }
 
 /// 生成替换乱码字符；双宽字符用两个单宽乱码保持终端宽度。
-fn garble_cells(original: char, style: &str, rand: &mut Rng) -> Vec<(char, String)> {
+fn garble_chars(original: char, rand: &mut Rng, out: &mut String) {
     let count = if is_wide_char(original) { 2 } else { 1 };
-    (0..count)
-        .map(|_| {
-            let index = rand.index(GARBLE_BYTES.len());
-            (GARBLE_BYTES[index] as char, style.to_string())
-        })
-        .collect()
+    for _ in 0..count {
+        let index = rand.index(GARBLE_BYTES.len());
+        out.push(GARBLE_BYTES[index] as char);
+    }
 }
 
 /// 生成底部轮播切换时的「解密扫描特效」的一帧。
@@ -181,10 +179,11 @@ pub fn decrypt_frame(
     let progress = progress.clamp(0.0, 1.0);
     let old_plain: Vec<char> = old_text.plain().chars().collect();
     let new_plain: Vec<char> = new_text.plain().chars().collect();
-    let old_styles = old_text.char_styles();
-    let new_styles = new_text.char_styles();
+    let old_styles = span_char_styles(old_text);
+    let new_styles = span_char_styles(new_text);
     let garble_style = TEXT_MUTED;
-    let mut cells: Vec<(char, String)> = Vec::new();
+    let mut runs = StyleRuns::new();
+    let mut garble = String::new();
     if progress < EROSION_FRACTION {
         // 侵蚀阶段：乱码波从左到右吃掉旧文本，波前左侧已乱码、右侧完好。
         let front = if progress > 0.0 && !old_plain.is_empty() {
@@ -196,9 +195,11 @@ pub fn decrypt_frame(
         };
         for (index, ch) in old_plain.iter().enumerate() {
             if index < front {
-                cells.extend(garble_cells(*ch, garble_style, rand));
+                garble.clear();
+                garble_chars(*ch, rand, &mut garble);
+                runs.push_str(&garble, garble_style);
             } else {
-                cells.push((*ch, old_styles[index].clone()));
+                runs.push_char(*ch, old_styles[index]);
             }
         }
     } else {
@@ -209,21 +210,21 @@ pub fn decrypt_frame(
             .min((new_plain.len() as f64 * reveal) as usize);
         for (index, ch) in new_plain.iter().enumerate() {
             if index < front {
-                cells.push((*ch, new_styles[index].clone()));
+                runs.push_char(*ch, new_styles[index]);
             } else if index == front {
-                cells.extend(garble_cells(*ch, garble_style, rand));
+                garble.clear();
+                garble_chars(*ch, rand, &mut garble);
+                runs.push_str(&garble, garble_style);
             } else if rand.random() < SHIMMER_CHANCE {
-                cells.push((*ch, new_styles[index].clone()));
+                runs.push_char(*ch, new_styles[index]);
             } else {
-                cells.extend(garble_cells(*ch, garble_style, rand));
+                garble.clear();
+                garble_chars(*ch, rand, &mut garble);
+                runs.push_str(&garble, garble_style);
             }
         }
     }
-    let mut rendered = StyledText::new();
-    for (ch, style) in cells {
-        rendered.push(&ch.to_string(), &style);
-    }
-    rendered
+    runs.finish()
 }
 
 /// 压缩 HUD 字段，避免长模型名把整行挤乱。

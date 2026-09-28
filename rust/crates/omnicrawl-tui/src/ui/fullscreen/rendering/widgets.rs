@@ -578,7 +578,7 @@ pub fn indent_body_lines(body: &StyledText, prefix: &str) -> StyledText {
         if index > 0 {
             rendered.push("\n", "");
         }
-        if !part.plain().trim().is_empty() {
+        if !part.is_blank() {
             rendered.push(prefix, "");
         }
         rendered.append_text(part);
@@ -837,7 +837,7 @@ impl ToolDisclosure {
         }
         let effective: Vec<&StyledText> = parts
             .iter()
-            .filter(|part| !part.plain().trim().is_empty())
+            .filter(|part| !part.is_blank())
             .collect();
         if effective.len() <= MAX_EXPANDED_BODY_LINES {
             return (body.clone(), 0, None);
@@ -853,7 +853,7 @@ impl ToolDisclosure {
     fn start_body_stream(&mut self) -> bool {
         let full = self.body_source.clone();
         let total = full.split_lines().len();
-        if full.plain().trim().is_empty() || total <= STREAM_BODY_MIN_LINES {
+        if full.is_blank() || total <= STREAM_BODY_MIN_LINES {
             return false;
         }
         self.stream_full_source = Some(full);

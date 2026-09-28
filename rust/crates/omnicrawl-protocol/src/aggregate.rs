@@ -69,6 +69,17 @@ impl PendingToolCalls {
 
 /// 把 Adapter 流事件归并为一次模型回复。
 pub fn aggregate_stream_events(events: impl IntoIterator<Item = ModelStreamEvent>) -> ModelReply {
+    let events: Vec<ModelStreamEvent> = events.into_iter().collect();
+    aggregate_stream_events_ref(events.iter())
+}
+
+/// 归并的事件序列视图：调用方已经持有事件表（或还要继续用这条流）时走这个入口。
+///
+/// 归并内部只读事件字段、按需复制字符串，不再先把整条流克隆一份。
+pub fn aggregate_stream_events_ref<'a, I>(events: I) -> ModelReply
+where
+    I: IntoIterator<Item = &'a ModelStreamEvent>,
+{
     let mut content_parts: Vec<String> = Vec::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ToolCallBlock> = Vec::new();
@@ -82,28 +93,32 @@ pub fn aggregate_stream_events(events: impl IntoIterator<Item = ModelStreamEvent
         match event {
             ModelStreamEvent::TextDelta(TextDelta { text }) => {
                 if !text.is_empty() {
-                    content_parts.push(text);
+                    content_parts.push(text.clone());
                     content_streamed = true;
                 }
             }
             ModelStreamEvent::ReasoningDelta(ReasoningDelta { text }) => {
                 if !text.is_empty() {
-                    reasoning_parts.push(text);
+                    reasoning_parts.push(text.clone());
                 }
             }
             ModelStreamEvent::ToolCallStarted(ToolCallStarted { call_id, name }) => {
-                pending.start(&call_id, &name);
+                pending.start(call_id, name);
             }
             ModelStreamEvent::ToolCallArgumentsDelta(ToolCallArgumentsDelta { call_id, delta }) => {
-                pending.append_arguments(&call_id, &delta);
+                pending.append_arguments(call_id, delta);
             }
             ModelStreamEvent::ToolCallCompleted(ToolCallCompleted {
                 call_id,
                 name,
                 arguments,
             }) => {
-                tool_calls.push(ToolCallBlock::new(call_id.clone(), name, arguments));
-                pending.take_completed(&call_id);
+                tool_calls.push(ToolCallBlock::new(
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                ));
+                pending.take_completed(call_id);
             }
             ModelStreamEvent::UsageReported(UsageReported {
                 input_tokens,
@@ -112,10 +127,10 @@ pub fn aggregate_stream_events(events: impl IntoIterator<Item = ModelStreamEvent
                 reasoning_tokens,
             }) => {
                 usage = Some(TokenUsage {
-                    input_tokens,
-                    output_tokens,
-                    cached_input_tokens,
-                    reasoning_tokens,
+                    input_tokens: *input_tokens,
+                    output_tokens: *output_tokens,
+                    cached_input_tokens: *cached_input_tokens,
+                    reasoning_tokens: *reasoning_tokens,
                 });
             }
             ModelStreamEvent::Finished {
@@ -124,10 +139,10 @@ pub fn aggregate_stream_events(events: impl IntoIterator<Item = ModelStreamEvent
                 finish_reason = if reason.is_empty() {
                     "stop".to_string()
                 } else {
-                    reason
+                    reason.clone()
                 };
             }
-            ModelStreamEvent::ProviderWarning(warning) => warnings.push(warning),
+            ModelStreamEvent::ProviderWarning(warning) => warnings.push(warning.clone()),
         }
     }
 

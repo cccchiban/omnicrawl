@@ -443,6 +443,7 @@ pub struct App {
     /// 后台 TTS 任务（模型下载 / 音色克隆）的结果通道。
     tts_task: Option<Receiver<TtsTaskResult>>,
     /// 本界面独有的 Monitor 日志消费游标（对映 Python `MonitorStateAdapter`）。
+    /// 每批增量按 `monitor:` 前缀归并进同一张卡片，不再逐批新开卡片。
     monitor_state: crate::monitor::MonitorStateAdapter,
     /// 上次轮询 Monitor 事件的时刻：主循环每帧调 `tick_monitor_events`，按
     /// `MONITOR_POLL_INTERVAL` 节流。
@@ -1929,8 +1930,16 @@ impl App {
             KeyCode::Right => self.state.composer.move_right(),
             KeyCode::Home => self.state.composer.move_home(),
             KeyCode::End => self.state.composer.move_end(),
-            KeyCode::Up => self.state.scroll_by(-SCROLL_STEP),
-            KeyCode::Down => self.state.scroll_by(SCROLL_STEP),
+            // 上下键最后才轮到输入框的历史回看：待决面板、`/sessions` 菜单与命令候选
+            // 都已在上方吃掉它们，这里只服务「输入框」——没有历史（或下键时未在浏览）
+            // 就退回原来的会话滚动（对映 Python `Composer.on_key` 的 `navigate_history`
+            // 失败回退分支）。
+            KeyCode::Up if !self.state.composer.navigate_history(-1) => {
+                self.state.scroll_by(-SCROLL_STEP)
+            }
+            KeyCode::Down if !self.state.composer.navigate_history(1) => {
+                self.state.scroll_by(SCROLL_STEP)
+            }
             KeyCode::PageUp => self.state.scroll_by(-PAGE_STEP),
             KeyCode::PageDown => self.state.scroll_by(PAGE_STEP),
             _ => {}
@@ -2065,6 +2074,11 @@ impl App {
                         }
                         true
                     }
+                    // 没有选项可服务（自由输入型提问）时，上下键轮到输入框的历史回看：
+                    // 提问作答复用同一个输入框，回看规则与常态一致（对映 Python
+                    // `Composer.on_key` 在 `option_navigation` 为假时继续走 `navigate_history`）。
+                    KeyCode::Up if self.state.composer.navigate_history(-1) => true,
+                    KeyCode::Down if self.state.composer.navigate_history(1) => true,
                     _ => {
                         // 自由输入型提问复用输入框，其余按键继续交给它编辑。
                         self.edit_composer(key, ctrl);
@@ -2137,6 +2151,9 @@ impl App {
             self.dispatch_command(text, parsed);
             return;
         }
+        // 非斜杠命令的提交记入输入框历史，供上下键回看（对映 Python `_submit` 中的
+        // `history_record`：命令不记录）。
+        self.state.composer.history_record(&text);
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn += 1;
         // `turn.start` 在进内核之前分发：transform 类 Handler 可改写 `userText`，
@@ -2948,11 +2965,12 @@ impl App {
         }
     }
 
-    /// 按 `MONITOR_POLL_INTERVAL` 节流轮询后台任务日志，把增量追加成工具卡。
+    /// 按 `MONITOR_POLL_INTERVAL` 节流轮询后台任务日志，把增量归并进工具卡。
     ///
     /// 对映 Python `ConversationViewMixin._refresh_monitor_events`：只往消息流追加，
     /// 不改动回合状态，不干扰正在跑的模型回合或其他后台任务。游标只在本适配器里，
     /// 本地 API 的 `/monitors` 与模型侧的 `monitor` 工具各有自己的消费位置。
+    /// 与 Python 的差异：同一个任务的后续批次归并到同一张卡，不逐批新开卡片。
     pub fn tick_monitor_events(&mut self, now: Instant) {
         if now.duration_since(self.monitor_polled_at) < crate::monitor::MONITOR_POLL_INTERVAL {
             return;

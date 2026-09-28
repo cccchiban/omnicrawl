@@ -53,17 +53,56 @@ pub const TOOL_TEXT: &str = "bright_black";
 pub const REASONING_BACKGROUND: &str = "#272822";
 pub const REASONING_TEXT: &str = "bright_black";
 
+// 解析结果记忆表：样式串只在一帧里被反复解析（每行每段都过一次），
+// 而取值集合很小（主题常量 + Markdown 渲染器产出的少数组合）。
+//
+// 用线程局部表而不是全局表：渲染只在 UI 线程，省掉同步开销；
+// 超过容量上限整体清空（不做 LRU，避免为了保命中而引入额外记账）。
+thread_local! {
+    static STYLE_CACHE: std::cell::RefCell<std::collections::HashMap<Box<str>, Style>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+const STYLE_CACHE_CAPACITY: usize = 512;
+
+fn cached_style(spec: &str) -> Style {
+    STYLE_CACHE.with(|cache| {
+        let mut cache = match cache.try_borrow_mut() {
+            Ok(cache) => cache,
+            // 重入（解析过程里再调 rich_style）时不碰缓存，直接解析一遍。
+            Err(_) => return parse_rich_style(spec),
+        };
+        if let Some(style) = cache.get(spec) {
+            return *style;
+        }
+        let style = parse_rich_style(spec);
+        if cache.len() >= STYLE_CACHE_CAPACITY {
+            cache.clear();
+        }
+        cache.insert(spec.into(), style);
+        style
+    })
+}
+
 /// 解析 Rich 风格串；无法识别的词元忽略（与 Rich 丢弃未知样式名一致）。
 ///
 /// `default` / `ansi_default` 表示终端默认前景，即不设置颜色；`dim` 是样式位
 /// 而非颜色名，映射到 ratatui 的暗色修饰。
-/// Rich 风格串 → ratatui 样式。
+/// 空串与 `default` 这类「什么都不改」的取值直接短路，不必进词法循环。
+pub fn rich_style(spec: &str) -> Style {
+    if spec.is_empty() {
+        return Style::default();
+    }
+    cached_style(spec)
+}
+
+/// Rich 风格串 → ratatui 样式（未记忆化的原始解析）。
 ///
 /// 支持词法：修饰符（bold/dim/italic/underline/reverse/strike）、颜色名、`#rrggbb` 与
 /// `rgba(r,g,b,a)`，以及 Rich 的 **`on <颜色>`** 背景语法（`"on #272822"`、
 /// `"cyan on #272822"`）。最后一个很关键：对映层的行内代码与代码块正是用它表达
 /// 「暗底」，若把它当成前景色解析，代码块就变成暗底暗字（彻底看不见）。
-pub fn rich_style(spec: &str) -> Style {
+fn parse_rich_style(spec: &str) -> Style {
     let mut style = Style::default();
     // 上一个词是 `on`：下一个颜色落到背景上。
     let mut background = false;
