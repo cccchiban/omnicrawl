@@ -17,12 +17,35 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     imp::copy(text)
 }
 
+/// 读系统剪切板里的文本；读不到就是 `None`。
+///
+/// 用途只有一个：粘贴识别——传统控制台不发 bracketed paste，粘贴退化成一串按键，
+/// 只有把按键流与剪切板比对才知道它是不是一次粘贴（对映 Python
+/// `terminal/handling.py::_read_windows_clipboard_text`）。读不到（非 Windows、剪切板被
+/// 占用、里面不是文本）返回 `None`，调用方退回按键形状判定。
+pub fn read_text() -> Option<String> {
+    imp::read()
+}
+
 #[cfg(windows)]
 mod imp {
-    use omnicrawl_host::tools::windows::clipboard::write_clipboard_text;
+    use omnicrawl_host::tools::windows::clipboard::{
+        try_read_clipboard_text, write_clipboard_text,
+    };
 
     pub fn copy(text: &str) -> Result<(), String> {
         write_clipboard_text(text).map_err(|error| error.to_string())
+    }
+
+    pub fn read() -> Option<String> {
+        try_read_clipboard_text()
+    }
+}
+
+#[cfg(not(windows))]
+mod imp {
+    pub fn read() -> Option<String> {
+        None
     }
 }
 

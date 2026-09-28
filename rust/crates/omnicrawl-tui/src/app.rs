@@ -1024,7 +1024,9 @@ impl App {
             || self.slow_task.is_some()
             || self.tts_task.is_some()
             || self.channel_models_task.is_some()
-            || self.state.has_running_activity();
+            || self.state.has_running_activity()
+            // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。
+            || self.state.is_reasoning_revealing();
         let mut budget = if active {
             ACTIVE_POLL_INTERVAL
         } else {

@@ -1722,3 +1722,47 @@ fn command_menu_keeps_arrow_keys_and_commands_are_not_recorded() {
         "斜杠命令不进历史，所以上键到此为止"
     );
 }
+
+
+/// 用户报的场景：模型重试之后，输入框上边框的状态显示不再自动刷新。
+///
+/// 三条断言把链路钉死：帧驱动下重试提示真的落到状态行（`Status` / `RetryStatus`
+/// 必须置脏输入块，否则 `needs_redraw` 会让事件循环整帧跳过绘制），模型重新出内容后
+/// 提示让位回运行态，回合结束状态行收起。
+#[test]
+fn retry_status_reaches_the_status_line_and_steps_aside() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.state.composer.insert("问一句");
+    harness.press(KeyCode::Enter);
+    assert!(harness.app.state.turn.is_running());
+
+    // 重试提示到达：状态行要变，而且这一变必须被事件循环看见。
+    harness.app.needs_redraw();
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"turn.retry_status\",\
+         \"params\":{\"message\":\"请求失败，正在自动重试（第1次）\"}}\n",
+    );
+    harness.expect_ready(
+        |app| app.state.status.as_deref() == Some("请求失败，正在自动重试（第1次）"),
+        "重试提示应当落到状态行",
+    );
+    assert!(
+        harness.app.needs_redraw(),
+        "状态行变了却不请求重画：事件循环会整帧跳过，界面停在旧文字上"
+    );
+
+    // 模型重新出内容：提示让位回运行态（默认文案由回合态给出）。
+    harness.send("{\"jsonrpc\":\"2.0\",\"method\":\"turn.delta\",\"params\":{\"text\":\"答复\"}}\n");
+    harness.expect_ready(|app| app.state.status.is_none(), "模型重新出内容后提示应当让位");
+    assert!(harness.app.needs_redraw(), "让位同样要重画");
+
+    // 回合结束：状态行收起。
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{\"turn_id\":\"turn-1\",\
+         \"final_text\":\"答复\",\"reasoning\":\"\",\"model_turns\":1,\"tool_calls\":0,\
+         \"paused\":false}}\n",
+    );
+    harness.expect_ready(|app| !app.state.turn.is_running(), "回合应当收尾");
+    assert_eq!(harness.app.state.status, None);
+}

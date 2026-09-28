@@ -522,6 +522,7 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
             width,
             index,
             state.is_reasoning_expanded(index),
+            state.reasoning_visible_chars(index, text.chars().count()),
         ),
         Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
         Record::Tool(card) => push_tool(&mut lines, card, width, state),
@@ -893,12 +894,16 @@ fn push_subagent_conversation(
 
 /// 思考段：暗背景 + 灰前景 + 斜体（对映 CSS `.reasoning-message`），折叠态只显示最新
 /// [`REASONING_TAIL`] 行（对映 `ReasoningDisclosure.COLLAPSED_HEIGHT`），点击切换展开。
+///
+/// `visible` 是本次渲染该段思考可见的字符数：流式阶段由宿主逐帧推进，好让内容连续
+/// 铺开而不是一次蹦出好几行。它只截断**渲染用**的文本，记录与复制仍是完整思考。
 fn push_reasoning(
     lines: &mut Vec<DisplayLine>,
     text: &str,
     width: usize,
     index: usize,
     expanded: bool,
+    visible: usize,
 ) {
     // 思考块的暗底灰字：必须写成 `on <背景色>`，否则会被当成前景色（暗底暗字）。
     let style = theme::rich_style(&format!(
@@ -909,7 +914,8 @@ fn push_reasoning(
     let body_width = width.saturating_sub(2 * display_width(MESSAGE_PAD)).max(1);
     // 思考正文同样走对映层 Markdown 渲染，只是颜色统一成灰（Python `uniform_gray`）：
     // 取渲染后的纯文本再套思考块的暗底灰字斜体样式，正文里的 `**`/`#` 等标记就会被去掉。
-    let body = markdown::uniform_gray(&latex::latex_to_text(text)).plain();
+    let shown = truncate_chars(text, visible);
+    let body = markdown::uniform_gray(&latex::latex_to_text(shown)).plain();
     // Markdown 收尾常见一条空行（段落分隔）——留着会在思考块末尾多出一整行空白。
     let wrapped = wrap_display(body.trim_end_matches('\n'), body_width);
     let folded = if expanded {
@@ -935,6 +941,14 @@ fn push_reasoning(
         background_line(&hint, style, width),
         LineHit::Reasoning { index },
     ));
+}
+
+/// 取字符串前 `chars` 个字符；`chars` 不小于全长时原样借用。
+fn truncate_chars(text: &str, chars: usize) -> &str {
+    match text.char_indices().nth(chars) {
+        Some((offset, _)) => &text[..offset],
+        None => text,
+    }
 }
 
 /// 一条铺满整行背景的消息行（思考块用）：左内边距 + 正文 + 右侧补白。
@@ -1532,12 +1546,49 @@ mod tests {
             .all(|line| line.hit.is_none()));
     }
 
+    /// 显现截断只影响渲染：`visible` 之内的文字会画出来，未显现的部分不会提前出现。
+    #[test]
+    fn reasoning_reveal_truncates_rendered_text_only() {
+        let text = "一二三四五六七八九十";
+        let mut partial = Vec::new();
+        push_reasoning(&mut partial, text, 20, 0, false, 3);
+        let rendered = plain(&partial);
+        assert!(rendered[0].contains("一二三"), "{rendered:?}");
+        assert!(
+            !rendered[0].contains("四"),
+            "未显现的部分不该画出来：{rendered:?}"
+        );
+
+        // 一个字都没显现时正文整行都不出现（仍保留那行位置，避免首字到达时凭空多一行）。
+        let mut zero = Vec::new();
+        push_reasoning(&mut zero, text, 20, 0, false, 0);
+        let empty = plain(&zero);
+        assert_eq!(empty.len(), 2, "空正文行 + 提示行：{empty:?}");
+        assert!(empty[0].trim().is_empty(), "正文还是空的：{empty:?}");
+        assert!(empty[1].contains("⋯ 思考"), "{empty:?}");
+
+        // 截断只是前缀裁剪：显现到最后时，全量结果包含整段文字且以同一前缀开头。
+        let mut full = Vec::new();
+        push_reasoning(&mut full, text, 20, 0, false, text.chars().count());
+        let full_text: String = plain(&full)
+            .iter()
+            .map(|line| line.trim().to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(full_text.contains(text), "全量渲染应当包含整段文字：{full_text:?}");
+        assert!(
+            plain(&full)[0].contains("一二三"),
+            "全量结果以同一前缀开头：{:?}",
+            plain(&full)
+        );
+    }
+
     #[test]
     fn reasoning_collapses_to_latest_lines_with_hint() {
         // 用空行分段：Markdown 会把同一段里的换行当软换行合并成一行（与 Python `uniform_gray` 同义）。
         let text: String = (1..=8).map(|index| format!("想法{index}\n\n")).collect();
         let mut lines = Vec::new();
-        push_reasoning(&mut lines, text.trim_end(), 20, 3, false);
+        push_reasoning(&mut lines, text.trim_end(), 20, 3, false, usize::MAX);
         let rendered = plain(&lines);
         assert_eq!(rendered.len(), REASONING_TAIL + 1, "五行正文 + 一行提示");
         assert!(
@@ -1556,7 +1607,7 @@ mod tests {
 
         // 展开态显示全部行，提示语随之变化。
         let mut expanded = Vec::new();
-        push_reasoning(&mut expanded, text.trim_end(), 20, 3, true);
+        push_reasoning(&mut expanded, text.trim_end(), 20, 3, true, usize::MAX);
         let rendered = plain(&expanded);
         assert_eq!(rendered.len(), 9, "八行正文 + 一行提示");
         assert!(rendered[0].contains("想法1"), "{rendered:?}");

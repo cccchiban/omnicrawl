@@ -26,6 +26,7 @@ use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
 use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
 use omnicrawl_tui::app::{uses_external_channel, App};
 use omnicrawl_tui::args::{parse, Options, Parsed};
+use omnicrawl_tui::clipboard;
 use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
 use omnicrawl_tui::paste;
 use omnicrawl_tui::ui;
@@ -184,6 +185,8 @@ fn event_loop(
     // 终端尺寸只在「首次」与「收到 `Event::Resize`」时读：Windows 上 `terminal.size()`
     // 是一次控制台往返，空闲时每帧问一次纯属浪费，而尺寸变化一定会以 resize 事件到达。
     let mut viewport: Option<Rect> = None;
+    // 粘贴识别状态：跨控制台输入批次的多行粘贴要挂起等后续批次。
+    let mut paste_tracker = paste::PasteTracker::new();
     loop {
         if viewport.is_none() {
             viewport = Some(terminal_viewport(terminal)?);
@@ -202,6 +205,8 @@ fn event_loop(
         app.tick_config_chat();
         app.tick_monitor_events(now);
         app.drain_frames();
+        // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
+        app.state.tick_reasoning_reveal();
         // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块自上次绘制以来都没变时
         // 整帧跳过绘制——空闲的 TUI 不再以 20fps 空转，也不重算任何一块的内容。
         // 尺寸变化（resize 事件）与模态弹层都由 `needs_redraw` 一并覆盖。
@@ -228,8 +233,10 @@ fn event_loop(
                 .notice("控制台输入模式被重置，已恢复鼠标与键盘协议。".to_string());
         }
         // 等待时长按「下一件要做的事」定：空闲（无回合、无动画、无在途结果）时久睡，
-        // 有活动时按活动帧率短睡，避免固定 50ms 节拍白等。
-        let wait = app.poll_budget(Instant::now());
+        // 有活动时按活动帧率短睡，避免固定 50ms 节拍白等。粘贴挂起期间还要缩短上限，
+        // 好让「其实不是粘贴」的按键流能及时按普通输入回退。
+        let budget = app.poll_budget(Instant::now());
+        let wait = paste_wait(&paste_tracker, budget);
         if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))?
         {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
@@ -238,7 +245,10 @@ fn event_loop(
                 viewport = Some(resized);
                 app.set_viewport(resized);
             }
-            handle_event(app, event);
+            handle_event(app, &mut paste_tracker, event);
+        } else if paste_tracker.poll_timeout(Instant::now()) {
+            // 没有新输入且挂起已超时：把这些按键当普通输入冲刷，不无限期暂存用户输入。
+            flush_pending_paste(app, &mut paste_tracker);
         }
     }
 }
@@ -257,10 +267,11 @@ fn terminal_viewport(
 ///
 /// 终端支持 bracketed paste 时事件本身就是 `Event::Paste`；但 conhost 等终端不发那个序列，
 /// 粘贴会退化成一串普通按键（换行成了 `Enter`）——于是第一行被提交、后面的行逐条排队。
-/// 这里把**当前这一刻能读到的按键全收进来**（`poll(0)` 循环，不依赖按键间隔），整串像粘贴就
-/// 当成一次粘贴交给折叠路径；不像则逐条交给正常按键路径（行为与以前一致）。非按键事件当场
-/// 处理，不会排在按键后面。
-fn handle_event(app: &mut App, first: Event) {
+/// 这里把**当前这一刻能读到的按键全收进来**（`poll(0)` 循环，不依赖按键间隔）交给
+/// [`paste::PasteTracker`]：与系统剪贴板完整匹配才当一次粘贴；只是剪贴板的严格前缀时先挂起，
+/// 等下一批到齐（大文本粘贴会被控制台按批次切开）；超时或对不上则逐条走正常按键路径。
+/// 非按键事件当场处理，不会排在按键后面。
+fn handle_event(app: &mut App, tracker: &mut paste::PasteTracker, first: Event) {
     // 防呆上限：极端情况下终端狂刷按键时别把这个循环卡住。
     const MAX_INPUT_KEYS: usize = 4096;
     let mut keys: Vec<KeyEvent> = Vec::new();
@@ -286,14 +297,43 @@ fn handle_event(app: &mut App, first: Event) {
     if keys.is_empty() {
         return;
     }
-    if paste::looks_like_paste(&keys) {
-        if let Some(text) = paste::burst_text(&keys) {
-            app.handle_event(Event::Paste(text));
-            return;
+    deliver_keys(app, tracker, keys, Instant::now());
+}
+
+/// 把一批按键交给粘贴识别状态机，并按结果分派。
+fn deliver_keys(
+    app: &mut App,
+    tracker: &mut paste::PasteTracker,
+    keys: Vec<KeyEvent>,
+    now: Instant,
+) {
+    // 读一次剪贴板：读不到（非 Windows / 被占用 / 不是文本）时退回形状判定。
+    let clipboard = clipboard::read_text();
+    match tracker.feed(&keys, clipboard.as_deref(), now) {
+        paste::PasteOutcome::Paste(text) => app.handle_event(Event::Paste(text)),
+        // 等后续批次：不处理任何按键，由事件循环按 `paste_timeout` 收紧等待。
+        paste::PasteOutcome::Pending => {}
+        paste::PasteOutcome::Bypass(keys) => {
+            for key in keys {
+                app.handle_event(Event::Key(key));
+            }
         }
     }
-    for key in keys {
+}
+
+/// 挂起超时后把候选前缀冲刷成普通输入（对映 Python 空闲循环里的 `flush_keys(force=True)`）。
+fn flush_pending_paste(app: &mut App, tracker: &mut paste::PasteTracker) {
+    for key in tracker.flush() {
         app.handle_event(Event::Key(key));
+    }
+}
+
+/// 等待终端事件的时长：挂起期间按短窗口醒来，好让超时能及时回退。
+fn paste_wait(tracker: &paste::PasteTracker, budget: Duration) -> Duration {
+    if tracker.is_pending() {
+        budget.min(paste::PASTE_SINGLE_LINE_PREFIX_TIMEOUT)
+    } else {
+        budget
     }
 }
 

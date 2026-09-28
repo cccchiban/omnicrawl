@@ -115,6 +115,48 @@ fn chatting_state() -> AppState {
 }
 
 #[test]
+fn status_line_follows_retry_and_streaming() {
+    // 用户报的场景：模型重试一次之后，输入框上的状态显示不再自动刷新。
+    // 两条都要成立——重试提示当场刷上去，模型重新出内容后再让位回运行态。
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    let now = Instant::now();
+    state.begin_turn("t1".to_string(), "问问看".to_string());
+
+    let status_top = |lines: &[String]| {
+        lines
+            .iter()
+            .position(|line| line.starts_with('╭'))
+            .unwrap_or_else(|| panic!("应有一行方框上边框：{lines:?}"))
+    };
+    state.apply(
+        &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
+            message: "正在重试(第1次)".to_string(),
+        }),
+        now,
+    );
+    let lines = screen(&state, 80, 14);
+    assert!(
+        lines[status_top(&lines)].contains("正在重试(第1次)"),
+        "重试提示要立刻画到状态行上：{lines:?}"
+    );
+
+    state.apply(&HostEvent::Delta(TextPayload { text: "答复".into() }), now);
+    let lines = screen(&state, 80, 14);
+    assert!(
+        lines[status_top(&lines)].contains("正在调用"),
+        "模型重新出内容后状态行要让位回运行态：{lines:?}"
+    );
+    assert!(
+        !lines.join("\n").contains("正在重试"),
+        "旧提示不该留在任何一块上：{lines:?}"
+    );
+}
+
+#[test]
 fn input_group_is_boxed_and_the_status_sits_on_its_top_border() {
     // 用户要求：任务清单 / 排队预览 / 提示 / 命令菜单 / 输入本体共用**一个方框**，
     // 运行状态（`⠋ 正在调用 [ ESC ]`）写在方框上边框上，而不是留在会话流里。

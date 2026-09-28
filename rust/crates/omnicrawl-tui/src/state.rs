@@ -39,6 +39,22 @@ const CAROUSEL_SEED: u64 = 0x0C1C_2025;
 /// 输入框上方那行瞬时提示（拖选复制等）的存活时长。
 pub const NOTICE_LINE_LINGER: Duration = Duration::from_secs(3);
 
+/// 思考段平滑显现：每帧至少推进的字符数。
+///
+/// 模型分片是突发到达的（一帧内可能应用多片，网络停顿后尤其明显），逐片重绘会让好几行
+/// 一次蹦出来。慢流时积压本来就小于这个值，内容因此仍按到达节奏即时显示。
+const REASONING_REVEAL_MIN_CHARS: usize = 2;
+
+/// 思考段平滑显现：每帧按积压量的几分之一追赶。
+///
+/// 取 3 意味着一次突发被摊成四五帧连续铺开（≈100ms），既不落后于模型、也不再整段蹦出。
+const REASONING_REVEAL_CATCHUP_DIVISOR: usize = 3;
+
+/// 思考段平滑显现：单帧推进的字符数上限。
+///
+/// 防止「整段思考一次性到达」时出现肉眼可见的整屏跳变，把最大的突发也摊平成连续铺开。
+const REASONING_REVEAL_MAX_CHARS: usize = 96;
+
 /// 生成期间 FIFO 排队预览的可见条数上限与摘要长度上限。
 ///
 /// 直接复用对映层常量，不另立一份：预览行数与 HUD 的 `QUEUE` 段读的是同一组值。
@@ -659,6 +675,67 @@ impl TextSelection {
     }
 }
 
+/// 思考段的逐帧显现游标。
+///
+/// 模型分片是**突发到达**的：网络成批投递、一次 `drain_frames` 里可能应用好几片，
+/// 若每片都立刻整段重绘，画面就会「一次蹦出好几行」。这里只记「已显现到第几个字符」，
+/// 渲染时按它截断，每帧推进一点，内容于是连续铺开。
+///
+/// 截断只发生在渲染层：记录本身仍是完整思考，复制、会话投影与收口后的全文都不受影响。
+/// `index` 为 `None`（缺省）表示没有段在显现——历史回放、恢复等路径直接按全文显示。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReasoningReveal {
+    /// 正在显现的思考记录下标。
+    index: Option<usize>,
+    /// 已显现的字符数。
+    revealed: usize,
+    /// 当前已累积到的字符数。
+    target: usize,
+}
+
+impl ReasoningReveal {
+    /// 某条思考记录开始流式显现（首片到达）：从 0 起铺开。
+    fn start(&mut self, index: usize) {
+        self.index = Some(index);
+        self.revealed = 0;
+        self.target = 0;
+    }
+
+    /// 该记录又长了：更新目标长度（收窄时跟着回退，例如流回滚）。
+    fn grow(&mut self, index: usize, target: usize) {
+        if self.index != Some(index) {
+            return;
+        }
+        self.target = target;
+        self.revealed = self.revealed.min(target);
+    }
+
+    /// 退出显现态：之后所有思考段都按全文显示（收口、展开/收起、回放、回滚）。
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// 推进一帧；返回是否还有没铺完的内容（事件循环据此决定要不要继续按帧重画）。
+    fn advance(&mut self) -> bool {
+        if self.index.is_none() || self.revealed >= self.target {
+            return false;
+        }
+        let backlog = self.target - self.revealed;
+        let step = (backlog / REASONING_REVEAL_CATCHUP_DIVISOR)
+            .clamp(REASONING_REVEAL_MIN_CHARS, REASONING_REVEAL_MAX_CHARS);
+        self.revealed = (self.revealed + step).min(self.target);
+        self.revealed < self.target
+    }
+
+    /// 该记录本次渲染可见的字符数。
+    fn visible_chars(&self, index: usize, total: usize) -> usize {
+        match self.index {
+            Some(active) if active == index => self.revealed.min(total),
+            _ => total,
+        }
+    }
+}
+
 pub struct AppState {
     pub project: String,
     pub model: String,
@@ -735,6 +812,8 @@ pub struct AppState {
     /// 渲染与命中测试只拿得到 `&AppState`，所以用 `RefCell` 装
     /// （与 `runtime_esc_area` 用 `Cell` 同一思路）。
     conversation_cache: std::cell::RefCell<ConversationCache>,
+    /// 思考段的逐帧显现游标（见 [`ReasoningReveal`]）。
+    reasoning_reveal: std::cell::RefCell<ReasoningReveal>,
 }
 
 impl AppState {
@@ -778,6 +857,7 @@ impl AppState {
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),
             conversation_cache: std::cell::RefCell::new(ConversationCache::default()),
+            reasoning_reveal: std::cell::RefCell::new(ReasoningReveal::default()),
         };
         // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
         // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
@@ -805,6 +885,20 @@ impl AppState {
     pub fn set_status(&mut self, status: Option<String>) {
         self.status = status;
         self.touch_composer();
+    }
+
+    /// 内核的「进行中」提示让位（`Status` / `RetryStatus` / `ProtocolWait` 写入的那条）。
+    ///
+    /// 这类提示说的是「此刻在等什么」（正在重试第 N 次、等待协议、网关降级…），回合一旦
+    /// 重新往前走就不再成立，状态行该回到运行态的默认文案。不清理它会一直停在那句话上，
+    /// 直到回合结束（对映 Python 每片增量都重设「正在思考 / 正在回复」）。
+    ///
+    /// 只在回合进行中让位：慢命令（`/review` 等）在空闲时把状态行写成「正在评审」，
+    /// 不能被子代理的流式增量顶掉。
+    fn settle_transient_status(&mut self) {
+        if self.turn.is_running() && self.status.is_some() {
+            self.set_status(None);
+        }
     }
 
     /// 底部块置脏（轮播换页与解密扫描）。
@@ -839,6 +933,57 @@ impl AppState {
     /// 会话区显示行缓存（`ui::conversation` 内部使用）。
     pub(crate) fn conversation_cache(&self) -> &std::cell::RefCell<ConversationCache> {
         &self.conversation_cache
+    }
+
+    // ---- 思考段平滑显现 ---------------------------------------------------------
+
+    /// 推进一帧思考段显现；返回 `true` 表示还没铺完（事件循环据此继续按帧重画）。
+    pub fn tick_reasoning_reveal(&mut self) -> bool {
+        // 记录被清空/回滚后游标可能指向已经不存在的记录：那种情况下直接退出显现态，
+        // 否则「还没铺完」会永远为真，事件循环就按活动帧率空转。
+        let stale = self
+            .reasoning_reveal
+            .borrow()
+            .index
+            .is_some_and(|index| index >= self.records.len());
+        if stale {
+            self.reasoning_reveal.get_mut().reset();
+            return false;
+        }
+        let before = {
+            let reveal = self.reasoning_reveal.borrow();
+            (reveal.index, reveal.revealed)
+        };
+        let more = self.reasoning_reveal.get_mut().advance();
+        let after = {
+            let reveal = self.reasoning_reveal.borrow();
+            (reveal.index, reveal.revealed)
+        };
+        // 显现量变了就是这一条记录的内容变了：必须让它重算显示行，只重画是不够的。
+        if before != after {
+            if let Some(index) = after.0 {
+                self.touch_record(index);
+            }
+        }
+        more
+    }
+
+    /// 略过逐帧显现、立刻铺完全部思考（收口、展开/收起、回放与回合结束时用）。
+    ///
+    /// 只清掉显现游标：记录本身就是完整思考，此后所有思考段都按全文渲染。
+    pub fn settle_reasoning_reveal(&mut self) {
+        self.reasoning_reveal.get_mut().reset();
+    }
+
+    /// 该记录本次渲染应显示的字符数（只有正在显现的那条会被截断）。
+    pub fn reasoning_visible_chars(&self, index: usize, total: usize) -> usize {
+        self.reasoning_reveal.borrow().visible_chars(index, total)
+    }
+
+    /// 是否有思考段正在逐帧铺开。
+    pub fn is_reasoning_revealing(&self) -> bool {
+        let reveal = self.reasoning_reveal.borrow();
+        reveal.index.is_some() && reveal.revealed < reveal.target
     }
 
     /// 按 `call_id` 找工具卡在消息流里的下标。
@@ -1169,6 +1314,8 @@ impl AppState {
             self.expanded_reasoning.insert(index);
             true
         };
+        // 用户主动查看：不再逐帧铺开，剩下的内容当场补全（展开态尤其要看到全文）。
+        self.settle_reasoning_reveal();
         // 展开态变了：只需要重算这一段思考。
         self.touch_record(index);
         expanded
@@ -1184,24 +1331,29 @@ impl AppState {
             HostEvent::Delta(payload) => {
                 self.telemetry.rate.record(&payload.text, now);
                 self.append_streamed(&payload.text, false);
+                // 模型又开始出内容：上一轮的「正在重试」提示到此为止。
+                self.settle_transient_status();
             }
             HostEvent::ReasoningDelta(payload) => {
                 self.telemetry.rate.record(&payload.text, now);
                 self.append_streamed(&payload.text, true);
+                self.settle_transient_status();
             }
             HostEvent::Status(payload) | HostEvent::RetryStatus(payload) => {
-                self.status = Some(payload.message.clone());
+                self.set_status(Some(payload.message.clone()));
             }
             // 会话区提示（脱敏占位符还原告警等）：写进对话流，**不动**输入框上的状态行——
             // 这类提示说的是已经落到对话里的内容，用它顶掉「正在调用」会让回合看起来停了。
             HostEvent::Notice(payload) => self.notice(payload.message.clone()),
-            HostEvent::ProtocolWait => self.status = Some("等待协议…".to_string()),
+            HostEvent::ProtocolWait => self.set_status(Some("等待协议…".to_string())),
             HostEvent::StreamRollback => {
                 if matches!(self.records.last(), Some(Record::Assistant(_))) {
                     self.records.pop();
                     // 回滚会把最后一条正文整段抽掉：缓存多出来的块要一并丢掉（罕见路径，整块重算）。
                     self.touch_conversation();
                 }
+                // 思考段也被截断（目标长度回退）：显现游标按新长度收敛，免得停在旧位置。
+                self.settle_reasoning_reveal();
                 self.telemetry.rate.rollback();
             }
             HostEvent::TokenUsage(payload) => {
@@ -1212,6 +1364,8 @@ impl AppState {
                 self.telemetry.cached_input_tokens = payload.cached_input_tokens.max(0) as u64;
             }
             HostEvent::ToolCallStarted(payload) => {
+                // 模型开始写工具参数：上一次「正在重试 / 等待协议」到此结束。
+                self.settle_transient_status();
                 // 模型刚开始写这个调用的参数：卡片先立起来，参数随后逐段补
                 // （Python 只在批次执行时才画卡片，这里是 Rust 侧刻意的增量渲染）。
                 self.streaming_tools.insert(
@@ -1366,6 +1520,8 @@ impl AppState {
             HostEvent::TurnFinished(payload) => {
                 // 清掉侧信道会让卡片上的压缩提示消失：会话块整块重算（每回合一次）。
                 self.streaming_tools.clear();
+                // 回合已结束：思考段不再逐帧铺开，剩下的内容当场补全。
+                self.settle_reasoning_reveal();
                 self.touch_conversation();
                 // 回合结束时仍停在「调用中」的卡片一律收口：这类卡片拿不到结果了
                 // （流被截断、批次被丢弃、工具超时后结果被丢弃），留着就会永远转圈。
@@ -1488,6 +1644,8 @@ impl AppState {
     /// 非字符串的消息跳过，不把 JSON 塞进消息流。
     pub fn replay_history(&mut self, history: &[serde_json::Value]) {
         self.records.clear();
+        // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
+        self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
         self.touch_conversation();
         for message in history {
@@ -1519,6 +1677,8 @@ impl AppState {
     /// 清空视图，而不是保留旧消息。
     pub fn replay_events(&mut self, events: &[serde_json::Value]) {
         self.records.clear();
+        // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
+        self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
         self.touch_conversation();
         // 未收口的工具卡：`(call_id, tool, 记录下标, 请求时间)`。没有 call id 的旧事件按
@@ -1855,6 +2015,8 @@ impl AppState {
         self.status = None;
         // 回合失败/取消时不能留下一直转圈的卡片。
         self.close_running_cards("工具调用在回合结束前未收到结果。");
+        // 中途停下的思考不再逐帧铺开：当场补全到已到达的长度，免得停在半句。
+        self.settle_reasoning_reveal();
         self.records.push(Record::Notice(message));
         self.touch_appended();
         self.touch_composer();
@@ -1869,6 +2031,8 @@ impl AppState {
             return;
         }
         self.show_thinking = enabled;
+        // 开关变化后整块重排：思考段不再逐帧铺开，避免显示到一半的半句停在屏幕上。
+        self.settle_reasoning_reveal();
         self.touch_conversation();
     }
 
@@ -2228,11 +2392,24 @@ impl AppState {
         if matches!(target_index.and_then(|index| self.records.get(index)), Some(record) if target(record))
         {
             let index = target_index.expect("目标记录存在");
-            if let Some(record) = self.records.get_mut(index) {
+            let length = if let Some(record) = self.records.get_mut(index) {
                 match record {
-                    Record::Reasoning(body) | Record::Assistant(body) => body.push_str(text),
+                    Record::Reasoning(body) | Record::Assistant(body) => {
+                        body.push_str(text);
+                        body.chars().count()
+                    }
                     _ => unreachable!("target 只匹配思考与正文记录"),
                 }
+            } else {
+                0
+            };
+            // 思考段逐帧显现：新段从 0 起铺开，已有段只更新目标长度（渲染按已显现量截断）。
+            if reasoning {
+                let reveal = self.reasoning_reveal.get_mut();
+                if reveal.index != Some(index) {
+                    reveal.start(index);
+                }
+                reveal.grow(index, length);
             }
             // 正文逐片追加：只重算这一条记录（分块增量缓存的关键路径）。
             self.touch_record(index);
@@ -2243,6 +2420,13 @@ impl AppState {
             } else {
                 Record::Assistant(body)
             });
+            if reasoning {
+                let index = self.records.len() - 1;
+                let length = text.chars().count();
+                let reveal = self.reasoning_reveal.get_mut();
+                reveal.start(index);
+                reveal.grow(index, length);
+            }
             self.touch_appended();
         }
     }
@@ -2655,6 +2839,134 @@ mod tests {
         assert_eq!(state.records[2], Record::Assistant("回答结束".to_string()));
     }
 
+    /// 思考段逐帧铺开：大突发不会在同一帧里整段蹦出，但几帧内一定能铺完。
+    #[test]
+    fn reasoning_reveal_spreads_a_burst_across_frames() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string());
+        let burst: String = "想".repeat(300);
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload { text: burst.clone() }),
+            now,
+        );
+
+        let total = burst.chars().count();
+        assert_eq!(
+            state.reasoning_visible_chars(1, total),
+            0,
+            "首帧一个字符都不该先显示出来"
+        );
+        assert!(state.is_reasoning_revealing());
+
+        // 逐帧推进：每次只铺开一部分，绝不会一帧到齐。
+        let mut frames = 0;
+        while state.tick_reasoning_reveal() {
+            frames += 1;
+            let visible = state.reasoning_visible_chars(1, total);
+            assert!(visible < total, "还有剩就该「没铺完」，第 {frames} 帧");
+            assert!(frames < 200, "铺开过程不该无限长");
+        }
+        assert_eq!(
+            state.reasoning_visible_chars(1, total),
+            total,
+            "最终必须铺完"
+        );
+        assert!(!state.is_reasoning_revealing());
+
+        // 记录本身始终是完整思考：截断只发生在渲染层。
+        assert_eq!(state.records[1], Record::Reasoning(burst));
+    }
+
+    /// 慢流（积压小于每帧最小步长）立刻显示，不额外滞后于模型。
+    #[test]
+    fn reasoning_reveal_keeps_up_with_a_slow_stream() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
+            now,
+        );
+        assert_eq!(state.reasoning_visible_chars(1, 1), 0, "首片先不显示");
+        state.tick_reasoning_reveal();
+        assert_eq!(
+            state.reasoning_visible_chars(1, 1),
+            1,
+            "一帧之内就该跟上单字符增量"
+        );
+    }
+
+    /// 收口路径（回合结束/失败/回放）当场补全，不留半句在屏幕上。
+    #[test]
+    fn reasoning_reveal_settles_on_turn_end_and_replay() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "想".repeat(200),
+            }),
+            now,
+        );
+        state.settle_reasoning_reveal();
+        assert_eq!(state.reasoning_visible_chars(1, 200), 200);
+        assert!(!state.is_reasoning_revealing());
+
+        // 又一段流式思考后回合结束：同样立刻铺完。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "再".repeat(200),
+            }),
+            now,
+        );
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "答复".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 0,
+                paused: false,
+            }),
+            now,
+        );
+        assert!(
+            !state.is_reasoning_revealing(),
+            "回合结束后不该还有内容在慢慢铺"
+        );
+        assert_eq!(state.reasoning_visible_chars(1, 400), 400);
+
+        // 回放历史属于「已发生的事实」，直接全文显示。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "又".repeat(100),
+            }),
+            now,
+        );
+        state.replay_history(&[]);
+        assert!(!state.is_reasoning_revealing());
+    }
+
+    /// 正文（非思考）不受显现机制影响：它一直是即时逐片追加。
+    #[test]
+    fn reasoning_reveal_never_truncates_assistant_text() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "正".repeat(500),
+            }),
+            now,
+        );
+        assert_eq!(state.records[1], Record::Assistant("正".repeat(500)));
+        assert!(
+            !state.is_reasoning_revealing(),
+            "正文不参与显现，不该出现「还在铺」的状态"
+        );
+    }
+
     #[test]
     fn tool_cards_track_status_body_and_elapsed() {
         let mut state = state();
@@ -2778,6 +3090,115 @@ mod tests {
         state.apply(&HostEvent::StreamRollback, now);
         assert_eq!(state.records.len(), 1, "正文记录应被撤销");
         assert!(state.telemetry.rate.value().is_none(), "回滚后速度归零");
+    }
+
+    /// 状态行写在输入块里：`Status` / `RetryStatus` / `ProtocolWait` 都必须把输入块置脏。
+    ///
+    /// 这三个事件以前直接给 `state.status` 赋值（绕过 `set_status`），三块刷新判定「没变」
+    /// 就让事件循环整帧跳过绘制——状态文字停在旧值上不刷新。用户报的「模型重试之后状态
+    /// 显示不会自动刷新」就是这条。
+    #[test]
+    fn kernel_status_events_mark_the_composer_dirty() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string());
+        let base = state.refresh_versions();
+
+        state.apply(
+            &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
+                message: "正在重试(第1次)".to_string(),
+            }),
+            now,
+        );
+        let after_retry = state.refresh_versions();
+        assert_eq!(state.status.as_deref(), Some("正在重试(第1次)"));
+        assert_eq!(
+            after_retry.composer,
+            base.composer + 1,
+            "重试提示写在输入框上边框上，必须置脏输入块"
+        );
+
+        state.apply(
+            &HostEvent::ProtocolWait,
+            now,
+        );
+        let after_wait = state.refresh_versions();
+        assert_eq!(state.status.as_deref(), Some("等待协议…"));
+        assert_eq!(after_wait.composer, after_retry.composer + 1);
+
+        state.apply(
+            &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
+                message: "网关降级，正在重试".to_string(),
+            }),
+            now,
+        );
+        assert_eq!(
+            state.refresh_versions().composer,
+            after_wait.composer + 1,
+            "普通状态提示同样要置脏"
+        );
+    }
+
+    /// 重试提示只是「此刻在等什么」，模型一旦重新出内容就该让位回运行态。
+    ///
+    /// 不留旧提示的话，状态行会一直写着「正在重试(第N次)」，看起来像卡在重试上。
+    #[test]
+    fn streaming_clears_the_retry_prompt() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string());
+        state.apply(
+            &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
+                message: "请求失败，正在自动重试（第1次）".to_string(),
+            }),
+            now,
+        );
+        assert!(state.status.is_some());
+
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "答复".into(),
+            }),
+            now,
+        );
+        assert_eq!(state.status, None, "正文到达后重试提示应当让位");
+        let after = state.refresh_versions();
+        state.apply(
+            &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
+                message: "请求失败，正在自动重试（第2次）".to_string(),
+            }),
+            now,
+        );
+        assert_eq!(state.status.as_deref(), Some("请求失败，正在自动重试（第2次）"));
+
+        // 思考增量同理：模型重新动起来就不再是「等待」。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "再想想".into(),
+            }),
+            now,
+        );
+        assert_eq!(state.status, None, "思考增量到达后提示也应当让位");
+        assert!(state.refresh_versions().composer >= after.composer);
+    }
+
+    /// 空闲时的状态行（慢命令的「正在评审」）不被子代理的流式增量顶掉。
+    #[test]
+    fn idle_status_survives_subagent_streaming() {
+        let mut state = state();
+        let now = Instant::now();
+        state.set_status(Some("正在评审".to_string()));
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "评审正文".into(),
+            }),
+            now,
+        );
+        assert_eq!(
+            state.status.as_deref(),
+            Some("正在评审"),
+            "回合没在跑时不能清掉慢命令的状态行"
+        );
     }
 
     #[test]

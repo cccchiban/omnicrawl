@@ -84,6 +84,20 @@ pub fn read_clipboard_text() -> Result<String, ToolError> {
     result
 }
 
+/// 单次尝试读取剪贴板文本；被占用等失败一律返回 `None`，**不重试也不睡眠**。
+///
+/// 给 TUI 的粘贴识别用：那条路径每收到一批按键就要比对一次剪贴板，而
+/// [`read_clipboard_text`] 的退避重试（3 次 × 50ms）会把界面卡住近 100ms。
+/// 对映 Python 侧 `_read_windows_clipboard_text`：读不到就当识别不了，退回普通按键流。
+pub fn try_read_clipboard_text() -> Option<String> {
+    if unsafe { ffi::OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return None;
+    }
+    let result = read_clipboard_locked().ok();
+    unsafe { ffi::CloseClipboard() };
+    result
+}
+
 fn read_clipboard_locked() -> Result<String, ToolError> {
     let handle = unsafe { ffi::GetClipboardData(ffi::CF_UNICODETEXT) };
     if handle.is_null() {
