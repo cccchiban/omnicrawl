@@ -201,7 +201,7 @@ fn real_kernel_streams_a_turn_into_the_ui() {
         app.state
             .records
             .iter()
-            .any(|record| matches!(record, Record::User(text) if text == "你好")),
+            .any(|record| matches!(record, Record::User(message) if message.text == "你好")),
         "用户消息应留在消息流里：{:?}",
         app.state.records
     );
@@ -757,7 +757,7 @@ fn real_kernel_undoes_the_last_turn_from_slash_command() {
         !app.state
             .records
             .iter()
-            .any(|record| matches!(record, Record::User(text) if text.contains("/undo"))),
+            .any(|record| matches!(record, Record::User(message) if message.text.contains("/undo"))),
         "`/undo` 不该进模型对话：{:?}",
         app.state.records
     );

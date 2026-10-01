@@ -13,6 +13,7 @@ pub mod app;
 pub mod args;
 pub mod clipboard;
 pub mod commands;
+pub mod image_path;
 pub mod monitor;
 pub mod paste;
 pub mod state;

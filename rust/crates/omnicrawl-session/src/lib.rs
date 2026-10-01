@@ -80,9 +80,9 @@ pub use projection::{
     active_session_events, apply_run_guard_event, complete_tool_pairing, event_to_model_message,
     format_tool_result_content, function_tool_call, interrupted_tool_result_message,
     recover_run_guard_state, session_title_from_events, tool_result_message,
-    tool_result_output_text, CANCELLED_TURN_DEFAULT_SUMMARY, INTERRUPTED_TOOL_RESULT_TEXT,
-    RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX,
-    TURN_UNDONE_EVENT_TYPE,
+    tool_result_output_text, user_message_with_images, CANCELLED_TURN_DEFAULT_SUMMARY,
+    INTERRUPTED_TOOL_RESULT_TEXT, RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX,
+    TOOL_RESULT_CONTEXT_PREFIX, TURN_UNDONE_EVENT_TYPE,
 };
 pub use prompt_history::{
     clean_prompt_display, PromptHistoryEntry, PromptHistoryStore, MAX_PROMPT_HISTORY_DISPLAY_CHARS,

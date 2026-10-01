@@ -15,6 +15,7 @@ pub mod conversation;
 pub mod file_picker;
 pub mod fullscreen;
 pub mod hud;
+pub mod image_preview;
 pub mod panels;
 pub mod queue;
 pub mod settings;

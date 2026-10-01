@@ -12,6 +12,8 @@ name = "omnicrawl-tui"
 path = "src/main.rs"
 
 [dependencies]
+# 图片预览：工具的视觉附件带的是 Base64 原文，要先解码再交给 image。
+base64 = "0.23"
 omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
 # 斜杠命令的候选来源（菜单只消费 CommandOption，不持有宿主）。
@@ -38,6 +40,9 @@ chrono = { workspace = true }
 crossterm = { workspace = true }
 regex = { workspace = true }
 ratatui = { workspace = true }
+# 工具卡里的图片预览（read_image / image_gen 等）：解码 + 转半块字形。
+image = { workspace = true }
+ratatui-image = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }

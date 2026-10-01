@@ -26,10 +26,10 @@ resolver = "2"
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-# MSRV 由 wreq 的 BoringSSL 绑定（btls-sys）决定：它声明 rust-version = 1.85。
-# 这是一次全工作区抬升——只有 omnicrawl-host 的 fetcher 用到 wreq，但 Cargo 的
-# rust-version 是工作区级声明，无法只对单个 crate 抬高。
-rust-version = "1.85"
+# MSRV 由依赖树里最高的那个声明决定，工作区级声明无法只对单个 crate 抬高。
+# 抬到 1.90 的直接原因：图形栈 ratatui-image → icy_sixel → quantette / ordered-float
+# 各自要求 1.90；此前是 wreq 的 BoringSSL 绑定（btls-sys）要 1.85。
+rust-version = "1.90"
 license = "MIT"
 
 [workspace.dependencies]
@@ -66,6 +66,14 @@ memmap2 = "0.9"
 # 全屏终端工作台：ratatui 负责布局与双缓冲渲染，crossterm 负责原始模式与跨平台输入事件。
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
+# 工具卡里的图片预览：把 read_image 这类工具返回的图片按终端单元渲染。
+# 只开 half-blocks 通路——它不做终端的图形协议查询，因此在任何终端（含 Windows
+# Terminal 走的 ConPTY）上都能出图；默认特性里的 chafa 需要运行期 libchafa，一律关掉。
+# 这条依赖把工作区 MSRV 从 1.85 抬到 1.90（它经 icy_sixel → quantette / ordered-float
+# 传递要求 1.90），见上面 `rust-version` 的说明。
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+# 图片解码：格式与 read_image 承认的签名一一对应（PNG/JPEG/GIF/WebP），全部纯 Rust。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # 输入框软折行与 HUD 对齐按显示列宽算，CJK 与 emoji 不能按字符数算。
 unicode-width = "0.2"
 # 搜索工具：与随包 Go 扩展（native/ocsearch）同一套语义——ripgrep 用的正则引擎，

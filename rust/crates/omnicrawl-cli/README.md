@@ -121,6 +121,15 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 提示；当成状态发出去会顶掉输入框上边框的「正在调用」，让人以为回合停了。宿主（TUI）收到
 `turn.notice` 后写进会话流（`Record::Notice`），不动状态行。
 
+**压缩边界同样走这条通知**（以前发 `turn.status`，回合结束就被清掉，对话里什么也留不下）：
+
+- 上下文压缩：`format_compaction_notice` 生成的 `---已压缩 xxk~xxk ---`，三条路径共用——
+  阈值触发、上下文超限恢复（尾部再拼一句「检测到上下文超限…」）、显式 `/compact`。
+- 回合末工具调用压缩：`omnicrawl_controllers::compression::compaction_notice` 生成的
+  `已压缩 {原始} → {概括} 字符`（千分位）。计量取自 `tool_call_summary` 事件的
+  `raw_chars` / `summary_chars`，其中 `summary_chars` 只数概括正文本身、不含末尾那段给模型
+  回读用的落盘说明，因此 TUI 回放（`/resume`、`/undo`）能重建逐字相同的一行，不必重算。
+
 ## 工具输出压缩旁路
 
 `[tool_output_compression]` 启用时，内核在拿到宿主回传的整批观察后会额外跑一次压缩请求：

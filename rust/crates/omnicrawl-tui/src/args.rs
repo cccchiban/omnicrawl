@@ -28,7 +28,9 @@ pub struct Options {
     /// 单个工具执行的最长等待（秒），与 Python 侧 `tool_timeout_seconds` 同义；
     /// 超时按批次绝对截止时间计算，超时工具的结果被丢弃、回合继续推进。
     pub tool_timeout_seconds: i64,
-    /// 模型原生支持视觉：开启后 `read_image` 的图片会作为观察注入模型请求。
+    /// 模型原生支持视觉：为真时 `read_image` 的图片作为视觉附件注入模型请求。
+    /// 未给该开关时按配置里当前模型的 `native_vision` 决定（见 `app.rs` 的
+    /// `effective_native_vision`）。
     pub native_vision: bool,
     /// 图像生成（OpenAI 兼容 Image API）：与 Python 的 `image_gen` 配置段同义。
     pub image_gen: ImageGenArgs,
@@ -95,6 +97,7 @@ pub const USAGE: &str = "\
   --command-timeout <秒>   命令类工具默认超时（默认 360）
   --tool-timeout <秒>      单个工具执行的最长等待（默认 600）
   --native-vision          模型原生支持视觉：把 read_image 的图片注入请求
+                           （未给时按配置里当前模型的 native_vision）
   --image-gen              启用图像生成（默认 $OMNICRAWL_IMAGE_GEN_ENABLED）
   --image-gen-base-url <地址>   图像接口基地址（默认 $OMNICRAWL_IMAGE_GEN_BASE_URL）
   --image-gen-model <名称>      图像模型（默认 $OMNICRAWL_IMAGE_GEN_MODEL）

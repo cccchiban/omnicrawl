@@ -32,6 +32,29 @@ pub struct ReadImageOutcome {
     pub prompt: String,
 }
 
+/// 一个读出来的本机图片文件：解析后的路径、MIME 类型与原始字节。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalImage {
+    pub path: PathBuf,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// 解析并读出一个本机图片文件（相对路径绑工作区、按签名判 MIME）。
+///
+/// `read_image` 与宿主 TUI 的「粘贴内容就是一个图片路径」共用这条判定链：签名表、
+/// 越界规则与错误文案都只有一份。
+pub fn read_local_image(raw_path: &str, workspace_root: &Path) -> Result<LocalImage, ToolError> {
+    let path = resolve_image_path(raw_path, workspace_root)?;
+    let bytes = read_bytes(&path, raw_path)?;
+    let media_type = detect_media_type(&path, &bytes)?;
+    Ok(LocalImage {
+        path,
+        media_type,
+        bytes,
+    })
+}
+
 pub fn read_image(
     paths: &WorkspacePaths,
     arguments: &Map<String, Value>,
@@ -45,11 +68,11 @@ pub fn read_image(
         _ => return Err(ToolError::new("prompt 必须是非空的图片分析提示词。")),
     };
     let detail = read_detail(arguments.get("detail"))?;
-    let path = resolve_image_path(&raw_path, paths.root())?;
-    let image_bytes = read_bytes(&path, &raw_path)?;
-    let media_type = detect_media_type(&path, &image_bytes)?;
+    let image = read_local_image(&raw_path, paths.root())?;
+    let image_bytes = &image.bytes;
+    let media_type = image.media_type.clone();
 
-    let display_path = display_image_path(&path, paths.root());
+    let display_path = display_image_path(&image.path, paths.root());
     let payload = json!({
         "path": display_path,
         "media_type": media_type,
@@ -61,8 +84,9 @@ pub fn read_image(
         output: python_dumps_compact(&payload),
         images: vec![ToolImageAttachment {
             media_type,
-            data_base64: base64::engine::general_purpose::STANDARD.encode(&image_bytes),
-            filename: path
+            data_base64: base64::engine::general_purpose::STANDARD.encode(image_bytes),
+            filename: image
+                .path
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default(),

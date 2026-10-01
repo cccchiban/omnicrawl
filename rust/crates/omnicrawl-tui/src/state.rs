@@ -14,6 +14,9 @@ use omnicrawl_ipc::{HostEvent, Id};
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::conversation::ConversationCache;
+use crate::ui::image_preview::ImagePreviews;
+use omnicrawl_controllers::types::ToolImageAttachment;
+use omnicrawl_ipc::bridge::TurnImageAttachment;
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::{SessionMenuItem, SessionsMenu};
 use crate::ui::fullscreen::random::Rng;
@@ -116,9 +119,40 @@ pub struct StreamingTool {
     pub streaming: bool,
 }
 
+/// 一条用户消息：正文 + 随它发出的图片。
+///
+/// 图片是**用户消息的一部分**（`Ctrl+V` 贴进来的剪贴板位图），因此与文本绑在同一条记录上：
+/// 会话区渲染成缩略图、重放时从事件载荷重建、提交时随 `turn.submit` 一起送给内核。
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserRecord {
+    pub text: String,
+    /// 随这条消息发出的图片，按粘贴顺序（与 `turn.submit` 的 `TurnImageAttachment` 同形）。
+    pub images: Vec<TurnImageAttachment>,
+    /// 图片预览在 [`ImagePreviews`] 里的锚点（与工具卡用 `call_id` 同一思路）。
+    ///
+    /// 每条用户消息一个：同一条消息的多张图属于同一块，滚动/重算都按这个键找回。
+    pub image_key: String,
+}
+
+impl UserRecord {
+    /// 纯文本消息（没有粘贴图片，或旧重放路径没带图片）。
+    pub fn text_only(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+            image_key: String::new(),
+        }
+    }
+
+    /// 这条消息会不会出图。
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty() && !self.image_key.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
-    User(String),
+    User(UserRecord),
     Reasoning(String),
     Assistant(String),
     Tool(ToolCard),
@@ -233,6 +267,12 @@ pub struct Composer {
     /// 提交时按占位符还原，删除时整块删掉。
     pastes: Vec<(String, String)>,
     paste_sequence: usize,
+    /// 粘贴的图片：占位符 → 图片附件（Ctrl+V 贴进来的剪贴板位图）。
+    ///
+    /// 与 `pastes` 同一套占位符机制：`[ #1 Image ]` 在输入框里是一整块，
+    /// 删除/左右移动都按块处理，提交时按顺序抽出图片随 prompt 一起送出。
+    images: Vec<(String, PendingImage)>,
+    image_sequence: usize,
     /// 已发送消息的历史，供上下键回看（对映 Python `Composer._history`）。
     history: Vec<String>,
     /// -1 表示输入框里是用户自己的草稿；>= 0 表示正在浏览第 N 条历史。
@@ -262,6 +302,36 @@ fn paste_placeholder(sequence: usize, lines: usize) -> String {
     format!("[粘贴 #{sequence} +{lines} 行]")
 }
 
+/// 粘贴进输入框、尚未随 prompt 发出的图片（`Ctrl+V` 贴进来的剪贴板位图，或粘贴进来的图片路径）。
+///
+/// `placeholder` 是它在输入框文本里的锚点（`[ #1 Image ]`）：撤回排队消息时据此把附件
+/// 挂回同一块，不靠重新编号或位置猜测。只留原始字节：Base64 编码在提交时一次性做
+/// （输入框按住不动时不必先膨胀 33%）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingImage {
+    pub placeholder: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// 一条「已从输入框交出、尚未发往内核」的提问：文本 + 随行的图片。
+///
+/// 生成期间进来的提问先进 FIFO 队列，回合结束后按顺序提交；图片必须与文本同行，
+/// 否则排队等一轮就会把图片丢掉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSubmission {
+    pub text: String,
+    pub images: Vec<PendingImage>,
+}
+
+/// 粘贴图片的占位符（对映用户要求的 `[ #1 Image ]`）。
+///
+/// `#` 后是图片序号（粘贴多张时递增），`Image` 是类型名，整个方括号是一块：
+/// 删除、左右移动都按块处理，不会停在块中间。
+fn image_placeholder(sequence: usize) -> String {
+    format!("[ #{sequence} Image ]")
+}
+
 impl Composer {
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
@@ -276,6 +346,7 @@ impl Composer {
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
+        self.images.clear();
         self.exit_browse_mode();
         self.refresh_menu();
     }
@@ -362,11 +433,15 @@ impl Composer {
     ///
     /// 返回的是**展开后**的全文：粘贴折叠块在这里还原成真实内容（对映 Python
     /// 提交前调 `_expand_compact_paste_placeholders` 再清空映射）。
+    ///
+    /// 图片块不展开成文本（`[ #1 Image ]` 照旧留在文本里），附件由 [`Self::take_images`]
+    /// 单独取走；这里一并清掉图片状态，避免取消提交后残留。
     pub fn take(&mut self) -> String {
         let text = self.expanded_text();
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
+        self.images.clear();
         self.exit_browse_mode();
         self.refresh_menu();
         text
@@ -389,6 +464,47 @@ impl Composer {
         self.insert(&placeholder);
     }
 
+    /// 图片粘贴入口：在光标处插入 `[ #n Image ]` 占位符，附件按序号存起来等提交。
+    ///
+    /// 与文本粘贴折叠同一套占位符语义：整块删除、左右移动不停在块中间；占位符被删掉后
+    /// 附件随之丢弃（[`Self::prune_pastes`]），不会被静默发出去。
+    pub fn insert_image(&mut self, media_type: &str, bytes: Vec<u8>) {
+        self.image_sequence += 1;
+        let placeholder = image_placeholder(self.image_sequence);
+        self.images.push((
+            placeholder.clone(),
+            PendingImage {
+                placeholder: placeholder.clone(),
+                media_type: media_type.to_string(),
+                bytes,
+            },
+        ));
+        self.insert(&placeholder);
+    }
+
+    /// 取走待发图片（按粘贴顺序），并清掉图片块状态。
+    ///
+    /// 提交路径专用：`take()` 只交出文本，图片得单独取——两者一起清掉才不会漏发。
+    pub fn take_images(&mut self) -> Vec<PendingImage> {
+        self.images.drain(..).map(|(_, image)| image).collect()
+    }
+
+    /// 把这些图片按各自的占位符挂回输入框（撤回排队消息时用）。
+    ///
+    /// 占位符已在文本里，因此只重建映射、不重新编号：撤回的那条消息回到输入框后，
+    /// 图片块与提交前完全一致。
+    pub fn restore_images(&mut self, images: Vec<PendingImage>) {
+        for image in images {
+            let placeholder = image.placeholder.clone();
+            self.images.push((placeholder, image));
+        }
+    }
+
+    /// 输入框里当前有几张待发图片（提交时判断要不要走图片路径）。
+    pub fn image_count(&self) -> usize {
+        self.images.len()
+    }
+
     /// 展开全部占位符；`take()` 与命令分派核对都读它。
     pub fn expanded_text(&self) -> String {
         let mut expanded = self.text.clone();
@@ -399,9 +515,16 @@ impl Composer {
     }
 
     /// 字符下标 `index` 落在哪个占位符里（左闭右开），没有就是 `None`。
+    ///
+    /// 粘贴文本块与图片块共用这套判定：两者在输入框里都是一整块。
     fn placeholder_span(&self, index: usize) -> Option<(usize, usize)> {
         let chars: Vec<char> = self.text.chars().collect();
-        for (placeholder, _) in &self.pastes {
+        let placeholders = self
+            .pastes
+            .iter()
+            .map(|(placeholder, _)| placeholder.as_str())
+            .chain(self.images.iter().map(|(placeholder, _)| placeholder.as_str()));
+        for placeholder in placeholders {
             let needle: Vec<char> = placeholder.chars().collect();
             if needle.is_empty() || needle.len() > chars.len() {
                 continue;
@@ -433,12 +556,16 @@ impl Composer {
 
     /// 丢掉已经不在文本里的占位符，避免原文一直挂着占内存
     /// （对映 Python `_prune_compact_paste_placeholders`）。
+    ///
+    /// 图片块同样在这里回收：占位符被删掉后附件就不该再随提交发出去。
     fn prune_pastes(&mut self) {
-        if self.pastes.is_empty() {
+        if self.pastes.is_empty() && self.images.is_empty() {
             return;
         }
         let text = self.text.clone();
         self.pastes
+            .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
+        self.images
             .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
     }
 
@@ -764,7 +891,7 @@ pub struct AppState {
     pub logo: LogoAnimation,
     /// 生成期间按 Enter 排队的消息（FIFO）。回合结束后按顺序自动提交，
     /// 避免同一进程里出现重叠的回合 worker（对映 Python 的 `_pending_inputs`）。
-    pub pending_inputs: VecDeque<String>,
+    pub pending_inputs: VecDeque<PendingSubmission>,
     /// 排队预览是否处于展开态（超出可见上限时才可切换）。
     pub pending_queue_expanded: bool,
     /// 被点击展开正文的工具卡（按 `call_id`），对映 Python `ToolDisclosure._expanded`。
@@ -812,8 +939,15 @@ pub struct AppState {
     /// 渲染与命中测试只拿得到 `&AppState`，所以用 `RefCell` 装
     /// （与 `runtime_esc_area` 用 `Cell` 同一思路）。
     conversation_cache: std::cell::RefCell<ConversationCache>,
+    /// 工具卡的图片预览（`read_image` 等工具回的视觉附件）。
+    ///
+    /// 与显示行缓存同样只被渲染路径读取，因此也装在 `RefCell` 里；解码在后台线程，
+    /// 宿主每帧调 [`Self::tick_image_previews`] 收结果。
+    image_previews: std::cell::RefCell<ImagePreviews>,
     /// 思考段的逐帧显现游标（见 [`ReasoningReveal`]）。
     reasoning_reveal: std::cell::RefCell<ReasoningReveal>,
+    /// 用户消息图片块的锚点序号（进程内自增，见 [`Record::User`] 的 `image_key`）。
+    user_image_sequence: u64,
 }
 
 impl AppState {
@@ -857,7 +991,9 @@ impl AppState {
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),
             conversation_cache: std::cell::RefCell::new(ConversationCache::default()),
+            image_previews: std::cell::RefCell::new(ImagePreviews::default()),
             reasoning_reveal: std::cell::RefCell::new(ReasoningReveal::default()),
+            user_image_sequence: 0,
         };
         // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
         // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
@@ -919,6 +1055,15 @@ impl AppState {
         self.refresh.bump_conversation();
     }
 
+    /// 清空会话视图（`Ctrl+L` 一类命令）：记录与图片预览一起丢掉。
+    ///
+    /// 预览必须同步清掉：记录没了以后没有任｛Desensitized:684｝引用那些锚点，留着只占内存。
+    pub fn clear_conversation(&mut self) {
+        self.records.clear();
+        self.image_previews.get_mut().clear();
+        self.touch_conversation();
+    }
+
     /// 会话区尾部追加了一条记录：显示行只需补算新记录，但界面要重画。
     fn touch_appended(&mut self) {
         self.refresh.bump_conversation();
@@ -933,6 +1078,52 @@ impl AppState {
     /// 会话区显示行缓存（`ui::conversation` 内部使用）。
     pub(crate) fn conversation_cache(&self) -> &std::cell::RefCell<ConversationCache> {
         &self.conversation_cache
+    }
+
+    /// 工具卡的图片预览存储（`ui::conversation` 内部使用）。
+    pub(crate) fn image_previews(&self) -> &std::cell::RefCell<ImagePreviews> {
+        &self.image_previews
+    }
+
+    // ---- 工具卡图片预览 -----------------------------------------------------------
+
+    /// 收下后台解码完的图片；返回是否出现了新的预览（会话区据此重画）。
+    ///
+    /// 新图意味着卡片正文要多铺几行占位块，必须让那一条记录的显示行重算——
+    /// 否则图片到了屏幕上也不会出现（缓存里还是旧的行数）。
+    pub fn tick_image_previews(&mut self) -> bool {
+        let ready = self.image_previews.get_mut().drain();
+        if ready.is_empty() {
+            return false;
+        }
+        // 只重算那几张卡的显示行：图片从「正在准备」换成整块，或者（解码失败时）换回载荷正文。
+        // 整块失效在这里太贵——一张 2000 行的会话每来一张图就要从头渲染一遍。
+        for key in &ready {
+            if let Some(slot) = self.image_block_slot(key) {
+                self.touch_record(slot);
+            }
+        }
+        true
+    }
+
+    /// 是否还有图片在后台解码（事件循环据此按活动帧率醒来取结果）。
+    pub fn has_pending_image_previews(&self) -> bool {
+        self.image_previews.borrow().is_pending()
+    }
+
+    /// 把一次工具调用回的视觉附件交给图片预览（宿主回填结果时调用）。
+    ///
+    /// 附件一到就登记，卡片随即按**最终行数**占出图片区；解码在后台完成，
+    /// 图片到达前先显示一行「正在准备图片」，不会出现「先排一次短的再把下面挤开」的跳变。
+    pub fn register_tool_images(&mut self, call_id: &str, images: &[ToolImageAttachment]) {
+        if call_id.is_empty() || images.is_empty() {
+            return;
+        }
+        self.image_previews.borrow_mut().register(call_id, images);
+        // 正文要从载荷换成图片区：那一条记录得重算显示行。
+        if let Some(slot) = self.tool_card_slot(call_id) {
+            self.touch_record(slot);
+        }
     }
 
     // ---- 思考段平滑显现 ---------------------------------------------------------
@@ -1006,6 +1197,26 @@ impl AppState {
                 };
                 hit.then_some(index)
             })
+    }
+
+    /// 图片锚点落在哪条记录上：工具卡（`call_id`）或用户消息（`image_key`）。
+    ///
+    /// 两类记录共用同一份 [`ImagePreviews`]，解码完成后都要重算自己那一条的显示行，
+    /// 因此这里按同一把键同时找两处，调用方不必知道键是哪一类。
+    fn image_block_slot(&self, key: &str) -> Option<usize> {
+        if key.is_empty() {
+            return self.tool_card_slot(key);
+        }
+        self.records
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, record)| match record {
+                Record::Tool(card) if card.call_id == key => Some(index),
+                Record::User(message) if message.image_key == key => Some(index),
+                _ => None,
+            })
+            .or_else(|| self.tool_card_slot(key))
     }
 
     /// 让仍在运行的工具卡保持「活」的耗时显示。
@@ -1189,9 +1400,13 @@ impl AppState {
     }
 
     /// 开始一个回合：用户消息落进消息流，输入框清空，滚动回到底部。
-    pub fn begin_turn(&mut self, turn_id: String, text: String) {
-        self.records.push(Record::User(text));
-        self.touch_appended();
+    pub fn begin_turn(
+        &mut self,
+        turn_id: String,
+        text: String,
+        images: Vec<TurnImageAttachment>,
+    ) {
+        self.push_user_message(text, images);
         self.turn = TurnState::Running { turn_id };
         self.turn_started = Some(Instant::now());
         self.status = None;
@@ -1201,19 +1416,64 @@ impl AppState {
         self.touch_composer();
     }
 
+    /// 把一条用户消息推进记录流，并给它挂上图片预览。
+    ///
+    /// 图片在这里就交给后台解码（与工具附件同一入口）：记录按**最终行数**占出图片区，
+    /// 解码期间先显示一行提示，不会出现「先排一次短的再被图片撑开」的跳变。
+    pub fn push_user_message(&mut self, text: String, images: Vec<TurnImageAttachment>) {
+        let image_key = if images.is_empty() {
+            String::new()
+        } else {
+            self.next_user_image_key()
+        };
+        if !image_key.is_empty() {
+            let attachments: Vec<ToolImageAttachment> = images
+                .iter()
+                .map(|image| ToolImageAttachment {
+                    media_type: image.media_type.clone(),
+                    data_base64: image.data_base64.clone(),
+                    filename: String::new(),
+                    detail: image.detail.clone(),
+                })
+                .collect();
+            self.image_previews
+                .borrow_mut()
+                .register(&image_key, &attachments);
+        }
+        self.records.push(Record::User(UserRecord {
+            text,
+            images,
+            image_key,
+        }));
+        self.touch_appended();
+    }
+
+    /// 用户消息图片块的锚点：进程内自增，不与工具调用的 `call_id` 撞车。
+    fn next_user_image_key(&mut self) -> String {
+        self.user_image_sequence += 1;
+        format!("user-image-{}", self.user_image_sequence)
+    }
+
     /// 提交输入框内容；空输入返回 `None`。
-    pub fn submit(&mut self) -> Option<String> {
+    ///
+    /// 文本与图片一起取走：图片占位符留在文本里（`[ #1 Image ]`），附件单独返回，
+    /// 两者必须同时清空，否则会漏发或残留。
+    pub fn submit(&mut self) -> Option<PendingSubmission> {
         if self.composer.is_empty() {
             return None;
         }
+        let images = self.composer.take_images();
         let text = self.composer.take();
         self.touch_composer();
-        Some(text)
+        Some(PendingSubmission { text, images })
     }
 
     /// 生成期间按 Enter：把输入排进 FIFO 队列（对映 Python `_pending_inputs.append`）。
-    pub fn queue_pending(&mut self, text: String) {
-        self.pending_inputs.push_back(text);
+    ///
+    /// 图片跟着一起排队：生成期间粘贴的图片若只留在输入框状态里，回合结束时那条消息
+    /// 会悄悄丢掉图片。
+    pub fn queue_pending(&mut self, text: String, images: Vec<PendingImage>) {
+        self.pending_inputs.push_back(PendingSubmission { text, images });
         self.sync_queue_expanded();
         self.touch_composer();
     }
@@ -1230,10 +1490,11 @@ impl AppState {
         if self.waiting().is_some() {
             return false;
         }
-        let Some(text) = self.pending_inputs.remove(index) else {
+        let Some(submission) = self.pending_inputs.remove(index) else {
             return false;
         };
-        self.composer.set_text(&text);
+        self.composer.set_text(&submission.text);
+        self.composer.restore_images(submission.images);
         self.sync_queue_expanded();
         self.touch_composer();
         true
@@ -1259,14 +1520,14 @@ impl AppState {
     ///
     /// 模态页（设置面板）是否放行由调用方判断，与 Python 的
     /// `len(self.screen_stack) == 1` 守卫同义。
-    pub fn take_next_pending(&mut self) -> Option<String> {
+    pub fn take_next_pending(&mut self) -> Option<PendingSubmission> {
         if self.turn.is_running() {
             return None;
         }
-        let text = self.pending_inputs.pop_front()?;
+        let submission = self.pending_inputs.pop_front()?;
         self.sync_queue_expanded();
         self.touch_composer();
-        Some(text)
+        Some(submission)
     }
 
     /// 丢开全部排队消息（退出前收尾，对映 Python `_pending_inputs.clear()`）。
@@ -1362,6 +1623,12 @@ impl AppState {
                 self.telemetry.input_tokens = payload.input_tokens.max(0) as u64;
                 self.telemetry.output_tokens = payload.output_tokens.max(0) as u64;
                 self.telemetry.cached_input_tokens = payload.cached_input_tokens.max(0) as u64;
+            }
+            HostEvent::ContextCompaction(payload) => {
+                // 压缩刚落地：把遥测换成压缩后的真实上下文大小（见 `refresh_after_compaction`）。
+                if let Some(tokens) = payload.post_compaction_context_tokens {
+                    self.refresh_after_compaction(tokens);
+                }
             }
             HostEvent::ToolCallStarted(payload) => {
                 // 模型开始写工具参数：上一次「正在重试 / 等待协议」到此结束。
@@ -1518,6 +1785,11 @@ impl AppState {
                 }
             }
             HostEvent::TurnFinished(payload) => {
+                // 工具调用压缩发生在回合收尾、`turn.finished` 之前：压缩后大小随本通知带来，
+                // 这里刷新遥测（上下文压缩那条路走 `turn.context_compaction`）。
+                if let Some(tokens) = payload.post_compaction_context_tokens {
+                    self.refresh_after_compaction(tokens);
+                }
                 // 清掉侧信道会让卡片上的压缩提示消失：会话块整块重算（每回合一次）。
                 self.streaming_tools.clear();
                 // 回合已结束：思考段不再逐帧铺开，剩下的内容当场补全。
@@ -1541,10 +1813,8 @@ impl AppState {
                 }
             }
             // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
-            // 压缩的可见边界仍由 `turn.status` 的提示呈现。
-            HostEvent::ContextCompaction(_)
-            | HostEvent::ModelResponseAfter(_)
-            | HostEvent::ModelRequestError(_) => {}
+            // 压缩的可见边界由内核另发的 `turn.notice`（「---已压缩 xxk~xxk ---」）落到会话流。
+            HostEvent::ModelResponseAfter(_) | HostEvent::ModelRequestError(_) => {}
         }
     }
 
@@ -1552,6 +1822,21 @@ impl AppState {
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
         self.touch_appended();
+    }
+
+    /// 压缩后刷新遥测：上下文占用与 ↑ 换成压缩后的真实大小，↓/† 清零。
+    ///
+    /// 压缩发生在回合收尾之后，此后不会再发模型请求，`turn.token_usage` 会一直停在压缩前那次
+    /// 的用量上；不在这里改写，底部遥测就会显示一个已经被替换掉的旧上下文大小。
+    ///
+    /// ↓（本次输出）与 †（缓存命中输入）属于**那一次已经过去的请求**，压缩后不再成立，因此清零
+    /// 而不是保留；缓存率由 ↑/† 现算，清零后自然回到 `CH0%`。速率是会话累计均值，与上下文大小无关，不动。
+    ///
+    /// 底部文本由 `refresh_carousel` 每帧按最新遥测重建，这里只改数值即可在下一帧显示。
+    pub fn refresh_after_compaction(&mut self, context_tokens: i64) {
+        self.telemetry.input_tokens = context_tokens.max(0) as u64;
+        self.telemetry.output_tokens = 0;
+        self.telemetry.cached_input_tokens = 0;
     }
 
     /// 当前文本选区（鼠标拖选）；没有选区时返回 `None`。
@@ -1644,6 +1929,8 @@ impl AppState {
     /// 非字符串的消息跳过，不把 JSON 塞进消息流。
     pub fn replay_history(&mut self, history: &[serde_json::Value]) {
         self.records.clear();
+        // 回放重建的是「已发生的事实」的投影，工具卡本身不会回来，图片预览也跟着作废。
+        self.image_previews.get_mut().clear();
         // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
         self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
@@ -1661,7 +1948,7 @@ impl AppState {
                 continue;
             }
             match role {
-                "user" => self.records.push(Record::User(content.to_string())),
+                "user" => self.push_user_message(content.to_string(), Vec::new()),
                 "assistant" => self.records.push(Record::Assistant(content.to_string())),
                 _ => {}
             }
@@ -1677,6 +1964,8 @@ impl AppState {
     /// 清空视图，而不是保留旧消息。
     pub fn replay_events(&mut self, events: &[serde_json::Value]) {
         self.records.clear();
+        // 同上：事件流重放出来的卡片没有附件原文，旧预览若留着会挂到不存在（或别的）卡片上。
+        self.image_previews.get_mut().clear();
         // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
         self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
@@ -1698,7 +1987,10 @@ impl AppState {
             match event_type {
                 "user_message" => {
                     if let Some(content) = replay_text(&payload, "content") {
-                        self.records.push(Record::User(content));
+                        // 随用户消息发出的图片也在事件里：重放照样出缩略图
+                        // （旧事件没有该字段，退化成纯文本）。
+                        let images = replay_user_images(&payload);
+                        self.push_user_message(content, images);
                     }
                 }
                 "assistant_message" => {
@@ -1831,6 +2123,12 @@ impl AppState {
                         if let Some(content) = replay_text(&payload, "content") {
                             self.records
                                 .push(Record::Assistant(format!("会话压缩摘要：\n{content}")));
+                        }
+                    } else if other == "tool_call_summary" {
+                        // 回合末的整轮工具调用压缩：被概括的逐条工具事件已被投影剔除，
+                        // 这里补一行与实时通知同款的计量边界（用户要求「和上下文压缩一样」）。
+                        if let Some(note) = replay_compaction_notice(&payload) {
+                            self.records.push(Record::Notice(note));
                         }
                     }
                 }
@@ -2209,6 +2507,16 @@ impl AppState {
         result: omnicrawl_core::ToolResult,
         vision: Option<host::VisionPayload>,
     ) -> bool {
+        // 图片预览与「模型是否在看图」无关：附件到了就先交给后台解码，随后出示缩略图。
+        if let Some(vision) = vision.as_ref() {
+            let call_id = self
+                .batch
+                .as_ref()
+                .and_then(|batch| batch.calls().get(index))
+                .map(|call| call.id.clone())
+                .unwrap_or_default();
+            self.register_tool_images(&call_id, &vision.images);
+        }
         let ready = match self.batch.as_mut() {
             Some(batch) => batch.record_result(index, result, vision),
             None => false,
@@ -2568,6 +2876,21 @@ fn thousands(value: usize) -> String {
     out
 }
 
+/// `tool_call_summary` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 计量取事件自己记下的原始与概括字符数：回放时重算不出来（正文已含落盘说明），
+/// 而实时通知与回放必须显示同一行，否则恢复会话后边界会变样。
+fn replay_compaction_notice(payload: &serde_json::Value) -> Option<String> {
+    let raw = payload.get("raw_chars").and_then(serde_json::Value::as_u64)?;
+    let summary = payload
+        .get("summary_chars")
+        .and_then(serde_json::Value::as_u64)?;
+    Some(omnicrawl_controllers::compression::compaction_notice(
+        raw as usize,
+        summary as usize,
+    ))
+}
+
 fn body_lines(output: &str) -> Vec<String> {
     output.lines().map(|line| line.to_string()).collect()
 }
@@ -2579,6 +2902,29 @@ fn replay_text(payload: &serde_json::Value, key: &str) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// 回放 `user_message` 载荷里的图片附件；没有（或形状不对）时返回空表。
+///
+/// 与 `turn.submit` 的 `TurnImageAttachment` 同形状：旧事件没有该字段，退回纯文本。
+fn replay_user_images(payload: &serde_json::Value) -> Vec<TurnImageAttachment> {
+    let Some(items) = payload.get("images").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            Some(TurnImageAttachment {
+                media_type: item.get("media_type")?.as_str()?.to_string(),
+                data_base64: item.get("data_base64")?.as_str()?.to_string(),
+                detail: item
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 /// 事件时间戳（`created_at`，RFC3339）；缺失或不可解析时为空。
@@ -2804,7 +3150,7 @@ mod tests {
     fn deltas_merge_into_one_record_per_segment() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
             now,
@@ -2834,7 +3180,10 @@ mod tests {
             "用户 + 思考 + 正文：{:?}",
             state.records
         );
-        assert_eq!(state.records[0], Record::User("问一句".to_string()));
+        assert_eq!(
+            state.records[0],
+            Record::User(UserRecord::text_only("问一句"))
+        );
         assert_eq!(state.records[1], Record::Reasoning("想一下".to_string()));
         assert_eq!(state.records[2], Record::Assistant("回答结束".to_string()));
     }
@@ -2844,7 +3193,7 @@ mod tests {
     fn reasoning_reveal_spreads_a_burst_across_frames() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         let burst: String = "想".repeat(300);
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload { text: burst.clone() }),
@@ -2883,7 +3232,7 @@ mod tests {
     fn reasoning_reveal_keeps_up_with_a_slow_stream() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
             now,
@@ -2902,7 +3251,7 @@ mod tests {
     fn reasoning_reveal_settles_on_turn_end_and_replay() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload {
                 text: "想".repeat(200),
@@ -2928,6 +3277,7 @@ mod tests {
                 model_turns: 1,
                 tool_calls: 0,
                 paused: false,
+                post_compaction_context_tokens: None,
             }),
             now,
         );
@@ -2953,7 +3303,7 @@ mod tests {
     fn reasoning_reveal_never_truncates_assistant_text() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string());
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         state.apply(
             &HostEvent::Delta(TextPayload {
                 text: "正".repeat(500),
@@ -2971,7 +3321,7 @@ mod tests {
     fn tool_cards_track_status_body_and_elapsed() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "跑一下".to_string());
+        state.begin_turn("t1".to_string(), "跑一下".to_string(), Vec::new());
         let tool_call = call("c1", "bash");
         state.apply(
             &HostEvent::ToolStarted(ToolStartedPayload {
@@ -3080,7 +3430,7 @@ mod tests {
     fn stream_rollback_drops_half_streamed_record() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         state.apply(
             &HostEvent::Delta(TextPayload {
                 text: "半截".into(),
@@ -3101,7 +3451,7 @@ mod tests {
     fn kernel_status_events_mark_the_composer_dirty() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         let base = state.refresh_versions();
 
         state.apply(
@@ -3146,7 +3496,7 @@ mod tests {
     fn streaming_clears_the_retry_prompt() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         state.apply(
             &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
                 message: "请求失败，正在自动重试（第1次）".to_string(),
@@ -3205,7 +3555,7 @@ mod tests {
     fn token_usage_and_finish_reset_status() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         state.apply(
             &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
                 message: "正在分析".to_string(),
@@ -3229,6 +3579,7 @@ mod tests {
                 model_turns: 1,
                 tool_calls: 0,
                 paused: false,
+                post_compaction_context_tokens: None,
             }),
             now,
         );
@@ -3238,12 +3589,101 @@ mod tests {
         assert_eq!(state.telemetry.cached_input_tokens, 5);
     }
 
+    /// 压缩后遥测要换成压缩后的真实上下文大小，↓/† 清零（它们属于那一次已经过去的请求）。
+    #[test]
+    fn context_compaction_refreshes_telemetry_to_the_post_compaction_size() {
+        let mut state = state();
+        let now = Instant::now();
+        state.apply(
+            &HostEvent::TokenUsage(TokenUsagePayload {
+                input_tokens: 10,
+                output_tokens: 20,
+                cached_input_tokens: 5
+            }),
+            now,
+        );
+        state.apply(
+            &HostEvent::ContextCompaction(omnicrawl_ipc::bridge::ContextCompactionPayload {
+                post_turn_context_tokens: 150_000,
+                trigger_context_tokens: 100_000,
+                turn_id: "t1".to_string(),
+                post_compaction_context_tokens: Some(12_000),
+            }),
+            now,
+        );
+        assert_eq!(state.telemetry.input_tokens, 12_000, "CTX 与 ↑ 换成压缩后大小");
+        assert_eq!(state.telemetry.output_tokens, 0, "↓ 属于上一次请求，压缩后清零");
+        assert_eq!(state.telemetry.cached_input_tokens, 0, "† 同上");
+    }
+
+    /// 回合末工具调用压缩走 `turn.finished` 带同一字段。
+    #[test]
+    fn turn_finished_carries_the_tool_compaction_size() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.apply(
+            &HostEvent::TokenUsage(TokenUsagePayload {
+                input_tokens: 10,
+                output_tokens: 20,
+                cached_input_tokens: 5
+            }),
+            now,
+        );
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "完成".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 1,
+                paused: false,
+                post_compaction_context_tokens: Some(8_000),
+            }),
+            now,
+        );
+        assert_eq!(state.telemetry.input_tokens, 8_000);
+        assert_eq!(state.telemetry.output_tokens, 0);
+        assert_eq!(state.telemetry.cached_input_tokens, 0);
+    }
+
+    /// 没有压缩的回合不能动遥测：字段缺省时维持模型请求回报的用量。
+    #[test]
+    fn turn_finished_without_compaction_keeps_the_usage() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.apply(
+            &HostEvent::TokenUsage(TokenUsagePayload {
+                input_tokens: 10,
+                output_tokens: 20,
+                cached_input_tokens: 5
+            }),
+            now,
+        );
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "完成".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 0,
+                paused: false,
+                post_compaction_context_tokens: None,
+            }),
+            now,
+        );
+        assert_eq!(state.telemetry.input_tokens, 10);
+        assert_eq!(state.telemetry.output_tokens, 20);
+        assert_eq!(state.telemetry.cached_input_tokens, 5);
+    }
+
     /// 会话区提示不能走状态行：状态行要留着显示「正在调用」等运行状态。
     #[test]
     fn notice_events_go_to_the_conversation_and_keep_the_status_line() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         state.apply(
             &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
                 message: "正在调用".to_string(),
@@ -3276,7 +3716,7 @@ mod tests {
     fn notice_mid_stream_does_not_split_the_reply() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
         state.apply(&HostEvent::Delta(TextPayload { text: "前半".into() }), now);
         state.apply(
             &HostEvent::Notice(omnicrawl_ipc::bridge::MessagePayload {
@@ -3810,6 +4250,38 @@ mod tests {
         assert_eq!(estimated_tokens("abcdefgh"), 2);
         assert_eq!(estimated_tokens("你好abcd"), 3);
     }
+
+    /// 用户消息可以带粘贴的图片：记录里留着附件，界面才有东西可画。
+    #[test]
+    fn begin_turn_keeps_the_pasted_images_on_the_user_message() {
+        let mut state = state();
+        let image = TurnImageAttachment {
+            media_type: "image/png".to_string(),
+            data_base64: "AAA".to_string(),
+            detail: "auto".to_string(),
+        };
+        state.begin_turn("t1".to_string(), "看图".to_string(), vec![image.clone()]);
+
+        let Some(Record::User(message)) = state.records.first() else {
+            panic!("第一条记录应当是用｛Desensitized:718｝消息：{:?}", state.records);
+        };
+        assert_eq!(message.text, "看图");
+        assert_eq!(message.images, vec![image]);
+        assert!(message.has_images(), "有附件就该出图片块");
+        assert!(!message.image_key.is_empty(), "图片块要有锚点");
+    }
+
+    /// 纯文本消息不带锚点：不然界面上会多铺一块空的图片区。
+    #[test]
+    fn a_text_only_message_has_no_image_block() {
+        let mut state = state();
+        state.begin_turn("t1".to_string(), "只有字".to_string(), Vec::new());
+        let Some(Record::User(message)) = state.records.first() else {
+            panic!("第一条记录应当是用｛Desensitized:718｝消息");
+        };
+        assert!(!message.has_images());
+        assert!(message.image_key.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -3868,7 +4340,9 @@ mod replay_tests {
             ),
         ]);
 
-        assert!(matches!(state.records.first(), Some(Record::User(text)) if text == "读一下 a.py"));
+        assert!(
+            matches!(state.records.first(), Some(Record::User(message)) if message.text == "读一下 a.py")
+        );
         assert!(matches!(state.records.get(1), Some(Record::Assistant(text)) if text == "我看看"));
         let cards = tool_cards(&state);
         assert_eq!(cards.len(), 2);
@@ -3955,6 +4429,93 @@ mod replay_tests {
         // 空事件流是权威结果（`/undo` 撤掉唯一一轮）：视图必须清空，不能保留旧记录。
         state.replay_events(&[]);
         assert!(state.records.is_empty());
+    }
+
+    /// 回合末的工具调用压缩在会话区留一行计量（用户要求「和上下文压缩一样」）：
+    /// 与 `compact_summary` 的回放同口径——原事件照旧画出来，边界提示追加在流里。
+    #[test]
+    fn replay_events_shows_the_tool_compaction_notice() {
+        let mut state = state();
+        state.replay_events(&[
+            event("user_message", json!({"content": "看一下日志"})),
+            event(
+                "tool_call_requested",
+                json!({"tool": "bash", "tool_call_id": "c1", "arguments": {}}),
+            ),
+            event(
+                "tool_result",
+                json!({"tool": "bash", "tool_call_id": "c1", "ok": true, "output": "很长"}),
+            ),
+            event(
+                "tool_call_summary",
+                json!({
+                    "content": "本轮工具调用概括：\n看了日志。",
+                    "covered_event_ids": ["e1"],
+                    "raw_chars": 12_345,
+                    "summary_chars": 1_234,
+                }),
+            ),
+        ]);
+
+        assert!(
+            state.records.iter().any(|record| matches!(record, Record::Notice(text)
+                if text == "已压缩 12,345 → 1,234 字符")),
+            "会话区应当出现压缩计量：{:?}",
+            state.records
+        );
+        assert!(
+            matches!(state.records.last(), Some(Record::Notice(text))
+                if text == "已压缩 12,345 → 1,234 字符"),
+            "计量画在工具调用之后（压缩本来就发生在整轮调用之后）：{:?}",
+            state.records
+        );
+    }
+
+    /// 缺计量字段的旧事件不假装有计量（宁可不显示，也不显示 0 → 0）。
+    #[test]
+    fn replay_events_skips_the_notice_without_char_counts() {
+        let mut state = state();
+        state.replay_events(&[event("tool_call_summary", json!({"content": "概括"}))]);
+        assert!(
+            state.records.iter().all(|record| !matches!(record, Record::Notice(_))),
+            "没有 char 计量就不显示提示：{:?}",
+            state.records
+        );
+    }
+
+    /// 重放用户消息时把随消息发出的图片也装回来：否则 `/resume` 之后图片就没了。
+    #[test]
+    fn replay_events_restores_the_user_message_images() {
+        let mut state = state();
+        state.replay_events(&[event(
+            "user_message",
+            json!({
+                "content": "看一下这张图",
+                "images": [
+                    {"media_type": "image/png", "data_base64": "AAA", "detail": "auto"},
+                ],
+            }),
+        )]);
+
+        let Some(Record::User(message)) = state.records.first() else {
+            panic!("第一条记录应当是用｛Desensitized:719｝消息：{:?}", state.records);
+        };
+        assert_eq!(message.text, "看一下这张图");
+        assert_eq!(message.images.len(), 1);
+        assert_eq!(message.images[0].data_base64, "AAA");
+        assert!(message.has_images(), "重放的图片也要出图片块");
+    }
+
+    /// 旧事件没有 `images` 字段：照旧是纯文本消息，不能凭空多出一块图片区。
+    #[test]
+    fn replay_events_without_images_stays_text_only() {
+        let mut state = state();
+        state.replay_events(&[event("user_message", json!({"content": "纯文本"}))]);
+        let Some(Record::User(message)) = state.records.first() else {
+            panic!("第一条记录应当是用｛Desensitized:719｝消息");
+        };
+        assert!(!message.has_images());
+        assert!(message.image_key.is_empty());
     }
 }
 
@@ -4061,6 +4622,83 @@ mod paste_tests {
         composer.insert_paste(&pasted(7));
         composer.insert("（请按这个格式）");
         assert_eq!(composer.take(), format!("{}（请按这个格式）", pasted(7)));
+    }
+}
+
+/// 粘贴图片：`Ctrl+V` 贴进来的位图在｛Desensitized:712｝以 `[ #n Image ]` 占位，
+/// 与文本粘贴折叠同一套占位符语义（对映用户要求）。
+#[cfg(test)]
+mod image_paste_tests {
+    use super::*;
+
+    fn png() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G', 1, 2, 3]
+    }
+
+    #[test]
+    fn pasted_images_get_numbered_placeholders() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        composer.insert("看一下");
+        composer.insert_image("image/png", png());
+        assert_eq!(
+            composer.text(),
+            "[ #1 Image ]看一下[ #2 Image ]",
+            "序号按粘贴顺序递增，占位符插在光标处"
+        );
+        assert_eq!(composer.image_count(), 2);
+    }
+
+    #[test]
+    fn backspace_removes_the_whole_image_block() {
+        let mut composer = Composer::default();
+        composer.insert("前");
+        composer.insert_image("image/png", png());
+        composer.backspace();
+        assert_eq!(composer.text(), "前", "退格要整块删掉占位符");
+        assert_eq!(composer.image_count(), 0, "占位符没了附件也要跟着丢");
+    }
+
+    #[test]
+    fn arrows_treat_the_image_block_as_a_single_cell() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        composer.insert("尾巴");
+        composer.move_home();
+        composer.move_right();
+        // 右移一次跨过整个块，不会停在块中间。
+        composer.insert("这里");
+        assert_eq!(composer.text(), "[ #1 Image ]这里尾巴");
+    }
+
+    #[test]
+    fn take_images_hands_out_attachments_in_order() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        composer.insert_image("image/png", png());
+        let images = composer.take_images();
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].placeholder, "[ #1 Image ]", "顺序与序号一致");
+        assert_eq!(images[1].placeholder, "[ #2 Image ]");
+        assert_eq!(composer.image_count(), 0, "取走后不残留");
+    }
+
+    #[test]
+    fn take_clears_images_without_dropping_the_placeholder_text() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        // 文本仍带占位符（提交时随 prompt 一起送），附件由 `take_images` 单独取。
+        assert_eq!(composer.take(), "[ #1 Image ]");
+        assert_eq!(composer.image_count(), 0, "take 也要清掉图片状态，避免残留");
+    }
+
+    #[test]
+    fn clearing_the_composer_drops_pending_images() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        composer.clear();
+        assert!(composer.is_empty());
+        assert_eq!(composer.image_count(), 0);
     }
 }
 
@@ -4473,6 +5111,7 @@ mod streaming_tests {
                 model_turns: 1,
                 tool_calls: 1,
                 paused: false,
+                post_compaction_context_tokens: None,
             }),
             now,
         );
@@ -4524,7 +5163,7 @@ mod streaming_tests {
 
     fn three_block_state() -> AppState {
         let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         state
     }
 
@@ -4596,7 +5235,7 @@ mod streaming_tests {
         assert_eq!(state.refresh_versions(), idle, "空闲时不该有活动刷新");
 
         // 回合在跑：状态行 spinner 与运行中卡片耗时都要重画。
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         let running = state.refresh_versions();
         state.tick_activity();
         let ticked = state.refresh_versions();

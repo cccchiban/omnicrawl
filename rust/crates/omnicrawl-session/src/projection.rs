@@ -178,7 +178,9 @@ pub fn event_to_model_message(event: &SessionEvent) -> Option<Value> {
             if content.trim().is_empty() {
                 return None;
             }
-            Some(json_message("user", content))
+            // 随消息发出的图片（`Ctrl+V` 粘贴）：按 OpenAI 多模态部件形状重建，
+            // 与 `turn.submit` 的实时路径同源，重启/压缩后重建的历史仍带图。
+            Some(user_message_with_images(content, payload.get("images")))
         }
         "assistant_message" => {
             let content = payload.get("content").and_then(Value::as_str)?;
@@ -380,6 +382,45 @@ fn json_message(role: &str, content: &str) -> Value {
     let mut message = Map::new();
     message.insert("role".to_string(), Value::String(role.to_string()));
     message.insert("content".to_string(), Value::String(content.to_string()));
+    Value::Object(message)
+}
+
+/// 用户消息：没有图片时是纯文本消息，有图片时是 OpenAI 多模态部件数组。
+///
+/// `images` 是事件载荷里的 `images` 字段（`turn.submit` 送来的 `TurnImageAttachment` 列表，
+/// 只有 `media_type` / `data_base64` / `detail`）。**实时请求与重启后的历史重建共用这一句**：
+/// 两边形状若不一致，同一条消息在「刚发出去」与「恢复后」会命中不了前缀缓存。
+pub fn user_message_with_images(content: &str, images: Option<&Value>) -> Value {
+    let Some(images) = images.and_then(Value::as_array).filter(|items| !items.is_empty()) else {
+        return json_message("user", content);
+    };
+    let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+    parts.push(serde_json::json!({"type": "text", "text": content}));
+    for image in images {
+        let (Some(media_type), Some(data_base64)) = (
+            image.get("media_type").and_then(Value::as_str),
+            image.get("data_base64").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let detail = image.get("detail").and_then(Value::as_str).unwrap_or_default();
+        let mut url = Map::new();
+        url.insert(
+            "url".to_string(),
+            Value::String(format!("data:{media_type};base64,{data_base64}")),
+        );
+        // `detail` 空着时不给字段：Python 侧缺省由 Provider 决定，塞空串会被拒。
+        if !detail.is_empty() {
+            url.insert("detail".to_string(), Value::String(detail.to_string()));
+        }
+        parts.push(serde_json::json!({"type": "image_url", "image_url": Value::Object(url)}));
+    }
+    if parts.len() == 1 {
+        return json_message("user", content);
+    }
+    let mut message = Map::new();
+    message.insert("role".to_string(), Value::String("user".to_string()));
+    message.insert("content".to_string(), Value::Array(parts));
     Value::Object(message)
 }
 
@@ -636,5 +677,65 @@ fn python_truthy(value: &Value) -> bool {
         Value::String(text) => !text.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Object(map) => !map.is_empty(),
+    }
+}
+
+
+#[cfg(test)]
+mod user_message_image_tests {
+    use super::*;
+
+    /// 没有图片时是纯文本消息：形状与旧行为一致（字符串 content）。
+    #[test]
+    fn without_images_the_message_stays_plain_text() {
+        assert_eq!(
+            user_message_with_images("纯文本", None),
+            serde_json::json!({"role": "user", "content": "纯文本"})
+        );
+        assert_eq!(
+            user_message_with_images("纯文本", Some(&serde_json::json!([]))),
+            serde_json::json!({"role": "user", "content": "纯文本"})
+        );
+    }
+
+    /// 有图片时是 OpenAI 多模态部件数组：文本在前，图片按顺序跟在后面。
+    #[test]
+    fn images_become_data_url_parts_after_the_text() {
+        let images = serde_json::json!([
+            {"media_type": "image/png", "data_base64": "AAA", "detail": "high"},
+            {"media_type": "image/jpeg", "data_base64": "BBB", "detail": ""},
+        ]);
+        let message = user_message_with_images("看图", Some(&images));
+        let parts = message["content"].as_array().expect("content 应当是部件数组");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], serde_json::json!({"type": "text", "text": "看图"}));
+        assert_eq!(
+            parts[1],
+            serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAA", "detail": "high"},
+            })
+        );
+        // `detail` 空着时不给字段：塞空串会被 Provider 拒。
+        assert_eq!(
+            parts[2],
+            serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,BBB"},
+            })
+        );
+    }
+
+    /// 形状不对的条目跳过而不是整条消息作废：正文仍然要发出去。
+    #[test]
+    fn malformed_image_entries_are_skipped() {
+        let images = serde_json::json!([
+            {"media_type": "image/png"},
+            {"data_base64": "BBB"},
+            "不是对象",
+        ]);
+        let message = user_message_with_images("看图", Some(&images));
+        // 一张都拼不出来时退回纯文本：总比发一条没有正文的部件数组好。
+        assert_eq!(message, serde_json::json!({"role": "user", "content": "看图"}));
     }
 }

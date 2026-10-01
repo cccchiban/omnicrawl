@@ -30,7 +30,10 @@ pub struct TurnSummaryOutcome {
     pub covered_event_ids: Vec<String>,
     pub archive_path: String,
     pub tool_calls: usize,
+    /// 被概括的原始调用（参数 + 输出）字符数。
     pub raw_chars: usize,
+    /// 概括正文的字符数（不含末尾的落盘说明）：会话区计量要与原始字符数对照。
+    pub summary_chars: usize,
 }
 
 /// 跑一次整轮概括；没有可概括的调用、或概括失败时返回 `None`。
@@ -71,6 +74,8 @@ pub fn summarize_turn(
             return None;
         }
     };
+    // 计量取概括正文本身的字符数：末尾的落盘说明是给模型回读用的，不算进压缩产出。
+    let summary_chars = content.chars().count();
     if !archive_path.is_empty() {
         content.push_str(&compression_logic::archived_notice(&archive_path, raw_chars));
     }
@@ -80,5 +85,6 @@ pub fn summarize_turn(
         archive_path,
         tool_calls: calls.len(),
         raw_chars,
+        summary_chars,
     })
 }

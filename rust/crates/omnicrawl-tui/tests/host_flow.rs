@@ -22,6 +22,9 @@ use omnicrawl_tui::host::{Waiting, DENIED};
 use omnicrawl_tui::kernel::KernelClient;
 use omnicrawl_tui::state::Record;
 
+/// 一个最小 PNG：签名对了就够 `read_image` 认格式。
+const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 0];
+
 /// 等待条件的上限：假内核在本地，正常都在毫秒级完成。
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -129,6 +132,8 @@ struct Harness {
     app: App,
     recorder: Recorder,
     script: ScriptHandle,
+    /// 这一用例的工作区根：粘贴图片路径的用例要往里放图片文件。
+    workspace: PathBuf,
 }
 
 impl Harness {
@@ -170,7 +175,15 @@ impl Harness {
             app,
             recorder,
             script: handle,
+            workspace,
         }
+    }
+
+    /// 打开原生视觉的版本：粘贴图片路径要转成附件，前提是图片有去处。
+    fn start_with_native_vision(script: &str, approval: ApprovalMode) -> Self {
+        let mut harness = Self::start(script, approval);
+        harness.app.options.native_vision = true;
+        harness
     }
 
     /// 往假内核写帧（脚本或后续追加）。
@@ -1215,7 +1228,8 @@ fn resume_command_asks_the_kernel_and_replays_history() {
         .records
         .iter()
         .filter_map(|record| match record {
-            Record::User(text) | Record::Assistant(text) => Some(text.clone()),
+            Record::User(message) => Some(message.text.clone()),
+            Record::Assistant(text) => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -1488,8 +1502,9 @@ fn handshake_reports_the_native_vision_switch() {
         .expect("宿主应当发出 initialize")
         .to_line();
     let frame: Value = serde_json::from_str(&line).expect("帧是 JSON");
-    // 与 `Options::native_vision` 同源——测试构造的 `Options` 里它是 false，
-    // 字段存在且为布尔值才是关键（省略字段会让旧内核默认成假，但新内核靠它做判定）。
+    // 字段必须显式出现（省略字段会让旧内核默认成假，但新内核靠它做判定）。
+    // 这里的 `Options` 带了 `--base-url`（走命令行渠道），此时配置里当前模型的
+    // `native_vision` 不参与判定，因此结果稳定为假，与本机 `~/.OmniCrawl` 的配置无关。
     assert_eq!(
         frame["params"]["model"]["native_vision"],
         Value::Bool(false),
@@ -1607,6 +1622,70 @@ fn pasted_multiline_text_is_folded_then_submitted_in_full() {
         submitted.params.clone().unwrap_or(Value::Null)["user_text"],
         json!(pasted),
         "提交的必须是还原后的原文"
+    );
+}
+
+/// 粘贴一整段图片路径 → 输入框里是图片块，提交时图片随 prompt 一起送（带 `images`）。
+#[test]
+fn pasted_image_path_becomes_an_image_attachment() {
+    let mut harness = Harness::start_with_native_vision(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let file = harness.workspace.join("trace-3200x2922.png");
+    std::fs::write(&file, PNG_BYTES).expect("写测试图片");
+
+    harness
+        .app
+        .handle_event(Event::Paste(file.to_string_lossy().to_string()));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "[ #1 Image ]",
+        "整段就是一个图片路径时应转成图片块"
+    );
+
+    harness.press(KeyCode::Enter);
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .expect("应发出 turn.submit");
+    let params = submitted.params.clone().unwrap_or(Value::Null);
+    assert_eq!(params["user_text"], json!("[ #1 Image ]"));
+    let images = params["images"].as_array().expect("应带 images");
+    assert_eq!(images.len(), 1, "{params}");
+    assert_eq!(images[0]["media_type"], json!("image/png"));
+    assert!(!images[0]["data_base64"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty());
+}
+
+/// 混有其它内容的粘贴仍是文本：不能因为里面出现了一个图片路径就转成图片块。
+#[test]
+fn pasted_text_mentioning_an_image_path_stays_text() {
+    let mut harness = Harness::start_with_native_vision(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let file = harness.workspace.join("a.png");
+    std::fs::write(&file, PNG_BYTES).expect("写测试图片");
+
+    let pasted = format!("看一下这张图：{}", file.to_string_lossy());
+    harness.app.handle_event(Event::Paste(pasted.clone()));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        pasted,
+        "夹了正文的粘贴要原样进输入框"
+    );
+
+    harness.press(KeyCode::Enter);
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .expect("应发出 turn.submit");
+    let params = submitted.params.clone().unwrap_or(Value::Null);
+    assert_eq!(params["user_text"], json!(pasted));
+    assert!(
+        params["images"].as_array().is_none_or(Vec::is_empty),
+        "没有图片时不该带附件：{params}"
     );
 }
 

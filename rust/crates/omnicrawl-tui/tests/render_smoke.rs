@@ -65,7 +65,7 @@ fn chatting_state() -> AppState {
     );
     state.telemetry.context_window = Some(1_000_000);
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "你好，帮我看看".to_string());
+    state.begin_turn("t1".to_string(), "你好，帮我看看".to_string(), Vec::new());
     state.apply(
         &HostEvent::ReasoningDelta(TextPayload {
             text: "先读文件".to_string(),
@@ -124,7 +124,7 @@ fn status_line_follows_retry_and_streaming() {
         ApprovalMode::Manual,
     );
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "问问看".to_string());
+    state.begin_turn("t1".to_string(), "问问看".to_string(), Vec::new());
 
     let status_top = |lines: &[String]| {
         lines
@@ -326,9 +326,9 @@ fn history_scroll_hides_the_newest_lines() {
         ApprovalMode::Manual,
     );
     for index in 1..=20 {
-        state.begin_turn(format!("t{index}"), format!("第{index}条消息"));
+        state.begin_turn(format!("t{index}"), format!("第{index}条消息"), Vec::new());
     }
-    state.begin_turn("t21".to_string(), "最后一条".to_string());
+    state.begin_turn("t21".to_string(), "最后一条".to_string(), Vec::new());
     let bottom = screen(&state, 80, 14).join("\n");
     assert!(bottom.contains("最后一条"), "默认应跟随最新：{bottom}");
     assert!(
@@ -400,4 +400,134 @@ fn command_menu_renders_directly_above_the_composer() {
         "输入卡内容行应带输入文本：{:?}",
         lines[composer_row]
     );
+}
+
+/// 1x1 红点 PNG（与 `image_preview` / `conversation` 单测用的是同一样本）。
+const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/// 界面上一张 read_image 卡片：走真实的附件登记入口，等后台解码落定。
+fn read_image_state() -> AppState {
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state.telemetry.context_window = Some(1_000_000);
+    let now = Instant::now();
+    state.begin_turn("t1".to_string(), "看看这张图".to_string(), Vec::new());
+    let call = tool_call(
+        "read_image",
+        serde_json::json!({"path": "shot.png", "prompt": "描述"}),
+    );
+    state.apply(
+        &HostEvent::ToolStarted(ToolStartedPayload {
+            step: 1,
+            call: call.clone(),
+        }),
+        now,
+    );
+    state.apply(
+        &HostEvent::ToolFinished(ToolEventPayload {
+            call: call.clone(),
+            result: ToolResult {
+                ok: true,
+                output:
+                    "{\"path\":\"shot.png\",\"media_type\":\"image/png\",\"bytes\":12}"
+                        .to_string(),
+                full_output: String::new(),
+                error_code: None,
+                retryable: false,
+            },
+        }),
+        now + Duration::from_millis(300),
+    );
+    // 宿主从批次附件里登记；这里用同一条入口，走的也是同一条解码链路。
+    state.register_tool_images(
+        "c1",
+        &[omnicrawl_controllers::types::ToolImageAttachment {
+            media_type: "image/png".to_string(),
+            data_base64: PNG_1X1.to_string(),
+            filename: "shot.png".to_string(),
+            detail: "auto".to_string(),
+        }],
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if state.tick_image_previews() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    state
+}
+
+#[test]
+fn a_read_image_card_paints_the_thumbnail_and_drops_the_json_payload() {
+    let state = read_image_state();
+    // 占位块占了几行：图片至少要把这些格子涂上颜色。
+    let rows = omnicrawl_tui::ui::conversation::display_lines(&state, 78)
+        .iter()
+        .filter(|line| line.image.is_some())
+        .count();
+    assert!(rows > 0, "read_image 的卡片应当铺出图片占位行");
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).expect("测试终端");
+    terminal
+        .draw(|frame| ui::render(frame, &state, None, None, None))
+        .expect("渲染不应失败");
+    let buffer = terminal.backend().buffer();
+    // 半块字形把图片写成字符格的前/背景色（纯色图的字符本身是空格），因此判据是
+    // 「这些格子拿到了非默认的 Rgb 色」——没有图片时占位行是一片默认色。
+    let painted = buffer
+        .content
+        .iter()
+        .filter(|cell| {
+            matches!(cell.fg, ratatui::style::Color::Rgb(..))
+                || matches!(cell.bg, ratatui::style::Color::Rgb(..))
+        })
+        .count();
+    assert!(
+        painted >= rows,
+        "缩略图应当画进 {rows} 行占位格，实得 {painted} 个着色格"
+    );
+
+    let text = screen(&state, 80, 30).join("
+");
+    assert!(
+        !text.contains("media_type"),
+        "read_image 的 JSON 载荷应当让位给图片：{text}"
+    );
+    assert!(
+        !text.contains("正在准备图片"),
+        "解码完成后不该还停在提示行：{text}"
+    );
+}
+
+#[test]
+fn an_image_tool_without_attachments_keeps_its_payload() {
+    // 附件没到（模型没看图、工具没执行）时按普通卡片渲染，不会先空出一块。
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state.telemetry.context_window = Some(1_000_000);
+    let now = Instant::now();
+    state.begin_turn("t1".to_string(), "看看这张图".to_string(), Vec::new());
+    let call = tool_call(
+        "read_image",
+        serde_json::json!({"path": "shot.png", "prompt": "描述"}),
+    );
+    state.apply(
+        &HostEvent::ToolStarted(ToolStartedPayload {
+            step: 1,
+            call,
+        }),
+        now,
+    );
+    let text = screen(&state, 80, 30).join("
+");
+    assert!(!text.contains("正在准备图片"), "{text}");
+    assert!(text.contains("read_image"), "{text}");
 }

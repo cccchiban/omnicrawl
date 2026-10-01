@@ -476,6 +476,7 @@ impl TurnRunner {
         let frame = Command::TurnSubmit(TurnSubmitParams {
             turn_id: turn_id.to_string(),
             user_text: text.to_string(),
+            images: Vec::new(),
         })
         .to_frame(id.clone());
         self.kernel

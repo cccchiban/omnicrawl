@@ -17,6 +17,12 @@ pub type Hgdiobj = *mut c_void;
 pub const SW_RESTORE: c_int = 9;
 
 pub const CF_UNICODETEXT: u32 = 13;
+pub const CF_DIB: u32 = 8;
+pub const CF_DIBV5: u32 = 17;
+/// `CF_HDROP`：资源管理器里「复制文件」写的就是它，内容是一串文件路径。
+pub const CF_HDROP: u32 = 15;
+/// `BITMAPINFOHEADER.biCompression` 的位域压缩（掩码紧跟在头之后）。
+pub const BI_BITFIELDS: u32 = 3;
 pub const GMEM_MOVEABLE: u32 = 0x0002;
 
 pub const INPUT_MOUSE: u32 = 0;
@@ -157,6 +163,7 @@ unsafe extern "system" {
 unsafe extern "system" {
     pub fn GlobalAlloc(flags: u32, bytes: usize) -> Hglobal;
     pub fn GlobalLock(handle: Hglobal) -> *mut c_void;
+    pub fn GlobalSize(handle: Hglobal) -> usize;
     pub fn GlobalUnlock(handle: Hglobal) -> Bool;
     pub fn GlobalFree(handle: Hglobal) -> Hglobal;
 }

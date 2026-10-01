@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -111,7 +112,7 @@ use crate::args::{ApprovalMode, Options};
 use crate::commands::{self, TuiHostAgent};
 use crate::host::{self, BatchStep, Waiting};
 use crate::kernel::{frame_api_key_env, KernelClient};
-use crate::state::{AppState, Record};
+use crate::state::{AppState, PendingImage, Record};
 use crate::tools::{
     AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry, TtsOptions,
 };
@@ -775,7 +776,7 @@ impl App {
             .records
             .iter()
             .filter_map(|record| match record {
-                Record::User(text) => Some(json!({"role": "user", "content": text})),
+                Record::User(message) => Some(json!({"role": "user", "content": message.text})),
                 Record::Assistant(text) => Some(json!({"role": "assistant", "content": text})),
                 _ => None,
             })
@@ -886,7 +887,7 @@ impl App {
             prompt_cache_capable: self.llm.prompt_cache.unwrap_or(false),
             prompt_cache_identity: prompt_cache_identity.to_identity_map(),
             // 交给内核做优先级判定：为真时带图观察直送主模型，不再走 `[vision]` 代理。
-            native_vision: self.options.native_vision,
+            native_vision: self.native_vision_enabled(),
             request_retry_count: if external_channel {
                 1
             } else {
@@ -1026,7 +1027,9 @@ impl App {
             || self.channel_models_task.is_some()
             || self.state.has_running_activity()
             // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。
-            || self.state.is_reasoning_revealing();
+            || self.state.is_reasoning_revealing()
+            // 图片还在后台解码：睡太久会让缩略图迟迟不出现。
+            || self.state.has_pending_image_previews();
         let mut budget = if active {
             ACTIVE_POLL_INTERVAL
         } else {
@@ -1151,7 +1154,16 @@ impl App {
     /// `route_image_result` 同义）。两者都没有时图片不会进请求——主模型看不懂图，
     /// 交出去只会白跑一趟 base64 过管道。
     fn attach_vision_images(&self) -> bool {
-        self.options.native_vision || vision_proxy_configured(&ConfigEnvironment::from_process())
+        self.native_vision_enabled() || vision_proxy_configured(&ConfigEnvironment::from_process())
+    }
+
+    /// 当前生效的原生视觉开关（握手与图片注入共用同一份判定）。
+    fn native_vision_enabled(&self) -> bool {
+        effective_native_vision(
+            uses_external_channel(&self.options),
+            self.options.native_vision,
+            &self.llm,
+        )
     }
 
     fn handle_frame(&mut self, frame: Frame) {
@@ -1623,6 +1635,10 @@ impl App {
                 }
                 self.handle_key(key);
             }
+            // Ctrl+V 的**抬起**：Windows Terminal 把 `ctrl+v` 绑成自家粘贴动作，按下被它吃掉，
+            // 只有抬起透传；图片粘贴挂在这里才对（详见 `handle_ctrl_v_release`）。
+            // 抬起也可能来自文本粘贴，此时 `paste_clipboard_image` 自己返回 `false`，不干扰正文。
+            Event::Key(key) if is_ctrl_v_release(key) => self.handle_ctrl_v_release(),
             Event::Mouse(_) if self.file_picker.is_some() => {}
             Event::Mouse(_) if self.config_chat.is_some() => {}
             Event::Mouse(mouse) if self.settings.is_some() => self.handle_settings_mouse(mouse),
@@ -1638,8 +1654,11 @@ impl App {
                 }
             }
             Event::Paste(text) if self.settings.is_none() && !self.kernel_lost => {
-                // 多行粘贴折成 `[粘贴 #n +N 行]`（提交时还原），否则大段文本会把输入框撑爆。
-                self.state.composer.insert_paste(&text)
+                // 整段就是一个存在的图片路径 → 转成图片附件；否则按文本折叠
+                // （多行折成 `[粘贴 #n +N 行]`，提交时还原）。
+                if !self.paste_image_path(&text) {
+                    self.state.composer.insert_paste(&text);
+                }
             }
             Event::Resize(..) => {}
             _ => {}
@@ -1911,8 +1930,7 @@ impl App {
             KeyCode::Enter => self.submit_or_queue(),
             KeyCode::Char('j') if ctrl => self.state.composer.newline(),
             KeyCode::Char('l') if ctrl => {
-                self.state.records.clear();
-                self.state.touch_conversation();
+                self.state.clear_conversation();
             }
             KeyCode::Esc => {
                 // 先清选区（有选区时 Esc 不该顺手取消回合）。
@@ -2105,6 +2123,69 @@ impl App {
         }
     }
 
+    /// Ctrl+V 的抬起事件：图片粘贴就挂在这里。
+    ///
+    /// Windows Terminal 把 `ctrl+v` 绑成它自己的粘贴动作，**按下被它吃掉**（只把抬起
+    /// 透传过来），因此 `Ctrl+V` 的按下事件永远到不了这里——挂在按下上的图片粘贴是死代码。
+    /// 抬起也照旧携带 Control，用它当触发点对 conhost 同样成立（那里按下与抬起都会到达）。
+    fn handle_ctrl_v_release(&mut self) {
+        self.paste_clipboard_image();
+    }
+
+    /// 把剪贴板里的位图粘进输入框；返回是否真的插入了一张图片。
+    ///
+    /// 三个前提缺一不可：剪贴板里是位图、当前没有弹层挡住输入框、原生视觉开着。
+    /// 没开原生视觉时不插入占位符，只在提示行说明原因（用户要求）——图片插进去也送不出去，
+    /// 不如当场说清为什么没插进去。剪贴板里是文本时返回 `false`，让终端自己送来的
+    /// 文本粘贴照常处理。
+    fn paste_clipboard_image(&mut self) -> bool {
+        if self.settings.is_some() || self.file_picker.is_some() || self.config_chat.is_some() {
+            return false;
+        }
+        let Some(png) = crate::clipboard::read_image_png() else {
+            return false;
+        };
+        if !self.vision_route_available() {
+            self.state.show_notice_line(
+                "当前未开启原生视觉，粘贴的图片不会被发送。",
+                Instant::now(),
+            );
+            // 已消费这次按键：图片不能进输入框，也不能让 `v` 落进正文。
+            return true;
+        }
+        self.state.composer.insert_image("image/png", png);
+        self.state.touch_composer();
+        true
+    }
+
+    /// 粘贴内容整段就是一个存在的图片文件路径时，把它转成图片附件；返回是否真的插入了。
+    ///
+    /// 只认「整段仅路径」：夹了引号、括号说明或别的正文就不转（详见 [`crate::image_path`]），
+    /// 避免粘贴代码时把路径片段误当图片。没有视觉通路时保持文本原样、不插入也不提示——
+    /// 路径对模型照样可读，正是「不转换」最合理的结果。
+    fn paste_image_path(&mut self, text: &str) -> bool {
+        if self.settings.is_some() || self.file_picker.is_some() || self.config_chat.is_some() {
+            return false;
+        }
+        if !self.vision_route_available() {
+            return false;
+        }
+        let Some(image) = crate::image_path::read_pasted_image_path(text, &self.workspace) else {
+            return false;
+        };
+        self.state.composer.insert_image(&image.media_type, image.bytes);
+        self.state.touch_composer();
+        true
+    }
+
+    /// 图片有没有去处：原生视觉直送主模型，或配了 `[vision]` 交给视觉代理。
+    ///
+    /// 与 [`Self::attach_vision_images`] 同一判据——那条路决定工具图片交不交出去，
+    /// 用户粘贴的图片走的是同一套路由，两边分开判定会出现「插得进去却发不出去」。
+    fn vision_route_available(&self) -> bool {
+        self.attach_vision_images()
+    }
+
     /// 提交输入框：生成期间排队等待，空闲时直接发给内核。
     ///
     /// 「立即命令」在生成期间也当场处理、不入队（对映 Python 的
@@ -2112,9 +2193,10 @@ impl App {
     /// 模态页、不产生模型回合，排队等反而让用户按了没反应。`/undo` 需要回合
     /// 空闲才能执行，因此照常排队，轮到时由 [`Self::request_undo`] 给出提示。
     fn submit_or_queue(&mut self) {
-        let Some(text) = self.state.submit() else {
+        let Some(submission) = self.state.submit() else {
             return;
         };
+        let text = submission.text;
         // `/sessions` 特殊处理（对映 Python `_handle_command`）：不把列表追加进对话区，
         // 而是在输入框上方弹可导航的会话菜单。放在这里而不是命令派发层，是为了让它
         // 在生成中（立即命令分支）与空闲时走同一条路径。
@@ -2129,27 +2211,34 @@ impl App {
                 if parsed.command.command_type.immediate() {
                     self.dispatch_command(text, parsed);
                 } else {
-                    self.state.queue_pending(text);
+                    self.state.queue_pending(text, submission.images);
                 }
                 return;
             }
-            self.state.queue_pending(text);
+            self.state.queue_pending(text, submission.images);
             return;
         }
-        self.dispatch_submission(text);
+        self.dispatch_submission(text, submission.images);
     }
 
     /// 把一次提交派发到斜杠命令或内核。
     ///
     /// 命中注册表即交给命令层（未命中的输入照旧当成一轮对话）；需要内核往返的两条
     /// （`/undo`、`/compact`）先在宿主侧拦下来异步下发。
-    fn dispatch_submission(&mut self, text: String) {
+    ///
+    /// `images` 是随这次提问粘贴的图片：斜杠命令不走模型，因此命中命令时按「没地方去」
+    /// 处理——提醒一句，不让图片悄悄消失。
+    fn dispatch_submission(&mut self, text: String, images: Vec<PendingImage>) {
         // 内核没了就什么都不发：界面已常显退出指引，往死连接里写只会刷出「发送失败」噪音。
         // 键盘路径到不了这里（Enter 在该状态下是退出），这是给鼠标等旁路的兜底。
         if self.kernel_lost {
             return;
         }
         if let Some(parsed) = command_registry().parse(&text) {
+            if !images.is_empty() {
+                self.state
+                    .show_notice_line("斜杠命令不接受图片，已忽略粘贴的图片。", Instant::now());
+            }
             self.dispatch_command(text, parsed);
             return;
         }
@@ -2167,7 +2256,16 @@ impl App {
                 return;
             }
         };
-        self.state.begin_turn(turn_id.clone(), text.clone());
+        let images = images
+            .into_iter()
+            .map(|image| omnicrawl_ipc::bridge::TurnImageAttachment {
+                media_type: image.media_type,
+                data_base64: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                detail: String::new(),
+            })
+            .collect::<Vec<_>>();
+        self.state
+            .begin_turn(turn_id.clone(), text.clone(), images.clone());
         // 用户提交的文本是审查模型判断授权边界的最新事实（与 host 侧 `record_user_text` 同位）。
         self.review_context.record_user_text(&text);
         // 新回合开始：清掉上一回合 Esc 留下的取消标记。工具表的取消令牌跨回合沿用
@@ -2176,6 +2274,7 @@ impl App {
         self.send(Command::TurnSubmit(omnicrawl_ipc::TurnSubmitParams {
             turn_id,
             user_text: text,
+            images,
         }));
     }
 
@@ -2250,9 +2349,7 @@ impl App {
         // 「打开设置面板」）从来不会进消息流；这里同样先处理再 return，
         // 否则会多出一条「· 打开设置面板」这类纯提醒。
         if result.clear_conversation {
-            self.state.records.clear();
-            // 清空会话是整块内容变化：缓存整体失效。
-            self.state.touch_conversation();
+            self.state.clear_conversation();
             self.state.scroll_to_bottom();
         }
         if result.open_config_chat {
@@ -2280,8 +2377,9 @@ impl App {
     /// 先拦下并异步下发（响应在 `handle_frame` 里回填）。
     fn start_kernel_command(&mut self, text: String, kind: KernelCommand) {
         // 状态变更类命令在回合进行中等回合结束（与排队语义一致）。
+        // 斜杠命令不接受图片（`dispatch_submission` 已拦下并提示），排队项里不带图。
         if self.state.turn.is_running() {
-            self.state.queue_pending(text);
+            self.state.queue_pending(text, Vec::new());
             return;
         }
         // 同类命令不并发：`/review HEAD~3` 与 `/review` 算同类（label 相同）。
@@ -2341,10 +2439,10 @@ impl App {
             if self.settings.is_some() || self.state.turn.is_running() {
                 return;
             }
-            let Some(text) = self.state.take_next_pending() else {
+            let Some(submission) = self.state.take_next_pending() else {
                 return;
             };
-            self.dispatch_submission(text);
+            self.dispatch_submission(submission.text, submission.images);
         }
     }
 
@@ -2391,6 +2489,16 @@ impl App {
                     let message = command.success_message(result);
                     if !message.trim().is_empty() {
                         self.state.notice(message);
+                    }
+                }
+                // 显式压缩（`/compact`）不会再有后续模型请求来修正遥测：回执里的压缩后大小
+                // 在这里落到遥测上（与自动压缩走 `turn.context_compaction` 同一口径）。
+                if let KernelCommand::Compact = &command {
+                    if let Some(tokens) = result
+                        .get("post_compaction_context_tokens")
+                        .and_then(Value::as_i64)
+                    {
+                        self.state.refresh_after_compaction(tokens);
                     }
                 }
                 // `/review` 的第二段：报告先展示，再注入内核上下文供下一轮请求使用。
@@ -5231,12 +5339,53 @@ fn channel_config_from_row(row: &ChannelRow) -> ChannelConfig {
     }
 }
 
+/// 是否是一次 `Ctrl+V` 的**抬起**事件。
+///
+/// 命中判据必须认抬起、不能认按下：Windows Terminal 默认把 `ctrl+v` 绑成自家粘贴动作，
+/// 它会吃掉按下（`vk=0x11` 的 down 记录里没有对应的 `v` down），只把抬起透传进 pty；
+/// conhost 下两者都会到达，`short-circuit` 到同一个处理即可。
+///
+/// 两个细节来自 crossterm 在 Windows 上的解析方式（`KeyCode` 由 `ToUnicodeEx` 反推）：
+/// * 大写锁打开时 `v` 会被折成 `'V'`，所以两种大小写都收；
+/// * `Ctrl+Shift+V` 也是 `'V'`（终端自己的文本粘贴），必须按 SHIFT 挡掉，
+///   否则剪贴板里同时有文本与位图时会「文本粘一遍、图片又插一遍」。
+///
+/// `pub` 是因为事件循环（`main.rs` 侧）也用它决定「这个抬起要不要放进主事件流」。
+pub fn is_ctrl_v_release(key: KeyEvent) -> bool {
+    if key.kind != KeyEventKind::Release {
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+    matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 /// 当前生效的上下文窗口：显式 CLI/环境值优先，其次配置文件。
 fn effective_context_window(explicit: Option<u64>, llm: &LlmConfig) -> i64 {
     match explicit {
         Some(value) if value > 0 => value as i64,
         _ => llm.context_window_tokens,
     }
+}
+
+/// 当前生效的原生视觉开关：命令行/环境显式开启优先，其次配置里当前模型的覆盖。
+///
+/// 配置里的值由 `load_llm_config` 按「模型条目覆盖 > 渠道 Profile 覆盖 > 未配置」解出，
+/// 与 Python `_native_vision_enabled` 同口径；未配置时 Python 会回落运行时模型能力，
+/// 而 TUI 没有能力表（见 crate README），因此按关闭处理。
+///
+/// `--base-url` 指向外部渠道时不再叠加配置：那份 `native_vision` 描述的是配置里选中的
+/// 模型，而外部渠道跑的是命令行给的那个模型（与 Provider / 协议 / 生成选项同一口径）。
+fn effective_native_vision(external_channel: bool, explicit: bool, llm: &LlmConfig) -> bool {
+    if explicit {
+        return true;
+    }
+    if external_channel {
+        return false;
+    }
+    llm.native_vision.unwrap_or(false)
 }
 
 /// 生成选项（`GenerationOptions` 的 JSON 形状）：只给配置里真正有值的字段。
@@ -5670,6 +5819,53 @@ mod tests {
     use super::*;
     use omnicrawl_config::models::llm::provider_options_from_json;
 
+    /// 钉住这次修复的触发条件：`Ctrl+V` 只认**抬起**。
+    ///
+    /// Windows Terminal 的 `ctrl+v` 是它自家的粘贴动作，按下被它吃掉、只有抬起透传；
+    /// 若判据退回按下，图片粘贴在 WT 下又是死代码（这正是本次的故障现象）。
+    #[test]
+    fn ctrl_v_image_paste_hangs_on_the_release_event() {
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release,
+        );
+        assert!(is_ctrl_v_release(release), "WT 只透传抬起，判据必须认它");
+
+        let press = KeyEvent::new_with_kind(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        assert!(!is_ctrl_v_release(press), "WT 下按下根本到不了应用");
+
+        // 普通 `v` 与别的 Ctrl 组合都不该命中。
+        assert!(!is_ctrl_v_release(KeyEvent::new_with_kind(
+            KeyCode::Char('v'),
+            KeyModifiers::empty(),
+            KeyEventKind::Release
+        )));
+        assert!(!is_ctrl_v_release(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release
+        )));
+
+        // 大写锁打开时 crossterm 会把 `v` 折成 `'V'`：这是同一次 Ctrl+V，必须认。
+        assert!(is_ctrl_v_release(KeyEvent::new_with_kind(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release
+        )));
+
+        // Ctrl+Shift+V 是终端自家的文本粘贴，不能顺手再插一张图（否则文本与图各来一遍）。
+        assert!(!is_ctrl_v_release(KeyEvent::new_with_kind(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyEventKind::Release
+        )));
+    }
+
     #[test]
     fn api_key_env_follows_channel_then_provider_default() {
         // 命令行渠道（`--base-url`）：用命令行那个名字。
@@ -5845,6 +6041,29 @@ mod tests {
         assert_eq!(tool_label("read"), "读取文件内容");
         assert_eq!(tool_label("powershell"), "执行 PowerShell 命令");
         assert_eq!(tool_label("自定义工具"), "自定义工具");
+    }
+
+    /// 原生视觉的三条来源：命令行/环境显式开启、配置里当前模型的覆盖、都没有时关闭。
+    ///
+    /// 回归的是「配置里配好了却看不到图」：以前只看 `Options::native_vision`，
+    /// 于是 `models.toml` / 渠道里写的 `native_vision = true` 对 TUI 完全无效。
+    #[test]
+    fn native_vision_comes_from_flag_then_config() {
+        let environment = omnicrawl_config::core::runtime::ConfigEnvironment::from_process();
+        let mut llm = LlmConfig::with_environment(&environment);
+        llm.native_vision = None;
+        assert!(!effective_native_vision(false, false, &llm), "都没给就是关");
+        assert!(effective_native_vision(false, true, &llm), "命令行开关仍然算数");
+
+        llm.native_vision = Some(true);
+        assert!(effective_native_vision(false, false, &llm), "配置开了就用配置");
+
+        // `--base-url` 指外部渠道：跑的是命令行那个模型，配置里的覆盖不跟过来。
+        assert!(!effective_native_vision(true, false, &llm));
+        assert!(effective_native_vision(true, true, &llm), "显式开关不受渠道影响");
+
+        llm.native_vision = Some(false);
+        assert!(!effective_native_vision(false, false, &llm), "配置明确关掉就是关");
     }
 
     #[test]

@@ -174,7 +174,7 @@ impl SourceEvent {
         let mut map = Map::new();
         map.insert("event_id".to_string(), Value::from(self.event_id.clone()));
         map.insert("type".to_string(), Value::from(self.event_type.clone()));
-        map.insert("payload".to_string(), self.payload.clone());
+        map.insert("payload".to_string(), prompt_payload(&self.payload));
         Value::Object(map)
     }
 
@@ -201,7 +201,7 @@ impl SourceEvent {
 
     /// 索引里的内容预览：超长时截断并补省略号。
     fn preview(&self, preview_chars: usize) -> String {
-        let serialized = compact_serialize(&self.payload);
+        let serialized = compact_serialize(&prompt_payload(&self.payload));
         if preview_chars > 0 && preview_chars < serialized.chars().count() {
             return format!(
                 "{}…",
@@ -210,6 +210,37 @@ impl SourceEvent {
         }
         serialized
     }
+}
+
+/// 交给摘要模型的载荷：图片的 Base64 正｛Desensitized:708｝换成一行描述。
+///
+/// 用户消息可以带粘贴的图片，图片原文（几百 KB 的 Base64）**不属于可摘要的内容**：
+/// 留在提示里只会把摘要输入撑爆、让 Token 估算与实际上下文完全脱节（估算按字符数算，
+/// Base64 又全是高熵字符）。这里只留张数与大小，摘要模型仍然知道「这条消息带了图」。
+fn prompt_payload(payload: &Value) -> Value {
+    let Some(images) = payload.get("images").and_then(Value::as_array) else {
+        return payload.clone();
+    };
+    if images.is_empty() {
+        return payload.clone();
+    }
+    let summarized: Vec<Value> = images
+        .iter()
+        .map(|image| {
+            let media_type = image.get("media_type").and_then(Value::as_str).unwrap_or_default();
+            let bytes = image
+                .get("data_base64")
+                .and_then(Value::as_str)
+                .map(|data| data.len())
+                .unwrap_or(0);
+            Value::from(format!("<图片 {media_type}，约 {} 字节>", bytes / 4 * 3))
+        })
+        .collect();
+    let mut prompt = payload.clone();
+    if let Value::Object(map) = &mut prompt {
+        map.insert("images".to_string(), Value::Array(summarized));
+    }
+    prompt
 }
 
 fn compact_serialize(value: &Value) -> String {
@@ -651,4 +682,61 @@ fn is_compact_summary(message: &Value) -> bool {
     value_text(message.get("content"))
         .trim()
         .starts_with(COMPACT_SUMMARY_PREFIX.trim())
+}
+
+#[cfg(test)]
+mod prompt_payload_tests {
+    use super::*;
+
+    fn event(payload: Value) -> SourceEvent {
+        SourceEvent {
+            event_id: "e1".to_string(),
+            event_type: "user_message".to_string(),
+            payload,
+        }
+    }
+
+    /// 图片的 Base64 不进摘要提示：只留类型与大小，否则摘要输入｛Desensitized:721｝Context 估算都被撑爆。
+    #[test]
+    fn image_payload_is_summarized_before_reaching_the_summary_prompt() {
+        let prompt = event(serde_json::json!({
+            "content": "看图",
+            "images": [
+                {"media_type": "image/png", "data_base64": "AAAAAAAA", "detail": "auto"},
+            ],
+        }))
+        .to_prompt_dict();
+        let images = prompt["payload"]["images"].as_array().expect("images 仍在");
+        assert_eq!(images.len(), 1);
+        assert!(
+            images[0].as_str().unwrap_or_default().contains("image/png"),
+            "只留类型与大小：{:?}",
+            images[0]
+        );
+        assert!(
+            !serde_json::to_string(&prompt).unwrap().contains("AAAAAAAA"),
+            "Base64 原文不该出现在提示里"
+        );
+        assert_eq!(prompt["payload"]["content"], Value::from("看图"), "正文照旧");
+    }
+
+    /// 没有图片的事件原样进提示：这条清洗只针对 `images` 字段。
+    #[test]
+    fn events_without_images_are_untouched() {
+        let payload = serde_json::json!({"content": "纯文本", "pending_user_text": "纯文本"});
+        let prompt = event(payload.clone()).to_prompt_dict();
+        assert_eq!(prompt["payload"], payload);
+    }
+
+    /// 索引预览同样走清洗：短预览不能把 Base64 抄进摘要模型的输入。
+    #[test]
+    fn index_preview_also_hides_the_base64() {
+        let index = event(serde_json::json!({
+            "content": "看图",
+            "images": [{"media_type": "image/png", "data_base64": "ZZZZZZZZ"}],
+        }))
+        .to_index_dict(200);
+        let preview = index["preview"].as_str().unwrap_or_default();
+        assert!(!preview.contains("ZZZZZZZZ"), "预览里不该有 Base64：{preview}");
+    }
 }

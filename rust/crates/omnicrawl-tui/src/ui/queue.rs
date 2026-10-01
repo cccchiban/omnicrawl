@@ -38,9 +38,14 @@ pub enum QueueHit {
     Toggle,
 }
 
-/// 待提交消息的借用视图（摘要计算要 `&[String]`）。
+/// 待提交消息的借用视图（摘要计算要 `&[String]`）：排队预览只显示文本，
+/// 图片已在文本里以 `[ #n Image ]` 占位符的形式出现。
 fn items(state: &AppState) -> Vec<String> {
-    state.pending_inputs.iter().cloned().collect()
+    state
+        .pending_inputs
+        .iter()
+        .map(|submission| submission.text.clone())
+        .collect()
 }
 
 /// 预览行序列；空队列返回空表。
@@ -131,8 +136,8 @@ mod tests {
     #[test]
     fn queue_rows_follow_fifo_with_delete_hotzone() {
         let mut state = state();
-        state.queue_pending("第一条留言\n第二行".to_string());
-        state.queue_pending("  第二条   带空白  ".to_string());
+        state.queue_pending("第一条留言\n第二行".to_string(), Vec::new());
+        state.queue_pending("  第二条   带空白  ".to_string(), Vec::new());
         assert_eq!(height(&state), 3, "标题 + 两条消息");
 
         let lines: Vec<String> = rows(&state)
@@ -158,7 +163,7 @@ mod tests {
     fn overflow_collapses_until_toggled() {
         let mut state = state();
         for index in 1..=5 {
-            state.queue_pending(format!("消息{index}"));
+            state.queue_pending(format!("消息{index}"), Vec::new());
         }
         assert_eq!(height(&state), 5, "标题 + 3 条 + 提示行");
         assert_eq!(hit(&state, 4), Some(QueueHit::Toggle));
@@ -182,7 +187,7 @@ mod tests {
     #[test]
     fn rendered_rows_keep_terminal_width() {
         let mut state = state();
-        state.queue_pending("一条很长的排队消息需要被截断到行宽之内".to_string());
+        state.queue_pending("一条很长的排队消息需要被截断到行宽之内".to_string(), Vec::new());
         let width = 30usize;
         let row = rows(&state)
             .into_iter()

@@ -17,7 +17,8 @@ pub mod version;
 pub use bridge::{
     method, BridgeError, Command, HostEvent, InitializeParams, KernelCompactionConfig,
     KernelSessionConfig, ModelHookRequest, ModelHookResult, ModelRequest, PendingCommand,
-    ToolBatch, ToolBatchResult, TurnCancelParams, TurnSubmitParams, DENIED_ERROR_CODE,
+    ToolBatch, ToolBatchResult, TurnCancelParams, TurnImageAttachment, TurnSubmitParams,
+    DENIED_ERROR_CODE,
 };
 pub use frame::{error_code, ErrorObject, Frame, FrameError, Id, JSONRPC_VERSION};
 pub use version::{negotiate_version, VersionError, PROTOCOL_VERSION, SUPPORTED_MAJOR};

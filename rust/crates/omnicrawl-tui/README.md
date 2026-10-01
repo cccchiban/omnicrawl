@@ -14,10 +14,10 @@
 | `src/args.rs` | 启动参数（命令行 → 环境变量 → 默认值）、内核路径解析 |
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载、鼠标拖选选区 |
-| `src/clipboard.rs` | 拖选复制的写剪切板（Windows 走宿主 Win32 `CF_UNICODETEXT` 实现，其余平台 `pbcopy`/`wl-copy`/`xclip`） |
+| `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
-| `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
+| `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
 
 ## 渲染与刷新（性能）
@@ -61,6 +61,57 @@
 | 流式一片增量到达后到上屏 | 全量重算 | 0.22ms（只重算最后一条记录） |
 | 空闲帧 | 每 50ms 重算一遍 | 一帧都不画 |
 
+### 工具卡里的图片预览
+
+`read_image` 会把图片作为**视觉附件**回给宿主（与模型是否在看图无关：没开原生视觉、也没配视觉代理时附件照样进这里）。
+[`ImagePreviews`](src/ui/image_preview.rs) 把这些附件渲染成工具卡正文里的缩略图：
+
+- **只走半块字形通路**。sixel / kitty / iTerm2 都要先问终端要图形能力与像素尺寸，而
+  `ratatui-image` 的探测要在 stdin 上阻塞读；Windows Terminal 走的 ConPTY 未必把应答交回子进程，
+  超时的探测线程还会继续占着 stdin——那是主输入循环的命脉。半块字形用字符格的前后景色画图，
+  不需要任何探测，任何终端都能出图（代价是分辨率只有半个字符格）；
+- **解码在后台线程**，且先缩到 640px 的最长边：源图解码是唯一的重活（大图动辄上百毫秒），
+  留在主线程会把界面卡住；
+- **尺寸先算、占位先铺**。卡片按缩略图的最终行数（宽度自适应，高度上限 16 行）一次占出图片区，
+  图片到达后直接覆盖上去；解码期间显示一行「正在准备图片」，不会出现「先排一次短的再把下面挤开」
+  的跳变。解码失败则回落到原来的载荷正文；
+- **预览数量上限 8 张**，按注册顺序淘汰最旧的：附件是 Base64 原文，逐句留在内存里会一路涨。
+
+缩略图本身不在文本缓冲里，而是渲染时覆盖到占位行上：占位行只记「属于哪张卡、在块内第几行」，
+滚动到块中间时由 `所见行号 − 块内偏移` 反推块顶，`SlicedImage` 的有符号坐标再做行裁切。
+
+### 粘贴图片（`Ctrl+V`）
+
+剪贴板里是位图时，`Ctrl+V` 把图片贴进输入框，并在光标处插入 `[ #1 Image ]` 占位符（序号按粘贴顺序递增）：
+
+- **整块占位符**。与多行粘贴折叠同一套机制（`Composer::insert_image`）：退格 / Delete 整块删掉，
+  左右键把块当一格，不会停在块中间；占位符被删掉后附件随之丢弃（`prune_pastes`），不会悄悄发出去。
+- **提交时随提问一起送**。`AppState::submit` 同时交出文本与附件，`turn.submit` 带上 `images`；
+  提交后输入框与附件一起清空，排队等下一轮的提问也把图片带在队列项里（`PendingSubmission`），
+  撤回排队消息时按占位符原样挂回。
+- **会话区显示缩略图**。图片是用户消息的一部分：`Record::User` 带着附件，正文之后铺一块缩略图区，
+  与工具卡走**同一条图片通路**（同一份 [`ImagePreviews`]、同一套占位行与 `SlicedImage` 绘制），
+  不另写一套渲染。`[ #n Image ]` 仍留在用户消息正文里（那是它发出去时携带的文本）。
+- **没开原生视觉时不插入**。`Ctrl+V` 会先读剪贴板位图，再按 `attach_vision_images` 判图片有没有去处：
+  没开原生视觉也没配 `[vision]` 时**不插入占位符**，只在输入框上方提示「当前未开启原生视觉，
+  粘贴的图片不会被发送」——插进去也送不出去，不如当场说清为什么（用户选定）。
+- **剪贴板里是文本时不消费按键**：`Ctrl+V` 照旧走终端自己的粘贴（bracketed paste）或粘贴识别状态机。
+
+位图解析与 PNG 编码复用宿主已有的 Win32 实现（`omnicrawl_host::tools::windows::clipboard::
+try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 crate 只做「读出来 → 入框」。
+
+### 粘贴图片路径（`Event::Paste`）
+
+粘贴内容**整段就是一个存在的图片文件路径**时，也转成同一个 `[ #n Image ]` 块（`src/image_path.rs`）：
+
+- **只认整段**。去掉首尾空白后必须正好是一条路径，不能夹换行、控制字符或任何别的正文；
+  `看一下这张图 C:\a.png`、`"C:\a.png"`、`read_image("C:\a.png")` 都按普通文本粘贴——
+  这正是「粘贴代码时不要把路径片段误当图片」。
+- **路径里的中文、空格与括号是允许的**（都是合法的 Windows 文件名组成部分），是否真是图片由
+  文件签名裁决：扩展名不在 `png/jpg/jpeg/gif/webp` 内、文件不存在或内容不是图片都不转。
+- **判定链与 `read_image` 同源**（`omnicrawl_host::tools::read_image::read_local_image`）：
+  同一份签名表、同一套相对路径绑工作区与越界规则、同一套错误文案。
+
 ### 事件循环的等待与唤醒
 
 三块刷新把「画不画」省下来了，但事件循环仍要决定「等多久」，这段等待直接加在
@@ -93,7 +144,7 @@
 | 工具 | 状态 | 说明 |
 | --- | --- | --- |
 | `read` | 已实现 | 行窗口、超长行截断、行号与续读 footer；`text` 片段定位已实现 |
-| `read_image` | 已实现 | 本机图片读取：拒绝 URL/data URI、相对路径不得越出工作区、按签名识别 PNG/JPEG/GIF/WebP、Base64 编码为视觉附件；图片去向由路由定：原生视觉（`--native-vision`）直送主模型，配了 `[vision]` 则交给独立视觉模型代理换成文本结论，两者都没有时只回文本载荷 |
+| `read_image` | 已实现 | 本机图片读取：拒绝 URL/data URI、相对路径不得越出工作区、按签名识别 PNG/JPEG/GIF/WebP、Base64 编码为视觉附件；图片去向由路由定：原生视觉（`--native-vision` 或配置里的 `native_vision`）直送主模型，配了 `[vision]` 则交给独立视觉模型代理换成文本结论；无论哪条路由，工具卡正文都会把图片显示给用户（见「工具卡里的图片预览」） |
 | `image_gen` | 已实现 | OpenAI 兼容 Image API：`/images/generations` 与 `/images/edits`（multipart 参考图），`b64_json` 落盘或按 URL 下载，保存位置支持目录 / 文件名 / 多张编号；未启用时调用给出明确错误（配置来自开关与环境变量，见已知差异） |
 | `write_file` | 已实现 | overwrite / append，父目录自动创建 |
 | `Edit_file` | 已实现 | count 语义、行尾风格恢复、版本指纹校验、文件锁 + 原子写、错误码 |
@@ -385,11 +436,31 @@ OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字
 （`PendingBatch::is_ready` = 每条都有结果），内核拿到整批后才会发下一轮模型请求；
 任何一条没回来都不会提前进入下一轮。
 
-**压缩提示**：`turn.tool_output_compression` 的通知在工具调用**完成之后**才显示（压缩本来
-就发生在批次执行之后，提示画在工具结果上方）：`已压缩 12,345 → 1,234 字符`，
+**压缩边界**：上下文压缩的 `---已压缩 xxk~xxk ---`（`turn.notice`）与回合末工具调用压缩的
+`已压缩 {原始} → {概括} 字符`（同样 `turn.notice`）都落在会话区，画成一行灰色提示
+（`Record::Notice`；上下文压缩沿用 Python 的 `compact-message` 灰字口径）。**不写状态行**：
+状态行在 `turn.finished` 时清掉，边界只能留在对话流里。回放时上下文压缩按
+`compact_summary` 画「会话压缩摘要：」正文，工具调用压缩按 `tool_call_summary` 的
+`raw_chars` / `summary_chars` 重建计量行（事件流里那两条工具事件已被投影剔除，不再画成卡片）。
+
+**工具输出压缩的卡片提示**：`turn.tool_output_compression` 的通知在工具调用**完成之后**才显示
+（压缩本来就发生在批次执行之后，提示画在工具结果上方）：`已压缩 12,345 → 1,234 字符`，
 并用 `finished` 携带的**压缩后正文替换**卡片里的原始输出（用户要求「压缩后替换原内容」）。
 工具调用处于运行态时一律用流式阶段的半截参数做预览，进入终态后改用卡片自己的真实参数与
 结果——避免出现「已经完成却还显示调用中/预览」的错位。
+
+**压缩后的遥测刷新**：底部轮播的上下文占用与 ↑ 来自 `turn.token_usage`（最近一次模型请求的用量），
+而压缩发生在回合收尾、模型请求之后——不刷新就会一直显示已被替换掉的旧上下文大小。两条压缩路径
+都把压缩后的上下文 Token（稳定上下文 + 重建后的运行期历史）带给宿主，`AppState::refresh_after_compaction`
+据此把 ↑/CTX 换成新值、把 ↓/† 清零（它们属于那一次已经过去的请求，缓存率随之回到 `CH0%`）：
+
+| 路径 | 承载 |
+| --- | --- |
+| 上下文压缩（阈值 / 溢出恢复） | `turn.context_compaction.post_compaction_context_tokens` |
+| 回合末工具调用压缩 | `turn.finished.post_compaction_context_tokens` |
+| 显式 `/compact` | `session.compact` 回执的 `post_compaction_context_tokens` |
+
+字段缺失（该回合没有压缩，或没有模型配置算不出稳定上下文）时遥测维持原值不动。
 
 **标题换行**：工具卡标题（`● bash ls -la …`）超宽时**换行**而不是省略号截断，续行缩进到
 参数起始列（`ls` 正下方），参数列表能对齐着读。
@@ -619,11 +690,12 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    缺省开启）；作用域里项目级与用户级常开，**会话级不开**（内核自持会话时宿主拿不到 session id，
    强行开启只会让模型调 `scope="session"` 时拿到「未启用」）；
    视觉路径：`read_image` 始终在工具表里（与 Python `_build_tools` 一致），图片的去向由路由决定——
-   打开 `--native-vision`（或 `OMNICRAWL_NATIVE_VISION`）时图片直送主模型（握手随
-   `initialize.model.native_vision` 告知内核，内核不再走代理）；未打开但配了 `[vision]` 时图片
+   打开 `--native-vision`（或 `OMNICRAWL_NATIVE_VISION`），或配置里当前模型的 `native_vision`
+   （`models.toml` 的模型条目 / 渠道 Profile，按「模型覆盖 > 渠道覆盖」解析）为真时图片直送主模型
+   （握手随 `initialize.model.native_vision` 告知内核，内核不再走代理）；没开但配了 `[vision]` 时图片
    交给独立视觉模型代理分析、结论作为不可信观察回填；两者都没有时图片不进请求，主模型只收到
    图片元数据。Python 侧「未显式配置时回落运行时模型能力」的判定需要模型能力表，本 crate 目前没有，
-   因此默认关闭而不是自动判断；
+   因此未配置时按关闭处理而不是自动判断；
    顾问的已知差异：顾问看到的「工作分支」由对话记录（user/assistant 文本）投影而成（Python 用 turn 级注入的完整工作消息），
    顾问模型/凭据来自 `--advisor-*` 与 `OMNICRAWL_ADVISOR_*`（基地址与凭据变量默认回落主模型），
    推理强度按 `--advisor-effort` 直接下发；

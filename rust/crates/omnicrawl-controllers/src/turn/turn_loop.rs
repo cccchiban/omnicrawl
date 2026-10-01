@@ -217,6 +217,8 @@ impl StreamOutcome {
             model_turns: self.model_turns,
             tool_calls: self.tool_calls,
             paused: self.paused,
+            // 压缩在回合收尾之后由内核自己的会话尾段完成，这里无从得知。
+            post_compaction_context_tokens: None,
         })
     }
 }

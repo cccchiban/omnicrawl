@@ -21,7 +21,11 @@ use omnicrawl_config::features::desensitization::{
     load_desensitization_config, DesensitizationConfig,
 };
 use omnicrawl_controllers::context_compaction::TokenUsageSample;
-use omnicrawl_controllers::context_compaction::RECALL_SESSION_EVIDENCE_TOOL_NAME;
+use omnicrawl_controllers::context_compaction::{
+    estimate_json_tokens, estimate_messages_tokens, estimate_text_tokens,
+    RECALL_SESSION_EVIDENCE_TOOL_NAME,
+};
+use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
 use omnicrawl_controllers::tool_args::{public_tool_arguments, TODO_TOOL_NAME};
 use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
@@ -81,7 +85,9 @@ use omnicrawl_controllers::subagents::worktrees::{
     artifact_lines, discard_guard, WorktreeArtifacts,
 };
 use omnicrawl_controllers::context_compaction::SourceEvent;
-use omnicrawl_session::{tool_result_message, utc_now, SessionListQuery, SessionStore};
+use omnicrawl_session::{
+    tool_result_message, user_message_with_images, utc_now, SessionListQuery, SessionStore,
+};
 
 use crate::compression::KernelCompressor;
 use crate::turn_summary::{summarize_turn, TurnSummaryRequest};
@@ -91,6 +97,23 @@ use crate::vision_proxy::KernelVisionProxy;
 use crate::compaction::{
     compact_after_turn, compact_now, recall_session_evidence, recover_after_overflow, KernelSession,
 };
+
+/// 压缩后的上下文 Token 估算：稳定上下文 + 运行期历史。
+///
+/// 稳定上下文 = 系统提示词 + 宿主给的上下文消息（项目规范、Skill、运行环境）+ 工具声明，
+/// 口径与压缩驱动自己的测量完全同源（`estimate_text_tokens` / `estimate_messages_tokens` /
+/// `estimate_json_tokens`），因此宿主显示的「压缩后大小」与实际进入下一次请求的内容一致。
+///
+/// 取不到模型配置时返回 `None`：没有系统提示词与工具面就算不出可比的整体大小，此时宁可
+/// 不报，也不给一个只含历史的偏小数。
+fn post_compaction_context_tokens(conn: &Rc<RefCell<Conn>>, history: &[Value]) -> Option<i64> {
+    let model = conn.borrow().model.clone()?;
+    let mut tokens = estimate_text_tokens(&model.system_prompt);
+    tokens += estimate_messages_tokens(&model.context_messages);
+    tokens += estimate_json_tokens(&Value::Array(model.tools.clone()));
+    tokens += estimate_messages_tokens(history);
+    Some(tokens.max(0))
+}
 
 /// 入站消息：解析好的帧，或读取端已关闭。
 ///
@@ -2172,11 +2195,31 @@ impl TurnRunGuard {
     }
 
     /// `user_message` 事件载荷：待续文本总是写；清单只在「继续」回合写。
-    fn user_message_payload(&self) -> Value {
+    ///
+    /// `images` 是随本轮提问粘贴的图片：它们是**用户消息的一部分**，落进转录才能在
+    /// `/resume`、重启与压缩投影之后仍然重建出同一条带图的消息。
+    fn user_message_payload(
+        &self,
+        images: &[omnicrawl_ipc::bridge::TurnImageAttachment],
+    ) -> Value {
         let mut payload = json!({
             "content": self.user_text,
             "pending_user_text": self.pending_user_text,
         });
+        if !images.is_empty() {
+            payload["images"] = Value::Array(
+                images
+                    .iter()
+                    .map(|image| {
+                        json!({
+                            "media_type": image.media_type,
+                            "data_base64": image.data_base64,
+                            "detail": image.detail,
+                        })
+                    })
+                    .collect(),
+            );
+        }
         if self.continue_requested && !self.todos.is_empty() {
             payload["todo_items"] = continuation::todo_items_value(&self.todos);
         }
@@ -2221,12 +2264,39 @@ fn next_subagent_batch_id() -> String {
     format!("batch-{:012x}", mixed & 0xffff_ffff_ffff)
 }
 
+/// 本轮用户消息的模型侧形状：没有图片时是纯文本，有图片时是 OpenAI 多模态部件数组。
+///
+/// 把 `TurnImageAttachment` 转成事件载荷那份 JSON 形状后交给
+/// [`omnicrawl_session::user_message_with_images`]——实时请求与重启后的历史重建共用同一句，
+/// 两边的消息形状因此始终一致（否则前缀缓存会在恢复后失效）。
+fn user_message_value(text: &str, images: &[omnicrawl_ipc::bridge::TurnImageAttachment]) -> Value {
+    if images.is_empty() {
+        return user_message_with_images(text, None);
+    }
+    let payload = Value::Array(
+        images
+            .iter()
+            .map(|image| {
+                json!({
+                    "media_type": image.media_type,
+                    "data_base64": image.data_base64,
+                    "detail": image.detail,
+                })
+            })
+            .collect(),
+    );
+    user_message_with_images(text, Some(&payload))
+}
+
 /// 跑一个回合：用户输入进上下文 → 模型与工具交替 → `turn.finished`。
 fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) {
     let turn_id = params.turn_id.clone();
     conn.borrow().cancel.store(false, Ordering::SeqCst);
 
     let user_text = params.user_text.clone();
+    // 随本轮提问粘贴的图片（`Ctrl+V`）：既是用户消息的一部分（落盘转录），
+    // 也要进这一轮的请求。原生视觉没开时宿主根本不会送来（那边已拦下并提示）。
+    let user_images = params.images.clone();
     let usage = Rc::clone(&conn.borrow().usage);
     usage.borrow_mut().reset();
     // 短「继续/重试」要还原成上一轮未完成的真实任务：待续文本与清单从会话推测（只有真是
@@ -2257,7 +2327,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         .as_ref()
         .map(|session| session.history.clone())
         .unwrap_or_default();
-    messages.push(json!({"role": "user", "content": model_text.clone()}));
+    messages.push(user_message_value(&model_text, &user_images));
     // 宿主给了模型配置就由内核自己发请求；没给则维持 model.reply 代答的兼容路径。
     if !context_messages.is_empty() {
         let mut combined: Vec<Value> = Vec::with_capacity(context_messages.len() + messages.len());
@@ -2332,7 +2402,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     // 下一轮与恢复投影仍然看得到这次提问，而不是把整轮丢在转录之外。
     run_guard.todos = active_todos.borrow().clone();
     if let Some(session) = conn.borrow_mut().session.as_mut() {
-        if let Err(detail) = session.append("user_message", run_guard.user_message_payload()) {
+        let payload = run_guard.user_message_payload(&user_images);
+        if let Err(detail) = session.append("user_message", payload) {
             eprintln!("[kernel] 会话写入用户消息失败：{detail}");
         }
     }
@@ -2435,8 +2506,11 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
             // 否则宿主此刻退出（或被强杀）就会丢掉这一轮的问答。
             let session = connection.session.take();
             drop(connection);
+            // 压缩后大小由 `run_session_tail` 带回：压缩发生在回合收尾，之后不会再发模型请求，
+            // 遥测若不在这里刷新就会一直停在压缩前那次的用量上。
+            let mut post_compaction_context_tokens = None;
             if let Some(mut session) = session {
-                run_session_tail(
+                post_compaction_context_tokens = run_session_tail(
                     conn,
                     &mut session,
                     &run_guard,
@@ -2463,6 +2537,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
                     model_turns: result.model_turns,
                     tool_calls: result.tool_calls,
                     paused: result.paused,
+                    post_compaction_context_tokens,
                 }));
             conn.borrow_mut().respond(request_id, json!({}));
         }
@@ -2571,7 +2646,9 @@ fn recover_context_overflow(
     ) {
         Ok(report) => {
             if let Some(notice) = report.notice.as_deref() {
-                conn.borrow_mut().notify(HostEvent::Status(MessagePayload {
+                // 边界提示走会话区（`turn.notice`）：画在状态行会在回合结束时消失，
+                // 留下的只有摘要本身，用户看不到「上一段已被替换」的可见边界。
+                conn.borrow_mut().notify(HostEvent::Notice(MessagePayload {
                     message: format!(
                         "{notice}（检测到上下文超限，已压缩当前任务上下文并自动继续。）"
                     ),
@@ -2603,18 +2680,22 @@ fn recover_context_overflow(
 ///
 /// 投影会据此剔除原来的逐条 `tool_call_requested` / `tool_result` 并插入概括文本；
 /// 未启用、没有调用或概括失败时什么都不写，上下文保持原样。
+///
+/// 概括落盘后**重建运行期历史**：投影会据此剔除被概括的逐条工具事件，下一轮请求带的是
+/// 概括文本而不是原始输出。少了这一步，事件只在转录里「看起来」被压缩了，模型仍然收到全文。
+/// 返回压缩后的上下文 Token 估算，供 `turn.finished` 刷新宿主遥测。
 fn summarize_turn_after_turn(
     conn: &Rc<RefCell<Conn>>,
-    session: &KernelSession,
+    session: &mut KernelSession,
     task_hint: &str,
     turn_id: &str,
-) {
+) -> Option<i64> {
     let model = conn.borrow().model.clone();
     let Some(model) = model else {
-        return;
+        return None;
     };
     let Some(compressor) = KernelCompressor::load(&model) else {
-        return;
+        return None;
     };
     let events = match session.store.read_active_events(&session.session_id) {
         Ok(events) => events,
@@ -2623,7 +2704,7 @@ fn summarize_turn_after_turn(
                 "[kernel] 读取会话事件失败，跳过本轮工具调用概括：{}",
                 error.message()
             );
-            return;
+            return None;
         }
     };
     let source: Vec<SourceEvent> = events
@@ -2641,7 +2722,7 @@ fn summarize_turn_after_turn(
         session_id: &session.session_id,
     };
     let Some(outcome) = summarize_turn(&compressor, &request) else {
-        return;
+        return None;
     };
     let payload = json!({
         "content": outcome.content,
@@ -2649,26 +2730,32 @@ fn summarize_turn_after_turn(
         "archive_path": outcome.archive_path,
         "tool_call_count": outcome.tool_calls,
         "raw_chars": outcome.raw_chars,
+        "summary_chars": outcome.summary_chars,
         "turn_id": turn_id,
     });
     if let Err(detail) = session.append("tool_call_summary", payload) {
         eprintln!("[kernel] 会话写入工具调用概括失败：{detail}");
-        return;
+        return None;
     }
-    // 本轮末一条状态：替代原先逐条工具卡上的「正在压缩…」，只报概括条数与原文位置。
-    let notice = if outcome.archive_path.is_empty() {
-        format!("已概括本轮 {} 次工具调用。", outcome.tool_calls)
-    } else {
-        format!(
-            "已概括本轮 {} 次工具调用，原文见：{}",
-            outcome.tool_calls, outcome.archive_path
-        )
-    };
+    // 概括事件已落盘：按投影重建历史，让下一次请求真正拿到压缩后的上下文。
+    if let Err(detail) = session.reload_history() {
+        eprintln!("[kernel] 工具调用压缩后重建运行期历史失败：{detail}");
+        return None;
+    }
+    let post_compaction_context_tokens =
+        post_compaction_context_tokens(conn, session.history.as_slice());
+    // 会话区提示：与上下文压缩一样，在对话流里留一行灰色边界，标明这一轮的逐条工具调用
+    // 已被概括替换。实测计量的字符数取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行。
+    let notice = compression_logic::compaction_notice(outcome.raw_chars, outcome.summary_chars);
     conn.borrow_mut()
-        .notify(HostEvent::Status(MessagePayload { message: notice }));
+        .notify(HostEvent::Notice(MessagePayload { message: notice }));
+    post_compaction_context_tokens
 }
 
 /// 回合收尾：落会话事件（用户消息与最终回复）→ 跑一次压缩 → 通知提示并更新运行期历史。
+///
+/// 返回值是本回合压缩**之后**的上下文 Token 估算（没有压缩时为 `None`），由调用方随
+/// `turn.finished` 发给宿主，用来把底部遥测换成压缩后的真实大小。
 fn run_session_tail(
     conn: &Rc<RefCell<Conn>>,
     session: &mut KernelSession,
@@ -2677,7 +2764,7 @@ fn run_session_tail(
     final_text: &str,
     task_hint: &str,
     turn_id: &str,
-) {
+) -> Option<i64> {
     // `user_message` 已在发请求之前落盘（见 `run_turn`），这里只写本轮终态与续跑痕迹。
     // 续跑痕迹的落盘顺序与 Python 完全一致：先逐次 `run_guard_continue`，再写本轮终态。
     for payload in &run_guard.continue_events {
@@ -2714,7 +2801,7 @@ fn run_session_tail(
         if let Err(detail) = session.reload_history() {
             eprintln!("[kernel] 重建运行期历史失败：{detail}");
         }
-        return;
+        return None;
     };
     let api_key = read_api_key(&model).unwrap_or_default();
     let (usage, last_request_input_tokens, last_request_messages) = {
@@ -2761,16 +2848,24 @@ fn run_session_tail(
                     .get("trigger_context_tokens")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
+                // 压缩刚落地：用重建后的历史算一次压缩后大小，随计量一起给宿主刷新遥测。
+                let post_compaction_context_tokens = report
+                    .history
+                    .as_deref()
+                    .and_then(|history| post_compaction_context_tokens(conn, history));
                 conn.borrow_mut()
                     .notify(HostEvent::ContextCompaction(ContextCompactionPayload {
                         post_turn_context_tokens,
                         trigger_context_tokens,
                         turn_id: turn_id.to_string(),
+                        post_compaction_context_tokens,
                     }));
             }
             if let Some(notice) = report.notice {
+                // 阈值触发的压缩同样在会话区留边界：`turn.finished` 一到状态行就清空，
+                // 边界只能落在对话流里（与自动压缩的摘要一起构成「上一段被替换」的痕迹）。
                 conn.borrow_mut()
-                    .notify(HostEvent::Status(MessagePayload { message: notice }));
+                    .notify(HostEvent::Notice(MessagePayload { message: notice }));
             }
             match report.history {
                 Some(history) => session.history = history,
@@ -2782,8 +2877,12 @@ fn run_session_tail(
             }
             // 阈值触发的压缩已经把整轮工具调用概括过：它写在 `compact_summary` 边界里，
             // 再写一条 `tool_call_summary` 只会重复。未触发时由这里补上回合末概括。
-            if !report.compacted {
-                summarize_turn_after_turn(conn, session, task_hint, turn_id);
+            if report.compacted {
+                // 压缩后大小已随 `turn.context_compaction` 发出（它总在 `turn.finished` 之前），
+                // 这里不再重复携带。
+                None
+            } else {
+                summarize_turn_after_turn(conn, session, task_hint, turn_id)
             }
         }
         Err(detail) => {
@@ -2791,7 +2890,7 @@ fn run_session_tail(
             if let Err(detail) = session.reload_history() {
                 eprintln!("[kernel] 重建运行期历史失败：{detail}");
             }
-            summarize_turn_after_turn(conn, session, task_hint, turn_id);
+            summarize_turn_after_turn(conn, session, task_hint, turn_id)
         }
     }
 }
@@ -2858,12 +2957,24 @@ fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
                 }
             }
             if let Some(notice) = report.notice.clone() {
+                // 显式压缩的边界也走会话区：命令回执本身是另一条提示（「已压缩当前会话…」），
+                // 这条是计量边界，Python 侧两者也是各占一行。
                 conn.borrow_mut()
-                    .notify(HostEvent::Status(MessagePayload { message: notice }));
+                    .notify(HostEvent::Notice(MessagePayload { message: notice }));
             }
+            // 压缩后大小随回执给宿主：显式压缩同样不会有后续模型请求来修正遥测。
+            let post_compaction_context_tokens = conn
+                .borrow()
+                .session
+                .as_ref()
+                .and_then(|session| post_compaction_context_tokens(conn, session.history.as_slice()));
             conn.borrow_mut().respond(
                 id,
-                json!({"summary": report.summary, "compacted": report.compacted}),
+                json!({
+                    "summary": report.summary,
+                    "compacted": report.compacted,
+                    "post_compaction_context_tokens": post_compaction_context_tokens,
+                }),
             );
         }
         Err(detail) => {

@@ -71,9 +71,11 @@ pub fn burst_text(events: &[KeyEvent]) -> Option<String> {
 
 /// 按键流与剪贴板是否**完整匹配**：是则返回该粘贴内容（用剪贴板原文，含用户复制的原始换行）。
 ///
-/// 只处理含换行的流：单行粘贴走普通按键路径就能正确插入，不必为每次击键读剪贴板。
+/// 只处理含换行的流，外加一条例外：[`crate::image_path::is_lone_image_path`]——控制台把一次
+/// 粘贴按批切开时，只有整串与剪贴板完全一致才能确认「这批按键是一次粘贴」，否则后半截会被
+/// 当成独立输入。其余单行粘贴走普通按键路径就能正确插入，不必为每次击键读剪贴板。
 pub fn clipboard_paste(text: &str, clipboard: &str) -> Option<String> {
-    if !text.contains('\n') {
+    if !text.contains('\n') && !crate::image_path::is_lone_image_path(clipboard) {
         return None;
     }
     if clipboard.is_empty() {
@@ -91,12 +93,15 @@ pub fn clipboard_paste(text: &str, clipboard: &str) -> Option<String> {
 /// 判定要点与 Python `_is_pending_clipboard_prefix` 一致：
 /// * 单独的换行不算（那是用户按 Enter，不能被挂起）；
 /// * 剥离控制字符后为空也不算——空串是任意文本的前缀，会把编辑键无限挂起；
-/// * 剪贴板必须本身是多行（单行粘贴不需要挂起）。
+/// * 剪贴板一般是多行；单行只在它是**图片路径**时参与（剪贴板里放着一张图片的路径时，
+///   控制台会把粘贴按批切开，不挂起就只能各批各自成段，永远拼不出完整路径）。
 pub fn is_pending_clipboard_prefix(text: &str, clipboard: &str) -> bool {
     if matches!(text, "\r" | "\n" | "\r\n") {
         return false;
     }
-    if clipboard.is_empty() || !clipboard.contains('\n') {
+    if clipboard.is_empty()
+        || (!clipboard.contains('\n') && !crate::image_path::is_lone_image_path(clipboard))
+    {
         return false;
     }
     let stream = normalize_stream_text(strip_stream_control_prefix(text));
@@ -249,6 +254,10 @@ impl PasteTracker {
         } else {
             PasteOutcome::Bypass(std::mem::take(&mut self.pending))
         };
+        // 无论交出的是粘贴还是普通按键，缓冲都在这一刻结清：留着的话，下一批按键会与
+        // **已经交付过**的内容拼在一起（形状判定再次成立），于是「粘贴后紧跟打字或退格/删除
+        // 键，粘贴内容再插一遍」。
+        self.pending.clear();
         self.pending_since = None;
         self.pending_length = 0;
         outcome
@@ -317,8 +326,20 @@ mod tests {
 
     #[test]
     fn single_line_stream_never_matches_clipboard() {
-        // 单行粘贴不读剪贴板：直接走普通按键路径插入。
+        // 单行文本粘贴不读剪贴板：直接走普通按键路径插入。
         assert!(clipboard_paste("hello", "hello").is_none());
+    }
+
+    #[test]
+    fn single_line_image_path_matches_clipboard_across_batches() {
+        // 剪贴板里放着一张图片的路径时，控制台会把粘贴按批切开：必须能比对、能挂起，
+        // 否则各批各自成段，拼不出完整路径（真机复现过）。
+        let path = r"D:\下载\1991\trace-2134x3200.png";
+        assert_eq!(clipboard_paste(path, path).as_deref(), Some(path));
+        assert!(is_pending_clipboard_prefix(r"D:\下载\1991", path));
+        assert!(!is_pending_clipboard_prefix(path, path));
+        // 普通单行文本仍然不参与：不给每次击键增加读剪贴板的开销。
+        assert!(!is_pending_clipboard_prefix("你", "你好"));
     }
 
     #[test]
@@ -357,7 +378,7 @@ mod tests {
 
     #[test]
     fn single_line_clipboard_is_never_pending() {
-        // 剪贴板只有一行时不需要挂起等待（单行走普通按键路径）。
+        // 普通单行剪贴板不需要挂起等待（单行走普通按键路径）。
         assert!(!is_pending_clipboard_prefix("第一", "第一行"));
     }
 
@@ -484,6 +505,51 @@ mod tests {
         // 读不到剪贴板（None）时退回形状判定：多行仍按一次粘贴处理，不逐行提交。
         let outcome = tracker.feed(&text(MULTILINE), None, now);
         assert_eq!(outcome, PasteOutcome::Paste(MULTILINE.to_string()));
+    }
+
+    #[test]
+    fn tracker_does_not_replay_a_shape_paste_with_the_next_keys() {
+        let now = Instant::now();
+        let mut tracker = PasteTracker::new();
+        // 形状兜底交出粘贴后，缓冲必须结清：否则紧跟的打字会与**已交付**的粘贴内容拼在一起，
+        // 形状判定再次成立，粘贴内容就在输入框里重复出现一遍。
+        assert_eq!(
+            tracker.feed(&text(MULTILINE), None, now),
+            PasteOutcome::Paste(MULTILINE.to_string())
+        );
+        let outcome = tracker.feed(&text("补充"), None, now);
+        assert_eq!(
+            outcome,
+            PasteOutcome::Bypass(text("补充")),
+            "粘贴后紧跟的文字只该作为自己的按键交付"
+        );
+    }
+
+    #[test]
+    fn tracker_does_not_replay_a_shape_paste_with_a_trailing_delete_key() {
+        let now = Instant::now();
+        let mut tracker = PasteTracker::new();
+        assert_eq!(
+            tracker.feed(&text(MULTILINE), None, now),
+            PasteOutcome::Paste(MULTILINE.to_string())
+        );
+        // 粘贴后按删除键：这一批不是粘贴（含无法线性成文的按键），但也不能把上次的粘贴
+        // 内容当成「待处理按键」重放。
+        let outcome = tracker.feed(&[key(KeyCode::Delete)], None, now);
+        assert_eq!(outcome, PasteOutcome::Bypass(vec![key(KeyCode::Delete)]));
+    }
+
+    #[test]
+    fn tracker_does_not_replay_a_shape_paste_when_the_clipboard_mismatches() {
+        let now = Instant::now();
+        let mut tracker = PasteTracker::new();
+        // 剪贴板内容与按键流对不上（例如粘贴时终端多带了换行）：走形状兜底，同样要结清缓冲。
+        assert_eq!(
+            tracker.feed(&text(MULTILINE), Some("别的内容"), now),
+            PasteOutcome::Paste(MULTILINE.to_string())
+        );
+        let outcome = tracker.feed(&text("补"), Some("别的内容"), now);
+        assert_eq!(outcome, PasteOutcome::Bypass(text("补")));
     }
 
     #[test]

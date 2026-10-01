@@ -27,10 +27,18 @@ pub fn read_text() -> Option<String> {
     imp::read()
 }
 
+/// 读剪贴板里的位图（PNG 字节）；里面没有图片、或平台不支持时返回 `None`。
+///
+/// 用途同样只有一个：`Ctrl+V` 粘贴图片。位图解析与编码复用宿主那套 Win32 实现
+/// （`CF_DIBV5` / `CF_DIB` → RGBA → PNG），不在这条路径上再写一份 DIB 解析。
+pub fn read_image_png() -> Option<Vec<u8>> {
+    imp::read_image()
+}
+
 #[cfg(windows)]
 mod imp {
     use omnicrawl_host::tools::windows::clipboard::{
-        try_read_clipboard_text, write_clipboard_text,
+        try_read_clipboard_image_png, try_read_clipboard_text, write_clipboard_text,
     };
 
     pub fn copy(text: &str) -> Result<(), String> {
@@ -40,11 +48,20 @@ mod imp {
     pub fn read() -> Option<String> {
         try_read_clipboard_text()
     }
+
+    pub fn read_image() -> Option<Vec<u8>> {
+        try_read_clipboard_image_png()
+    }
 }
 
 #[cfg(not(windows))]
 mod imp {
     pub fn read() -> Option<String> {
+        None
+    }
+
+    /// 非 Windows 没有这份实现：粘贴图片在那里不可用（`Ctrl+V` 只粘文本）。
+    pub fn read_image() -> Option<Vec<u8>> {
         None
     }
 }

@@ -45,7 +45,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
 | `initialize` | 请求 | `{protocol_version, client?, model?, session?, plugin_model_hooks?}` | `{protocol_version, session_id}` |
-| `turn.submit` | 请求 | `{turn_id, user_text}` | `{}`（回合已结束） |
+| `turn.submit` | 请求 | `{turn_id, user_text, images?}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `turn.undo` | 请求 | `{}` | `{kind, message_count, side_effects_reverted, unrestorable, history}` |
 | `session.settings` | 请求 | `{model?, compaction?}` | `{applied: [字段路径]}` |
@@ -63,6 +63,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `shutdown` | 请求 | `{}` | `{}` |
 
 - 回合结果只经由 `turn.finished` 通知传递，`turn.submit` 的响应不重复结果，避免两处真相。
+- `turn.submit` 的 `images`（可选，缺省 `[]`）是用户随提问粘贴的图片：`[{media_type, data_base64, detail?}]`。
+  这些图**是用户消息的一部分**——内核把它们写进 `user_message` 事件的 `images` 字段（转录、`/resume`
+  与重启后的投影因此能重建同一条消息），并按 OpenAI 多模态部件形状放进本轮请求。宿主不应在未开启
+  原生视觉时送来图片：图片没有去处（既不直送主模型，也没有 `[vision]` 代理），应就地提示用户。
 - 会话读写方法都要求**内核自持会话**（`initialize.session`），否则回 `-32600` 与「当前会话不受内核
   持有」；会话归属内核是因为转录、压缩边界与运行期历史都在那边，宿主只做投影。
 - `turn.undo` 撤销最近一轮：先把工作区按 `turn_snapshot` 事件的快照换回本轮开始前，再提交会话逻辑回退
@@ -259,13 +263,13 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.delta` | `{text}` | `on_delta` |
 | `turn.reasoning_delta` | `{text}` | `on_reasoning_delta` |
 | `turn.status` | `{message}` | `on_status` |
-| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（当前用于出网脱敏的占位符还原告警）。Python 侧同类告警也经 `on_status`，Rust 侧为避免顶掉状态行另立了这条通知 |
+| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩的「---已压缩 xxk~xxk ---」与回合末工具调用压缩的「已压缩 a → b 字符」）。Python 侧这些消息也走 `on_status`、由 UI 按前缀特判落进对话区；Rust 侧直接用这条通知表达落点，免得既顶掉状态行又依赖文案前缀匹配 |
 | `turn.retry_status` | `{message}` | `on_retry_status` |
 | `turn.protocol_wait` | `{}` | `on_protocol_wait` |
 | `turn.stream_rollback` | `{}` | `on_stream_rollback` |
 | `turn.token_usage` | `{input_tokens, output_tokens, cached_input_tokens}` | `on_token_usage` |
-| `turn.finished` | `{turn_id, final_text, reasoning, model_turns, tool_calls, paused}` | `run_stream` 的返回值 |
-| `turn.context_compaction` | `{post_turn_context_tokens, trigger_context_tokens, turn_id}` | 回合收尾的压缩触发点（`_trigger_context_compaction_after_turn`）；宿主据此分发 `context.compaction.after_turn` |
+| `turn.finished` | `{turn_id, final_text, reasoning, model_turns, tool_calls, paused, post_compaction_context_tokens?}` | `run_stream` 的返回值 |
+| `turn.context_compaction` | `{post_turn_context_tokens, trigger_context_tokens, turn_id, post_compaction_context_tokens?}` | 回合收尾的压缩触发点（`_trigger_context_compaction_after_turn`）；宿主据此分发 `context.compaction.after_turn` |
 | `turn.model_response_after` | `{model, content, tool_call_count}` | 模型请求返回点（`_request_agent_reply` 里 `model.response.after`）；宿主据此分发 `model.response.after` |
 | `turn.model_request_error` | `{error, model}` | 模型请求以 `AgentProtocolError` 终结（`_request_agent_reply` 里 `model.request.error`）；宿主据此分发 `model.request.error` |
 | `turn.tool_call_started` | `{call_id, tool}` | 无（Rust 侧新增）：模型开始吐一个工具调用，参数还在流里 |
@@ -313,8 +317,10 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   `turn.tool_output_compression`（`phase=started` 时不带计量，`finished` 带 `before_chars` /
   `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」/「已压缩 a → b 字符」。
 - **会话区提示**：`turn.notice` 与 `turn.status` 的差别只在宿主落点——前者是「一条已经落在
-  对话里的提示」（当前用于出网脱敏的占位符还原告警），宿主应追加进对话流；后者是「正在做什么」
-  的运行状态，宿主写状态行。把前者当状态发会让它顶掉「正在调用」。
+  对话里的提示」（当前用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩的
+  「---已压缩 xxk~xxk ---」与回合末工具调用压缩的「已压缩 a → b 字符」），宿主应追加进对话流；
+  后者是「正在做什么」的运行状态，宿主写状态行。压缩边界必须走前者：写状态行会在
+  `turn.finished` 时被清掉，对话里只剩摘要/概括，用户看不到「上一段已被替换」的痕迹。
 - 一个连接同时只跑一个回合；第二个 `turn.submit` 回 `-32002`。
 - 通知不带 `id`；响应必须带回对应请求的 `id`，`id` 允许整数或字符串。
 
@@ -371,6 +377,12 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   上下文计量。模型的两条分别对应一次模型请求成功返回与以协议错误终结。宿主收到这些通知后
   分发同名插件 Hook（`context.compaction.after_turn` / `model.response.after` / `model.request.error`）
   ——插件运行期在宿主侧，而触发点在 agent runtime（内核侧）。
+- **压缩后的上下文计量**（`post_compaction_context_tokens`，可选字段）：压缩发生在回合收尾之后，
+  此后不会再发模型请求，`turn.token_usage` 会一直停在压缩前那次的用量上。内核在两条压缩路径上
+  把这个数发给宿主，宿主据此把上下文占用刷成压缩后的真实大小：
+  `turn.context_compaction`（阈值/溢出触发的上下文压缩，只有 `trigger_reached` 的回合才发）与
+  `turn.finished`（回合末的整轮工具调用压缩）。`session.compact`（显式 `/compact`）的响应里带同名字段。
+  字段缺失表示该回合没有压缩（或算不出稳定上下文），宿主保持现有遥测不动。
 - **宿主发出**（宿主执行 `tool.batch` 时自行产生）：`tool.started` / `tool.finished` / `tool.output_update`，
   以及 `todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
 - **两者都可能发出**：`subagent.event`——子代理由宿主执行时宿主发，由内核自持执行（当前实现）时内核发。

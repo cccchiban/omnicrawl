@@ -24,7 +24,7 @@ use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
 use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
-use omnicrawl_tui::app::{uses_external_channel, App};
+use omnicrawl_tui::app::{is_ctrl_v_release, uses_external_channel, App};
 use omnicrawl_tui::args::{parse, Options, Parsed};
 use omnicrawl_tui::clipboard;
 use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
@@ -207,6 +207,8 @@ fn event_loop(
         app.drain_frames();
         // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
         app.state.tick_reasoning_reveal();
+        // 工具卡图片预览：后台解码完的缩略图在这里接进状态（新图会让会话区重算那一张卡）。
+        app.state.tick_image_previews();
         // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块自上次绘制以来都没变时
         // 整帧跳过绘制——空闲的 TUI 不再以 20fps 空转，也不重算任何一块的内容。
         // 尺寸变化（resize 事件）与模态弹层都由 `needs_redraw` 一并覆盖。
@@ -278,10 +280,14 @@ fn handle_event(app: &mut App, tracker: &mut paste::PasteTracker, first: Event) 
     let mut event = first;
     loop {
         match event {
-            // 只留按下事件：keyup/repeat 既不该参与判定，也不该被当成输入重放。
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Press {
                     keys.push(key);
+                } else if key.kind == KeyEventKind::Release && is_ctrl_v_release(key) {
+                    // Windows Terminal 把 `ctrl+v` 绑成自家粘贴动作，按下被它吃掉、只有抬起
+                    // 透传；这个抬起必须放进主事件流，否则「Ctrl+V 粘贴图片」永远收不到触发。
+                    // 其余抬起/重复键仍丢弃：它们既不参与粘贴判定，也不该被当成输入重放。
+                    app.handle_event(Event::Key(key));
                 }
             }
             other => app.handle_event(other),

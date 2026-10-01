@@ -48,6 +48,32 @@ pub fn compacted_display(
     format!("（已压缩：{raw_chars} → {compressed_chars} 字符，模型 {model}）\n{compressed}")
 }
 
+/// 回合末整轮工具调用压缩的会话区计量：`已压缩 12,345 → 1,234 字符`。
+///
+/// 口径与 [`compacted_display`] 同源（字符数、箭头），但只报计量、不带正文：会话区只需要
+/// 一行边界，说明这一轮的逐条工具调用已被概括替换。与上下文压缩的
+/// [`crate::turn::compaction::format_compaction_notice`] 刻意不同——那条按 Token 报整段历史。
+pub fn compaction_notice(raw_chars: usize, summary_chars: usize) -> String {
+    format!(
+        "已压缩 {} → {} 字符",
+        group_digits(raw_chars),
+        group_digits(summary_chars)
+    )
+}
+
+/// 千分位分组（`12345` → `12,345`）：压缩前后的字符数动辄五六位，分隔开才好读。
+fn group_digits(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// 工具参数摘要：超长（如 `write_file` 正文）截断，供压缩模型判断调用意图。
 pub fn arguments_summary(arguments: &Value) -> String {
     let Value::Object(map) = arguments else {
@@ -544,5 +570,13 @@ mod dual_compaction_tests {
         let notice = archived_notice(".omnicrawl/.agent_tmp/files/a.txt", 1234);
         assert!(notice.contains(".omnicrawl/.agent_tmp/files/a.txt"));
         assert!(notice.contains("1234"));
+    }
+
+    /// 会话区计量：与工具卡上的「已压缩 a → b 字符」同款，数字带千分位。
+    #[test]
+    fn compaction_notice_reports_both_char_counts() {
+        assert_eq!(compaction_notice(12_345, 1_234), "已压缩 12,345 → 1,234 字符");
+        assert_eq!(compaction_notice(0, 0), "已压缩 0 → 0 字符");
+        assert_eq!(compaction_notice(999, 12_345_678), "已压缩 999 → 12,345,678 字符");
     }
 }

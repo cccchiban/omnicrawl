@@ -19,13 +19,15 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
+use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use super::{display_width, fit, truncate_styled, wrap_display};
-use crate::state::{AppState, Record, ToolCard, ToolStatus};
+use crate::state::{AppState, Record, ToolCard, ToolStatus, UserRecord};
 use crate::ui::fullscreen::rendering::{latex, markdown, tool_diff};
 use crate::ui::fullscreen::rendering::widgets::{self, SubAgentConversation, SubAgentProgressTree};
 use crate::ui::fullscreen::terminal::theme;
 use crate::ui::fullscreen::text::StyledText;
+use crate::ui::image_preview;
 use crate::ui::panels;
 
 /// 工具卡正文在缩略态与展开态的行数上限（对映 Python `MAX_EXPANDED_BODY_LINES`）。
@@ -63,22 +65,67 @@ pub enum LineHit {
     Reasoning { index: usize },
 }
 
-/// 显示行 + 它承载的点击目标。
+/// 一行显示行在工具卡图片块里的位置。
+///
+/// 图片本身不在文本缓冲里，而是渲染时由 [`render`] 覆盖到占位行上。占位行因此必须记住
+/// 自己属于哪个块、在块内第几行：滚到块中间时窗口里看不到首行，只能靠这两个数还原块的起点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRow {
+    pub call_id: String,
+    /// 本行在块内的行号（首行为 0）。
+    pub offset: u16,
+}
+
+/// 显示行 + 它承载的点击目标与图片标记。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayLine {
     pub line: Line<'static>,
     pub hit: Option<LineHit>,
+    /// 图片块的占位行；`None` 表示普通文本行。
+    pub image: Option<ImageRow>,
 }
 
 impl DisplayLine {
     fn plain(line: Line<'static>) -> Self {
-        Self { line, hit: None }
+        Self {
+            line,
+            hit: None,
+            image: None,
+        }
     }
 
     fn with_hit(line: Line<'static>, hit: LineHit) -> Self {
         Self {
             line,
             hit: Some(hit),
+            image: None,
+        }
+    }
+
+    /// 图片块的占位行：空白格 + 图片标记，命中与卡片其余部分同效（点图片也能收起卡片）。
+    fn image_placeholder(call_id: &str, offset: u16) -> Self {
+        Self {
+            line: Line::raw(""),
+            hit: Some(LineHit::ToolCard {
+                call_id: call_id.to_string(),
+            }),
+            image: Some(ImageRow {
+                call_id: call_id.to_string(),
+                offset,
+            }),
+        }
+    }
+
+    /// 用户消息的图片块占位行：与工具卡同样的空白格 + 图片标记，但没有点击命中
+    /// （用户消息不可折叠，点上去不该有动作）。
+    fn user_image_placeholder(image_key: &str, offset: u16) -> Self {
+        Self {
+            line: Line::raw(""),
+            hit: None,
+            image: Some(ImageRow {
+                call_id: image_key.to_string(),
+                offset,
+            }),
         }
     }
 }
@@ -97,6 +144,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     );
     let total = visible.total;
     let start = visible.start;
+    // 图片块的占位行要在文本之后覆盖上去，所以先把它们在窗口里的位置记下来再消费行。
+    let blocks = image_blocks(&visible.lines);
     // 可见窗口内套上选区反显（鼠标拖选）；没有选区时直接搬走原行（按值消费，不再克隆一次）。
     let window: Vec<Line<'static>> = visible
         .lines
@@ -108,6 +157,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
     frame.render_widget(Paragraph::new(window), text);
+    // 图片必须画在文本之后：占位行是空白格，先铺白再把图片写进同一批格子。
+    for block in blocks {
+        render_image_block(frame, text, state, &block);
+    }
     render_scrollbar(
         frame,
         area,
@@ -115,6 +168,52 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         text.height as usize,
         state.scroll_from_bottom,
     );
+}
+
+/// 窗口里一个可见的图片块：哪张图、块的顶边落在窗口第几行。
+struct VisibleImageBlock {
+    call_id: String,
+    /// 块的首行（offset 0）在窗口里的行号。窗口只露出块的中段时它是**负数或零以上的推算值**，
+    /// 由「所见行号 − 该行在块内的偏移」反推，图片因此能整块画出去而不用管裁切。
+    top: i32,
+}
+
+/// 从可见窗口里挑出图片块：同一张卡的多行占位合并成一块，块的顶边由偏移反推。
+fn image_blocks(lines: &[DisplayLine]) -> Vec<VisibleImageBlock> {
+    let mut blocks: Vec<VisibleImageBlock> = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        let Some(image) = line.image.as_ref() else {
+            continue;
+        };
+        let top = row as i32 - i32::from(image.offset);
+        match blocks.iter_mut().find(|block| block.call_id == image.call_id) {
+            // 同一块的多行只认最靠上的那个推算值：块顶在所有行上算出来都一样。
+            Some(block) => block.top = block.top.min(top),
+            None => blocks.push(VisibleImageBlock {
+                call_id: image.call_id.clone(),
+                top,
+            }),
+        }
+    }
+    blocks
+}
+
+/// 把一张缩略图画进它的占位区。
+///
+/// 位置用 `SlicedImage` 的有符号坐标表达：块顶可以落在渲染区之上（只露出下半张），
+/// 由库自己按行裁切，这里不必先算可见行区间。
+fn render_image_block(frame: &mut Frame, area: Rect, state: &AppState, block: &VisibleImageBlock) {
+    let previews = state.image_previews().borrow();
+    let Some(protocol) = previews.protocol(&block.call_id) else {
+        return;
+    };
+    // 与正文同一左缩进：图片与标题/正文左对齐，不贴到会话区边框上。
+    let x = display_width(MESSAGE_PAD) as i16;
+    let position = SignedPosition {
+        x,
+        y: block.top.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+    };
+    frame.render_widget(SlicedImage::new(protocol, position), area);
 }
 
 /// 把行内 `[from, to)` 显示列区间染上反显样式（选区高亮）。
@@ -450,12 +549,26 @@ impl ConversationCache {
 /// `sync` 只读 `records` / 展开态等字段，不会回头再借用缓存本身，因此这里
 /// 「先 `borrow_mut` 同步、再 `borrow` 读出」不会重入。
 fn cache_of(state: &AppState, width: u16) -> Ref<'_, ConversationCache> {
+    // 图片缩略图按本次宽度先补到最新：显示行的占位块行数由它决定，两者必须在同一次调用里
+    // 对齐（分开做的话，宽度刚变的这一帧会按旧行数排版）。
+    state
+        .image_previews()
+        .borrow_mut()
+        .ensure_protocols(image_width(width));
     let cell = state.conversation_cache();
     {
         let mut cache = cell.borrow_mut();
         cache.sync(state, width);
     }
     cell.borrow()
+}
+
+/// 图片可用的显示列宽：扣掉正文左内边距。
+///
+/// 图片与标题/正文左对齐（不额外缩进），因此这个宽度比卡片文字窄一格；占位块的行数
+/// 与 [`render_image_block`] 的横坐标都从它推出来，两处必须同源。
+fn image_width(width: u16) -> u16 {
+    width.saturating_sub(display_width(MESSAGE_PAD) as u16).max(1)
 }
 
 /// 全部记录的显示行（已按宽度折行，并应用 2000 行上限）。
@@ -514,7 +627,7 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
     }
     lines.push(DisplayLine::plain(Line::raw("")));
     match record {
-        Record::User(text) => push_user(&mut lines, text, width),
+        Record::User(message) => push_user(&mut lines, message, width, state),
         Record::Assistant(text) => push_assistant(&mut lines, text, width),
         Record::Reasoning(text) => push_reasoning(
             &mut lines,
@@ -775,7 +888,7 @@ pub fn collapsed_body(
 ///
 /// 对映 CSS `.user-message { color: $terminal-white; border-left: solid $terminal-cyan }`
 /// 与 `pipeline.py` 的 `_append_message`（去掉旧版的 `$ ` 前缀）。
-fn push_user(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
+fn push_user(lines: &mut Vec<DisplayLine>, message: &UserRecord, width: usize, state: &AppState) {
     let stripe = Style::new().bg(Color::Cyan);
     let label_style = theme::rich_style(&format!("{} italic", theme::TOOL_TEXT));
     let body_style = theme::rich_style(theme::ACCENT_WHITE);
@@ -785,12 +898,49 @@ fn push_user(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
         label_style,
         stripe,
     )));
-    for chunk in wrap_display(&text.replace('\r', ""), body_width) {
+    for chunk in wrap_display(&message.text.replace('\r', ""), body_width) {
         lines.push(DisplayLine::plain(striped_line(
             &format!("{MESSAGE_PAD}{chunk}"),
             body_style,
             stripe,
         )));
+    }
+    push_user_images(lines, message, width, state);
+}
+
+/// 用户消息随行的图片：正文之后铺一块缩略图区，走与工具卡相同的那条图片通路。
+///
+/// 图片与文本同属一条消息，因此渲染在同一块记录里；解码未完成时先铺一行提示，
+/// 行数由 [`ImagePreviews::block_size`] 给出（与工具卡同源，不自己算取整）。
+fn push_user_images(
+    lines: &mut Vec<DisplayLine>,
+    message: &UserRecord,
+    width: usize,
+    state: &AppState,
+) {
+    if !message.has_images() {
+        return;
+    }
+    let previews = state.image_previews().borrow();
+    if !previews.shows_image(&message.image_key) {
+        return;
+    }
+    let available = image_width(width as u16);
+    let rows = previews
+        .block_size(&message.image_key, available)
+        .map(|(_, height)| height)
+        .unwrap_or(0);
+    if rows == 0 {
+        // 解码还没完成：先占一行提示，图片到了再换成整块（与工具卡同款）。
+        lines.push(DisplayLine::plain(striped_line(
+            &format!("{MESSAGE_PAD}正在准备图片…"),
+            theme::rich_style(theme::TEXT_MUTED),
+            Style::new().bg(Color::Cyan),
+        )));
+        return;
+    }
+    for offset in 0..rows {
+        lines.push(DisplayLine::user_image_placeholder(&message.image_key, offset));
     }
 }
 
@@ -1027,6 +1177,11 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 正文统一由对映层生成（Python `tool_disclosure_body`）：文件变更工具从参数
     // 画出 diff 预览（运行中也能看到）、read 与记忆/知识库工具正文为空、
     // fetcher 只留 URL/状态/标题、其余工具原样输出。
+    // 例外是带图片的工具（`read_image` / `windows_screenshot`）：文本载荷对用户没有
+    // 展示价值（一份是紧凑 JSON，一份是截图元信息），正文位置让给缩略图。
+    if push_image_block(lines, card, width, state) {
+        return;
+    }
     let body = tool_diff::tool_disclosure_body(&card.name, arguments, &result_text);
     let (head, hidden, tail) = if expanded {
         (body.split_lines(), 0, Vec::new())
@@ -1064,6 +1219,54 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
             ));
         }
     }
+}
+
+/// 带图片的工具卡的正文：铺一块图片占位区，并在该区里标出图片块的位置。
+///
+/// 返回是否接管了正文。接管条件是「这个工具会出示图片」——判定只看工具名与附件是否已注册，
+/// **不等图片解码完**：先按最终行数把块占出来，图片到了直接覆盖上去，卡片不会先排一次短的
+/// 再把下面的内容挤开。
+///
+/// 占位行本身是空白（图片不在文本缓冲里），但必须仍带 `ToolCard` 命中：用户点在图片上
+/// 与点在卡片其它部分一样能收起/展开。
+fn push_image_block(
+    lines: &mut Vec<DisplayLine>,
+    card: &ToolCard,
+    width: usize,
+    state: &AppState,
+) -> bool {
+    if !image_preview::has_image_preview(&card.name) {
+        return false;
+    }
+    let previews = state.image_previews().borrow();
+    if !previews.shows_image(&card.call_id) {
+        return false;
+    }
+    let available = image_width(width as u16);
+    let rows = previews
+        .block_size(&card.call_id, available)
+        .map(|(_, height)| height)
+        .unwrap_or(0);
+    if rows == 0 {
+        // 解码还没完成：先铺一个「正在准备」的提示行，图片到了再换成整块。
+        for row in tool_body_rows(
+            &StyledText::styled("正在准备图片…", theme::TEXT_MUTED),
+            width,
+            false,
+        ) {
+            lines.push(DisplayLine::with_hit(
+                row,
+                LineHit::ToolCard {
+                    call_id: card.call_id.clone(),
+                },
+            ));
+        }
+        return true;
+    }
+    for offset in 0..rows {
+        lines.push(DisplayLine::image_placeholder(&card.call_id, offset));
+    }
+    true
 }
 
 /// 消息内边距 + 一行富文本（工具卡标题用；样式由对映层的拼装结果给出）。
@@ -1217,7 +1420,7 @@ mod tests {
     /// 把一段带 Markdown/LaTeX 的助手正文喂进状态机，再取实际显示行。
     fn assistant_lines(markdown: &str) -> (AppState, Vec<DisplayLine>) {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         state.apply(
             &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                 text: markdown.to_string(),
@@ -1236,7 +1439,7 @@ mod tests {
             "model".to_string(),
             ApprovalMode::Manual,
         );
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         let status = runtime_status(&state, 60).expect("运行中应当有状态行");
         assert_eq!(status.spans.first().map(|span| span.content.as_ref()), Some(" "));
         let text_span = &status.spans[1];
@@ -1290,7 +1493,7 @@ mod tests {
     #[test]
     fn streaming_deltas_accumulate_into_one_assistant_record() {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         let now = Instant::now();
         for chunk in ["第一段", "第二段", "第三段"] {
             state.apply(
@@ -1330,7 +1533,7 @@ mod tests {
     #[test]
     fn selection_text_joins_lines_and_stops_at_the_last_column() {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         state.apply(
             &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                 // 空行分段：Markdown 会把段内单换行当软换行合并成空格（与 Rich 一致）。
@@ -1383,7 +1586,7 @@ mod tests {
     /// 起一个带正文的工具卡（`read` 之外的工具才有正文）。
     fn state_with_tool(ok: bool, body_lines: usize) -> AppState {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "跑工具".to_string());
+        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
         let now = Instant::now();
         let call = omnicrawl_core::ToolCall {
             name: "bash".to_string(),
@@ -1470,6 +1673,7 @@ mod tests {
         state.begin_turn(
             "t1".to_string(),
             "这是一个很长的用户问题需要折行".to_string(),
+            Vec::new(),
         );
         state.apply(
             &omnicrawl_ipc::bridge::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
@@ -1704,10 +1908,47 @@ mod tests {
     }
 
     /// 起一个指定工具名的卡片（`state_with_tool` 的泛化版）。
+    /// 1x1 红点 PNG（与 `image_preview` 单测用的是同一样本）。
+    const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    /// 直接往预览存储里注册一张附件（跳过宿主批次，这里只测渲染）。
+    fn register_test_image(state: &mut AppState, call_id: &str, base64: &str) {
+        let attachment = omnicrawl_controllers::types::ToolImageAttachment {
+            media_type: "image/png".to_string(),
+            data_base64: base64.to_string(),
+            filename: "a.png".to_string(),
+            detail: "auto".to_string(),
+        };
+        state
+            .image_previews()
+            .borrow_mut()
+            .register(call_id, &[attachment]);
+        state.touch_conversation();
+    }
+
+    /// 等后台解码完成并取回缩略图；返回块的行数。
+    fn settle_test_image(state: &mut AppState) -> u16 {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if state.tick_image_previews() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // 取行会顺带把缩略图补到当前宽度。
+        let _ = display_lines(state, 80);
+        state
+            .image_previews()
+            .borrow()
+            .block_size("c1", 79)
+            .expect("缩略图应当已经建好")
+            .1
+    }
+
     fn state_with_named_tool(name: &str, arguments: serde_json::Value, output: &str) -> AppState {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
         state.telemetry.context_window = Some(1_000_000);
-        state.begin_turn("t1".to_string(), "跑工具".to_string());
+        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
         let now = Instant::now();
         let call = omnicrawl_core::ToolCall {
             name: name.to_string(),
@@ -1793,6 +2034,162 @@ mod tests {
         assert!(
             !rendered.iter().any(|line| line.contains("点击展开")),
             "文件变更工具豁免折叠：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn image_tools_show_a_placeholder_block_instead_of_their_payload() {
+        // `read_image` 的文本载荷是紧凑 JSON，对用户没有意义：正文位置给图片。
+        let mut state = state_with_named_tool(
+            "read_image",
+            json!({"path": "shot.png", "prompt": "描述"}),
+            "{\"path\":\"shot.png\",\"media_type\":\"image/png\",\"bytes\":12}",
+        );
+        // 附件还没注册时按普通载荷走（正文照旧，不会先空一块再补图）。
+        let rendered = plain(&display_lines(&state, 80));
+        assert!(
+            rendered.iter().any(|line| line.contains("media_type")),
+            "没有附件时仍应显示载荷：{rendered:?}"
+        );
+
+        register_test_image(&mut state, "c1", PNG_1X1);
+        // 解码还没落定：先铺一行「正在准备」，不留空白洞。
+        let rendered = plain(&display_lines(&state, 80));
+        assert!(
+            rendered.iter().any(|line| line.contains("正在准备图片")),
+            "解码期间应有提示行：{rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("media_type")),
+            "载荷应当已经让位：{rendered:?}"
+        );
+
+        // 解码完成后换成整块占位行，行数 = 缩略图的行数。
+        let rows = settle_test_image(&mut state);
+        let lines = display_lines(&state, 80);
+        let block: Vec<&DisplayLine> = lines.iter().filter(|line| line.image.is_some()).collect();
+        assert_eq!(block.len(), usize::from(rows), "占位行数应与缩略图一致");
+        for (offset, line) in block.iter().enumerate() {
+            let image = line.image.as_ref().expect("占位行");
+            assert_eq!(image.call_id, "c1");
+            assert_eq!(image.offset, offset as u16, "块内偏移按行递增");
+            assert_eq!(text_of(&line.line).trim(), "", "占位行本身是空白格");
+            assert_eq!(
+                line.hit,
+                Some(LineHit::ToolCard {
+                    call_id: "c1".to_string()
+                }),
+                "点图片与点卡片其它部分同效"
+            );
+        }
+    }
+
+    #[test]
+    fn a_user_message_with_images_renders_a_thumbnail_block() {
+        // 用户粘贴的图片和工具附件走同一条图片通路：正文之后铺一块缩略图占位区。
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn(
+            "t1".to_string(),
+            "看一下".to_string(),
+            vec![omnicrawl_ipc::bridge::TurnImageAttachment {
+                media_type: "image/png".to_string(),
+                data_base64: PNG_1X1.to_string(),
+                detail: "auto".to_string(),
+            }],
+        );
+        let rendered = plain(&display_lines(&state, 80));
+        assert!(
+            rendered.iter().any(|line| line.contains("user：")),
+            "用户消息标题照旧：{rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("正在准备图片")),
+            "解码期间应有提示行：{rendered:?}"
+        );
+
+        // 解码完成后换成整块占位行，且不带点击命中（用户消息不可折叠）。
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while Instant::now() < deadline && !state.tick_image_previews() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let lines = display_lines(&state, 80);
+        let block: Vec<&DisplayLine> = lines.iter().filter(|line| line.image.is_some()).collect();
+        assert!(!block.is_empty(), "用户消息的图片要占出块");
+        for line in block {
+            assert_eq!(line.hit, None, "用户消息的图片块没有点击动作");
+            assert_eq!(text_of(&line.line).trim(), "", "占位行本身是空白格");
+        }
+    }
+
+    #[test]
+    fn other_tools_keep_their_plain_body_next_to_an_image() {
+        // 同一张卡里的附件不影响别的工具的正文渲染：bash 的输出照旧。
+        let mut state = state_with_named_tool("bash", json!({"command": "ls"}), "a.py");
+        register_test_image(&mut state, "c1", PNG_1X1);
+        settle_test_image(&mut state);
+        let rendered = plain(&display_lines(&state, 80));
+        assert!(
+            rendered.iter().any(|line| line.contains("a.py")),
+            "bash 的正文不应被图片顶掉：{rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("正在准备图片")),
+            "普通工具的卡片里不该出现图片区：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_that_starts_inside_the_image_block_still_finds_the_block_top() {
+        // 滚到块中间：窗口里看不到首行，块顶必须由「所见行号 − 块内偏移」反推出来。
+        let lines: Vec<DisplayLine> =
+            (0..4).map(|offset| DisplayLine::image_placeholder("c1", offset)).collect();
+        let blocks = image_blocks(&lines);
+        assert_eq!(blocks.len(), 1, "同一块的多行要合成一块");
+        assert_eq!(blocks[0].call_id, "c1");
+        assert_eq!(blocks[0].top, 0);
+
+        // 只露出最后两行：推算出来的块顶是 -2（第二行在块内偏移 2）。
+        let window = &lines[2..];
+        let blocks = image_blocks(window);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].top, -2, "块顶落在窗口之上");
+    }
+
+    #[test]
+    fn two_image_blocks_in_one_window_stay_separate() {
+        let mut lines: Vec<DisplayLine> =
+            (0..2).map(|offset| DisplayLine::image_placeholder("a", offset)).collect();
+        lines.push(DisplayLine::plain(Line::raw("")));
+        lines.extend((0..3).map(|offset| DisplayLine::image_placeholder("b", offset)));
+        let blocks = image_blocks(&lines);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!((blocks[0].call_id.as_str(), blocks[0].top), ("a", 0));
+        assert_eq!((blocks[1].call_id.as_str(), blocks[1].top), ("b", 3));
+    }
+
+    #[test]
+    fn a_failed_decode_falls_back_to_the_payload_body() {
+        // 附件解不出来（截断的文件、外部工具塞进来的怪数据）时必须回落到原来的载荷正文，
+        // 不能把卡片永久停在「正在准备图片」上。
+        let mut state = state_with_named_tool(
+            "read_image",
+            json!({"path": "shot.png", "prompt": "描述"}),
+            "{\"path\":\"shot.png\"}",
+        );
+        register_test_image(&mut state, "c1", "bm90IGFuIGltYWdl");
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while state.has_pending_image_previews() && Instant::now() < deadline {
+            state.tick_image_previews();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let rendered = plain(&display_lines(&state, 80));
+        assert!(
+            !rendered.iter().any(|line| line.contains("正在准备图片")),
+            "解码失败后不该停在提示行：{rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("shot.png")),
+            "应当回落到载荷正文：{rendered:?}"
         );
     }
 
@@ -2011,7 +2408,7 @@ mod tests {
             "m".to_string(),
             crate::args::ApprovalMode::Manual,
         );
-        state.begin_turn("t1".to_string(), "跑工具".to_string());
+        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
         state
     }
 
@@ -2052,7 +2449,7 @@ mod tests {
             assert_cache_matches(&state, width, "Logo 动画");
         }
 
-        state.begin_turn("t1".to_string(), "第一个问题".to_string());
+        state.begin_turn("t1".to_string(), "第一个问题".to_string(), Vec::new());
         assert_cache_matches(&state, width, "begin_turn");
 
         for chunk in ["第一段", "**加粗**", " `code`"] {
@@ -2327,6 +2724,7 @@ mod tests {
                 model_turns: 1,
                 tool_calls: 1,
                 paused: true,
+                post_compaction_context_tokens: None,
             }),
             now,
         );
@@ -2391,7 +2789,7 @@ mod tests {
         assert_eq!(cache_rebuilds(&state), baseline, "空转刷新不应触发重算");
 
         // 流式追加正文：只重算最后一条记录。
-        state.begin_turn("t2".to_string(), "第二个问题".to_string());
+        state.begin_turn("t2".to_string(), "第二个问题".to_string(), Vec::new());
         let _ = display_lines(&state, 60);
         let after_turn = cache_rebuilds(&state);
         assert_eq!(after_turn - baseline, 1, "追加记录只补算新记录");

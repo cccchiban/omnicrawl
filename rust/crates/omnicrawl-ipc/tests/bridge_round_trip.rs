@@ -71,6 +71,7 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
                 "model_turns": 2,
                 "tool_calls": 1,
                 "paused": false,
+                "post_compaction_context_tokens": 52000,
             }),
         ),
         (
@@ -79,6 +80,7 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
                 "post_turn_context_tokens": 130000,
                 "trigger_context_tokens": 120000,
                 "turn_id": "t1",
+                "post_compaction_context_tokens": 12000,
             }),
         ),
         (
@@ -99,7 +101,7 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
         ),
         (
             method::TURN_TOOL_OUTPUT_COMPRESSION,
-            json!({"call_id": "call-1", "tool": "bash", "phase": "finished", "before_chars": 12345, "after_chars": 1234, "output": "压缩后的正文"}),
+            json!({"call_id": "call-1", "tool": "bash", "phase": "finished", "before_chars": 12345, "after_chars": 1234, "output": "压缩后的正文", "error": ""}),
         ),
     ]
 }
@@ -139,7 +141,7 @@ fn command_samples() -> Vec<(&'static str, Value)> {
         ),
         (
             method::TURN_SUBMIT,
-            json!({"turn_id": "t1", "user_text": "读一下 loop.py"}),
+            json!({"turn_id": "t1", "user_text": "读一下 loop.py", "images": []}),
         ),
         (method::TURN_CANCEL, json!({"turn_id": "t1"})),
         (method::TURN_UNDO, json!({})),

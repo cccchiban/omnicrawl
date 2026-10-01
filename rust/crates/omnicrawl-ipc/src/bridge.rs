@@ -197,6 +197,13 @@ pub struct TurnFinishedPayload {
     pub model_turns: usize,
     pub tool_calls: usize,
     pub paused: bool,
+    /// 本回合收尾的工具调用压缩**之后**的上下文 Token 估算；没发生压缩时为 `None`。
+    ///
+    /// 工具调用压缩在回合末把整轮工具调用概括替换，运行期历史随之变小，但此后不会再有模型
+    /// 请求，`turn.token_usage` 会一直停在压缩前那次的用量上。宿主据此把底部遥测刷新成压缩后的
+    /// 真实上下文大小。旧内核不发该字段，缺省 `None` 表示「本回合没有可用的压缩后计量」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_compaction_context_tokens: Option<i64>,
 }
 
 /// 回合收尾的上下文压缩计量：对应 Python `_trigger_context_compaction_after_turn`
@@ -210,6 +217,12 @@ pub struct ContextCompactionPayload {
     /// 触发压缩的回合 id；缺省为空串。
     #[serde(default)]
     pub turn_id: String,
+    /// 压缩**之后**的运行期历史 Token 估算；压缩未落地或估算不出时为 `None`。
+    ///
+    /// 压缩后不会再发模型请求，`turn.token_usage` 会停在压缩前那次用量上，宿主据此把底部遥测
+    /// 换成压缩后的真实上下文大小。旧内核不发该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_compaction_context_tokens: Option<i64>,
 }
 
 /// 一次模型请求成功返回的通知：对应 Python `model.response.after` 的载荷。
@@ -570,10 +583,26 @@ fn default_request_retry_count() -> u32 {
     1
 }
 
+/// 宿主随 `turn.submit` 一并送来的图片（`Ctrl+V` 粘贴的剪贴板位图）。
+///
+/// 与工具产出的视觉附件同形状（`ToolImageAttachment`），但**不带文件名**：这些图不在
+/// 磁盘上，只有内存里的 Base64。走这条路的图是**用户消息的一部分**，会随用户消息一起
+/// 落盘进转录。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnImageAttachment {
+    pub media_type: String,
+    pub data_base64: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnSubmitParams {
     pub turn_id: String,
     pub user_text: String,
+    /// 随本轮提问一起送来的图片；空数组表示纯文本提问（旧宿主不给时的行为）。
+    #[serde(default)]
+    pub images: Vec<TurnImageAttachment>,
 }
 
 /// `session.list` 负载：`archived` 为真时只看归档，`limit` 由内核收敛到 1..=100。

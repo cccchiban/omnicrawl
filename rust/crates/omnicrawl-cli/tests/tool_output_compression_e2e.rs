@@ -491,12 +491,106 @@ fn tool_calls_are_summarized_once_after_the_turn() {
 
     // 会话转录里落下概括事件，投影据此剔除逐条工具事件。
     let events = read_session_events(&config);
+    let summary = events
+        .iter()
+        .find(|event| event["type"] == "tool_call_summary")
+        .unwrap_or_else(|| panic!("应当写入 tool_call_summary 事件：{events:?}"));
+    // 计量随事件落盘：宿主回放（/resume、/undo）据此重建同一行，不必重算概括正文。
+    let raw_chars = summary["payload"]["raw_chars"]
+        .as_u64()
+        .expect("事件要带原始字符数");
+    let summary_chars = summary["payload"]["summary_chars"]
+        .as_u64()
+        .expect("事件要带概括字符数");
     assert!(
-        events.iter().any(|event| event["type"] == "tool_call_summary"),
-        "应当写入 tool_call_summary 事件：{events:?}"
+        summary_chars > 0 && raw_chars > summary_chars,
+        "概括应当确实压小：{raw_chars} → {summary_chars}"
+    );
+
+    // 会话区提示与上下文压缩同款：一行「已压缩 a → b 字符」，不是状态行。
+    let notice = frames
+        .iter()
+        .find(|frame| frame["method"] == "turn.notice")
+        .unwrap_or_else(|| panic!("应当发一条会话区提示：{frames:?}"));
+    assert_eq!(
+        notice["params"]["message"],
+        json!(format!(
+            "已压缩 {} → {} 字符",
+            group_digits(raw_chars),
+            group_digits(summary_chars)
+        )),
+        "提示文案要与事件载荷的计量一致"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+#[test]
+fn tool_compaction_rebuilds_history_and_reports_the_new_context_size() {
+    // 概括不只是「转录里看起来被压缩了」：它必须重建运行期历史，让下一轮请求真的带概括文本；
+    // 同时把压缩后的上下文大小随 `turn.finished` 报给宿主刷新遥测。
+    let server = StubServer::spawn();
+    let config = write_config("history", 100);
+    let mut kernel = Kernel::spawn(&config);
+    kernel.initialize(
+        model_config(&server),
+        Some(session_config(config.parent().expect("配置目录"))),
+    );
+
+    let long_output = "日志行内容".repeat(200);
+    let frames = kernel.run_turn("看一下日志", &long_output);
+    let finished = frames
+        .iter()
+        .find(|frame| frame["method"] == "turn.finished")
+        .unwrap_or_else(|| panic!("回合应正常收尾：{frames:?}"));
+
+    let reported = finished["params"]["post_compaction_context_tokens"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("回合末工具压缩要报压缩后大小：{finished}"));
+    assert!(reported > 0, "压缩后上下文大小应为正数：{reported}");
+
+    // 覆盖事件已落盘：被概括的逐条工具事件不再进入下一轮请求。
+    let events = read_session_events(&config);
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "tool_call_summary"),
+        "应当写入概括事件：{events:?}"
+    );
+
+    // 历史确实被重建：再发一轮，请求体里带的是概括文本，不是 200 份原始长输出。
+    let bodies_before = server.bodies().len();
+    kernel.run_turn("接着看", &long_output);
+    let bodies = server.bodies();
+    let followup = bodies[bodies_before..]
+        .iter()
+        .find(|body| !body.to_string().contains("<<<TOOL_CALLS_START>>>"))
+        .unwrap_or_else(|| panic!("应当发出下一轮主请求"));
+    let text = followup.to_string();
+    assert!(
+        text.contains(COMPRESSED_TEXT),
+        "下一轮请求应带整轮概括文本：{text}"
+    );
+    assert!(
+        !text.contains(&long_output),
+        "被概括的原始长输出不得再进入请求：{} 字符的原文仍在请求体里",
+        long_output.len()
+    );
+
+    std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+/// 千分位分组：契约是「用户读得到的字符数」，因此断言侧独立算一遍，不复用实现的函数。
+fn group_digits(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// 读最近一条会话转录的事件类型与载荷。
