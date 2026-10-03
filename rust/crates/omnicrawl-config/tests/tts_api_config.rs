@@ -91,7 +91,7 @@ timeout_seconds = 90
 
 /// 密钥解析：配置里的明文优先，否则读 `api_key_env`（含环境变量注入口径）。
 #[test]
-fn api_key_prefers_inline_then_env() {
+fn api_key_comes_from_inline_only() {
     let root = temp_root("key");
     let user = user_dir(&root);
     write_text(
@@ -107,9 +107,10 @@ api_key_env = "OC_TEST_TTS_KEY"
     let config = load_tts_api_configuration(&env, None).expect("读取接口配置");
     assert_eq!(config.resolve_api_key(&env), "inline-key");
 
+    // 环境变量通道已移除：没有明文 key 时解析结果为空串（由调用方判「缺凭据」）。
     let mut without_inline = config.clone();
     without_inline.api_key = String::new();
-    assert_eq!(without_inline.resolve_api_key(&env), "env-key");
+    assert_eq!(without_inline.resolve_api_key(&env), "");
 
     // 空密钥变量名回落到默认名，避免写成空串后永远取不到密钥。
     let mut blank_env_name = config.clone();

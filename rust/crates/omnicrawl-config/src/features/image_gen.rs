@@ -99,12 +99,9 @@ impl ImageGenConfiguration {
         Ok(self)
     }
 
-    /// 优先使用配置里的 `api_key`，否则按 `api_key_env` 读取环境变量。
-    pub fn resolve_api_key(&self, env: &ConfigEnvironment) -> String {
-        if !self.api_key.is_empty() {
-            return self.api_key.clone();
-        }
-        env.get(&self.api_key_env).unwrap_or_default()
+    /// 生效的 API Key：只认配置里的明文 `api_key`。
+    pub fn resolve_api_key(&self, _env: &ConfigEnvironment) -> String {
+        self.api_key.trim().to_string()
     }
 }
 

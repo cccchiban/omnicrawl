@@ -1,0 +1,14 @@
+[package]
+name = "omnicrawl-onejev"
+description = "OneJev 本地自部署：尺寸清单、模型下载、专用虚拟环境与 qev 服务进程生命周期"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-host = { path = "../omnicrawl-host" }
+serde_json = { workspace = true }
+ureq = { workspace = true }

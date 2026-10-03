@@ -593,41 +593,13 @@ impl MaskContext<'_> {
     }
 }
 
-/// 计划与文本不对齐时的诊断（默认关闭，`OMNICRAWL_MASK_PLAN_DIAG=1` 打开）。
-///
-/// 这条路径上的失配过去是静默的：Python 侧下标是码点，错位只取错值；Rust 侧是字节，
-/// 错位会 `panic` 打断整个内核进程。现在失配一律退回完整屏蔽，但要能查到「为什么失配」，
-/// 所以留一个只打长度与位置的开关（不打印文本正文，只给一个很短的转义窗口）。
+/// 计划与文本不对齐时的诊断：诊断输出已随环境变量开关一并移除，保留空实现与调用点。
 fn report_plan_misalignment(
-    text: &str,
-    stage_index: usize,
-    span: &super::plan_cache::PlanSpan,
-    result: &str,
+    _text: &str,
+    _stage_index: usize,
+    _span: &super::plan_cache::PlanSpan,
+    _result: &str,
 ) {
-    // 开关只读一次：失配在 CJK 文本上是常规路径（见上），不能让每段文本都去查环境变量。
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ENABLED.get_or_init(|| {
-        std::env::var("OMNICRAWL_MASK_PLAN_DIAG").ok().as_deref() == Some("1")
-    }) {
-        return;
-    }
-    let key = super::plan_cache::text_key(text);
-    let key_hex: String = key[..6].iter().map(|byte| format!("{byte:02x}")).collect();
-    let window_start = span.start.saturating_sub(8).min(result.len());
-    let window_end = (window_start + 16).min(result.len());
-    let window = result
-        .get(window_start..window_end)
-        .map(|slice| slice.escape_debug().to_string())
-        .unwrap_or_else(|| "<窗口本身不是字符边界>".to_string());
-    eprintln!(
-        "[kernel] [mask-plan] 计划与文本不对齐，已退回完整屏蔽：key={key_hex} text_len={} result_len={} stage={stage_index} span={}..{} seq={} counter={:?} window={window:?}",
-        text.len(),
-        result.len(),
-        span.start,
-        span.end,
-        span.seq,
-        span.counter
-    );
 }
 
 /// 按阶段标签把「本周期首次登记」计入对应计数口径。

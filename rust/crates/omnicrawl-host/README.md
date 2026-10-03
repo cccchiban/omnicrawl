@@ -24,8 +24,8 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 `prompt.rs` 是宿主侧唯一的提示词入口，三类输入都在这边读盘，判定与文案在
 `omnicrawl-controllers`（`building` / `turn::prompt_context`）：
 
-- **system prompt**：`templates/system_prompt.md`（`OMNICRAWL_TEMPLATES_DIR` 或可执行文件
-  祖先目录优先，缺失用 `include_str!` 的内嵌副本）→ `build_system_prompt` 拒绝旧动态占位符
+- **system prompt**：`templates/system_prompt.md`（可执行文件祖先目录优先，缺失用
+  `include_str!` 的内嵌副本）→ `build_system_prompt` 拒绝旧动态占位符
   → 顾问准则（启用且未命中黑名单时）→ `<active_mode_prompt>`（模式已启用时）。
 - **项目规范**：用户级 `~/.OmniCrawl/AGENTS.md` 与项目级 `<工作区>/AGENTS.md` 合并，
   项目级排在后面并优先；**读不到文件不算错误**，没有规范时不注入该消息。
@@ -69,6 +69,47 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   （`CancelToken::reset`）：TUI 在 `dispatch_submission` 发 `turn.submit` 前复位，无头运行器在
   `TurnRunner::run_turn` 开头复位。不复位时「`Esc` 取消后继续对话」的下一回合里，每个
   `bash` / `powershell` 都会在子进程刚起来时被判定为已取消——令牌只置位不回零，是跨回合状态。
+
+## 检索重排（可选，默认关闭）
+
+`tools/decision_search.rs` 把 `memory_search` 与 `kb_search` 的候选交给结构化决策模型按相关度
+排序。两个开关各自独立（`decision_models.toml` 的 `[features]` 里的 `memory_search_rerank` /
+`kb_search_rerank`），装配入口 `rerank_options_from_config(env, switch_key)` 由 TUI 与本地 API
+共用（`RegistryOptions.knowledge_rerank` 与 `MemoryOptions.rerank`）。
+
+- 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
+  `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
+  调用方的 `max_results`**，不做固定截断。
+- **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、网络失败、响应不可解析都退回本地
+  排序结果（与审查通道的 fail-closed 相反，是本功能刻意选的：检索少几条比检索直接失败代价小）。
+- 出网内容沿用审查通道的 `[desensitization]` 旁路（`review::masking_from_config`）；脱敏构造失败
+  按「重排不可用」处理，绝不外发原文。
+- `RerankClient` 是注入点：测试用桩（`memory.rs` 的 `StubRerank`）替换真实 HTTP 调用，回环用例在
+  `decision_search.rs` 内部自带。
+
+三个调用点（`review.rs` 的工具调用审查、本模块的检索重排与提问托管）共用 `decision_wire`
+这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 走
+`POST /v1/decide`；`chat_completions` 走 `POST /v1/chat/completions`，作为 user 消息发出），
+并从响应里取出同一形状的 `answers`（后者从 `choices[0].message.content` 里解析）。新增请求方式
+只需改配置域与这一层，调用点的解析逻辑不动。
+
+## 提问托管（可选，默认关闭）
+
+`tools/decision_choice.rs` 把 `ask_user` 的**有选项**提问交给结构化决策模型自动作答
+（`decision_models.toml` 的 `[features] ask_user_custody`，`custody_options_from_config(env)`
+由 TUI 与本地 API 共用）。
+
+- 请求的 `state` 带三类上下文：`question`（提问正文）、`user_prompt`（用户本回合的请求）、
+  `advisor_replies`（本回合已有的顾问答复，没有时该字段不出现）；问题是一个 `choice` 提问
+  （候选项键 `o0`、`o1`…），读回 `answers.<id>.choice` 对应的选项作为答案，缺失时退化取
+  `probabilities` 最高的一项。
+- **没有选项的提问不托管**：决策模型只能从给定候选项里选，写不出自由文本，因此照旧交给用户。
+- **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都退回人工
+  提问，面板照旧停在那里等用户（与检索重排同一语义，和审查通道的 fail-closed 相反）。
+- 自动作答在会话流里留一条可见提示（`custody_notice`：提问 → 选中项），用户看不到面板也能知道
+  发生了什么。出网内容沿用审查通道的 `[desensitization]` 旁路。
+- `ChoiceClient` 是注入点：回环用例在 `decision_choice.rs` 内部自带；流程用例在
+  `tests/turn_flow.rs`（`custody_answers_the_question_without_asking_the_user`）用 `FixedChoice` 桩。
 
 ## 与两端的边界
 

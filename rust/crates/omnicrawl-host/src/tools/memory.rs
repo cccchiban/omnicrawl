@@ -5,6 +5,7 @@
 //! `_require_memory_store_for_arguments`（作用域路由与「未启用」文案）。
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use omnicrawl_controllers::json::{python_dumps, python_number_text};
 use omnicrawl_controllers::memory::{
@@ -22,6 +23,9 @@ use omnicrawl_session::memory_store::{
 };
 use serde_json::{json, Map, Value};
 
+use super::decision_search::{
+    apply_order, reranked_order, RerankOptions, RERANK_CANDIDATE_LIMIT,
+};
 use super::error::{ToolError, ToolOutcome};
 
 /// 三个作用域各自的开关与目录；会话级还需要当前会话 ID。
@@ -35,6 +39,8 @@ pub struct MemoryOptions {
     pub user_enabled: bool,
     pub session_id: Option<String>,
     pub session_enabled: bool,
+    /// 搜索重排（`decision_models.toml` 的 `memory_search_rerank` 开关）；未开启时走本地排序。
+    pub rerank: Arc<RerankOptions>,
 }
 
 impl MemoryOptions {
@@ -139,6 +145,18 @@ fn search_result_value(result: &MemorySearchResult) -> Value {
     })
 }
 
+/// 送进重排的候选描述：只带判断相关度所需的三项，不含正文。
+fn rerank_candidate_text(result: &MemorySearchResult) -> String {
+    let mut parts = vec![result.summary.clone()];
+    if !result.storage_directory.trim().is_empty() {
+        parts.push(format!("存储目录：{}", result.storage_directory));
+    }
+    if !result.related_directories.is_empty() {
+        parts.push(format!("关联目录：{}", result.related_directories.join("、")));
+    }
+    parts.join("\n")
+}
+
 fn record_value(record: &MemoryRecord) -> Value {
     json!({
         "id": record.id,
@@ -148,6 +166,10 @@ fn record_value(record: &MemoryRecord) -> Value {
     })
 }
 
+/// 重排指令：只要求按相关度排序，不做其他判断。
+const RERANK_INSTRUCTIONS: &str = "给定 state 里的检索查询与调用意图，判断每个候选项与查询的相关程度；\
+state 是事实来源，不要根据候选项自身措辞推测查询。";
+
 pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) -> ToolOutcome {
     let scope = scope_for(arguments)?;
     let store = options.store(scope)?;
@@ -155,7 +177,8 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
     if query.is_empty() {
         return Err(ToolError::new("query 不能为空。"));
     }
-    if argument_text(arguments, "reason").is_empty() {
+    let reason = argument_text(arguments, "reason");
+    if reason.is_empty() {
         return Err(ToolError::new("reason 不能为空。"));
     }
     let candidates: Vec<Value> = read_optional_string_list(arguments, "candidate_directories")
@@ -164,9 +187,30 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
         .map(Value::String)
         .collect();
     let max_results = read_limited_int(arguments, "max_results", 5, 20) as u32;
-    let results = store
-        .search(&query, &candidates, max_results)
+    // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
+    let pool = if options.rerank.active() {
+        max_results.max(RERANK_CANDIDATE_LIMIT as u32)
+    } else {
+        max_results
+    };
+    let mut results = store
+        .search(&query, &candidates, pool)
         .map_err(store_error)?;
+    if options.rerank.active() {
+        let state = json!({
+            "scope": scope.as_str(),
+            "query": query,
+            "reason": reason,
+            "candidate_directories": candidates,
+        });
+        let texts: Vec<String> = results.iter().map(rerank_candidate_text).collect();
+        if let Some(order) =
+            reranked_order(options.rerank.as_ref(), state, RERANK_INSTRUCTIONS, &texts)
+        {
+            results = apply_order(results, &order);
+        }
+    }
+    results.truncate(max_results as usize);
     Ok(python_dumps(
         &Value::Array(results.iter().map(search_result_value).collect()),
         2,
@@ -299,6 +343,7 @@ mod tests {
             user_enabled: true,
             session_id: Some("session-1".to_string()),
             session_enabled: true,
+            ..MemoryOptions::default()
         };
         (options, root)
     }
@@ -414,5 +459,127 @@ mod tests {
             error.message,
             "第 1 条记忆 source_event 必须是字符串或 null。"
         );
+    }
+
+    /// 重排桩：按给定顺序返回下标，并记录收到的候选文本（不起网络）。
+    struct StubRerank {
+        order: Vec<usize>,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl super::super::decision_search::RerankClient for StubRerank {
+        fn rank(
+            &self,
+            request: &super::super::decision_search::RerankRequest<'_>,
+        ) -> Result<Vec<usize>, String> {
+            *self.seen.lock().expect("记录未被毒化") = request.candidates.to_vec();
+            Ok(self.order.clone())
+        }
+    }
+
+    fn rerank_options(order: Vec<usize>, seen: Arc<std::sync::Mutex<Vec<String>>>) -> RerankOptions {
+        use super::super::decision_search::RerankChannel;
+        RerankOptions {
+            enabled: true,
+            channel: Some(RerankChannel {
+                mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+                model: "jev-latest".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                api_key: "jv_test".to_string(),
+                api_key_env: "JEV_API_KEY".to_string(),
+            }),
+            client: Arc::new(StubRerank { order, seen }),
+            ..RerankOptions::default()
+        }
+    }
+
+    #[test]
+    fn rerank_reorders_results_and_keeps_max_results() {
+        let (mut options, _root) = options("rerank");
+        let mut written: Vec<String> = Vec::new();
+        for content in [
+            "内核重写：工具表装配完成",
+            "内核重写：记忆中检索排序",
+            "内核重写：知识库索引计划",
+        ] {
+            let record = memory_write(
+                &options,
+                &arguments(json!({"memories": [{"content": content}]})),
+            )
+            .expect("写入应当成功");
+            let records: Value = serde_json::from_str(&record).expect("写入结果是 JSON");
+            written.push(
+                records[0]["id"].as_str().unwrap_or_default().to_string(),
+            );
+        }
+
+        // 先取一次本地顺序作为基准。
+        let baseline = memory_search(
+            &options,
+            &arguments(json!({"query": "内核重写", "reason": "取基准顺序", "max_results": 3})),
+        )
+        .expect("搜索应当成功");
+        let baseline: Value = serde_json::from_str(&baseline).expect("结果是 JSON");
+        let local_ids: Vec<String> = baseline
+            .as_array()
+            .expect("结果是数组")
+            .iter()
+            .map(|item| item["id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(local_ids.len(), 3, "{baseline}");
+        assert!(
+            local_ids.iter().all(|id| written.contains(id)),
+            "基准顺序里应当包含全部三条"
+        );
+
+        // 倒序重排：结果顺序应当是本地顺序的反向，条数仍按 max_results。
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        options.rerank = Arc::new(rerank_options(vec![2, 1, 0], Arc::clone(&seen)));
+        let found = memory_search(
+            &options,
+            &arguments(json!({"query": "内核重写", "reason": "确认重排", "max_results": 2})),
+        )
+        .expect("搜索应当成功");
+        let results: Value = serde_json::from_str(&found).expect("结果是 JSON");
+        let items = results.as_array().expect("结果是数组");
+        assert_eq!(items.len(), 2, "返回条数仍按 max_results：{found}");
+
+        let mut expected: Vec<String> = local_ids.clone();
+        expected.reverse();
+        let actual: Vec<String> = items
+            .iter()
+            .map(|item| item["id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(actual, expected[..2].to_vec(), "按重排顺序返回：{found}");
+
+        let recorded = seen.lock().expect("记录未被毒化").clone();
+        assert_eq!(recorded.len(), 3, "候选池比 max_results 宽：{recorded:?}");
+        assert!(
+            recorded.iter().any(|text| text.contains("存储目录")),
+            "候选描述应带判断相关度所需的字段：{recorded:?}"
+        );
+    }
+
+    #[test]
+    fn rerank_failure_falls_back_to_local_order() {
+        let (mut options, _root) = options("rerank-fail");
+        // 渠道缺失：重排不可用，检索照旧返回本地排序结果。
+        options.rerank = Arc::new(RerankOptions {
+            enabled: true,
+            channel: None,
+            ..RerankOptions::default()
+        });
+        memory_write(
+            &options,
+            &arguments(json!({"memories": [{"content": "内核检索回退"}]})),
+        )
+        .expect("写入应当成功");
+        let found = memory_search(
+            &options,
+            &arguments(json!({"query": "内核检索回退", "reason": "回归 fail-open"})),
+        )
+        .expect("检索不该因为重排不可用而失败");
+        let results: Value = serde_json::from_str(&found).expect("结果是 JSON");
+        assert_eq!(results.as_array().map(Vec::len), Some(1), "{found}");
     }
 }

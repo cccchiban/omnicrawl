@@ -1,4 +1,4 @@
-//! MCP 配置对照：`config.toml` 的 `[mcp]` 段、环境变量覆盖与校验错误文案。
+//! MCP 配置对照：`config.toml` 的 `[mcp]` 段与校验错误文案（环境变量通道已移除）。
 
 mod common;
 

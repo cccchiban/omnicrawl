@@ -144,7 +144,8 @@ struct Harness {
 impl Harness {
     fn new(tag: &str) -> Self {
         let root = temp_dir(&format!("oc-api-mcp-{tag}"));
-        let config_path = root.join("config.toml");
+        let config_path = root.join("home").join(".OmniCrawl").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("配置目录")).expect("建隔离配置目录");
         std::fs::write(&config_path, INITIAL_CONFIG).expect("写入初始配置");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).expect("建立工作区");
@@ -166,9 +167,9 @@ impl Harness {
         runner.handshake(&mut |_| {}).expect("握手应当成功");
 
         let mut options = ServiceOptions::new(workspace, model());
-        // 隔离配置：只认注入的 home 与 `AI_CONFIG_FILE`，不碰开发机上的真实配置。
-        options.env = ConfigEnvironment::new(root.join("home"), std::env::consts::OS)
-            .with_env_value("AI_CONFIG_FILE", &config_path.to_string_lossy());
+        // 隔离配置：只认注入的 home（配置固定读 `~/.OmniCrawl/config.toml`），
+        // 不碰开发机上的真实配置。
+        options.env = ConfigEnvironment::new(root.join("home"), std::env::consts::OS);
         let service = Arc::new(AgentService::with_runner(options, runner));
         let address = spawn(build_router_with_state(
             ApiState::new(config()).with_service(service),
@@ -230,6 +231,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         client_name: "omnicrawl-api-test".to_string(),
         plugins: None,
         review: None,
+        custody: None,
         prompt: None,
     }
 }

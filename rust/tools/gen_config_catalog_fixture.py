@@ -191,12 +191,8 @@ def build_catalog_misc() -> dict[str, object]:
             {"options": [option.to_ui_dict() for option in options], "current": "", "limit": 1, "expected": MC.format_model_options(options, limit=1)},
             {"options": [], "current": "", "limit": 40, "expected": MC.format_model_options([])},
         ],
-        "env_override": [
-            {"env": {}, "expected": False},
-            {"env": {"OMNICRAWL_MODEL": "gpt-5"}, "expected": True},
-            {"env": {"OPENAI_MODEL": " gpt-5 "}, "expected": True},
-            {"env": {"OMNICRAWL_MODEL": "  "}, "expected": False},
-        ],
+        # 环境变量接管模型选择已移除：无论环境里有什么，结论恒为「不接管」。
+        "env_override": [{"env": {}, "expected": False}],
     }
 
 

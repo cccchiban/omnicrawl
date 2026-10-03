@@ -2066,7 +2066,7 @@ fn emit_subagent_event(conn: &Rc<RefCell<Conn>>, name: &str, payload: Value) {
 }
 
 /// 读取 `[run_guard].continuation`：与其它内核旁路配置同一套解析
-/// （显式路径 > `AI_CONFIG_FILE` > 用户目录）。
+/// （显式路径 > 用户目录）。
 ///
 /// 总开关或续跑开关关闭、配置读不出来都返回 `None`：调用点因此不必区分「没配置」与「关掉了」。
 fn load_continue_config() -> Option<ContinueConfig> {

@@ -1903,6 +1903,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnicrawl-onejev"
+version = "0.0.1"
+dependencies = [
+ "omnicrawl-config",
+ "omnicrawl-host",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "omnicrawl-protocol"
 version = "0.0.1"
 dependencies = [
@@ -1955,6 +1965,7 @@ dependencies = [
  "omnicrawl-ipc",
  "omnicrawl-llm",
  "omnicrawl-mcp",
+ "omnicrawl-onejev",
  "omnicrawl-protocol",
  "omnicrawl-session",
  "omnicrawl-tts",

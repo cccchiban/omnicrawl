@@ -1,17 +1,16 @@
 //! 飞书接入配置解析。
 //!
 //! 语义基准是 Python `omnicrawl/connectors/fsapp.py` 的 `load_feishu_config` /
-//! `_mask_secret` / `check_config`：**环境变量优先**，其次 `[feishu]` 段，再其次根级别
-//! 的 `fs_app_id` / `fs_app_secret` / `fs_allowed_users`（兼容 GenericAgent 配置习惯）。
+//! `_mask_secret` / `check_config`：凭据只读 `[feishu]` 段，其次根级别的
+//! `fs_app_id` / `fs_app_secret` / `fs_allowed_users`（兼容 GenericAgent 配置习惯）。
 //! 配置对象由宿主配置层解析后传入，TOML 读取不属于本 crate。
 
 use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-/// 数据来源：环境变量查询 + 已解析的配置对象。
+/// 数据来源：已解析的配置对象。
 pub struct ConfigSource<'a> {
-    pub environment: &'a dyn Fn(&str) -> Option<String>,
     pub data: &'a Value,
 }
 
@@ -36,9 +35,8 @@ impl FeishuConfig {
     }
 }
 
-/// 按环境变量优先、`[feishu]` 次之的规则加载配置。
+/// 按 `[feishu]` 段优先、根级别回退的规则加载配置。
 pub fn load_feishu_config(source: ConfigSource<'_>) -> Result<FeishuConfig, String> {
-    let environment = source.environment;
     let data = source.data;
     let section = match data.get("feishu") {
         None | Some(Value::Null) => Value::Object(serde_json::Map::new()),
@@ -47,7 +45,6 @@ pub fn load_feishu_config(source: ConfigSource<'_>) -> Result<FeishuConfig, Stri
     };
 
     let app_id = first_nonempty(&[
-        environment("FEISHU_APP_ID"),
         lookup(&section, "app_id"),
         lookup(&section, "fs_app_id"),
         lookup(data, "fs_app_id"),
@@ -55,7 +52,6 @@ pub fn load_feishu_config(source: ConfigSource<'_>) -> Result<FeishuConfig, Stri
     .trim()
     .to_string();
     let app_secret = first_nonempty(&[
-        environment("FEISHU_APP_SECRET"),
         lookup(&section, "app_secret"),
         lookup(&section, "fs_app_secret"),
         lookup(data, "fs_app_secret"),
@@ -64,7 +60,6 @@ pub fn load_feishu_config(source: ConfigSource<'_>) -> Result<FeishuConfig, Stri
     .to_string();
 
     let raw_allowed = first_nonempty_value(&[
-        environment("FEISHU_ALLOWED_USER_IDS").map(Value::String),
         config_value(&section, "allowed_user_ids"),
         config_value(&section, "allowed_users"),
         config_value(&section, "fs_allowed_users"),
@@ -73,7 +68,6 @@ pub fn load_feishu_config(source: ConfigSource<'_>) -> Result<FeishuConfig, Stri
     let allowed_user_ids = coerce_string_set(raw_allowed.as_ref());
 
     let raw_timeout = first_nonempty_value(&[
-        environment("FEISHU_CONFIRM_TIMEOUT").map(Value::String),
         config_value(&section, "confirmation_timeout_seconds"),
         config_value(&section, "confirm_timeout_seconds"),
         Some(json!(300)),
@@ -188,7 +182,7 @@ fn parse_seconds(value: Option<&Value>) -> Result<f64, String> {
         _ => None,
     });
     let seconds = parsed.ok_or_else(|| {
-        "FEISHU_CONFIRM_TIMEOUT / feishu.confirmation_timeout_seconds 必须是数字。".to_string()
+        "feishu.confirmation_timeout_seconds 必须是数字。".to_string()
     })?;
     Ok(if seconds > 1.0 { seconds } else { 1.0 })
 }
@@ -212,27 +206,14 @@ fn value_as_text(value: &Value) -> String {
 mod tests {
     use super::*;
 
-    fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: std::collections::HashMap<String, String> = pairs
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect();
-        move |name: &str| map.get(name).cloned()
-    }
-
     #[test]
-    fn environment_wins_and_aliases_are_accepted() {
+    fn section_wins_and_aliases_are_accepted() {
         let data = json!({
             "feishu": {"app_id": "cli_section", "allowed_users": ["ou_a"]},
             "fs_app_secret": "root-secret",
         });
-        let env = environment(&[("FEISHU_APP_ID", " cli_env ")]);
-        let config = load_feishu_config(ConfigSource {
-            environment: &env,
-            data: &data,
-        })
-        .expect("配置可解析");
-        assert_eq!(config.app_id, "cli_env");
+        let config = load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
+        assert_eq!(config.app_id, "cli_section");
         assert_eq!(config.app_secret, "root-secret");
         assert!(config.allowed_user_ids.contains("ou_a"));
         assert_eq!(config.confirmation_timeout_seconds, 300.0);
@@ -241,12 +222,7 @@ mod tests {
     #[test]
     fn empty_whitelist_is_public_access() {
         let data = json!({"feishu": {"app_id": "a", "app_secret": "b"}});
-        let env = environment(&[]);
-        let config = load_feishu_config(ConfigSource {
-            environment: &env,
-            data: &data,
-        })
-        .expect("配置可解析");
+        let config = load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
         assert!(config.public_access());
         assert!(config.allows("ou_any"));
     }
@@ -254,12 +230,7 @@ mod tests {
     #[test]
     fn star_whitelist_is_public_access_and_others_are_checked() {
         let data = json!({"feishu": {"allowed_user_ids": ["ou_x"]}});
-        let env = environment(&[]);
-        let config = load_feishu_config(ConfigSource {
-            environment: &env,
-            data: &data,
-        })
-        .expect("配置可解析");
+        let config = load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
         assert!(config.allows("ou_x"));
         assert!(!config.allows("ou_y"));
         assert!(!config.allows(""));
@@ -268,12 +239,7 @@ mod tests {
     #[test]
     fn section_must_be_object() {
         let data = json!({"feishu": "cli_x"});
-        let env = environment(&[]);
-        let error = load_feishu_config(ConfigSource {
-            environment: &env,
-            data: &data,
-        })
-        .expect_err("应报错");
+        let error = load_feishu_config(ConfigSource { data: &data }).expect_err("应报错");
         assert_eq!(error, "config.toml 的 [feishu] 必须是对象。");
     }
 

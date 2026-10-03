@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-use omnicrawl_tui::tools::{knowledge, KnowledgeBase};
+use omnicrawl_tui::tools::{knowledge, KnowledgeBase, RerankOptions};
 
 const FIXTURE: &str = include_str!("fixtures/knowledge_tools_parity.json");
 
@@ -50,7 +50,7 @@ fn knowledge_tools_match_python() {
             .unwrap_or_default()
             .replace(&today, "{TODAY}");
         let outcome = match tool {
-            "kb_search" => knowledge::kb_search(&base, &args),
+            "kb_search" => knowledge::kb_search(&base, &RerankOptions::default(), &args),
             "kb_read" => knowledge::kb_read(&base, &args),
             "kb_write" => knowledge::kb_write(&base, &args),
             "kb_append" => knowledge::kb_append(&base, &args),

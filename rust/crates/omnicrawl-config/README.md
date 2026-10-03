@@ -11,7 +11,7 @@ subagents / tool_output_compression / tools / tts）。
 
 ## 已搬范围
 
-**`core/runtime`**：配置文件路径解析（显式路径 > `AI_*` 环境变量 > `~/.OmniCrawl/<name>.toml`）、
+**`core/runtime`**：配置文件路径解析（显式路径 > `~/.OmniCrawl/<name>.toml`，没有环境变量这一级）、
 `.toml` 后缀校验、UTF-8（含 BOM）读取、空文件与遗留 `config.json` 的报错、子对象读取、
 TOML 原子写回（同目录临时文件 + 替换，Windows 短暂 Access Denied 重试 8 次 × 0.05s 退避）、
 旧用户目录迁移（同名冲突落 `<name>.migrated.bak`，必要时 `.migrated.N.bak`，任何失败保留旧目录）。
@@ -24,7 +24,7 @@ TOML 原子写回（同目录临时文件 + 替换，Windows 短暂 Access Denie
 
 **`models/llm`**：`LlmConfig` 运行视图与归一化校验（用户代理换行、窗口正整数、legacy 三件套、
 custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强度别名与报错文案、
-`load_llm_config`（单模型与环境变量补齐）、`save_reasoning_effort`、`save_active_model_ref`。
+`load_llm_config`（单模型与多模型两条路径都只读配置段）、`save_reasoning_effort`、`save_active_model_ref`。
 
 `LlmConfig.prompt_cache` 是 Provider 能力声明（`Option<bool>`）：只由自定义模型条目的
 `capabilities.prompt_cache` 填充，detected / legacy 路径保持 `None`。宿主握手时据此设置
@@ -62,9 +62,10 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 
 ## 与 Python 的差异
 
-- **进程外信息注入**：home、平台名、`APPDATA`/`XDG_CONFIG_HOME`、`AI_*` 路径变量、模型与
-  凭据环境变量都放在 `ConfigEnvironment` 里；`from_process()` 取进程环境，`new(home, platform)`
-  只认显式注入（对照测试用后者，与 Python 侧清空 `os.environ` 同义）。
+- **环境变量一律不读**：配置路径、模型选择、凭据、功能开关都只读 TOML；`ConfigEnvironment`
+  只承载家目录、平台名与 `APPDATA`/`XDG_CONFIG_HOME` 这类系统级路径信息。`from_process()` 取
+  真实进程环境，`new(home, platform)` 只认显式注入（对照测试用后者，与 Python 侧清空
+  `os.environ` 同义）。这条差异导致依赖环境变量维度的 parity 用例被删除或改写。
 - **不搬 `project_root` / `_is_development_environment`**：Python 侧已注明它们不参与默认路径
   解析（Rust 侧没有「源码目录」这个运行时概念）。
 - **路径字符串化**：按 `pathlib` 的观感对齐（统一分隔符、去掉 `.` 段、合并重复分隔符、
@@ -100,7 +101,7 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 `agent_workspace`（worktree/local 与退出策略枚举校验）、`desensitization`（27 个字段的开关、
 熵参数与 NER 取值域校验）、`image_gen`（Base URL、`auto|宽x高` 尺寸、质量与格式枚举）、
 `tool_output_compression`（思考档位与四个正整数预算）、`tts`（线程数枚举、设备三态、
-模型目录解析）、`subagents`（独立 `subagents.toml`、环境变量紧急刹车、`models.<角色>` 覆盖）。
+模型目录解析）、`subagents`（独立 `subagents.toml`、`models.<角色>` 覆盖）。
 
 **`features/tts_api`（Rust 专有）**：语音合成接口段（`[tts_api]`），与 `tts` 分开是刻意的——
 `[tts]` 的读回值与写回文本被 parity 数据集逐字节钉住（加字段就要同步改 Python），而本段是
@@ -108,6 +109,30 @@ Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 par
 `tests/tts_api_config.rs`：默认值（`enabled` 默认 `true`，地址/模型/音色/密钥变量名都有默认）、
 `base_url` 去尾斜杠、`response_format` 只允许 `wav`、`speed` 限 0.25~4.0、
 `resolve_api_key`（明文优先，否则读 `api_key_env`）与只改本段的写回。
+
+**`features/decision_model`（Rust 专有）**：结构化决策模型配置（独立 `decision_models.toml`），
+面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。两种请求方式（`mode`）：
+
+* `jev`（默认）——Jev 原生接口：`POST {base_url}/v1/decide`、Bearer 鉴权，`state` + `questions`
+  直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
+* `chat_completions`——OpenAI 兼容接口：`POST {base_url}/v1/chat/completions`，同一份
+  `state` + `questions` 作为一条 user 消息的 JSON 文本发出并要求 JSON 输出，答案从
+  `choices[0].message.content` 里解析出同一形状的 `answers`（负载组装与解析在
+  `omnicrawl-host::decision_wire`）。
+
+与 `models.toml` 分开是刻意的：决策渠道与对话渠道是两套服务地址与命名空间，混在一起会被
+对话侧的目录与能力解析当成候选模型；它也**不并入** `llm.profiles`（`initialize` 里没有对映
+字段）。同样不进 parity 数据集，自带模块内测试（默认一条 Jev 渠道、两种请求方式的端点折算、
+读写往返、默认渠道折算、取值域与重复 key 校验）。
+接入点：`DecisionChannelConfig::decide_url()` 与 `resolve_api_key()`，以及
+`DecisionModelConfiguration::active_channel()`。
+
+同一文件里的 `[features]` 段是决策模型的功能开关（`DECISION_SWITCHES` 是唯一来源：读盘、
+写盘、界面与测试都读它；新增开关只需往表里加一项）。当前四项：
+`tool_call_review`（工具调用审查使用决策模型）、`memory_search_rerank`（记忆搜索使用决策模型
+排序）、`kb_search_rerank`（知识库检索使用决策模型排序）与 `ask_user_custody`（提问由决策模型
+自动作答），均默认关闭；读写走 `load_decision_switches` / `save_decision_switch`——前者读不出来时
+按默认值回落，后者保留同段其他键与 `channels` 段。
 
 **`core/settings`**：`load_feature_enabled`（`subagents` 段走独立文件）、
 `save_context_window_tokens`（legacy 段 / 多模型 `defaults` / `models.toml` 条目三路）、
@@ -171,12 +196,15 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
   desensitization 读取 15 例 + 写回 1 例。
 - `tests/tts_api_config.rs`（非 parity）：`[tts_api]` 的默认值、归一化、密钥解析、非法取值
   与写回隔离，共 5 例。
+- `src/features/decision_model.rs` 模块内测试（非 parity）：结构化决策模型的默认渠道、
+  读写往返、默认 key 折算、取值域与重复 key 校验，以及功能开关的默认值回落、写回与
+  渠道段隔离、未知开关拒绝，共 8 例。
 - `tests/fixtures/config_core_parity.json`：workspace 读取 5 例 + 写回 1 例、
   设置开关 6 例、窗口写回（配置 3 例 / 模型目录 3 例）、压缩阈值 5 例、
   显示思考 3 例、SubAgent 参数 4 例、MCP 写回 1 例、Node 判定 6 例、
   插件状态 5 例、启动提示 5 例、首次启动编排 7 例。
 - `tests/fixtures/config_channels_parity.json`：默认草稿 4 例、key 归一化 7 例、
-  标签 9 例、渠道读取 7 例、写回文本 2 例、渠道校验 11 例、凭据判定 4 例。
+  标签 9 例、渠道读取 7 例、写回文本 2 例、渠道校验 11 例、凭据判定 2 例（只认明文 key）。
 - `tests/fixtures/config_catalog_parity.json`：`/models` 探测 18 例（含请求头与 endpoint）、
-  provider 分类 16 例、候选补全 3 例、列表渲染 3 例、环境变量接管 4 例、
+  provider 分类 16 例、候选补全 3 例、列表渲染 3 例、
   描述转换 2 例、模型写回 6 例、目录构建 4 例（含缓存命中与刷新两条路径）。

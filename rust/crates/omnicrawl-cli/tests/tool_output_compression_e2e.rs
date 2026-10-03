@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -227,6 +227,19 @@ fn read_request(stream: &mut TcpStream) -> (String, String) {
     )
 }
 
+/// 把配置放到临时 home 的 `~/.OmniCrawl/config.toml` 并返回该 home：
+/// 配置路径不再有环境变量覆盖，隔离只能靠 home。
+fn isolate_home(config_path: &Path) -> PathBuf {
+    let home = config_path
+        .parent()
+        .expect("配置目录")
+        .join("home");
+    let target = home.join(".OmniCrawl");
+    std::fs::create_dir_all(&target).expect("建隔离配置目录");
+    std::fs::copy(config_path, target.join("config.toml")).expect("复制配置");
+    home
+}
+
 struct Kernel {
     child: Child,
     stdin: ChildStdin,
@@ -235,9 +248,11 @@ struct Kernel {
 
 impl Kernel {
     fn spawn(config_path: &std::path::Path) -> Self {
+        let home = isolate_home(config_path);
         let mut child = Command::new(env!("CARGO_BIN_EXE_omnicrawl"))
             .env("OMNICRAWL_TEST_KEY", TEST_KEY)
-            .env("AI_CONFIG_FILE", config_path)
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

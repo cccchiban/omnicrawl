@@ -15,10 +15,14 @@ use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::load_feature_enabled;
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
-use omnicrawl_config::features::context_compaction::load_context_compaction_config;
 use omnicrawl_config::features::approval::{
     load_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW,
 };
+use omnicrawl_config::features::context_compaction::load_context_compaction_config;
+use omnicrawl_config::features::decision_model::{
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH,
+};
+use omnicrawl_config::features::tools::load_disabled_tools;
 use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
 use omnicrawl_config::models::model_catalog::{
     build_catalog, detect_model_options, ensure_current_model_option, Catalog, CatalogPorts,
@@ -128,6 +132,9 @@ pub struct ServiceOptions {
     /// 审查运行期（`approval.mode = review` 时用）；`None` 表示没有审查运行期，
     /// 此时需审查的调用按 fail-closed 拒绝。
     pub review: Option<omnicrawl_host::review::ReviewOptions>,
+    /// 提问托管运行期（`[decision_models.features] ask_user_custody`）；`None` 表示不托管，
+    /// 有选项的提问照旧等 HTTP 提交的答案。
+    pub custody: Option<omnicrawl_host::tools::CustodyOptions>,
     /// 模型发现缓存：跨请求存活，`POST /models/refresh` 清空它。
     pub discovery_cache: Arc<DiscoveryCache>,
     /// 内核可执行文件：运行期重起内核（切换会话 / 工作区）需要它；嵌入模式可以不给。
@@ -160,6 +167,7 @@ impl ServiceOptions {
             monitors: None,
             plugins: None,
             review: None,
+            custody: None,
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
@@ -1259,8 +1267,20 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
         project_enabled: true,
         user_enabled: true,
         session_enabled: false,
+        rerank: Arc::new(omnicrawl_host::tools::rerank_options_from_config(
+            env,
+            DECISION_SWITCH_MEMORY_SEARCH,
+        )),
         ..MemoryOptions::default()
     };
+    // 知识库检索重排：与 TUI 同源，按 `[decision_models.features] kb_search_rerank` 装配。
+    options.registry_options.knowledge_rerank = Arc::new(
+        omnicrawl_host::tools::rerank_options_from_config(env, DECISION_SWITCH_KB_SEARCH),
+    );
+    // 工具开关（`[tools]` 段）同样在启动期装载：若这里不装，`config.toml` 里关掉的
+    // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
+    options.registry_options.disabled_tools =
+        load_disabled_tools(env, None).unwrap_or_default();
     options.monitors = Some(monitors);
     // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
     options.plugins = Some(Arc::new(PluginHost::from_environment(
@@ -1270,36 +1290,21 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     // 审查运行期：与 TUI 同源（`approval.review_model` 为空时回落主模型，凭据与基地址
     // 沿用主渠道，脱敏旁路按 `[desensitization]` 配置构造）。
     options.review = build_review_options(&llm, env);
+    // 提问托管：与 TUI 同源（`[decision_models.features] ask_user_custody`）。
+    options.custody = Some(omnicrawl_host::tools::custody_options_from_config(env));
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
 
-/// 按配置与主模型视图装配审查运行期（与 TUI 的 `build_review_options` 同源）。
+/// 按配置与主模型视图装配审查运行期（与 TUI 同源：`omnicrawl_host::review`）。
 ///
-/// 模型取 `approval.review_model`，为空时回落主模型；主模型也为空时返回 `None`
-/// （没有可用审查模型，需审查的调用会 fail-closed 拒绝）。
+/// 审查通道按 `[decision_models.features] tool_call_review` 在对话模型与结构化决策模型之间选；
+/// 没有可用审查模型时返回 `None`（需审查的调用会 fail-closed 拒绝）。
 fn build_review_options(
     llm: &LlmConfig,
     env: &ConfigEnvironment,
 ) -> Option<omnicrawl_host::review::ReviewOptions> {
-    let review_model = omnicrawl_config::features::approval::load_approval_review_model(env, None)
-        .unwrap_or_default();
-    let model = if review_model.trim().is_empty() {
-        llm.model.clone()
-    } else {
-        review_model
-    };
-    if model.trim().is_empty() {
-        return None;
-    }
-    Some(omnicrawl_host::review::ReviewOptions {
-        model,
-        base_url: llm.base_url.clone(),
-        api_key: llm.api_key.clone(),
-        api_key_env: llm.api_key_env.clone(),
-        request_timeout_seconds: llm.request_timeout_seconds,
-        masking: omnicrawl_host::review::masking_from_config(env).map(Arc::new),
-    })
+    omnicrawl_host::review::review_options_from_config(llm, env)
 }
 
 /// `GenerationOptions` 的 JSON 形状：只带明确配置过的项。
@@ -1348,6 +1353,8 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         plugins: options.plugins.clone(),
         // 审查运行期与 `options_from_process` 装配的那份同源（嵌入与测试可直接填 `None`）。
         review: options.review.clone(),
+        // 提问托管同源：与审查一样走决策渠道，失败一律退回人工提问。
+        custody: options.custody.clone(),
         // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。
         prompt: options.prompt.clone(),
     }
@@ -2340,6 +2347,68 @@ impl AgentService {
         Ok(McpReload {
             diagnostics,
             tool_count,
+            requires_restart,
+        })
+    }
+
+    /// `PUT /settings/tools` 的运行期一半：按新开关重建工具表并把新声明下发给内核。
+    ///
+    /// 与 [`Self::reload_mcp`] 同一套事务：配置已由路由写盘，这里负责让运行期跟上——
+    /// 否则「设置里关掉的工具」要等下次启动才真的从模型可见面里消失。
+    ///
+    /// 回合在途时按 `try_lock` 快速失败；嵌入模式（`with_runner`）没有可重建的运行器，
+    /// 此时只更新下一次内核重起要用的选项并回报「需重启生效」。
+    pub fn reload_tool_switches(&self, disabled_tools: Vec<String>) -> Result<McpReload, ApiError> {
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，工具开关要等回合结束后才能生效。"))?;
+        let mut requires_restart = true;
+        if let Some(runner) = guard.as_mut() {
+            let mut registry_options = self.options.registry_options.clone();
+            registry_options.disabled_tools = disabled_tools.clone();
+            runner
+                .rebuild_registry(&registry_options)
+                .map_err(|message| {
+                    ApiError::new(
+                        "TOOLS_RUNTIME_FAILED",
+                        format!("重建工具表失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            // 新声明整体替换内核侧的工具表：模型下一轮才看得到被关掉的能力。
+            let declarations = runner.registry().declarations();
+            let params = SessionSettingsParams {
+                model: Some(Box::new(SessionModelSettings {
+                    tools: Some(declarations),
+                    ..SessionModelSettings::default()
+                })),
+                compaction: None,
+            };
+            runner
+                .apply_session_settings(params, &mut |_| {})
+                .map_err(|message| {
+                    ApiError::new(
+                        "TOOLS_RUNTIME_FAILED",
+                        format!("下发工具声明失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            requires_restart = false;
+        }
+        drop(guard);
+
+        // 下一次内核重起（切会话 / 切工作区）也要用新开关，否则会被启动时的旧值覆盖回去。
+        if let Ok(mut spawner) = self.spawner.lock() {
+            if let Some(spawner) = spawner.as_mut() {
+                spawner.registry_options.disabled_tools = disabled_tools;
+            }
+        }
+        Ok(McpReload {
+            diagnostics: Vec::new(),
+            tool_count: 0,
             requires_restart,
         })
     }

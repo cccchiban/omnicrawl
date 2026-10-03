@@ -43,16 +43,8 @@ impl ProviderProfile {
             .map_err(|error| ConfigError::new(error.message))
     }
 
-    /// `api_key_env` 指向的环境变量优先，其次明文（对应 `openai_common.resolve_api_key`）。
-    pub fn resolve_api_key(&self, env: &ConfigEnvironment) -> String {
-        let name = self.api_key_env.trim();
-        if !name.is_empty() {
-            let value = env.get(name).unwrap_or_default();
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
+    /// 生效的 API Key：只认配置里的明文 `api_key`。
+    pub fn resolve_api_key(&self, _env: &ConfigEnvironment) -> String {
         self.api_key.trim().to_string()
     }
 }

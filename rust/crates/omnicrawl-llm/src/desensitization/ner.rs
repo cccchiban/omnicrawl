@@ -31,7 +31,6 @@ pub const DEFAULT_CACHE_SIZE: usize = 2048;
 
 /// 用于长文本切块的句末标点（与训练时语料切分口径一致）。
 const SENT_END_CHARS: &str = "。！？；!?;…\n\r";
-const ENV_MODEL_PATH: &str = "OMNICRAWL_NER_MODEL";
 
 /// 中文姓名内部连接符：随中文片段一起进入模型，也允许出现在实体区间内。
 const CHINESE_CONNECTORS: [char; 2] = ['·', '・'];
@@ -90,7 +89,7 @@ pub fn packaged_kernel_model_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PACKAGED_KERNEL_MODEL_FILENAME)
 }
 
-/// 运行期的权重路径：显式配置 > `OMNICRAWL_NER_MODEL` > 内核随包二进制。
+/// 运行期的权重路径：显式配置 > 内核随包二进制（环境变量通道已移除）。
 ///
 /// 优先顺序与 [`resolve_model_path`] 一致，只在最后一级不同：那个函数按 Python 的
 /// checkpoint 名（[`PACKAGED_MODEL_FILENAME`]）拼默认路径，是配置层的兼容语义；
@@ -106,12 +105,7 @@ pub fn resolve_runtime_model_path(
             return PathBuf::from(trimmed);
         }
     }
-    if let Some(env_value) = env_value {
-        let trimmed = env_value.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
+    let _ = env_value;
     packaged_kernel_model_path(data_dir)
 }
 
@@ -126,18 +120,8 @@ pub fn resolve_model_path(
             return PathBuf::from(configured);
         }
     }
-    if let Some(env_value) = env_value {
-        let trimmed = env_value.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
+    let _ = env_value;
     default_dir.join(PACKAGED_MODEL_FILENAME)
-}
-
-/// 读取 `OMNICRAWL_NER_MODEL` 的名字（供调用方从环境注入）。
-pub fn model_path_env_name() -> &'static str {
-    ENV_MODEL_PATH
 }
 
 /// 设备选择：内核只有 CPU 实现，`auto` / `cuda` 一律回到 CPU。

@@ -33,19 +33,19 @@
     },
     {
       "raw": "0",
-      "enabled": false
+      "enabled": true
     },
     {
       "raw": "  OFF  ",
-      "enabled": false
+      "enabled": true
     },
     {
       "raw": "off",
-      "enabled": false
+      "enabled": true
     },
     {
       "raw": "disabled",
-      "enabled": false
+      "enabled": true
     },
     {
       "raw": "1",
@@ -95,7 +95,6 @@
           "<ROOT>"
         ]
       ],
-      "launch_cwd_env_present": false,
       "pythonpath": "<ROOT>"
     },
     {
@@ -114,14 +113,12 @@
           "<ROOT>;/existing"
         ]
       ],
-      "launch_cwd_env_present": false,
       "pythonpath": "<ROOT>;/existing"
     },
     {
-      "name": "blank_pythonpath_and_launch_cwd",
+      "name": "blank_pythonpath",
       "base": {
-        "PYTHONPATH": "   ",
-        "AI_VOICE_CHAT_LAUNCH_CWD": "/somewhere"
+        "PYTHONPATH": "   "
       },
       "pairs": [
         [
@@ -129,14 +126,12 @@
           "<ROOT>"
         ]
       ],
-      "launch_cwd_env_present": false,
       "pythonpath": "<ROOT>"
     },
     {
-      "name": "pythonpath_list_and_launch_cwd",
+      "name": "pythonpath_list",
       "base": {
         "PYTHONPATH": "/a:/b",
-        "AI_VOICE_CHAT_LAUNCH_CWD": "/x",
         "KEEP": "1"
       },
       "pairs": [
@@ -149,7 +144,6 @@
           "1"
         ]
       ],
-      "launch_cwd_env_present": false,
       "pythonpath": "<ROOT>;/a:/b"
     }
   ],
@@ -322,28 +316,14 @@
       "capture_logs": false,
       "capture_logs_flag": false,
       "started": [
-        "Telegram",
         "飞书"
       ],
       "started_after_close": [
-        "Telegram",
         "飞书"
       ],
       "diagnostics": [],
       "diagnostics_after_close": [],
       "spawns": [
-        {
-          "module": "omnicrawl.connectors.telegram",
-          "cwd": "<WORKSPACE>/workspaces/feishu_only_telegram_env",
-          "stdin_is_devnull": true,
-          "stdout_is_devnull": true,
-          "log_name": null,
-          "stderr_merged_into_stdout": false,
-          "stderr_is_devnull": true,
-          "new_process_group": true,
-          "launch_cwd_env_present": false,
-          "pythonpath_present": true
-        },
         {
           "module": "omnicrawl.connectors.fsapp",
           "cwd": "<WORKSPACE>/workspaces/feishu_only_telegram_env",
@@ -366,15 +346,42 @@
       },
       "capture_logs": false,
       "capture_logs_flag": false,
-      "started": [],
-      "started_after_close": [],
-      "diagnostics": [
-        "已通过 OMNICRAWL_AUTO_START_CONNECTORS 关闭 Telegram/飞书自动启动。"
+      "started": [
+        "Telegram",
+        "飞书"
       ],
-      "diagnostics_after_close": [
-        "已通过 OMNICRAWL_AUTO_START_CONNECTORS 关闭 Telegram/飞书自动启动。"
+      "started_after_close": [
+        "Telegram",
+        "飞书"
       ],
-      "spawns": []
+      "diagnostics": [],
+      "diagnostics_after_close": [],
+      "spawns": [
+        {
+          "module": "omnicrawl.connectors.telegram",
+          "cwd": "<WORKSPACE>/workspaces/auto_start_disabled",
+          "stdin_is_devnull": true,
+          "stdout_is_devnull": true,
+          "log_name": null,
+          "stderr_merged_into_stdout": false,
+          "stderr_is_devnull": true,
+          "new_process_group": true,
+          "launch_cwd_env_present": false,
+          "pythonpath_present": true
+        },
+        {
+          "module": "omnicrawl.connectors.fsapp",
+          "cwd": "<WORKSPACE>/workspaces/auto_start_disabled",
+          "stdin_is_devnull": true,
+          "stdout_is_devnull": true,
+          "log_name": null,
+          "stderr_merged_into_stdout": false,
+          "stderr_is_devnull": true,
+          "new_process_group": true,
+          "launch_cwd_env_present": false,
+          "pythonpath_present": true
+        }
+      ]
     },
     {
       "name": "auto_start_unknown_value",
@@ -390,12 +397,8 @@
       "started_after_close": [
         "Telegram"
       ],
-      "diagnostics": [
-        "OMNICRAWL_AUTO_START_CONNECTORS='maybe' 不是有效的开关值，将按启用处理。可使用 0/false/off 关闭。"
-      ],
-      "diagnostics_after_close": [
-        "OMNICRAWL_AUTO_START_CONNECTORS='maybe' 不是有效的开关值，将按启用处理。可使用 0/false/off 关闭。"
-      ],
+      "diagnostics": [],
+      "diagnostics_after_close": [],
       "spawns": [
         {
           "module": "omnicrawl.connectors.telegram",

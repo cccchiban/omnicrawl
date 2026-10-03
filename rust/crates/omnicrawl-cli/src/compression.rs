@@ -61,7 +61,7 @@ impl Clone for KernelCompressor {
 /// key 就会被上游回「模型不存在或当前账号无权使用该模型」。
 ///
 /// 配置里没有可读的 `[llm]`（极简配置/测试）或解析结果不可用时，退回「帧里那条连接 +
-/// 选择当模型名」，与改动前的行为一致。
+/// 选择当模型名」；凭据同样从 config.toml 读明文。
 fn resolve_compression_model(
     env: &ConfigEnvironment,
     model: &KernelModelConfig,
@@ -88,20 +88,14 @@ fn resolve_compression_model(
     child.model = selection.to_string();
     child.system_prompt = String::new();
     child.tools = Vec::new();
-    let api_key = std::env::var(&child.api_key_env).unwrap_or_default();
-    (child, String::new(), api_key)
+    // 配置读不出来时没有可用凭据：返回空串，调用方按「缺少凭据」跳过压缩。
+    (child, String::new(), String::new())
 }
 
-/// 被选中 Profile 自己写在 config.toml 里的明文 key（没有则 `None`）。
+/// Profile `api_key_env` 对应的「明文 key 优先」查找：只认 Profile 里写的 `api_key`。
 ///
-/// 为什么不直接用 `apply_model_selection` 给出的 `resolved.api_key`：
-/// `ProviderProfile::resolve_api_key` 是**环境变量优先**，而内核进程里的 `OPENAI_API_KEY`
-/// 是宿主为「当前主渠道」注入的（`omnicrawl-host/src/kernel.rs::kernel_credentials_env`）。
-/// 压缩渠道往往是另一家服务（例如主渠道是聚合网关、压缩渠道是硅基流动），它同样写着
-/// `api_key_env = "OPENAI_API_KEY"`，于是会拿主渠道的 key 去打压缩渠道 → HTTP 401。
-/// Python 侧直接读进程环境（用户自己的 shell），纯净环境里同名变量通常根本没设，
-/// 取到的就是明文 key——所以「明文优先」在常见配置下与 Python 同结果（差异只在
-/// 「仅在环境变量里轮换密钥、config.toml 里留着旧明文」时会用明文，写进 README 了）。
+/// 审查/压缩渠道往往是另一家服务（例如主渠道是聚合网关、压缩渠道是硅基流动），
+/// 用主渠道的 key 去打压缩渠道会 HTTP 401。
 fn profile_literal_key(env: &ConfigEnvironment, profile_id: &str) -> Option<String> {
     let profile_id = profile_id.trim();
     if profile_id.is_empty() {

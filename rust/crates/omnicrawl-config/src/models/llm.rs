@@ -120,16 +120,14 @@ fn json_to_toml(value: &serde_json::Value) -> toml::Value {
 }
 
 impl LlmConfig {
-    /// Python dataclass 的默认值：凭据相关的三项从环境取，其余为常量。
-    pub fn with_environment(env: &ConfigEnvironment) -> Self {
+    /// 空配置视图：所有字段取常量默认值，凭据一律来自配置段。
+    pub fn with_environment(_env: &ConfigEnvironment) -> Self {
         Self {
-            api_key: env.get("OPENAI_API_KEY").unwrap_or_default(),
-            base_url: env.get("OPENAI_BASE_URL").unwrap_or_default(),
-            model: env.get("OPENAI_MODEL").unwrap_or_default(),
-            thinking_type: env
-                .get("OPENAI_THINKING_TYPE")
-                .unwrap_or_else(|| DEFAULT_THINKING_TYPE.to_string()),
-            reasoning_effort: env.get("REASONING_EFFORT").unwrap_or_default(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            thinking_type: DEFAULT_THINKING_TYPE.to_string(),
+            reasoning_effort: String::new(),
             context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
             max_output_tokens: 0,
             native_vision: None,
@@ -172,22 +170,17 @@ impl LlmConfig {
             ));
         }
         if self.model_source == "legacy" {
-            require_non_empty("api_key", &self.api_key, "OPENAI_API_KEY")?;
-            require_non_empty("base_url", &self.base_url, "OPENAI_BASE_URL")?;
-            require_non_empty("model", &self.model, "OPENAI_MODEL")?;
+            require_non_empty("api_key", &self.api_key)?;
+            require_non_empty("base_url", &self.base_url)?;
+            require_non_empty("model", &self.model)?;
         } else {
             if self.model.trim().is_empty() {
                 return Err(ConfigError::new("缺少当前模型 model_id。"));
             }
             if self.api_key.trim().is_empty() {
-                let env_name = if self.api_key_env.is_empty() {
-                    "OPENAI_API_KEY".to_string()
-                } else {
-                    self.api_key_env.clone()
-                };
-                return Err(ConfigError::new(format!(
-                    "缺少 API Key，请设置环境变量 {env_name} 或在 Profile 中配置 api_key。"
-                )));
+                return Err(ConfigError::new(
+                    "缺少 API Key，请在 Profile 中配置 api_key。",
+                ));
             }
         }
         Ok(self)
@@ -233,10 +226,10 @@ impl ActiveModelRef {
     }
 }
 
-fn require_non_empty(key: &str, value: &str, env_name: &str) -> Result<(), ConfigError> {
+fn require_non_empty(key: &str, value: &str) -> Result<(), ConfigError> {
     if value.trim().is_empty() {
         return Err(ConfigError::new(format!(
-            "缺少配置 llm.{key}，请在 config.toml 中填写 llm.{key}，或设置环境变量 {env_name}。"
+            "缺少配置 llm.{key}，请在 config.toml 中填写 llm.{key}。"
         )));
     }
     Ok(())
@@ -256,7 +249,7 @@ pub fn normalize_reasoning_effort(value: &str) -> Result<&'static str, ConfigErr
     )))
 }
 
-/// 从本地配置文件和环境变量创建当前 LLM 运行视图。
+/// 从本地配置文件创建当前 LLM 运行视图。
 pub fn load_llm_config(env: &ConfigEnvironment) -> Result<LlmConfig, ConfigError> {
     let data = load_config_data(env, None)?;
     let section = get_section(&data, "llm")?;
@@ -264,30 +257,20 @@ pub fn load_llm_config(env: &ConfigEnvironment) -> Result<LlmConfig, ConfigError
         return load_multi_model_llm_config(env, &section);
     }
     LlmConfig {
-        api_key: read_required_config_text(env, &section, "api_key", "OPENAI_API_KEY")?,
-        base_url: read_required_config_text(env, &section, "base_url", "OPENAI_BASE_URL")?,
-        model: read_required_config_text(env, &section, "model", "OPENAI_MODEL")?,
+        api_key: read_required_config_text(&section, "api_key")?,
+        base_url: read_required_config_text(&section, "base_url")?,
+        model: read_required_config_text(&section, "model")?,
         thinking_type: read_optional_config_text(
-            env,
             &section,
             "thinking_type",
-            "OPENAI_THINKING_TYPE",
             DEFAULT_THINKING_TYPE,
         )?,
         reasoning_effort: read_optional_config_text(
-            env,
             &section,
             "reasoning_effort",
-            "REASONING_EFFORT",
             DEFAULT_REASONING_EFFORT,
         )?,
-        user_agent: read_optional_config_text(
-            env,
-            &section,
-            "user_agent",
-            "OPENAI_USER_AGENT",
-            "",
-        )?,
+        user_agent: read_optional_config_text(&section, "user_agent", "")?,
         context_window_tokens: read_context_window_tokens(&section, DEFAULT_CONTEXT_WINDOW_TOKENS)?,
         model_source: "legacy".to_string(),
         provider: "openai".to_string(),
@@ -365,22 +348,10 @@ pub fn save_active_model_ref(
     save_config_data(env, &data, config_path)
 }
 
-/// 必填文本：环境变量优先，其次配置项。
-pub fn read_required_config_text(
-    env: &ConfigEnvironment,
-    section: &Table,
-    key: &str,
-    env_name: &str,
-) -> Result<String, ConfigError> {
-    if let Some(value) = env.get(env_name) {
-        if !value.trim().is_empty() {
-            return Ok(value);
-        }
-    }
+/// 必填文本：只读配置项。
+pub fn read_required_config_text(section: &Table, key: &str) -> Result<String, ConfigError> {
     let missing = || {
-        ConfigError::new(format!(
-            "缺少配置 llm.{key}，请在配置文件中填写 llm.{key}，或设置环境变量 {env_name}。"
-        ))
+        ConfigError::new(format!("缺少配置 llm.{key}，请在配置文件中填写 llm.{key}。"))
     };
     match section.get(key) {
         None => Err(missing()),
@@ -392,17 +363,10 @@ pub fn read_required_config_text(
 
 /// 可选文本：空值回落默认。
 pub fn read_optional_config_text(
-    env: &ConfigEnvironment,
     section: &Table,
     key: &str,
-    env_name: &str,
     default: &str,
 ) -> Result<String, ConfigError> {
-    if let Some(value) = env.get(env_name) {
-        if !value.trim().is_empty() {
-            return Ok(value);
-        }
-    }
     match section.get(key) {
         None => Ok(default.to_string()),
         Some(Value::String(text)) => {

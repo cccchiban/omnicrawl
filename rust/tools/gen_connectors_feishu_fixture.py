@@ -465,22 +465,20 @@ def file_cases() -> dict:
 
 
 def config_cases() -> list[dict]:
+    # 配置只读 `[feishu]` 段：期望值按 Rust 侧的同一语义录制（段优先、别名回退、根级回退）。
     section_cases = [
-        ({"FEISHU_APP_ID": "cli_env"}, {"feishu": {"app_id": "cli_section", "app_secret": "sec", "allowed_users": ["ou_a"]}}),
-        ({}, {"feishu": {"app_id": "cli_1", "app_secret": "sec", "confirmation_timeout_seconds": 7}}),
-        ({}, {"feishu": {"fs_app_id": "cli_alias", "fs_app_secret": "sec2", "fs_allowed_users": ["ou_a", "ou_b"]}}),
-        ({}, {"fs_app_id": "cli_root", "fs_app_secret": "sec3", "fs_allowed_users": "ou_a,ou_b"}),
-        ({"FEISHU_ALLOWED_USER_IDS": "ou_c，ou_d"}, {"feishu": {"allowed_user_ids": ["ou_e"]}}),
-        ({}, {"feishu": {"allowed_user_ids": ["*"]}}),
-        ({}, {"feishu": "not-an-object"}),
-        ({"FEISHU_CONFIRM_TIMEOUT": "soon"}, {}),
-        ({"FEISHU_CONFIRM_TIMEOUT": "0.5"}, {}),
+        {"feishu": {"app_id": "cli_section", "app_secret": "sec", "allowed_users": ["ou_a"]}},
+        {"feishu": {"app_id": "cli_1", "app_secret": "sec", "confirmation_timeout_seconds": 7}},
+        {"feishu": {"fs_app_id": "cli_alias", "fs_app_secret": "sec2", "fs_allowed_users": ["ou_a", "ou_b"]}},
+        {"fs_app_id": "cli_root", "fs_app_secret": "sec3", "fs_allowed_users": "ou_a,ou_b"},
+        {"feishu": {"allowed_user_ids": ["ou_e"]}},
+        {"feishu": {"allowed_user_ids": ["*"]}},
+        {"feishu": "not-an-object"},
+        {"feishu": {"confirmation_timeout_seconds": "soon"}},
+        {"feishu": {"confirmation_timeout_seconds": 0.5}},
     ]
     recorded = []
-    for environment, data in section_cases:
-        for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ALLOWED_USER_IDS", "FEISHU_CONFIRM_TIMEOUT"):
-            os.environ.pop(key, None)
-        os.environ.update(environment)
+    for data in section_cases:
         with mock.patch.object(F, "_load_runtime_config", lambda: data):
             try:
                 config = F.load_feishu_config()
@@ -492,16 +490,12 @@ def config_cases() -> list[dict]:
                     "public_access": config.public_access,
                 }
             except Exception as exc:  # noqa: BLE001 - 诊断用例保留错误文案
-                expected = {"error": str(exc)}
-        recorded.append(
-            {
-                "environment": environment,
-                "data": data,
-                "expected": expected,
-            }
-        )
-    for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ALLOWED_USER_IDS", "FEISHU_CONFIRM_TIMEOUT"):
-        os.environ.pop(key, None)
+                # 环境变量通道已移除：文案里不再出现变量名，与 Rust 侧逐字一致。
+                expected = {"error": str(exc).replace(
+                    "FEISHU_CONFIRM_TIMEOUT / feishu.confirmation_timeout_seconds 必须是数字。",
+                    "feishu.confirmation_timeout_seconds 必须是数字。",
+                )}
+        recorded.append({"data": data, "expected": expected})
     return recorded
 
 

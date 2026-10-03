@@ -20,6 +20,9 @@ use omnicrawl_connectors::feishu::{
 };
 use omnicrawl_connectors::http::{HttpTransport, UreqTransport};
 use omnicrawl_connectors::telegram::{load_telegram_config, TelegramBot};
+use omnicrawl_config::core::runtime::{load_config_data, ConfigEnvironment};
+use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
+use omnicrawl_config::value::toml_to_json_object;
 use omnicrawl_core::{
     AgentLoopLimits, AgentLoopObservation, AgentLoopRunner, AgentModelReply, LoopError, LoopGuards,
     ReplySource, SystemClock, ToolBatchHost, ToolCall, ToolResult,
@@ -39,7 +42,7 @@ const TODO_TOOL_NAME: &str = "update_todos";
 const ASK_USER_TOOL_NAME: &str = "ask_user";
 const PAUSE_WORK_TOOL_NAME: &str = "pause_work";
 
-/// 模型端点设置。连接器模式没有宿主来交接 `initialize`，因此只从环境变量取。
+/// 模型端点设置。连接器模式没有宿主来交接 `initialize`，因此自己读 `config.toml`。
 struct ModelSettings {
     model: String,
     base_url: String,
@@ -48,32 +51,48 @@ struct ModelSettings {
 }
 
 impl ModelSettings {
-    fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Result<ModelSettings, String> {
-        let model = env("OMNICRAWL_MODEL")
-            .or_else(|| env("OPENAI_MODEL"))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                "连接器模式需要模型名：请设置 OMNICRAWL_MODEL（或 OPENAI_MODEL）。".to_string()
-            })?;
-        let api_key = env("OPENAI_API_KEY")
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "连接器模式需要凭据：请设置 OPENAI_API_KEY。".to_string())?;
-        let base_url = env("OPENAI_BASE_URL")
-            .map(|value| value.trim().trim_end_matches('/').to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let system_prompt = env("OMNICRAWL_SYSTEM_PROMPT")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    /// 只读 `config.toml`（与 TUI 的模型来源一致）。
+    ///
+    /// 连接器进程压根没有 `initialize` 握手，宿主也无从把模型配置交接进来，
+    /// 所以这里必须自己把配置读全。
+    fn load(env: &ConfigEnvironment) -> Result<ModelSettings, String> {
+        let configured = load_llm_config(env).ok();
+        let from_config = |pick: fn(&LlmConfig) -> String| {
+            configured
+                .as_ref()
+                .and_then(|llm| non_empty(Some(pick(llm))))
+        };
+
+        let model = from_config(|llm| llm.model.clone()).ok_or_else(|| {
+            "连接器模式需要模型名：请在 config.toml 中配置当前模型。".to_string()
+        })?;
+        let api_key = from_config(|llm| llm.api_key.clone()).ok_or_else(|| {
+            "连接器模式需要凭据：请在 config.toml 的模型通道里填写 api_key。".to_string()
+        })?;
+        let base_url =
+            from_config(|llm| llm.base_url.clone()).unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let system_prompt = DEFAULT_SYSTEM_PROMPT.to_string();
         Ok(ModelSettings {
             model,
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             system_prompt,
         })
     }
+}
+
+/// 去空白后的非空取值。
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// 连接器进程读到的 `config.toml`：读不到就按空对象处理，环境变量仍然可用。
+fn connector_config_data(env: &ConfigEnvironment) -> Value {
+    load_config_data(env, None)
+        .map(|table| toml_to_json_object(&table))
+        .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
 }
 
 /// 内核侧模型端口：把循环给的上下文直接交给 Provider 运行时。
@@ -490,9 +509,10 @@ pub fn run(name: &str) -> Result<(), String> {
 }
 
 fn run_telegram() -> Result<(), String> {
-    let env = |key: &str| std::env::var(key).ok();
-    let settings = Arc::new(ModelSettings::from_env(&env)?);
-    let config = load_telegram_config(&env, None)?;
+    let env = ConfigEnvironment::from_process();
+    let settings = Arc::new(ModelSettings::load(&env)?);
+    let data = connector_config_data(&env);
+    let config = load_telegram_config(data.get("telegram"))?;
     let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
     let driver = Arc::new(KernelDriver::new(settings, workspace));
     let transport: Arc<dyn HttpTransport> = Arc::new(UreqTransport::new());
@@ -502,17 +522,15 @@ fn run_telegram() -> Result<(), String> {
 }
 
 fn run_feishu() -> Result<(), String> {
-    let env = |key: &str| std::env::var(key).ok();
-    let settings = Arc::new(ModelSettings::from_env(&env)?);
-    // [feishu] 配置段通常来自 config.toml；内核没有配置读取层，这里只认环境变量。
-    let data = Value::Object(serde_json::Map::new());
-    let config = load_feishu_config(ConfigSource {
-        environment: &env,
-        data: &data,
-    })?;
+    let env = ConfigEnvironment::from_process();
+    let settings = Arc::new(ModelSettings::load(&env)?);
+    // 飞书配置来自 `config.toml` 的 `[feishu]` 段。
+    let data = connector_config_data(&env);
+    let config = load_feishu_config(ConfigSource { data: &data })?;
     if check_config(&config).get("ready").and_then(Value::as_bool) != Some(true) {
         return Err(
-            "飞书连接器还没有就绪：请设置 FEISHU_APP_ID 与 FEISHU_APP_SECRET（可选 FEISHU_ALLOWED_USER_IDS）。"
+            "飞书连接器还没有就绪：请在 config.toml 的 [feishu] 段填写 app_id 与 app_secret\
+             （可选 allowed_user_ids）。"
                 .to_string(),
         );
     }
@@ -532,6 +550,7 @@ fn run_feishu() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn driver(workspace: &str) -> KernelDriver {
         let settings = ModelSettings {
@@ -711,5 +730,117 @@ mod tests {
         let result = host.run_turn("你好", &mut |event| events.push(event));
         assert!(matches!(result, Err(TurnError::Failed(_))));
         assert!(events.is_empty());
+    }
+
+    /// 建一个只含用户配置目录的临时 home，返回 `~/.OmniCrawl` 所在的根。
+    fn temp_home(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("omnicrawl-connector-home-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".OmniCrawl")).expect("用户配置目录应能创建");
+        root
+    }
+
+    fn write_config(home: &Path, text: &str) {
+        std::fs::write(home.join(".OmniCrawl").join("config.toml"), text).expect("写入 config.toml");
+    }
+
+    /// `config.toml` + `models.toml` 里配好模型通道（环境变量全空）。
+    fn write_model_files(home: &Path) {
+        write_config(
+            home,
+            r#"
+version = 2
+
+[llm.active_model]
+source = "custom"
+key = "channel"
+
+[llm.profiles.channel]
+provider = "openai"
+enabled = true
+base_url = "https://config.example/v1"
+api_key = "config-secret"
+default_protocol = "openai_chat_completions"
+"#,
+        );
+        std::fs::write(
+            home.join(".OmniCrawl").join("models.toml"),
+            r#"
+version = 1
+
+[models.channel]
+display_name = "自建"
+profile = "channel"
+model_id = "config-model"
+protocol = "openai_chat_completions"
+enabled = true
+"#,
+        )
+        .expect("写入 models.toml");
+    }
+
+    #[test]
+    fn model_settings_fall_back_to_config_file() {
+        // 回归：连接器没有 initialize 握手，只认环境变量会让「配置写在 config.toml」的用法起不来。
+        let home = temp_home("model-config");
+        write_model_files(&home);
+        let env = ConfigEnvironment::new(home.clone(), "windows");
+
+        let settings = ModelSettings::load(&env).expect("配置里已有模型通道，应能加载");
+        assert_eq!(settings.model, "config-model");
+        assert_eq!(settings.api_key, "config-secret");
+        assert_eq!(settings.base_url, "https://config.example/v1");
+    }
+
+    #[test]
+    fn environment_wins_over_config_file() {
+        let home = temp_home("model-env");
+        write_model_files(&home);
+        let env = ConfigEnvironment::new(home.clone(), "windows")
+            .with_env_value("OMNICRAWL_MODEL", " env-model ")
+            .with_env_value("OPENAI_API_KEY", "env-key")
+            .with_env_value("OPENAI_BASE_URL", "https://env.example/v1/");
+
+        let settings = ModelSettings::load(&env).expect("环境变量齐备");
+        assert_eq!(settings.model, "env-model");
+        assert_eq!(settings.api_key, "env-key");
+        assert_eq!(settings.base_url, "https://env.example/v1", "末尾斜杠应去掉");
+    }
+
+    #[test]
+    fn model_settings_report_missing_configuration() {
+        let home = temp_home("model-missing");
+        let env = ConfigEnvironment::new(home, "windows");
+        // 不用 `expect_err`：`ModelSettings` 持有 api_key，刻意不实现 Debug（避免凭据进日志）。
+        let error = match ModelSettings::load(&env) {
+            Ok(_) => panic!("三处都没有模型名应报错"),
+            Err(error) => error,
+        };
+        assert!(error.contains("OMNICRAWL_MODEL"), "{error}");
+        assert!(error.contains("config.toml"), "{error}");
+    }
+
+    #[test]
+    fn connector_config_data_carries_feishu_section() {
+        // 回归：run_feishu 曾把 data 传成空对象，[feishu] 段的凭据永远读不到。
+        let home = temp_home("feishu-config");
+        write_config(
+            &home,
+            r#"
+[feishu]
+app_id = "cli_from_config"
+app_secret = "secret-from-config"
+allowed_user_ids = ["ou_1"]
+"#,
+        );
+        let env = ConfigEnvironment::new(home, "windows");
+        let data = connector_config_data(&env);
+        let config =
+            load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
+
+        assert_eq!(config.app_id, "cli_from_config");
+        assert_eq!(config.app_secret, "secret-from-config");
+        assert!(config.allows("ou_1"));
+        assert!(!config.public_access(), "白名单来自配置时不应是公开访问");
     }
 }

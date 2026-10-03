@@ -22,7 +22,7 @@
     "bearer_token": ""
    },
    "outcome": {
-    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+    "error": "api.bearer_token 不能为空。"
    }
   },
   {
@@ -31,7 +31,7 @@
     "bearer_token": "   "
    },
    "outcome": {
-    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+    "error": "api.bearer_token 不能为空。"
    }
   },
   {
@@ -212,7 +212,7 @@
    }
   },
   {
-   "name": "环境变量令牌优先",
+   "name": "环境令牌不生效",
    "env": {
     "OMNICRAWL_API_TOKEN": " env-token "
    },
@@ -221,7 +221,7 @@
    },
    "outcome": {
     "ok": {
-     "bearer_token": "env-token",
+     "bearer_token": "file-token",
      "host": "127.0.0.1",
      "port": 8765,
      "allowed_origins": [],
@@ -231,7 +231,7 @@
    }
   },
   {
-   "name": "环境变量令牌为空回退段内",
+   "name": "环境令牌为空也不影响段内",
    "env": {
     "OMNICRAWL_API_TOKEN": "   "
    },
@@ -254,7 +254,7 @@
    "env": {},
    "section": {},
    "outcome": {
-    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+    "error": "api.bearer_token 不能为空。"
    }
   },
   {
@@ -264,7 +264,7 @@
     "bearer_token": 123
    },
    "outcome": {
-    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+    "error": "api.bearer_token 不能为空。"
    }
   },
   {
@@ -280,7 +280,7 @@
    "env": {},
    "section": "",
    "outcome": {
-    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+    "error": "api.bearer_token 不能为空。"
    }
   },
   {
@@ -308,7 +308,7 @@
    }
   },
   {
-   "name": "环境变量覆盖地址与端口",
+   "name": "环境地址与端口不生效",
    "env": {
     "OMNICRAWL_API_HOST": "localhost",
     "OMNICRAWL_API_PORT": "9000"
@@ -321,8 +321,8 @@
    "outcome": {
     "ok": {
      "bearer_token": "parity-token",
-     "host": "localhost",
-     "port": 9000,
+     "host": "127.0.0.1",
+     "port": 8765,
      "allowed_origins": [],
      "confirmation_timeout_seconds": 300.0,
      "workers": 1
@@ -330,7 +330,7 @@
    }
   },
   {
-   "name": "环境变量 worker",
+   "name": "环境 worker 不生效",
    "env": {
     "OMNICRAWL_API_WORKERS": "2"
    },
@@ -344,7 +344,7 @@
      "port": 8765,
      "allowed_origins": [],
      "confirmation_timeout_seconds": 300.0,
-     "workers": 2
+     "workers": 1
     }
    }
   },

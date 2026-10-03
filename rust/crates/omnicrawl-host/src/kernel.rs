@@ -32,6 +32,7 @@ pub type KernelEnv = Vec<(String, String)>;
 /// 只读环境变量。而 `config.toml` 里写的字面 `api_key`（Python 侧的首选来源）并不在环境里，
 /// 所以宿主必须在起内核时把它补进子进程环境，否则「配置里有 key、环境里没有」的用法会在
 /// 每次回合上直接失败：`读取环境变量 OPENAI_API_KEY 失败…模型请求无法鉴权`。
+/// （这是父子进程的凭据握手，不属于被移除的「用户设置类环境变量」。）
 ///
 /// 密钥仍然只走进程环境，不进协议帧。名字为空时不注入（内核会按「无凭据」处理）。
 pub fn model_credentials_env(api_key: &str, api_key_env: &str) -> KernelEnv {

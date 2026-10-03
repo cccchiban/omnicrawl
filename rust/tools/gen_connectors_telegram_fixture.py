@@ -201,23 +201,21 @@ def destination_cases() -> list[dict]:
 
 
 def config_cases() -> list[dict]:
+    # 配置只读 `[telegram]` 段：期望值按 Rust 侧的同一语义录制。
     section_cases = [
-        ({"TELEGRAM_BOT_TOKEN": "from-env", "TELEGRAM_CONFIRM_TIMEOUT": "12"}, {"bot_token": "cfg", "allowed_user_ids": [1, 2]}),
-        ({}, {"bot_token": "cfg", "allowed_user_ids": [1, 2], "confirmation_timeout_seconds": 7}),
-        ({"TELEGRAM_ALLOWED_USER_IDS": "1，2, 3 ,"}, {"bot_token": "cfg"}),
-        ({}, {"bot_token": "cfg", "allowed_user_ids": []}),
-        ({"TELEGRAM_ALLOWED_USER_IDS": "1,abc"}, {}),
-        ({}, {"allowed_user_ids": ["x"]}),
-        ({"TELEGRAM_CONFIRM_TIMEOUT": "soon"}, {}),
-        ({}, {"bot_token": 123, "allowed_user_ids": [7]}),
-        ({}, {"bot_token": "cfg", "allowed_user_ids": 9}),
-        ({}, {}),
+        {"bot_token": "cfg", "allowed_user_ids": [1, 2]},
+        {"bot_token": "cfg", "allowed_user_ids": [1, 2], "confirmation_timeout_seconds": 7},
+        {"bot_token": "cfg", "allowed_user_ids": [1, 2, 3]},
+        {"bot_token": "cfg", "allowed_user_ids": []},
+        {"allowed_user_ids": "1,abc"},
+        {"allowed_user_ids": ["x"]},
+        {"confirmation_timeout_seconds": "soon"},
+        {"bot_token": 123, "allowed_user_ids": [7]},
+        {"bot_token": "cfg", "allowed_user_ids": 9},
+        {},
     ]
     recorded = []
-    for environment, section in section_cases:
-        for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_IDS", "TELEGRAM_CONFIRM_TIMEOUT"):
-            os.environ.pop(key, None)
-        os.environ.update(environment)
+    for section in section_cases:
         with mock.patch.object(RUNTIME, "load_config_data", lambda *a, **k: {"telegram": section}):
             try:
                 config = T.load_telegram_config()
@@ -227,10 +225,12 @@ def config_cases() -> list[dict]:
                     "confirm_timeout_seconds": config["confirm_timeout_seconds"],
                 }
             except ValueError as exc:
-                expected = {"error": str(exc)}
-        recorded.append({"environment": environment, "section": section, "expected": expected})
-    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_IDS", "TELEGRAM_CONFIRM_TIMEOUT"):
-        os.environ.pop(key, None)
+                # 环境变量通道已移除：文案里不再出现变量名，与 Rust 侧逐字一致。
+                expected = {"error": str(exc).replace(
+                    "TELEGRAM_CONFIRM_TIMEOUT / telegram.confirmation_timeout_seconds 必须是数字。",
+                    "telegram.confirmation_timeout_seconds 必须是数字。",
+                )}
+        recorded.append({"section": section, "expected": expected})
     return recorded
 
 

@@ -12,6 +12,7 @@ members = [
     "crates/omnicrawl-host",
     "crates/omnicrawl-ipc",
     "crates/omnicrawl-llm",
+    "crates/omnicrawl-onejev",
     "crates/omnicrawl-mcp",
     "crates/omnicrawl-protocol",
     "crates/omnicrawl-session",

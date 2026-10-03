@@ -4,20 +4,15 @@ use std::path::PathBuf;
 
 use crate::paths::resolve_lenient;
 
-/// 默认模型目录：`~/.omnicrawl/tts/models`（可用 `OMNICRAWL_TTS_MODEL_DIR` 覆盖）。
+/// 默认模型目录：`~/.omnicrawl/tts/models`。
 pub fn default_model_dir() -> PathBuf {
-    if let Ok(value) = std::env::var("OMNICRAWL_TTS_MODEL_DIR") {
-        if !value.trim().is_empty() {
-            return PathBuf::from(value.trim());
-        }
-    }
     home_directory()
         .join(".omnicrawl")
         .join("tts")
         .join("models")
 }
 
-/// 解析模型目录：未显式给出时回退默认目录（含环境变量覆盖）。
+/// 解析模型目录：未显式给出时回退默认目录。
 pub fn resolve_model_dir(model_dir: Option<&str>) -> PathBuf {
     match model_dir.map(str::trim).filter(|value| !value.is_empty()) {
         None => default_model_dir(),

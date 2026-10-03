@@ -397,8 +397,8 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   子回合里被允许的工具仍走同一 `tool.batch` 通道，`turn_id` 用子任务号，宿主据此把审批与生命周期分开。
   子代理的生命周期事件（`subagent.event`）也由内核发出。
 
-`subagent` 的可用角色来自内核读到的 `subagents.toml` 与 Markdown 定义（环境变量 `AI_SUBAGENTS_FILE`
-指定配置文件、`OMNICRAWL_SUBAGENTS_DIR` 指定定义目录）；未启用时工具仍在表里，调用会得到
+`subagent` 的可用角色来自内核读到的 `~/.OmniCrawl/subagents.toml` 与 `~/.OmniCrawl/agents`
+下的 Markdown 定义；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`。
 
 `subagent` 的执行方式：`action=run` 按 `max_concurrency` 并发跑子任务，`action=spawn` 交给内核的

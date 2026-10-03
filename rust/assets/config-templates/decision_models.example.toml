@@ -1,0 +1,72 @@
+# OmniCrawl 结构化决策模型配置（首次启动自动复制为 decision_models.toml）
+#
+# 结构化决策模型是独立于对话模型的第二类服务：送一段 state 加若干有类型的提问
+# （choice / score / noul），拿回校准过的答案。它不做文本生成，也不进 models.toml
+# 的对话模型目录——两套服务地址与模型命名空间互不相干。
+#
+# 支持的服务：Jev（TypeSafe AI）与自部署的 OneJev（本机 qev 服务）。三种请求方式见下方 mode 注释。
+# 密钥请用环境变量（api_key_env）；也可以直接写 api_key，但不要提交到版本库。
+version = 1
+
+# 默认使用的决策渠道 key；留空或指向不存在的渠道时取第一条启用的渠道。
+default_key = "jev-main"
+
+[channels.jev-main]
+name = "Jev 主渠道"
+# 请求方式：
+#   jev             —— Jev 原生接口，POST {base_url}/v1/decide，state + questions 直接进请求体。
+#   chat_completions —— OpenAI 兼容接口，POST {base_url}/v1/chat/completions，
+#                      同一份 state + questions 作为 user 消息发出，从返回内容里解析 answers。
+#   onejev          —— 本机自部署的 OneJev 服务，POST {base_url}/v1/systemone，
+#                      请求与响应形状与 jev 相同；base_url 指向本地服务（见下方 [local]）。
+mode = "jev"
+# 接口基础地址（不含 /v1/decide 或 /v1/chat/completions）。
+base_url = "https://jevtypesafeai.com/api"
+# 内联密钥（可留空，改用下面的环境变量）。
+api_key = ""
+api_key_env = "JEV_API_KEY"
+# 决策模型：jev-latest 跟随最新版本；生产环境建议钉死版本（如 jev-1.13.0）。
+model = "jev-latest"
+enabled = true
+
+# 决策模型的功能开关。开关关闭时相关功能走原路径（当前即对话模型审查与本地排序检索）。
+[features]
+# 工具调用审查使用决策模型：开启后 approval.mode = review 的审查请求改走决策模型
+# （同一份待审查负载当 state，问一个 choice 问题直接读回结论），不生成文本也不用
+# 解析模型输出，因此更快。审查不可用时按 fail-closed 拒绝，不退化成对话模型审查。
+tool_call_review = false
+
+# 记忆搜索使用决策模型排序：开启后 memory_search 先取更宽的候选池（最多 20 条），
+# 再让决策模型按相关度排序，按各候选项的置信度降序返回，条数仍按调用方给的
+# max_results。决策服务不可用（缺渠道/凭据、超时、响应不可解析）时回退本地排序，
+# 检索工具不会因此失败。
+memory_search_rerank = false
+
+# 知识库检索使用决策模型排序：对 kb_search 同理，候选描述用标题、路径与摘要。
+kb_search_rerank = false
+
+# 提问由决策模型自动作答：开启后模型调用 ask_user 且带选项时，不再弹面板等你作答，
+# 而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型，让它选最符合
+# 你意图的一项。没有选项的提问（自由问答）照旧交给你。决策服务不可用时回退到人工
+# 提问，不会替你瞎猜；自动作答会在会话流里留一条提示。
+ask_user_custody = false
+
+# 自部署（OneJev）：在本机跑一份决策模型，不依赖云端服务。
+#
+# 官方发布 0.8B / 4B / 9B / 27B / 27B-FP8 五档（Hugging Face 的 OmniJev/OneJev-*），
+# 由本机 Python 服务 `qev serve` 提供 TypeSafe 兼容接口。设置面板的「结构化决策模型」页
+# 可以一键下载某一档、准备运行环境、启停本地服务，并把决策渠道切到自部署。
+# 权重与虚拟环境都在 model_dir 下（默认 ~/.omnicrawl/onejev），不进工作区。
+[local]
+# 当前部署的尺寸：0.8B / 4B / 9B / 27B-FP8 / 27B。
+# 显存下限大致是 4 / 12 / 24 / 34 / 60 GB；没有独显时只能跑 CPU（很慢）。
+size = "0.8B"
+# 推理设备：auto（有 GPU 用 CUDA）/ cuda / cpu。
+device = "auto"
+# 数据根目录：权重在 <root>/models/、虚拟环境在 <root>/venv/、缓存与日志也在下面。
+# 留空表示默认目录 ~/.omnicrawl/onejev。
+model_dir = ""
+# 决策渠道选了自部署（mode = "onejev"）时，是否在切换渠道后自动拉起本地服务。
+auto_start = true
+# 启动后等待健康检查的上限（秒）：首次加载权重并捕获 CUDA 图，大尺寸会久一些。
+health_timeout_seconds = 600

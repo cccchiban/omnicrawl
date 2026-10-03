@@ -169,25 +169,15 @@ pub fn load_mcp_config(
     let data = load_config_data(env, config_path)?;
     let section = get_section(&data, "mcp")?;
 
-    let mut enabled = read_bool_field(&section, "enabled", false, "mcp.enabled")?;
-    if let Some(env_enabled) = read_bool_env(env, "MCP_ENABLED")? {
-        enabled = env_enabled;
-    }
+    let enabled = read_bool_field(&section, "enabled", false, "mcp.enabled")?;
 
-    let mut default_timeout = read_int_field(
+    let default_timeout = read_int_field(
         &section,
         "default_timeout_seconds",
         30,
         1,
         MAX_COMMAND_TIMEOUT_SECONDS,
         "mcp.default_timeout_seconds",
-    )?;
-    default_timeout = read_int_env(
-        env,
-        "MCP_DEFAULT_TIMEOUT_SECONDS",
-        default_timeout,
-        1,
-        MAX_COMMAND_TIMEOUT_SECONDS,
     )?;
 
     let policy = load_policy_config(&get_section(&section, "policy")?)?;
@@ -422,31 +412,6 @@ fn hostname_of(netloc: &str) -> String {
     }
 }
 
-fn read_bool_env(env: &ConfigEnvironment, name: &str) -> Result<Option<bool>, McpConfigError> {
-    let Some(value) = env.get(name) else {
-        return Ok(None);
-    };
-    if value.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(parse_bool_text(&value, name)?))
-}
-
-fn read_int_env(
-    env: &ConfigEnvironment,
-    name: &str,
-    default: i64,
-    min_value: i64,
-    max_value: i64,
-) -> Result<i64, McpConfigError> {
-    let Some(value) = env.get(name) else {
-        return Ok(default);
-    };
-    if value.trim().is_empty() {
-        return Ok(default);
-    }
-    parse_int_text(&value, min_value, max_value, name)
-}
 
 fn read_bool_field(
     section: &Table,
@@ -689,10 +654,11 @@ mod tests {
     }
 
     #[test]
-    fn environment_overrides_global_switch() {
+    fn environment_does_not_override_global_switch() {
+        // 环境变量通道已移除：注入开关取值也不改变结论。
         let environment = env("/tmp").with_env_value("MCP_ENABLED", "是");
-        let config = load_mcp_config(&environment, None).expect("环境变量应当可读");
-        assert!(config.enabled);
+        let config = load_mcp_config(&environment, None).expect("配置应当可读");
+        assert!(!config.enabled);
     }
 
     #[test]

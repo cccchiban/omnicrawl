@@ -11,7 +11,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `src/main.rs` | 二进制入口：选内核、握手、进出全屏、事件循环与终端恢复 |
-| `src/args.rs` | 启动参数（命令行 → 环境变量 → 默认值）、内核路径解析 |
+| `src/args.rs` | 启动参数（命令行 → config.toml → 默认值）、内核路径解析 |
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载、鼠标拖选选区 |
 | `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
@@ -159,7 +159,7 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 | `web_search` | 已实现 | Bing / DuckDuckGo / 雅虎三引擎：桌面浏览器请求头、端点与查询参数逐字对齐、正则解析结果页（含雅虎 `RU=` 与 DDG `uddg=` 跳转还原）、验证码/异常流量如实报错、网络错误重试 |
 | `fetcher` | 已实现 | 多 URL 并行抓取、手动跟随 301/302/307/308 与 `<meta refresh>`、内网/本机目标直连、`insecure=true` 跳过证书校验、正文提取（`main` → `article` → `body`，剔除脚本样式）且 HTML5 容错解析 |
 | `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现 | 整组注册：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型 |
-| `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model`（或 `OMNICRAWL_ADVISOR_MODEL`）给出时进表 |
+| `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model` 给出、或 `[advisor]` 段配置启用时进表 |
 | `update_todos` / `ask_user` / `pause_work` | 已实现 | 由界面侧判定与面板交互 |
 | `tts_synthesize` | 已实现 | 引擎在 `omnicrawl-tts`（文本归一化、音频 I/O 与声线库、greedy 生成帧逐帧一致），执行体在宿主工具表 `omnicrawl-host/src/tools/registry.rs`；`[tts]` 未启用时工具不进表（与 Python 一致） |
 | `subagent` | 由并行内核侧改造覆盖 | `controllers/subagents/*` 与本 crate 的 `subagent_types` 接线正在推进中，本 crate 不重复开工 |
@@ -206,15 +206,15 @@ cargo run -p omnicrawl-tui -- --model deepseek-v4-flash --session-root ../.agent
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--kernel <路径>` | `$OMNICRAWL_BINARY` → 同目录 `omnicrawl` → PATH | 内核可执行文件 |
-| `--model <名称>` | `$OMNICRAWL_MODEL` / `$OPENAI_MODEL` → config.toml 的当前模型 | 命令行与环境变量都没有时退回配置（`[llm.active_model]` / `[llm] model`，对齐 Python 的读配置语义）；三处都没有才报错 |
-| `--base-url <地址>` | `$OPENAI_BASE_URL` | 模型接口基地址 |
+| `--kernel <路径>` | 同目录 `omnicrawl` → PATH | 内核可执行文件 |
+| `--model <名称>` | config.toml 的当前模型 | 命令行没给时退回配置（`[llm.active_model]` / `[llm] model`）；两处都没有才报错 |
+| `--base-url <地址>` | config.toml 的基地址 | 模型接口基地址 |
 | `--api-key-env <变量名>` | `OPENAI_API_KEY` | 凭据只给环境变量名，不进帧 |
 | `--session-root <目录>` | 空 | 给了就让内核自己持有会话（转录与压缩） |
 | `--context-window <N>` | 空 | HUD 上下文占用条的分母 |
 | `--approval <manual\|review\|auto>` | config.toml 的 `[approval] mode`（没配时为 `review`） | 命令行给的模式优先；不给时读配置（对齐 Python `load_approval_mode`，含别名与默认值），配置读不出来或取值非法直接报错而不静默降级；`manual` 下非自持工具先弹确认 |
 | `--command-timeout <秒>` | `360` | 命令类工具默认超时（与 `MAX_COMMAND_TIMEOUT_SECONDS` 一致，上限 360） |
-| `--tool-timeout <秒>` | `$AGENT_TOOL_TIMEOUT_SECONDS` → `600` | 单批工具执行的最长等待（上限 3600）：超时把未完成的调用写成超时观察、回合继续推进，后台结果被丢弃 |
+| `--tool-timeout <秒>` | `600` | 单批工具执行的最长等待（上限 3600）：超时把未完成的调用写成超时观察、回合继续推进，后台结果被丢弃 |
 
 按键：`Enter` 提交、`Ctrl+J` 换行、`Esc` 取消当前回合（空闲时清空输入）、`↑`/`↓`/`PageUp`/`PageDown`
 滚动消息区、`Ctrl+L` 清屏、`Ctrl+C` 清空输入、`Ctrl+Q` 退出；审批面板用 `Y`/`N`，
@@ -292,7 +292,7 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 - **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
 - **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
 - **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 插件 `workspace.switch.before`（拒绝即中止，旧 Worker 不动；失败时补发 `workspace.switch.error`）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。与 Python 的已知差异：`before`/`after` 由 `PluginHost::switch_workspace` 一次发出，因此钩子相对「候选装配」的先后与 Python 不同源（见「本阶段的边界」）。
-- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 进度树与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。握手时下发的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled` 缺省开启时），`compaction` 由 `[context_compaction]` 整段映射（触发阈值优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）—— 内核不读配置文件，不给就等于回落默认值（摘要预算 2000 token、记忆回写关闭），用户配置形同没写。
+- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 进度树与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` 可覆盖。握手时下发的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled` 缺省开启时），`compaction` 由 `[context_compaction]` 整段映射（触发阈值优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）—— 内核不读配置文件，不给就等于回落默认值（摘要预算 2000 token、记忆回写关闭），用户配置形同没写。
   内核按 Python 的口径把工具事件一并落进转录：每次模型请求工具先落 `tool_call_requested`（公开参数 + 本批 assistant 原文的 `assistant_content` / 思考回传字段 / `function_name`），整批执行且输出预算/视觉/压缩处理过之后落 `tool_result`（`output` 展示全文、`model_output` 模型可见输出，超长输出由会话存储落 artifact），被拒绝的调用另有 `tool_call_denied`；因此回放出的历史页能还原工具卡，`/undo` 的 `event_ids` 也自然覆盖这些事件。已知缺口只剩两处：`tool_call_approved` 仍未落盘（审批在宿主侧完成，协议里还没有宿主→内核的审批通知），以及宿主协议观察不带 `ui_artifact`，事件里按 Python 缺省写 `{}`。子代理内部的工具调用**不落父会话**（Python 的 `persist_session_events=False` 口径）。
 - **异步内核往返**：命令层的接口是同步的、内核链路是异步帧，因此 `/undo`、`/compact` 与 `/review` 由宿主在进命令层之前拦下、异步下发（响应按请求 id 回填，状态行随回执收起）。`/review` 必须走异步：评审子 Agent 的工具批次要回到宿主执行，同步等待会与 `tool.batch` 互相卡死；它先在宿主侧跑 git 预检（复用命令层的 `check_review_preconditions`），回执到了先渲染报告、再发一条 `session.append` 把报告注入内核上下文（下一轮请求可见）。
 - **同步往返**：只读或本地毫秒级的几条用宿主侧快速往返（`/tasks`、`/task`、`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume`）；等待期间让路的帧收进 `deferred_frames`，下次 `drain_frames` 按原顺序处理，通知不丢。
@@ -563,7 +563,8 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
 右侧 `Esc`/`←` 先回左栏；上下文页 `Tab` 切换字段，Textual `Select` 的 `Enter`/`↑`/`↓`/`空格` 展开候选，
 展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起（单选页与上下文页共用这套键位）；
-工具开关页 `↑`/`↓` 选行、`←`/`→`/`Enter`/`空格` 切换。
+工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，其余行切换工具开关）；
+结构化决策模型页的渠道行 `Enter`/`→` 进表单，其下方的功能开关行同样用 `←`/`→`/`Enter`/空格 就地切换。
 
 本批落地的一级项与二级面板：
 
@@ -576,7 +577,8 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
-| 工具设置 | 已实现（内置工具开关节） | 逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
+| 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/v1/chat/completions`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前四项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期 |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 
 TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成后端**（接口 / 本地，后端行会写明
@@ -614,7 +616,7 @@ TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成�
 
 ### Provider 配置接线（`initialize.model`）
 
-握手不再发空壳：没显式给 `--base-url`（或 `OPENAI_BASE_URL`）时，`initialize.model` 的
+握手不再发空壳：没显式给 `--base-url` 时，`initialize.model` 的
 Provider、协议、基地址、凭据变量名、生成选项（推理强度/温度/最大输出/请求超时/重试/provider_options）
 与上下文窗口全部来自 `config.toml` + `models.toml` 的解析结果（`load_llm_config` / `load_channel_configuration`），
 独立运行不必再靠命令行参数喂模型配置。
@@ -690,14 +692,15 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    缺省开启）；作用域里项目级与用户级常开，**会话级不开**（内核自持会话时宿主拿不到 session id，
    强行开启只会让模型调 `scope="session"` 时拿到「未启用」）；
    视觉路径：`read_image` 始终在工具表里（与 Python `_build_tools` 一致），图片的去向由路由决定——
-   打开 `--native-vision`（或 `OMNICRAWL_NATIVE_VISION`），或配置里当前模型的 `native_vision`
+   打开 `--native-vision`，或配置里当前模型的 `native_vision`
    （`models.toml` 的模型条目 / 渠道 Profile，按「模型覆盖 > 渠道覆盖」解析）为真时图片直送主模型
    （握手随 `initialize.model.native_vision` 告知内核，内核不再走代理）；没开但配了 `[vision]` 时图片
    交给独立视觉模型代理分析、结论作为不可信观察回填；两者都没有时图片不进请求，主模型只收到
    图片元数据。Python 侧「未显式配置时回落运行时模型能力」的判定需要模型能力表，本 crate 目前没有，
    因此未配置时按关闭处理而不是自动判断；
    顾问的已知差异：顾问看到的「工作分支」由对话记录（user/assistant 文本）投影而成（Python 用 turn 级注入的完整工作消息），
-   顾问模型/凭据来自 `--advisor-*` 与 `OMNICRAWL_ADVISOR_*`（基地址与凭据变量默认回落主模型），
+   顾问模型来自 `--advisor-*` 与 `[advisor]` 段（基地址默认回落主模型），凭据只取顾问模型所属渠道的明文
+   `api_key`（渠道没写则回落主模型那份），一律读 TOML、不读环境变量，
    推理强度按 `--advisor-effort` 直接下发；
    Windows 桌面工具的已知差异：截图 PNG 由 Rust 侧编码器生成（与 Python 的 GDI+ 编码字节不同，尺寸/阈值行为一致），
    截图固定落在工作区 `.omnicrawl/.agent_tmp/images/`（Python 由工作区配置提供目录），

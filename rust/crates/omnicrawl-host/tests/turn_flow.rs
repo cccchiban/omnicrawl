@@ -155,6 +155,14 @@ fn model() -> KernelModelConfig {
 }
 
 fn runner(client: KernelClient, root: &Path) -> TurnRunner {
+    runner_with_custody(client, root, None)
+}
+
+fn runner_with_custody(
+    client: KernelClient,
+    root: &Path,
+    custody: Option<omnicrawl_host::tools::CustodyOptions>,
+) -> TurnRunner {
     let options = RunnerOptions {
         workspace_root: root.to_path_buf(),
         model: model(),
@@ -166,6 +174,7 @@ fn runner(client: KernelClient, root: &Path) -> TurnRunner {
         client_name: "omnicrawl-host-test".to_string(),
         plugins: None,
         review: None,
+        custody,
         prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
@@ -200,6 +209,25 @@ fn events_of(events: &[HostEvent]) -> Vec<String> {
         .iter()
         .map(|event| event.method().to_string())
         .collect()
+}
+
+/// 固定选某一项的托管桩：不起网络，并记下收到的上下文。
+struct FixedChoice {
+    index: usize,
+    seen: Arc<Mutex<Option<(String, Vec<String>)>>>,
+}
+
+impl omnicrawl_host::tools::ChoiceClient for FixedChoice {
+    fn choose(
+        &self,
+        request: &omnicrawl_host::tools::decision_choice::ChoiceRequest<'_>,
+    ) -> Result<usize, String> {
+        *self.seen.lock().expect("记录未被毒化") = Some((
+            request.state.to_string(),
+            request.criteria.iter().map(|(key, _)| key.clone()).collect(),
+        ));
+        Ok(self.index)
+    }
 }
 
 #[test]
@@ -345,6 +373,79 @@ fn ask_user_is_answered_through_interactor() {
     assert_eq!(result.observations.len(), 1);
     assert!(result.observations[0].result.ok);
     assert_eq!(result.observations[0].result.output, "选项A");
+    pipe.close();
+}
+
+#[test]
+fn custody_answers_the_question_without_asking_the_user() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("custody");
+    let seen = Arc::new(Mutex::new(None));
+    let custody = omnicrawl_host::tools::CustodyOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_choice::ChoiceChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+        }),
+        masking: None,
+        client: Arc::new(FixedChoice {
+            index: 1,
+            seen: Arc::clone(&seen),
+        }),
+    };
+    let mut subject = runner_with_custody(client, &root, Some(custody));
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(concat!(
+        r#"{"jsonrpc":"2.0","id":3,"method":"tool.batch","params":{"turn_id":"turn-1","step":1,"calls":["#,
+        r#"{"name":"ask_user","arguments":{"question":"选哪个？","options":["选项A","选项B"],"kind":"select"},"id":"c1","function_name":"ask_user"}]}}"#,
+    ));
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":1,"paused":false}}"#,
+    );
+
+    // 托管生效时交互层不该被问到：主播的 `answer` 一次都没走。
+    let mut interactor = Scripted {
+        approve: true,
+        answer: Some("选项A".to_string()),
+        asked: Vec::new(),
+    };
+    let mut events: Vec<HostEvent> = Vec::new();
+    subject
+        .submit("问一下", &TurnControl::new(), &mut interactor, &mut |event| {
+            events.push(event)
+        })
+        .expect("回合应当跑完");
+
+    assert!(interactor.asked.is_empty(), "{:?}", interactor.asked);
+    let result =
+        ToolBatchResult::from_result(&recorder.result(3)).expect("宿主回的应当是工具批次结果");
+    assert_eq!(result.observations.len(), 1);
+    assert!(result.observations[0].result.ok);
+    assert_eq!(result.observations[0].result.output, "选项B", "取桩选中的那一项");
+
+    // 自动作答在会话流里留痕，并带上问题与选中项。
+    let notices: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            HostEvent::Notice(payload) => Some(payload.message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains("选哪个？"), "{}", notices[0]);
+    assert!(notices[0].contains("选项B"), "{}", notices[0]);
+
+    // 请求上下文带上了提问与用户本回合的请求。
+    let (state, criteria) = seen.lock().expect("记录未被毒化").clone().expect("托管被调用");
+    assert!(state.contains("选哪个？"), "{state}");
+    assert!(state.contains("问一下"), "{state}");
+    assert_eq!(criteria, vec!["o0", "o1"]);
     pipe.close();
 }
 

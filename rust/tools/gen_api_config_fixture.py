@@ -5,10 +5,11 @@
 
 - `APIConfig` 的校验顺序与文案（令牌、回环地址、端口、确认超时、worker 上限、CORS 通配符）；
 - 归一化结果（令牌 strip、来源列表去空白与空串、端口与 worker 取整）；
-- `load_api_config` 的环境变量优先级、`api` 段类型校验与解析错误文案。
+- `load_api_config` 的 `api` 段类型校验与解析错误文案。
 
-环境变量用 `mock.patch.dict` 注入（`USERPROFILE`/`HOME` 也一并固定），`load_config_data`
-被替换成返回 `{"api": <用例段>}`，因此 `get_section` 的类型校验同样走真实现。
+环境变量通道已从 Rust 侧移除：期望值在**清空这些变量**的前提下录制，`env` 仍原样写进
+数据集，供 Rust 侧证明「注入也不读」。`load_config_data` 被替换成返回 `{"api": <用例段>}`，
+因此 `get_section` 的类型校验同样走真实现。
 
 用法：``python rust/tools/gen_api_config_fixture.py``
 输出：``rust/crates/omnicrawl-api/tests/fixtures/api_config_parity.json``
@@ -49,26 +50,34 @@ def _payload(config: APIConfig) -> dict:
     }
 
 
+def normalize_error(message: str) -> str:
+    """把错误文案归一成「环境变量通道已移除」后的形状，与 Rust 侧逐字一致。"""
+
+    return message.replace(
+        "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。",
+        "api.bearer_token 不能为空。",
+    )
+
+
 def construct_case(name: str, **kwargs) -> dict:
     """`APIConfig(...)` 的构造结果：归一化字段或异常文案。"""
 
     try:
         return {"name": name, "input": kwargs, "outcome": {"ok": _payload(APIConfig(**kwargs))}}
     except (ValueError, TypeError) as error:
-        return {"name": name, "input": kwargs, "outcome": {"error": str(error)}}
+        return {"name": name, "input": kwargs, "outcome": {"error": normalize_error(str(error))}}
 
 
 def load_case(name: str, *, env: dict | None = None, section: object = None) -> dict:
     """`load_api_config()` 的结果：环境变量与 `api` 段一起喂给真实现。"""
 
     environ = dict(BASE_ENV)
-    environ.update(env or {})
     with mock.patch.dict(os.environ, environ, clear=True):
         with mock.patch.object(APP, "load_config_data", lambda *args, **kwargs: {"api": section}):
             try:
                 outcome = {"ok": _payload(APP.load_api_config())}
             except Exception as error:  # noqa: BLE001 - 用例要的就是异常文案
-                outcome = {"error": str(error)}
+                outcome = {"error": normalize_error(str(error))}
     return {"name": name, "env": env or {}, "section": section, "outcome": outcome}
 
 
@@ -99,9 +108,9 @@ def build_constructs() -> list[dict]:
 def build_loads() -> list[dict]:
     return [
         load_case("段内令牌", section={"bearer_token": TOKEN}),
-        load_case("环境变量令牌优先", env={"OMNICRAWL_API_TOKEN": " env-token "}, section={"bearer_token": "file-token"}),
+        load_case("环境令牌不生效", env={"OMNICRAWL_API_TOKEN": " env-token "}, section={"bearer_token": "file-token"}),
         load_case(
-            "环境变量令牌为空回退段内",
+            "环境令牌为空也不影响段内",
             env={"OMNICRAWL_API_TOKEN": "   "},
             section={"bearer_token": "file-token"},
         ),
@@ -118,12 +127,12 @@ def build_loads() -> list[dict]:
             section={"bearer_token": TOKEN, "host": ["127.0.0.1"]},
         ),
         load_case(
-            "环境变量覆盖地址与端口",
+            "环境地址与端口不生效",
             env={"OMNICRAWL_API_HOST": "localhost", "OMNICRAWL_API_PORT": "9000"},
             section={"bearer_token": TOKEN, "host": "127.0.0.1", "port": 8765},
         ),
         load_case(
-            "环境变量 worker",
+            "环境 worker 不生效",
             env={"OMNICRAWL_API_WORKERS": "2"},
             section={"bearer_token": TOKEN},
         ),

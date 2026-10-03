@@ -313,14 +313,16 @@ fn service_matches_python() {
     for case in fixture["service"].as_array().unwrap() {
         let text = case["text"].as_str().unwrap();
         let dir = temp_dir("service");
-        let config_path = dir.join("config.toml");
-        let subagents_path = dir.join("subagents.toml");
+        // 配置路径不再有环境变量覆盖：初始配置与断言都落在隔离 home 的 `.OmniCrawl/`。
+        let home = dir.join("home");
+        let user_dir = home.join(".OmniCrawl");
+        fs::create_dir_all(&user_dir).expect("建隔离配置目录");
+        let config_path = user_dir.join("config.toml");
+        let subagents_path = user_dir.join("subagents.toml");
         if let Some(initial) = case["initial"].as_str() {
             fs::write(&config_path, initial).expect("写入初始配置");
         }
-        let env = ConfigEnvironment::new(dir.clone(), std::env::consts::OS)
-            .with_env_value("AI_CONFIG_FILE", config_path.to_str().unwrap())
-            .with_env_value("AI_SUBAGENTS_FILE", subagents_path.to_str().unwrap());
+        let env = ConfigEnvironment::new(home, std::env::consts::OS);
         let mut service = ConfigChatService::new(&env, data_dir(), None);
 
         match case.get("error").and_then(|item| item.as_str()) {

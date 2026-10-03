@@ -143,10 +143,10 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 与裸 model_id，走 `apply_model_selection` 一并把模型名、基地址、协议与凭据换成被选中的那条
 （以前是把整个 key 当模型名直接发给上游，`channel-2/Qwen/…` 这种带 Profile 前缀的 key 会被
 上游回「模型不存在或当前账号无权使用该模型」）。配置文件路径与其它配置一致：
-显式路径 > `AI_CONFIG_FILE` > 用户目录。
+显式路径 > 用户目录（没有环境变量这一级）。
 
-**凭据口径（与主渠道不同，别改成「环境变量优先」）**：压缩渠道优先用它在 config.toml 里
-写下的明文 `api_key`；没写明文才回落到 `resolve_api_key`（环境变量优先 → 明文）与同名环境变量。
+**凭据口径**：压缩渠道用它在 config.toml 里写下的明文 `api_key`；没写明文就没有可用凭据，
+压缩按「缺少凭据」跳过。
 原因是内核进程里的 `OPENAI_API_KEY` 是宿主为**当前主渠道**注入的（`omnicrawl-host/src/kernel.rs`
 的 `kernel_credentials_env`），而压缩渠道往往是另一家服务——用户的配置里主渠道是聚合网关、
 压缩渠道是硅基流动，两边都写着 `api_key_env = "OPENAI_API_KEY"`；若按环境变量优先，就会

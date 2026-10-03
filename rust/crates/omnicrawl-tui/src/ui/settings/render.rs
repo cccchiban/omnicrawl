@@ -16,10 +16,11 @@ use ratatui::Frame;
 use super::hit::HitAction;
 use super::picker::window_bounds;
 use super::state::{
-    ChannelField, ChannelFormView, ContextField, DropdownField, Focus, Pane, SettingsState,
-    ToolSwitchRow,
+    ChannelField, ChannelFormView, ContextField, DecisionField, DecisionFormView, DropdownField,
+    Focus, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION, DECISION_SWITCH_SECTION,
+    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW,
 };
-use super::{channel_field_value, row_label};
+use super::{channel_field_value, decision_field_value, row_label};
 use crate::ui::fullscreen::terminal::theme;
 use omnicrawl_config::models::channels::{protocol_label, provider_label};
 use helpers::{fit, left_column_width, window_offset};
@@ -243,6 +244,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::Subagents => render_subagents(frame, body, state, focused),
         Pane::Vision => render_vision(frame, body, state, focused),
         Pane::Channels => render_channels(frame, body, state, focused),
+        Pane::DecisionModels => render_decision_models(frame, body, state, focused),
         Pane::Choice(_) => render_choice(frame, body, state, focused),
         Pane::Form(_) => render_form(frame, body, state, focused),
         Pane::Tts => render_tts(frame, body, state, focused),
@@ -342,6 +344,295 @@ fn render_channel_list(frame: &mut Frame, area: Rect, state: &SettingsState, foc
             x: area.x + 1,
             width: area.width.saturating_sub(1),
             height: area.height.min(list_height.max(1) as u16),
+            ..area
+        },
+        frame.buffer_mut(),
+    );
+}
+
+/// 结构化决策模型页：表单态画字段，列表态画决策渠道行。
+fn render_decision_models(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    match state.decision_form() {
+        Some(form) => render_decision_form(frame, area, state, form),
+        None => render_decision_list(frame, area, state, focused),
+    }
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(4),
+        height: area.height.min(4),
+        ..area
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+/// 决策渠道列表：渠道两行行式（与渠道页同款），下方接「功能开关」分区单行开关。
+///
+/// ```text
+/// › [x] Jev 主渠道 [默认]
+///     jev  jev-latest  https://jevtypesafeai.com/api
+///
+///  功能开关
+///   [x] 工具调用审查使用决策模型
+/// ```
+fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let rows = state.decision_rows();
+    let switches = state.decision_switch_rows();
+    let reserved = 4u16.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let selected = state.decision_selected();
+
+    // 先把整页排成「行 + 归属行号（分区标题无归属）」的序列，再按选中行的跨度开窗口——
+    // 渠道占 2 行、开关占 1 行，窗口长度按行算会让选中行半截露在框外。
+    let mut entries: Vec<(Line<'static>, Option<usize>)> = Vec::new();
+    if rows.is_empty() {
+        entries.push((
+            Line::styled(
+                fit("尚无决策渠道，按 N 新建第一条渠道。", area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED),
+            ),
+            None,
+        ));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let line_style = if index == selected && focused {
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            theme::rich_style(theme::TEXT_SECONDARY)
+        };
+        let checked = if row.enabled { "x" } else { " " };
+        let default_mark = if state.decision_default_key() == row.key {
+            " [默认]"
+        } else {
+            ""
+        };
+        entries.push((
+            Line::styled(
+                format!(
+                    "{} [{checked}] {}{default_mark}",
+                    if index == selected { "›" } else { " " },
+                    row.name
+                ),
+                line_style,
+            ),
+            Some(index),
+        ));
+        entries.push((
+            Line::styled(
+                format!("    {}  {}  {}", row.mode, row.model, row.base_url),
+                line_style,
+            ),
+            Some(index),
+        ));
+    }
+    if !switches.is_empty() {
+        entries.push((
+            Line::styled(
+                fit(&format!(" {DECISION_SWITCH_SECTION}"), area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD),
+            ),
+            None,
+        ));
+        for (offset, row) in switches.iter().enumerate() {
+            let absolute = rows.len() + offset;
+            let line_style = if absolute == selected && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            };
+            entries.push((
+                Line::styled(
+                    fit(
+                        &format!(
+                            "{} [{}] {}",
+                            if absolute == selected { "›" } else { " " },
+                            if row.enabled { "x" } else { " " },
+                            row.label
+                        ),
+                        area.width as usize,
+                    ),
+                    line_style,
+                ),
+                Some(absolute),
+            ));
+        }
+    }
+
+    // 自部署分区：尺寸/设备/已下载状态 + 环境与服务状态 + 动作行。
+    let local_rows = state.decision_local_rows();
+    if !local_rows.is_empty() {
+        let base = rows.len() + switches.len();
+        entries.push((
+            Line::styled(
+                fit(&format!(" {DECISION_LOCAL_SECTION}"), area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD),
+            ),
+            None,
+        ));
+        for (offset, row) in local_rows.iter().enumerate() {
+            let absolute = base + offset;
+            let line_style = if absolute == selected && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else if row.action {
+                theme::rich_style(theme::ACCENT_WHITE)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            };
+            let text = if row.value.is_empty() {
+                format!("{} {}", if absolute == selected { "›" } else { " " }, row.label)
+            } else {
+                format!(
+                    "{} {}：{}",
+                    if absolute == selected { "›" } else { " " },
+                    row.label,
+                    row.value
+                )
+            };
+            entries.push((Line::styled(fit(&text, area.width as usize), line_style), Some(absolute)));
+        }
+    }
+
+    let start = decision_window_start(&entries, selected, list_height);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (line, owner) in entries.into_iter().skip(start).take(list_height) {
+        if let Some(owner) = owner {
+            state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(owner));
+        }
+        lines.push(line);
+    }
+
+    Paragraph::new(lines).render(
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.min(list_height.max(1) as u16),
+            ..area
+        },
+        frame.buffer_mut(),
+    );
+}
+
+/// 窗口起点：选中行属于哪个条目，就把它整个条目的行都算进可见高度。
+fn decision_window_start(
+    entries: &[(Line<'static>, Option<usize>)],
+    selected: usize,
+    height: usize,
+) -> usize {
+    if entries.is_empty() || height == 0 {
+        return 0;
+    }
+    // 选中条目在行序列里的起止（含多行条目）。
+    let first = entries
+        .iter()
+        .position(|(_, owner)| *owner == Some(selected))
+        .unwrap_or(0);
+    let last = entries
+        .iter()
+        .rposition(|(_, owner)| *owner == Some(selected))
+        .unwrap_or(first);
+    let needed = last - first + 1;
+    if needed >= height {
+        return first;
+    }
+    // 选中条目之后能塞下的行数：优先让它下方的内容也可见。
+    let tail = height - needed;
+    first.saturating_sub(tail.min(first))
+}
+
+/// 决策渠道表单：一行一个字段；枚举字段带 `▼`，编辑中的文本字段带光标块。
+fn render_decision_form(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SettingsState,
+    form: DecisionFormView<'_>,
+) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, field) in DecisionField::ORDER.iter().copied().enumerate() {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
+        let is_current = field == form.field;
+        let marker = if is_current { "›" } else { " " };
+        let editing = is_current && form.input.is_some();
+        let value = match (editing, form.dropdown) {
+            (true, _) => form
+                .input
+                .and_then(|composer| composer.wrapped_lines(area.width.saturating_sub(20)).pop())
+                .map(|text| format!("{text}▌"))
+                .unwrap_or_default(),
+            (false, Some(dropdown)) if dropdown.field == field => {
+                format!("{} ▼（↑↓ 选择）", decision_field_value(form.row, field))
+            }
+            (false, _) => {
+                let suffix = if field == DecisionField::Mode { " ▼" } else { "" };
+                format!("{}{suffix}", decision_field_value(form.row, field))
+            }
+        };
+        let label = format!("{marker} {}：", field.label());
+        let label_style = theme::rich_style(theme::TEXT_MUTED);
+        lines.push(Line::from(vec![
+            Span::styled(label, label_style),
+            Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+        ]));
+    }
+    let visible = area.height.saturating_sub(4) as usize;
+    if let Some(dropdown) = form.dropdown {
+        let reserved = lines.len() + 1 + usize::from(form.is_new);
+        let available = visible.max(1).saturating_sub(reserved);
+        if available > 0 {
+            lines.push(Line::raw(""));
+            let options = dropdown.options.len();
+            let show_ellipsis = options > available && available >= 3;
+            let window_size = if show_ellipsis {
+                available.saturating_sub(2).max(1)
+            } else {
+                available
+            };
+            let (start, end) = window_bounds(options, dropdown.selected, window_size);
+            if show_ellipsis && start > 0 {
+                lines.push(Line::styled(
+                    fit(&format!("  ... 前面 {start} 个"), area.width as usize),
+                    theme::rich_style(theme::TEXT_MUTED),
+                ));
+            }
+            for (index, option) in dropdown.options.iter().enumerate().take(end).skip(start) {
+                state.record_hit(row_hit(area, lines.len()), HitAction::Option(index));
+                let highlighted = index == dropdown.selected;
+                let style = if highlighted {
+                    Style::default().bg(Color::Yellow)
+                } else {
+                    theme::rich_style(theme::TEXT_PRIMARY)
+                };
+                lines.push(Line::styled(
+                    fit(&format!("  {option}"), area.width as usize),
+                    style,
+                ));
+            }
+            if show_ellipsis && end < options {
+                lines.push(Line::styled(
+                    fit(
+                        &format!("  ... 后面 {} 个", options - end),
+                        area.width as usize,
+                    ),
+                    theme::rich_style(theme::TEXT_MUTED),
+                ));
+            }
+        }
+    }
+    if form.is_new {
+        lines.push(Line::styled(
+            "（新渠道，Ctrl+S 保存后写盘）".to_string(),
+            theme::rich_style(theme::TEXT_MUTED),
+        ));
+    }
+    lines.truncate(visible.max(1));
+    Paragraph::new(lines).render(
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.min(visible.max(1) as u16),
             ..area
         },
         frame.buffer_mut(),
@@ -899,7 +1190,7 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
     // 底部 3 行留给状态（1 空行 + 2 行文本）与提示（1 行）。
     let reserved = 4u16.min(area.height);
     let list_height = area.height.saturating_sub(reserved) as usize;
-    let offset = window_offset(state.tool_selected(), rows.len(), list_height);
+    let offset = window_offset(state.tool_selected(), state.tool_row_count(), list_height);
     // `.tool-pane-row { padding: 0 1 }`：整行再缩进 1 格。
     let list_area = Rect {
         x: area.x + 1,
@@ -907,22 +1198,39 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
         height: area.height.min(list_height as u16),
         ..area
     };
-    let lines: Vec<Line<'static>> = rows
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(list_height)
-        .map(|(index, row)| {
-            state.record_hit(
-                row_hit(list_area, index - offset),
-                HitAction::PaneRow(index),
-            );
-            Line::from(tool_row_spans(
-                row,
-                index == state.tool_selected() && focused,
-            ))
-        })
-        .collect();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // 首行固定是「工具调用审查」（对映 Python 工具设置分节的「审批模式」分节）。
+    if offset == 0 {
+        state.record_hit(
+            row_hit(list_area, 0),
+            HitAction::PaneRow(TOOLS_APPROVAL_ROW),
+        );
+        lines.push(Line::from(vec![Span::styled(
+            approval_row_text(state, state.tool_selected() == TOOLS_APPROVAL_ROW && focused),
+            if state.tool_selected() == TOOLS_APPROVAL_ROW && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            },
+        )]));
+    }
+    let skip = offset.saturating_sub(1);
+    lines.extend(
+        rows.iter()
+            .enumerate()
+            .skip(skip)
+            .take(list_height.saturating_sub(lines.len()))
+            .map(|(index, row)| {
+                state.record_hit(
+                    row_hit(list_area, index + 1 - offset),
+                    HitAction::PaneRow(index + 1),
+                );
+                Line::from(tool_row_spans(
+                    row,
+                    index + 1 == state.tool_selected() && focused,
+                ))
+            }),
+    );
     Paragraph::new(lines).render(list_area, frame.buffer_mut());
 
     let tail = Rect {
@@ -1219,6 +1527,16 @@ fn render_subagents(frame: &mut Frame, area: Rect, state: &SettingsState, focuse
         state.pane_hint(),
         theme::rich_style(theme::TEXT_MUTED),
     );
+}
+
+/// 工具调用审查行的文本：`› 工具调用审查：自动审查`。
+fn approval_row_text(state: &SettingsState, selected: bool) -> String {
+    format!(
+        "{} {}：{}",
+        if selected { "›" } else { " " },
+        TOOLS_APPROVAL_LABEL,
+        state.tool_approval_value()
+    )
 }
 
 /// 工具开关行的文本：`› 名称：已启用（未注册）`。

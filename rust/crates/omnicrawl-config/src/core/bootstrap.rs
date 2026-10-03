@@ -294,7 +294,7 @@ fn ensure_template(
     Ok(true)
 }
 
-/// 检查当前模型 Profile 是否已有直接 Key 或环境变量 Key。
+/// 检查当前模型 Profile 是否已在配置里写了明文 Key。
 fn active_api_key_configured(
     env: &ConfigEnvironment,
     config_data: &Table,
@@ -313,14 +313,8 @@ fn active_api_key_configured(
     profile_has_key(env, profile)
 }
 
-fn profile_has_key(env: &ConfigEnvironment, profile: &Table) -> bool {
-    let provider = profile_provider(profile);
-    let env_name = profile_api_key_env(profile, &provider);
-    let direct_key = python_str(profile.get("api_key")).trim().to_string();
-    if !direct_key.is_empty() {
-        return true;
-    }
-    !env_name.is_empty() && !env.get_trimmed(&env_name).is_empty()
+fn profile_has_key(_env: &ConfigEnvironment, profile: &Table) -> bool {
+    !python_str(profile.get("api_key")).trim().is_empty()
 }
 
 fn profile_provider(profile: &Table) -> String {

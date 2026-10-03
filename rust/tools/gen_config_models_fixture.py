@@ -67,6 +67,17 @@ def write_text(path: Path, content: str) -> None:
         handle.write(content)
 
 
+def normalize_error(message: str) -> str:
+    """把错误文案归一成「环境变量通道已移除」后的形状，与 Rust 侧逐字一致。"""
+
+    if message.startswith("缺少 API Key"):
+        return "缺少 API Key，请在 Profile 中配置 api_key。"
+    marker = "，或设置环境变量 "
+    if marker in message:
+        return message.split(marker, 1)[0] + "。"
+    return message
+
+
 def as_json(value):
     if dataclasses.is_dataclass(value):
         return as_json(dataclasses.asdict(value))
@@ -105,7 +116,6 @@ def build_reasoning_effort() -> list[dict[str, object]]:
 
 LLM_NORMALIZE_CASES = [
     ("默认视图", {}, {}),
-    ("凭据从环境取", {}, {"OPENAI_API_KEY": "env-key", "OPENAI_BASE_URL": "https://env", "OPENAI_MODEL": "env-model"}),
     (
         "legacy 齐全",
         {"api_key": "k", "base_url": "https://api", "model": "gpt-5.2"},
@@ -143,7 +153,8 @@ def build_llm_normalize() -> list[dict[str, object]]:
                 config = L.LLMConfig(**inputs)
                 record: dict[str, object] = {"expected": as_json(config)}
             except L.LLMError as exc:
-                record = {"error": str(exc)}
+                # 环境变量通道已移除：文案里不再出现变量名，与 Rust 侧逐字一致。
+                record = {"error": normalize_error(str(exc))}
         record.update({"name": name, "input": inputs, "env": env})
         cases.append(record)
     return cases
@@ -459,8 +470,6 @@ LLM_LOAD_CASES = [
         {},
     ),
     ("缺 base_url", {"llm": {"api_key": "k", "model": "m"}}, {}),
-    ("环境变量补齐", {"llm": {}}, {"OPENAI_API_KEY": "ek", "OPENAI_BASE_URL": "https://env", "OPENAI_MODEL": "em"}),
-    ("环境变量优先", {"llm": {"api_key": "k", "base_url": "https://api", "model": "m"}}, {"OPENAI_MODEL": "from-env"}),
     ("上下文窗口非法", {"llm": {"api_key": "k", "base_url": "https://api", "model": "m", "context_window_tokens": 0}}, {}),
     ("llm 段不是对象", {"llm": 5}, {}),
     (
@@ -490,7 +499,8 @@ def build_llm_load() -> list[dict[str, object]]:
                 try:
                     record: dict[str, object] = {"expected": as_json(L.load_llm_config())}
                 except (L.LLMError, S.ModelStoreError) as exc:
-                    record = {"error": str(exc)}
+                    # 环境变量通道已移除：文案里不再出现变量名，与 Rust 侧逐字一致。
+                    record = {"error": normalize_error(str(exc))}
             record.update({"name": name, "config": config, "env": env})
             cases.append(record)
     return cases
@@ -847,24 +857,6 @@ MULTI_CASES = [
         {},
         {},
     ),
-    (
-        "环境变量指定模型",
-        {"llm": {"profiles": {"ch1": {"provider": "openai", "api_key": "k"}}, "active_model": {"source": "detected", "profile": "ch1", "model_id": "gpt-5.2"}}},
-        {},
-        {"OMNICRAWL_MODEL": "qwen"},
-    ),
-    (
-        "环境变量 profile/model",
-        {"llm": {"profiles": {"ch1": {"provider": "openai", "api_key": "k"}}, "active_model": {"source": "detected", "profile": "ch1", "model_id": "gpt-5.2"}}},
-        {},
-        {"OPENAI_MODEL": "ch1/gpt-4o"},
-    ),
-    (
-        "环境变量覆盖 profile",
-        {"llm": {"profiles": {"ch3": {"provider": "gemini", "api_key": "k"}}, "active_model": {"source": "detected", "profile": "ch3", "model_id": "gemini-3"}}},
-        {},
-        {"OMNICRAWL_PROFILE": "ch3"},
-    ),
     ("active_model 非对象", {"llm": {"profiles": {"ch1": {"provider": "openai"}}, "active_model": 5}}, {}, {}),
     (
         "未知 Provider 默认协议",
@@ -925,7 +917,7 @@ def build_multi_load() -> list[dict[str, object]]:
                 try:
                     record: dict[str, object] = {"expected": as_json(L.load_llm_config())}
                 except (L.LLMError, S.ModelStoreError, V.VisionConfigError) as exc:
-                    record = {"error": str(exc)}
+                    record = {"error": normalize_error(str(exc))}
             record.update({"name": name, "config": config, "models": models, "env": env})
             cases.append(record)
     return cases
@@ -965,7 +957,7 @@ def build_selection() -> list[dict[str, object]]:
                     )
                     record: dict[str, object] = {"expected": as_json(M.apply_model_selection(base, token))}
                 except (L.LLMError, S.ModelStoreError, V.VisionConfigError) as exc:
-                    record = {"error": str(exc)}
+                    record = {"error": normalize_error(str(exc))}
             record.update({"name": name, "token": token, "config": config, "models": models})
             cases.append(record)
     return cases

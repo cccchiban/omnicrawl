@@ -7,9 +7,6 @@ use std::path::{Path, PathBuf};
 
 use super::runtime::{expand_user, ConfigEnvironment};
 
-/// 启动目录覆盖变量。
-pub const LAUNCH_CWD_ENV: &str = "AI_VOICE_CHAT_LAUNCH_CWD";
-
 /// Agent 当前要操作的工作区路径。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectContext {
@@ -25,17 +22,14 @@ impl ProjectContext {
 
 /// 检测本轮 Agent 的工作区目录。
 ///
-/// `AI_VOICE_CHAT_LAUNCH_CWD` 优先于显式 `start_path`；两者都没有时使用当前目录。
-/// 解析失败、路径不存在时回退到当前目录；已有文件则取其父目录。
+/// 显式 `start_path` 优先；没有时使用当前目录。解析失败、路径不存在时回退到当前目录；
+/// 已有文件则取其父目录。
 pub fn detect_project_context(
     environment: &ConfigEnvironment,
     start_path: Option<&Path>,
 ) -> ProjectContext {
     let current = current_directory();
-    let raw = environment.get_trimmed(LAUNCH_CWD_ENV);
-    let candidate = if !raw.is_empty() {
-        expand_user(environment, &raw)
-    } else if let Some(path) = start_path {
+    let candidate = if let Some(path) = start_path {
         expand_user(environment, &path.to_string_lossy())
     } else {
         current.clone()
@@ -75,16 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn launch_environment_overrides_explicit_start_path() {
-        let root = std::env::temp_dir().join("omnicrawl-context-env");
+    fn explicit_start_path_wins_over_current_directory() {
+        let root = std::env::temp_dir().join("omnicrawl-context-explicit");
         let explicit = root.join("explicit");
-        let from_env = root.join("from-env");
         fs::create_dir_all(&explicit).unwrap();
-        fs::create_dir_all(&from_env).unwrap();
-        let env = environment(&root).with_env_value(LAUNCH_CWD_ENV, &from_env.to_string_lossy());
 
-        let context = detect_project_context(&env, Some(&explicit));
-        assert_eq!(context.workspace_root, fs::canonicalize(from_env).unwrap());
+        let context = detect_project_context(&environment(&root), Some(&explicit));
+        assert_eq!(context.workspace_root, fs::canonicalize(explicit).unwrap());
         let _ = fs::remove_dir_all(root);
     }
 

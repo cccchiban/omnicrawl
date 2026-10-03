@@ -20,7 +20,7 @@ pub const DEFAULT_MAX_RESULTS: usize = 3;
 
 /// 默认扫描的作用域目录（优先级从低到高，后加载的覆盖先加载的）。
 pub const SKILL_SCOPES: [(&str, &str); 3] = [
-    ("enterprise", "OMNICRAWL_ENTERPRISE_DIR"),
+    ("enterprise", ""),
     ("user", "~/.omnicrawl/skills"),
     ("project", ".omnicrawl/skills"),
 ];
@@ -213,16 +213,10 @@ impl SkillManager {
         self.last_extra_paths = extra_paths.to_vec();
         let home_dir = home_directory();
 
-        for (scope, path_spec) in SKILL_SCOPES {
+        for (scope, _path_spec) in SKILL_SCOPES {
             match scope {
-                "enterprise" => {
-                    let env_value = std::env::var(path_spec).unwrap_or_default();
-                    let env_value = env_value.trim().to_string();
-                    if !env_value.is_empty() {
-                        let path = resolve_path(&expand_user(&env_value));
-                        self.scan_directory(&path, scope);
-                    }
-                }
+                // enterprise 层不再有环境变量目录，只保留 user / project 两层。
+                "enterprise" => {}
                 "user" => {
                     let user_skills = home_dir.join(".omnicrawl").join("skills");
                     ensure_scope_dir(&user_skills);

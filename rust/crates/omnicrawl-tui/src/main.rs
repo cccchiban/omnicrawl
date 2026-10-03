@@ -60,13 +60,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let env = |name: &str| std::env::var(name).ok();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let mut options = match parse(&args, &env, &exe_dir)? {
+    let mut options = match parse(&args, &exe_dir)? {
         Parsed::Help(text) | Parsed::Version(text) => {
             println!("{text}");
             return Ok(ExitCode::SUCCESS);
@@ -78,7 +77,7 @@ fn run() -> Result<ExitCode, String> {
     let context = detect_project_context(&environment, None);
     let workspace = context.workspace_root;
     // 默认会话根与 Python 宿主、本地 API 同址（`~/.OmniCrawl/.agent_sessions`，不绑工作区）：
-    // `--session-root` / `OMNICRAWL_SESSION_ROOT` 都没给时也要有会话，否则 `/sessions`、
+    // `--session-root` 没给时也要有会话，否则 `/sessions`、
     // `/resume`、`/new`、`/compact` 一律只能报「内核未持有会话」。
     if options.session_root.is_none() {
         options.session_root = Some(user_config_dir(&environment).join(".agent_sessions"));
@@ -196,6 +195,8 @@ fn event_loop(
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
         app.tick_tts_tasks();
+        // 自部署（OneJev）后台任务：环境安装 / 权重下载 / 本地服务启停的结果。
+        app.tick_onejev_tasks();
         // 底部单行轮播：遥测 → 工作区路径 → 留言，各 10s，切换时解密扫描。
         app.tick_carousel(now);
         // 输入框上方那行瞬时提示（拖选复制等）到时自散。

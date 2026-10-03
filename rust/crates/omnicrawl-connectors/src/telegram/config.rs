@@ -1,8 +1,8 @@
 //! Telegram 接入配置解析。
 //!
 //! 语义基准是 Python `omnicrawl/connectors/telegram.py` 的 `load_telegram_config`：
-//! **环境变量优先，其次 `config.toml` 的 `[telegram]` 段**（段对象由宿主配置层解析后传入，
-//! TOML 读取不属于本 crate）。环境变量名与配置 key 不是一一对应，映射写在这里。
+//! 凭据只读 `config.toml` 的 `[telegram]` 段（段对象由宿主配置层解析后传入，
+//! TOML 读取不属于本 crate）。
 
 use serde_json::Value;
 
@@ -20,14 +20,9 @@ pub struct TelegramConfig {
     pub confirm_timeout_seconds: f64,
 }
 
-/// 读取配置：环境变量优先，其次配置段，最后默认值；解析失败返回中文错误。
-pub fn load_telegram_config(
-    environment: &dyn Fn(&str) -> Option<String>,
-    section: Option<&Value>,
-) -> Result<TelegramConfig, String> {
-    let bot_token = value_as_text(env_or(
-        environment,
-        "TELEGRAM_BOT_TOKEN",
+/// 读取配置：只读配置段，缺项回落默认值；解析失败返回中文错误。
+pub fn load_telegram_config(section: Option<&Value>) -> Result<TelegramConfig, String> {
+    let bot_token = value_as_text(section_or(
         section,
         "bot_token",
         Value::String(String::new()),
@@ -35,18 +30,14 @@ pub fn load_telegram_config(
     .trim()
     .to_string();
 
-    let raw_allowed = env_or(
-        environment,
-        "TELEGRAM_ALLOWED_USER_IDS",
+    let raw_allowed = section_or(
         section,
         "allowed_user_ids",
         Value::String(String::new()),
     );
     let allowed_user_ids = parse_allowed_user_ids(&raw_allowed)?;
 
-    let raw_timeout = env_or(
-        environment,
-        "TELEGRAM_CONFIRM_TIMEOUT",
+    let raw_timeout = section_or(
         section,
         "confirmation_timeout_seconds",
         Value::String(DEFAULT_CONFIRM_TIMEOUT_SECONDS.to_string()),
@@ -80,19 +71,7 @@ pub fn effective_confirm_timeout(seconds: f64) -> f64 {
     }
 }
 
-fn env_or(
-    environment: &dyn Fn(&str) -> Option<String>,
-    env_name: &str,
-    section: Option<&Value>,
-    config_key: &str,
-    default: Value,
-) -> Value {
-    if let Some(raw) = environment(env_name) {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Value::String(trimmed.to_string());
-        }
-    }
+fn section_or(section: Option<&Value>, config_key: &str, default: Value) -> Value {
     if let Some(found) = section.and_then(|value| value.get(config_key)) {
         return found.clone();
     }
@@ -143,7 +122,7 @@ fn parse_seconds(raw: &Value) -> Result<f64, String> {
         _ => None,
     };
     parsed.ok_or_else(|| {
-        "TELEGRAM_CONFIRM_TIMEOUT / telegram.confirmation_timeout_seconds 必须是数字。".to_string()
+        "telegram.confirmation_timeout_seconds 必须是数字。".to_string()
     })
 }
 
@@ -175,66 +154,44 @@ fn display(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::collections::HashMap;
-
-    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn lookup(map: HashMap<String, String>) -> impl Fn(&str) -> Option<String> {
-        move |name: &str| map.get(name).cloned()
-    }
 
     #[test]
-    fn environment_wins_over_section() {
-        let section = json!({"bot_token": "from-config", "allowed_user_ids": [1, 2]});
-        let config = load_telegram_config(
-            &lookup(env(&[
-                ("TELEGRAM_BOT_TOKEN", "  from-env  "),
-                ("TELEGRAM_CONFIRM_TIMEOUT", "12"),
-            ])),
-            Some(&section),
-        )
-        .expect("配置可解析");
-        assert_eq!(config.bot_token, "from-env");
+    fn section_supplies_everything() {
+        let section = json!({
+            "bot_token": "  from-config  ",
+            "allowed_user_ids": [1, 2],
+            "confirmation_timeout_seconds": 12,
+        });
+        let config = load_telegram_config(Some(&section)).expect("配置可解析");
+        assert_eq!(config.bot_token, "from-config");
         assert_eq!(config.allowed_user_ids, vec![1, 2]);
         assert_eq!(config.confirm_timeout_seconds, 12.0);
     }
 
     #[test]
     fn comma_separated_ids_support_full_width_comma() {
-        let config = load_telegram_config(
-            &lookup(env(&[("TELEGRAM_ALLOWED_USER_IDS", "1，2, 3 ,")])),
-            None,
-        )
-        .expect("配置可解析");
+        let section = json!({"allowed_user_ids": "1，2, 3 ,"});
+        let config = load_telegram_config(Some(&section)).expect("配置可解析");
         assert_eq!(config.allowed_user_ids, vec![1, 2, 3]);
     }
 
     #[test]
     fn invalid_user_id_reports_item() {
-        let error = load_telegram_config(
-            &lookup(env(&[("TELEGRAM_ALLOWED_USER_IDS", "1,abc")])),
-            None,
-        )
-        .expect_err("应报错");
+        let section = json!({"allowed_user_ids": "1,abc"});
+        let error = load_telegram_config(Some(&section)).expect_err("应报错");
         assert_eq!(error, "Telegram 允许用户 ID 必须是整数：abc");
     }
 
     #[test]
     fn invalid_timeout_reports_hint() {
-        let error =
-            load_telegram_config(&lookup(env(&[("TELEGRAM_CONFIRM_TIMEOUT", "soon")])), None)
-                .expect_err("应报错");
+        let section = json!({"confirmation_timeout_seconds": "soon"});
+        let error = load_telegram_config(Some(&section)).expect_err("应报错");
         assert!(error.contains("必须是数字"), "{error}");
     }
 
     #[test]
     fn defaults_apply_when_absent() {
-        let config = load_telegram_config(&lookup(HashMap::new()), None).expect("配置可解析");
+        let config = load_telegram_config(None).expect("配置可解析");
         assert_eq!(config.bot_token, "");
         assert!(config.allowed_user_ids.is_empty());
         assert_eq!(config.confirm_timeout_seconds, 300.0);

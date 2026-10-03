@@ -46,6 +46,7 @@ use omnicrawl_config::features::desensitization::{
 use omnicrawl_config::features::image_gen::{
     load_image_gen_configuration, save_image_gen_configuration, ImageGenConfiguration,
 };
+
 use omnicrawl_config::features::run_guard::{
     load_run_guard_config, save_run_guard_config, RunGuardConfig,
 };
@@ -89,7 +90,23 @@ use omnicrawl_controllers::workspace::{
 };
 use omnicrawl_controllers::AgentError;
 use omnicrawl_core::{ToolCall, ToolResult};
+use omnicrawl_config::features::decision_model::{
+    load_decision_model_configuration, load_decision_switches, load_local_deployment,
+    save_decision_model_configuration, save_decision_switch, save_local_deployment,
+    DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
+    DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
+    DEFAULT_LOCAL_DECISION_CHANNEL_KEY, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH,
+};
 use omnicrawl_host::plugins::PluginHost;
+use omnicrawl_onejev::{
+    delete_model as delete_onejev_model, download_model as download_onejev_model,
+    ensure_environment as ensure_onejev_environment, environment_state as onejev_environment_state,
+    find_size as find_onejev_size, model_ready as onejev_model_ready,
+    resolve_root as resolve_onejev_root, LaunchSpec as OneJevLaunchSpec, OneJevServer,
+    ServerState as OneJevServerState, ONEJEV_SIZES,
+};
+use omnicrawl_onejev::paths::model_dir as onejev_model_dir;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::prompt_cache::build_prompt_cache_identity;
 use omnicrawl_ipc::{
@@ -124,10 +141,12 @@ use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
-    nearest_compaction_percent, reasoning_label, ChannelRow, FieldValue, FormKind, McpChange,
-    McpServerDraft, McpServerRow, McpSettingsValues, SettingsChange, SettingsEvent, SettingsState,
-    SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsDraft, TtsValues,
-    VisionChange, VisionModelRef, SUBAGENT_ADVANCED_SPECS,
+    nearest_compaction_percent, reasoning_label, ChannelRow, DecisionLocalChange,
+    DecisionLocalValues, DecisionRow, DecisionSwitchRow, FieldValue, FormKind, McpChange,
+    McpServerDraft, McpServerRow,
+    McpSettingsValues, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
+    SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsDraft, TtsValues, VisionChange,
+    VisionModelRef, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 use omnicrawl_tts::api::ApiTtsConfig;
@@ -338,14 +357,10 @@ fn build_review_options(
     if model.trim().is_empty() {
         return None;
     }
-    Some(omnicrawl_host::review::ReviewOptions {
-        model,
-        base_url: llm.base_url.clone(),
-        api_key: llm.api_key.clone(),
-        api_key_env: llm.api_key_env.clone(),
-        request_timeout_seconds: llm.request_timeout_seconds,
-        masking: omnicrawl_host::review::masking_from_config(environment).map(Arc::new),
-    })
+    let _ = model;
+    // 审查通道的选择（对话模型 / 结构化决策模型）由 host 侧按 `[decision_models.features]`
+    // 统一判定，TUI 只做装配入口的转发，避免两侧各判一次。
+    omnicrawl_host::review::review_options_from_config(llm, environment)
 }
 
 /// 内核 stderr 行 → 会话区提示文案；不是报错行时返回 `None`。
@@ -435,6 +450,11 @@ pub struct App {
     ///
     /// 审查模型不可用（未配模型或凭据）时为 `None`，此时需审查的调用按 fail-closed 拒绝。
     review: Option<omnicrawl_host::review::ReviewOptions>,
+    /// 提问托管运行期（`[decision_models.features] ask_user_custody`）：开启后有选项的提问
+    /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
+    custody: Option<omnicrawl_host::tools::CustodyOptions>,
+    /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复。
+    custody_context: omnicrawl_host::tools::CustodyContext,
     /// 审查载荷里的两条会话事实（最近一条用户消息 + 最近一次 ask_user 问答）。
     review_context: omnicrawl_host::review::ReviewContext,
     /// 文件选择弹层（TTS 参考音频）：`Some` 时铺在设置面板之上，键盘都归它。
@@ -443,6 +463,10 @@ pub struct App {
     pub config_chat: Option<ConfigChatState>,
     /// 后台 TTS 任务（模型下载 / 音色克隆）的结果通道。
     tts_task: Option<Receiver<TtsTaskResult>>,
+    /// 后台自部署任务（环境安装 / 权重下载 / 服务启停）的结果通道。
+    onejev_task: Option<Receiver<OneJevTaskResult>>,
+    /// 本地 OneJev 决策服务进程（切换尺寸即按新规格重启它）。
+    onejev_server: OneJevServer,
     /// 本界面独有的 Monitor 日志消费游标（对映 Python `MonitorStateAdapter`）。
     /// 每批增量按 `monitor:` 前缀归并进同一张卡片，不再逐批新开卡片。
     monitor_state: crate::monitor::MonitorStateAdapter,
@@ -481,6 +505,24 @@ enum TtsTaskResult {
     Download(Result<(), String>),
     /// 音色克隆：成功或失败文案。
     Clone(Result<(), String>),
+}
+
+/// 后台自部署任务的产出（环境安装 / 权重下载 / 服务启停），由 UI 线程的轮询取回。
+///
+/// 权重下载与环境安装都是 GB 级、服务启停要等健康检查，一律放后台线程，界面只收最终文案。
+enum OneJevTaskResult {
+    /// 环境安装：成功时是否装到了 CUDA 版 torch。
+    Environment(Result<bool, String>),
+    /// 权重下载：成功时给出尺寸键。
+    Download {
+        size: String,
+        result: Result<(), String>,
+    },
+    /// 服务启停：句柄要连同结果一起送回宿主（它持有子进程与 Job 对象）。
+    Service {
+        server: OneJevServer,
+        result: Result<String, String>,
+    },
 }
 
 /// 慢命令的宿主侧后台任务（对映 Python `CommandOutcome.execution == "slow"`）。
@@ -546,17 +588,13 @@ impl App {
             let slot = Arc::clone(&advisor_tools);
             Arc::new(move || slot.lock().map(|guard| guard.clone()).unwrap_or_default())
         };
+        // 启动期只读一次环境：记忆开关、以及决策模型的两处检索重排都从这里取配置。
+        let environment = ConfigEnvironment::from_process();
         // 记忆开关与 Python 侧同源：`entry.py` 读 `load_feature_enabled("memory", default=True)`，
         // 即缺省开启。此前这里直接走 `RegistryOptions::default()`（`memory_enabled: false`），
         // 导致记忆整组工具永远进不了表，而 Python 侧缺省是进的。
-        let memory_enabled = load_feature_enabled(
-            &ConfigEnvironment::from_process(),
-            "memory",
-            true,
-            None,
-            None,
-        )
-        .unwrap_or(true);
+        let memory_enabled = load_feature_enabled(&environment, "memory", true, None, None)
+            .unwrap_or(true);
         let registry_options = RegistryOptions {
             session_held_by_kernel: options.session_root.is_some(),
             // 记忆整组工具进表，作用域与 Python 的 `_create_memory_stores` 对齐：项目级与
@@ -568,17 +606,25 @@ impl App {
                 project_enabled: true,
                 user_enabled: true,
                 session_enabled: false,
+                // 记忆检索重排：开关在 `[decision_models.features]`，默认关闭。
+                rerank: Arc::new(omnicrawl_host::tools::rerank_options_from_config(
+                    &environment,
+                    DECISION_SWITCH_MEMORY_SEARCH,
+                )),
                 ..MemoryOptions::default()
             },
+            // 知识库检索重排：与记忆搜索同一套装配口径。
+            knowledge_rerank: Arc::new(omnicrawl_host::tools::rerank_options_from_config(
+                &environment,
+                DECISION_SWITCH_KB_SEARCH,
+            )),
             subagent_types: subagent_role_names(),
             mcp: mcp_manager(workspace),
-            image_gen: ImageGenOptions {
-                enabled: options.image_gen.enabled,
-                base_url: options.image_gen.base_url.clone(),
-                model: options.image_gen.model.clone(),
-                api_key_env: options.image_gen.api_key_env.clone(),
-                ..ImageGenOptions::default()
-            },
+            // 命令行只承载显式覆盖，未给的字段以 `[image_gen]` 配置为准（见 `args.rs`）。
+            image_gen: image_gen_options_from(
+                &load_image_gen_configuration(&environment, None).unwrap_or_default(),
+                &options.image_gen,
+            ),
             advisor: AdvisorOptions {
                 enabled: options.advisor.enabled,
                 model: options.advisor.model.clone(),
@@ -587,11 +633,7 @@ impl App {
                 } else {
                     options.advisor.base_url.clone()
                 },
-                api_key_env: if options.advisor.api_key_env.trim().is_empty() {
-                    options.api_key_env.clone()
-                } else {
-                    options.advisor.api_key_env.clone()
-                },
+                api_key: String::new(),
                 effort: options.advisor.effort.clone(),
                 executor_model: options.model.clone(),
                 disabled_for_models: options.advisor.disabled_for_models.clone(),
@@ -656,7 +698,9 @@ impl App {
         }
         // 审查运行期：与 Python `_review_tool_call` 同源；未配模型时为 `None`，
         // 此时 `review` 模式下需审查的调用按 fail-closed 拒绝。
-        let review = build_review_options(&llm, &ConfigEnvironment::from_process());
+        let review = build_review_options(&llm, &environment);
+        // 提问托管：与审查、检索重排同源（`[decision_models.features] ask_user_custody`）。
+        let custody = Some(omnicrawl_host::tools::custody_options_from_config(&environment));
         // 命令菜单的候选表来自统一命令源（注册表声明），启动时装载一次。
         state.composer.set_commands(commands::command_options());
         Ok(Self {
@@ -685,10 +729,14 @@ impl App {
             drawn: None,
             plugins,
             review,
+            custody,
+            custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),
             file_picker: None,
             config_chat: None,
             tts_task: None,
+            onejev_task: None,
+            onejev_server: OneJevServer::new(),
             monitor_state: crate::monitor::MonitorStateAdapter::default(),
             monitor_polled_at: Instant::now(),
             isolation: None,
@@ -1024,6 +1072,7 @@ impl App {
             || self.config_chat.is_some()
             || self.slow_task.is_some()
             || self.tts_task.is_some()
+            || self.onejev_task.is_some()
             || self.channel_models_task.is_some()
             || self.state.has_running_activity()
             // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。
@@ -1344,6 +1393,12 @@ impl App {
                     .guard_pending_approval(|call| plugin_tool_guards(&plugins, call, true, mode))
                 {
                     self.handle_batch_step(request_id, next);
+                    return;
+                }
+                // 提问托管：开关打开且提问带选项时，先让决策模型替你选一项，
+                // 选出来就跳过面板（并在会话流里留一条提示）。任何失败都退回人工提问。
+                if let Some(next) = self.try_custody_pending_question() {
+                    self.handle_batch_step(request_id, next);
                 }
             }
             BatchStep::Execute(jobs) => {
@@ -1400,6 +1455,33 @@ impl App {
                 }
             }
         }
+    }
+
+    /// 提问托管：待决提问带选项且托管可用时自动作答，返回推进后的步骤。
+    ///
+    /// `None` 表示本次不托管（开关关、没有选项、决策服务不可用或这一趟失败），
+    /// 面板照旧留在界面上等用户——托管的目的是省一次人工往返，不值当替用户瞎猜。
+    /// 语义与 `omnicrawl-host::turn` 的 `custody_answer` 同源。
+    fn try_custody_pending_question(&mut self) -> Option<host::BatchStep> {
+        let Some(host::Waiting::Question(panel)) = self.state.waiting() else {
+            return None;
+        };
+        if !panel.is_select() {
+            return None;
+        }
+        let panel = panel.clone();
+        // 托管请求的 state 里带上本回合的提问正文与用户请求。
+        self.custody_context.question = panel.prompt.clone();
+        let custody = self.custody.as_ref()?;
+        let index = omnicrawl_host::tools::chosen_option(
+            custody,
+            &self.custody_context,
+            &panel.options,
+        )?;
+        let answer = panel.options.get(index)?.clone();
+        self.state
+            .notice(omnicrawl_host::turn::custody_notice(&panel.prompt, &answer));
+        self.answer_pending_question(answer)
     }
 
     /// 回答待决提问：先把问答记进审查上下文（授权边界的最新事实），再推进批次。
@@ -2552,6 +2634,11 @@ impl App {
             load_feature_enabled(&environment, "plugins", false, None, None).unwrap_or(false);
         let (model_options, model_key) = self.model_candidates(&environment, &llm);
         let (channel_rows, default_channel_key) = self.channel_views(&environment);
+        // 决策模型页的初值：渠道、功能开关与自部署分区（读不出来就用配置默认值）。
+        let (decision_rows, default_decision_key) = self.decision_views(&environment);
+        let decision_template = decision_row_from_config(&DecisionChannelConfig::default());
+        let decision_switches = decision_switch_rows(&load_decision_switches(&environment, None));
+        let decision_local = self.decision_local_values(&environment);
         let channel_template = default_channel(provider_options()[0], None)
             .map(|channel| channel_row_from_config(&channel))
             .unwrap_or_default();
@@ -2611,6 +2698,9 @@ impl App {
         )
         .with_model(model_options, &model_key)
         .with_channels(channel_rows, &default_channel_key, channel_template)
+        .with_decision_models(decision_rows, &default_decision_key, decision_template)
+        .with_decision_switches(decision_switches)
+        .with_decision_local(decision_local)
         .with_choices(
             &llm.reasoning_effort,
             show_thinking,
@@ -2656,6 +2746,35 @@ impl App {
             Err(error) => {
                 eprintln!("[tui] 渠道配置读取失败，渠道页留空：{error}");
                 (Vec::new(), String::new())
+            }
+        }
+    }
+
+    /// 决策模型页的渠道列表与默认渠道（读不出来就退回配置默认值）。
+    fn decision_views(
+        &self,
+        environment: &ConfigEnvironment,
+    ) -> (Vec<DecisionRow>, String) {
+        match load_decision_model_configuration(environment, None) {
+            Ok(configuration) => (
+                configuration
+                    .channels
+                    .iter()
+                    .map(decision_row_from_config)
+                    .collect(),
+                configuration.default_key.clone(),
+            ),
+            Err(error) => {
+                eprintln!("[tui] 决策模型配置读取失败，决策页用默认渠道：{error}");
+                let fallback = DecisionModelConfiguration::default();
+                (
+                    fallback
+                        .channels
+                        .iter()
+                        .map(decision_row_from_config)
+                        .collect(),
+                    fallback.default_key,
+                )
             }
         }
     }
@@ -2839,6 +2958,14 @@ impl App {
             SettingsChange::Channels { rows, default_key } => {
                 self.apply_channels(rows, default_key)?
             }
+            SettingsChange::DecisionModels { rows, default_key } => {
+                self.apply_decision_models(rows, default_key)?
+            }
+            SettingsChange::DecisionSwitch { key, enabled } => {
+                self.apply_decision_switch(key, *enabled)?
+            }
+            SettingsChange::DecisionLocal(change) => self.apply_decision_local(change)?,
+            SettingsChange::ToolApproval { mode } => self.apply_tool_approval(mode)?,
             SettingsChange::ToolSwitch { name, enabled } => {
                 self.apply_tool_switch(name, *enabled)?
             }
@@ -2857,6 +2984,427 @@ impl App {
         };
         self.push_session_settings(change);
         Ok(message)
+    }
+
+    /// 按最新配置重建审查运行期（决策渠道或开关变更后调用）。
+    fn rebuild_review(&mut self, environment: &ConfigEnvironment) {
+        self.review = build_review_options(&self.llm, environment);
+    }
+
+    /// 按最新配置重建提问托管运行期（决策渠道或开关变更后调用）。
+    fn rebuild_custody(&mut self, environment: &ConfigEnvironment) {
+        self.custody = Some(omnicrawl_host::tools::custody_options_from_config(environment));
+    }
+
+    // ---------- 决策模型页（渠道 / 功能开关 / 自部署） ----------
+
+    /// 保存整份决策模型配置：`api_key` 留空表示不改动，按 key 从磁盘继承。
+    ///
+    /// 决策渠道不下发内核（`initialize` 没有对映字段），因此写盘后只重建宿主侧的
+    /// 审查 / 重排 / 托管运行期，再让界面与磁盘对齐。
+    fn apply_decision_models(
+        &mut self,
+        rows: &[DecisionRow],
+        default_key: &str,
+    ) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let previous = load_decision_model_configuration(&environment, None)
+            .unwrap_or_else(|_| DecisionModelConfiguration::default());
+        let mut channels: Vec<DecisionChannelConfig> = Vec::new();
+        for row in rows {
+            let mut channel = decision_config_from_row(row);
+            if channel.api_key.is_empty() {
+                if let Some(existing) = previous
+                    .channels
+                    .iter()
+                    .find(|item| item.key == channel.key)
+                {
+                    channel.api_key = existing.api_key.clone();
+                }
+            }
+            channels.push(channel);
+        }
+        let configuration = DecisionModelConfiguration {
+            channels,
+            default_key: default_key.to_string(),
+        };
+        let path = save_decision_model_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 三条调用通道都按新渠道重建，保存后本会话即刻生效。
+        self.rebuild_review(&environment);
+        self.rebuild_custody(&environment);
+        self.rebuild_rerank(&environment)?;
+        let reloaded = load_decision_model_configuration(&environment, None)
+            .unwrap_or(configuration);
+        let rows: Vec<DecisionRow> = reloaded
+            .channels
+            .iter()
+            .map(decision_row_from_config)
+            .collect();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.sync_decision_models(rows, &reloaded.default_key);
+        }
+        Ok(format!("决策模型配置已保存到 {}。", path.display()))
+    }
+
+    /// 写回一个决策模型功能开关（选中即保存），并按新开关重建对应运行期。
+    fn apply_decision_switch(&mut self, key: &str, enabled: bool) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let path = save_decision_switch(&environment, key, enabled, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 开关影响的是宿主侧哪些请求走决策模型，因此三条通道都要按新值重建。
+        self.rebuild_review(&environment);
+        self.rebuild_custody(&environment);
+        self.rebuild_rerank(&environment)?;
+        let label = DECISION_SWITCHES
+            .iter()
+            .find(|spec| spec.key == key)
+            .map(|spec| spec.label)
+            .unwrap_or(key);
+        Ok(format!(
+            "{label}：{}，已保存到 {}。",
+            if enabled { "开启" } else { "关闭" },
+            path.display()
+        ))
+    }
+
+    /// 重建两处检索重排运行期（记忆搜索与知识库检索各一份）。
+    fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
+        self.registry_options.memory.rerank = Arc::new(
+            omnicrawl_host::tools::rerank_options_from_config(
+                environment,
+                DECISION_SWITCH_MEMORY_SEARCH,
+            ),
+        );
+        self.registry_options.knowledge_rerank = Arc::new(
+            omnicrawl_host::tools::rerank_options_from_config(
+                environment,
+                DECISION_SWITCH_KB_SEARCH,
+            ),
+        );
+        self.rebuild_registry()
+    }
+
+    // ---------- 决策模型页的自部署分区（OneJev 本地服务） ----------
+
+    /// 自部署分区的一次动作：写配置、装环境、下载/删除权重、切渠道、启停服务。
+    fn apply_decision_local(&mut self, change: &DecisionLocalChange) -> Result<String, String> {
+        match change {
+            DecisionLocalChange::Save { size, device } => self.save_decision_local(size, device),
+            DecisionLocalChange::PrepareEnvironment => self.start_onejev_environment(),
+            DecisionLocalChange::Download { size } => self.start_onejev_download(size),
+            DecisionLocalChange::Delete { size } => self.delete_onejev_size(size),
+            DecisionLocalChange::UseChannel { size } => self.use_onejev_channel(size),
+            DecisionLocalChange::StartService => self.start_onejev_service(),
+            DecisionLocalChange::StopService => self.stop_onejev_service(),
+        }
+    }
+
+    /// 写回尺寸与设备（枚举行改档即保存）；服务在跑且规格变了就按新规格重启。
+    fn save_decision_local(&mut self, size: &str, device: &str) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let previous = load_local_deployment(&environment, None);
+        let configuration = LocalDeploymentConfig {
+            size: size.to_string(),
+            device: device.to_string(),
+            ..previous.clone()
+        };
+        let path = save_local_deployment(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let spec_changed = previous.size != configuration.size
+            || previous.device != configuration.device;
+        let mut note = String::new();
+        if spec_changed && self.onejev_server.state() != &OneJevServerState::Stopped {
+            match self.restart_onejev_service(&configuration) {
+                Ok(message) => note = format!(" {message}"),
+                Err(error) => note = format!(" 服务未能按新规格重启：{error}"),
+            }
+        }
+        let device_label = match configuration.device.as_str() {
+            "cpu" => "CPU",
+            "cuda" => "CUDA",
+            _ => "自动",
+        };
+        Ok(format!(
+            "自部署已设为 {}（设备 {}），已保存到 {}{}。",
+            configuration.size,
+            device_label,
+            path.display(),
+            note
+        ))
+    }
+
+    /// 自部署分区的初值：尺寸清单 + 已下载状态 + 环境与服务状态。
+    fn decision_local_values(&self, environment: &ConfigEnvironment) -> DecisionLocalValues {
+        let configuration = load_local_deployment(environment, None);
+        let root = resolve_onejev_root(environment, &configuration.model_dir);
+        let sizes: Vec<(String, String, bool)> = ONEJEV_SIZES
+            .iter()
+            .map(|size| {
+                (
+                    size.key.to_string(),
+                    size.label.to_string(),
+                    onejev_model_ready(&root, size),
+                )
+            })
+            .collect();
+        let env_ready =
+            onejev_environment_state(&root) == omnicrawl_onejev::EnvironmentState::Ready;
+        DecisionLocalValues {
+            size: configuration.size.clone(),
+            device: configuration.device.clone(),
+            root: root.display().to_string(),
+            sizes,
+            env_ready,
+            env_status: if env_ready {
+                "已就绪".to_string()
+            } else {
+                format!(
+                    "未安装（缺少 torch + qev：{}）",
+                    omnicrawl_onejev::paths::venv_dir(&root).display()
+                )
+            },
+            service_status: format!(
+                "{}（{}）",
+                self.onejev_server.state().label(),
+                self.onejev_server.model_name().unwrap_or("未指定模型")
+            ),
+            service_running: self.onejev_server.state() == &OneJevServerState::Ready,
+        }
+    }
+
+    /// 一键准备运行环境（venv + torch + qev）：长任务，放后台线程。
+    fn start_onejev_environment(&mut self) -> Result<String, String> {
+        self.spawn_onejev_task(|environment, configuration| {
+            let root = resolve_onejev_root(&environment, &configuration.model_dir);
+            let mut progress = |_stage: &str, _done: u64, _total: u64| {};
+            let result = ensure_onejev_environment(&environment, &root, &mut progress)
+                .map(|outcome| outcome.cuda)
+                .map_err(|error| error);
+            OneJevTaskResult::Environment(result)
+        })
+    }
+
+    /// 下载某个尺寸的权重：GB 级长任务，放后台线程。
+    fn start_onejev_download(&mut self, size: &str) -> Result<String, String> {
+        let Some(target) = find_onejev_size(size) else {
+            return Err(format!("未知的自部署尺寸：{size}。"));
+        };
+        self.spawn_onejev_task(move |environment, configuration| {
+            let root = resolve_onejev_root(&environment, &configuration.model_dir);
+            let mut progress = |_done: u64, _total: u64| {};
+            let result = download_onejev_model(&environment, &root, &target, Some(&mut progress))
+                .map(|_| ());
+            OneJevTaskResult::Download {
+                size: target.key.to_string(),
+                result,
+            }
+        })
+    }
+
+    /// 删除某个尺寸的权重（同步动作：只有目录删除，无网络）。
+    fn delete_onejev_size(&mut self, size: &str) -> Result<String, String> {
+        let Some(target) = find_onejev_size(size) else {
+            return Err(format!("未知的自部署尺寸：{size}。"));
+        };
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        let root = resolve_onejev_root(&environment, &configuration.model_dir);
+        // 删的是服务正在用的那份权重时先停服务：Windows 上被占用的文件删不掉。
+        let target_dir = onejev_model_dir(&root, target.repo_id);
+        if self.onejev_server.model_dir() == Some(target_dir.as_path()) {
+            self.onejev_server.stop();
+        }
+        let removed = delete_onejev_model(&root, &target)?;
+        if !removed {
+            return Ok(format!("OneJev {} 未下载到本机，无需删除。", target.key));
+        }
+        self.refresh_decision_local();
+        Ok(format!("已删除 OneJev {} 的权重。", target.key))
+    }
+
+    /// 把决策渠道切到自部署：建/改一条 `onejev` 渠道并设为默认。
+    ///
+    /// 尺寸决定模型名（`qev serve --name`），地址是本地固定端口；服务没跑就顺手拉起。
+    fn use_onejev_channel(&mut self, size: &str) -> Result<String, String> {
+        let Some(target) = find_onejev_size(size) else {
+            return Err(format!("未知的自部署尺寸：{size}。"));
+        };
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration = load_decision_model_configuration(&environment, None)
+            .unwrap_or_else(|_| DecisionModelConfiguration::default());
+        let model_name = target
+            .repo_id
+            .rsplit('/')
+            .next()
+            .unwrap_or(target.key)
+            .to_string();
+        let channel = DecisionChannelConfig {
+            key: DEFAULT_LOCAL_DECISION_CHANNEL_KEY.to_string(),
+            name: format!("OneJev 自部署 {}", target.key),
+            mode: DECISION_MODE_ONEJEV.to_string(),
+            base_url: DEFAULT_LOCAL_DECISION_BASE_URL.to_string(),
+            api_key: String::new(),
+            api_key_env: DEFAULT_LOCAL_DECISION_API_KEY_ENV.to_string(),
+            model: model_name,
+            enabled: true,
+        };
+        match configuration
+            .channels
+            .iter_mut()
+            .find(|item| item.key == DEFAULT_LOCAL_DECISION_CHANNEL_KEY)
+        {
+            Some(existing) => *existing = channel,
+            None => configuration.channels.push(channel),
+        }
+        configuration.default_key = DEFAULT_LOCAL_DECISION_CHANNEL_KEY.to_string();
+        let path = save_decision_model_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.rebuild_review(&environment);
+        self.rebuild_custody(&environment);
+        self.rebuild_rerank(&environment)?;
+        let rows: Vec<DecisionRow> = configuration
+            .channels
+            .iter()
+            .map(decision_row_from_config)
+            .collect();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.sync_decision_models(rows, &configuration.default_key);
+        }
+
+        // 渠道指向本地服务而服务没跑：顺手拉起，免得用户切完渠道却打不通。
+        let mut note = String::new();
+        if self.onejev_server.state() == &OneJevServerState::Stopped {
+            match self.start_onejev_service() {
+                Ok(message) => note = format!(" {message}"),
+                Err(error) => note = format!(" 本地服务未启动：{error}"),
+            }
+        }
+        Ok(format!(
+            "决策渠道已切到自部署（{}，{}），已保存到 {}{}。",
+            target.key,
+            DEFAULT_LOCAL_DECISION_BASE_URL,
+            path.display(),
+            note
+        ))
+    }
+
+    /// 启动（或按当前尺寸重启）本地服务。
+    fn start_onejev_service(&mut self) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        self.restart_onejev_service(&configuration)
+    }
+
+    /// 启动（或重启）本地服务：进程句柄留在宿主，只有在途等待放线程。
+    fn restart_onejev_service(
+        &mut self,
+        configuration: &LocalDeploymentConfig,
+    ) -> Result<String, String> {
+        if self.onejev_task.is_some() {
+            return Err("已有自部署任务在跑，请稍候。".to_string());
+        }
+        let Some(target) = find_onejev_size(&configuration.size) else {
+            return Err(format!("未知的自部署尺寸：{}。", configuration.size));
+        };
+        let environment = ConfigEnvironment::from_process();
+        let root = resolve_onejev_root(&environment, &configuration.model_dir);
+        let spec = OneJevLaunchSpec::new(&root, &target, &configuration.device);
+        let timeout = configuration.health_timeout_seconds.max(1) as u64;
+        let (sender, receiver) = mpsc::channel();
+        self.onejev_task = Some(receiver);
+        // 服务句柄先搬到线程里等健康检查，结果连同句柄一起送回来装回宿主。
+        let mut server = std::mem::take(&mut self.onejev_server);
+        let status = format!("正在启动本地决策服务（{}）…", target.key);
+        thread::spawn(move || {
+            let outcome = server.start(spec, true, timeout);
+            let result = match outcome.state {
+                OneJevServerState::Ready => Ok(outcome.message),
+                _ => Err(outcome.message),
+            };
+            let _ = sender.send(OneJevTaskResult::Service {
+                server,
+                result,
+            });
+        });
+        Ok(status)
+    }
+
+    /// 停止本地服务并释放显存。
+    fn stop_onejev_service(&mut self) -> Result<String, String> {
+        let outcome = self.onejev_server.stop();
+        self.refresh_decision_local();
+        Ok(outcome.message)
+    }
+
+    /// 把「读配置 + 后台执行」的样板收口：任务结果统一回到 [`Self::tick_onejev_tasks`]。
+    fn spawn_onejev_task<F>(&mut self, run: F) -> Result<String, String>
+    where
+        F: FnOnce(ConfigEnvironment, LocalDeploymentConfig) -> OneJevTaskResult + Send + 'static,
+    {
+        if self.onejev_task.is_some() {
+            return Err("已有自部署任务在跑，请稍候。".to_string());
+        }
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        let (sender, receiver) = mpsc::channel();
+        self.onejev_task = Some(receiver);
+        thread::spawn(move || {
+            let _ = sender.send(run(environment, configuration));
+        });
+        Ok("自部署任务已开始，完成后会在这里更新。".to_string())
+    }
+
+    /// 每帧轮询后台自部署任务：取回结果后回填状态行并刷新分区。
+    pub fn tick_onejev_tasks(&mut self) {
+        let received = match self.onejev_task.as_ref() {
+            Some(receiver) => receiver.try_recv(),
+            None => return,
+        };
+        let outcome = match received {
+            Ok(outcome) => outcome,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.onejev_task = None;
+                return;
+            }
+        };
+        self.onejev_task = None;
+        let message = match outcome {
+            OneJevTaskResult::Environment(Ok(true)) => {
+                "运行环境已就绪（CUDA 版 torch）。".to_string()
+            }
+            OneJevTaskResult::Environment(Ok(false)) => {
+                "运行环境已就绪（CPU 版 torch：未检测到可用的 NVIDIA 驱动）。".to_string()
+            }
+            OneJevTaskResult::Environment(Err(error)) => format!("运行环境准备失败：{error}"),
+            OneJevTaskResult::Download { size, result } => match result {
+                Ok(()) => format!("OneJev {size} 下载完成。"),
+                Err(error) => format!("OneJev {size} 下载失败：{error}"),
+            },
+            OneJevTaskResult::Service { server, result } => {
+                self.onejev_server = server;
+                match result {
+                    Ok(message) => message,
+                    Err(error) => format!("本地决策服务未就绪：{error}"),
+                }
+            }
+        };
+        self.refresh_decision_local_with(message);
+    }
+
+    /// 用磁盘与进程的现状刷新自部署分区（保留既有状态行文本）。
+    fn refresh_decision_local(&mut self) {
+        self.refresh_decision_local_with(String::new());
+    }
+
+    /// 刷新自部署分区；`message` 非空时同时更新状态行。
+    fn refresh_decision_local_with(&mut self, message: String) {
+        let environment = ConfigEnvironment::from_process();
+        let values = self.decision_local_values(&environment);
+        if let Some(settings) = self.settings.as_mut() {
+            settings.refresh_decision_local(values, message);
+        }
     }
 
     // ---------- TTS 页与音频选择弹层 ----------
@@ -3386,6 +3934,23 @@ impl App {
         ))
     }
 
+    /// 写回工具调用审查模式（`[approval] mode`），并同步本会话的审批模式。
+    fn apply_tool_approval(&mut self, mode: &str) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let path =
+            omnicrawl_config::features::approval::save_approval_mode(&environment, mode, None)
+                .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let parsed = ApprovalMode::parse(mode)
+            .map_err(|error| format!("设置未完成：{error}"))?;
+        // 审批模式是宿主侧执行层的定调依据，本会话即刻生效（不下发内核）。
+        self.options.approval = parsed;
+        Ok(format!(
+            "工具调用审查模式已设为 {}，已保存到 {}。",
+            parsed.label(),
+            path.display()
+        ))
+    }
+
     /// 读 MCP 设置页的初值：全局开关/策略 + Server 列表；读不出来用保守默认值。
     fn mcp_settings_values(&self, environment: &ConfigEnvironment) -> McpSettingsValues {
         match load_mcp_config(environment, None) {
@@ -3542,17 +4107,14 @@ impl App {
                 } else {
                     channel.base_url.clone()
                 };
-                advisor.api_key_env = if channel.api_key_env.trim().is_empty() {
-                    self.options.api_key_env.clone()
-                } else {
-                    channel.api_key_env.clone()
-                };
+                // 顾问凭据只认渠道里的明文密钥（与运行期 `resolve_api_key` 同口径）。
+                advisor.api_key = channel.api_key.clone();
             }
             // 没配渠道（单模型 legacy 配置）时，顾问模型就是配置里的引用本身。
             None => {
                 advisor.model = config.model_key.clone();
                 advisor.base_url = self.options.base_url.clone();
-                advisor.api_key_env = self.options.api_key_env.clone();
+                advisor.api_key = String::new();
             }
         }
         self.registry_options.advisor = advisor;
@@ -5302,6 +5864,67 @@ fn feature_label(key: &str) -> String {
 }
 
 /// 配置里的渠道视图 → 界面行。
+/// 图像生成运行期选项：命令行只承载显式覆盖，未给的字段回落 `[image_gen]` 配置。
+fn image_gen_options_from(
+    config: &ImageGenConfiguration,
+    cli: &crate::args::ImageGenArgs,
+) -> ImageGenOptions {
+    ImageGenOptions {
+        enabled: cli.enabled.unwrap_or(config.enabled),
+        base_url: cli
+            .base_url
+            .clone()
+            .unwrap_or_else(|| config.base_url.clone()),
+        model: cli.model.clone().unwrap_or_else(|| config.model.clone()),
+        api_key_env: cli
+            .api_key_env
+            .clone()
+            .unwrap_or_else(|| config.api_key_env.clone()),
+        ..ImageGenOptions::default()
+    }
+}
+
+/// 决策模型功能开关的界面行：标签与顺序取自配置域的开关表，值取配置。
+fn decision_switch_rows(switches: &DecisionSwitches) -> Vec<DecisionSwitchRow> {
+    DECISION_SWITCHES
+        .iter()
+        .map(|spec| DecisionSwitchRow {
+            key: spec.key.to_string(),
+            label: spec.label.to_string(),
+            enabled: switches.get(spec.key).copied().unwrap_or(spec.default),
+        })
+        .collect()
+}
+
+/// 配置决策渠道 → 决策页的界面行。
+fn decision_row_from_config(channel: &DecisionChannelConfig) -> DecisionRow {
+    DecisionRow {
+        key: channel.key.clone(),
+        name: channel.name.clone(),
+        mode: channel.mode.clone(),
+        base_url: channel.base_url.clone(),
+        // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
+        api_key: channel.api_key.clone(),
+        api_key_env: channel.api_key_env.clone(),
+        model: channel.model.clone(),
+        enabled: channel.enabled,
+    }
+}
+
+/// 界面行 → 配置决策渠道（`api_key` 留空表示「不改动」，由调用方按 key 继承）。
+fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConfig {
+    DecisionChannelConfig {
+        key: row.key.trim().to_string(),
+        name: row.name.trim().to_string(),
+        mode: row.mode.trim().to_string(),
+        base_url: row.base_url.trim().to_string(),
+        api_key: row.api_key.trim().to_string(),
+        api_key_env: row.api_key_env.trim().to_string(),
+        model: row.model.trim().to_string(),
+        enabled: row.enabled,
+    }
+}
+
 fn channel_row_from_config(channel: &ChannelConfig) -> ChannelRow {
     ChannelRow {
         key: channel.key.clone(),

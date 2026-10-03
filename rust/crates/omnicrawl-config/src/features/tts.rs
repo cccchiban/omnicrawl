@@ -13,7 +13,6 @@ pub const DEFAULT_TTS_VOICE: &str = "Junhao";
 pub const DEFAULT_TTS_OUTPUT_DIR: &str = ".omnicrawl/.agent_tmp/tts";
 
 const TTS_THREAD_COUNT_OPTIONS: [i64; 4] = [1, 2, 4, 8];
-const TTS_MODEL_DIR_ENV: &str = "OMNICRAWL_TTS_MODEL_DIR";
 
 /// TTS 开关与参数。
 #[derive(Debug, Clone, PartialEq)]
@@ -68,7 +67,7 @@ impl TtsConfiguration {
         Ok(self)
     }
 
-    /// 解析模型目录：优先配置值，其次环境变量与默认目录。
+    /// 解析模型目录：优先配置值，其次默认目录。
     pub fn resolved_model_dir(&self, env: &ConfigEnvironment) -> PathBuf {
         if self.model_dir.is_empty() {
             return default_tts_model_dir(env);
@@ -77,13 +76,9 @@ impl TtsConfiguration {
     }
 }
 
-/// 默认模型目录：`~/.omnicrawl/tts/models`（`OMNICRAWL_TTS_MODEL_DIR` 可覆盖）。
+/// 默认模型目录：`~/.omnicrawl/tts/models`。
 pub fn default_tts_model_dir(env: &ConfigEnvironment) -> PathBuf {
-    let override_dir = env.get_trimmed(TTS_MODEL_DIR_ENV);
-    if override_dir.is_empty() {
-        return env.home().join(".omnicrawl").join("tts").join("models");
-    }
-    expand_user(env, &override_dir)
+    env.home().join(".omnicrawl").join("tts").join("models")
 }
 
 /// 读取 TTS 配置；缺少 `tts` 段时返回关闭的默认配置。

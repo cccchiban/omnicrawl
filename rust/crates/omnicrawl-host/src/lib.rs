@@ -14,6 +14,7 @@
 //! 高风险 Git 调用交给独立审查模型，失败一律 fail-closed。
 
 pub mod approval;
+pub mod decision_wire;
 pub mod host;
 pub mod kernel;
 pub mod plugins;

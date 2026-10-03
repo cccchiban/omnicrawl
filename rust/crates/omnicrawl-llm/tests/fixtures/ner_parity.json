@@ -516,7 +516,7 @@
    {
     "configured": "",
     "env": " D:/y/env.pt ",
-    "expected_suffix": "env.pt"
+    "expected_suffix": "bilstm_crf_best.pt"
    },
    {
     "configured": null,

@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
-    Command, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
-    ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch,
-    ToolEventPayload, ToolStartedPayload,
+    Command, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
+    ModelHookRequest, ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload,
+    ToolBatch, ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
     error_code, Frame, Id, ToolBatchResult, TurnCancelParams, TurnSubmitParams, PROTOCOL_VERSION,
@@ -32,6 +32,7 @@ use crate::plugins::PluginHost;
 use crate::prompt::PromptRuntime;
 use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
+use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
@@ -62,6 +63,9 @@ pub struct RunnerOptions {
     /// 审查模型（`approval.mode = review` 时用）；`None` 表示没有审查运行期，
     /// 此模式下需审查的调用会 fail-closed 拒绝。
     pub review: Option<ReviewOptions>,
+    /// 提问托管（`decision_models.toml` 的 `ask_user_custody` 开关）：开启后**有选项**的提问
+    /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
+    pub custody: Option<CustodyOptions>,
     /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
     ///
     /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
@@ -144,6 +148,8 @@ impl TurnControl {
 /// 一个调用执行完的通知。
 struct JobDone {
     index: usize,
+    /// 工具名：提问托管要从顾问答复里取上下文。
+    tool: String,
     result: ToolResult,
     vision: Option<VisionPayload>,
 }
@@ -156,6 +162,8 @@ pub struct TurnRunner {
     next_turn: u64,
     /// 审查载荷要的两条会话事实（最近用户消息 + 最近一次 ask_user 问答）。
     review_context: ReviewContext,
+    /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复（每次提交回合时刷新）。
+    custody_context: CustodyContext,
 }
 
 impl TurnRunner {
@@ -177,6 +185,7 @@ impl TurnRunner {
             options,
             next_turn: 1,
             review_context: ReviewContext::default(),
+            custody_context: CustodyContext::default(),
         })
     }
 
@@ -434,6 +443,10 @@ impl TurnRunner {
         };
         // 审查闸的意图摘要取本轮提交的原文（与 Python 从消息快照取的最近一条用户消息同义）。
         self.review_context.record_user_text(&user_text);
+        // 提问托管的上下文按回合刷新：用户请求取本轮原文，顾问答复只算本回合的。
+        self.custody_context.question.clear();
+        self.custody_context.user_prompt = user_text.clone();
+        self.custody_context.advisor_replies.clear();
         let result = self.run_turn(&turn_id, &user_text, control, interactor, on_event);
         if let Some(plugins) = self.options.plugins.as_ref() {
             match &result {
@@ -804,11 +817,23 @@ impl TurnRunner {
                             }
                         }
                         Waiting::Question(panel) => {
-                            let answer = interactor
-                                .answer(&panel.prompt, &panel.options, &arguments)
-                                .unwrap_or_default();
+                            // 提问托管：有选项且决策服务可用时自动作答，不再打扰用户；
+                            // 其余情形（无选项、不可用、失败）一律 fail-open 退回人工提问。
+                            let custodied = self.custody_answer(&panel);
+                            let answer = match custodied.as_ref() {
+                                Some(answer) => answer.clone(),
+                                None => interactor
+                                    .answer(&panel.prompt, &panel.options, &arguments)
+                                    .unwrap_or_default(),
+                            };
                             // 问答是审查模型判断授权边界的最新事实，先记下来再继续推进。
                             self.review_context.record_ask_user(&panel.prompt, &answer);
+                            if let Some(answer) = custodied.as_ref() {
+                                // 自动作答要留痕：用户看不到面板，但要知道发生了什么。
+                                on_event(HostEvent::Notice(MessagePayload {
+                                    message: custody_notice(&panel.prompt, answer),
+                                }));
+                            }
                             pending.answer(
                                 answer,
                                 &mut context(self.options.approval, &mut todos, &mut paused, facts),
@@ -946,6 +971,12 @@ impl TurnRunner {
         loop {
             match completions.recv_timeout(POLL_INTERVAL) {
                 Ok(done) => {
+                    // 顾问答复是提问托管判断「该选哪一项」的上下文，整批回填前先记下来。
+                    if done.tool == crate::tools::advisor::ADVISOR_TOOL_NAME && done.result.ok {
+                        self.custody_context
+                            .advisor_replies
+                            .push(done.result.output.clone());
+                    }
                     pending.record_result(done.index, done.result, done.vision);
                     if pending.is_ready() {
                         return;
@@ -967,6 +998,21 @@ impl TurnRunner {
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
+    }
+
+    /// 提问托管：有选项的提问交给决策模型选一项，返回选中的答案。
+    ///
+    /// `None` 表示本次不托管（开关关、没有选项、不可用，或决策服务这一趟失败），
+    /// 调用方要退回人工提问——托管的目的是省一次人工往返，不值当替用户瞎猜。
+    fn custody_answer(&mut self, panel: &crate::host::QuestionPanel) -> Option<String> {
+        if panel.options.is_empty() {
+            return None;
+        }
+        // 待决提问的正文就是这个面板的问题：托管请求的 `state.question` 取它。
+        self.custody_context.question = panel.prompt.clone();
+        let custody = self.options.custody.as_ref()?;
+        let index = chosen_option(custody, &self.custody_context, &panel.options)?;
+        panel.options.get(index).cloned()
     }
 
     /// `tool.call.before`：可改写调用参数，也可拒绝整个调用。
@@ -1209,10 +1255,20 @@ fn run_job(
         }
         let _ = sender.send(JobDone {
             index,
+            tool: tool_name,
             result,
             vision,
         });
     });
+}
+
+/// 自动作答的可见提示：用户看不到提问面板，这条提示要交代「问了什么、选了什么」。
+pub fn custody_notice(question: &str, answer: &str) -> String {
+    format!(
+        "提问已由决策模型自动作答：{question} → {answer}",
+        question = question.trim(),
+        answer = answer.trim()
+    )
 }
 
 fn todos_to_value(todos: &[TodoItem]) -> Value {

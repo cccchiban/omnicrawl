@@ -577,7 +577,7 @@
       "existing": [
         "telegram_1"
       ],
-      "expected": "files/telegram_1789728414"
+      "expected": "files/telegram_1790876196"
     },
     {
       "subdir": "code",
@@ -588,10 +588,6 @@
   ],
   "config": [
     {
-      "environment": {
-        "TELEGRAM_BOT_TOKEN": "from-env",
-        "TELEGRAM_CONFIRM_TIMEOUT": "12"
-      },
       "section": {
         "bot_token": "cfg",
         "allowed_user_ids": [
@@ -600,16 +596,15 @@
         ]
       },
       "expected": {
-        "bot_token": "from-env",
+        "bot_token": "cfg",
         "allowed_user_ids": [
           1,
           2
         ],
-        "confirm_timeout_seconds": 12.0
+        "confirm_timeout_seconds": 300.0
       }
     },
     {
-      "environment": {},
       "section": {
         "bot_token": "cfg",
         "allowed_user_ids": [
@@ -628,11 +623,13 @@
       }
     },
     {
-      "environment": {
-        "TELEGRAM_ALLOWED_USER_IDS": "1，2, 3 ,"
-      },
       "section": {
-        "bot_token": "cfg"
+        "bot_token": "cfg",
+        "allowed_user_ids": [
+          1,
+          2,
+          3
+        ]
       },
       "expected": {
         "bot_token": "cfg",
@@ -645,7 +642,6 @@
       }
     },
     {
-      "environment": {},
       "section": {
         "bot_token": "cfg",
         "allowed_user_ids": []
@@ -657,16 +653,14 @@
       }
     },
     {
-      "environment": {
-        "TELEGRAM_ALLOWED_USER_IDS": "1,abc"
+      "section": {
+        "allowed_user_ids": "1,abc"
       },
-      "section": {},
       "expected": {
         "error": "Telegram 允许用户 ID 必须是整数：abc"
       }
     },
     {
-      "environment": {},
       "section": {
         "allowed_user_ids": [
           "x"
@@ -677,16 +671,14 @@
       }
     },
     {
-      "environment": {
-        "TELEGRAM_CONFIRM_TIMEOUT": "soon"
+      "section": {
+        "confirmation_timeout_seconds": "soon"
       },
-      "section": {},
       "expected": {
-        "error": "TELEGRAM_CONFIRM_TIMEOUT / telegram.confirmation_timeout_seconds 必须是数字。"
+        "error": "telegram.confirmation_timeout_seconds 必须是数字。"
       }
     },
     {
-      "environment": {},
       "section": {
         "bot_token": 123,
         "allowed_user_ids": [
@@ -702,7 +694,6 @@
       }
     },
     {
-      "environment": {},
       "section": {
         "bot_token": "cfg",
         "allowed_user_ids": 9
@@ -716,7 +707,6 @@
       }
     },
     {
-      "environment": {},
       "section": {},
       "expected": {
         "bot_token": "",

@@ -173,6 +173,7 @@ SCENARIOS: list[tuple[str, str | None, dict[str, str], bool]] = [
         {},
         False,
     ),
+    # 环境变量通道已从 Rust 侧移除：以下场景仍注入变量，但期望值按「不读环境」录制。
     (
         "feishu_only_telegram_env",
         toml_text(FEISHU_SECTION),
@@ -195,18 +196,18 @@ SCENARIOS: list[tuple[str, str | None, dict[str, str], bool]] = [
 ]
 
 # 子进程环境的受控输入：(基础环境, 说明)。`<ROOT>` 会被换成 Python 侧算出的包父目录。
+# 启动目录变量已不再由本层清理（环境变量通道整体移除），基础环境只剩 PYTHONPATH 维度。
 CHILD_ENV_CASES: list[dict[str, Any]] = [
     {"name": "no_pythonpath", "base": {"PATH": "/usr/bin"}},
     {"name": "existing_pythonpath", "base": {"PATH": "/usr/bin", "PYTHONPATH": "  /existing  "}},
     {
-        "name": "blank_pythonpath_and_launch_cwd",
-        "base": {"PYTHONPATH": "   ", "AI_VOICE_CHAT_LAUNCH_CWD": "/somewhere"},
+        "name": "blank_pythonpath",
+        "base": {"PYTHONPATH": "   "},
     },
     {
-        "name": "pythonpath_list_and_launch_cwd",
+        "name": "pythonpath_list",
         "base": {
             "PYTHONPATH": "/a:/b",
-            "AI_VOICE_CHAT_LAUNCH_CWD": "/x",
             "KEEP": "1",
         },
     },
@@ -273,7 +274,8 @@ def run_scenario(
         for key in MANAGED_ENV:
             os.environ.pop(key, None)
         os.environ["AI_CONFIG_FILE"] = str(config_path)
-        os.environ.update(env_overrides)
+        # 环境变量通道已移除：期望值在不注入这些变量的前提下录制，
+        # 但 `env_overrides` 仍原样写进数据集，供 Rust 侧证明「注入也不读」。
 
         spawns: list[dict[str, Any]] = []
 
@@ -335,7 +337,6 @@ def build_child_env_cases() -> list[dict[str, Any]]:
                 "name": case["name"],
                 "base": base,
                 "pairs": pairs,
-                "launch_cwd_env_present": "AI_VOICE_CHAT_LAUNCH_CWD" in dict(pairs),
                 "pythonpath": dict(pairs).get("PYTHONPATH", ""),
             }
         )
@@ -343,7 +344,7 @@ def build_child_env_cases() -> list[dict[str, Any]]:
 
 
 def build_auto_start_decisions() -> list[dict[str, Any]]:
-    """自动启动开关的判定表：未设置 / 关闭取值 / 开启取值 / 无效取值。"""
+    """自动启动开关的判定表：环境变量开关已移除，无论环境如何都启用。"""
 
     cases: list[dict[str, Any]] = []
     for raw in (None, "0", "  OFF  ", "off", "disabled", "1", "TRUE", "on", "maybe", ""):
@@ -354,7 +355,7 @@ def build_auto_start_decisions() -> list[dict[str, Any]]:
         cases.append(
             {
                 "raw": raw,
-                "enabled": A._auto_start_enabled(),
+                "enabled": True,
             }
         )
     os.environ.pop(A.AUTO_START_ENV, None)

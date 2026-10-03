@@ -16,7 +16,7 @@ pub struct Options {
     pub model: String,
     pub base_url: String,
     pub api_key_env: String,
-    /// system prompt 的**显式覆盖**：`--system-prompt` 或 `OMNICRAWL_SYSTEM_PROMPT` 给了才有值。
+    /// system prompt 的**显式覆盖**：只有 `--system-prompt` 给了才有值。
     /// `None` 表示没给，提示词装配走 `rust/assets/templates/system_prompt.md` 模板——
     /// 这里不能回落成默认文案，否则模板会被一句话顶掉（曾经的 bug）。
     pub system_prompt: Option<String>,
@@ -38,33 +38,35 @@ pub struct Options {
     pub advisor: AdvisorArgs,
 }
 
-/// 顾问配置：命令行与环境变量（Python 从 config.toml 读取）。
+/// 顾问配置：命令行只承载显式覆盖，其余字段留给配置文件的 `[advisor]` 段。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdvisorArgs {
     pub enabled: bool,
     pub model: String,
     pub base_url: String,
-    pub api_key_env: String,
     pub effort: String,
     pub disabled_for_models: Vec<String>,
 }
 
-/// 图像生成配置：命令行开关与环境变量（Python 从 config.toml 读取，差异见 crate README）。
+/// 图像生成配置：命令行只承载**显式覆盖**，未给的字段留给配置文件的 `[image_gen]` 段。
+///
+/// 三个 `Option` 是为了区分「用户明确指定」与「没指定」：`None` 时由宿主回落到配置文件，
+/// 否则配置里配好的接口地址/模型永远会被命令行默认值顶掉。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageGenArgs {
-    pub enabled: bool,
-    pub base_url: String,
-    pub model: String,
-    pub api_key_env: String,
+    pub enabled: Option<bool>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub api_key_env: Option<String>,
 }
 
 impl Default for ImageGenArgs {
     fn default() -> Self {
         Self {
-            enabled: false,
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-image-2".to_string(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
+            enabled: None,
+            base_url: None,
+            model: None,
+            api_key_env: None,
         }
     }
 }
@@ -80,15 +82,14 @@ pub enum Parsed {
 pub const USAGE: &str = "\
 用法：omnicrawl-tui [选项]
 
-启动内核协议 v1 的宿主前端（全屏终端工作台）。内核默认取 $OMNICRAWL_BINARY，
-否则用与本程序同目录的 omnicrawl，再退回 PATH。
+启动内核协议 v1 的宿主前端（全屏终端工作台）。内核路径只用 `--kernel`、同目录的
+omnicrawl 或 PATH。
 
 选项：
   --kernel <路径>          内核可执行文件
-  --model <名称>           模型名（默认 $OMNICRAWL_MODEL / $OPENAI_MODEL，
-                           再退回 config.toml 里的当前模型）
-  --base-url <地址>        模型接口基地址（默认 $OPENAI_BASE_URL）
-  --api-key-env <变量名>   存放凭据的环境变量名（默认 OPENAI_API_KEY）
+  --model <名称>           模型名（未给时读 config.toml 里的当前模型）
+  --base-url <地址>        模型接口基地址（未给时读 config.toml）
+  --api-key-env <变量名>   存放凭据的环境变量名（未给时读 config.toml）
   --system-prompt <文本>   系统提示词；给了就整段替换内置模板
   --session-root <目录>    会话根目录；给了就让内核自己持有会话
   --context-window <N>     HUD 上下文占用条的分母（token）
@@ -98,31 +99,25 @@ pub const USAGE: &str = "\
   --tool-timeout <秒>      单个工具执行的最长等待（默认 600）
   --native-vision          模型原生支持视觉：把 read_image 的图片注入请求
                            （未给时按配置里当前模型的 native_vision）
-  --image-gen              启用图像生成（默认 $OMNICRAWL_IMAGE_GEN_ENABLED）
-  --image-gen-base-url <地址>   图像接口基地址（默认 $OMNICRAWL_IMAGE_GEN_BASE_URL）
-  --image-gen-model <名称>      图像模型（默认 $OMNICRAWL_IMAGE_GEN_MODEL）
-  --image-gen-api-key-env <变量> 图像 API Key 的环境变量名（默认 $OMNICRAWL_IMAGE_GEN_API_KEY_ENV）
-  --advisor-model <名称>        顾问模型（给了即启用；默认 $OMNICRAWL_ADVISOR_MODEL）
-  --advisor-base-url <地址>     顾问接口基地址（默认 $OMNICRAWL_ADVISOR_BASE_URL，再回落主模型）
-  --advisor-api-key-env <变量>  顾问凭据的环境变量名（默认 $OMNICRAWL_ADVISOR_API_KEY_ENV，再回落主模型）
-  --advisor-effort <强度>       顾问推理强度（默认 $OMNICRAWL_ADVISOR_EFFORT）
+  --image-gen              启用图像生成（未给时读 config.toml 的 [image_gen]）
+  --image-gen-base-url <地址>   图像接口基地址（未给时读 config.toml）
+  --image-gen-model <名称>      图像模型（未给时读 config.toml）
+  --image-gen-api-key-env <变量> 图像 API Key 的环境变量名（未给时读 config.toml）
+  --advisor-model <名称>        顾问模型（给了即启用；未给时读 config.toml）
+  --advisor-base-url <地址>     顾问接口基地址（未给时读 config.toml，再回落主模型）
+  --advisor-effort <强度>       顾问推理强度（未给时读 config.toml）
   --version, -V            打印版本
   --help, -h               打印本说明";
 
-/// 按「命令行 → 环境变量 → 配置文件 → 默认值」解析参数；`env` 便于测试注入。
-pub fn parse(
-    args: &[String],
-    env: &dyn Fn(&str) -> Option<String>,
-    exe_dir: &Path,
-) -> Result<Parsed, String> {
-    parse_with(args, env, exe_dir, &configured_model, &configured_approval)
+/// 按「命令行 → 配置文件 → 默认值」解析参数。
+pub fn parse(args: &[String], exe_dir: &Path) -> Result<Parsed, String> {
+    parse_with(args, exe_dir, &configured_model, &configured_approval)
 }
 
 /// [`parse`] 的实现。最后一级回退（读 config.toml）也作为参数注入：
 /// 测试才能在不依赖开发机真实配置的前提下覆盖「配置里也没有/取不到」这两个分支。
 fn parse_with(
     args: &[String],
-    env: &dyn Fn(&str) -> Option<String>,
     exe_dir: &Path,
     configured_model: &dyn Fn() -> Result<String, String>,
     configured_approval: &dyn Fn() -> Result<ApprovalMode, String>,
@@ -138,13 +133,13 @@ fn parse_with(
     let mut command_timeout: Option<i64> = None;
     let mut tool_timeout: Option<i64> = None;
     let mut native_vision = false;
-    let mut image_gen_enabled = false;
+    // 图像生成的启用开关：三态，`None` 表示命令行与环境变量都没有给，交给配置文件。
+    let mut image_gen_switch: Option<bool> = None;
     let mut image_gen_base_url: Option<String> = None;
     let mut image_gen_model: Option<String> = None;
     let mut image_gen_api_key_env: Option<String> = None;
     let mut advisor_model: Option<String> = None;
     let mut advisor_base_url: Option<String> = None;
-    let mut advisor_api_key_env: Option<String> = None;
     let mut advisor_effort: Option<String> = None;
 
     let mut index = 0;
@@ -198,7 +193,7 @@ fn parse_with(
                 tool_timeout = Some(parsed.clamp(1, 3600));
             }
             "--native-vision" => native_vision = true,
-            "--image-gen" => image_gen_enabled = true,
+            "--image-gen" => image_gen_switch = Some(true),
             "--image-gen-base-url" => {
                 image_gen_base_url = Some(take_value(args, &mut index, flag)?);
             }
@@ -214,9 +209,6 @@ fn parse_with(
             "--advisor-base-url" => {
                 advisor_base_url = Some(take_value(args, &mut index, flag)?);
             }
-            "--advisor-api-key-env" => {
-                advisor_api_key_env = Some(take_value(args, &mut index, flag)?);
-            }
             "--advisor-effort" => {
                 advisor_effort = Some(take_value(args, &mut index, flag)?);
             }
@@ -225,50 +217,25 @@ fn parse_with(
         index += 1;
     }
 
-    // 模型名来源顺序：`--model` → `OMNICRAWL_MODEL` → `OPENAI_MODEL` → config.toml 的当前模型。
-    // 最后一段是对齐 Python 的关键（`config/models/llm.py` 的
-    // `model=_read_required_config_text(llm_section, "model", "OPENAI_MODEL")`：
-    // 模型是配置项，环境变量只是回退）；Rust 侧原来只认前三级，配置里明明配好了
-    // `[llm.active_model]` 也必须再敲一遍 `--model` 才能启动。
-    let model = match model
-        .or_else(|| non_empty(env("OMNICRAWL_MODEL")))
-        .or_else(|| non_empty(env("OPENAI_MODEL")))
-    {
+    // 模型名来源顺序：`--model` → config.toml 的当前模型。
+    let model = match model {
         Some(model) => model,
         None => configured_model().map_err(|error| {
             format!(
-                "--model 未给出，环境变量 OMNICRAWL_MODEL / OPENAI_MODEL 也是空的，\
-且从 config.toml 取模型失败：{error}\
-可在 config.toml 中配置模型，或设置 OPENAI_MODEL 切换。"
+                "--model 未给出，且从 config.toml 取模型失败：{error}可在 config.toml 中配置模型，或用 --model 指定。"
             )
         })?,
     };
 
-    let disabled_for_models: Vec<String> = non_empty(env("OMNICRAWL_ADVISOR_DISABLED_FOR_MODELS"))
-        .map(|value| {
-            value
-                .split(',')
-                .map(|item| item.trim().to_string())
-                .filter(|item| !item.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    let advisor_model = advisor_model
-        .or_else(|| non_empty(env("OMNICRAWL_ADVISOR_MODEL")))
-        .unwrap_or_default();
+    let advisor_model = advisor_model.unwrap_or_default();
 
     Ok(Parsed::Run(Box::new(Options {
-        kernel: kernel.unwrap_or_else(|| resolve_kernel_path(env, exe_dir)),
+        kernel: kernel.unwrap_or_else(|| resolve_kernel_path(exe_dir)),
         model,
-        base_url: base_url
-            .or_else(|| non_empty(env("OPENAI_BASE_URL")))
-            .unwrap_or_default(),
-        api_key_env: api_key_env
-            .or_else(|| non_empty(env("OMNICRAWL_API_KEY_ENV")))
-            .unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
-        system_prompt: system_prompt.or_else(|| non_empty(env("OMNICRAWL_SYSTEM_PROMPT"))),
-        session_root: session_root
-            .or_else(|| non_empty(env("OMNICRAWL_SESSION_ROOT")).map(PathBuf::from)),
+        base_url: base_url.unwrap_or_default(),
+        api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+        system_prompt,
+        session_root,
         context_window_tokens: context_window,
         // 审批模式对映 Python `load_approval_mode()`：命令行给 `--approval` 时以命令行
         // 为准，否则读 config.toml（`[approval] mode`，缺失时与 Python 一致回落「自动
@@ -278,69 +245,34 @@ fn parse_with(
             Some(mode) => mode,
             None => configured_approval().map_err(|error| {
                 format!(
-                    "从 config.toml 读取审批模式失败：{error}\n可用 --approval <manual|review|auto> 覆盖。"
+                    "从 config.toml 读取审批模式失败：{error}
+可用 --approval <manual|review|auto> 覆盖。"
                 )
             })?,
         },
         command_timeout_seconds: command_timeout.unwrap_or(360),
-        tool_timeout_seconds: tool_timeout
-            .or_else(|| {
-                non_empty(env("AGENT_TOOL_TIMEOUT_SECONDS"))
-                    .and_then(|value| value.trim().parse::<i64>().ok())
-                    .map(|value| value.clamp(1, 3600))
-            })
-            .unwrap_or(600),
-        native_vision: native_vision
-            || non_empty(env("OMNICRAWL_NATIVE_VISION"))
-                .map(|value| {
-                    matches!(
-                        value.trim().to_lowercase().as_str(),
-                        "1" | "true" | "yes" | "on"
-                    )
-                })
-                .unwrap_or(false),
+        tool_timeout_seconds: tool_timeout.unwrap_or(600),
+        native_vision,
         image_gen: ImageGenArgs {
-            enabled: image_gen_enabled
-                || non_empty(env("OMNICRAWL_IMAGE_GEN_ENABLED"))
-                    .map(|value| {
-                        matches!(
-                            value.trim().to_lowercase().as_str(),
-                            "1" | "true" | "yes" | "on"
-                        )
-                    })
-                    .unwrap_or(false),
-            base_url: image_gen_base_url
-                .or_else(|| non_empty(env("OMNICRAWL_IMAGE_GEN_BASE_URL")))
-                .unwrap_or_else(|| ImageGenArgs::default().base_url),
-            model: image_gen_model
-                .or_else(|| non_empty(env("OMNICRAWL_IMAGE_GEN_MODEL")))
-                .unwrap_or_else(|| ImageGenArgs::default().model),
-            api_key_env: image_gen_api_key_env
-                .or_else(|| non_empty(env("OMNICRAWL_IMAGE_GEN_API_KEY_ENV")))
-                .unwrap_or_else(|| ImageGenArgs::default().api_key_env),
+            // 命令行没给时留 `None`，由宿主读 `[image_gen]` 段补齐。
+            enabled: image_gen_switch,
+            base_url: image_gen_base_url,
+            model: image_gen_model,
+            api_key_env: image_gen_api_key_env,
         },
         advisor: AdvisorArgs {
+            // `--advisor-model` 是唯一开关：没给就让宿主按配置决定。
             enabled: !advisor_model.trim().is_empty(),
             model: advisor_model,
-            base_url: advisor_base_url
-                .or_else(|| non_empty(env("OMNICRAWL_ADVISOR_BASE_URL")))
-                .unwrap_or_default(),
-            api_key_env: advisor_api_key_env
-                .or_else(|| non_empty(env("OMNICRAWL_ADVISOR_API_KEY_ENV")))
-                .unwrap_or_default(),
-            effort: advisor_effort
-                .or_else(|| non_empty(env("OMNICRAWL_ADVISOR_EFFORT")))
-                .unwrap_or_default(),
-            disabled_for_models,
+            base_url: advisor_base_url.unwrap_or_default(),
+            effort: advisor_effort.unwrap_or_default(),
+            disabled_for_models: Vec::new(),
         },
     })))
 }
 
-/// 内核可执行文件：显式环境变量优先，其次与本程序同目录的 `omnicrawl`，最后交给 PATH。
-fn resolve_kernel_path(env: &dyn Fn(&str) -> Option<String>, exe_dir: &Path) -> PathBuf {
-    if let Some(explicit) = non_empty(env("OMNICRAWL_BINARY")) {
-        return PathBuf::from(explicit);
-    }
+/// 内核可执行文件：与本程序同目录的 `omnicrawl`，找不到就交给 PATH。
+fn resolve_kernel_path(exe_dir: &Path) -> PathBuf {
     let suffix = std::env::consts::EXE_SUFFIX;
     let sibling = exe_dir.join(format!("omnicrawl{suffix}"));
     if sibling.is_file() {
@@ -357,7 +289,7 @@ fn take_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, 
 }
 
 /// 从配置里取当前模型名；只负责说清「为什么取不到」，面向用户的引导语由
-/// [`parse_with`] 统一追加（这样三处都缺模型时错误里一定同时点到环境变量与配置）。
+/// [`parse_with`] 统一追加。
 ///
 /// 走的就是界面与内核共用的那条配置链（`load_llm_config` 内部按
 /// `[llm.active_model]` / `[llm] model` / models.toml 解析），因此
@@ -382,82 +314,53 @@ fn configured_approval() -> Result<ApprovalMode, String> {
     ApprovalMode::parse(&mode)
 }
 
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.filter(|text| !text.trim().is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn no_env(_: &str) -> Option<String> {
-        None
-    }
-
-    fn native_vision_env(value: &'static str) -> impl Fn(&str) -> Option<String> {
-        move |key: &str| {
-            if key == "OMNICRAWL_NATIVE_VISION" {
-                Some(value.to_string())
-            } else {
-                None
-            }
-        }
+    #[test]
+    fn base_url_comes_from_flag_only() {
+        assert_eq!(options(&["--model", "m"]).base_url, "");
+        assert_eq!(
+            options(&["--model", "m", "--base-url", "https://cli.example/v1"]).base_url,
+            "https://cli.example/v1"
+        );
+        let parsed = options(&["--model", "m"]);
+        assert_eq!(parsed.api_key_env, "OPENAI_API_KEY");
+        // 没给 `--approval` 时取配置兜底（上文的注入值），不再是硬编码的 manual。
+        assert_eq!(parsed.approval, ApprovalMode::Review);
+        assert_eq!(parsed.command_timeout_seconds, 360);
+        assert_eq!(parsed.tool_timeout_seconds, 600);
+        assert!(parsed.session_root.is_none());
     }
 
     #[test]
-    fn native_vision_comes_from_flag_or_environment() {
-        assert!(!options(&["--model", "m"], &no_env).native_vision);
-        assert!(options(&["--model", "m", "--native-vision"], &no_env).native_vision);
-        assert!(options(&["--model", "m"], &native_vision_env("yes")).native_vision);
-        assert!(options(&["--model", "m"], &native_vision_env("TRUE")).native_vision);
-        assert!(!options(&["--model", "m"], &native_vision_env("0")).native_vision);
-        assert!(!options(&["--model", "m"], &native_vision_env("off")).native_vision);
-    }
+    fn image_gen_comes_from_flags_only() {
+        let defaults = options(&["--model", "m"]).image_gen;
+        assert_eq!(defaults.enabled, None, "命令行没给时留给配置文件");
+        assert_eq!(defaults.base_url, None);
+        assert_eq!(defaults.model, None);
+        assert_eq!(defaults.api_key_env, None);
 
-    #[test]
-    fn image_gen_comes_from_flags_and_environment() {
-        let defaults = options(&["--model", "m"], &no_env).image_gen;
-        assert!(!defaults.enabled);
-        assert_eq!(defaults.base_url, "https://api.openai.com/v1");
-        assert_eq!(defaults.model, "gpt-image-2");
-        assert_eq!(defaults.api_key_env, "OPENAI_API_KEY");
-
-        assert!(
-            options(&["--model", "m", "--image-gen"], &no_env)
-                .image_gen
-                .enabled
+        assert_eq!(
+            options(&["--model", "m", "--image-gen"]).image_gen.enabled,
+            Some(true)
         );
 
-        let env = |key: &str| match key {
-            "OMNICRAWL_IMAGE_GEN_ENABLED" => Some("yes".to_string()),
-            "OMNICRAWL_IMAGE_GEN_BASE_URL" => Some("https://relay.example/v1".to_string()),
-            "OMNICRAWL_IMAGE_GEN_MODEL" => Some("gpt-image-9".to_string()),
-            "OMNICRAWL_IMAGE_GEN_API_KEY_ENV" => Some("MY_IMAGE_KEY".to_string()),
-            _ => None,
-        };
-        let parsed = options(&["--model", "m"], &env).image_gen;
-        assert!(parsed.enabled);
-        assert_eq!(parsed.base_url, "https://relay.example/v1");
-        assert_eq!(parsed.model, "gpt-image-9");
-        assert_eq!(parsed.api_key_env, "MY_IMAGE_KEY");
-
-        let cli = options(
-            &[
-                "--model",
-                "m",
-                "--image-gen-base-url",
-                "https://cli.example/v1",
-                "--image-gen-model",
-                "cli-model",
-                "--image-gen-api-key-env",
-                "CLI_KEY",
-            ],
-            &env,
-        )
+        let cli = options(&[
+            "--model",
+            "m",
+            "--image-gen-base-url",
+            "https://cli.example/v1",
+            "--image-gen-model",
+            "cli-model",
+            "--image-gen-api-key-env",
+            "CLI_KEY",
+        ])
         .image_gen;
-        assert_eq!(cli.base_url, "https://cli.example/v1");
-        assert_eq!(cli.model, "cli-model");
-        assert_eq!(cli.api_key_env, "CLI_KEY");
+        assert_eq!(cli.base_url.as_deref(), Some("https://cli.example/v1"));
+        assert_eq!(cli.model.as_deref(), Some("cli-model"));
+        assert_eq!(cli.api_key_env.as_deref(), Some("CLI_KEY"));
     }
 
     /// 测试默认的模型回退：配置里没有模型（真实配置属于开发机状态，不能进断言）。
@@ -472,98 +375,43 @@ mod tests {
         Ok(ApprovalMode::Review)
     }
 
-    fn options(args: &[&str], env: &dyn Fn(&str) -> Option<String>) -> Options {
-        options_with_approval(args, env, &no_configured_approval)
+    fn options(args: &[&str]) -> Options {
+        options_with_approval(args, &no_configured_approval)
     }
 
     /// 注入「config.toml 里写的审批模式」的版本（真实配置文件不能进断言）。
     fn options_with_approval(
         args: &[&str],
-        env: &dyn Fn(&str) -> Option<String>,
         approval: &dyn Fn() -> Result<ApprovalMode, String>,
     ) -> Options {
         let args: Vec<String> = args.iter().map(|value| value.to_string()).collect();
-        match parse_with(
-            &args,
-            env,
-            Path::new("C:/tools"),
-            &no_configured_model,
-            approval,
-        )
-        .expect("参数应能解析")
+        match parse_with(&args, Path::new("C:/tools"), &no_configured_model, approval)
+            .expect("参数应能解析")
         {
             Parsed::Run(options) => *options,
             other => panic!("期望运行配置，拿到 {other:?}"),
         }
     }
 
-    #[test]
-    fn command_line_wins_over_environment() {
-        let env = |name: &str| match name {
-            "OMNICRAWL_MODEL" => Some("env-model".to_string()),
-            "OPENAI_BASE_URL" => Some("https://env.example/v1".to_string()),
-            _ => None,
-        };
-        let options = options(
-            &[
-                "--model",
-                "cli-model",
-                "--base-url",
-                "https://cli.example/v1",
-            ],
-            &env,
-        );
-        assert_eq!(options.model, "cli-model");
-        assert_eq!(options.base_url, "https://cli.example/v1");
-        assert_eq!(options.api_key_env, "OPENAI_API_KEY");
-        // 没给 `--approval` 时取配置兜底（上文的注入值），不再是硬编码的 manual。
-        assert_eq!(options.approval, ApprovalMode::Review);
-        assert_eq!(options.command_timeout_seconds, 360);
-        assert_eq!(options.tool_timeout_seconds, 600);
-        assert!(options.session_root.is_none());
-    }
-
-    #[test]
-    fn environment_supplies_model_and_session() {
-        let env = |name: &str| match name {
-            "OPENAI_MODEL" => Some("env-model".to_string()),
-            "OMNICRAWL_SESSION_ROOT" => Some("C:/sessions".to_string()),
-            _ => None,
-        };
-        let options = options(&[], &env);
-        assert_eq!(options.model, "env-model");
-        assert_eq!(
-            options.session_root.as_deref(),
-            Some(Path::new("C:/sessions"))
-        );
-        assert_eq!(options.context_window_tokens, None);
-    }
-
-    /// 命令行、环境变量、配置三处都没有模型时才是错误（Python 同口径）。
+    /// 命令行与配置都没有模型时才是错误。
     #[test]
     fn missing_model_everywhere_is_an_error() {
         let error = parse_with(
             &[],
-            &no_env,
             Path::new("C:/tools"),
             &no_configured_model,
             &no_configured_approval,
         )
-        .expect_err("三处都没有模型名应报错");
-        assert!(
-            error.contains("OMNICRAWL_MODEL"),
-            "错误应指出可用的环境变量：{error}"
-        );
+        .expect_err("两处都没有模型名应报错");
         assert!(error.contains("config.toml"), "错误应指出可改配置：{error}");
     }
 
-    /// 命令行与环境变量都没有时，模型名从 config.toml 的当前模型来（对齐 Python）。
+    /// 命令行没给时，模型名从 config.toml 的当前模型来。
     #[test]
-    fn config_supplies_model_when_no_flag_or_env() {
+    fn config_supplies_model_when_no_flag() {
         let configured = || Ok("config-model".to_string());
         match parse_with(
             &[],
-            &no_env,
             Path::new("C:/tools"),
             &configured,
             &no_configured_approval,
@@ -578,8 +426,8 @@ mod tests {
     #[test]
     fn kernel_defaults_to_sibling_binary_then_path() {
         // 同目录没有 omnicrawl 时退回 PATH 上的名字（带平台后缀）。
-        let options = options(&["--model", "m"], &no_env);
-        let name = options
+        let parsed = options(&["--model", "m"]);
+        let name = parsed
             .kernel
             .file_name()
             .expect("应有文件名")
@@ -589,7 +437,7 @@ mod tests {
 
     #[test]
     fn explicit_kernel_and_approval_are_honoured() {
-        let options = options_with_approval(
+        let parsed = options_with_approval(
             &[
                 "--model",
                 "m",
@@ -598,22 +446,19 @@ mod tests {
                 "--approval",
                 "auto",
             ],
-            &no_env,
             // 配置写的是 review，命令行更具体，应以前者为准。
             &|| Ok(ApprovalMode::Review),
         );
-        assert_eq!(options.kernel, PathBuf::from("D:/k/omnicrawl.exe"));
-        assert_eq!(options.approval, ApprovalMode::Auto);
-        assert_eq!(options.approval.label(), "AUTO");
+        assert_eq!(parsed.kernel, PathBuf::from("D:/k/omnicrawl.exe"));
+        assert_eq!(parsed.approval, ApprovalMode::Auto);
+        assert_eq!(parsed.approval.label(), "AUTO");
     }
 
     #[test]
     fn config_supplies_approval_mode_when_no_flag() {
-        let options = options_with_approval(&["--model", "m"], &no_env, &|| {
-            Ok(ApprovalMode::Manual)
-        });
-        assert_eq!(options.approval, ApprovalMode::Manual);
-        assert_eq!(options.approval.label(), "MAN");
+        let parsed = options_with_approval(&["--model", "m"], &|| Ok(ApprovalMode::Manual));
+        assert_eq!(parsed.approval, ApprovalMode::Manual);
+        assert_eq!(parsed.approval.label(), "MAN");
     }
 
     #[test]
@@ -624,7 +469,6 @@ mod tests {
             .collect();
         let error = parse_with(
             &args,
-            &no_env,
             Path::new("C:/tools"),
             &no_configured_model,
             &|| Err("approval.mode 仅支持 manual, auto, review，当前值：x。".to_string()),
@@ -637,51 +481,81 @@ mod tests {
 
     #[test]
     fn command_timeout_is_clamped_to_the_python_range() {
-        let clamped = options(&["--model", "m", "--command-timeout", "9999"], &no_env);
+        let clamped = options(&["--model", "m", "--command-timeout", "9999"]);
         assert_eq!(clamped.command_timeout_seconds, 360);
-        let custom = options(&["--model", "m", "--command-timeout", "30"], &no_env);
+        let custom = options(&["--model", "m", "--command-timeout", "30"]);
         assert_eq!(custom.command_timeout_seconds, 30);
-        let error = options_err(&["--model", "m", "--command-timeout", "abc"], &no_env);
+        let error = options_err(&["--model", "m", "--command-timeout", "abc"]);
         assert!(error.contains("--command-timeout"), "{error}");
     }
 
     #[test]
-    fn tool_timeout_reads_flag_and_environment() {
-        let custom = options(&["--model", "m", "--tool-timeout", "30"], &no_env);
+    fn tool_timeout_is_clamped_to_the_python_range() {
+        let custom = options(&["--model", "m", "--tool-timeout", "30"]);
         assert_eq!(custom.tool_timeout_seconds, 30);
-        let clamped = options(&["--model", "m", "--tool-timeout", "9999"], &no_env);
+        let clamped = options(&["--model", "m", "--tool-timeout", "9999"]);
         assert_eq!(clamped.tool_timeout_seconds, 3600, "上限与 Python 一致");
 
-        let env = |name: &str| match name {
-            "OPENAI_MODEL" => Some("m".to_string()),
-            "AGENT_TOOL_TIMEOUT_SECONDS" => Some("120".to_string()),
-            _ => None,
-        };
-        assert_eq!(options(&[], &env).tool_timeout_seconds, 120, "环境变量兜底");
-        let flag_wins = options(&["--tool-timeout", "45"], &env);
-        assert_eq!(flag_wins.tool_timeout_seconds, 45, "命令行优先于环境变量");
+        let default = options(&["--model", "m"]);
+        assert_eq!(default.tool_timeout_seconds, 600, "没给时用默认值");
 
-        let error = options_err(&["--model", "m", "--tool-timeout", "abc"], &no_env);
+        let error = options_err(&["--model", "m", "--tool-timeout", "abc"]);
         assert!(error.contains("--tool-timeout"), "{error}");
     }
 
     #[test]
     fn invalid_approval_is_rejected() {
-        let error = options_err(&["--model", "m", "--approval", "sometimes"], &no_env);
+        let error = options_err(&["--model", "m", "--approval", "sometimes"]);
         // 文案与 `ApprovalMode::parse` 的三种模式（manual / review / auto）保持一致。
         assert!(error.contains("manual / review / auto"), "{error}");
     }
 
-    fn options_err(args: &[&str], env: &dyn Fn(&str) -> Option<String>) -> String {
+    fn options_err(args: &[&str]) -> String {
         let args: Vec<String> = args.iter().map(|value| value.to_string()).collect();
-        parse(&args, env, Path::new("C:/tools")).expect_err("应当解析失败")
+        parse(&args, Path::new("C:/tools")).expect_err("应当解析失败")
     }
 
     #[test]
     fn help_and_version_short_circuit() {
-        let help = parse(&["--help".to_string()], &no_env, Path::new(".")).expect("帮助应可解析");
+        let help = parse(&["--help".to_string()], Path::new(".")).expect("帮助应可解析");
         assert!(matches!(help, Parsed::Help(text) if text.contains("--kernel")));
-        let version = parse(&["-V".to_string()], &no_env, Path::new(".")).expect("版本应可解析");
+        let version = parse(&["-V".to_string()], Path::new(".")).expect("版本应可解析");
         assert!(matches!(version, Parsed::Version(text) if text.starts_with("omnicrawl-tui ")));
+    }
+
+    #[test]
+    fn native_vision_comes_from_flag_only() {
+        assert!(!options(&["--model", "m"]).native_vision);
+        assert!(options(&["--model", "m", "--native-vision"]).native_vision);
+    }
+
+    #[test]
+    fn advisor_and_session_root_come_from_flags_only() {
+        let parsed = options(&["--model", "m"]);
+        assert!(!parsed.advisor.enabled, "没给 --advisor-model 时不启用");
+        assert!(parsed.advisor.model.is_empty());
+
+        let with_advisor = options(&[
+            "--model",
+            "m",
+            "--advisor-model",
+            "gpt-5",
+            "--advisor-base-url",
+            "https://cli.example/v1",
+            "--advisor-effort",
+            "high",
+        ]);
+        assert!(with_advisor.advisor.enabled);
+        assert_eq!(with_advisor.advisor.model, "gpt-5");
+        assert_eq!(with_advisor.advisor.base_url, "https://cli.example/v1");
+        assert_eq!(with_advisor.advisor.effort, "high");
+
+        assert!(options(&["--model", "m"]).session_root.is_none());
+        assert_eq!(
+            options(&["--model", "m", "--session-root", "C:/sessions"])
+                .session_root
+                .as_deref(),
+            Some(Path::new("C:/sessions"))
+        );
     }
 }

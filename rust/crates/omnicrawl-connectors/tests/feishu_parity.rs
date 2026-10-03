@@ -4,7 +4,6 @@
 //! 执行计划与子任务进度、卡片 JSON、配置解析、去重键，以及时间线条目真正发出的消息序列。
 //! 卡片负载按键序逐字节比对（Python 的 `json.dumps` 分隔符也是契约的一部分）。
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
@@ -508,18 +507,8 @@ fn resource_types() -> Vec<String> {
 #[test]
 fn config_loading_matches_python() {
     for case in fixture()["config"].as_array().expect("config") {
-        let environment: BTreeMap<String, String> = case["environment"]
-            .as_object()
-            .expect("environment")
-            .iter()
-            .map(|(key, value)| (key.clone(), value.as_str().expect("env 值").to_string()))
-            .collect();
-        let lookup = move |name: &str| environment.get(name).cloned();
         let data = case["data"].clone();
-        let result = load_feishu_config(ConfigSource {
-            environment: &lookup,
-            data: &data,
-        });
+        let result = load_feishu_config(ConfigSource { data: &data });
         match &case["expected"] {
             Value::Object(expected) if expected.contains_key("error") => {
                 let error = result.expect_err("应报错");

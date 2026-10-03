@@ -90,8 +90,8 @@
         "MCP_DEFAULT_TIMEOUT_SECONDS": "120"
       },
       "config": {
-        "enabled": true,
-        "default_timeout_seconds": 120,
+        "enabled": false,
+        "default_timeout_seconds": 10,
         "servers": {
           "files": {
             "name": "files",
@@ -102,7 +102,7 @@
             "url": null,
             "env": {},
             "headers": {},
-            "timeout_seconds": 120,
+            "timeout_seconds": 10,
             "risk_level": "restricted"
           }
         },

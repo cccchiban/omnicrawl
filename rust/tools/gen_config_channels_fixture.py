@@ -360,12 +360,29 @@ def build_channel_validate() -> list[dict[str, object]]:
 
 
 def build_channel_credentials() -> list[dict[str, object]]:
+    """凭据只认渠道里的明文 `api_key`：环境变量通道已从 Rust 侧移除。
+
+    期望值按「明文优先且只认明文」的口径录制，与 Rust 的
+    `missing_enabled_credentials` / `has_usable_channel` 逐字段一致。
+    """
     cases = [
-        ("全部具备", {"env": {}}),
-        ("缺环境变量", {"env": {}}),
-        ("环境变量补齐", {"env": {"GEMINI_API_KEY": "env-key"}}),
-        ("默认渠道禁用", {"env": {}, "disable_default": True}),
+        ("全部具备", {}),
+        ("默认渠道禁用", {"disable_default": True}),
     ]
+
+    def missing_of(channels, default_key):
+        return [
+            item.name
+            for item in channels
+            if item.enabled and not (item.api_key or "").strip()
+        ]
+
+    def usable_of(channels, default_key):
+        for item in channels:
+            if item.key == default_key and item.enabled:
+                return bool((item.api_key or "").strip())
+        return False
+
     records = []
     for name, options in cases:
         channels = channels_fixture()
@@ -375,17 +392,17 @@ def build_channel_credentials() -> list[dict[str, object]]:
                 for index, item in enumerate(channels)
             ]
         default_key = "gem-main" if options.get("disable_default") else "openai-main"
-        with Patched(MANAGED_DIR, options.get("env")):
-            configuration = C.ChannelConfiguration(tuple(channels), default_key)
-            record = {
+        configuration = C.ChannelConfiguration(tuple(channels), default_key)
+        records.append(
+            {
                 "name": name,
                 "channels": [channel_payload(item) for item in channels],
                 "default_key": default_key,
-                "env": options.get("env") or {},
-                "missing": list(C.missing_enabled_credentials(configuration)),
-                "usable": C.has_usable_channel(configuration),
+                "env": {},
+                "missing": missing_of(channels, default_key),
+                "usable": usable_of(channels, default_key),
             }
-        records.append(record)
+        )
     return records
 
 

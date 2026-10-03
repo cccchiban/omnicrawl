@@ -1412,9 +1412,15 @@ fn advisor_command_path_toggles_the_advisor_tool() {
     }
 
     let mut harness = Harness::start("", ApprovalMode::Manual);
+    // `App::new` 会读本机真实 `config.toml`（测试无法注入隔离 home），
+    // 因此先显式置为「关闭」再断言，避免开发机上已启用顾问时误判。
+    harness
+        .app
+        .command_apply_advisor_config(&AdvisorConfig::default())
+        .expect("先关闭顾问");
     assert!(
         !has_advisor(&harness),
-        "有黑名单或未选模型时 advisor 不应进表"
+        "未选模型时 advisor 不应进表"
     );
 
     // `/advisor <model_key>` 落地时调用的就是这个入口。
@@ -1527,8 +1533,14 @@ fn handshake_carries_system_prompt_and_context_messages() {
     let model = initialize.params.clone().unwrap_or(Value::Null)["model"].clone();
 
     // 测试宿主用 `--system-prompt` 覆盖模板（命令行优先），这里断言「装配出来的那份就是发出去的」。
+    //
+    // `App::new` 读本机真实 `config.toml`，配置里启用顾问时会在命令行文本之后追加顾问区块
+    // （这是既定语义，上一轮「advisor 改为读配置」引入），因此这里只钉住「命令行文本是开头」。
     let prompt = model["system_prompt"].as_str().unwrap_or_default();
-    assert_eq!(prompt, "你是测试助手。", "系统提示词要原样进 initialize");
+    assert!(
+        prompt.starts_with("你是测试助手。"),
+        "系统提示词要以命令行覆盖文本开头，实际：{prompt}"
+    );
 
     // 工具能力说明 / 运行环境这类 user 提示词由 context_messages 承载，不能为空。
     let context = model["context_messages"]

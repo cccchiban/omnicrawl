@@ -651,7 +651,7 @@ pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
     };
     if metas.is_empty() {
         return "当前没有已加载的 Skill。在 .omnicrawl/skills/、~/.omnicrawl/skills/ 或 \
-                $OMNICRAWL_ENTERPRISE_DIR/ 下创建 SKILL.md 来添加。"
+                企业级 skills 目录下创建 SKILL.md 来添加。"
             .to_string();
     }
     let mut lines = vec![format!("已加载 {} 个 Skill：", metas.len())];
@@ -1198,12 +1198,8 @@ pub fn handle_reasoning_command(ctx: &CommandContext<'_>) -> CommandResult {
     .with_refresh_context()
 }
 
-fn reasoning_env_override_message(environment: &ConfigEnvironment) -> String {
-    let configured = environment.get("REASONING_EFFORT").unwrap_or_default();
-    if configured.trim().is_empty() {
-        return String::new();
-    }
-    " 注意：当前存在 REASONING_EFFORT 环境变量，重启后会优先使用环境变量。".to_string()
+fn reasoning_env_override_message(_environment: &ConfigEnvironment) -> String {
+    String::new()
 }
 
 /// 查看或切换当前模型。

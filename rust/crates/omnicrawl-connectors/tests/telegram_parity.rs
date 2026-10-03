@@ -4,7 +4,7 @@
 //! `/thinking` 与 `/workspace` 的判定。长度按**字符**计、`pathlib` 的边界写法与
 //! 重名序号的逐轮递进都是语义的一部分，因此都有用例。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 
 use omnicrawl_connectors::telegram::{
@@ -197,20 +197,8 @@ fn temp_destination_matches_python() {
 #[test]
 fn config_loading_matches_python() {
     for case in fixture()["config"].as_array().expect("config") {
-        let environment: HashMap<String, String> = case["environment"]
-            .as_object()
-            .expect("environment")
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.clone(),
-                    value.as_str().expect("env 值是字符串").to_string(),
-                )
-            })
-            .collect();
         let section = case["section"].clone();
-        let lookup = move |name: &str| environment.get(name).cloned();
-        let result = load_telegram_config(&lookup, Some(&section));
+        let result = load_telegram_config(Some(&section));
         match &case["expected"] {
             Value::Object(expected) if expected.contains_key("error") => {
                 let error = result.expect_err("应解析失败");

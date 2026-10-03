@@ -294,7 +294,9 @@ struct Host {
 }
 
 impl Host {
-    fn start(workspace: &PathBuf, agents: &PathBuf, config: &PathBuf) -> Self {
+    /// `agents` / `config` 由 `prepare_root` 建在 `~/.OmniCrawl` 下，配置路径不再有
+    /// 环境变量覆盖，这里只按 workspace 推出隔离 home。
+    fn start(workspace: &PathBuf, _agents: &PathBuf, _config: &PathBuf) -> Self {
         let home = workspace
             .parent()
             .map(|parent| parent.join("home"))
@@ -304,8 +306,6 @@ impl Host {
             .env("OPENAI_API_KEY", TEST_KEY)
             .env("USERPROFILE", &home)
             .env("HOME", &home)
-            .env("AI_SUBAGENTS_FILE", config)
-            .env("OMNICRAWL_SUBAGENTS_DIR", agents)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -506,13 +506,15 @@ fn agent_definition() -> &'static str {
     "---\nname: review\ndescription: 评审\ndisallowedTools:\n  - subagent\nmodel: inherit\npermissionMode: delegated-read-only\nisolation: shared\n---\n你是评审子代理，只读。\n"
 }
 
-/// 准备一套临时工作区：定义目录 + 子代理配置。
+/// 准备一套临时工作区：隔离 home 下的定义目录 + 子代理配置。
+///
+/// 定义目录与配置路径不再有环境变量覆盖，因此都放进 `~/.OmniCrawl`。
 fn prepare_root(tag: &str, config_body: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let root =
         std::env::temp_dir().join(format!("omnicrawl-subagent-{tag}-{}", std::process::id()));
     let workspace = root.join("ws");
-    let agents = root.join("agents");
-    let config = root.join("subagents.toml");
+    let agents = root.join("home").join(".OmniCrawl").join("agents");
+    let config = root.join("home").join(".OmniCrawl").join("subagents.toml");
     std::fs::create_dir_all(&workspace).expect("建工作区");
     std::fs::create_dir_all(&agents).expect("建定义目录");
     std::fs::write(agents.join("review.md"), agent_definition()).expect("写定义");
@@ -807,8 +809,8 @@ fn worktree_isolation_creates_and_reports_isolated_workspace() {
     // 工作区本身必须是 git 仓库：worktree 隔离要基于它建。
     let root = std::env::temp_dir().join(format!("omnicrawl-subagent-wt-{}", std::process::id()));
     let workspace = root.join("ws");
-    let agents = root.join("agents");
-    let config = root.join("subagents.toml");
+    let agents = root.join("home").join(".OmniCrawl").join("agents");
+    let config = root.join("home").join(".OmniCrawl").join("subagents.toml");
     std::fs::create_dir_all(&workspace).expect("建工作区");
     std::fs::create_dir_all(&agents).expect("建定义目录");
     for args in [

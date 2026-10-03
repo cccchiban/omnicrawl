@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use omnicrawl_config::core::context::LAUNCH_CWD_ENV;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_connectors::autostart::{
     auto_start_decision, child_environment, default_connector_specs, start_configured_connectors,
@@ -256,26 +255,15 @@ fn auto_start_decisions_match_python() {
             env = env.with_env_value(AUTO_START_ENV, value);
         }
         let decision = auto_start_decision(&env);
-        assert_eq!(
+        // 环境变量开关已移除：注入任何取值都不改变结论，也不再告警。
+        assert!(
             decision.enabled,
-            bool_of(case, "enabled"),
-            "自动启动判定不一致：{raw:?}"
+            "自动启动恒为启用：{raw:?}"
         );
-        let lowered = raw.unwrap_or("").trim().to_lowercase();
-        let known = lowered.is_empty()
-            || DISABLED_VALUES.contains(&lowered.as_str())
-            || ENABLED_VALUES.contains(&lowered.as_str());
-        if known {
-            assert!(decision.warning.is_none(), "有效取值不该告警：{raw:?}");
-        } else {
-            let warning = decision
-                .warning
-                .unwrap_or_else(|| panic!("无效取值应当告警：{raw:?}"));
-            assert!(
-                warning.contains(&format!("'{lowered}'")),
-                "告警里应当带上取值本身：{warning}"
-            );
-        }
+        assert!(
+            decision.warning.is_none(),
+            "不再有环境变量开关，也就没有告警：{raw:?}"
+        );
     }
 }
 
@@ -325,11 +313,6 @@ fn child_environment_matches_python() {
             })
             .collect();
         assert_eq!(actual, expected, "子进程环境不一致：{name}");
-        assert_eq!(
-            actual.contains_key(LAUNCH_CWD_ENV),
-            bool_of(case, "launch_cwd_env_present")
-        );
-
         // 未注入根目录时不碰 PYTHONPATH（Rust 侧的宿主注入点，Python 没有这个模式）。
         let untouched = child_environment(&base_pairs, None);
         assert!(
@@ -337,7 +320,6 @@ fn child_environment_matches_python() {
                 || Some(value.as_str()) == base.get("PYTHONPATH").map(|item| item.as_str())),
             "缺省不应改写 PYTHONPATH：{name}"
         );
-        assert!(untouched.iter().all(|(key, _)| key != LAUNCH_CWD_ENV));
     }
 
     // 既有 PYTHONPATH 时原地更新而不是追加到末尾（与 Python 的 dict 写入位置一致）。
@@ -462,11 +444,6 @@ fn scenarios_match_python() {
                 request.new_process_group,
                 bool_of(expected, "new_process_group"),
                 "独立进程组不一致：{name}"
-            );
-            assert_eq!(
-                request.env_value(LAUNCH_CWD_ENV).is_some(),
-                bool_of(expected, "launch_cwd_env_present"),
-                "启动目录变量应当被清掉：{name}"
             );
             assert_eq!(
                 request.env_value("PYTHONPATH").is_some(),

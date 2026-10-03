@@ -114,10 +114,7 @@ def build_legacy() -> list[dict[str, object]]:
 
 RESOLVE_CASES: list[tuple[str, str | None, dict[str, str], str]] = [
     ("config", None, {}, "默认用户目录"),
-    ("config", None, {"AI_CONFIG_FILE": "C:\\custom\\my.toml"}, "环境变量优先"),
-    ("config", None, {"AI_CONFIG_FILE": "   "}, "环境变量空白回退默认"),
-    ("config", None, {"AI_CONFIG_FILE": "~/env.toml"}, "环境变量波浪号"),
-    ("config", "D:\\explicit\\cfg.toml", {"AI_CONFIG_FILE": "C:\\custom\\my.toml"}, "显式优先"),
+    ("config", "D:\\explicit\\cfg.toml", {}, "显式优先"),
     ("config", "~/rel.toml", {}, "显式波浪号"),
     ("config", "./rel.toml", {}, "点前缀归一"),
     ("config", "a//b/./c.toml", {}, "分隔符归一"),
@@ -127,15 +124,11 @@ RESOLVE_CASES: list[tuple[str, str | None, dict[str, str], str]] = [
     ("config", "noext", {}, "无后缀拒绝"),
     ("config", "cfg.tar.toml", {}, "双后缀允许"),
     ("models", None, {}, "默认"),
-    ("models", None, {"AI_MODELS_FILE": "~/m.toml"}, "环境变量波浪号"),
     ("models", "m.yaml", {}, "yaml 拒绝"),
     ("subagents", None, {}, "默认"),
-    ("subagents", None, {"AI_SUBAGENTS_FILE": "D:\\s.toml"}, "环境变量"),
     ("subagents", "s.JSON", {}, "大写 JSON 拒绝"),
     ("config_write", None, {}, "写路径默认"),
     ("config_write", "~/w.toml", {}, "写路径显式"),
-    ("config_write", None, {"AI_CONFIG_FILE": "C:\\env\\w.toml"}, "写路径环境变量"),
-    ("models_write", None, {"AI_MODELS_FILE": "m.toml"}, "写路径环境变量"),
     ("models_write", "bad.txt", {}, "写路径后缀拒绝"),
     ("subagents_write", "~/s.toml", {}, "写路径显式"),
     ("subagents_write", None, {}, "写路径默认"),
@@ -244,14 +237,6 @@ LOAD_CASES: list[tuple[str, dict[str, str], bool, str | None, dict[str, str]]] =
         True,
         None,
         {},
-    ),
-    ("环境变量指向的文件不存在", {}, True, None, {"AI_CONFIG_FILE": "C:\\nope\\x.toml"}),
-    (
-        "环境变量指向的文件存在",
-        {"env.toml": "[llm]\nmodel = \"custom\"\n"},
-        True,
-        None,
-        {"AI_CONFIG_FILE": "{root}\\env.toml"},
     ),
 ]
 

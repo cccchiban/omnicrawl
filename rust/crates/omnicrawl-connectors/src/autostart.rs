@@ -27,7 +27,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use omnicrawl_config::core::context::LAUNCH_CWD_ENV;
 use omnicrawl_config::core::runtime::{load_config_data, user_config_dir, ConfigEnvironment};
 use omnicrawl_config::value::toml_to_json_object;
 use omnicrawl_session::redact_sensitive_text;
@@ -649,10 +648,8 @@ impl ConnectorProcessManager {
 
         for spec in &self.options.specs {
             let configured = if spec.name == TELEGRAM_PLATFORM {
-                let environment = self.options.environment.clone();
-                let query = move |name: &str| environment.get(name);
                 let section = data.get("telegram").cloned();
-                match load_telegram_config(&query, section.as_ref()) {
+                match load_telegram_config(section.as_ref()) {
                     Ok(config) => {
                         !config.bot_token.trim().is_empty() && !config.allowed_user_ids.is_empty()
                     }
@@ -665,12 +662,7 @@ impl ConnectorProcessManager {
                     }
                 }
             } else if spec.name == FEISHU_PLATFORM {
-                let environment = self.options.environment.clone();
-                let query = move |name: &str| environment.get(name);
-                let source = ConfigSource {
-                    environment: &query,
-                    data: &data,
-                };
+                let source = ConfigSource { data: &data };
                 match load_feishu_config(source) {
                     Ok(config) => {
                         !config.app_id.trim().is_empty() && !config.app_secret.trim().is_empty()
@@ -754,50 +746,23 @@ pub struct AutoStartDecision {
     pub warning: Option<String>,
 }
 
-/// 解析自动启动开关：缺省开启；未知取值按「启用」处理并给出告警。
-pub fn auto_start_decision(env: &ConfigEnvironment) -> AutoStartDecision {
-    let raw_value = env.get_trimmed(AUTO_START_ENV).to_lowercase();
-    if raw_value.is_empty() {
-        return AutoStartDecision {
-            enabled: true,
-            warning: None,
-        };
-    }
-    if DISABLED_VALUES.contains(&raw_value.as_str()) {
-        return AutoStartDecision {
-            enabled: false,
-            warning: None,
-        };
-    }
-    let warning = if ENABLED_VALUES.contains(&raw_value.as_str()) {
-        None
-    } else {
-        // 单引号与 Python 的 `%r` 对普通 ASCII 取值一致（`%r` 会转义控制字符，Rust 侧
-        // 的 `{:?}` 用双引号，这里按 Python 的形状输出）。
-        Some(format!(
-            "{AUTO_START_ENV}='{raw_value}' 不是有效的开关值，将按启用处理。可使用 0/false/off 关闭。"
-        ))
-    };
+/// 解析自动启动开关：不再有环境变量开关，恒为启用且不告警。
+pub fn auto_start_decision(_env: &ConfigEnvironment) -> AutoStartDecision {
     AutoStartDecision {
         enabled: true,
-        warning,
+        warning: None,
     }
 }
 
-/// 构造子进程环境：清掉继承的启动目录变量，并按需前置 `PYTHONPATH`。
+/// 构造子进程环境：按需前置 `PYTHONPATH`。
 ///
-/// 连接器子进程以工作区为 cwd 启动，先清掉继承的 `LAUNCH_CWD_ENV`，否则会沿用主进程最初的
-/// 启动目录；`pythonpath_root` 由宿主注入（Python 侧固定是 `omnicrawl` 包的父目录），
-/// `None` 表示不动 `PYTHONPATH`。
+/// 连接器子进程以工作区为 cwd 启动；`pythonpath_root` 由宿主注入
+/// （Python 侧固定是 `omnicrawl` 包的父目录），`None` 表示不动 `PYTHONPATH`。
 pub fn child_environment(
     base: &[(String, String)],
     pythonpath_root: Option<&Path>,
 ) -> Vec<(String, String)> {
-    let mut environment: Vec<(String, String)> = base
-        .iter()
-        .filter(|(key, _)| key != LAUNCH_CWD_ENV)
-        .cloned()
-        .collect();
+    let mut environment: Vec<(String, String)> = base.to_vec();
     let Some(root) = pythonpath_root else {
         return environment;
     };

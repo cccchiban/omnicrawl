@@ -67,12 +67,9 @@ impl Default for ImageGenOptions {
 }
 
 impl ImageGenOptions {
-    /// 生效的 API Key：显式配置优先，其次读同名环境变量。
+    /// 生效的 API Key：只认配置里的明文密钥。
     pub fn resolve_api_key(&self) -> String {
-        if !self.api_key.trim().is_empty() {
-            return self.api_key.clone();
-        }
-        std::env::var(&self.api_key_env).unwrap_or_default()
+        self.api_key.trim().to_string()
     }
 }
 
@@ -209,15 +206,13 @@ fn edit(
 fn ensure_ready(options: &ImageGenOptions) -> Result<(), ToolError> {
     if !options.enabled {
         return Err(ToolError::new(
-            "图像生成未启用：请用 --image-gen 打开，并配置 OMNICRAWL_IMAGE_GEN_BASE_URL / \
-OMNICRAWL_IMAGE_GEN_MODEL / OMNICRAWL_IMAGE_GEN_API_KEY_ENV。",
+            "图像生成未启用：请在 config.toml 的 [image_gen] 段配置 base_url / model / api_key 并启用。",
         ));
     }
     if options.resolve_api_key().trim().is_empty() {
-        return Err(ToolError::new(format!(
-            "缺少 API Key：请设置环境变量 {}，或用 OMNICRAWL_IMAGE_GEN_API_KEY_ENV 指定变量名。",
-            options.api_key_env
-        )));
+        return Err(ToolError::new(
+            "缺少 API Key：请在 config.toml 的 [image_gen] 段填写 api_key。".to_string(),
+        ));
     }
     Ok(())
 }
@@ -589,6 +584,7 @@ mod tests {
             .message
             .starts_with("图像生成未启用："));
 
+        // 凭据只认明文 api_key：环境变量名填了也没用。
         let no_key = ImageGenOptions {
             api_key: String::new(),
             api_key_env: "OMNICRAWL_TUI_IMAGE_GEN_MISSING".to_string(),
@@ -597,7 +593,7 @@ mod tests {
         let error = image_gen(&no_key, &arguments(json!({"prompt": "x"})))
             .expect_err("缺 API Key 应当被拒绝");
         assert!(
-            error.message.contains("OMNICRAWL_TUI_IMAGE_GEN_MISSING"),
+            error.message.contains("[image_gen]") && error.message.contains("api_key"),
             "{}",
             error.message
         );

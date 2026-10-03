@@ -589,9 +589,33 @@ async fn put_tools(
         .iter()
         .map(|(name, enabled)| (name.clone(), Value::Bool(*enabled)))
         .collect();
+    // 写盘之后必须让运行期跟上：只改磁盘的开关要等下次启动才生效，
+    // 而工具开关的语义是「模型可见即不可调用」，改了就该立刻从工具表里下去。
+    let disabled: Vec<String> = switches
+        .iter()
+        .filter(|(_, enabled)| !**enabled)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut applied_runtime = false;
+    let mut requires_restart = false;
+    let mut detail: Option<String> = None;
+    match state.service()?.reload_tool_switches(disabled) {
+        Ok(outcome) => {
+            applied_runtime = true;
+            requires_restart = outcome.requires_restart;
+            if requires_restart {
+                detail = Some("工具开关已保存，但当前进程没有可重建的运行器，重启后生效。".to_string());
+            }
+        }
+        // 回合在途：磁盘已是新配置，运行期不改。如实回报，不让客户端以为没写成。
+        Err(error) => detail = Some(error.message),
+    }
     Ok(data(json!({
         "switches": switches,
         "applied": Value::Object(applied),
+        "applied_runtime": applied_runtime,
+        "requires_restart": requires_restart,
+        "detail": detail,
     })))
 }
 

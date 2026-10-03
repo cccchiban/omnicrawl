@@ -625,8 +625,10 @@ pub fn save_llm_model(
 }
 
 /// 是否由环境变量接管模型选择。
-pub fn model_env_override_active(env: &ConfigEnvironment) -> bool {
-    !env.get_trimmed("OMNICRAWL_MODEL").is_empty() || !env.get_trimmed("OPENAI_MODEL").is_empty()
+///
+/// 环境变量接管已移除，此函数恒为假，保留是为了让调用点继续自述语义。
+pub fn model_env_override_active(_env: &ConfigEnvironment) -> bool {
+    false
 }
 
 /// 目录项 → 可构建运行时的模型描述。

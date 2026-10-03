@@ -637,7 +637,7 @@
    }
   },
   {
-   "name": "Key 来自环境变量",
+   "name": "Key 只写了环境变量名",
    "initial_files": {
     "config.toml": "[llm.profiles.gem-main]\nprovider = \"gemini\"\napi_key_env = \"GEMINI_API_KEY\"\n\n[llm.active_model]\nprofile = \"gem-main\"\n"
    },
@@ -655,8 +655,8 @@
     "config_created": false,
     "models_created": true,
     "subagents_created": true,
-    "api_key_prompted": false,
-    "api_key_configured": true,
+    "api_key_prompted": true,
+    "api_key_configured": false,
     "first_run": true,
     "checks": [
      [

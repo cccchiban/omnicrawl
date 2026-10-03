@@ -23,13 +23,18 @@ pub use hit::{HitAction, HitRegion};
 pub use picker::{ModelPicker, PickerKey, PICKER_HINT, PICKER_WINDOW};
 
 pub use state::{
-    channel_field_value, display_value, ChannelDropdown, ChannelField, ChannelFormView, ChannelRow,
-    ChoiceKind, ContextField, Dropdown, DropdownField, Focus, McpChange, McpEditorRowView,
-    McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, OptionValue, Pane, SettingsChange,
-    SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow,
-    TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef,
-    MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS,
-    TTS_DEVICE_OPTIONS, TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_THREAD_COUNTS,
+    channel_field_value, decision_field_value, display_value, ChannelDropdown, ChannelField,
+    ChannelFormView, ChannelRow, ChoiceKind, ContextField, DecisionDropdown, DecisionField,
+    DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues, DecisionRow,
+    DecisionSwitchRow, Dropdown, DropdownField, Focus, McpChange,
+    McpEditorRowView, McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, OptionValue,
+    Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow,
+    ToolSwitchRow, TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef,
+    DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION, DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION,
+    MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT,
+    MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS,
+    TOOLS_APPROVAL_ROW, TTS_DEVICE_OPTIONS, TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS,
+    TTS_THREAD_COUNTS,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。
@@ -37,10 +42,11 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 19] = [
+pub const ROW_ORDER: [&str; 20] = [
     "config_chat",
     "model",
     "channels",
+    "decision_models",
     "advisor",
     "tool_output_compression",
     "context",
@@ -65,6 +71,7 @@ pub fn row_label(key: &str) -> String {
         "config_chat" => "通过对话修改设置",
         "model" => "模型",
         "channels" => "模型渠道",
+        "decision_models" => "结构化决策模型",
         "advisor" => "顾问设置",
         "tool_output_compression" => "工具输出压缩",
         "context" => "上下文",

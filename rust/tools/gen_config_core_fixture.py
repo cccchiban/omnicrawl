@@ -542,7 +542,9 @@ INIT_CASES = [
         "prompt": None,
     },
     {
-        "name": "Key 来自环境变量",
+        # 环境变量通道已移除：Profile 只写了 api_key_env、没有明文 api_key 时，
+        # 判定为「未配置」并进入索取流程（期望值按 Rust 语义覆盖，见下方 override）。
+        "name": "Key 只写了环境变量名",
         "files": {
             "config.toml": tomli_w.dumps(
                 {
@@ -558,6 +560,7 @@ INIT_CASES = [
         "api_key": {"GEMINI_API_KEY": "env-key"},
         "channel_setup": False,
         "prompt": None,
+        "summary_override": {"api_key_prompted": True, "api_key_configured": False},
     },
     {
         "name": "配置读取失败",
@@ -666,6 +669,8 @@ def build_bootstrap_initialize() -> list[dict[str, object]]:
                 for path in sorted(config_dir.iterdir())
                 if path.is_file()
             }
+            summary = summarize(setup, config_dir)
+            summary.update(case.get("summary_override") or {})
             records.append(
                 {
                     "name": case["name"],
@@ -674,7 +679,7 @@ def build_bootstrap_initialize() -> list[dict[str, object]]:
                     "channel_setup": bool(case["channel_setup"]),
                     "prompt": case["prompt"],
                     "final_files": files,
-                    "summary": summarize(setup, config_dir),
+                    "summary": summary,
                 }
             )
     return records

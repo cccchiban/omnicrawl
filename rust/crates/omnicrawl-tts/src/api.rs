@@ -90,7 +90,7 @@ pub fn synthesize_speech(
 ) -> Result<TtsResult, String> {
     if config.api_key.trim().is_empty() {
         return Err(
-            "语音合成接口未配置密钥：请在 [tts_api] 填 api_key，或配置 api_key_env 指向的环境变量（默认 OPENAI_API_KEY）。"
+            "语音合成接口未配置密钥：请在 config.toml 的 [tts_api] 段填写 api_key。"
                 .to_string(),
         );
     }

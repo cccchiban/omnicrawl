@@ -7,6 +7,8 @@ pub mod advisor;
 pub mod agent_workspace;
 pub mod approval;
 pub mod context_compaction;
+// Rust 侧新增：结构化决策模型（Python 无对映），独立成文件与模块，避开 parity 数据集。
+pub mod decision_model;
 pub mod desensitization;
 pub mod image_gen;
 pub mod run_guard;

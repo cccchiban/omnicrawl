@@ -4,7 +4,7 @@
 //! 与 `agent/core.py` 的启动期准备。判定与文案在 [`omnicrawl_controllers`] 与
 //! [`omnicrawl_extensions::skill`]，这里只做宿主侧的 I/O：读模板、读 AGENTS.md、扫 Skill 目录。
 //!
-//! 模板优先从磁盘目录读取（`OMNICRAWL_TEMPLATES_DIR`，其次可执行文件祖先里的
+//! 模板优先从磁盘目录读取（可执行文件祖先里的
 //! `rust/assets/templates`（仓库检出）与 `omnicrawl/templates`（已发布载荷）），读不到时用
 //! 编译期内嵌的同一份文本——脱离 Python 宿主分发时不必再带模板目录，行为与 Python 逐字一致。
 
@@ -25,7 +25,6 @@ use serde_json::Value;
 use crate::plugins::PluginHost;
 
 /// 模板目录覆盖。
-pub const TEMPLATES_DIR_ENV: &str = "OMNICRAWL_TEMPLATES_DIR";
 /// Agent 临时目录的默认展示路径（与 Python `_agent_temp_dir_display` 的兜底同值）。
 pub const DEFAULT_AGENT_TEMP_DIR: &str = ".omnicrawl/.agent_tmp";
 
@@ -264,16 +263,9 @@ impl PromptRuntime {
     }
 }
 
-/// 模板目录：显式环境变量优先，其次可执行文件祖先里的 `rust/assets/templates`（仓库检出）
+/// 模板目录：可执行文件祖先里的 `rust/assets/templates`（仓库检出）
 /// 与 `omnicrawl/templates`（已发布载荷）。
-pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
-    let configured = env.get_trimmed(TEMPLATES_DIR_ENV);
-    if !configured.trim().is_empty() {
-        let candidate = PathBuf::from(configured);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-    }
+pub fn locate_templates_dir(_env: &ConfigEnvironment) -> Option<PathBuf> {
     let mut base = std::env::current_exe().ok();
     while let Some(path) = base {
         base = path.parent().map(PathBuf::from);
@@ -316,7 +308,7 @@ mod tests {
     /// （后者只剩「已发布载荷」的兼容角色，脱离 Python 包树后会被删掉）。
     #[test]
     fn templates_dir_prefers_rust_assets() {
-        // 隔离环境：不读进程变量，避免本机的 `OMNICRAWL_TEMPLATES_DIR` 把用例带偏。
+        // 隔离环境：不读进程变量，避免本机环境把用例带偏。
         let env = ConfigEnvironment::new("bundle", "test");
         let found = locate_templates_dir(&env).expect("仓库检出里应能找到模板目录");
         assert!(found.join("system_prompt.md").is_file(), "{found:?}");

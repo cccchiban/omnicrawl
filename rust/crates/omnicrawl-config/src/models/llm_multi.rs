@@ -1,6 +1,6 @@
 //! 多模型 Profile / `active_model` 解析（对应 `omnicrawl/config/models/llm_multi.py`）。
 //!
-//! 判定与文案全部在内核；读文件与读环境变量经 [`ConfigEnvironment`] 注入。
+//! 判定与文案全部在内核；读文件路径经 [`ConfigEnvironment`] 注入。
 
 use std::collections::BTreeMap;
 
@@ -86,32 +86,14 @@ impl ModelSource {
     }
 }
 
-/// 按 `OMNICRAWL_MODEL` / `active_model.source` 判定当前模型来源并填充中间态。
+/// 按 `active_model.source` 判定当前模型来源并填充中间态。
 fn resolve_model_source(
-    env_model: &str,
-    env_profile: &str,
     active_raw: &Table,
     store: &ModelStore,
     source_default: &str,
 ) -> Result<ModelSource, ConfigError> {
     let mut state = ModelSource::new(source_default);
-    if !env_model.is_empty() && !env_model.contains('/') {
-        match store.resolve_alias(env_model)? {
-            Some(record) => state.apply_record(record),
-            None => {
-                state.model_id = env_model.to_string();
-                state.source = "detected".to_string();
-            }
-        }
-    } else if !env_model.is_empty() && env_model.contains('/') {
-        let (profile_id, model_id) = env_model.split_once('/').unwrap_or(("", ""));
-        state.profile_id = profile_id.to_string();
-        state.model_id = model_id.to_string();
-        state.source = "detected".to_string();
-        if !env_profile.is_empty() {
-            state.profile_id = env_profile.to_string();
-        }
-    } else if state.source == "custom" {
+    if state.source == "custom" {
         let catalog_key = python_str(active_raw.get("key")).trim().to_string();
         if catalog_key.is_empty() {
             return Err(ConfigError::new(
@@ -138,9 +120,6 @@ fn resolve_model_source(
         }
     }
 
-    if !env_profile.is_empty() {
-        state.profile_id = env_profile.to_string();
-    }
     Ok(state)
 }
 
@@ -218,7 +197,7 @@ fn resolve_credentials(
     let user_agent = python_str(profile_data.get("user_agent"))
         .trim()
         .to_string();
-    let mut base_url = python_str(profile_data.get("base_url")).trim().to_string();
+    let base_url = python_str(profile_data.get("base_url")).trim().to_string();
     let profile = ProviderProfile {
         id: profile_id.to_string(),
         provider: provider.to_string(),
@@ -235,13 +214,7 @@ fn resolve_credentials(
         request_retry_count: 5,
         discovery_timeout_seconds: 10.0,
     };
-    let mut api_key = profile.resolve_api_key(env);
-    if api_key.is_empty() && provider == "openai" {
-        api_key = env.get_trimmed("OPENAI_API_KEY");
-    }
-    if base_url.is_empty() && provider == "openai" {
-        base_url = env.get_trimmed("OPENAI_BASE_URL");
-    }
+    let api_key = profile.resolve_api_key(env);
     (api_key, base_url, api_key_env, user_agent, profile)
 }
 
@@ -281,15 +254,6 @@ pub fn load_multi_model_llm_config(
     if profiles_raw.is_empty() {
         return Err(ConfigError::new("多模型配置缺少 llm.profiles。"));
     }
-    let env_model = {
-        let primary = env.get_trimmed("OMNICRAWL_MODEL");
-        if primary.is_empty() {
-            env.get_trimmed("OPENAI_MODEL")
-        } else {
-            primary
-        }
-    };
-    let env_profile = env.get_trimmed("OMNICRAWL_PROFILE");
     let active_raw = loose_section(llm_section, "active_model");
     let store = load_model_store(env, None)?;
     let source = {
@@ -301,7 +265,7 @@ pub fn load_multi_model_llm_config(
             trimmed.to_string()
         }
     };
-    let state = resolve_model_source(&env_model, &env_profile, &active_raw, &store, &source)?;
+    let state = resolve_model_source(&active_raw, &store, &source)?;
     let (provider, protocol, profile_data) =
         resolve_profile(&state.profile_id, &state.protocol, &profiles_raw)?;
     let (api_key, base_url, api_key_env, user_agent, _profile) =
@@ -312,20 +276,9 @@ pub fn load_multi_model_llm_config(
     for (key, value) in llm_section {
         merged.insert(key.clone(), value.clone());
     }
-    let reasoning_effort = read_optional_config_text(
-        env,
-        &merged,
-        "reasoning_effort",
-        "REASONING_EFFORT",
-        DEFAULT_REASONING_EFFORT,
-    )?;
-    let thinking_type = read_optional_config_text(
-        env,
-        &merged,
-        "thinking_type",
-        "OPENAI_THINKING_TYPE",
-        DEFAULT_THINKING_TYPE,
-    )?;
+    let reasoning_effort =
+        read_optional_config_text(&merged, "reasoning_effort", DEFAULT_REASONING_EFFORT)?;
+    let thinking_type = read_optional_config_text(&merged, "thinking_type", DEFAULT_THINKING_TYPE)?;
     let context_window = apply_window_overrides(
         &state.source,
         state.context_window,

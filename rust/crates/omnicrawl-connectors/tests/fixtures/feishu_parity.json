@@ -1758,9 +1758,6 @@
   },
   "config": [
     {
-      "environment": {
-        "FEISHU_APP_ID": "cli_env"
-      },
       "data": {
         "feishu": {
           "app_id": "cli_section",
@@ -1771,7 +1768,7 @@
         }
       },
       "expected": {
-        "app_id": "cli_env",
+        "app_id": "cli_section",
         "app_secret": "sec",
         "allowed_user_ids": [
           "ou_a"
@@ -1781,7 +1778,6 @@
       }
     },
     {
-      "environment": {},
       "data": {
         "feishu": {
           "app_id": "cli_1",
@@ -1798,7 +1794,6 @@
       }
     },
     {
-      "environment": {},
       "data": {
         "feishu": {
           "fs_app_id": "cli_alias",
@@ -1821,7 +1816,6 @@
       }
     },
     {
-      "environment": {},
       "data": {
         "fs_app_id": "cli_root",
         "fs_app_secret": "sec3",
@@ -1839,9 +1833,6 @@
       }
     },
     {
-      "environment": {
-        "FEISHU_ALLOWED_USER_IDS": "ou_c，ou_d"
-      },
       "data": {
         "feishu": {
           "allowed_user_ids": [
@@ -1853,15 +1844,13 @@
         "app_id": "",
         "app_secret": "",
         "allowed_user_ids": [
-          "ou_c",
-          "ou_d"
+          "ou_e"
         ],
         "confirmation_timeout_seconds": 300.0,
         "public_access": false
       }
     },
     {
-      "environment": {},
       "data": {
         "feishu": {
           "allowed_user_ids": [
@@ -1880,7 +1869,6 @@
       }
     },
     {
-      "environment": {},
       "data": {
         "feishu": "not-an-object"
       },
@@ -1889,19 +1877,21 @@
       }
     },
     {
-      "environment": {
-        "FEISHU_CONFIRM_TIMEOUT": "soon"
+      "data": {
+        "feishu": {
+          "confirmation_timeout_seconds": "soon"
+        }
       },
-      "data": {},
       "expected": {
-        "error": "FEISHU_CONFIRM_TIMEOUT / feishu.confirmation_timeout_seconds 必须是数字。"
+        "error": "feishu.confirmation_timeout_seconds 必须是数字。"
       }
     },
     {
-      "environment": {
-        "FEISHU_CONFIRM_TIMEOUT": "0.5"
+      "data": {
+        "feishu": {
+          "confirmation_timeout_seconds": 0.5
+        }
       },
-      "data": {},
       "expected": {
         "app_id": "",
         "app_secret": "",

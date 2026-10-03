@@ -22,6 +22,7 @@ use serde_json::{Map, Value};
 
 use super::advisor::{self, AdvisorOptions};
 use super::command::{CancelToken, CommandRunner, Shell, DEFAULT_COMMAND_TIMEOUT_SECONDS};
+use super::decision_search::RerankOptions;
 use super::declarations::declaration;
 use super::error::{command_result, text_failure, text_success, ToolError};
 use super::fetcher::{self, FetcherOptions};
@@ -140,6 +141,8 @@ pub struct RegistryOptions {
     pub disabled_tools: Vec<String>,
     /// 知识库根目录；未配置时用 `~/.OmniCrawl/knowledge`。
     pub knowledge_root: Option<PathBuf>,
+    /// 知识库检索重排（`decision_models.toml` 的 `kb_search_rerank` 开关）。
+    pub knowledge_rerank: Arc<RerankOptions>,
     /// 联网工具的运行期配置（传输可注入，测试用桩替换）。
     pub web_search: WebSearchOptions,
     pub fetcher: FetcherOptions,
@@ -168,6 +171,7 @@ pub struct ToolRegistry {
     commands: CommandRunner,
     monitors: MonitorManager,
     knowledge: KnowledgeBase,
+    knowledge_rerank: Arc<RerankOptions>,
     memory: MemoryOptions,
     web_search: WebSearchOptions,
     fetcher: FetcherOptions,
@@ -334,6 +338,7 @@ impl ToolRegistry {
             commands,
             monitors,
             knowledge,
+            knowledge_rerank: options.knowledge_rerank.clone(),
             memory,
             web_search: options.web_search.clone(),
             fetcher: options.fetcher.clone(),
@@ -525,7 +530,11 @@ impl ToolRegistry {
             "grep" => outcome_result(grep::grep(&self.paths, &arguments)),
             "git" => git::git_tool(&self.paths, &arguments),
             "monitor" => self.run_monitor(&arguments),
-            "kb_search" => outcome_result(knowledge::kb_search(&self.knowledge, &arguments)),
+            "kb_search" => outcome_result(knowledge::kb_search(
+                &self.knowledge,
+                &self.knowledge_rerank,
+                &arguments,
+            )),
             "kb_read" => outcome_result(knowledge::kb_read(&self.knowledge, &arguments)),
             "kb_write" => outcome_result(knowledge::kb_write(&self.knowledge, &arguments)),
             "kb_append" => outcome_result(knowledge::kb_append(&self.knowledge, &arguments)),
@@ -696,6 +705,26 @@ mod tests {
             id: "c1".to_string(),
             function_name: name.to_string(),
         }
+    }
+
+    /// 关掉的内置工具必须真的不进声明表：模型不可见才不可调用。
+    ///
+    /// 回归的是「设置里关掉了、启动后仍然可调」：`RegistryOptions::disabled_tools`
+    /// 若在装配时漏填，`build_agent_tools` 的过滤就退化成不过滤（空表即全放行）。
+    #[test]
+    fn disabled_tools_stay_out_of_the_table() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-disabled");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        let options = RegistryOptions {
+            disabled_tools: vec!["powershell".to_string(), "web_search".to_string()],
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(!names.contains("powershell"), "关掉的工具不得进表：{names:?}");
+        assert!(!names.contains("web_search"), "关掉的工具不得进表：{names:?}");
+        assert!(names.contains("read"), "其余工具照旧进表：{names:?}");
     }
 
     #[test]

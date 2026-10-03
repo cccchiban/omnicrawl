@@ -64,43 +64,11 @@
    "managed_home": "C:\\oc-parity\\home"
   },
   {
-   "expected_path": "C:\\custom\\my.toml",
-   "name": "环境变量优先",
-   "func": "config",
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "C:\\custom\\my.toml"
-   },
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
-   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\config.toml",
-   "name": "环境变量空白回退默认",
-   "func": "config",
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "   "
-   },
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
-   "expected_path": "C:\\oc-parity\\home\\env.toml",
-   "name": "环境变量波浪号",
-   "func": "config",
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "~/env.toml"
-   },
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
    "expected_path": "D:\\explicit\\cfg.toml",
    "name": "显式优先",
    "func": "config",
    "explicit": "D:\\explicit\\cfg.toml",
-   "env": {
-    "AI_CONFIG_FILE": "C:\\custom\\my.toml"
-   },
+   "env": {},
    "managed_home": "C:\\oc-parity\\home"
   },
   {
@@ -176,16 +144,6 @@
    "managed_home": "C:\\oc-parity\\home"
   },
   {
-   "expected_path": "C:\\oc-parity\\home\\m.toml",
-   "name": "环境变量波浪号",
-   "func": "models",
-   "explicit": null,
-   "env": {
-    "AI_MODELS_FILE": "~/m.toml"
-   },
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
    "error": "模型配置仅支持 .toml 文件：m.yaml。JSON 配置已停止支持。",
    "name": "yaml 拒绝",
    "func": "models",
@@ -199,16 +157,6 @@
    "func": "subagents",
    "explicit": null,
    "env": {},
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
-   "expected_path": "D:\\s.toml",
-   "name": "环境变量",
-   "func": "subagents",
-   "explicit": null,
-   "env": {
-    "AI_SUBAGENTS_FILE": "D:\\s.toml"
-   },
    "managed_home": "C:\\oc-parity\\home"
   },
   {
@@ -233,26 +181,6 @@
    "func": "config_write",
    "explicit": "~/w.toml",
    "env": {},
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
-   "expected_path": "C:\\env\\w.toml",
-   "name": "写路径环境变量",
-   "func": "config_write",
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "C:\\env\\w.toml"
-   },
-   "managed_home": "C:\\oc-parity\\home"
-  },
-  {
-   "expected_path": "m.toml",
-   "name": "写路径环境变量",
-   "func": "models_write",
-   "explicit": null,
-   "env": {
-    "AI_MODELS_FILE": "m.toml"
-   },
    "managed_home": "C:\\oc-parity\\home"
   },
   {
@@ -533,32 +461,6 @@
    "use_default": true,
    "explicit": null,
    "env": {}
-  },
-  {
-   "expected": {},
-   "name": "环境变量指向的文件不存在",
-   "layout": {},
-   "use_default": true,
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "C:\\nope\\x.toml"
-   }
-  },
-  {
-   "expected": {
-    "llm": {
-     "model": "custom"
-    }
-   },
-   "name": "环境变量指向的文件存在",
-   "layout": {
-    "env.toml": "[llm]\nmodel = \"custom\"\n"
-   },
-   "use_default": true,
-   "explicit": null,
-   "env": {
-    "AI_CONFIG_FILE": "{root}\\env.toml"
-   }
   }
  ],
  "dumps": [

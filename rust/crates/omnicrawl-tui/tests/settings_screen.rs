@@ -11,9 +11,9 @@ use ratatui::Terminal;
 
 use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
-    ChannelRow, ChoiceKind, ContextField, FieldValue, Focus, FormKind, HitAction, Pane,
-    SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentRow, ToolSwitchRow,
-    VisionModelRef,
+    ChannelRow, ChoiceKind, ContextField, DecisionRow, DecisionSwitchRow, FieldValue, Focus,
+    FormKind, HitAction, Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
+    SubagentRow, ToolSwitchRow, VisionModelRef,
 };
 
 const WIDTH: u16 = 100;
@@ -156,7 +156,7 @@ fn crosshair_border_follows_focus() {
 #[test]
 fn context_panel_shows_current_values() {
     let mut state = state();
-    for _ in 0..5 {
+    while state.selected_key() != "context" {
         state.handle_key(KeyCode::Down);
     }
     assert_eq!(state.pane(), Pane::Context);
@@ -172,7 +172,7 @@ fn context_panel_shows_current_values() {
 #[test]
 fn context_dropdown_overlay_lists_candidates_and_highlights_current() {
     let mut state = state();
-    for _ in 0..5 {
+    while state.selected_key() != "context" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter); // 进入右栏
@@ -198,7 +198,7 @@ fn context_dropdown_overlay_lists_candidates_and_highlights_current() {
 #[test]
 fn esc_collapses_dropdown_then_returns_then_closes() {
     let mut state = state();
-    for _ in 0..5 {
+    while state.selected_key() != "context" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);
@@ -234,7 +234,8 @@ fn tools_panel_lists_switch_states() {
         screen.contains("TTS 语音合成（MOSS-TTS-Nano）：已启用（未注册）"),
         "未注册的工具要标注：{screen}"
     );
-    assert!(screen.contains("↑↓ 选择  ←→/Enter/空格 切换  Esc 返回"));
+    assert!(screen.contains("↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回"));
+    assert!(screen.contains("工具调用审查：自动审查"), "首行是审查模式：{screen}");
 }
 
 #[test]
@@ -368,6 +369,173 @@ fn channels_page_renders_list_then_form() {
     assert!(form.contains("模型 ID：gpt-5.2"), "{form}");
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }
+
+/// 决策渠道行的构造：凭据留空（渲染只看 key/名称/服务/地址/模型/开关）。
+fn decision(key: &str, name: &str, model: &str, enabled: bool) -> DecisionRow {
+    let mut row = DecisionRow::default();
+    row.key = key.to_string();
+    row.name = name.to_string();
+    row.mode = "jev".to_string();
+    row.base_url = "https://jevtypesafeai.com/api".to_string();
+    row.model = model.to_string();
+    row.enabled = enabled;
+    row
+}
+
+/// 结构化决策模型页：列表 → 表单 → 候选，与渠道页同形且可独立设置渠道与模型。
+#[test]
+fn decision_models_page_renders_list_then_form() {
+    let mut state =
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+            vec![
+                decision("jev-main", "Jev 主渠道", "jev-latest", true),
+                decision("jev-pinned", "固定版本渠道", "jev-1.13.0", false),
+            ],
+            "jev-main",
+            decision("新渠道", "新渠道", "jev-latest", true),
+        ));
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    assert_eq!(state.pane(), Pane::DecisionModels);
+    let list = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(list.contains("Jev 主渠道"), "决策渠道列表：{list}");
+    assert!(list.contains("[默认]"), "默认决策渠道要有标记：{list}");
+    assert!(list.contains("jev-latest"), "明细行给出模型：{list}");
+    assert!(list.contains("N 新建"), "列表提示：{list}");
+
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Enter); // 编辑选中渠道
+    let form = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(form.contains("渠道名称：Jev 主渠道"), "表单字段：{form}");
+    assert!(form.contains("请求方式：jev"), "{form}");
+    assert!(form.contains("模型 ID：jev-latest"), "决策模型单独可配：{form}");
+    // 密钥只显示掩码，明文不进界面。
+    assert!(form.contains("API Key：（未配置）"), "未配密钥时给出占位：{form}");
+    assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
+}
+
+/// 决策渠道的「请求方式」候选（当前只有 Jev）：展开、移动、确认都写回草稿。
+#[test]
+fn decision_mode_dropdown_selects_the_service() {
+    let mut state =
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+            vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
+            "jev-main",
+            decision("新渠道", "新渠道", "jev-latest", true),
+        ));
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Enter); // 编辑渠道
+    state.handle_key(KeyCode::Down); // 移到「请求方式」
+    state.handle_key(KeyCode::Enter); // 展开候选
+    let expanded = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(expanded.contains("↑↓ 选择"), "展开态提示：{expanded}");
+    state.handle_key(KeyCode::Enter); // 确认候选
+    let collapsed = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(!collapsed.contains("↑↓ 选择"), "确认后收起候选：{collapsed}");
+}
+
+/// `N` 新建的草稿在 `Ctrl+S` 之前不进列表，`Esc` 直接丢弃。
+#[test]
+fn decision_new_channel_is_drafted_until_saved() {
+    let mut state =
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+            vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
+            "jev-main",
+            decision("新渠道", "新渠道", "jev-latest", true),
+        ));
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Char('n'));
+    let drafting = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(drafting.contains("新渠道"), "草稿表单应可编辑：{drafting}");
+    state.handle_key(KeyCode::Esc);
+    assert_eq!(
+        state.decision_rows().len(),
+        1,
+        "Esc 丢弃草稿，列表不变"
+    );
+
+    // Ctrl+S 才写盘（这里只验证产出的变更事件）。
+    state.handle_key(KeyCode::Char('n'));
+    let event = state.handle_ctrl_key(KeyCode::Char('s'));
+    match event {
+        Some(SettingsEvent::Apply(SettingsChange::DecisionModels { rows, default_key })) => {
+            assert_eq!(rows.len(), 2, "草稿这时才落进列表");
+            assert_eq!(default_key, "jev-main", "默认渠道沿用原值");
+        }
+        other => panic!("应当产出决策模型变更：{other:?}"),
+    }
+}
+
+/// 决策页的 `D` 删除至少保留一条。
+#[test]
+fn decision_page_keeps_at_least_one_channel() {
+    let mut state =
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+            vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
+            "jev-main",
+            decision("新渠道", "新渠道", "jev-latest", true),
+        ));
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Char('d'));
+    assert_eq!(state.decision_rows().len(), 1, "最后一条不允许删除");
+    assert_eq!(state.status(), "至少要保留一个决策渠道。");
+}
+
+/// 决策页下方的功能开关分区：列表照旧，开关行画在渠道之后、可切换并产出变更。
+#[test]
+fn decision_page_renders_and_toggles_feature_switches() {
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows())
+            .with_decision_models(
+                vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
+                "jev-main",
+                decision("新渠道", "新渠道", "jev-latest", true),
+            )
+            .with_decision_switches(vec![DecisionSwitchRow {
+                key: "tool_call_review".to_string(),
+                label: "工具调用审查使用决策模型".to_string(),
+                enabled: false,
+            }]),
+    );
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    assert_eq!(state.pane(), Pane::DecisionModels);
+    let list = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(list.contains("功能开关"), "开关分区标题：{list}");
+    assert!(
+        list.contains("[ ] 工具调用审查使用决策模型"),
+        "关闭态开关行：{list}"
+    );
+
+    // 行序：渠道 1 条（占 1 个行号）之后就是开关；↓ 落到开关行。
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Down); // 移到功能开关
+    let event = state.handle_key(KeyCode::Right);
+    match event {
+        Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch { key, enabled })) => {
+            assert_eq!(key, "tool_call_review");
+            assert!(enabled, "←/→ 就地翻转开关");
+        }
+        other => panic!("应当产出决策开关变更：{other:?}"),
+    }
+
+    // 开关行上按 N/D 不改渠道列表。
+    let rows_before = state.decision_rows().len();
+    state.handle_key(KeyCode::Char('n'));
+    assert_eq!(state.decision_rows().len(), rows_before, "N 只作用于渠道行");
+}
+
 
 /// 「模型 ID」自动检测出的候选列表：超出一屏时窗口跟着游标走，前后各留一行省略提示。
 #[test]
@@ -728,10 +896,14 @@ fn row_is_hovered_yellow(state: &SettingsState, area: ratatui::layout::Rect) -> 
 fn left_column_click_switches_page_and_enters_the_pane() {
     let mut state = state();
     draw(&state, WIDTH, HEIGHT);
-    let y = list_row_y(&state, 7);
+    let tools_index = omnicrawl_tui::ui::settings::ROW_ORDER
+        .iter()
+        .position(|key| *key == "tools")
+        .expect("工具页在左栏");
+    let y = list_row_y(&state, tools_index);
     let action = state.hit_at(5, y).expect("左栏行应当可点");
     assert!(state.click(action).is_none(), "切页不产出配置变更事件");
-    assert_eq!(state.selected(), 7);
+    assert_eq!(state.selected(), tools_index);
     assert_eq!(state.selected_key(), "tools");
     assert_eq!(state.pane(), Pane::Tools);
     assert_eq!(state.focus(), Focus::Pane, "点左栏等于 Enter，直接进右栏");
@@ -758,6 +930,33 @@ fn pane_row_click_selects_first_and_activates_on_the_same_row() {
     assert!(
         matches!(event, SettingsEvent::Apply(_)),
         "工具开关行确认后应当产出配置变更事件"
+    );
+}
+
+#[test]
+fn approval_row_is_the_first_clickable_row_and_cycles() {
+    let mut state = state();
+    while state.selected_key() != "tools" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    // 进入面板时首行（审查模式）已被选中；先往下挪一行，才能观察到「首次点击只移动」。
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.tool_selected(), 1);
+    draw(&state, WIDTH, HEIGHT);
+
+    let y = pane_row_y(&state, 0);
+    let action = state.hit_at(40, y).expect("审查模式行应当可点");
+    assert!(state.click(action).is_none(), "首次点击只移动选中");
+    assert_eq!(state.tool_selected(), 0);
+
+    let event = state.click(action).expect("再点当前行等同 Enter");
+    assert!(
+        matches!(
+            event,
+            SettingsEvent::Apply(SettingsChange::ToolApproval { .. })
+        ),
+        "审查模式行确认后应当产出审批变更事件，实际：{event:?}"
     );
 }
 
@@ -821,8 +1020,8 @@ fn hover_paints_the_row_under_the_cursor_yellow() {
 #[test]
 fn pane_hint_sits_on_the_bottom_border() {
     let mut state = state();
-    // 走到「工具」页（ROW_ORDER 第 8 项）：单选类面板本来就没有提示行，这里要挑有的。
-    for _ in 0..7 {
+    // 走到「工具设置」页：单选类面板本来就没有提示行，这里要挑有的。
+    while state.selected_key() != "tools" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);

@@ -12,6 +12,10 @@
 //!   [`SettingsEvent::OpenConfigChat`]，由 `app.rs` 关闭面板并拉起配置对话弹层。
 
 use crossterm::event::KeyCode;
+use omnicrawl_config::features::approval::{
+    approval_mode_label, normalize_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_MANUAL,
+    APPROVAL_MODE_REVIEW,
+};
 use omnicrawl_config::models::channels::{protocols_for_provider, provider_options};
 use ratatui::layout::Rect;
 use std::cell::RefCell;
@@ -51,6 +55,8 @@ pub enum Pane {
     Vision,
     /// 模型渠道：渠道列表 + 单条渠道表单。
     Channels,
+    /// 结构化决策模型：决策渠道列表 + 单条决策渠道表单。
+    DecisionModels,
     /// 单选页：一个下拉候选，选中即保存。
     Choice(ChoiceKind),
     /// 表单页：若干字段 + `Ctrl+S` 保存。
@@ -68,6 +74,7 @@ impl Pane {
         match key {
             "model" => Self::Choice(ChoiceKind::Model),
             "channels" => Self::Channels,
+            "decision_models" => Self::DecisionModels,
             "advisor" => Self::Form(FormKind::Advisor),
             "tool_output_compression" => Self::Form(FormKind::ToolOutputCompression),
             "desensitization" => Self::Form(FormKind::Desensitization),
@@ -144,7 +151,10 @@ pub enum ContextField {
     Compaction,
 }
 
-/// 一件工具开关的可显示状态。
+/// 工具页首行的行号：工具调用审查模式。
+pub const TOOLS_APPROVAL_ROW: usize = 0;
+
+/// 一把工具开关的可显示状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSwitchRow {
     pub name: String,
@@ -395,6 +405,437 @@ impl ChannelField {
     }
 }
 
+/// 一条结构化决策渠道（对应 `decision_models.toml` 的 `channels.<key>`）。
+///
+/// 与 [`ChannelRow`] 同形但**不是同一套字段**：决策服务只有一种接口（choice / score /
+/// noul 三种提问类型共用 `/v1/decide`），因此没有 Provider / 协议 / User-Agent，模型名
+/// 也不是对话模型（`jev-latest` 或固定版本号）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DecisionRow {
+    pub key: String,
+    pub name: String,
+    /// 服务类型，当前只有 `jev`。
+    pub mode: String,
+    pub base_url: String,
+    /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时的写回，界面从不渲染明文。
+    pub api_key: String,
+    pub api_key_env: String,
+    pub model: String,
+    pub enabled: bool,
+}
+
+/// 决策渠道表单的字段顺序（与渲染、`Tab` 顺序一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionField {
+    Name,
+    Mode,
+    BaseUrl,
+    ApiKey,
+    ApiKeyEnv,
+    ModelId,
+    Enabled,
+}
+
+impl DecisionField {
+    /// 表单里的字段顺序。
+    pub const ORDER: [DecisionField; 7] = [
+        DecisionField::Name,
+        DecisionField::Mode,
+        DecisionField::BaseUrl,
+        DecisionField::ApiKey,
+        DecisionField::ApiKeyEnv,
+        DecisionField::ModelId,
+        DecisionField::Enabled,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "渠道名称",
+            // 与对话渠道的「请求方式」同文案：这里放的是决策服务类型（当前只有 Jev）。
+            Self::Mode => "请求方式",
+            Self::BaseUrl => "Base URL",
+            Self::ApiKey => "API Key",
+            Self::ApiKeyEnv => "API Key 环境变量",
+            Self::ModelId => "模型 ID",
+            Self::Enabled => "启用",
+        }
+    }
+
+    /// 文本字段（可进入编辑态）；枚举与开关不是。
+    pub fn is_text(self) -> bool {
+        !matches!(self, Self::Mode | Self::Enabled)
+    }
+
+    fn index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0)
+    }
+}
+
+/// 决策渠道表单里展开的枚举候选（当前只有「请求方式」）。
+#[derive(Debug, Clone)]
+pub struct DecisionDropdown {
+    pub field: DecisionField,
+    pub options: Vec<String>,
+    pub selected: usize,
+}
+
+/// 决策渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
+#[derive(Debug, Clone)]
+struct DecisionForm {
+    row: DecisionRow,
+    field: DecisionField,
+    dropdown: Option<DecisionDropdown>,
+    /// 文本字段的输入缓冲（`None` 表示只在字段之间移动）。
+    input: Option<Composer>,
+    /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
+    index: Option<usize>,
+    is_new: bool,
+}
+
+/// 决策模型页的「功能开关」分区标题（开关行画在渠道列表下方）。
+pub const DECISION_SWITCH_SECTION: &str = "功能开关";
+
+/// 决策模型页的「自部署（OneJev）」分区标题（画在功能开关下方）。
+pub const DECISION_LOCAL_SECTION: &str = "自部署 OneJev";
+
+/// 自部署分区里的行号（顺序即界面顺序）。
+pub const DECISION_LOCAL_ROW_SIZE: usize = 0;
+pub const DECISION_LOCAL_ROW_DEVICE: usize = 1;
+pub const DECISION_LOCAL_ROW_ROOT: usize = 2;
+pub const DECISION_LOCAL_ROW_DOWNLOADED: usize = 3;
+pub const DECISION_LOCAL_ROW_ENV: usize = 4;
+pub const DECISION_LOCAL_ROW_PREPARE: usize = 5;
+pub const DECISION_LOCAL_ROW_DOWNLOAD: usize = 6;
+pub const DECISION_LOCAL_ROW_DELETE: usize = 7;
+pub const DECISION_LOCAL_ROW_CHANNEL: usize = 8;
+pub const DECISION_LOCAL_ROW_SERVICE: usize = 9;
+pub const DECISION_LOCAL_ROW_START: usize = 10;
+pub const DECISION_LOCAL_ROW_STOP: usize = 11;
+/// 自部署分区的行数。
+pub const DECISION_LOCAL_ROW_COUNT: usize = 12;
+
+/// 结构化决策模型的服务类型候选（Jev 原生 / 对话补全 / OneJev 自部署）。
+///
+/// 与配置域 [`omnicrawl_config::features::decision_model::DECISION_MODES`] 同源：
+/// 这里重导出成界面用的名字，避免界面层直接引用配置域常量。
+pub const DECISION_MODE_OPTIONS: [&str; 3] =
+    omnicrawl_config::features::decision_model::DECISION_MODES;
+
+/// 自部署的推理设备候选（与配置域 [`omnicrawl_config::features::decision_model::LOCAL_DEVICE_OPTIONS`] 同源）。
+pub const DECISION_LOCAL_DEVICE_OPTIONS: [&str; 3] =
+    omnicrawl_config::features::decision_model::LOCAL_DEVICE_OPTIONS;
+
+/// 自部署分区的行标签（渲染与测试都读它）。
+pub const DECISION_LOCAL_ROW_LABELS: [&str; DECISION_LOCAL_ROW_COUNT] = [
+    "部署尺寸",
+    "推理设备",
+    "数据目录",
+    "已下载尺寸",
+    "运行环境",
+    "准备运行环境",
+    "下载当前尺寸",
+    "删除当前尺寸",
+    "使用自部署渠道",
+    "本地服务",
+    "启动 / 重启服务",
+    "停止服务",
+];
+
+/// 自部署分区里的一行（只读信息行 + 动作行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionLocalRow {
+    pub label: &'static str,
+    pub value: String,
+    /// 该行是可执行的动作用（渲染成按钮样式）。
+    pub action: bool,
+}
+
+/// 自部署分区的初值（宿主在打开面板时读配置、磁盘与服务状态给出）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DecisionLocalValues {
+    /// 当前部署尺寸键（清单里的写法）。
+    pub size: String,
+    /// `auto` / `cuda` / `cpu`。
+    pub device: String,
+    /// 数据根目录（显示用；空串表示默认目录）。
+    pub root: String,
+    /// 清单里的尺寸（键、文案、是否已下载）。
+    pub sizes: Vec<(String, String, bool)>,
+    /// 运行环境是否就绪（venv + qev）。
+    pub env_ready: bool,
+    /// 环境状态文案（缺什么、用哪个解释器）。
+    pub env_status: String,
+    /// 本地服务状态文案。
+    pub service_status: String,
+    /// 本地服务是否在运行（决定「停止服务」是否有意义）。
+    pub service_running: bool,
+}
+
+/// 决策模型的一个功能开关行（标签与默认值来自配置域的开关表）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionSwitchRow {
+    pub key: String,
+    pub label: String,
+    pub enabled: bool,
+}
+
+/// 决策模型页的界面状态：列表 + 可选的表单。
+///
+/// 列表态的行由「决策渠道 + 功能开关 + 自部署分区」拼成：渠道在前、开关随后、
+/// 自部署行在最后；表单态只编辑渠道。
+#[derive(Debug, Clone)]
+struct DecisionModelsState {
+    rows: Vec<DecisionRow>,
+    switches: Vec<DecisionSwitchRow>,
+    /// 自部署分区：尺寸/设备/已下载状态 + 环境与服务状态。
+    local: DecisionLocalState,
+    default_key: String,
+    selected: usize,
+    form: Option<DecisionForm>,
+    /// 「新建」用的模板（宿主从配置的默认决策渠道生成）。
+    template: DecisionRow,
+    status: String,
+}
+
+/// 自部署分区的界面状态。
+#[derive(Debug, Clone, Default)]
+struct DecisionLocalState {
+    size: String,
+    device: String,
+    root: String,
+    sizes: Vec<(String, String, bool)>,
+    env_ready: bool,
+    env_status: String,
+    service_status: String,
+    service_running: bool,
+    /// 后台任务进行中（下载 / 安装 / 启停）：界面据此守卫重复动作。
+    busy: bool,
+}
+
+impl DecisionLocalState {
+    fn new(values: DecisionLocalValues) -> Self {
+        let sizes = if values.sizes.is_empty() {
+            // 清单由宿主给出；缺失时至少留一行提示，不让分区变成空白。
+            Vec::new()
+        } else {
+            values.sizes
+        };
+        Self {
+            size: values.size,
+            device: values.device,
+            root: values.root,
+            sizes,
+            env_ready: values.env_ready,
+            env_status: values.env_status,
+            service_status: values.service_status,
+            service_running: values.service_running,
+            busy: false,
+        }
+    }
+
+    /// 当前尺寸在清单里的下标（找不到时 0）。
+    fn size_index(&self) -> usize {
+        self.sizes
+            .iter()
+            .position(|(key, _, _)| key == &self.size)
+            .unwrap_or(0)
+    }
+
+    /// 当前尺寸的界面文案（清单里取，取不到就给键本身）。
+    fn size_label(&self) -> String {
+        self.sizes
+            .get(self.size_index())
+            .map(|(_, label, _)| label.clone())
+            .unwrap_or_else(|| self.size.clone())
+    }
+
+    /// 当前尺寸是否已下载。
+    fn size_downloaded(&self) -> bool {
+        self.sizes
+            .get(self.size_index())
+            .map(|(_, _, ready)| *ready)
+            .unwrap_or(false)
+    }
+
+    /// 「已下载尺寸」行的值：列出全部已下载的档位。
+    fn downloaded_text(&self) -> String {
+        let ready: Vec<&str> = self
+            .sizes
+            .iter()
+            .filter(|(_, _, ready)| *ready)
+            .map(|(key, _, _)| key.as_str())
+            .collect();
+        if ready.is_empty() {
+            "（无）".to_string()
+        } else {
+            ready.join("、")
+        }
+    }
+
+    /// 设备行的文案。
+    fn device_text(&self) -> String {
+        match self.device.as_str() {
+            "cpu" => "CPU".to_string(),
+            "cuda" => "CUDA".to_string(),
+            _ => "自动（有 GPU 用 CUDA）".to_string(),
+        }
+    }
+
+    /// 环境行的文案。
+    fn env_text(&self) -> String {
+        if self.env_ready {
+            "已就绪".to_string()
+        } else if self.env_status.trim().is_empty() {
+            "未安装".to_string()
+        } else {
+            self.env_status.clone()
+        }
+    }
+
+    /// 按方向键循环尺寸（在清单里滚动）。
+    fn cycle_size(&mut self, direction: isize) {
+        if self.sizes.is_empty() {
+            return;
+        }
+        let count = self.sizes.len() as isize;
+        let index = ((self.size_index() as isize + direction).rem_euclid(count)) as usize;
+        self.size = self.sizes[index].0.clone();
+    }
+
+    /// 按行号循环该行的档位（尺寸 / 设备）。
+    fn cycle(&mut self, row: usize, direction: isize) {
+        match row {
+            DECISION_LOCAL_ROW_SIZE => self.cycle_size(direction),
+            DECISION_LOCAL_ROW_DEVICE => self.cycle_device(direction),
+            _ => {}
+        }
+    }
+
+    /// 按方向键循环设备档位。
+    fn cycle_device(&mut self, direction: isize) {
+        let options = DECISION_LOCAL_DEVICE_OPTIONS;
+        let count = options.len() as isize;
+        let current = options
+            .iter()
+            .position(|option| *option == self.device)
+            .unwrap_or(0) as isize;
+        let index = ((current + direction).rem_euclid(count)) as usize;
+        self.device = options[index].to_string();
+    }
+
+    /// 分区行（渲染层读它）。
+    fn rows(&self) -> Vec<DecisionLocalRow> {
+        let mut rows = Vec::with_capacity(DECISION_LOCAL_ROW_COUNT);
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_SIZE],
+            value: self.size_label(),
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DEVICE],
+            value: self.device_text(),
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_ROOT],
+            value: if self.root.trim().is_empty() {
+                "（默认目录）".to_string()
+            } else {
+                self.root.clone()
+            },
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DOWNLOADED],
+            value: self.downloaded_text(),
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_ENV],
+            value: self.env_text(),
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_PREPARE],
+            value: if self.env_ready {
+                "（已就绪，可重装）".to_string()
+            } else {
+                String::new()
+            },
+            action: true,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DOWNLOAD],
+            value: if self.size_downloaded() {
+                "（已下载）".to_string()
+            } else {
+                String::new()
+            },
+            action: true,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DELETE],
+            value: if self.size_downloaded() {
+                String::new()
+            } else {
+                "（未下载）".to_string()
+            },
+            action: true,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_CHANNEL],
+            value: "把当前尺寸切成决策渠道".to_string(),
+            action: true,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_SERVICE],
+            value: self.service_status.clone(),
+            action: false,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_START],
+            value: if self.service_running {
+                "（运行中，可重启）".to_string()
+            } else {
+                String::new()
+            },
+            action: true,
+        });
+        rows.push(DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_STOP],
+            value: if self.service_running {
+                String::new()
+            } else {
+                "（未运行）".to_string()
+            },
+            action: true,
+        });
+        rows
+    }
+}
+
+/// 自部署分区要宿主做的一件事。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionLocalChange {
+    /// 写回尺寸与设备（枚举行改档即保存）。
+    Save { size: String, device: String },
+    /// 一键安装专用虚拟环境（venv + torch CUDA + qev）。
+    PrepareEnvironment,
+    /// 下载某个尺寸的权重。
+    Download { size: String },
+    /// 删除某个尺寸的权重。
+    Delete { size: String },
+    /// 把决策渠道切到自部署（按当前尺寸建/改一条 `onejev` 渠道并设为默认）。
+    UseChannel { size: String },
+    /// 启动（或按当前尺寸重启）本地服务。
+    StartService,
+    /// 停止本地服务并释放显存。
+    StopService,
+}
+
 /// 打开设置面板时的初始值（由宿主从配置与工具表读出来后传入）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsValues {
@@ -407,11 +848,21 @@ pub struct SettingsValues {
     pub channels: Vec<ChannelRow>,
     pub default_channel_key: String,
     pub channel_template: ChannelRow,
+    /// 结构化决策模型页的初始列表、默认渠道与「新建」模板。
+    pub decision_channels: Vec<DecisionRow>,
+    pub default_decision_key: String,
+    pub decision_template: DecisionRow,
+    /// 决策模型页下方那一组功能开关的当前值（键与顺序取自配置域的开关表）。
+    pub decision_switches: Vec<DecisionSwitchRow>,
+    /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
+    pub decision_local: DecisionLocalValues,
     pub reasoning_effort: String,
     pub show_thinking: bool,
     pub memory_enabled: bool,
     pub plugins_enabled: bool,
     pub tools: Vec<ToolSwitchRow>,
+    /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
+    pub approval_mode: String,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
     /// MCP 设置页的初始值（全局策略 + Server 列表）。
@@ -445,11 +896,17 @@ impl SettingsValues {
             channels: Vec::new(),
             default_channel_key: String::new(),
             channel_template: ChannelRow::default(),
+            decision_channels: Vec::new(),
+            default_decision_key: String::new(),
+            decision_template: DecisionRow::default(),
+            decision_switches: Vec::new(),
+            decision_local: DecisionLocalValues::default(),
             reasoning_effort: "none".to_string(),
             show_thinking: true,
             memory_enabled: false,
             plugins_enabled: false,
             tools,
+            approval_mode: APPROVAL_MODE_REVIEW.to_string(),
             subagents: Vec::new(),
             mcp: McpSettingsValues::default(),
             vision_enabled: false,
@@ -478,6 +935,39 @@ impl SettingsValues {
         };
         self.channels = channels;
         self.channel_template = template;
+        self
+    }
+
+    /// 覆盖决策模型页的初始列表、默认渠道与「新建」模板。
+    pub fn with_decision_models(
+        mut self,
+        channels: Vec<DecisionRow>,
+        default_key: &str,
+        template: DecisionRow,
+    ) -> Self {
+        let fallback = channels
+            .first()
+            .map(|row| row.key.clone())
+            .unwrap_or_default();
+        self.default_decision_key = if default_key.trim().is_empty() {
+            fallback
+        } else {
+            default_key.to_string()
+        };
+        self.decision_channels = channels;
+        self.decision_template = template;
+        self
+    }
+
+    /// 覆盖决策模型页下方的功能开关（未显式给出时按配置域的默认值铺一行一组开关）。
+    pub fn with_decision_switches(mut self, switches: Vec<DecisionSwitchRow>) -> Self {
+        self.decision_switches = switches;
+        self
+    }
+
+    /// 覆盖决策模型页自部署分区的初值。
+    pub fn with_decision_local(mut self, values: DecisionLocalValues) -> Self {
+        self.decision_local = values;
         self
     }
 
@@ -514,6 +1004,12 @@ impl SettingsValues {
     /// TTS 页的初值（配置 + 音色库 + 模型状态）。
     pub fn with_tts(mut self, values: TtsValues) -> Self {
         self.tts = values;
+        self
+    }
+
+    /// 工具页首行的审查模式初值（取运行期现用的模式）。
+    pub fn with_approval(mut self, mode: &str) -> Self {
+        self.approval_mode = nearest_approval_mode(mode).to_string();
         self
     }
 
@@ -617,6 +1113,8 @@ pub enum SettingsChange {
     CompactionPercent { percent: i64 },
     /// 单个内置工具开关。
     ToolSwitch { name: String, enabled: bool },
+    /// 工具调用审查模式（`manual` / `review` / `auto`）。
+    ToolApproval { mode: String },
     /// 子任务设置的一行（选中即改，没有保存键）。
     Subagent(SubagentChange),
     /// MCP 设置（全局策略或 Server 列表，保存后重建 MCP 连接）。
@@ -634,6 +1132,15 @@ pub enum SettingsChange {
         rows: Vec<ChannelRow>,
         default_key: String,
     },
+    /// 保存整份结构化决策模型配置（决策渠道列表 + 默认渠道 key）。
+    DecisionModels {
+        rows: Vec<DecisionRow>,
+        default_key: String,
+    },
+    /// 决策模型页的一个功能开关（键取自配置域的开关表）。
+    DecisionSwitch { key: String, enabled: bool },
+    /// 决策模型页的自部署分区：写尺寸/设备、准备环境、下载/删除尺寸、切渠道、启停服务。
+    DecisionLocal(DecisionLocalChange),
     /// 保存一页表单：字段值按该页字段表的顺序给出。
     Form {
         kind: FormKind,
@@ -1118,7 +1625,7 @@ pub enum SettingsEvent {
     },
 }
 
-const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
+const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
 const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Server  Esc 返回";
 const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
 const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
@@ -1131,6 +1638,9 @@ const TTS_HINT: &str =
     "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
 const CHANNELS_LIST_HINT: &str = "↑↓ 选择渠道  Enter 编辑  N 新建  D 删除  Esc 返回";
 const CHANNELS_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
+const DECISION_LIST_HINT: &str =
+    "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
+const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
 /// 工具输出压缩页的提示：多一个「进模型选择器」的入口。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  M 模型选择器  Ctrl+S 保存  Esc 返回";
@@ -1215,7 +1725,39 @@ struct ContextState {
 struct ToolsState {
     rows: Vec<ToolSwitchRow>,
     selected: usize,
+    /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
+    approval: String,
     status: String,
+}
+
+/// 工具开关页首行的标签（工具调用审查模式）。
+pub const TOOLS_APPROVAL_LABEL: &str = "工具调用审查";
+
+/// 审查模式的候选顺序（对映 Python 的 `_APPROVAL_OPTIONS`）。
+pub const TOOLS_APPROVAL_OPTIONS: [&str; 3] =
+    [APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW, APPROVAL_MODE_AUTO];
+
+/// 把任意审批模式折算到候选档位（不认得的值落到默认的「自动审查」）。
+pub fn nearest_approval_mode(mode: &str) -> &'static str {
+    match normalize_approval_mode(mode) {
+        Ok(normalized) => TOOLS_APPROVAL_OPTIONS
+            .iter()
+            .copied()
+            .find(|option| *option == normalized)
+            .unwrap_or(APPROVAL_MODE_REVIEW),
+        Err(_) => APPROVAL_MODE_REVIEW,
+    }
+}
+
+/// 在审查模式候选里按方向循环（对映 Python 的 `_change`）。
+pub fn cycle_approval_mode(current: &str, direction: isize) -> &'static str {
+    let current = nearest_approval_mode(current);
+    let index = TOOLS_APPROVAL_OPTIONS
+        .iter()
+        .position(|option| *option == current)
+        .unwrap_or(1);
+    let count = TOOLS_APPROVAL_OPTIONS.len() as isize;
+    TOOLS_APPROVAL_OPTIONS[((index as isize + direction).rem_euclid(count)) as usize]
 }
 
 /// MCP 设置页的行号（对映 Python `MCPSettingsPane._ROWS`）。
@@ -1523,6 +2065,7 @@ pub struct SettingsState {
     vision: VisionState,
     choices: ChoicesState,
     channels: ChannelsState,
+    decision_models: DecisionModelsState,
     /// 每个表单页一份草稿，下标与 `FormKind::index` 一致。
     forms: Vec<FormState>,
     /// 工具输出压缩页的内嵌双列模型选择器（进该页时按当前草稿重建）。
@@ -1551,6 +2094,7 @@ impl SettingsState {
             tools: ToolsState {
                 rows: values.tools,
                 selected: 0,
+                approval: nearest_approval_mode(&values.approval_mode).to_string(),
                 status: TOOLS_HINT.to_string(),
             },
             mcp: McpState {
@@ -1596,6 +2140,16 @@ impl SettingsState {
                 form: None,
                 template: values.channel_template,
                 status: CHANNELS_LIST_HINT.to_string(),
+            },
+            decision_models: DecisionModelsState {
+                rows: values.decision_channels,
+                switches: values.decision_switches,
+                local: DecisionLocalState::new(values.decision_local),
+                default_key: values.default_decision_key,
+                selected: 0,
+                form: None,
+                template: values.decision_template,
+                status: DECISION_LIST_HINT.to_string(),
             },
             forms: form_states(values.form_values),
             picker: None,
@@ -1736,7 +2290,7 @@ impl SettingsState {
                 already
             }
             Pane::Tools => {
-                let target = index.min(self.tools.rows.len().saturating_sub(1));
+                let target = index.min(self.tool_row_count().saturating_sub(1));
                 let already = self.tools.selected == target;
                 self.tools.selected = target;
                 already
@@ -1772,6 +2326,22 @@ impl SettingsState {
                     let target = index.min(self.channels.rows.len().saturating_sub(1));
                     let already = self.channels.selected == target;
                     self.channels.selected = target;
+                    already
+                }
+            }
+            Pane::DecisionModels => {
+                // 与渠道页同形：列表态选渠道或开关，表单态选字段。
+                if let Some(form) = self.decision_models.form.as_mut() {
+                    let Some(field) = DecisionField::ORDER.get(index).copied() else {
+                        return false;
+                    };
+                    let already = form.field == field;
+                    form.field = field;
+                    already
+                } else {
+                    let target = index.min(self.decision_row_count().saturating_sub(1));
+                    let already = self.decision_models.selected == target;
+                    self.decision_models.selected = target;
                     already
                 }
             }
@@ -1859,6 +2429,16 @@ impl SettingsState {
 
     pub fn tool_selected(&self) -> usize {
         self.tools.selected
+    }
+
+    /// 工具页首行的审查模式显示文案（`工具调用审查：自动审查`）。
+    pub fn tool_approval_value(&self) -> String {
+        approval_mode_label(&self.tools.approval)
+    }
+
+    /// 工具页的可选行数：首行的审查模式 + 逐工具开关。
+    pub fn tool_row_count(&self) -> usize {
+        self.tools.rows.len() + 1
     }
 
     pub fn subagent_rows(&self) -> &[SubagentRow] {
@@ -2048,6 +2628,7 @@ impl SettingsState {
             Pane::Subagents => &self.subagents.status,
             Pane::Vision => &self.vision.status,
             Pane::Channels => &self.channels.status,
+            Pane::DecisionModels => &self.decision_models.status,
             Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(FormKind::ToolOutputCompression) => self
                 .picker
@@ -2082,6 +2663,13 @@ impl SettingsState {
                     CHANNELS_FORM_HINT
                 } else {
                     CHANNELS_LIST_HINT
+                }
+            }
+            Pane::DecisionModels => {
+                if self.decision_models.form.is_some() {
+                    DECISION_FORM_HINT
+                } else {
+                    DECISION_LIST_HINT
                 }
             }
             // Python 的单选面板只有下拉与状态行，没有提示行。
@@ -2160,6 +2748,7 @@ impl SettingsState {
             Pane::Subagents => self.handle_subagents_key(key),
             Pane::Vision => self.handle_vision_key(key),
             Pane::Channels => self.handle_channels_key(key),
+            Pane::DecisionModels => self.handle_decision_models_key(key),
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
@@ -2807,9 +3396,9 @@ impl SettingsState {
                 self.move_tool(1);
                 None
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-                self.toggle_tool()
-            }
+            // 审查模式行按方向换档；工具开关行无视方向，一律切换。
+            KeyCode::Left => self.toggle_tool(-1),
+            KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => self.toggle_tool(1),
             KeyCode::Esc => {
                 self.back_to_list();
                 None
@@ -3123,6 +3712,7 @@ impl SettingsState {
             | Pane::Mcp
             | Pane::Subagents
             | Pane::Channels
+            | Pane::DecisionModels
             | Pane::Vision
             | Pane::Tts
             | Pane::ConfigChat
@@ -3314,16 +3904,24 @@ impl SettingsState {
         }
     }
 
+    /// 工具页首行是审查模式，其余行是逐工具开关；上下键在最外层一起循环。
     fn move_tool(&mut self, delta: isize) {
-        let count = self.tools.rows.len() as isize;
-        if count == 0 {
+        let count = self.tool_row_count() as isize;
+        if count <= 0 {
             return;
         }
         self.tools.selected = ((self.tools.selected as isize + delta).rem_euclid(count)) as usize;
     }
 
-    fn toggle_tool(&mut self) -> Option<SettingsEvent> {
-        let row = self.tools.rows.get(self.tools.selected)?;
+    /// 首行改审查模式（循环候选），其余行切换工具开关。
+    fn toggle_tool(&mut self, direction: isize) -> Option<SettingsEvent> {
+        if self.tools.selected == 0 {
+            let mode = cycle_approval_mode(&self.tools.approval, direction);
+            return Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
+                mode: mode.to_string(),
+            }));
+        }
+        let row = self.tools.rows.get(self.tools.selected - 1)?;
         Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
             name: row.name.clone(),
             enabled: !row.enabled,
@@ -3650,11 +4248,473 @@ impl SettingsState {
         }))
     }
 
+    // ---------- 结构化决策模型页：列表与表单 ----------
+    //
+    // 与渠道页同形，但表单更窄（决策服务只有一种接口）且没有「模型 ID 自动检测」：
+    // 决策模型名是固定的版本字符串，没有远端列表可拉。
+
+    /// 决策页：列表态与表单态各有一组键位。
+    ///
+    /// 列表态的行由「决策渠道 + 功能开关」拼成：渠道行上 `Enter`/`→` 进表单，
+    /// 开关行上 `←`/`→`/`Enter`/空格 就地切换（选中即保存，与工具开关页同义）。
+    fn handle_decision_models_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        if self.decision_models.form.is_some() {
+            return self.handle_decision_form_key(key);
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_decision_channel(-1);
+                None
+            }
+            KeyCode::Down => {
+                self.move_decision_channel(1);
+                None
+            }
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => {
+                if self.decision_switch_selected().is_some() {
+                    return self.toggle_decision_switch();
+                }
+                if let Some(row) = self.decision_local_selected() {
+                    return self.activate_decision_local(row);
+                }
+                if key == KeyCode::Char(' ') {
+                    return None;
+                }
+                self.edit_decision_channel();
+                None
+            }
+            KeyCode::Left => {
+                if self.decision_switch_selected().is_some() {
+                    return self.toggle_decision_switch();
+                }
+                if let Some(row) = self.decision_local_selected() {
+                    // 左键在枚举行上回退一档，其余行与 Esc 同义（回一级菜单）。
+                    if matches!(row, DECISION_LOCAL_ROW_SIZE | DECISION_LOCAL_ROW_DEVICE) {
+                        self.decision_models.local.cycle(row, -1);
+                        return self.save_decision_local();
+                    }
+                    self.back_to_list();
+                    return None;
+                }
+                self.back_to_list();
+                None
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                if self.decision_switch_selected().is_some()
+                    || self.decision_local_selected().is_some()
+                {
+                    self.decision_models.status =
+                        "只有决策渠道行参与新建；按 ↑ 选中决策渠道再按 N。".to_string();
+                    return None;
+                }
+                self.new_decision_channel();
+                None
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if let Some(row) = self.decision_local_selected() {
+                    return self.activate_decision_local(row);
+                }
+                self.delete_decision_channel();
+                None
+            }
+            KeyCode::Esc => {
+                self.back_to_list();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 决策表单：输入态 → 候选展开态 → 字段导航，三层各管各的键位。
+    fn handle_decision_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let input_active = self
+            .decision_models
+            .form
+            .as_ref()
+            .map(|form| form.input.is_some())
+            .unwrap_or(false);
+        if input_active {
+            return self.handle_decision_input_key(key);
+        }
+        let dropdown_open = self
+            .decision_models
+            .form
+            .as_ref()
+            .map(|form| form.dropdown.is_some())
+            .unwrap_or(false);
+        if dropdown_open {
+            return self.handle_decision_dropdown_key(key);
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_decision_field(-1);
+                None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.move_decision_field(1);
+                None
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_decision_field(),
+            KeyCode::Esc | KeyCode::Left => {
+                self.leave_decision_form();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 候选展开态：`↑`/`↓` 移动、`Enter` 确认、`Esc` 收起。
+    fn handle_decision_dropdown_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let form = self.decision_models.form.as_mut()?;
+        let dropdown = form.dropdown.as_mut()?;
+        match key {
+            KeyCode::Up => {
+                let count = dropdown.options.len() as isize;
+                if count > 0 {
+                    dropdown.selected = ((dropdown.selected as isize - 1).rem_euclid(count)) as usize;
+                }
+                None
+            }
+            KeyCode::Down => {
+                let count = dropdown.options.len() as isize;
+                if count > 0 {
+                    dropdown.selected = ((dropdown.selected as isize + 1).rem_euclid(count)) as usize;
+                }
+                None
+            }
+            KeyCode::Enter => {
+                let value = dropdown.options.get(dropdown.selected).cloned();
+                let field = dropdown.field;
+                form.dropdown = None;
+                if let Some(value) = value {
+                    set_decision_field(&mut form.row, field, value);
+                }
+                None
+            }
+            KeyCode::Esc => {
+                form.dropdown = None;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 文本编辑态：字符插入、光标移动、`Enter` 提交、`Esc` 取消。
+    fn handle_decision_input_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let form = self.decision_models.form.as_mut()?;
+        let field = form.field;
+        let composer = form.input.as_mut()?;
+        match key {
+            KeyCode::Enter => {
+                let value = composer.take();
+                form.input = None;
+                set_decision_field(&mut form.row, field, value);
+            }
+            KeyCode::Esc => form.input = None,
+            KeyCode::Char(character) => composer.insert(&character.to_string()),
+            KeyCode::Backspace => composer.backspace(),
+            KeyCode::Delete => composer.delete(),
+            KeyCode::Left => composer.move_left(),
+            KeyCode::Right => composer.move_right(),
+            KeyCode::Home => composer.move_home(),
+            KeyCode::End => composer.move_end(),
+            _ => {}
+        }
+        None
+    }
+
+    /// 选中的是开关行时返回它在开关表里的下标；选中的是渠道行时返回 `None`。
+    fn decision_switch_selected(&self) -> Option<usize> {
+        self.decision_models
+            .selected
+            .checked_sub(self.decision_models.rows.len())
+            .filter(|index| *index < self.decision_models.switches.len())
+    }
+
+    /// 自部署分区被选中的行号（不在该分区时为 `None`）。
+    fn decision_local_selected(&self) -> Option<usize> {
+        self.decision_models
+            .selected
+            .checked_sub(self.decision_models.rows.len() + self.decision_models.switches.len())
+            .filter(|index| *index < DECISION_LOCAL_ROW_COUNT)
+    }
+
+    /// 自部署分区：`Enter`/方向键触发的动作。
+    fn activate_decision_local(&mut self, row: usize) -> Option<SettingsEvent> {
+        if self.decision_models.local.busy {
+            self.decision_models.status = "自部署任务进行中，请稍候。".to_string();
+            return None;
+        }
+        match row {
+            DECISION_LOCAL_ROW_SIZE | DECISION_LOCAL_ROW_DEVICE => {
+                self.decision_models.local.cycle(row, 1);
+                self.save_decision_local()
+            }
+            DECISION_LOCAL_ROW_PREPARE => {
+                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                    DecisionLocalChange::PrepareEnvironment,
+                )))
+            }
+            DECISION_LOCAL_ROW_DOWNLOAD => {
+                let size = self.decision_models.local.size.clone();
+                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                    DecisionLocalChange::Download { size },
+                )))
+            }
+            DECISION_LOCAL_ROW_DELETE => {
+                let size = self.decision_models.local.size.clone();
+                if !self.decision_models.local.size_downloaded() {
+                    self.decision_models.status = format!("{size} 还没有下载到本机，无需删除。");
+                    return None;
+                }
+                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                    DecisionLocalChange::Delete { size },
+                )))
+            }
+            DECISION_LOCAL_ROW_CHANNEL => {
+                let size = self.decision_models.local.size.clone();
+                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                    DecisionLocalChange::UseChannel { size },
+                )))
+            }
+            DECISION_LOCAL_ROW_START => Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                DecisionLocalChange::StartService,
+            ))),
+            DECISION_LOCAL_ROW_STOP => Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                DecisionLocalChange::StopService,
+            ))),
+            _ => None,
+        }
+    }
+
+    /// 尺寸或设备改动：就地写盘（与功能开关同一口径：选中即保存）。
+    fn save_decision_local(&mut self) -> Option<SettingsEvent> {
+        let local = &self.decision_models.local;
+        Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+            DecisionLocalChange::Save {
+                size: local.size.clone(),
+                device: local.device.clone(),
+            },
+        )))
+    }
+
+    /// 开关行：就地翻转并交给宿主写盘（选中即保存）。
+    fn toggle_decision_switch(&mut self) -> Option<SettingsEvent> {
+        let index = self.decision_switch_selected()?;
+        let row = self
+            .decision_models
+            .switches
+            .get(index)
+            .map(|row| (row.key.clone(), !row.enabled))?;
+        Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch {
+            key: row.0,
+            enabled: row.1,
+        }))
+    }
+
+    fn move_decision_channel(&mut self, delta: isize) {
+        let count = self.decision_row_count() as isize;
+        if count == 0 {
+            return;
+        }
+        self.decision_models.selected =
+            ((self.decision_models.selected as isize + delta).rem_euclid(count)) as usize;
+    }
+
+    /// 进入表单：编辑选中的决策渠道（选中开关行时不进表单）。
+    fn edit_decision_channel(&mut self) {
+        let Some(row) = self
+            .decision_models
+            .rows
+            .get(self.decision_models.selected)
+            .cloned()
+        else {
+            self.decision_models.status = "还没有决策渠道可编辑；按 N 新建一条。".to_string();
+            return;
+        };
+        let index = self.decision_models.selected;
+        self.decision_models.status =
+            format!("正在编辑决策渠道 {}；Ctrl+S 保存，Esc 返回列表。", row.key);
+        self.decision_models.form = Some(DecisionForm {
+            row,
+            field: DecisionField::Name,
+            input: None,
+            dropdown: None,
+            is_new: false,
+            index: Some(index),
+        });
+    }
+
+    /// 新建决策渠道：草稿只在表单里，`Ctrl+S` 才落进列表（`Esc` 直接丢弃）。
+    fn new_decision_channel(&mut self) {
+        let mut row = self.decision_models.template.clone();
+        let base = if row.key.trim().is_empty() {
+            "决策渠道".to_string()
+        } else {
+            row.key.trim().to_string()
+        };
+        let mut candidate = base.clone();
+        let mut index = 2;
+        while self
+            .decision_models
+            .rows
+            .iter()
+            .any(|item| item.key == candidate)
+        {
+            candidate = format!("{base}{index}");
+            index += 1;
+        }
+        row.key = candidate.clone();
+        if row.name.trim().is_empty() {
+            row.name = candidate.clone();
+        }
+        self.decision_models.status =
+            format!("正在新建决策渠道 {candidate}；填好后按 Ctrl+S 保存，Esc 放弃。");
+        self.decision_models.form = Some(DecisionForm {
+            row,
+            field: DecisionField::Name,
+            input: None,
+            dropdown: None,
+            is_new: true,
+            index: None,
+        });
+    }
+
+    /// 删除选中决策渠道；至少保留一条（与配置侧的校验同口径）。
+    ///
+    /// 选中开关行时不动列表，只提示当前要删的是渠道。
+    fn delete_decision_channel(&mut self) {
+        if self.decision_switch_selected().is_some() {
+            self.decision_models.status =
+                "功能开关行不能删除；按 ↑ 选中决策渠道再按 D。".to_string();
+            return;
+        }
+        if self.decision_local_selected().is_some() {
+            self.decision_models.status =
+                "自部署分区的行不能删除；按 ↑ 选中决策渠道再按 D。".to_string();
+            return;
+        }
+        if self.decision_models.rows.len() <= 1 {
+            self.decision_models.status = "至少要保留一个决策渠道。".to_string();
+            return;
+        }
+        let removed = self
+            .decision_models
+            .rows
+            .remove(self.decision_models.selected);
+        self.decision_models.selected = self
+            .decision_models
+            .selected
+            .min(self.decision_models.rows.len() - 1);
+        if self.decision_models.default_key == removed.key {
+            self.decision_models.default_key = self
+                .decision_models
+                .rows
+                .iter()
+                .find(|row| row.enabled)
+                .or_else(|| self.decision_models.rows.first())
+                .map(|row| row.key.clone())
+                .unwrap_or_default();
+        }
+        self.decision_models.status =
+            format!("已删除决策渠道 {}；Ctrl+S 保存后才会写盘。", removed.key);
+    }
+
+    /// 表单里切换字段（`↑`/`↓` 与 `Tab` 同义）。
+    fn move_decision_field(&mut self, delta: isize) {
+        let Some(form) = self.decision_models.form.as_mut() else {
+            return;
+        };
+        let count = DecisionField::ORDER.len() as isize;
+        let current = form.field.index() as isize;
+        let next = (current + delta).rem_euclid(count) as usize;
+        form.field = DecisionField::ORDER[next];
+    }
+
+    /// `Enter`/空格：文本字段进编辑态、枚举展开候选、开关就地翻转。
+    fn activate_decision_field(&mut self) -> Option<SettingsEvent> {
+        let Some(form) = self.decision_models.form.as_mut() else {
+            return None;
+        };
+        match form.field {
+            DecisionField::Enabled => form.row.enabled = !form.row.enabled,
+            DecisionField::Mode => {
+                let options: Vec<String> = DECISION_MODE_OPTIONS
+                    .iter()
+                    .map(|mode| (*mode).to_string())
+                    .collect();
+                let selected = options
+                    .iter()
+                    .position(|option| option == &form.row.mode)
+                    .unwrap_or(0);
+                form.input = None;
+                form.dropdown = Some(DecisionDropdown {
+                    field: DecisionField::Mode,
+                    options,
+                    selected,
+                });
+            }
+            field => {
+                let mut composer = Composer::default();
+                // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
+                if field != DecisionField::ApiKey {
+                    composer.insert(&decision_field_value(&form.row, field));
+                }
+                form.dropdown = None;
+                form.input = Some(composer);
+            }
+        }
+        None
+    }
+
+    /// `Esc`：退出表单回列表（未保存的改动丢弃）。
+    fn leave_decision_form(&mut self) {
+        let drafting = self
+            .decision_models
+            .form
+            .as_ref()
+            .map(|form| form.is_new)
+            .unwrap_or(false);
+        self.decision_models.form = None;
+        self.decision_models.status = if drafting {
+            "已放弃新建决策渠道（未写盘）。".to_string()
+        } else {
+            "已返回决策渠道列表（未保存的改动已丢弃）。".to_string()
+        };
+    }
+
+    /// `Ctrl+S`：把表单落进列表、校验后交给宿主写盘。
+    fn save_decision_channels(&mut self) -> Option<SettingsEvent> {
+        let form = self.decision_models.form.clone()?;
+        let mut rows = self.decision_models.rows.clone();
+        match form.index {
+            Some(index) if index < rows.len() => rows[index] = form.row.clone(),
+            _ => rows.push(form.row.clone()),
+        }
+        if let Err(message) = validate_decision_rows(&rows) {
+            self.decision_models.status = message;
+            return None;
+        }
+        let default_key = pick_default_decision_channel(&rows, &self.decision_models.default_key);
+        self.decision_models.status = "正在保存决策模型配置…".to_string();
+        self.decision_models.rows = rows.clone();
+        self.decision_models.default_key = default_key.clone();
+        self.decision_models.form = None;
+        Some(SettingsEvent::Apply(SettingsChange::DecisionModels {
+            rows,
+            default_key,
+        }))
+    }
+
     /// `Ctrl` 组合键：渠道表单与表单页的保存都走 `Ctrl+S`。
     pub fn handle_ctrl_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match self.pane {
             Pane::Channels if self.channels.form.is_some() => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_channels(),
+                _ => None,
+            },
+            Pane::DecisionModels if self.decision_models.form.is_some() => match key {
+                KeyCode::Char('s') | KeyCode::Char('S') => self.save_decision_channels(),
                 _ => None,
             },
             Pane::Form(kind) => match key {
@@ -3723,6 +4783,48 @@ impl SettingsState {
                 self.channels.form = None;
                 self.channels.status = message;
             }
+            SettingsChange::DecisionModels { rows, default_key } => {
+                self.decision_models.rows = rows.clone();
+                self.decision_models.default_key = default_key.clone();
+                self.decision_models.selected = self
+                    .decision_models
+                    .selected
+                    .min(self.decision_row_count().saturating_sub(1));
+                self.decision_models.form = None;
+                self.decision_models.status = message;
+            }
+            SettingsChange::DecisionLocal(change) => {
+                match change {
+                    DecisionLocalChange::Save { size, device } => {
+                        self.decision_models.local.size = size.clone();
+                        self.decision_models.local.device = device.clone();
+                    }
+                    DecisionLocalChange::PrepareEnvironment
+                    | DecisionLocalChange::Download { .. }
+                    | DecisionLocalChange::StartService
+                    | DecisionLocalChange::StopService => {
+                        // 长任务：先按住重复动作，宿主完成后经 `refresh_decision_local` 放行。
+                        self.decision_models.local.busy = true;
+                    }
+                    DecisionLocalChange::Delete { .. } => {}
+                    DecisionLocalChange::UseChannel { size } => {
+                        // 渠道行由宿主写盘后回填（`sync_decision_models`），这里只记住尺寸。
+                        self.decision_models.local.size = size.clone();
+                    }
+                }
+                self.decision_models.status = message;
+            }
+            SettingsChange::DecisionSwitch { key, enabled } => {
+                if let Some(row) = self
+                    .decision_models
+                    .switches
+                    .iter_mut()
+                    .find(|row| &row.key == key)
+                {
+                    row.enabled = *enabled;
+                }
+                self.decision_models.status = message;
+            }
             SettingsChange::Model { key } => {
                 self.choices.model = key.clone();
                 self.choices.status[ChoiceKind::Model.index()] = message;
@@ -3739,6 +4841,10 @@ impl SettingsState {
                 if let Some(row) = self.tools.rows.iter_mut().find(|row| &row.name == name) {
                     row.enabled = *enabled;
                 }
+                self.tools.status = message;
+            }
+            SettingsChange::ToolApproval { mode } => {
+                self.tools.approval = nearest_approval_mode(mode).to_string();
                 self.tools.status = message;
             }
             SettingsChange::Subagent(change) => {
@@ -3895,6 +5001,8 @@ impl SettingsState {
             Pane::Vision => self.vision.status = message,
             // 渠道页失败时保留表单，方便就地改错再按 Ctrl+S。
             Pane::Channels => self.channels.status = message,
+            // 决策页同理：保留表单。
+            Pane::DecisionModels => self.decision_models.status = message,
             Pane::Choice(kind) => self.choices.status[kind.index()] = message,
             // 表单页失败时同样保留草稿。
             Pane::Form(_) => {
@@ -3915,6 +5023,11 @@ impl SettingsState {
     pub fn note_kernel_rejection(&mut self, change: &SettingsChange, note: &str) {
         match change {
             SettingsChange::Channels { .. } => self.channels.status.push_str(note),
+            SettingsChange::DecisionModels { .. }
+            | SettingsChange::DecisionSwitch { .. }
+            | SettingsChange::DecisionLocal(_) => {
+                self.decision_models.status.push_str(note);
+            }
             SettingsChange::Model { .. } => {
                 self.choices.status_mut(ChoiceKind::Model).push_str(note);
             }
@@ -3922,6 +5035,7 @@ impl SettingsState {
                 self.context.status.push_str(note);
             }
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
+            SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
@@ -3991,12 +5105,181 @@ impl SettingsState {
         self.channels.form = None;
     }
 
-    /// 工具表重建后刷新行的注册标记与开关状态。
+    /// 工具表重建后刷新行的注册标记与开关状态（审查模式不随之变化）。
     pub fn refresh_tools(&mut self, rows: Vec<ToolSwitchRow>) {
-        let selected = self.tools.selected.min(rows.len().saturating_sub(1));
+        let selected = self.tools.selected.min(rows.len());
         self.tools.rows = rows;
         self.tools.selected = selected;
     }
+
+    /// 决策渠道列表（渲染层用）。
+    pub fn decision_rows(&self) -> &[DecisionRow] {
+        &self.decision_models.rows
+    }
+
+    pub fn decision_selected(&self) -> usize {
+        self.decision_models.selected
+    }
+
+    /// 决策模型页的功能开关行（渲染层用）。
+    pub fn decision_switch_rows(&self) -> &[DecisionSwitchRow] {
+        &self.decision_models.switches
+    }
+
+    /// 决策页列表态的总行数（渠道 + 开关 + 自部署分区）；渲染层的窗口滚动与行号都读它。
+    pub fn decision_row_count(&self) -> usize {
+        self.decision_models.rows.len()
+            + self.decision_models.switches.len()
+            + DECISION_LOCAL_ROW_COUNT
+    }
+
+    /// 自部署分区的行（渲染层用）。
+    pub fn decision_local_rows(&self) -> Vec<DecisionLocalRow> {
+        self.decision_models.local.rows()
+    }
+
+    /// 自部署分区是否有后台任务在跑。
+    pub fn decision_local_busy(&self) -> bool {
+        self.decision_models.local.busy
+    }
+
+    pub fn decision_default_key(&self) -> &str {
+        &self.decision_models.default_key
+    }
+
+    /// 正在编辑的决策渠道（渲染层用）；不在表单时为 `None`。
+    pub fn decision_form(&self) -> Option<DecisionFormView<'_>> {
+        let form = self.decision_models.form.as_ref()?;
+        Some(DecisionFormView {
+            row: &form.row,
+            field: form.field,
+            input: form.input.as_ref(),
+            dropdown: form.dropdown.as_ref(),
+            is_new: form.is_new,
+        })
+    }
+
+    /// 宿主回填：自部署分区的状态变化（下载完成 / 环境就绪 / 服务启停）。
+    ///
+    /// 只覆盖分区的只读值，不动当前选中的行与渠道列表；`message` 非空时同时更新状态行，
+    /// 空串表示「只刷新事实」。
+    pub fn refresh_decision_local(&mut self, values: DecisionLocalValues, message: String) {
+        let busy = self.decision_models.local.busy;
+        let mut local = DecisionLocalState::new(values);
+        // 后台任务是否还在跑由宿主决定，这里沿用旧值即可（宿主在任务开始/结束时另行置位）。
+        local.busy = busy;
+        self.decision_models.local = local;
+        if !message.trim().is_empty() {
+            self.decision_models.status = message;
+        }
+    }
+
+    /// 保存后把决策页与磁盘对齐（与 `sync_channels` 同义）。
+    pub fn sync_decision_models(&mut self, rows: Vec<DecisionRow>, default_key: &str) {
+        self.decision_models.selected = self.decision_models.selected.min(
+            (rows.len() + self.decision_models.switches.len() + DECISION_LOCAL_ROW_COUNT)
+                .saturating_sub(1),
+        );
+        self.decision_models.default_key = if default_key.trim().is_empty() {
+            rows.first().map(|row| row.key.clone()).unwrap_or_default()
+        } else {
+            default_key.to_string()
+        };
+        self.decision_models.rows = rows;
+        self.decision_models.form = None;
+    }
+}
+
+/// 决策渠道表单的只读视图（渲染层用）。
+pub struct DecisionFormView<'a> {
+    pub row: &'a DecisionRow,
+    pub field: DecisionField,
+    /// 正在编辑的文本字段缓冲（非空表示处于输入态）。
+    pub input: Option<&'a Composer>,
+    pub dropdown: Option<&'a DecisionDropdown>,
+    pub is_new: bool,
+}
+
+/// 决策表单字段的当前显示值（`Enabled` 给「开启/关闭」）。
+pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
+    match field {
+        DecisionField::Name => row.name.clone(),
+        DecisionField::Mode => row.mode.clone(),
+        DecisionField::BaseUrl => row.base_url.clone(),
+        // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码（与渠道页同款）。
+        DecisionField::ApiKey => mask_api_key(&row.api_key),
+        DecisionField::ApiKeyEnv => row.api_key_env.clone(),
+        DecisionField::ModelId => row.model.clone(),
+        DecisionField::Enabled => {
+            if row.enabled {
+                "开启".to_string()
+            } else {
+                "关闭".to_string()
+            }
+        }
+    }
+}
+
+/// 把表单值写回决策渠道记录。
+fn set_decision_field(row: &mut DecisionRow, field: DecisionField, value: String) {
+    match field {
+        DecisionField::Name => row.name = value,
+        DecisionField::Mode => row.mode = value.trim().to_lowercase(),
+        DecisionField::BaseUrl => row.base_url = value.trim().to_string(),
+        // 留空 = 不改动（与渠道页、TTS 面板同一套口径，避免误触把磁盘上的密钥抹掉）。
+        DecisionField::ApiKey => {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                row.api_key = trimmed.to_string();
+            }
+        }
+        DecisionField::ApiKeyEnv => row.api_key_env = value.trim().to_string(),
+        DecisionField::ModelId => row.model = value.trim().to_string(),
+        DecisionField::Enabled => row.enabled = value == "开启",
+    }
+}
+
+/// 保存前的本地校验：与配置侧同口径，先挡住常见手误，避免白跑一次磁盘往返。
+fn validate_decision_rows(rows: &[DecisionRow]) -> Result<(), String> {
+    if rows.is_empty() {
+        return Err("至少要保留一个决策渠道。".to_string());
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for row in rows {
+        let key = row.key.trim();
+        if key.is_empty() {
+            return Err("决策渠道 key 不能为空。".to_string());
+        }
+        if seen.contains(&key) {
+            return Err(format!("决策渠道 key 重复：{key}。"));
+        }
+        seen.push(key);
+        if row.name.trim().is_empty() {
+            return Err(format!("决策渠道 {key} 的名称不能为空。"));
+        }
+        if row.mode.trim().is_empty() {
+            return Err(format!("决策渠道 {key} 的请求方式不能为空。"));
+        }
+        if row.base_url.trim().is_empty() {
+            return Err(format!("决策渠道 {key} 的基地址不能为空。"));
+        }
+        if row.model.trim().is_empty() {
+            return Err(format!("决策渠道 {key} 的模型 ID 不能为空。"));
+        }
+    }
+    Ok(())
+}
+
+/// 挑默认决策渠道：原来的那条还在且启用就沿用，否则取第一条启用的。
+fn pick_default_decision_channel(rows: &[DecisionRow], current: &str) -> String {
+    if let Some(row) = rows.iter().find(|row| row.key == current && row.enabled) {
+        return row.key.clone();
+    }
+    rows.iter()
+        .find(|row| row.enabled)
+        .or_else(|| rows.first())
+        .map(|row| row.key.clone())
+        .unwrap_or_default()
 }
 
 /// 渠道表单的只读视图（渲染层用）。
@@ -4220,13 +5503,11 @@ mod tests {
     #[test]
     fn list_navigation_wraps_and_switches_panes() {
         let mut state = state();
-        // 走到「上下文」行（下标 5）。
-        for _ in 0..5 {
-            assert_eq!(state.handle_key(KeyCode::Down), None);
-        }
+        // 走到「上下文」行。
+        goto(&mut state, "context");
         assert_eq!(state.selected_key(), "context");
         assert_eq!(state.pane(), Pane::Context);
-        // 上翻依次经过「工具输出压缩」「顾问设置」到「模型」。
+        // 上翻依次经过「工具输出压缩」「顾问设置」「结构化决策模型」到「模型渠道」。
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "tool_output_compression");
         assert_eq!(state.pane(), Pane::Form(FormKind::ToolOutputCompression));
@@ -4234,9 +5515,12 @@ mod tests {
         assert_eq!(state.selected_key(), "advisor");
         assert_eq!(state.pane(), Pane::Form(FormKind::Advisor));
         state.handle_key(KeyCode::Up);
+        assert_eq!(state.selected_key(), "decision_models");
+        assert_eq!(state.pane(), Pane::DecisionModels);
+        state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "channels");
 
-        // 循环：继续上翻两次到头（模型 → 通过对话修改设置），再上翻回到末行。
+        // 循环：继续上翻到头（模型 → 通过对话修改设置），再上翻回到末行。
         state.handle_key(KeyCode::Up);
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "config_chat");
@@ -4263,9 +5547,7 @@ mod tests {
     #[test]
     fn context_dropdown_opens_moves_and_applies() {
         let mut state = state();
-        for _ in 0..5 {
-            state.handle_key(KeyCode::Down);
-        }
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter); // 进入上下文面板
         assert_eq!(state.focus(), Focus::Pane);
         assert_eq!(state.context_field(), ContextField::Window);
@@ -4298,9 +5580,7 @@ mod tests {
     #[test]
     fn context_dropdown_escape_collapses_without_change() {
         let mut state = state();
-        for _ in 0..5 {
-            state.handle_key(KeyCode::Down);
-        }
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 展开
         state.handle_key(KeyCode::Down);
@@ -4312,9 +5592,7 @@ mod tests {
     #[test]
     fn tab_switches_field_and_percent_applies() {
         let mut state = state();
-        for _ in 0..5 {
-            state.handle_key(KeyCode::Down);
-        }
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Tab);
         assert_eq!(state.context_field(), ContextField::Compaction);
@@ -4340,9 +5618,7 @@ mod tests {
     #[test]
     fn re_picking_same_value_does_not_apply() {
         let mut state = state();
-        for _ in 0..5 {
-            state.handle_key(KeyCode::Down);
-        }
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 展开
         assert_eq!(
@@ -4355,9 +5631,7 @@ mod tests {
     #[test]
     fn failure_keeps_previous_value_and_reports() {
         let mut state = state();
-        for _ in 0..5 {
-            state.handle_key(KeyCode::Down);
-        }
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter);
         state.apply_failed("设置未完成：磁盘只读。".to_string());
         assert_eq!(state.context_window_tokens(), 128_000);
@@ -4373,7 +5647,15 @@ mod tests {
         assert_eq!(state.pane(), Pane::Tools);
         state.handle_key(KeyCode::Enter); // 进入面板
         assert_eq!(state.tool_selected(), 0);
+        assert_eq!(
+            state.handle_key(KeyCode::Char(' ')),
+            Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
+                mode: "auto".to_string(),
+            })),
+            "首行是工具调用审查，默认 review 右移一档到 auto"
+        );
 
+        state.handle_key(KeyCode::Down);
         assert_eq!(
             state.handle_key(KeyCode::Char(' ')),
             Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
@@ -4423,9 +5705,54 @@ mod tests {
         assert_eq!(state.status(), "读取文件内容已关闭。");
 
         state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Down);
         state.refresh_tools(vec![]);
-        assert_eq!(state.tool_selected(), 0, "空表时游标回落到 0");
+        assert_eq!(state.tool_selected(), 0, "空表时游标回落到首行的审查模式");
         assert!(state.tool_rows().is_empty());
+    }
+
+    #[test]
+    fn tools_pane_approval_row_cycles_and_applies() {
+        let mut state = state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.tool_selected(), TOOLS_APPROVAL_ROW);
+        assert_eq!(state.tool_approval_value(), "自动审查", "默认档位是 review");
+
+        assert_eq!(
+            state.handle_key(KeyCode::Right),
+            Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
+                mode: "auto".to_string(),
+            })),
+            "右移一档"
+        );
+        // 事件尚未回填（状态机要等 `apply_succeeded`），游标仍停在 review。
+        assert_eq!(
+            state.handle_key(KeyCode::Left),
+            Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
+                mode: "manual".to_string(),
+            })),
+            "左移一档"
+        );
+
+        state.apply_succeeded(
+            &SettingsChange::ToolApproval {
+                mode: "manual".to_string(),
+            },
+            "工具调用审查已设为 人工确认。".to_string(),
+        );
+        assert_eq!(state.tool_approval_value(), "人工确认");
+        assert_eq!(state.status(), "工具调用审查已设为 人工确认。");
+    }
+
+    #[test]
+    fn approval_cycle_matches_python_approval_options() {
+        assert_eq!(cycle_approval_mode("review", 1), "auto");
+        assert_eq!(cycle_approval_mode("review", -1), "manual");
+        assert_eq!(cycle_approval_mode("auto", 1), "manual", "到顶回第一档");
+        assert_eq!(cycle_approval_mode("manual", -1), "auto", "到底回最后一档");
+        assert_eq!(nearest_approval_mode("去死"), "review", "不认得的值回落默认档");
+        assert_eq!(nearest_approval_mode("always"), "auto", "别名照常折算");
     }
 
     /// 配置对话页没有状态行（写回结论在弹层里），但按键提示要给出打开方式。

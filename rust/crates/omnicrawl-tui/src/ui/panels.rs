@@ -42,7 +42,8 @@ pub fn panel_height(state: &AppState, width: u16) -> u16 {
                 .len()
                 .min(QUESTION_BODY_LIMIT);
             let options = if panel.is_select() {
-                panel.options.len().min(QUESTION_OPTION_LIMIT)
+                // 与渲染一致：模型选项最多占 `LIMIT - 1` 行，末行固定给自定义作答入口。
+                panel.options.len().min(QUESTION_OPTION_LIMIT - 1) + 1
             } else {
                 1
             };
@@ -120,7 +121,12 @@ pub fn render_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16)
                 .map(Line::raw)
                 .collect();
             if panel.is_select() {
-                let options = panel.options.iter().take(QUESTION_OPTION_LIMIT);
+                // 末尾固定留一行给自定义作答入口（对映 Python 的「but I Think...」），
+                // 因此模型选项再多也只占前几行。
+                let options = panel
+                    .options
+                    .iter()
+                    .take(QUESTION_OPTION_LIMIT.saturating_sub(1));
                 for (index, option) in options.enumerate() {
                     let selected = index == panel.selected;
                     lines.push(Line::from(vec![
@@ -138,6 +144,24 @@ pub fn render_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16)
                         ),
                     ]));
                 }
+                let selected = panel.is_custom();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if selected { "▸ " } else { "  " },
+                        Style::new().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        fit(
+                            crate::host::QUESTION_CUSTOM_LABEL,
+                            inner.saturating_sub(2),
+                        ),
+                        if selected {
+                            Style::new().fg(Color::Cyan)
+                        } else {
+                            Style::new().fg(Color::DarkGray)
+                        },
+                    ),
+                ]));
             } else {
                 lines.push(Line::styled(
                     "在输入框写下答案后回车",
@@ -205,8 +229,8 @@ mod tests {
             }))],
         );
         assert!(matches!(state.waiting(), Some(Waiting::Question(_))));
-        // 正文一行 + 两个选项 + 上下边框。
-        assert_eq!(panel_height(&state, 60), 5);
+        // 正文一行 + 两个选项 + 自定义入口 + 上下边框。
+        assert_eq!(panel_height(&state, 60), 6);
 
         let mut free = new_state();
         free.start_batch(

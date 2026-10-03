@@ -217,6 +217,8 @@ fn runner_options(root: &Path) -> RunnerOptions {
         plugins: None,
         // 无审查模型：review 模式下的需审查调用按 fail-closed 拒绝。
         review: None,
+        // 不托管提问：有选项的提问照旧由 HTTP 提交答案。
+        custody: None,
         prompt: None,
     }
 }

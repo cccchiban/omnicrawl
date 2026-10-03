@@ -45,8 +45,9 @@ python rust/tools/gen_config_router_fixture.py   # 需要 torch；重新生成�
 - **资源不可用文案**：两侧都保留 `配置对话资源不可用：` 前缀，但内层文字不同——Python 直接把
   `except Exception` 的 `str(exc)` 拼上去（`FileNotFoundError` 的文案里带 `[Errno 2]` 与平台
   相关路径），Rust 统一写成 `读取 <labels.json 路径> 失败：<std::io::Error>`。
-- **进程外信息**：配置路径与 `AI_CONFIG_FILE` / `AI_SUBAGENTS_FILE` 由
-  `omnicrawl-config` 的 `ConfigEnvironment` 注入（Python 直接读 `os.environ` / `Path.home()`）。
+- **进程外信息**：家目录与平台名由 `omnicrawl-config` 的 `ConfigEnvironment` 注入；配置路径
+  固定读 `~/.OmniCrawl/<name>.toml`，不再有环境变量覆盖（Python 直接读 `os.environ` /
+  `Path.home()` 并支持 `AI_*_FILE`）。
 - **运行态同步**：`ConfigChatAgent` 是宿主注入面；Python 在函数末尾对
   `tts` / `image_gen` / `vision` / `desensitization` / `run_guard` / `agent_workspace` /
   `advisor` 段的「提前返回」本身是空操作，内核侧等价表达为「未命中 setter 就不动手」。

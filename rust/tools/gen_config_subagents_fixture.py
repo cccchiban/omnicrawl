@@ -120,69 +120,9 @@ model = ""
     ("模型段非对象", '[subagents]\nmodels = "x"\n', {}),
     ("模型条目非对象", "[subagents]\n[subagents.models.review]\nmodel = 5\n", {}),
     (
-        "环境关闭开关",
-        "[subagents]\nenabled = true\n",
-        {"OMNICRAWL_SUBAGENTS_ENABLED": "0"},
-    ),
-    (
-        "环境布尔为真不放开",
-        "[subagents]\nenabled = false\n",
-        {"OMNICRAWL_SUBAGENTS_ENABLED": "true"},
-    ),
-    (
-        "环境收紧并发",
-        "[subagents]\nmax_concurrency = 4\n",
-        {"OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "1"},
-    ),
-    (
-        "环境放宽并发无效",
-        "[subagents]\nmax_concurrency = 2\n",
-        {"OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "4"},
-    ),
-    (
-        "环境收紧超时",
-        "[subagents]\ndefault_timeout_seconds = 600\n",
-        {"OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS": "30"},
-    ),
-    (
-        "环境收紧校验超时",
-        "[subagents]\nverify_command_timeout_seconds = 120\n",
-        {"OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS": "30"},
-    ),
-    (
-        "环境关闭 verify",
-        "[subagents]\nenable_verify_agent = true\n",
-        {"OMNICRAWL_SUBAGENT_VERIFY_AGENT_ENABLED": "disabled"},
-    ),
-    (
-        "环境并发非法",
-        "[subagents]\nmax_concurrency = 2\n",
-        {"OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "abc"},
-    ),
-    (
-        "环境并发越界",
-        "[subagents]\nmax_concurrency = 2\n",
-        {"OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "9"},
-    ),
-    (
-        "环境布尔非法",
-        "[subagents]\nenabled = true\n",
-        {"OMNICRAWL_SUBAGENTS_ENABLED": "maybe"},
-    ),
-    (
-        "环境超时非法",
-        "[subagents]\ndefault_timeout_seconds = 600\n",
-        {"OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS": "abc"},
-    ),
-    (
-        "环境空串按未设置",
-        "[subagents]\nmax_concurrency = 3\n",
-        {"OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "   "},
-    ),
-    (
         "中文布尔取值",
         "[subagents]\nenabled = false\n",
-        {"OMNICRAWL_SUBAGENTS_ENABLED": "启用"},
+        {},
     ),
 ]
 
@@ -227,17 +167,16 @@ def advanced_cases() -> list[dict]:
 
 
 def load_cases(case_dir: Path) -> list[dict]:
+    """环境变量通道已从 Rust 侧移除：期望值在**清空环境**的前提下录制。"""
+
     cases = []
     for index, (label, toml_text, env_values) in enumerate(LOAD_CASES):
         path = case_dir / f"case-{index}.toml"
         path.write_text(toml_text, encoding="utf-8")
         saved = {name: os.environ.pop(name, None) for name in ENV_NAMES}
-        os.environ.update(env_values)
         try:
             observed = outcome(module.load_subagent_config, path)
         finally:
-            for name in ENV_NAMES:
-                os.environ.pop(name, None)
             for name, value in saved.items():
                 if value is not None:
                     os.environ[name] = value

@@ -61,6 +61,9 @@ pub enum Waiting {
     Approval(ApprovalPanel),
 }
 
+/// `ask_user` 面板末尾统一追加的自定义作答入口：选中后解锁输入框自己写答案。
+pub const QUESTION_CUSTOM_LABEL: &str = "我有自己的想法...";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuestionPanel {
     pub prompt: String,
@@ -69,9 +72,37 @@ pub struct QuestionPanel {
 }
 
 impl QuestionPanel {
-    /// 有选项时是单选列表（只能从选项里答），否则由输入框补答案。
+    /// 有选项时是单选列表，否则由输入框补答案。
     pub fn is_select(&self) -> bool {
         !self.options.is_empty()
+    }
+
+    /// 可选行数：模型给的选项 + 末尾的自定义作答入口。
+    pub fn option_count(&self) -> usize {
+        if self.options.is_empty() {
+            0
+        } else {
+            self.options.len() + 1
+        }
+    }
+
+    /// 自定义作答入口的行号（没有选项时为 `None`）。
+    pub fn custom_row(&self) -> Option<usize> {
+        self.is_select().then(|| self.options.len())
+    }
+
+    /// 选中项是不是自定义作答入口。
+    pub fn is_custom(&self) -> bool {
+        self.custom_row() == Some(self.selected)
+    }
+
+    /// 选中行的显示文案（自定义入口给出固定文案）。
+    pub fn selected_label(&self) -> &str {
+        if self.is_custom() {
+            QUESTION_CUSTOM_LABEL
+        } else {
+            self.options.get(self.selected).map(String::as_str).unwrap_or("")
+        }
     }
 
     pub fn answer(&self) -> String {
@@ -81,13 +112,13 @@ impl QuestionPanel {
         }
     }
 
-    /// 上下键移动选择，循环。
+    /// 上下键移动选择，循环（含末尾的自定义作答入口）。
     pub fn select(&mut self, delta: isize) {
-        if self.options.is_empty() {
+        let count = self.option_count();
+        if count == 0 {
             return;
         }
-        let count = self.options.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(count) as usize;
+        self.selected = ((self.selected as isize + delta).rem_euclid(count as isize)) as usize;
     }
 }
 
@@ -855,15 +886,22 @@ mod tests {
             options: vec!["A".to_string(), "B".to_string()],
             selected: 0,
         };
-        panel.select(-1);
+        panel.select(1);
         assert_eq!(panel.selected, 1);
         assert_eq!(panel.answer(), "B");
+        // 第三行是自定义作答入口：选中它时 answer() 不再是选项原文。
         panel.select(1);
-        assert_eq!(panel.selected, 0);
+        assert_eq!(panel.selected, 2);
+        assert!(panel.is_custom());
+        assert_eq!(panel.selected_label(), QUESTION_CUSTOM_LABEL);
+        assert_eq!(panel.answer(), "", "自定义入口没有预置答案");
+        panel.select(1);
+        assert_eq!(panel.selected, 0, "循环回第一个选项");
 
         let free = question_from(&call(ASK_USER_TOOL, json!({"question": "写点什么"})));
         assert!(!free.is_select());
         assert!(free.answer().is_empty());
+        assert_eq!(free.option_count(), 0, "没有选项时也没有自定义入口");
     }
 
     #[test]

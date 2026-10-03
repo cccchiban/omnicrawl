@@ -22,7 +22,6 @@ use omnicrawl_extensions::install::list_plugins;
 use crate::channel_setup::{run_channel_setup, unavailable_outcome};
 
 /// 模板目录覆盖（与 `omnicrawl-host` 的提示词模板定位同一约定）。
-pub const TEMPLATES_DIR_ENV: &str = "OMNICRAWL_TEMPLATES_DIR";
 
 const CONFIG_TEMPLATE: &str =
     include_str!("../../../../rust/assets/config-templates/config.example.toml");
@@ -129,16 +128,9 @@ pub fn interactive_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// 磁盘上的模板目录：环境变量优先，其次可执行文件祖先里的 `rust/assets/config-templates`
-/// （仓库检出）与 `omnicrawl/config/templates`（已发布载荷）。
-pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
-    let configured = env.get_trimmed(TEMPLATES_DIR_ENV);
-    if !configured.trim().is_empty() {
-        let candidate = PathBuf::from(configured);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-    }
+/// 磁盘上的模板目录：可执行文件祖先里的 `rust/assets/config-templates`（仓库检出）
+/// 与 `omnicrawl/config/templates`（已发布载荷）。
+pub fn locate_templates_dir(_env: &ConfigEnvironment) -> Option<PathBuf> {
     let mut current = std::env::current_exe().ok();
     while let Some(path) = current {
         current = path.parent().map(PathBuf::from);

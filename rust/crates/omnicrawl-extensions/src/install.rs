@@ -137,9 +137,7 @@ pub fn quote_path_segment(text: &str) -> String {
 
 pub fn registry_url_for(name: &str, version: Option<&str>) -> String {
     let encoded = quote_path_segment(name);
-    let base = std::env::var("npm_config_registry")
-        .or_else(|_| std::env::var("NPM_CONFIG_REGISTRY"))
-        .unwrap_or_else(|_| "https://registry.npmjs.org".to_string());
+    let base = "https://registry.npmjs.org".to_string();
     let base = base.trim_end_matches('/').to_string();
     match version {
         Some(version) => format!("{base}/{encoded}/{}", quote_path_segment(version)),

@@ -109,16 +109,23 @@ fn read_request(stream: &mut TcpStream) -> String {
 }
 
 /// 内核二进制：优先 release，其次 debug；都没有就返回 `None`（用例跳过）。
+///
+/// 编译目录默认是仓库下的 `target/`，但本机用 `CARGO_TARGET_DIR` 指到别处
+/// （避开杀软拦截），因此先认这个环境变量。
 fn kernel_binary() -> Option<PathBuf> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let target = manifest.parent()?.parent()?.join("target");
     let name = format!("omnicrawl{}", std::env::consts::EXE_SUFFIX);
-    [
-        target.join("release").join(&name),
-        target.join("debug").join(&name),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    if let Some(base) = manifest.parent().and_then(Path::parent) {
+        roots.push(base.join("target"));
+    }
+    roots
+        .into_iter()
+        .flat_map(|root| [root.join("release").join(&name), root.join("debug").join(&name)])
+        .find(|path| path.is_file())
 }
 
 /// 每个用例一个干净的真实工作区。

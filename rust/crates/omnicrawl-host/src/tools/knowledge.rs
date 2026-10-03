@@ -11,6 +11,9 @@ use omnicrawl_controllers::json::{python_dumps, python_number_text};
 use omnicrawl_controllers::tool_args::{read_limited_int, read_optional_string_list};
 use serde_json::{json, Map, Value};
 
+use super::decision_search::{
+    apply_order, reranked_order, RerankOptions, RERANK_CANDIDATE_LIMIT,
+};
 use super::error::{ToolError, ToolOutcome};
 use super::paths::resolve_lenient;
 
@@ -947,7 +950,27 @@ fn optional_text(arguments: &Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
-pub fn kb_search(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOutcome {
+/// 送进重排的候选描述：标题、路径与摘要即可判断相关度，不必带整段正文。
+fn rerank_candidate_text(hit: &SearchHit) -> String {
+    let mut parts = vec![
+        format!("标题：{}", hit.title),
+        format!("路径：{}", hit.rel_path),
+    ];
+    if !hit.snippet.trim().is_empty() {
+        parts.push(format!("摘要：{}", hit.snippet));
+    }
+    parts.join("\n")
+}
+
+/// 重排指令：只要求按相关度排序，不做其他判断。
+const RERANK_INSTRUCTIONS: &str = "给定 state 里的检索查询与过滤条件，判断每个候选项与查询的相关程度；\
+state 是事实来源，不要根据候选项自身措辞推测查询。";
+
+pub fn kb_search(
+    base: &KnowledgeBase,
+    rerank: &RerankOptions,
+    arguments: &Map<String, Value>,
+) -> ToolOutcome {
     let query = argument_text(arguments, "query");
     if query.is_empty() {
         return Err(ToolError::new("query 不能为空。"));
@@ -957,14 +980,36 @@ pub fn kb_search(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOu
     let note_type = optional_text(arguments, "type");
     let status = optional_text(arguments, "status");
     let max_results = read_limited_int(arguments, "max_results", 10, MAX_SEARCH_RESULTS);
-    let hits = base.search(
+    // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
+    let pool = if rerank.active() {
+        max_results.max(RERANK_CANDIDATE_LIMIT as i64)
+    } else {
+        max_results
+    };
+    let mut hits = base.search(
         &query,
         project.as_deref(),
         tags.as_deref(),
         note_type.as_deref(),
         status.as_deref(),
-        max_results,
+        pool,
     )?;
+    if rerank.active() {
+        let state = json!({
+            "query": query,
+            "filters": {
+                "project": project,
+                "tags": tags,
+                "type": note_type,
+                "status": status,
+            },
+        });
+        let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
+        if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &texts) {
+            hits = apply_order(hits, &order);
+        }
+    }
+    hits.truncate(max_results as usize);
     Ok(python_dumps(
         &Value::Array(hits.iter().map(SearchHit::to_value).collect()),
         2,
@@ -1071,6 +1116,7 @@ pub fn kb_list(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOutc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("omnicrawl-tui-knowledge-{name}"));
@@ -1149,12 +1195,121 @@ mod tests {
             },
         )
         .expect("写入应当成功");
-        let hits = kb_search(&base, &arguments(json!({"query": "rust"}))).expect("搜索应当成功");
+        let hits = kb_search(
+            &base,
+            &RerankOptions::default(),
+            &arguments(json!({"query": "rust"})),
+        )
+        .expect("搜索应当成功");
         let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
         let entries = parsed.as_array().expect("结果是数组");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["path"], "topics/rust.md");
         assert_eq!(entries[0]["score"], 3);
         assert_eq!(entries[1]["score"], 1);
+    }
+
+    /// 重排桩：按给定顺序返回下标，并记录收到的候选文本（不起网络）。
+    struct StubRerank {
+        order: Vec<usize>,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl super::super::decision_search::RerankClient for StubRerank {
+        fn rank(
+            &self,
+            request: &super::super::decision_search::RerankRequest<'_>,
+        ) -> Result<Vec<usize>, String> {
+            *self.seen.lock().expect("记录未被毒化") = request.candidates.to_vec();
+            Ok(self.order.clone())
+        }
+    }
+
+    #[test]
+    fn rerank_reorders_hits_and_keeps_max_results() {
+        let root = temp_root("rerank");
+        let base = KnowledgeBase::new(&root);
+        for (path, title, body) in [
+            ("topics/a.md", "甲", "rust 检索：内核工具表"),
+            ("topics/b.md", "乙", "rust 检索：记忆排序"),
+            ("topics/c.md", "丙", "rust 检索：知识库索引"),
+        ] {
+            base.write(
+                path,
+                body,
+                &WriteRequest {
+                    title: Some(title),
+                    mode: "create",
+                    ..WriteRequest::default()
+                },
+            )
+            .expect("写入应当成功");
+        }
+
+        // 倒序重排：结果顺序按重排给出的下标，条数仍按 max_results。
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let options = RerankOptions {
+            enabled: true,
+            channel: Some(super::super::decision_search::RerankChannel {
+                mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+                model: "jev-latest".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                api_key: "jv_test".to_string(),
+                api_key_env: "JEV_API_KEY".to_string(),
+            }),
+            client: Arc::new(StubRerank {
+                order: vec![2, 1, 0],
+                seen: Arc::clone(&seen),
+            }),
+            ..RerankOptions::default()
+        };
+        let hits = kb_search(
+            &base,
+            &options,
+            &arguments(json!({"query": "rust 检索", "max_results": 2})),
+        )
+        .expect("搜索应当成功");
+        let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
+        let entries = parsed.as_array().expect("结果是数组");
+        assert_eq!(entries.len(), 2, "返回条数仍按 max_results：{hits}");
+        assert_eq!(entries[0]["path"], "topics/c.md", "按重排顺序返回：{hits}");
+        assert_eq!(entries[1]["path"], "topics/b.md", "{hits}");
+
+        let recorded = seen.lock().expect("记录未被毒化").clone();
+        assert_eq!(recorded.len(), 3, "候选池比 max_results 宽：{recorded:?}");
+        assert!(
+            recorded.iter().all(|text| text.contains("标题：")),
+            "候选描述应带标题：{recorded:?}"
+        );
+    }
+
+    #[test]
+    fn rerank_failure_falls_back_to_local_order() {
+        let root = temp_root("rerank-fail");
+        let base = KnowledgeBase::new(&root);
+        base.write(
+            "topics/only.md",
+            "rust 检索回退",
+            &WriteRequest {
+                title: Some("回退"),
+                mode: "create",
+                ..WriteRequest::default()
+            },
+        )
+        .expect("写入应当成功");
+        // 开关开着但没有可用渠道：重排不可用，检索照旧返回本地排序结果。
+        let options = RerankOptions {
+            enabled: true,
+            channel: None,
+            ..RerankOptions::default()
+        };
+        let hits = kb_search(
+            &base,
+            &options,
+            &arguments(json!({"query": "检索回退"})),
+        )
+        .expect("检索不该因为重排不可用而失败");
+        let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
+        assert_eq!(parsed.as_array().map(Vec::len), Some(1), "{hits}");
     }
 }

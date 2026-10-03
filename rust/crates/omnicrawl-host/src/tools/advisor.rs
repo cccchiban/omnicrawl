@@ -23,15 +23,16 @@ pub const ADVISOR_SYSTEM_PROMPT: &str =
     include_str!("../../../../../rust/assets/templates/advisor_system.md");
 const USER_AGENT: &str = "omnicrawl-tui-advisor/0.0.1";
 
-/// 顾问运行期配置：模型与凭据来自 `--advisor-*` / `OMNICRAWL_ADVISOR_*`，工作分支与工具面由宿主注入。
+/// 顾问运行期配置：模型来自 `--advisor-*` 或 `[advisor]` 段，凭据取自顾问模型所属渠道
+/// （渠道没写则回落主模型），工作分支与工具面由宿主注入。只读 TOML，不读环境变量。
 #[derive(Clone)]
 pub struct AdvisorOptions {
     pub enabled: bool,
     /// 顾问模型名；空串等价未选择（`AdvisorConfig.active` 的语义）。
     pub model: String,
     pub base_url: String,
+    /// 顾问凭据：由宿主按渠道（回落主模型）的明文 `api_key` 装配。
     pub api_key: String,
-    pub api_key_env: String,
     /// 推理强度（对应 Python 的 `advisor.effort`）。
     pub effort: String,
     /// 当前执行者模型，用于黑名单命中判定。
@@ -54,7 +55,6 @@ impl Default for AdvisorOptions {
             model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
             effort: String::new(),
             executor_model: String::new(),
             executor_catalog_key: String::new(),
@@ -69,12 +69,9 @@ impl Default for AdvisorOptions {
 }
 
 impl AdvisorOptions {
-    /// 生效的顾问凭据：显式配置优先，其次读环境变量。
+    /// 生效的顾问凭据：只认装配进来的明文密钥（渠道 `api_key`）。
     pub fn resolve_api_key(&self) -> String {
-        if !self.api_key.trim().is_empty() {
-            return self.api_key.clone();
-        }
-        std::env::var(&self.api_key_env).unwrap_or_default()
+        self.api_key.trim().to_string()
     }
 
     /// 是否真正可用（显式启用且已选模型）。
@@ -110,10 +107,10 @@ pub fn advisor(options: &AdvisorOptions, _arguments: &Map<String, Value>) -> Too
 
     let api_key = options.resolve_api_key();
     if api_key.trim().is_empty() {
-        return Err(ToolError::new(format!(
-            "顾问模型 Runtime 初始化失败：缺少 API Key：请设置环境变量 {}。",
-            options.api_key_env
-        )));
+        return Err(ToolError::new(
+            "顾问模型 Runtime 初始化失败：顾问模型所属渠道未配置 api_key，请在 config.toml 中填写。"
+                .to_string(),
+        ));
     }
 
     let timeout_seconds =
@@ -218,22 +215,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_credentials_report_the_environment_variable() {
+    fn missing_credentials_point_at_the_configuration_file() {
         let options = options_with(vec![json!({"role": "user", "content": "x"})], |options| {
             options.api_key = String::new();
-            options.api_key_env = "OMNICRAWL_TUI_ADVISOR_MISSING".to_string();
         });
         let error = advisor(&options, &arguments(json!({}))).expect_err("缺凭据应当被拒绝");
         assert!(
-            error.message.contains("OMNICRAWL_TUI_ADVISOR_MISSING"),
+            error
+                .message
+                .starts_with("顾问模型 Runtime 初始化失败：顾问模型所属渠道未配置 api_key"),
             "{}",
             error.message
         );
         assert!(
-            error
-                .message
-                .starts_with("顾问模型 Runtime 初始化失败：缺少 API Key"),
-            "{}",
+            !error.message.contains("环境变量"),
+            "凭据只从 TOML 读取，文案不该再引导环境变量：{}",
             error.message
         );
     }

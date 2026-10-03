@@ -167,10 +167,11 @@ def build_fixture(checkpoint: dict[str, object]) -> dict[str, object]:
             {"text": text, "is_chinese_span": N._is_chinese_span(text), "has_cjk": N._has_cjk(text)}
             for text in ["张三", "张", "张a", "", "·", "王·五"]
         ],
+        # 环境变量通道已从 Rust 侧移除：env 维度只留「给了也不生效」的用例。
         "model_paths": [
             {"configured": None, "env": None, "expected_suffix": N.PACKAGED_MODEL_FILENAME},
             {"configured": "D:/x/custom.pt", "env": None, "expected_suffix": "custom.pt"},
-            {"configured": "", "env": " D:/y/env.pt ", "expected_suffix": "env.pt"},
+            {"configured": "", "env": " D:/y/env.pt ", "expected_suffix": N.PACKAGED_MODEL_FILENAME},
             {"configured": None, "env": "   ", "expected_suffix": N.PACKAGED_MODEL_FILENAME},
         ],
         "devices": [

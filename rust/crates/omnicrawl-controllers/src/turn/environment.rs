@@ -242,17 +242,8 @@ pub fn detect_agent_window_hint() -> String {
         .iter()
         .map(|name| name.to_lowercase())
         .collect();
-    let mut shell_label = windows_shell_label(&lowered_chain);
+    let shell_label = windows_shell_label(&lowered_chain);
     let terminal_label = windows_terminal_label(&lowered_chain);
-
-    if shell_label.is_empty()
-        && std::env::var("AI_VOICE_CHAT_IN_POWERSHELL")
-            .unwrap_or_default()
-            .trim()
-            == "1"
-    {
-        shell_label = "Windows PowerShell（由启动器创建）".to_string();
-    }
 
     let mut parts: Vec<String> = Vec::new();
     if !terminal_label.is_empty() {

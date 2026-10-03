@@ -24,15 +24,10 @@ pub const DEFAULT_WORKERS: i64 = 1;
 /// 服务只接受回环地址。
 pub const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
 
-pub const TOKEN_ENV: &str = "OMNICRAWL_API_TOKEN";
-pub const HOST_ENV: &str = "OMNICRAWL_API_HOST";
-pub const PORT_ENV: &str = "OMNICRAWL_API_PORT";
-pub const WORKERS_ENV: &str = "OMNICRAWL_API_WORKERS";
-
 /// 多 worker 子进程标记：监督进程给每个子进程设置它，子进程据此不再拉起下层。
 pub const WORKER_CHILD_ENV: &str = "OMNICRAWL_API_WORKER";
 
-const EMPTY_TOKEN: &str = "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。";
+const EMPTY_TOKEN: &str = "api.bearer_token 不能为空。";
 const NON_LOOPBACK_HOST: &str = "API 服务首版仅允许绑定回环地址。";
 const INVALID_PORT_RANGE: &str = "api.port 必须是 1 到 65535 的整数。";
 const INVALID_TIMEOUT_RANGE: &str = "api.confirmation_timeout_seconds 必须大于 0。";
@@ -153,36 +148,23 @@ pub fn load_api_config(
 /// 已取到 `api` 段的装载路径：便于对照测试直接喂段表。
 pub fn api_config_from_section(
     section: &Table,
-    env: &ConfigEnvironment,
+    _env: &ConfigEnvironment,
 ) -> Result<ApiConfig, ApiConfigError> {
-    let env_token = env.get_trimmed(TOKEN_ENV);
-    let bearer_token = if env_token.is_empty() {
-        section_token(section, "bearer_token")
-    } else {
-        env_token
-    };
+    let bearer_token = section_token(section, "bearer_token");
 
-    let env_host = env.get_trimmed(HOST_ENV);
-    let host = if env_host.is_empty() {
+    let host = {
         let from_section = section_host(section);
         if from_section.is_empty() {
             DEFAULT_HOST.to_string()
         } else {
             from_section
         }
-    } else {
-        env_host
     };
 
-    let env_port = env.get_trimmed(PORT_ENV);
-    let raw_port = if env_port.is_empty() {
-        section
-            .get("port")
-            .cloned()
-            .unwrap_or(Value::Integer(DEFAULT_PORT))
-    } else {
-        Value::String(env_port)
-    };
+    let raw_port = section
+        .get("port")
+        .cloned()
+        .unwrap_or(Value::Integer(DEFAULT_PORT));
     let port = python_int(&raw_port).ok_or_else(|| ApiConfigError::new(PORT_NOT_INTEGER))?;
 
     let origins = match section.get("allowed_origins") {
@@ -206,15 +188,10 @@ pub fn api_config_from_section(
         }
     };
 
-    let env_workers = env.get_trimmed(WORKERS_ENV);
-    let raw_workers = if env_workers.is_empty() {
-        section
-            .get("workers")
-            .cloned()
-            .unwrap_or(Value::Integer(DEFAULT_WORKERS))
-    } else {
-        Value::String(env_workers)
-    };
+    let raw_workers = section
+        .get("workers")
+        .cloned()
+        .unwrap_or(Value::Integer(DEFAULT_WORKERS));
     let workers =
         python_int(&raw_workers).ok_or_else(|| ApiConfigError::new(WORKERS_NOT_INTEGER))?;
 
@@ -329,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn load_prefers_environment_and_normalizes_origins() {
+    fn load_reads_section_and_normalizes_origins() {
         let mut section = Table::new();
         section.insert("bearer_token".into(), Value::String("file-token".into()));
         section.insert("host".into(), Value::String(" LocalHost ".into()));
@@ -341,9 +318,9 @@ mod tests {
                 Value::String("http://b".into()),
             ]),
         );
-        let launched = env().with_env_value(TOKEN_ENV, " env-token ");
-        let config = api_config_from_section(&section, &launched).expect("应当装载成功");
-        assert_eq!(config.bearer_token, "env-token");
+        // 环境变量通道已移除：令牌只认段内值。
+        let config = api_config_from_section(&section, &env()).expect("应当装载成功");
+        assert_eq!(config.bearer_token, "file-token");
         assert_eq!(config.host, "LocalHost");
         assert_eq!(config.allowed_origins, vec!["http://a", "http://b"]);
     }

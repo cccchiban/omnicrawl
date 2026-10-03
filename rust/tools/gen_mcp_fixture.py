@@ -259,9 +259,10 @@ def config_cases(workspace: Path) -> list[dict[str, Any]]:
     try:
         for case in CONFIG_CASES:
             config_path.write_text(case["toml"], encoding="utf-8")
+            # 环境变量通道已从 Rust 侧移除：期望值在**清空环境**的前提下录制，
+            # 但 `env` 仍原样写进数据集，供 Rust 侧证明「注入也不读」。
             for name in ("MCP_ENABLED", "MCP_DEFAULT_TIMEOUT_SECONDS"):
                 os.environ.pop(name, None)
-            os.environ.update(case["env"])
             common_fields = {"name": case["name"], "toml": case["toml"], "env": case["env"]}
             try:
                 config = config_module.load_mcp_config(config_path)
@@ -1265,11 +1266,16 @@ def http_scenarios() -> list[dict[str, Any]]:
 
 
 def bundled_doc_cases() -> dict[str, Any]:
+    """文件清单来自 Python 包，但内容哈希按 **Rust 内嵌的** `rust/assets/docs/` 录。
+
+    Rust 侧用 `include_str!("rust/assets/docs/<name>")` 把文档打进二进制，测试比对的
+    就是这份内嵌内容；两棵树若出现漂移（历史上 `session_design.md` 已经漂了），
+    以 Rust 资产为准才能反映真实发布内容。
+    """
     names = documentation.bundled_doc_names()
+    assets_dir = ROOT / "rust" / "assets" / "docs"
     hashes = {
-        name: hashlib.sha256(
-            (documentation.bundled_docs_dir() / name).read_bytes()
-        ).hexdigest()
+        name: hashlib.sha256((assets_dir / name).read_bytes()).hexdigest()
         for name in names
     }
     return {"names": names, "hashes": hashes}

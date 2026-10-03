@@ -753,7 +753,7 @@ pub fn is_scan_excluded(path: &str) -> bool {
     !Path::new(path).exists()
 }
 
-/// 项目路径归一化：展开环境变量与 `~`，再解析成绝对路径（不存在时按词法归一）。
+/// 项目路径归一化：展开 `~`，再解析成绝对路径（不存在时按词法归一）。
 pub fn normalize_project_path(raw_path: &str) -> Result<String, SessionStoreError> {
     if raw_path.trim().is_empty() {
         return Err(error("项目路径必须是非空字符串。"));
@@ -860,66 +860,11 @@ fn expand_user(path: &str) -> String {
 }
 
 /// `os.path.expandvars` 的可用子集：`$VAR` / `${VAR}`，Windows 另有 `%VAR%`。
-/// 未定义的变量原样保留（与 Python 一致）。
+///
+/// 进程环境不再参与展开：未定义的变量原样保留（与 Python 一致），
+/// 因此这条路径只剩「原样返回」一种结果。
 pub fn expand_vars(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let characters: Vec<char> = text.chars().collect();
-    let mut index = 0usize;
-    while index < characters.len() {
-        let current = characters[index];
-        if current == '$' && index + 1 < characters.len() {
-            let (name, next) = if characters[index + 1] == '{' {
-                let mut cursor = index + 2;
-                let mut name = String::new();
-                while cursor < characters.len() && characters[cursor] != '}' {
-                    name.push(characters[cursor]);
-                    cursor += 1;
-                }
-                (name, (cursor + 1).min(characters.len()))
-            } else {
-                let mut cursor = index + 1;
-                let mut name = String::new();
-                while cursor < characters.len()
-                    && (characters[cursor].is_alphanumeric() || characters[cursor] == '_')
-                {
-                    name.push(characters[cursor]);
-                    cursor += 1;
-                }
-                (name, cursor)
-            };
-            if !name.is_empty() {
-                if let Ok(value) = std::env::var(&name) {
-                    result.push_str(&value);
-                    index = next;
-                    continue;
-                }
-            }
-            result.push('$');
-            index += 1;
-            continue;
-        }
-        if cfg!(windows) && current == '%' {
-            let mut cursor = index + 1;
-            let mut name = String::new();
-            while cursor < characters.len() && characters[cursor] != '%' {
-                name.push(characters[cursor]);
-                cursor += 1;
-            }
-            if cursor < characters.len() {
-                if let Ok(value) = std::env::var(&name) {
-                    result.push_str(&value);
-                    index = cursor + 1;
-                    continue;
-                }
-            }
-            result.push('%');
-            index += 1;
-            continue;
-        }
-        result.push(current);
-        index += 1;
-    }
-    result
+    text.to_string()
 }
 
 fn home_directory() -> PathBuf {

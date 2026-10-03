@@ -1,8 +1,8 @@
 //! 严格使用 TOML 的运行配置仓库，支持 UTF-8 读取与原子写回。
 //!
-//! 对应 `omnicrawl/config/core/runtime.py`。与 Python 的差别只有两处，都写在 `README.md`：
-//! 进程外信息（home、平台、`APPDATA`/`XDG_CONFIG_HOME`、三个路径环境变量）由
-//! [`ConfigEnvironment`] 注入；`project_root` 与依赖它的 `_is_development_environment`
+//! 对应 `omnicrawl/config/core/runtime.py`。配置路径只认显式传入或用户目录，
+//! 不再有环境变量覆盖；进程外信息（home、平台、`APPDATA`/`XDG_CONFIG_HOME`）由
+//! [`ConfigEnvironment`] 注入。`project_root` 与依赖它的 `_is_development_environment`
 //! 不搬（Python 侧已明确它们不参与默认路径解析）。
 
 use std::collections::BTreeMap;
@@ -19,11 +19,9 @@ use crate::toml::{self, Table, Value};
 pub const DEFAULT_CONFIG_FILENAME: &str = "config.toml";
 pub const DEFAULT_MODELS_FILENAME: &str = "models.toml";
 pub const DEFAULT_SUBAGENTS_FILENAME: &str = "subagents.toml";
+pub const DEFAULT_DECISION_MODELS_FILENAME: &str = "decision_models.toml";
 pub const GLOBAL_AGENTS_FILENAME: &str = "AGENTS.md";
 pub const USER_CONFIG_DIRNAME: &str = ".OmniCrawl";
-pub const CONFIG_PATH_ENV: &str = "AI_CONFIG_FILE";
-pub const MODELS_PATH_ENV: &str = "AI_MODELS_FILE";
-pub const SUBAGENTS_PATH_ENV: &str = "AI_SUBAGENTS_FILE";
 
 const TOML_SUFFIX: &str = "toml";
 const ATOMIC_REPLACE_MAX_ATTEMPTS: usize = 8;
@@ -62,7 +60,7 @@ impl ConfigEnvironment {
         }
     }
 
-    /// 按环境变量名注入取值。
+    /// 按环境变量名注入取值（仅测试与系统级路径信息使用）。
     pub fn with_env_value(mut self, name: &str, value: &str) -> Self {
         self.overrides.insert(name.to_string(), value.to_string());
         self
@@ -215,45 +213,45 @@ pub fn default_subagents_path(env: &ConfigEnvironment) -> PathBuf {
     user_config_dir(env).join(DEFAULT_SUBAGENTS_FILENAME)
 }
 
-/// 显式路径或对应环境变量优先；否则始终使用用户目录配置。
+/// 用户默认结构化决策模型配置路径。
+pub fn default_decision_models_path(env: &ConfigEnvironment) -> PathBuf {
+    user_config_dir(env).join(DEFAULT_DECISION_MODELS_FILENAME)
+}
+
+/// 显式路径优先；否则始终使用用户目录配置。
 pub fn resolve_config_path(
     env: &ConfigEnvironment,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
-    resolve_path(
-        env,
-        config_path,
-        CONFIG_PATH_ENV,
-        DEFAULT_CONFIG_FILENAME,
-        "运行配置",
-    )
+    resolve_path(env, config_path, DEFAULT_CONFIG_FILENAME, "运行配置")
 }
 
-/// 显式路径或对应环境变量优先；否则始终使用用户目录配置。
+/// 显式路径优先；否则始终使用用户目录配置。
 pub fn resolve_models_path(
     env: &ConfigEnvironment,
     models_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
-    resolve_path(
-        env,
-        models_path,
-        MODELS_PATH_ENV,
-        DEFAULT_MODELS_FILENAME,
-        "模型配置",
-    )
+    resolve_path(env, models_path, DEFAULT_MODELS_FILENAME, "模型配置")
 }
 
-/// 显式路径或对应环境变量优先；否则始终使用用户目录配置。
+/// 显式路径优先；否则始终使用用户目录配置。
 pub fn resolve_subagents_path(
     env: &ConfigEnvironment,
     subagents_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    resolve_path(env, subagents_path, DEFAULT_SUBAGENTS_FILENAME, "子代理设置")
+}
+
+/// 显式路径优先；否则始终使用用户目录配置。
+pub fn resolve_decision_models_path(
+    env: &ConfigEnvironment,
+    decision_models_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
     resolve_path(
         env,
-        subagents_path,
-        SUBAGENTS_PATH_ENV,
-        DEFAULT_SUBAGENTS_FILENAME,
-        "子代理设置",
+        decision_models_path,
+        DEFAULT_DECISION_MODELS_FILENAME,
+        "决策模型配置",
     )
 }
 
@@ -283,23 +281,23 @@ pub fn resolve_subagents_write_path(
     resolve_subagents_path(env, subagents_path)
 }
 
+/// 解析结构化决策模型配置写入路径；未显式指定时始终写入用户目录。
+pub fn resolve_decision_models_write_path(
+    env: &ConfigEnvironment,
+    decision_models_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    resolve_decision_models_path(env, decision_models_path)
+}
+
 fn resolve_path(
     env: &ConfigEnvironment,
     explicit: Option<&Path>,
-    env_name: &str,
     filename: &str,
     source: &str,
 ) -> Result<PathBuf, ConfigError> {
     let path = match explicit {
         Some(path) => expand_user(env, &path.to_string_lossy()),
-        None => {
-            let raw = env.get_trimmed(env_name);
-            if raw.is_empty() {
-                user_config_dir(env).join(filename)
-            } else {
-                expand_user(env, &raw)
-            }
-        }
+        None => user_config_dir(env).join(filename),
     };
     validate_toml_path(&path, source)?;
     Ok(path)
@@ -315,8 +313,8 @@ pub fn load_config_data(
         return load_mapping_file(&path);
     }
     // 只检测默认位置的遗留文件以给出可操作错误：不解析、不迁移，也不当作配置源。
-    // 显式路径与 AI_CONFIG_FILE 已在扩展名校验阶段拒绝 JSON。
-    if config_path.is_none() && env.get_trimmed(CONFIG_PATH_ENV).is_empty() {
+    // 显式路径已在扩展名校验阶段拒绝 JSON。
+    if config_path.is_none() {
         let legacy_path = path.with_extension("json");
         if legacy_path.exists() {
             return Err(ConfigError::new(

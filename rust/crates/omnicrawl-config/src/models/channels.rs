@@ -473,37 +473,26 @@ pub fn save_channel_configuration(
     Ok((resolved_config, resolved_models))
 }
 
-/// 返回已启用但既无直接 Key 也无环境变量 Key 的渠道名称。
+/// 返回已启用但没有明文凭据的渠道名称。
 pub fn missing_enabled_credentials(
-    env: &ConfigEnvironment,
+    _env: &ConfigEnvironment,
     configuration: &ChannelConfiguration,
 ) -> Vec<String> {
-    let mut missing: Vec<String> = Vec::new();
-    for channel in &configuration.channels {
-        if !channel.enabled || !channel.api_key.is_empty() {
-            continue;
-        }
-        if !channel.api_key_env.is_empty() && !env.get_trimmed(&channel.api_key_env).is_empty() {
-            continue;
-        }
-        missing.push(channel.name.clone());
-    }
-    missing
+    configuration
+        .channels
+        .iter()
+        .filter(|channel| channel.enabled && channel.api_key.is_empty())
+        .map(|channel| channel.name.clone())
+        .collect()
 }
 
-/// 判断默认渠道是否具备可解析的 Key。
-pub fn has_usable_channel(env: &ConfigEnvironment, configuration: &ChannelConfiguration) -> bool {
-    for channel in &configuration.channels {
-        if channel.key != configuration.default_key || !channel.enabled {
-            continue;
-        }
-        if !channel.api_key.is_empty() {
-            return true;
-        }
-        return !channel.api_key_env.is_empty()
-            && !env.get_trimmed(&channel.api_key_env).is_empty();
-    }
-    false
+/// 判断默认渠道是否具备可解析的明文 Key。
+pub fn has_usable_channel(_env: &ConfigEnvironment, configuration: &ChannelConfiguration) -> bool {
+    configuration
+        .channels
+        .iter()
+        .find(|channel| channel.key == configuration.default_key && channel.enabled)
+        .is_some_and(|channel| !channel.api_key.is_empty())
 }
 
 fn enabled_default(channels: &[ChannelConfig], requested: &str) -> String {

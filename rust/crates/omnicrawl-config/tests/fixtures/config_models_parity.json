@@ -87,42 +87,10 @@
  ],
  "llm_normalize": [
   {
-   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key，或设置环境变量 OPENAI_API_KEY。",
+   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key。",
    "name": "默认视图",
    "input": {},
    "env": {}
-  },
-  {
-   "expected": {
-    "api_key": "env-key",
-    "base_url": "https://env",
-    "model": "env-model",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000,
-    "max_output_tokens": 0,
-    "native_vision": null,
-    "temperature": null,
-    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
-    "max_history_turns": 8,
-    "profile_id": "",
-    "provider": "openai",
-    "protocol": "openai_chat_completions",
-    "catalog_key": "",
-    "model_source": "legacy",
-    "api_key_env": "",
-    "user_agent": "",
-    "request_timeout_seconds": 180,
-    "request_retry_count": 5,
-    "provider_options": {}
-   },
-   "name": "凭据从环境取",
-   "input": {},
-   "env": {
-    "OPENAI_API_KEY": "env-key",
-    "OPENAI_BASE_URL": "https://env",
-    "OPENAI_MODEL": "env-model"
-   }
   },
   {
    "expected": {
@@ -157,7 +125,7 @@
    "env": {}
   },
   {
-   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key，或设置环境变量 OPENAI_API_KEY。",
+   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key。",
    "name": "legacy 缺 api_key",
    "input": {
     "base_url": "https://api",
@@ -166,7 +134,7 @@
    "env": {}
   },
   {
-   "error": "缺少配置 llm.base_url，请在 config.toml 中填写 llm.base_url，或设置环境变量 OPENAI_BASE_URL。",
+   "error": "缺少配置 llm.base_url，请在 config.toml 中填写 llm.base_url。",
    "name": "legacy 缺 base_url",
    "input": {
     "api_key": "k",
@@ -175,7 +143,7 @@
    "env": {}
   },
   {
-   "error": "缺少配置 llm.model，请在 config.toml 中填写 llm.model，或设置环境变量 OPENAI_MODEL。",
+   "error": "缺少配置 llm.model，请在 config.toml 中填写 llm.model。",
    "name": "legacy 缺 model",
    "input": {
     "api_key": "k",
@@ -225,7 +193,7 @@
    "env": {}
   },
   {
-   "error": "缺少 API Key，请设置环境变量 OPENAI_API_KEY 或在 Profile 中配置 api_key。",
+   "error": "缺少 API Key，请在 Profile 中配置 api_key。",
    "name": "custom 缺 api_key",
    "input": {
     "model_source": "custom",
@@ -234,7 +202,7 @@
    "env": {}
   },
   {
-   "error": "缺少 API Key，请设置环境变量 MY_KEY 或在 Profile 中配置 api_key。",
+   "error": "缺少 API Key，请在 Profile 中配置 api_key。",
    "name": "custom 缺 api_key 带 env 名",
    "input": {
     "model_source": "custom",
@@ -1530,7 +1498,7 @@
    "env": {}
   },
   {
-   "error": "缺少配置 llm.base_url，请在配置文件中填写 llm.base_url，或设置环境变量 OPENAI_BASE_URL。",
+   "error": "缺少配置 llm.base_url，请在配置文件中填写 llm.base_url。",
    "name": "缺 base_url",
    "config": {
     "llm": {
@@ -1539,76 +1507,6 @@
     }
    },
    "env": {}
-  },
-  {
-   "expected": {
-    "api_key": "ek",
-    "base_url": "https://env",
-    "model": "em",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000,
-    "max_output_tokens": 0,
-    "native_vision": null,
-    "temperature": null,
-    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
-    "max_history_turns": 8,
-    "profile_id": "",
-    "provider": "openai",
-    "protocol": "openai_chat_completions",
-    "catalog_key": "",
-    "model_source": "legacy",
-    "api_key_env": "",
-    "user_agent": "",
-    "request_timeout_seconds": 180,
-    "request_retry_count": 5,
-    "provider_options": {}
-   },
-   "name": "环境变量补齐",
-   "config": {
-    "llm": {}
-   },
-   "env": {
-    "OPENAI_API_KEY": "ek",
-    "OPENAI_BASE_URL": "https://env",
-    "OPENAI_MODEL": "em"
-   }
-  },
-  {
-   "expected": {
-    "api_key": "k",
-    "base_url": "https://api",
-    "model": "from-env",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000,
-    "max_output_tokens": 0,
-    "native_vision": null,
-    "temperature": null,
-    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
-    "max_history_turns": 8,
-    "profile_id": "",
-    "provider": "openai",
-    "protocol": "openai_chat_completions",
-    "catalog_key": "",
-    "model_source": "legacy",
-    "api_key_env": "",
-    "user_agent": "",
-    "request_timeout_seconds": 180,
-    "request_retry_count": 5,
-    "provider_options": {}
-   },
-   "name": "环境变量优先",
-   "config": {
-    "llm": {
-     "api_key": "k",
-     "base_url": "https://api",
-     "model": "m"
-    }
-   },
-   "env": {
-    "OPENAI_MODEL": "from-env"
-   }
   },
   {
    "error": "配置项 llm.context_window_tokens 必须是正整数。",
@@ -2475,119 +2373,6 @@
    "env": {}
   },
   {
-   "error": "Profile 不存在或未启用：",
-   "name": "环境变量指定模型",
-   "config": {
-    "llm": {
-     "profiles": {
-      "ch1": {
-       "provider": "openai",
-       "api_key": "k"
-      }
-     },
-     "active_model": {
-      "source": "detected",
-      "profile": "ch1",
-      "model_id": "gpt-5.2"
-     }
-    }
-   },
-   "models": {},
-   "env": {
-    "OMNICRAWL_MODEL": "qwen"
-   }
-  },
-  {
-   "expected": {
-    "api_key": "k",
-    "base_url": "",
-    "model": "gpt-4o",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000,
-    "max_output_tokens": 0,
-    "native_vision": null,
-    "temperature": null,
-    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
-    "max_history_turns": 8,
-    "profile_id": "ch1",
-    "provider": "openai",
-    "protocol": "openai_chat_completions",
-    "catalog_key": "",
-    "model_source": "detected",
-    "api_key_env": "",
-    "user_agent": "",
-    "request_timeout_seconds": 180,
-    "request_retry_count": 5,
-    "provider_options": {}
-   },
-   "name": "环境变量 profile/model",
-   "config": {
-    "llm": {
-     "profiles": {
-      "ch1": {
-       "provider": "openai",
-       "api_key": "k"
-      }
-     },
-     "active_model": {
-      "source": "detected",
-      "profile": "ch1",
-      "model_id": "gpt-5.2"
-     }
-    }
-   },
-   "models": {},
-   "env": {
-    "OPENAI_MODEL": "ch1/gpt-4o"
-   }
-  },
-  {
-   "expected": {
-    "api_key": "k",
-    "base_url": "",
-    "model": "gemini-3",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000,
-    "max_output_tokens": 0,
-    "native_vision": null,
-    "temperature": null,
-    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
-    "max_history_turns": 8,
-    "profile_id": "ch3",
-    "provider": "gemini",
-    "protocol": "gemini_generate_content",
-    "catalog_key": "",
-    "model_source": "detected",
-    "api_key_env": "",
-    "user_agent": "",
-    "request_timeout_seconds": 180,
-    "request_retry_count": 5,
-    "provider_options": {}
-   },
-   "name": "环境变量覆盖 profile",
-   "config": {
-    "llm": {
-     "profiles": {
-      "ch3": {
-       "provider": "gemini",
-       "api_key": "k"
-      }
-     },
-     "active_model": {
-      "source": "detected",
-      "profile": "ch3",
-      "model_id": "gemini-3"
-     }
-    }
-   },
-   "models": {},
-   "env": {
-    "OMNICRAWL_PROFILE": "ch3"
-   }
-  },
-  {
    "error": "llm.active_model.source=custom 时必须提供 key。",
    "name": "active_model 非对象",
    "config": {
@@ -2896,7 +2681,7 @@
    "env": {}
   },
   {
-   "error": "缺少 API Key，请设置环境变量 OPENAI_API_KEY 或在 Profile 中配置 api_key。",
+   "error": "缺少 API Key，请在 Profile 中配置 api_key。",
    "name": "缺 api_key 报错",
    "config": {
     "llm": {

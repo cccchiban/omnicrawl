@@ -21,8 +21,6 @@ use serde_json::{json, Map, Value};
 
 /// 工具名：与工具目录里的 `subagent` 一致。
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
-/// 定义目录的环境变量；未设置时回落到用户 Agent 目录。
-pub const SUBAGENTS_DIR_ENV: &str = "OMNICRAWL_SUBAGENTS_DIR";
 
 /// 一个已通过校验、权限已收窄的子任务。
 #[derive(Debug, Clone)]
@@ -254,11 +252,8 @@ impl SubAgentRuntime {
     }
 }
 
-/// 定义目录：优先环境变量，否则用用户 Agent 目录（与 four-layer 发现里的 user 层同址，
+/// 定义目录：用户 Agent 目录（与 four-layer 发现里的 user 层同址，
 /// 重复扫描会被 real path 去重跳过）。
 pub fn builtin_directory(env: &ConfigEnvironment) -> PathBuf {
-    match env.get(SUBAGENTS_DIR_ENV) {
-        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
-        _ => env.home().join(".OmniCrawl").join("agents"),
-    }
+    env.home().join(".OmniCrawl").join("agents")
 }

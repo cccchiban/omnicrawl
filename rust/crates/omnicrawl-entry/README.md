@@ -40,7 +40,7 @@ Rust 统一启动入口，对应 Python `omnicrawl/entry.py` 的路由与子进�
 | --- | --- | --- |
 | `entry.py::run_application` 的路由与退出码 | `src/main.rs::run_tui` | 交互判定、首次配置、连接器、TUI 子进程、退出回收 |
 | `entry.py::_prepare_startup` 的配置阶段 | `src/startup.rs::bootstrap` | 复用 `omnicrawl-config` 的 `initialize_user_configuration` + `format_startup_report` |
-| `config/core/bootstrap.py::_ensure_template` | `startup.rs` 的 `read_template` 端口 | 模板目录（`OMNICRAWL_TEMPLATES_DIR` → 可执行文件祖先的 `omnicrawl/config/templates`）优先，缺失用编译期内嵌副本 |
+| `config/core/bootstrap.py::_ensure_template` | `startup.rs` 的 `read_template` 端口 | 模板目录（可执行文件祖先的 `rust/assets/config-templates` → `omnicrawl/config/templates`）优先，缺失用编译期内嵌副本 |
 | `config/core/bootstrap.py::_check_node` | `startup.rs::probe_node` | `node --version` + PATH 上的 `npm`，文案与 Python 逐条一致 |
 | `config/core/bootstrap.py::_check_plugin_state` | `startup.rs::probe_plugin_rows` | 复用 `omnicrawl-extensions::install::list_plugins(scope="all")` |
 | `ui/fullscreen/screens/channel_setup.py` | `src/channel_setup.rs` | 行式渠道向导（无 Textual），保存复用 `save_channel_configuration` |
