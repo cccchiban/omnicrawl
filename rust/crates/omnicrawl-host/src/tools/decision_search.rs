@@ -1,9 +1,12 @@
 //! 检索重排：把记忆搜索与知识库检索的候选交给结构化决策模型按相关度排序。
 //!
 //! 可选项、默认关闭（`decision_models.toml` 的 `[features]` 里两个工具各一个开关）。开启后本地
-//! 检索先取一份更宽的候选池，再向决策服务提一个 choice 问题，按各候选项的置信度
-//! （`answers.<id>.probabilities`）降序排列，最后按调用方要求的 `max_results` 截断——排序更准，
-//! 返回条数仍由调用方决定。
+//! 检索先按关键词取一份更宽的候选池，再**按命中的不同关键词种类**挑出
+//! [`RERANK_CANDIDATE_LIMIT`] 条送模型：只数种类不数次数，命中面越宽的候选越靠前。
+//!
+//! 送审的候选按 [`RERANK_BATCH_SIZE`] 拆成若干份**串行**请求（本地小模型单批耗时随候选数近似
+//! 线性增长，拆批让每份都落进单次超时预算内），再按各批内归一化置信度交错合并，最后按调用方
+//! 要求的 `max_results` 截断——排序更准，返回条数仍由调用方决定。
 //!
 //! **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都退回
 //! 本地排序结果，检索工具不会因为决策服务不可用而失败（与审查通道的 fail-closed 语义相反，
@@ -12,6 +15,7 @@
 //! 出网脱敏复用审查通道那套 `[desensitization]` 旁路（[`crate::review::masking_from_config`]）：
 //! 候选内容同样屏蔽后再外发；脱敏构造失败按「重排不可用」处理，绝不外发原文。
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,11 +27,20 @@ use serde_json::{json, Map, Value};
 
 use crate::review::{masking_from_config, ReviewMasking};
 
-/// 送给决策模型排序的候选上限：候选越多越准，请求体、延迟与费用也越大。
-pub const RERANK_CANDIDATE_LIMIT: usize = 20;
+/// 送进决策模型排序的候选上限。
+///
+/// 单批耗时随候选数近似线性增长（实测 0.8B / CPU：5 条约 12s、10 条约 25s），因此送审只取
+/// 10 条，并按 [`RERANK_BATCH_SIZE`] 拆成两份**串行**发出：每份都落进单次超时预算内。
+pub const RERANK_CANDIDATE_LIMIT: usize = 10;
+/// 本地检索先取的候选池宽度（比送审条数宽，关键词覆盖排序才有筛选空间）。
+pub const RERANK_POOL_LIMIT: usize = 20;
+/// 送进单次重排请求的候选数（候选池按此拆成若干份串行发出）。
+pub const RERANK_BATCH_SIZE: usize = 5;
 /// 单个候选项进请求前截断到的字符数（只留判断相关度所需的部分）。
 const CANDIDATE_MAX_CHARS: usize = 400;
-/// 一次重排请求的超时（决策服务本身是 70–500ms 量级，余量留给网络）。
+/// 一次重排请求的超时。
+///
+/// 本地 OneJev 0.8B 在 CPU 上单批 5 候选约 12s，20s 留出余量；超时即 fail-open 退回本地排序。
 const RERANK_TIMEOUT_SECONDS: u64 = 20;
 const USER_AGENT: &str = "omnicrawl-search-rerank/0.0.1";
 /// 提问 ID；候选项键就是它在 `criteria` 里的下标（`c0`、`c1`…），便于把回答映射回来。
@@ -152,31 +165,150 @@ pub fn rerank_options_from_config(
     }
 }
 
-/// 按决策模型给出的相关度重排候选；`None` 表示本次重排不可用，调用方保留本地顺序（fail-open）。
+/// 重排一整池候选；返回**池内下标**的最终顺序，`None` 表示本次重排不可用（调用方保留本地顺序）。
+///
+/// 三步：按关键词覆盖种类挑出送审的 [`RERANK_CANDIDATE_LIMIT`] 条 → 按 [`RERANK_BATCH_SIZE`]
+/// 拆成若干份**串行**送模型 → 按各批内的相对名次交错合并。没进送审名单的候选按池内原顺序接在后面，
+/// 因此候选池可以比送审条数更宽，返回条数仍由调用方的 `max_results` 决定。
 pub fn reranked_order(
     options: &RerankOptions,
     state: Value,
     instructions: &str,
+    query: &str,
     candidates: &[String],
 ) -> Option<Vec<usize>> {
     if !options.active() || candidates.len() < 2 {
         return None;
     }
     let channel = options.channel.as_ref()?;
-    let request = RerankRequest {
-        channel,
-        masking: options.masking.as_deref(),
-        state: &state,
-        instructions,
-        candidates,
-    };
-    match options.client.rank(&request) {
-        Ok(order) => Some(order),
-        Err(error) => {
-            eprintln!("[host] 检索重排不可用，改用本地排序：{error}");
-            None
+
+    // 送审名单：本地关键词覆盖排序后的前 N 条；此处的下标都是池内下标。
+    let coverage = keyword_coverage_order(query, candidates);
+    let selected: Vec<usize> = coverage
+        .into_iter()
+        .take(RERANK_CANDIDATE_LIMIT)
+        .collect();
+
+    // 各批的排序结果（池内下标）：跨批置信度不可比，因此只保留批内名次，合并时轮转取用。
+    let mut per_batch: Vec<Vec<usize>> = Vec::new();
+    let mut failed = 0usize;
+    let mut batches = 0usize;
+    for batch in candidate_offsets(selected.len()) {
+        batches += 1;
+        // 该批在送审名单里的切片：既有送审文本，也有批内下标 → 池内下标的映射。
+        let selected_in_batch = &selected[batch.clone()];
+        let texts: Vec<String> = selected_in_batch
+            .iter()
+            .map(|index| candidates[*index].clone())
+            .collect();
+        let request = RerankRequest {
+            channel,
+            masking: options.masking.as_deref(),
+            state: &state,
+            instructions,
+            candidates: &texts,
+        };
+        match options.client.rank(&request) {
+            Ok(order) => {
+                // 批内下标 → 送审名单下标 → 池内下标，逐层还原。
+                let ranked: Vec<usize> = order
+                    .into_iter()
+                    .filter_map(|rank| {
+                        selected_in_batch
+                            .get(rank)
+                            .and_then(|slot| selected.get(*slot))
+                            .copied()
+                    })
+                    .collect();
+                per_batch.push(ranked);
+            }
+            Err(error) => {
+                eprintln!("[host] 检索重排不可用，改用本地排序：{error}");
+                failed += 1;
+            }
         }
     }
+    if failed == batches {
+        return None;
+    }
+
+    // 交错合并：按名次轮转取各批的下一名，使每批的头名排在前面（等价于各批归一化置信度交叠）。
+    let mut merged: Vec<usize> = Vec::with_capacity(candidates.len());
+    let deepest = per_batch.iter().map(Vec::len).max().unwrap_or(0);
+    for rank in 0..deepest {
+        for ranked in &per_batch {
+            if let Some(index) = ranked.get(rank) {
+                if !merged.contains(index) {
+                    merged.push(*index);
+                }
+            }
+        }
+    }
+    // 没被任何一批排到的候选（没进送审名单、该批失败、或模型漏答）按池内原顺序补在后面。
+    for index in 0..candidates.len() {
+        if !merged.contains(&index) {
+            merged.push(index);
+        }
+    }
+    Some(merged)
+}
+
+/// 候选池的分批下标区间：每 [`RERANK_BATCH_SIZE`] 条一份，末份允许不足。
+fn candidate_offsets(count: usize) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    while start < count {
+        let end = (start + RERANK_BATCH_SIZE).min(count);
+        ranges.push(start..end);
+        start = end;
+    }
+    ranges
+}
+
+/// 按「命中的不同关键词种类数」降序排候选。
+///
+/// query 按空白与标点切成关键词，统计候选文本命中了其中**几个不同的关键词**——只数种类
+/// 不数出现次数，避免长文本靠重复同一个词刷分。并列时保持本地顺序（稳定排序，不引入新偏好）。
+pub fn keyword_coverage_order(query: &str, candidates: &[String]) -> Vec<usize> {
+    let keywords = split_keywords(query);
+    let mut scored: Vec<(usize, usize)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let lowered = text.to_lowercase();
+            let hits = keywords
+                .iter()
+                .filter(|keyword| lowered.contains(keyword.as_str()))
+                .count();
+            (hits, index)
+        })
+        .collect();
+    // 稳定排序：覆盖种类数降序，并列保持原下标升序。
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    scored.into_iter().map(|(_, index)| index).collect()
+}
+
+/// query 切词：按空白与标点断开，只留非空词（中英文都按原词，不再切 2/3 元组）。
+fn split_keywords(query: &str) -> BTreeSet<String> {
+    let mut keywords: BTreeSet<String> = BTreeSet::new();
+    let mut current = String::new();
+    for character in query.chars() {
+        if character.is_alphanumeric() || is_han(character) {
+            current.extend(character.to_lowercase());
+            continue;
+        }
+        if !current.is_empty() {
+            keywords.insert(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        keywords.insert(current);
+    }
+    keywords
+}
+
+fn is_han(character: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&character)
 }
 
 /// 按重排给出的下标重排条目；`order` 之外的条目按原顺序接在后面。
@@ -372,6 +504,7 @@ mod tests {
             &RerankOptions::default(),
             json!({}),
             "指令",
+            "甲 乙",
             &candidates
         )
         .is_none());
@@ -380,7 +513,14 @@ mod tests {
             enabled: true,
             ..RerankOptions::default()
         };
-        assert!(reranked_order(&enabled_without_channel, json!({}), "指令", &candidates).is_none());
+        assert!(reranked_order(
+            &enabled_without_channel,
+            json!({}),
+            "指令",
+            "甲 乙",
+            &candidates
+        )
+        .is_none());
     }
 
     #[test]
@@ -472,6 +612,7 @@ mod tests {
             &options,
             json!({"query": "查询文本"}),
             "哪个候选项与查询最相关？",
+            "查询文本",
             &candidates,
         )
         .expect("回环应当返回排序");
@@ -504,6 +645,7 @@ mod tests {
             &options,
             json!({"query": "查询文本"}),
             "哪个候选项与查询最相关？",
+            "查询文本",
             &candidates,
         )
         .expect("回环应当返回排序");
@@ -530,18 +672,101 @@ mod tests {
             &options,
             json!({}),
             "指令",
+            "甲 乙",
             &["甲".to_string(), "乙".to_string()]
         )
         .is_none());
     }
 
-    /// 决策服务的本地回环：固定回答一个排序，并记录收到的请求。
-    struct RerankCassette {
-        base_url: String,
-        captured: Arc<std::sync::Mutex<CapturedRerankRequest>>,
+    #[test]
+    fn keywords_are_split_by_whitespace_and_punctuation() {
+        let keywords = split_keywords("检索重排，候选池/超时 timeout: 改造");
+        for expected in ["检索重排", "候选池", "超时", "timeout", "改造"] {
+            assert!(keywords.contains(expected), "缺关键词 {expected}：{keywords:?}");
+        }
+        assert_eq!(keywords.len(), 5, "标点只作分隔，不产出空词：{keywords:?}");
     }
 
-    #[derive(Default, Clone)]
+    #[test]
+    fn coverage_counts_distinct_keywords_not_occurrences() {
+        // 命中的**种类数**才是排序依据：重复同一个词不涨分。
+        let candidates = vec![
+            "重排 重排 重排 重排".to_string(),
+            "检索 重排 超时".to_string(),
+            "无关内容".to_string(),
+        ];
+        assert_eq!(
+            keyword_coverage_order("检索 重排 超时", &candidates),
+            vec![1, 0, 2],
+            "覆盖三种的在前，只覆盖一种的次之，无关的最后"
+        );
+    }
+
+    #[test]
+    fn coverage_keeps_local_order_on_ties() {
+        let candidates = vec!["甲 乙".to_string(), "乙 甲".to_string(), "丙".to_string()];
+        assert_eq!(
+            keyword_coverage_order("甲 乙", &candidates),
+            vec![0, 1, 2],
+            "覆盖数并列时保持原顺序"
+        );
+    }
+
+    #[test]
+    fn candidate_offsets_split_into_full_batches_then_a_tail() {
+        assert!(candidate_offsets(0).is_empty());
+        assert_eq!(candidate_offsets(3), vec![0..3]);
+        assert_eq!(candidate_offsets(5), vec![0..5]);
+        assert_eq!(candidate_offsets(10), vec![0..5, 5..10]);
+        assert_eq!(candidate_offsets(12), vec![0..5, 5..10, 10..12]);
+    }
+
+    /// 一份候选多于一批时：拆批串行送审，且各批下标要正确映射回池内下标。
+    #[test]
+    fn oversized_pool_is_split_into_sequential_batches() {
+        let cassette = RerankCassette::serve();
+        let options = RerankOptions {
+            enabled: true,
+            channel: Some(channel(&cassette.base_url())),
+            ..RerankOptions::default()
+        };
+        // 12 条候选 → 送审 10 条（每批 5 条，共两批），余下 2 条留在池内补位。
+        let candidates: Vec<String> = (0..12)
+            .map(|index| format!("检索 重排 候选 {index}"))
+            .collect();
+        let order = reranked_order(
+            &options,
+            json!({"query": "查询文本"}),
+            "哪个候选项与查询最相关？",
+            "检索 重排 候选",
+            &candidates,
+        )
+        .expect("回环应当返回排序");
+        assert_eq!(order.len(), 12, "排序必须覆盖整池：{order:?}");
+        let mut unique = order.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 12, "下标不重复：{order:?}");
+
+        let batched = cassette.captured_batches();
+        assert_eq!(batched.len(), 2, "10 条送审拆成两批：{batched:?}");
+        assert_eq!(batched[0].criteria_keys.len(), 5);
+        assert_eq!(batched[1].criteria_keys.len(), 5);
+        // 回环固定把批内 c2 排第一（概率 0.8）：两批的头名应交替排在最前，
+        // 即池内下标 2 与 7（第二批起点 5 + 批内 2）。
+        assert_eq!(&order[..2], &[2, 7], "两批头名交替在前：{order:?}");
+        assert_eq!(&order[2..4], &[1, 6], "次名紧随：{order:?}");
+    }
+
+    /// 决策服务的本地回环：固定回答一个排序，并记录收到的请求。
+    ///
+    /// 拆批后一次重排会发出多个请求，因此这里接受多次连接、按到达顺序记录。
+    struct RerankCassette {
+        base_url: String,
+        captured: Arc<std::sync::Mutex<Vec<CapturedRerankRequest>>>,
+    }
+
+    #[derive(Debug, Default, Clone)]
     struct CapturedRerankRequest {
         path: String,
         authorization: String,
@@ -558,9 +783,10 @@ mod tests {
 
             let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
             let port = listener.local_addr().expect("本地地址").port();
-            let captured = Arc::new(std::sync::Mutex::new(CapturedRerankRequest::default()));
+            let captured: Arc<std::sync::Mutex<Vec<CapturedRerankRequest>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
             let seen = Arc::clone(&captured);
-            std::thread::spawn(move || {
+            std::thread::spawn(move || loop {
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
@@ -613,7 +839,7 @@ mod tests {
                 };
                 let question = inner.get("questions").and_then(|value| value.get(QUESTION_ID));
                 {
-                    let mut record = seen.lock().expect("记录未被毒化");
+                    let mut record = CapturedRerankRequest::default();
                     record.path = path;
                     record.authorization = authorization;
                     record.model = request
@@ -636,6 +862,7 @@ mod tests {
                         .and_then(Value::as_object)
                         .map(|entries| entries.keys().cloned().collect())
                         .unwrap_or_default();
+                    seen.lock().expect("记录未被毒化").push(record);
                 }
                 let answers = json!({
                     QUESTION_ID: {
@@ -679,7 +906,16 @@ mod tests {
             self.base_url.clone()
         }
 
+        /// 首次请求的记录（单批场景下就是唯一那份）。
         fn captured(&self) -> CapturedRerankRequest {
+            self.captured_batches()
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        }
+
+        /// 按到达顺序记录的全部请求。
+        fn captured_batches(&self) -> Vec<CapturedRerankRequest> {
             self.captured.lock().expect("记录未被毒化").clone()
         }
     }

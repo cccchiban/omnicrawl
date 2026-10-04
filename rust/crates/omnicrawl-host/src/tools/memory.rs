@@ -24,7 +24,7 @@ use omnicrawl_session::memory_store::{
 use serde_json::{json, Map, Value};
 
 use super::decision_search::{
-    apply_order, reranked_order, RerankOptions, RERANK_CANDIDATE_LIMIT,
+    apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT,
 };
 use super::error::{ToolError, ToolOutcome};
 
@@ -189,7 +189,7 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
     let max_results = read_limited_int(arguments, "max_results", 5, 20) as u32;
     // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
     let pool = if options.rerank.active() {
-        max_results.max(RERANK_CANDIDATE_LIMIT as u32)
+        max_results.max(RERANK_POOL_LIMIT as u32)
     } else {
         max_results
     };
@@ -204,9 +204,13 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
             "candidate_directories": candidates,
         });
         let texts: Vec<String> = results.iter().map(rerank_candidate_text).collect();
-        if let Some(order) =
-            reranked_order(options.rerank.as_ref(), state, RERANK_INSTRUCTIONS, &texts)
-        {
+        if let Some(order) = reranked_order(
+            options.rerank.as_ref(),
+            state,
+            RERANK_INSTRUCTIONS,
+            &query,
+            &texts,
+        ) {
             results = apply_order(results, &order);
         }
     }

@@ -12,7 +12,7 @@ use omnicrawl_controllers::tool_args::{read_limited_int, read_optional_string_li
 use serde_json::{json, Map, Value};
 
 use super::decision_search::{
-    apply_order, reranked_order, RerankOptions, RERANK_CANDIDATE_LIMIT,
+    apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT,
 };
 use super::error::{ToolError, ToolOutcome};
 use super::paths::resolve_lenient;
@@ -982,7 +982,7 @@ pub fn kb_search(
     let max_results = read_limited_int(arguments, "max_results", 10, MAX_SEARCH_RESULTS);
     // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
     let pool = if rerank.active() {
-        max_results.max(RERANK_CANDIDATE_LIMIT as i64)
+        max_results.max(RERANK_POOL_LIMIT as i64)
     } else {
         max_results
     };
@@ -1005,7 +1005,7 @@ pub fn kb_search(
             },
         });
         let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
-        if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &texts) {
+        if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &query, &texts) {
             hits = apply_order(hits, &order);
         }
     }
