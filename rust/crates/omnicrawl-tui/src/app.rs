@@ -595,6 +595,9 @@ impl App {
         // 导致记忆整组工具永远进不了表，而 Python 侧缺省是进的。
         let memory_enabled = load_feature_enabled(&environment, "memory", true, None, None)
             .unwrap_or(true);
+        // `[tools]` 段的禁用开关同样要在构造期装载：此前只在设置面板切换
+        // （`apply_tool_switch`）时才赋值，启动路径漏装，配置里关掉的工具重启后照旧进表。
+        let disabled_tools = load_disabled_tools(&environment, None).unwrap_or_default();
         let registry_options = RegistryOptions {
             session_held_by_kernel: options.session_root.is_some(),
             // 记忆整组工具进表，作用域与 Python 的 `_create_memory_stores` 对齐：项目级与
@@ -619,6 +622,7 @@ impl App {
                 DECISION_SWITCH_KB_SEARCH,
             )),
             subagent_types: subagent_role_names(),
+            disabled_tools,
             mcp: mcp_manager(workspace),
             // 命令行只承载显式覆盖，未给的字段以 `[image_gen]` 配置为准（见 `args.rs`）。
             image_gen: image_gen_options_from(
