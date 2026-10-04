@@ -17,6 +17,7 @@ use omnicrawl_config::features::approval::{
     APPROVAL_MODE_REVIEW,
 };
 use omnicrawl_config::models::channels::{protocols_for_provider, provider_options};
+use omnicrawl_onejev::ProgressSnapshot;
 use ratatui::layout::Rect;
 use std::cell::RefCell;
 
@@ -507,15 +508,22 @@ pub const DECISION_LOCAL_ROW_DEVICE: usize = 1;
 pub const DECISION_LOCAL_ROW_ROOT: usize = 2;
 pub const DECISION_LOCAL_ROW_DOWNLOADED: usize = 3;
 pub const DECISION_LOCAL_ROW_ENV: usize = 4;
-pub const DECISION_LOCAL_ROW_PREPARE: usize = 5;
-pub const DECISION_LOCAL_ROW_DOWNLOAD: usize = 6;
-pub const DECISION_LOCAL_ROW_DELETE: usize = 7;
-pub const DECISION_LOCAL_ROW_CHANNEL: usize = 8;
-pub const DECISION_LOCAL_ROW_SERVICE: usize = 9;
-pub const DECISION_LOCAL_ROW_START: usize = 10;
-pub const DECISION_LOCAL_ROW_STOP: usize = 11;
+/// 后台任务进度行：无任务在跑时不画（行仍占位，但值为空）。
+pub const DECISION_LOCAL_ROW_PROGRESS: usize = 5;
+pub const DECISION_LOCAL_ROW_PREPARE: usize = 6;
+pub const DECISION_LOCAL_ROW_DOWNLOAD: usize = 7;
+pub const DECISION_LOCAL_ROW_DELETE: usize = 8;
+/// 删除专用虚拟环境（venv），保留权重与下载缓存。
+pub const DECISION_LOCAL_ROW_REMOVE_ENV: usize = 9;
+pub const DECISION_LOCAL_ROW_CHANNEL: usize = 10;
+pub const DECISION_LOCAL_ROW_SERVICE: usize = 11;
+pub const DECISION_LOCAL_ROW_START: usize = 12;
+pub const DECISION_LOCAL_ROW_STOP: usize = 13;
 /// 自部署分区的行数。
-pub const DECISION_LOCAL_ROW_COUNT: usize = 12;
+pub const DECISION_LOCAL_ROW_COUNT: usize = 14;
+
+/// 进度条宽度（显示列）：状态行里够看又不会挤掉阶段文案。
+pub const DECISION_PROGRESS_BAR_WIDTH: usize = 24;
 
 /// 结构化决策模型的服务类型候选（Jev 原生 / 对话补全 / OneJev 自部署）。
 ///
@@ -535,9 +543,11 @@ pub const DECISION_LOCAL_ROW_LABELS: [&str; DECISION_LOCAL_ROW_COUNT] = [
     "数据目录",
     "已下载尺寸",
     "运行环境",
+    "任务进度",
     "准备运行环境",
     "下载当前尺寸",
     "删除当前尺寸",
+    "删除运行环境",
     "使用自部署渠道",
     "本地服务",
     "启动 / 重启服务",
@@ -545,12 +555,18 @@ pub const DECISION_LOCAL_ROW_LABELS: [&str; DECISION_LOCAL_ROW_COUNT] = [
 ];
 
 /// 自部署分区里的一行（只读信息行 + 动作行）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecisionLocalRow {
     pub label: &'static str,
     pub value: String,
     /// 该行是可执行的动作用（渲染成按钮样式）。
     pub action: bool,
+    /// 该行下方是否再画一条进度条。
+    pub bar: bool,
+    /// 进度条比例；`None` 时画沿轨道循环滑动的滑块（任务在跑但进度不可量化）。
+    pub progress: Option<f64>,
+    /// 进度条的量化文案（`1.2 GB / 2.2 GB`），空串表示没有。
+    pub progress_detail: String,
 }
 
 /// 自部署分区的初值（宿主在打开面板时读配置、磁盘与服务状态给出）。
@@ -572,6 +588,10 @@ pub struct DecisionLocalValues {
     pub service_status: String,
     /// 本地服务是否在运行（决定「停止服务」是否有意义）。
     pub service_running: bool,
+    /// 正在跑的后台任务名（`None` 表示没有任务，界面据此放开重复动作）。
+    pub task: Option<String>,
+    /// 当前任务的进度快照。
+    pub progress: ProgressSnapshot,
 }
 
 /// 决策模型的一个功能开关行（标签与默认值来自配置域的开关表）。
@@ -611,8 +631,12 @@ struct DecisionLocalState {
     env_status: String,
     service_status: String,
     service_running: bool,
-    /// 后台任务进行中（下载 / 安装 / 启停）：界面据此守卫重复动作。
+    /// 后台任务进行中（由宿主给出的 `task` 推导）：界面据此守卫重复动作。
     busy: bool,
+    /// 当前任务名（如「下载 0.8B」「准备运行环境」），无任务时为空。
+    task: String,
+    /// 后台任务的进度快照（每帧由宿主刷新）。
+    progress: ProgressSnapshot,
 }
 
 impl DecisionLocalState {
@@ -623,6 +647,7 @@ impl DecisionLocalState {
         } else {
             values.sizes
         };
+        let busy = values.task.is_some();
         Self {
             size: values.size,
             device: values.device,
@@ -632,7 +657,28 @@ impl DecisionLocalState {
             env_status: values.env_status,
             service_status: values.service_status,
             service_running: values.service_running,
-            busy: false,
+            busy,
+            task: values.task.unwrap_or_default(),
+            progress: values.progress,
+        }
+    }
+
+    /// 进度行的文案：阶段说明 + 量化细节；没任务时为空（渲染层不画这行）。
+    fn progress_text(&self) -> String {
+        if !self.busy {
+            return String::new();
+        }
+        let stage = self.progress.stage.trim();
+        let detail = self.progress.detail();
+        let head = if self.task.trim().is_empty() {
+            "正在执行".to_string()
+        } else {
+            self.task.trim().to_string()
+        };
+        match (stage.is_empty(), detail.is_empty()) {
+            (true, _) => format!("{head}…"),
+            (false, true) => format!("{head}：{stage}"),
+            (false, false) => format!("{head}：{stage}（{detail}）"),
         }
     }
 
@@ -680,7 +726,7 @@ impl DecisionLocalState {
         match self.device.as_str() {
             "cpu" => "CPU".to_string(),
             "cuda" => "CUDA".to_string(),
-            _ => "自动（有 GPU 用 CUDA）".to_string(),
+            _ => "自动（按已装 torch 能力）".to_string(),
         }
     }
 
@@ -727,92 +773,113 @@ impl DecisionLocalState {
     }
 
     /// 分区行（渲染层读它）。
+    ///
+    /// 只有「任务进度」一行带进度条：`progress` 为 `Some` 时画实心条，
+    /// 为 `None` 但任务在跑时画沿轨道循环滑动的滑块（如等服务绑端口）。
     fn rows(&self) -> Vec<DecisionLocalRow> {
+        let row = |index: usize, value: String, action: bool| DecisionLocalRow {
+            label: DECISION_LOCAL_ROW_LABELS[index],
+            value,
+            action,
+            bar: false,
+            progress: None,
+            progress_detail: String::new(),
+        };
         let mut rows = Vec::with_capacity(DECISION_LOCAL_ROW_COUNT);
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_SIZE],
-            value: self.size_label(),
-            action: false,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DEVICE],
-            value: self.device_text(),
-            action: false,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_ROOT],
-            value: if self.root.trim().is_empty() {
+        rows.push(row(DECISION_LOCAL_ROW_SIZE, self.size_label(), false));
+        rows.push(row(DECISION_LOCAL_ROW_DEVICE, self.device_text(), false));
+        rows.push(row(
+            DECISION_LOCAL_ROW_ROOT,
+            if self.root.trim().is_empty() {
                 "（默认目录）".to_string()
             } else {
                 self.root.clone()
             },
-            action: false,
-        });
+            false,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_DOWNLOADED,
+            self.downloaded_text(),
+            false,
+        ));
+        rows.push(row(DECISION_LOCAL_ROW_ENV, self.env_text(), false));
         rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DOWNLOADED],
-            value: self.downloaded_text(),
+            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_PROGRESS],
+            value: self.progress_text(),
             action: false,
+            // 任务在跑就画进度条：比例已知画实心条，未知画循环滑块（等服务绑端口）。
+            bar: self.busy,
+            progress: if self.busy { self.progress.ratio() } else { None },
+            progress_detail: if self.busy {
+                self.progress.detail()
+            } else {
+                String::new()
+            },
         });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_ENV],
-            value: self.env_text(),
-            action: false,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_PREPARE],
-            value: if self.env_ready {
+        rows.push(row(
+            DECISION_LOCAL_ROW_PREPARE,
+            if self.env_ready {
                 "（已就绪，可重装）".to_string()
             } else {
                 String::new()
             },
-            action: true,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DOWNLOAD],
-            value: if self.size_downloaded() {
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_DOWNLOAD,
+            if self.size_downloaded() {
                 "（已下载）".to_string()
             } else {
                 String::new()
             },
-            action: true,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_DELETE],
-            value: if self.size_downloaded() {
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_DELETE,
+            if self.size_downloaded() {
                 String::new()
             } else {
                 "（未下载）".to_string()
             },
-            action: true,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_CHANNEL],
-            value: "把当前尺寸切成决策渠道".to_string(),
-            action: true,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_SERVICE],
-            value: self.service_status.clone(),
-            action: false,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_START],
-            value: if self.service_running {
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_REMOVE_ENV,
+            if self.env_ready {
+                String::new()
+            } else {
+                "（未安装）".to_string()
+            },
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_CHANNEL,
+            "把当前尺寸切成决策渠道".to_string(),
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_SERVICE,
+            self.service_status.clone(),
+            false,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_START,
+            if self.service_running {
                 "（运行中，可重启）".to_string()
             } else {
                 String::new()
             },
-            action: true,
-        });
-        rows.push(DecisionLocalRow {
-            label: DECISION_LOCAL_ROW_LABELS[DECISION_LOCAL_ROW_STOP],
-            value: if self.service_running {
-                String::new()
+            true,
+        ));
+        rows.push(row(
+            DECISION_LOCAL_ROW_STOP,
+            if self.service_running {
+                "（停用本机共享服务）".to_string()
             } else {
                 "（未运行）".to_string()
             },
-            action: true,
-        });
+            true,
+        ));
         rows
     }
 }
@@ -824,6 +891,8 @@ pub enum DecisionLocalChange {
     Save { size: String, device: String },
     /// 一键安装专用虚拟环境（venv + torch CUDA + qev）。
     PrepareEnvironment,
+    /// 删除专用虚拟环境（venv），保留权重与下载缓存。
+    RemoveEnvironment,
     /// 下载某个尺寸的权重。
     Download { size: String },
     /// 删除某个尺寸的权重。
@@ -4440,9 +4509,17 @@ impl SettingsState {
     }
 
     /// 自部署分区：`Enter`/方向键触发的动作。
+    ///
+    /// 长任务期间按住重复动作，但状态行给出**当前阶段**（进度行也一直在跑），
+    /// 不再只回一句「请稍候」——用户能看出到底卡在哪一步。
     fn activate_decision_local(&mut self, row: usize) -> Option<SettingsEvent> {
         if self.decision_models.local.busy {
-            self.decision_models.status = "自部署任务进行中，请稍候。".to_string();
+            let (stage, _, _) = self.decision_progress_line();
+            self.decision_models.status = if stage.is_empty() {
+                "自部署任务进行中，进度见「任务进度」行。".to_string()
+            } else {
+                format!("自部署任务进行中：{stage}")
+            };
             return None;
         }
         match row {
@@ -4469,6 +4546,15 @@ impl SettingsState {
                 }
                 Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
                     DecisionLocalChange::Delete { size },
+                )))
+            }
+            DECISION_LOCAL_ROW_REMOVE_ENV => {
+                if !self.decision_models.local.env_ready {
+                    self.decision_models.status = "运行环境本来就没装，无需删除。".to_string();
+                    return None;
+                }
+                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
+                    DecisionLocalChange::RemoveEnvironment,
                 )))
             }
             DECISION_LOCAL_ROW_CHANNEL => {
@@ -4803,10 +4889,15 @@ impl SettingsState {
                     | DecisionLocalChange::Download { .. }
                     | DecisionLocalChange::StartService
                     | DecisionLocalChange::StopService => {
-                        // 长任务：先按住重复动作，宿主完成后经 `refresh_decision_local` 放行。
+                        // 长任务：界面先按住重复动作；宿主随后用 `refresh_decision_local`
+                        // 的 `task` 字段持续对齐（任务结束自然放开）。
                         self.decision_models.local.busy = true;
                     }
                     DecisionLocalChange::Delete { .. } => {}
+                    DecisionLocalChange::RemoveEnvironment => {
+                        // 同步动作，但环境状态变了：就绪标记由宿主随后的刷新覆盖。
+                        self.decision_models.local.env_ready = false;
+                    }
                     DecisionLocalChange::UseChannel { size } => {
                         // 渠道行由宿主写盘后回填（`sync_decision_models`），这里只记住尺寸。
                         self.decision_models.local.size = size.clone();
@@ -5143,6 +5234,16 @@ impl SettingsState {
         self.decision_models.local.busy
     }
 
+    /// 自部署任务进度行的渲染输入：`(阶段文案, 比例, 量化细节)`。
+    ///
+    /// 比例是 `None` 时渲染层画循环滑块（任务在跑但这一步没有可量化的进度）。
+    pub fn decision_progress_line(&self) -> (String, Option<f64>, String) {
+        let local = &self.decision_models.local;
+        let ratio = local.progress.ratio();
+        let value = local.progress_text();
+        (value, ratio, local.progress.detail())
+    }
+
     pub fn decision_default_key(&self) -> &str {
         &self.decision_models.default_key
     }
@@ -5159,16 +5260,15 @@ impl SettingsState {
         })
     }
 
-    /// 宿主回填：自部署分区的状态变化（下载完成 / 环境就绪 / 服务启停）。
+    /// 宿主回填：自部署分区的状态变化（下载完成 / 环境就绪 / 服务启停 / 任务进度）。
     ///
     /// 只覆盖分区的只读值，不动当前选中的行与渠道列表；`message` 非空时同时更新状态行，
     /// 空串表示「只刷新事实」。
+    ///
+    /// `busy` 完全由宿主给出的 `task` 决定：任务结束（`task` 为 `None`）时这里必然复位，
+    /// 不会再出现「后台早已结束、界面还按着『进行中』不放」的死锁。
     pub fn refresh_decision_local(&mut self, values: DecisionLocalValues, message: String) {
-        let busy = self.decision_models.local.busy;
-        let mut local = DecisionLocalState::new(values);
-        // 后台任务是否还在跑由宿主决定，这里沿用旧值即可（宿主在任务开始/结束时另行置位）。
-        local.busy = busy;
-        self.decision_models.local = local;
+        self.decision_models.local = DecisionLocalState::new(values);
         if !message.trim().is_empty() {
             self.decision_models.status = message;
         }
@@ -7094,5 +7194,110 @@ mod tests {
         );
         assert_eq!(ChannelField::ApiKey.label(), "API Key");
         assert!(ChannelField::ApiKey.is_text(), "API Key 应是可输入字段");
+    }
+
+    // ---------- 自部署分区的进度行 ----------
+
+    /// 自部署分区初值：下载 0.8B 到一半。
+    fn running_local(task: &str, done: u64, total: u64) -> DecisionLocalValues {
+        DecisionLocalValues {
+            size: "0.8B".to_string(),
+            device: "auto".to_string(),
+            sizes: vec![("0.8B".to_string(), "0.8B（约 2.2 GB）".to_string(), false)],
+            task: Some(task.to_string()),
+            progress: ProgressSnapshot {
+                stage: "下载权重".to_string(),
+                done,
+                total,
+                unit: omnicrawl_onejev::ProgressUnit::Bytes,
+            },
+            ..DecisionLocalValues::default()
+        }
+    }
+
+    fn decision_local_state(values: DecisionLocalValues) -> SettingsState {
+        SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows())
+                .with_decision_models(Vec::new(), "", DecisionRow::default())
+                .with_decision_local(values),
+        )
+    }
+
+    #[test]
+    fn task_progress_row_carries_a_bar_and_keeps_busy() {
+        let state = decision_local_state(running_local("下载 OneJev 0.8B", 512, 1024));
+        assert!(state.decision_local_busy(), "有 task 就是进行中");
+        let rows = state.decision_local_rows();
+        let progress = &rows[DECISION_LOCAL_ROW_PROGRESS];
+        assert!(progress.bar, "进度行要画条");
+        assert_eq!(progress.progress, Some(0.5));
+        assert!(!progress.progress_detail.is_empty(), "要有量化文案");
+        assert!(
+            progress.value.contains("下载 OneJev 0.8B"),
+            "进度行要点出任务名：{}",
+            progress.value
+        );
+    }
+
+    #[test]
+    fn finished_task_releases_busy_and_hides_the_bar() {
+        // 这是「任务早已结束、界面还按着进行中不放」的回归测试：
+        // `busy` 完全由宿主给的 `task` 推导，任务清空即复位。
+        let state = decision_local_state(DecisionLocalValues {
+            size: "0.8B".to_string(),
+            ..DecisionLocalValues::default()
+        });
+        assert!(!state.decision_local_busy(), "没有 task 就不该 busy");
+        let rows = state.decision_local_rows();
+        assert!(!rows[DECISION_LOCAL_ROW_PROGRESS].bar, "没任务不画条");
+        assert!(rows[DECISION_LOCAL_ROW_PROGRESS].value.is_empty());
+    }
+
+    #[test]
+    fn refresh_without_task_resets_busy() {
+        // 宿主在任务结束后刷新：即便先前被 `apply_succeeded` 按住，也要放开。
+        let mut state = decision_local_state(running_local("下载 OneJev 0.8B", 1, 2));
+        goto(&mut state, "decision_models");
+        assert!(state.decision_local_busy());
+        state.refresh_decision_local(
+            DecisionLocalValues {
+                size: "0.8B".to_string(),
+                ..DecisionLocalValues::default()
+            },
+            "下载完成。".to_string(),
+        );
+        assert!(!state.decision_local_busy(), "任务结束必须复位 busy");
+        assert_eq!(state.status(), "下载完成。");
+    }
+
+    #[test]
+    fn unquantified_task_falls_back_to_a_sliding_bar() {
+        // 环境安装 / 服务冷启动没有字节数：比例给 `None`，渲染层改画滑动滑块。
+        let state = decision_local_state(DecisionLocalValues {
+            size: "0.8B".to_string(),
+            task: Some("准备运行环境".to_string()),
+            progress: ProgressSnapshot {
+                stage: "2/3 安装 torch（CUDA 轮子，约 3 GB）…".to_string(),
+                ..ProgressSnapshot::default()
+            },
+            ..DecisionLocalValues::default()
+        });
+        let rows = state.decision_local_rows();
+        assert!(rows[DECISION_LOCAL_ROW_PROGRESS].bar);
+        assert_eq!(rows[DECISION_LOCAL_ROW_PROGRESS].progress, None);
+        assert!(rows[DECISION_LOCAL_ROW_PROGRESS]
+            .value
+            .contains("安装 torch"));
+    }
+
+    #[test]
+    fn busy_activation_reports_the_stage_instead_of_just_waiting() {
+        let mut state = decision_local_state(running_local("下载 OneJev 0.8B", 512, 1024));
+        goto(&mut state, "decision_models");
+        state.handle_key(KeyCode::Enter);
+        // 进面板后排到进度行，再按 Enter：应被按住并给出阶段，而不是沉默。
+        let rows = state.decision_local_rows();
+        assert_eq!(rows.len(), DECISION_LOCAL_ROW_COUNT);
+        assert!(state.decision_local_busy());
     }
 }

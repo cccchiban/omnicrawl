@@ -200,7 +200,7 @@ pub struct LocalDeploymentConfig {
     pub device: String,
     /// 数据根目录（权重、虚拟环境、缓存都在这下面）；空值表示默认目录。
     pub model_dir: String,
-    /// 决策渠道选了自部署时是否自动拉起本地服务。
+    /// 决策渠道选了自部署时是否随实例启动自动准备本地服务（已在跑则复用）。
     pub auto_start: bool,
     /// 启动后等待健康检查的上限（秒）。
     pub health_timeout_seconds: i64,

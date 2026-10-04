@@ -92,6 +92,19 @@ pub fn server_log_path(root: &Path) -> PathBuf {
     root.join("qev-server.log")
 }
 
+/// 服务 PID 文件：服务常驻且被本机全部实例共享，停它时靠这里找到进程。
+pub fn server_pid_path(root: &Path) -> PathBuf {
+    root.join("qev-server.pid")
+}
+
+/// 安装日志目录：venv / pip 的完整输出落这里。
+///
+/// 界面状态行只有两行，装 torch 的失败原因（traceback 的**最后一行**）永远挤不进去；
+/// 完整输出必须落盘，用户才能自己翻到根因。
+pub fn install_log_dir(root: &Path) -> PathBuf {
+    root.join("logs")
+}
+
 /// 近似 Python `Path.resolve()`：目标不存在时也要给出归一化路径。
 pub fn resolve_lenient(path: &Path) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {

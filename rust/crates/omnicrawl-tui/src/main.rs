@@ -170,6 +170,11 @@ fn prepare_startup(
     for line in &app.startup_plugin_lines {
         sink.write_line(&format!("插件：{line}"), LogLevel::Info);
     }
+    // 自部署决策服务：渠道启用后随实例自启动（本机已有服务时只复用，不重复拉起）。
+    app.autostart_local_decision_service();
+    for line in app.startup_service_lines.clone() {
+        sink.write_line(&line, LogLevel::Info);
+    }
     app.attach_kernel_logs(kernel_logs);
     sink.write_line("等待内核握手", LogLevel::Info);
     app.handshake()?;

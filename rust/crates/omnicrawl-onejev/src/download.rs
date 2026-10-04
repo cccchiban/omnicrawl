@@ -21,10 +21,19 @@ const HF_API_BASE: &str = "https://huggingface.co/api/models";
 const HF_RESOLVE_BASE: &str = "https://huggingface.co";
 const USER_AGENT: &str = "omnicrawl-onejev";
 
-/// 下载重试次数（网络抖动重试）。
-const DOWNLOAD_RETRIES: usize = 3;
-/// 单个文件的下载超时（秒）；权重文件按 MB 级带宽留足余量。
-const READ_TIMEOUT_SECONDS: u64 = 1800;
+/// 下载重试次数。
+///
+/// HF 的 CDN 会在权重传到一半时主动断流（实测单条连接只能拿到 0.6–1.1 GB），
+/// 2.21 GB 的 0.8B 权重因此必然要断好几次；每次重试都从断点续传，
+/// 所以这里的次数是「最多允许断几次」而不是「最多允许失败几次」。
+const DOWNLOAD_RETRIES: usize = 8;
+/// 建连/首包超时（秒）：HF 在部分网络下会被黑洞掉，连接阶段必须尽快失败重试，
+/// 否则界面会长时间停在「正在下载」却毫无进展。
+const CONNECT_TIMEOUT_SECONDS: u64 = 20;
+/// 仓库文件清单这类小响应的读取超时（秒）。
+const LIST_TIMEOUT_SECONDS: u64 = 120;
+/// 权重文件主体的接收超时（秒）；GB 级文件按 MB 级带宽留足余量。
+const BODY_TIMEOUT_SECONDS: u64 = 1800;
 /// 单文件进度回调的写入块大小。
 const CHUNK_BYTES: usize = 1 << 20;
 
@@ -161,7 +170,7 @@ struct RepoFile {
 fn list_repo_files(agent: &ureq::Agent, repo_id: &str) -> Result<Vec<RepoFile>, String> {
     let url = format!("{HF_API_BASE}/{repo_id}/tree/main?recursive=true&expand=true");
     let mut text = String::new();
-    get_reader(agent, &url, 60)?
+    get_reader(agent, &url, LIST_TIMEOUT_SECONDS)?
         .read_to_string(&mut text)
         .map_err(|error| format!("读取仓库文件列表失败：{error}"))?;
     let entries: Value = serde_json::from_str(&text)
@@ -195,24 +204,58 @@ fn list_repo_files(agent: &ureq::Agent, repo_id: &str) -> Result<Vec<RepoFile>, 
 fn get_reader(
     agent: &ureq::Agent,
     url: &str,
-    timeout_seconds: u64,
+    body_timeout_seconds: u64,
 ) -> Result<Box<dyn Read>, String> {
-    let timeout = Duration::from_secs(timeout_seconds);
-    let response = agent
+    Ok(open_body(agent, url, body_timeout_seconds, 0)?.2)
+}
+
+/// 发起请求并返回 `(状态码, 服务端确认的续传起点, 读取器)`。
+///
+/// `resume_from` 大于 0 时带 `Range` 头请求续传；服务端确认续传会回 206 并在
+/// `Content-Range` 里给出真实起点（[`download_file_once`] 据此判断能否接着写）。
+fn open_body(
+    agent: &ureq::Agent,
+    url: &str,
+    body_timeout_seconds: u64,
+    resume_from: u64,
+) -> Result<(u16, Option<u64>, Box<dyn Read>), String> {
+    let connect = Duration::from_secs(CONNECT_TIMEOUT_SECONDS);
+    let request = agent
         .get(url)
         .config()
-        .timeout_connect(Some(timeout))
-        .timeout_recv_response(Some(timeout))
-        .timeout_recv_body(Some(timeout))
+        // 连接阶段用短超时：黑洞连接很快失败并交给重试，不让界面静默干等。
+        .timeout_connect(Some(connect))
+        .timeout_recv_response(Some(connect))
+        .timeout_recv_body(Some(Duration::from_secs(body_timeout_seconds)))
         .build()
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .map_err(|error| format!("请求失败：{error}"))?;
+        .header("User-Agent", USER_AGENT);
+    let request = if resume_from > 0 {
+        request.header("Range", format!("bytes={resume_from}-"))
+    } else {
+        request
+    };
+    let response = request.call().map_err(|error| format!("请求失败：{error}"))?;
     let status = response.status().as_u16();
     if status >= 400 {
         return Err(format!("HTTP {status}：{url}"));
     }
-    Ok(Box::new(response.into_body().into_reader()))
+    let confirmed_start = response
+        .headers()
+        .get("content-range")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.strip_prefix("bytes "))
+        .and_then(|rest| rest.split('-').next())
+        .and_then(|start| start.trim().parse::<u64>().ok());
+    Ok((
+        status,
+        confirmed_start,
+        Box::new(response.into_body().into_reader()),
+    ))
+}
+
+/// 未完成下载的 `.part` 文件当前长度（断点续传的起点）。
+fn partial_len(part: &Path) -> u64 {
+    std::fs::metadata(part).map(|meta| meta.len()).unwrap_or(0)
 }
 
 /// 文件名是否命中通配模式（语义对齐 Python `fnmatch` 的 `*` / `?`）。
@@ -262,6 +305,10 @@ fn file_complete(path: &Path, expected_size: u64) -> bool {
     expected_size == 0 || metadata.len() == expected_size
 }
 
+/// 单文件下载（带重试）。
+///
+/// 每次重试都从 `.part` 的断点续传，因此进度回调在重试之间是单调递增的：
+/// 回调只在拿到更高的字节数时才触发，避免续传重连时进度条回跳。
 fn download_file(
     agent: &ureq::Agent,
     url: &str,
@@ -270,8 +317,19 @@ fn download_file(
     progress: &mut Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<(), String> {
     let mut last_error = String::new();
+    let mut highest = 0u64;
     for _attempt in 1..=DOWNLOAD_RETRIES {
-        match download_file_once(agent, url, destination, expected_size, progress) {
+        let mut monotonic = |done: u64, total: u64| {
+            if done <= highest {
+                return;
+            }
+            highest = done;
+            if let Some(callback) = progress.as_deref_mut() {
+                callback(done, total);
+            }
+        };
+        let mut sink: Option<&mut dyn FnMut(u64, u64)> = Some(&mut monotonic);
+        match download_file_once(agent, url, destination, expected_size, &mut sink) {
             Ok(()) => return Ok(()),
             Err(error) => last_error = error,
         }
@@ -296,33 +354,69 @@ fn download_file_once(
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default()
     ));
-    let mut reader = get_reader(agent, url, READ_TIMEOUT_SECONDS)?;
-    let mut output = std::fs::File::create(&part)
-        .map_err(|error| format!("创建 {} 失败：{error}", part.display()))?;
-    let mut buffer = vec![0u8; CHUNK_BYTES];
+    // 上次中断留下的字节要接着写：HF 的 CDN 单条连接拿不完 GB 级权重，
+    // 从头重下等于永远重复同一段失败。
+    let mut resume_from = partial_len(&part);
+    if expected_size > 0 && resume_from > expected_size {
+        // 本地比预期还长：只可能是同名不同版本，丢掉重来。
+        let _ = std::fs::remove_file(&part);
+        resume_from = 0;
+    }
+    let (status, confirmed_start, mut reader) = open_body(agent, url, BODY_TIMEOUT_SECONDS, resume_from)?;
     let mut received = 0u64;
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("读取响应失败：{error}"))?;
-        if read == 0 {
-            break;
+    let append = match (resume_from, status) {
+        // 服务端按 Range 返回 206 且起点吻合，才能从断点追加。
+        (0, _) => false,
+        (offset, 206) if confirmed_start == Some(offset) => true,
+        (offset, 206) => return Err(format!("续传起点不符（本地 {offset}，服务端 {confirmed_start:?}）")),
+        // 服务端不支持续传（回了 200 全量），丢掉本地半成品从头写。
+        _ => {
+            let _ = std::fs::remove_file(&part);
+            false
         }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|error| format!("写入 {} 失败：{error}", part.display()))?;
-        received += read as u64;
-        if let Some(callback) = progress.as_deref_mut() {
-            callback(received, expected_size);
+    };
+    let mut output = if append {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .map_err(|error| format!("打开 {} 失败：{error}", part.display()))?
+    } else {
+        std::fs::File::create(&part)
+            .map_err(|error| format!("创建 {} 失败：{error}", part.display()))?
+    };
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    let base = if append { resume_from } else { 0 };
+    if let Some(callback) = progress.as_deref_mut() {
+        callback(base, expected_size);
+    }
+    let mut read_error = None;
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|error| format!("写入 {} 失败：{error}", part.display()))?;
+                received += read as u64;
+                if let Some(callback) = progress.as_deref_mut() {
+                    callback(base + received, expected_size);
+                }
+            }
+            // 断流不是致命错误：进度已经落盘，交给外层重试接着拉。
+            Err(error) => {
+                read_error = Some(error.to_string());
+                break;
+            }
         }
     }
     output.flush().map_err(|error| format!("{error}"))?;
     drop(output);
-    if expected_size > 0 && received != expected_size {
-        let _ = std::fs::remove_file(&part);
-        return Err(format!(
-            "下载字节数不符（得到 {received}，期望 {expected_size}）"
-        ));
+    let written = base + received;
+    if let Some(error) = read_error {
+        return Err(format!("读取响应失败（已收到 {written} 字节）：{error}"));
+    }
+    if expected_size > 0 && written != expected_size {
+        return Err(format!("下载字节数不符（得到 {written}，期望 {expected_size}）"));
     }
     std::fs::rename(&part, destination).map_err(|error| format!("{error}"))?;
     Ok(())

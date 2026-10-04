@@ -36,6 +36,10 @@ mod platform {
     /// 只用于让 CTRL 事件不广播到宿主，递归回收由 Job Object 负责。
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// 从宿主所在的 Job 中脱离：进程不再随 Job 关闭被回收（父进程不在 Job 中时被忽略）。
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    /// 不继承控制台（服务类进程不需要，也不受终端关闭影响）。
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
 
     /// kill-on-close 的 Job 对象。
     ///
@@ -107,6 +111,28 @@ mod platform {
         command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
+    /// 拉起一个**独立于宿主生命周期**的子进程：宿主退出（含崩溃）都不回收它。
+    ///
+    /// 两条措施缺一不可：不把它纳入宿主自己的 kill-on-close Job（那会随宿主退出被回收），
+    /// 以及脱离宿主所在的 Job；`DETACHED_PROCESS` 再让它不随终端窗口关闭一起收到控制台事件。
+    ///
+    /// `CREATE_BREAKAWAY_FROM_JOB` 在父 Job 未开放 breakaway
+    /// （`JOB_OBJECT_LIMIT_BREAKAWAY_OK`）时会被 `CreateProcess` 拒绝，
+    /// 因此失败后退回不带它的一次尝试：起得来优先，代价是那种父子 Job 场景下生存性弱一些。
+    pub fn spawn_shared_service(command: &mut Command) -> std::io::Result<Child> {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(
+            CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB,
+        );
+        match command.spawn() {
+            Ok(child) => Ok(child),
+            Err(_) => {
+                command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+                command.spawn()
+            }
+        }
+    }
+
     /// 按 PID 回收整棵进程树：优先 `taskkill /T /F`（它按父链递归）。
     pub fn kill_process_tree_by_pid(pid: u32) {
         use std::os::windows::process::CommandExt;
@@ -136,6 +162,30 @@ mod platform {
     /// 进程所属的进程组；Windows 用 Job Object 代替进程组语义，永远没有组可查。
     pub fn process_group_of(_pid: u32) -> Option<u32> {
         None
+    }
+
+    /// 判断进程是否仍在运行（停共享服务前先确认目标还在，避免误伤被回收又复用的 PID）。
+    pub fn pid_is_running(pid: u32) -> bool {
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        /// `STILL_ACTIVE`（0x103）：仅此退出码表示进程仍在运行。
+        const STILL_ACTIVE: u32 = 0x103;
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: 只读退出码，句柄用完即关。
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle == 0 {
+                return false;
+            }
+            let mut exit_code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code) != 0;
+            CloseHandle(handle);
+            ok && exit_code == STILL_ACTIVE
+        }
     }
 }
 
@@ -173,6 +223,15 @@ mod platform {
         command.process_group(0);
     }
 
+    /// 拉起一个**独立于宿主生命周期**的子进程：宿主退出（含崩溃）都不回收它。
+    ///
+    /// 自成一组即可：Unix 下父进程退出不会给子进程发信号，非前台进程组也收不到
+    /// 终端的 `SIGHUP`。这里不额外调 `setsid`，免去一次 `pre_exec`。
+    pub fn spawn_shared_service(command: &mut Command) -> std::io::Result<std::process::Child> {
+        command.process_group(0);
+        command.spawn()
+    }
+
     /// 按 PID 回收整棵进程树：对子进程所在的进程组发 `SIGKILL`。
     ///
     /// 子进程创建时已用 [`configure_process_group`] 自成一组，`pgid == pid`，
@@ -202,11 +261,21 @@ mod platform {
         let group = unsafe { getpgid(pid as i32) };
         (group > 0).then_some(group as u32)
     }
+
+    /// 判断进程是否仍在运行（`kill(pid, 0)` 只做存在性与权限检查，不真的发信号）。
+    pub fn pid_is_running(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: 信号 0 不投递任何信号，仅返回是否可作用于该进程。
+        unsafe { kill(pid as i32, 0) == 0 }
+    }
 }
 
 pub use platform::KillOnCloseJob;
 pub use platform::{
-    configure_process_group, kill_process_tree_by_pid, process_group_of, request_process_tree_kill,
+    configure_process_group, kill_process_tree_by_pid, pid_is_running, process_group_of,
+    request_process_tree_kill, spawn_shared_service,
 };
 
 /// 回收一整棵进程树：纳入了 Job 时关句柄让它递归终止，否则按 PID（Unix 下按进程组）回收。

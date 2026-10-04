@@ -66,7 +66,9 @@ device = "auto"
 # 数据根目录：权重在 <root>/models/、虚拟环境在 <root>/venv/、缓存与日志也在下面。
 # 留空表示默认目录 ~/.omnicrawl/onejev。
 model_dir = ""
-# 决策渠道选了自部署（mode = "onejev"）时，是否在切换渠道后自动拉起本地服务。
+# 决策渠道选了自部署（mode = "onejev"）时，是否随 OmniCrawl 启动自动准备本地服务：
+# 本机已有服务在跑（本机所有实例共用一份）就直接复用，不会重复启动；服务常驻，
+# 不随实例退出被回收，要停就在设置页点「停止服务」。
 auto_start = true
 # 启动后等待健康检查的上限（秒）：首次加载权重并捕获 CUDA 图，大尺寸会久一些。
 health_timeout_seconds = 600

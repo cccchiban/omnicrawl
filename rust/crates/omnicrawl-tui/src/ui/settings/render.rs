@@ -17,11 +17,12 @@ use super::hit::HitAction;
 use super::picker::window_bounds;
 use super::state::{
     ChannelField, ChannelFormView, ContextField, DecisionField, DecisionFormView, DropdownField,
-    Focus, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION, DECISION_SWITCH_SECTION,
-    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW,
+    Focus, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION, DECISION_PROGRESS_BAR_WIDTH,
+    DECISION_SWITCH_SECTION, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW,
 };
 use super::{channel_field_value, decision_field_value, row_label};
 use crate::ui::fullscreen::terminal::theme;
+use crate::ui::display_width;
 use omnicrawl_config::models::channels::{protocol_label, provider_label};
 use helpers::{fit, left_column_width, window_offset};
 
@@ -493,6 +494,25 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
                 )
             };
             entries.push((Line::styled(fit(&text, area.width as usize), line_style), Some(absolute)));
+            // 进度条独占一行画在进度行下方：行宽受限时按比例吃满可用列。
+            if row.bar {
+                let detail = if row.progress_detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", row.progress_detail)
+                };
+                let bar_width = (area.width as usize)
+                    .saturating_sub(display_width(&detail))
+                    .min(DECISION_PROGRESS_BAR_WIDTH);
+                let bar = progress_bar_text(row.progress, bar_width, progress_phase());
+                entries.push((
+                    Line::styled(
+                        fit(&format!("    {bar}{detail}"), area.width as usize),
+                        theme::rich_style(theme::TEXT_MUTED),
+                    ),
+                    Some(absolute),
+                ));
+            }
         }
     }
 
@@ -514,6 +534,50 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
         },
         frame.buffer_mut(),
     );
+}
+
+/// 进度条的填充与空白格（单宽字符，保证宽度按列算得准）。
+const PROGRESS_FILLED: &str = "█";
+const PROGRESS_EMPTY: &str = "░";
+
+/// 画一条进度条：比例已知时左满右空，未知时画沿轨道循环滑动的滑块。
+///
+/// `phase` 是滑块进度（列），由 [`progress_phase`] 从墙上时钟算出，
+/// 因此界面不必自己保存动画状态，纯函数也便于测试。
+fn progress_bar_text(ratio: Option<f64>, width: usize, phase: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    match ratio {
+        Some(ratio) => {
+            let filled = ((ratio * width as f64).round() as usize).min(width);
+            format!(
+                "{}{}",
+                PROGRESS_FILLED.repeat(filled),
+                PROGRESS_EMPTY.repeat(width - filled)
+            )
+        }
+        None => {
+            // 循环滑动：滑块宽约 1/4，左端从 `-slider` 推进到 `width`，滑出去后重新进入。
+            let slider = (width / 4).max(1);
+            let offset = phase % (width + slider);
+            let mut text = String::new();
+            for column in 0..width {
+                let inside = column < offset && column + slider >= offset;
+                text.push_str(if inside { PROGRESS_FILLED } else { PROGRESS_EMPTY });
+            }
+            text
+        }
+    }
+}
+
+/// 滑块当前所在的列（每 120ms 挪一列：够明显，又不至于闪烁）。
+fn progress_phase() -> usize {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    (millis / 120) as usize
 }
 
 /// 窗口起点：选中行属于哪个条目，就把它整个条目的行都算进可见高度。
@@ -1778,6 +1842,7 @@ pub mod helpers {
 #[cfg(test)]
 mod tests {
     use super::helpers::*;
+    use super::*;
 
     #[test]
     fn window_offset_keeps_selection_visible() {
@@ -1802,5 +1867,45 @@ mod tests {
         assert_eq!(left_column_width(50, 30, 24, 20), 26);
         assert_eq!(left_column_width(40, 30, 24, 20), 24, "不低于最小宽度");
         assert_eq!(left_column_width(20, 30, 24, 20), 20, "极窄时不超过总宽");
+    }
+
+    #[test]
+    fn progress_bar_fills_by_ratio() {
+        assert_eq!(progress_bar_text(Some(0.5), 4, 0), "██░░");
+        assert_eq!(progress_bar_text(Some(0.0), 4, 0), "░░░░");
+        assert_eq!(progress_bar_text(Some(1.0), 4, 0), "████");
+        assert_eq!(progress_bar_text(Some(0.0), 0, 0), "", "零宽没有条");
+        // 比例越界时不能画超宽。
+        assert_eq!(progress_bar_text(Some(1.5), 3, 0), "███");
+    }
+
+    #[test]
+    fn unknown_progress_slides_and_wraps() {
+        let width = 8;
+        let slider = (width / 4).max(1);
+        let cycle = width + slider;
+        // 一个周期内：滑块始终只占 slider 列，且从左侧滑出、右侧滑入。
+        for phase in 0..cycle {
+            let text = progress_bar_text(None, width, phase);
+            assert_eq!(text.chars().count(), width, "宽度恒等于轨道宽");
+            let filled = text.matches(PROGRESS_FILLED).count();
+            assert!(filled <= slider + 1, "phase {phase} 填充过宽：{text}");
+        }
+        // 起点与周期末尾位置不同：确实在动。
+        assert_ne!(
+            progress_bar_text(None, width, 0),
+            progress_bar_text(None, width, slider)
+        );
+        assert_eq!(
+            progress_bar_text(None, width, 0),
+            progress_bar_text(None, width, cycle),
+            "滑过一个周期回到原位"
+        );
+    }
+
+    #[test]
+    fn progress_phase_advances_with_the_clock() {
+        let first = progress_phase();
+        assert!(first > 0, "墙上时钟换算出的相位应为正");
     }
 }

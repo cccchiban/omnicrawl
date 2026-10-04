@@ -103,8 +103,8 @@ use omnicrawl_onejev::{
     delete_model as delete_onejev_model, download_model as download_onejev_model,
     ensure_environment as ensure_onejev_environment, environment_state as onejev_environment_state,
     find_size as find_onejev_size, model_ready as onejev_model_ready,
-    resolve_root as resolve_onejev_root, LaunchSpec as OneJevLaunchSpec, OneJevServer,
-    ServerState as OneJevServerState, ONEJEV_SIZES,
+    remove_environment as remove_onejev_env, resolve_root as resolve_onejev_root,
+    LaunchSpec as OneJevLaunchSpec, OneJevServer, ServerState as OneJevServerState, ONEJEV_SIZES,
 };
 use omnicrawl_onejev::paths::model_dir as onejev_model_dir;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
@@ -433,6 +433,8 @@ pub struct App {
     prompt_request: Option<Id>,
     /// 启动期插件加载诊断：由 `main.rs` 写进启动页日志框（不进对话流，避免顶掉首屏 Logo）。
     pub startup_plugin_lines: Vec<String>,
+    /// 启动期自部署决策服务的处理结论（同上，走启动页日志框）。
+    pub startup_service_lines: Vec<String>,
     /// 启动期解析出来的模型/渠道视图（config.toml + models.toml + 环境变量）。
     ///
     /// 握手与设置面板都读它：`initialize.model` 的 Provider/协议/生成选项/上下文窗口
@@ -465,6 +467,8 @@ pub struct App {
     tts_task: Option<Receiver<TtsTaskResult>>,
     /// 后台自部署任务（环境安装 / 权重下载 / 服务启停）的结果通道。
     onejev_task: Option<Receiver<OneJevTaskResult>>,
+    /// 正在跑的自部署任务名与进度（界面每帧取一次快照）。
+    onejev_progress: Option<OneJevRunningTask>,
     /// 本地 OneJev 决策服务进程（切换尺寸即按新规格重启它）。
     onejev_server: OneJevServer,
     /// 本界面独有的 Monitor 日志消费游标（对映 Python `MonitorStateAdapter`）。
@@ -523,6 +527,12 @@ enum OneJevTaskResult {
         server: OneJevServer,
         result: Result<String, String>,
     },
+}
+
+/// 正在跑的自部署任务：名字（显示用）+ 进度句柄（后台线程写、界面读）。
+struct OneJevRunningTask {
+    name: String,
+    progress: omnicrawl_onejev::ProgressHandle,
 }
 
 /// 慢命令的宿主侧后台任务（对映 Python `CommandOutcome.execution == "slow"`）。
@@ -740,6 +750,7 @@ impl App {
             config_chat: None,
             tts_task: None,
             onejev_task: None,
+            onejev_progress: None,
             onejev_server: OneJevServer::new(),
             monitor_state: crate::monitor::MonitorStateAdapter::default(),
             monitor_polled_at: Instant::now(),
@@ -749,6 +760,7 @@ impl App {
             slow_task: None,
             scrollbar_drag: false,
             startup_plugin_lines,
+            startup_service_lines: Vec::new(),
             kernel_logs: None,
             channel_models_task: None,
         })
@@ -3096,6 +3108,7 @@ impl App {
         match change {
             DecisionLocalChange::Save { size, device } => self.save_decision_local(size, device),
             DecisionLocalChange::PrepareEnvironment => self.start_onejev_environment(),
+            DecisionLocalChange::RemoveEnvironment => self.remove_onejev_environment(),
             DecisionLocalChange::Download { size } => self.start_onejev_download(size),
             DecisionLocalChange::Delete { size } => self.delete_onejev_size(size),
             DecisionLocalChange::UseChannel { size } => self.use_onejev_channel(size),
@@ -3118,7 +3131,15 @@ impl App {
         let spec_changed = previous.size != configuration.size
             || previous.device != configuration.device;
         let mut note = String::new();
-        if spec_changed && self.onejev_server.state() != &OneJevServerState::Stopped {
+        // 规格变了才动服务：一份服务只能跑一个尺寸，换尺寸必须换进程（停的是本机共享的那份）。
+        // 规格没变时什么都不做——服务可能正被别的实例用着，静默重启只会打断它们。
+        let running = self.onejev_server.state() != &OneJevServerState::Stopped
+            || omnicrawl_onejev::healthy(
+                omnicrawl_onejev::LOCAL_HOST,
+                omnicrawl_onejev::LOCAL_PORT,
+                1,
+            );
+        if spec_changed && running {
             match self.restart_onejev_service(&configuration) {
                 Ok(message) => note = format!(" {message}"),
                 Err(error) => note = format!(" 服务未能按新规格重启：{error}"),
@@ -3154,6 +3175,29 @@ impl App {
             .collect();
         let env_ready =
             onejev_environment_state(&root) == omnicrawl_onejev::EnvironmentState::Ready;
+        // 服务状态以「端口上到底有没有服务」为准：它可能由别的 OmniCrawl 实例启动，
+        // 界面必须如实说明「已就绪但属于其他实例」，否则用户会以为可以在这里随便停。
+        let owned = self.onejev_server.state() == &OneJevServerState::Ready;
+        let listening = omnicrawl_onejev::healthy(
+            omnicrawl_onejev::LOCAL_HOST,
+            omnicrawl_onejev::LOCAL_PORT,
+            1,
+        );
+        let service_status = if listening {
+            let name = omnicrawl_onejev::running_model(&root)
+                .or_else(|| self.onejev_server.model_name().map(str::to_string))
+                .unwrap_or_else(|| configuration.size.clone());
+            if owned {
+                format!("已就绪，{name}（本实例启动）")
+            } else {
+                format!("已就绪，{name}（其他 OmniCrawl 实例启动，本实例复用）")
+            }
+        } else {
+            match self.onejev_server.state() {
+                OneJevServerState::Ready => "已就绪（本实例记录的服务未见监听）".to_string(),
+                other => other.label(),
+            }
+        };
         DecisionLocalValues {
             size: configuration.size.clone(),
             device: configuration.device.clone(),
@@ -3168,25 +3212,57 @@ impl App {
                     omnicrawl_onejev::paths::venv_dir(&root).display()
                 )
             },
-            service_status: format!(
-                "{}（{}）",
-                self.onejev_server.state().label(),
-                self.onejev_server.model_name().unwrap_or("未指定模型")
-            ),
-            service_running: self.onejev_server.state() == &OneJevServerState::Ready,
+            service_status,
+            service_running: listening,
+            task: self
+                .onejev_progress
+                .as_ref()
+                .map(|running| running.name.clone()),
+            progress: self
+                .onejev_progress
+                .as_ref()
+                .map(|running| running.progress.snapshot())
+                .unwrap_or_default(),
         }
     }
 
     /// 一键准备运行环境（venv + torch + qev）：长任务，放后台线程。
     fn start_onejev_environment(&mut self) -> Result<String, String> {
-        self.spawn_onejev_task(|environment, configuration| {
+        self.spawn_onejev_task("准备运行环境", |environment, configuration, progress| {
             let root = resolve_onejev_root(&environment, &configuration.model_dir);
-            let mut progress = |_stage: &str, _done: u64, _total: u64| {};
-            let result = ensure_onejev_environment(&environment, &root, &mut progress)
-                .map(|outcome| outcome.cuda)
-                .map_err(|error| error);
+            let mut sink = progress.sink();
+            let result = ensure_onejev_environment(&environment, &root, &mut sink)
+                .map(|outcome| outcome.cuda);
             OneJevTaskResult::Environment(result)
         })
+    }
+
+    /// 删除运行环境（venv），保留权重与下载缓存。
+    ///
+    /// 「准备运行环境」按本机 GPU 能力选 torch 轮子；驱动当时不可用就会装成 CPU 版，
+    /// 只能删掉重装。服务在跑时先停掉：Windows 上被占用的文件删不掉。
+    fn remove_onejev_environment(&mut self) -> Result<String, String> {
+        if self.onejev_task.is_some() {
+            return Err("已有自部署任务在跑，请稍候。".to_string());
+        }
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        let root = resolve_onejev_root(&environment, &configuration.model_dir);
+        let venv = omnicrawl_onejev::paths::venv_dir(&root);
+        if !venv.exists() {
+            return Ok("运行环境本来就没装，无需删除。".to_string());
+        }
+        // 删 venv 会连同 qev 一起删掉：服务必须真的停掉，否则 Windows 上文件删不掉。
+        self.onejev_server.stop_shared(&root);
+        let removed = remove_onejev_env(&root)?;
+        self.refresh_decision_local();
+        if !removed {
+            return Ok("运行环境本来就没装，无需删除。".to_string());
+        }
+        Ok(format!(
+            "已删除运行环境（{}），权重与下载缓存保留；可按「准备运行环境」重装。",
+            venv.display()
+        ))
     }
 
     /// 下载某个尺寸的权重：GB 级长任务，放后台线程。
@@ -3194,11 +3270,13 @@ impl App {
         let Some(target) = find_onejev_size(size) else {
             return Err(format!("未知的自部署尺寸：{size}。"));
         };
-        self.spawn_onejev_task(move |environment, configuration| {
+        let name = format!("下载 OneJev {}", target.key);
+        self.spawn_onejev_task(&name, move |environment, configuration, progress| {
             let root = resolve_onejev_root(&environment, &configuration.model_dir);
-            let mut progress = |_done: u64, _total: u64| {};
-            let result = download_onejev_model(&environment, &root, &target, Some(&mut progress))
-                .map(|_| ());
+            progress.stage(format!("下载 OneJev {}", target.key));
+            let mut sink = progress.bytes_sink();
+            let result =
+                download_onejev_model(&environment, &root, &target, Some(&mut sink)).map(|_| ());
             OneJevTaskResult::Download {
                 size: target.key.to_string(),
                 result,
@@ -3215,9 +3293,13 @@ impl App {
         let configuration = load_local_deployment(&environment, None);
         let root = resolve_onejev_root(&environment, &configuration.model_dir);
         // 删的是服务正在用的那份权重时先停服务：Windows 上被占用的文件删不掉。
+        // 服务可能是别的实例起的，因此判定要看「在跑的是哪一档」，不只看本实例的记录。
         let target_dir = onejev_model_dir(&root, target.repo_id);
-        if self.onejev_server.model_dir() == Some(target_dir.as_path()) {
-            self.onejev_server.stop();
+        let target_model = target.repo_id.rsplit('/').next().unwrap_or(target.key);
+        let in_use = self.onejev_server.model_dir() == Some(target_dir.as_path())
+            || omnicrawl_onejev::running_model(&root).as_deref() == Some(target_model);
+        if in_use {
+            self.onejev_server.stop_shared(&root);
         }
         let removed = delete_onejev_model(&root, &target)?;
         if !removed {
@@ -3277,12 +3359,17 @@ impl App {
         }
 
         // 渠道指向本地服务而服务没跑：顺手拉起，免得用户切完渠道却打不通。
+        // 本机已有服务在跑（本实例或别的实例起的）时只是复用，不会重复拉起；
+        // `[local] auto_start = false` 时只切渠道、不动进程（启动与否交给「启动服务」行）。
+        let local = load_local_deployment(&environment, None);
         let mut note = String::new();
-        if self.onejev_server.state() == &OneJevServerState::Stopped {
-            match self.start_onejev_service() {
+        if local.auto_start {
+            match self.ensure_onejev_service(&local, false) {
                 Ok(message) => note = format!(" {message}"),
                 Err(error) => note = format!(" 本地服务未启动：{error}"),
             }
+        } else {
+            note = " [local] auto_start = false，未自动启动本地服务。".to_string();
         }
         Ok(format!(
             "决策渠道已切到自部署（{}，{}），已保存到 {}{}。",
@@ -3293,17 +3380,11 @@ impl App {
         ))
     }
 
-    /// 启动（或按当前尺寸重启）本地服务。
-    fn start_onejev_service(&mut self) -> Result<String, String> {
-        let environment = ConfigEnvironment::from_process();
-        let configuration = load_local_deployment(&environment, None);
-        self.restart_onejev_service(&configuration)
-    }
-
-    /// 启动（或重启）本地服务：进程句柄留在宿主，只有在途等待放线程。
-    fn restart_onejev_service(
+    /// 确保本地服务可用：端口上已有就复用，否则按当前规格拉起。
+    fn ensure_onejev_service(
         &mut self,
         configuration: &LocalDeploymentConfig,
+        force_restart: bool,
     ) -> Result<String, String> {
         if self.onejev_task.is_some() {
             return Err("已有自部署任务在跑，请稍候。".to_string());
@@ -3317,11 +3398,27 @@ impl App {
         let timeout = configuration.health_timeout_seconds.max(1) as u64;
         let (sender, receiver) = mpsc::channel();
         self.onejev_task = Some(receiver);
+        let progress = omnicrawl_onejev::ProgressHandle::new();
+        let task_name = if force_restart {
+            format!("重启本地决策服务（{}）", target.key)
+        } else {
+            format!("启动本地决策服务（{}）", target.key)
+        };
+        progress.stage("正在拉起 qev 进程…");
+        self.onejev_progress = Some(OneJevRunningTask {
+            name: task_name.clone(),
+            progress: progress.clone(),
+        });
         // 服务句柄先搬到线程里等健康检查，结果连同句柄一起送回来装回宿主。
         let mut server = std::mem::take(&mut self.onejev_server);
         let status = format!("正在启动本地决策服务（{}）…", target.key);
         thread::spawn(move || {
-            let outcome = server.start(spec, true, timeout);
+            let mut on_stage = |stage: &str| progress.stage(stage);
+            let outcome = if force_restart {
+                server.restart(spec, timeout)
+            } else {
+                server.start_with_progress(spec, true, timeout, &mut on_stage)
+            };
             let result = match outcome.state {
                 OneJevServerState::Ready => Ok(outcome.message),
                 _ => Err(outcome.message),
@@ -3331,20 +3428,51 @@ impl App {
                 result,
             });
         });
+        self.refresh_decision_local_with(status.clone());
         Ok(status)
     }
 
-    /// 停止本地服务并释放显存。
+    /// 启动（或复用）本地服务；规格变了时由调用方走 [`Self::ensure_onejev_service`] 的强制重启。
+    fn start_onejev_service(&mut self) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        self.ensure_onejev_service(&configuration, false)
+    }
+
+    /// 按新规格重启本地服务（尺寸/设备改档时用）：这份服务本机只有一份，必须换进程。
+    fn restart_onejev_service(
+        &mut self,
+        configuration: &LocalDeploymentConfig,
+    ) -> Result<String, String> {
+        self.ensure_onejev_service(configuration, true)
+    }
+
+    /// 停止本机共享的本地服务并释放显存。
+    ///
+    /// 停的是端口上那一份（可能是别的实例起的）：多实例共用一份服务，界面上的「停止服务」
+    /// 就是要它真的停下来。
     fn stop_onejev_service(&mut self) -> Result<String, String> {
-        let outcome = self.onejev_server.stop();
+        let environment = ConfigEnvironment::from_process();
+        let configuration = load_local_deployment(&environment, None);
+        let root = resolve_onejev_root(&environment, &configuration.model_dir);
+        let outcome = self.onejev_server.stop_shared(&root);
         self.refresh_decision_local();
         Ok(outcome.message)
     }
 
     /// 把「读配置 + 后台执行」的样板收口：任务结果统一回到 [`Self::tick_onejev_tasks`]。
-    fn spawn_onejev_task<F>(&mut self, run: F) -> Result<String, String>
+    ///
+    /// `name` 是界面上显示的任务名；`run` 通过 [`omnicrawl_onejev::ProgressHandle`] 持续写进度，
+    /// 界面每帧取快照。任务结束时进度句柄随 `onejev_progress` 一起清空，`busy` 因此必然复位。
+    fn spawn_onejev_task<F>(&mut self, name: &str, run: F) -> Result<String, String>
     where
-        F: FnOnce(ConfigEnvironment, LocalDeploymentConfig) -> OneJevTaskResult + Send + 'static,
+        F: FnOnce(
+                ConfigEnvironment,
+                LocalDeploymentConfig,
+                omnicrawl_onejev::ProgressHandle,
+            ) -> OneJevTaskResult
+            + Send
+            + 'static,
     {
         if self.onejev_task.is_some() {
             return Err("已有自部署任务在跑，请稍候。".to_string());
@@ -3353,14 +3481,27 @@ impl App {
         let configuration = load_local_deployment(&environment, None);
         let (sender, receiver) = mpsc::channel();
         self.onejev_task = Some(receiver);
-        thread::spawn(move || {
-            let _ = sender.send(run(environment, configuration));
+        let progress = omnicrawl_onejev::ProgressHandle::new();
+        self.onejev_progress = Some(OneJevRunningTask {
+            name: name.to_string(),
+            progress: progress.clone(),
         });
-        Ok("自部署任务已开始，完成后会在这里更新。".to_string())
+        thread::spawn(move || {
+            let _ = sender.send(run(environment, configuration, progress));
+        });
+        self.refresh_decision_local_with(format!("{name}已开始。"));
+        Ok(format!("{name}已开始，进度见「任务进度」行。"))
     }
 
     /// 每帧轮询后台自部署任务：取回结果后回填状态行并刷新分区。
+    ///
+    /// 任务在跑时每帧把进度快照推给设置页（进度行与状态行都读它）；结果一到就清空
+    /// [`Self::onejev_progress`]——`busy` 由它推导，因此**必然**在任务结束时复位。
     pub fn tick_onejev_tasks(&mut self) {
+        // 先推这一帧的进度：任务结束的那一帧也要把最终阶段画出来。
+        if self.onejev_progress.is_some() && self.onejev_task.is_some() {
+            self.refresh_decision_local();
+        }
         let received = match self.onejev_task.as_ref() {
             Some(receiver) => receiver.try_recv(),
             None => return,
@@ -3370,10 +3511,13 @@ impl App {
             Err(mpsc::TryRecvError::Empty) => return,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.onejev_task = None;
+                self.onejev_progress = None;
+                self.refresh_decision_local();
                 return;
             }
         };
         self.onejev_task = None;
+        self.onejev_progress = None;
         let message = match outcome {
             OneJevTaskResult::Environment(Ok(true)) => {
                 "运行环境已就绪（CUDA 版 torch）。".to_string()
@@ -3408,6 +3552,77 @@ impl App {
         let values = self.decision_local_values(&environment);
         if let Some(settings) = self.settings.as_mut() {
             settings.refresh_decision_local(values, message);
+        }
+    }
+
+    // ---------- 启动期自启动本地决策服务 ----------
+
+    /// 启动时按配置把自部署决策服务准备好（渠道 `onejev` + `[local] auto_start`）。
+    ///
+    /// 判定与处理都集中在 `OneJevServer`：端口已就绪（含**其他 OmniCrawl 实例**起的服务）
+    /// 就复用，不重复拉起；环境与权重不齐时只记一行启动日志，不在启动期起一个注定失败的进程。
+    pub fn autostart_local_decision_service(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        let Ok(configuration) = load_decision_model_configuration(&environment, None) else {
+            return;
+        };
+        let Some(channel) = configuration.active_channel() else {
+            return;
+        };
+        // 默认渠道不是自部署：本实例不用本地服务，不动任何进程。
+        if channel.mode != DECISION_MODE_ONEJEV {
+            return;
+        }
+        let local = load_local_deployment(&environment, None);
+        if !local.auto_start {
+            self.startup_service_lines.push(
+                "默认决策渠道是自部署，但 [local] auto_start = false，未自动启动本地服务。"
+                    .to_string(),
+            );
+            return;
+        }
+        let Some(target) = find_onejev_size(&local.size) else {
+            return;
+        };
+        let root = resolve_onejev_root(&environment, &local.model_dir);
+        let spec = OneJevLaunchSpec::new(&root, &target, &local.device);
+
+        // 端口上已经有服务：复用即可，这是多实例共用的正常路径。
+        // 这里同步复用（不拉起进程、也不占后台任务），只记一行启动日志。
+        if omnicrawl_onejev::healthy(
+            omnicrawl_onejev::LOCAL_HOST,
+            omnicrawl_onejev::LOCAL_PORT,
+            1,
+        ) {
+            let outcome = self
+                .onejev_server
+                .start_with_progress(spec, false, 1, &mut |_| {});
+            self.startup_service_lines.push(outcome.message);
+            return;
+        }
+
+        // 环境与权重是启动的前提：缺了就让用户去设置页处理，不在这里起一个注定失败的进程。
+        if onejev_environment_state(&root) != omnicrawl_onejev::EnvironmentState::Ready {
+            self.startup_service_lines.push(
+                "自部署运行环境未就绪，未自动启动本地服务（可在「结构化决策模型」页准备运行环境）。"
+                    .to_string(),
+            );
+            return;
+        }
+        if !onejev_model_ready(&root, &target) {
+            self.startup_service_lines.push(format!(
+                "OneJev {} 的权重未下载，未自动启动本地服务（可在「结构化决策模型」页下载）。",
+                target.key
+            ));
+            return;
+        }
+
+        // 启动是分钟级动作（加载权重 + 捕获 CUDA 图）：放后台线程，启动画面不等它。
+        match self.ensure_onejev_service(&local, false) {
+            Ok(message) => self.startup_service_lines.push(message),
+            Err(error) => self
+                .startup_service_lines
+                .push(format!("本地决策服务未启动：{error}")),
         }
     }
 

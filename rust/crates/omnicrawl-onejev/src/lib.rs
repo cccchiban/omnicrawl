@@ -9,23 +9,27 @@
 //! * [`download`]：从 Hugging Face 拉取某个尺寸的权重到本机数据目录（`[onejev] model_dir`），
 //!   带就绪判断与删除；
 //! * [`env`] + [`server`]：专用虚拟环境（torch CUDA + qev）与本地服务进程的生命周期
-//!   （拉起 / 健康检查 / 停止 / 切尺寸），宿主据此把决策请求打到 `127.0.0.1:<port>`。
+//!   （拉起 / 健康检查 / 停止 / 切尺寸）。这份服务由**本机全部 OmniCrawl 实例共用**：
+//!   实例启动时按配置自动准备，已在跑就复用，且不随实例退出被回收。
 //!
 //! 权重与虚拟环境都放在用户数据目录（默认 `~/.omnicrawl/onejev`），不进工作区、不进仓库。
 
 pub mod download;
 pub mod env;
 pub mod paths;
+pub mod progress;
 pub mod server;
 pub mod sizes;
 
 pub use download::{delete_model, download_model, model_ready, DownloadOutcome, ProgressCallback};
 pub use env::{
-    ensure_environment, environment_state, EnvironmentState, InstallOutcome, InstallProgress,
+    ensure_environment, environment_state, remove_environment, system_python, EnvironmentState,
+    InstallOutcome, InstallProgress, PythonLauncher,
 };
+pub use progress::{human_bytes, ProgressHandle, ProgressSnapshot, ProgressUnit};
 pub use paths::{default_root, resolve_root};
 pub use server::{
-    LaunchSpec, OneJevServer, ServerOutcome, ServerState, DEFAULT_HEALTH_TIMEOUT_SECONDS,
-    LOCAL_BASE_URL, LOCAL_HOST, LOCAL_PORT,
+    healthy, read_pid, read_pid_record, running_model, LaunchSpec, OneJevServer, ServerOutcome,
+    ServerState, DEFAULT_HEALTH_TIMEOUT_SECONDS, LOCAL_BASE_URL, LOCAL_HOST, LOCAL_PORT,
 };
 pub use sizes::{find_size, size_labels, OneJevSize, ONEJEV_SIZES};
