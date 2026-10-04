@@ -70,6 +70,27 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   `TurnRunner::run_turn` 开头复位。不复位时「`Esc` 取消后继续对话」的下一回合里，每个
   `bash` / `powershell` 都会在子进程刚起来时被判定为已取消——令牌只置位不回零，是跨回合状态。
 
+## 决策模型审查（可选，默认关闭）
+
+`review.rs` 是 `approval.mode = review` 的审查闸：静态规则判定为 Review 的调用（删除类、
+下载并执行类、高风险 Git）交给审查者做最后一道安全闸，失败一律 fail-closed。默认走对话模型
+（独立身份提示词 + 一次单轮补全，`{"approve": ...}` JSON）；`decision_models.toml` 的
+`[features] tool_call_review` 打开后改走结构化决策模型（`ReviewChannel`，`review_options_from_config`
+由 TUI 与本地 API 共用装配）。
+
+- 决策通道把同一份待审查负载当 `state`，提**两个** choice 提问：`tool_call_verdict`
+  （`approve` / `reject`）与 `tool_call_reject_reason`（拒绝理由，候选项键 `r0`、`r1`…，
+  候选表见 `DECISION_REVIEW_REJECT_REASONS`：未经允许删除工作区外文件、删除范围越界、
+  删除目标不明确、下载脚本后直接执行、高风险 Git 超出任务范围 / 不可逆且未授权、调用与任务
+  目标不符）。一次往返取回两个答案，不生成文本、不用解析。
+- 判定拒绝时，拒绝文案以**选中的候选理由**开头（附置信度），主模型一眼能看出这是审查者的判断
+  而不是决策服务故障；理由答案缺失或键落在候选表之外时退回原有的「决策模型判定拒绝（confidence …，
+  响应：…）」诊断文案，不编造理由。
+- 出网内容沿用 `[desensitization]` 旁路（`masking_from_config`）；决策渠道不可用、开关打开但没
+  渠道、响应取不出答案都算拒绝（fail-closed，不退化成对话模型审查）。
+- 回环用例在 `review.rs` 内部自带（`DecisionCassette`：`set_choice` / `set_reason` 两个旋钮，
+  覆盖结论解析、选中理由、表外键与缺答回落）。
+
 ## 检索重排（可选，默认关闭）
 
 `tools/decision_search.rs` 把 `memory_search` 与 `kb_search` 的候选交给结构化决策模型按相关度

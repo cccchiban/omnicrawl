@@ -12,8 +12,10 @@
 //! 两条审查通道：
 //! * 对话模型通道（默认）：`review_tool_call`，一次单轮补全并解析 `{"approve": ...}` JSON。
 //! * 决策模型通道（可选，`[decision_models.features] tool_call_review = true`）：把同一份
-//!   待审查负载当成 `state`，向结构化决策服务提一个 choice 问题，直接读回选项——不生成
-//!   文本、不用解析，因此更快（[`DecisionReviewOptions`]）。
+//!   待审查负载当成 `state`，向结构化决策服务提两个 choice 问题——结论（approve / reject）与
+//!   拒绝理由（固定候选表，见 [`DECISION_REVIEW_REJECT_REASONS`]），直接读回选项，不生成
+//!   文本、不用解析，因此更快（[`DecisionReviewOptions`]）。判定拒绝时把选中的理由原样写进
+//!   拒绝文案，主模型据此能分辨「审查者判定」与「决策服务故障」。
 //!   两条通道共享同一份载荷、同一套脱敏旁路与同一套 fail-closed 语义。
 //!
 //! 与 Python 的差异：`maybe_create_oneshot_masker`（从 `[desensitization]` 配置构造 masker）
@@ -132,6 +134,49 @@ const DECISION_REVIEW_APPROVE_CRITERIA: &str =
     "批准执行：目标明确、影响可判断且属于当前任务范围（或属于一律批准的那几类操作）。";
 const DECISION_REVIEW_REJECT_CRITERIA: &str =
     "拒绝执行：删除范围越界或目标不明确、下载脚本后直接执行、或高风险 Git 操作无法证明符合当前任务需求。";
+
+/// 决策审查的第二个提问：拒绝理由。与结论同请求发出，只在判定拒绝时采用。
+///
+/// 决策模型只能从固定候选项里选一条，因此拒绝后回给主模型的一定是这里写死的理由，而不是模型
+/// 自由文本——主模型据此能看出「这是审查者的判断」，而不是决策服务失败。
+const DECISION_REVIEW_REASON_QUESTION_ID: &str = "tool_call_reject_reason";
+const DECISION_REVIEW_REASON_KEY_PREFIX: &str = "r";
+const DECISION_REVIEW_REASON_INSTRUCTIONS: &str =
+    "如果 tool_call_verdict 判定为拒绝，本次拒绝属于哪一种理由？\
+从 criteria 里选最贴切的一条，只依据 state 里的 tool / description / arguments / user_intent_summary 判断；\
+判定为批准时也照选最接近的一条，审查层只在拒绝时采用。";
+
+/// 拒绝理由候选：`(回给主模型的理由, 判定说明)`，键是下标（`r0`、`r1`…）。
+pub const DECISION_REVIEW_REJECT_REASONS: [(&str, &str); 7] = [
+    (
+        "未经允许删除工作区之外的文件或目录",
+        "删除目标在工作区（workspace_root）之外，且用户意图与最近一次问答里没有对应授权。",
+    ),
+    (
+        "删除范围越界（根目录、磁盘分区、整个项目或仓库、数据库等）",
+        "删除目标落在根目录、磁盘分区、整个项目或目录树、.git 仓库、数据库等任务范围之外的破坏性范围上。",
+    ),
+    (
+        "删除目标不明确，无法判断影响范围",
+        "参数里的删除目标含糊（通配符、变量、空值等），无法判断究竟会删掉什么。",
+    ),
+    (
+        "从网络下载脚本或代码后直接执行",
+        "调用会先拉取远端脚本或代码再执行，无论来源看起来是否可信。",
+    ),
+    (
+        "高风险 Git 操作超出当前任务范围",
+        "push、rebase、merge、pull、clean、reset --hard 等操作的目标或影响与当前任务无关。",
+    ),
+    (
+        "高风险 Git 操作不可逆且没有用户授权",
+        "推送、改写历史、清空工作区、删除分支或标签等不可逆操作无法证明符合用户需求。",
+    ),
+    (
+        "调用内容与当前任务目标不符",
+        "参数指向的文件、路径或目标与 user_intent_summary / ask_user_qa 里的任务需求不一致。",
+    ),
+];
 
 /// 审查请求的脱敏旁路（对应 Python 的 `maybe_create_oneshot_masker`）。
 pub struct ReviewMasking {
@@ -450,6 +495,11 @@ fn review_with_decision(
                 DECISION_REVIEW_APPROVE: DECISION_REVIEW_APPROVE_CRITERIA,
                 DECISION_REVIEW_REJECT: DECISION_REVIEW_REJECT_CRITERIA,
             }
+        },
+        DECISION_REVIEW_REASON_QUESTION_ID: {
+            "type": "choice",
+            "instructions": DECISION_REVIEW_REASON_INSTRUCTIONS,
+            "criteria": decision_reason_criteria(),
         }
     });
     let body =
@@ -517,7 +567,9 @@ fn review_with_decision(
     match choice {
         DECISION_REVIEW_APPROVE => Ok(()),
         DECISION_REVIEW_REJECT => Err(review_rejected_reason(&decision_reject_detail(
-            &text, confidence,
+            &text,
+            confidence,
+            answers.get(DECISION_REVIEW_REASON_QUESTION_ID),
         ))),
         _ => Err(review_parse_failed_reason(&format!(
             "决策模型未返回可识别的选项：{}",
@@ -526,8 +578,49 @@ fn review_with_decision(
     }
 }
 
-/// 拒绝原因：点明置信度与决策服务的原始响应，便于复盘。
-fn decision_reject_detail(text: &str, confidence: Option<f64>) -> String {
+/// 拒绝理由候选的 `criteria`：键 `r0`、`r1`…，值是候选的判定说明。
+fn decision_reason_criteria() -> Value {
+    let criteria: Map<String, Value> = DECISION_REVIEW_REJECT_REASONS
+        .iter()
+        .enumerate()
+        .map(|(index, (_, description))| {
+            (
+                format!("{DECISION_REVIEW_REASON_KEY_PREFIX}{index}"),
+                Value::String((*description).to_string()),
+            )
+        })
+        .collect();
+    Value::Object(criteria)
+}
+
+/// 取回选中的拒绝理由：键越界、缺失或非候选键时返回 `None`（回落诊断文案）。
+fn decision_reject_reason(answer: Option<&Value>) -> Option<&'static str> {
+    let key = answer
+        .and_then(|value| value.get("choice"))
+        .and_then(Value::as_str)
+        .map(str::trim)?;
+    let index: usize = key
+        .strip_prefix(DECISION_REVIEW_REASON_KEY_PREFIX)?
+        .parse()
+        .ok()?;
+    DECISION_REVIEW_REJECT_REASONS
+        .get(index)
+        .map(|(reason, _)| *reason)
+}
+
+/// 拒绝原因：优先用决策模型选中的固定理由——主模型据此知道这是审查者的判断，而不是决策服务
+/// 出了故障；没选出可识别理由时回落原有的置信度 + 响应诊断。
+fn decision_reject_detail(
+    text: &str,
+    confidence: Option<f64>,
+    reason_answer: Option<&Value>,
+) -> String {
+    if let Some(reason) = decision_reject_reason(reason_answer) {
+        return match confidence {
+            Some(value) => format!("{reason}（决策模型判定拒绝，confidence {value:.2}）"),
+            None => format!("{reason}（决策模型判定拒绝）"),
+        };
+    }
     match confidence {
         Some(value) => format!(
             "决策模型判定拒绝（confidence {value:.2}，响应：{}）",
@@ -821,6 +914,10 @@ mod tests {
         cassette.set_choice("reject");
         let reason = review_tool_call(&options, &request).expect_err("reject 应拒绝");
         assert!(reason.starts_with("自动审查拒绝执行："), "文案：{reason}");
+        assert!(
+            reason.contains(DECISION_REVIEW_REJECT_REASONS[0].0),
+            "拒绝原因应是决策模型选中的候选理由：{reason}"
+        );
         assert!(reason.contains("confidence"), "拒绝原因带置信度：{reason}");
 
         // 请求形状：state 就是审查载荷，model 与鉴权头按决策渠道给。
@@ -837,6 +934,65 @@ mod tests {
             captured.questions_contains_choice,
             "问题类型应是 choice：{}",
             captured.questions
+        );
+        assert_eq!(
+            captured.reason_criteria_keys.len(),
+            DECISION_REVIEW_REJECT_REASONS.len(),
+            "理由候选项应与候选表一一对应：{}",
+            captured.questions
+        );
+    }
+
+    #[test]
+    fn decision_channel_reject_reason_falls_back_when_unusable() {
+        let cassette = DecisionCassette::serve();
+        let decision = DecisionReviewOptions {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: cassette.base_url(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+        };
+        let request = ReviewRequest {
+            tool_name: "bash",
+            description: "运行 shell 命令",
+            arguments: &arguments(json!({"command": "rm -rf /"})),
+            workspace_root: ".",
+            context: &ReviewContext::default(),
+        };
+        let options = ReviewOptions {
+            channel: ReviewChannel::Decision(decision),
+            ..ReviewOptions::default()
+        };
+        cassette.set_choice("reject");
+
+        // 候选表外的键：退回原有的置信度 + 响应诊断，不编造理由。
+        cassette.set_reason("r99");
+        let reason = review_tool_call(&options, &request).expect_err("reject 应拒绝");
+        assert!(
+            reason.contains("决策模型判定拒绝（confidence"),
+            "表外键应回落诊断文案：{reason}"
+        );
+
+        // 缺答：同上。
+        cassette.set_reason("");
+        let reason = review_tool_call(&options, &request).expect_err("reject 应拒绝");
+        assert!(
+            reason.contains("决策模型判定拒绝（confidence"),
+            "缺答应回落诊断文案：{reason}"
+        );
+
+        // 同一候选表里换一条：文案随之改变。
+        let index = DECISION_REVIEW_REJECT_REASONS.len() - 1;
+        cassette.set_reason(&format!("{DECISION_REVIEW_REASON_KEY_PREFIX}{index}"));
+        let reason = review_tool_call(&options, &request).expect_err("reject 应拒绝");
+        assert!(
+            reason.contains(DECISION_REVIEW_REJECT_REASONS[index].0),
+            "应回传选中的那一条理由：{reason}"
+        );
+        assert!(
+            !reason.contains(DECISION_REVIEW_REJECT_REASONS[0].0),
+            "不该串到别的候选：{reason}"
         );
     }
 
@@ -885,6 +1041,7 @@ mod tests {
     struct DecisionCassette {
         base_url: String,
         choice: Arc<std::sync::Mutex<String>>,
+        reason: Arc<std::sync::Mutex<String>>,
         captured: Arc<std::sync::Mutex<CapturedDecisionRequest>>,
     }
 
@@ -896,6 +1053,8 @@ mod tests {
         state: String,
         questions: String,
         questions_contains_choice: bool,
+        /// 理由提问的候选项键（按请求里的顺序）。
+        reason_criteria_keys: Vec<String>,
     }
 
     impl DecisionCassette {
@@ -906,11 +1065,15 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
             let port = listener.local_addr().expect("本地地址").port();
             let choice = Arc::new(std::sync::Mutex::new("approve".to_string()));
+            let reason = Arc::new(std::sync::Mutex::new(
+                format!("{DECISION_REVIEW_REASON_KEY_PREFIX}0"),
+            ));
             let captured = Arc::new(std::sync::Mutex::new(CapturedDecisionRequest::default()));
             let seen_choice = Arc::clone(&choice);
+            let seen_reason = Arc::clone(&reason);
             let seen_captured = Arc::clone(&captured);
             std::thread::spawn(move || {
-                for _ in 0..4 {
+                for _ in 0..8 {
                     let Ok((stream, _)) = listener.accept() else {
                         break;
                     };
@@ -977,14 +1140,25 @@ mod tests {
                             .unwrap_or("")
                             .to_string();
                         seen.questions = questions.to_string();
+                        let reason_question = questions.get(DECISION_REVIEW_REASON_QUESTION_ID);
                         seen.questions_contains_choice = questions
                             .get(DECISION_REVIEW_QUESTION_ID)
                             .and_then(|value| value.get("type"))
                             .and_then(Value::as_str)
-                            == Some("choice");
+                            == Some("choice")
+                            && reason_question
+                                .and_then(|value| value.get("type"))
+                                .and_then(Value::as_str)
+                                == Some("choice");
+                        seen.reason_criteria_keys = reason_question
+                            .and_then(|value| value.get("criteria"))
+                            .and_then(Value::as_object)
+                            .map(|criteria| criteria.keys().cloned().collect())
+                            .unwrap_or_default();
                     }
                     let selected = seen_choice.lock().expect("选项未被毒化").clone();
-                    let answers = json!({
+                    let selected_reason = seen_reason.lock().expect("理由未被毒化").clone();
+                    let mut answers = json!({
                         DECISION_REVIEW_QUESTION_ID: {
                             "type": "choice",
                             "choice": selected,
@@ -992,6 +1166,14 @@ mod tests {
                             "probabilities": {"approve": 0.09, "reject": 0.91},
                         }
                     });
+                    // 空键模拟决策服务没给理由答案（缺答路径）。
+                    if !selected_reason.is_empty() {
+                        answers[DECISION_REVIEW_REASON_QUESTION_ID] = json!({
+                            "type": "choice",
+                            "choice": selected_reason,
+                            "confidence": 0.88,
+                        });
+                    }
                     // 两种请求方式各自认自己的响应形状。
                     let payload = if native {
                         json!({"model": "jev-1.13.0", "answers": answers}).to_string()
@@ -1020,6 +1202,7 @@ mod tests {
             Self {
                 base_url: format!("http://127.0.0.1:{port}"),
                 choice,
+                reason,
                 captured,
             }
         }
@@ -1030,6 +1213,11 @@ mod tests {
 
         fn set_choice(&self, choice: &str) {
             *self.choice.lock().expect("选项未被毒化") = choice.to_string();
+        }
+
+        /// 设定理由答案的键；空串表示这次响应不带理由答案。
+        fn set_reason(&self, reason: &str) {
+            *self.reason.lock().expect("理由未被毒化") = reason.to_string();
         }
 
         fn captured(&self) -> CapturedDecisionRequest {
