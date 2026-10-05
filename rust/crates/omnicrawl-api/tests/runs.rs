@@ -219,6 +219,8 @@ fn runner_options(root: &Path) -> RunnerOptions {
         review: None,
         // 不托管提问：有选项的提问照旧由 HTTP 提交答案。
         custody: None,
+        // 不做工具调用淘汰：「刚变老」的那批调用全部留在上下文里。
+        prune: None,
         prompt: None,
     }
 }

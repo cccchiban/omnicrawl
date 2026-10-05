@@ -6,10 +6,11 @@
 //! 两种请求方式（`mode`）：
 //! * `jev`（默认）：`POST {base_url}/v1/decide`，`state` + `questions` 直接进请求体，
 //!   响应体的 `answers` 直接就是答案。Bearer 鉴权，模型名形如 `jev-latest` / `jev-1.13.0`。
-//! * `chat_completions`：`POST {base_url}/v1/chat/completions`（OpenAI 兼容），把同一份
+//! * `chat_completions`：`POST {base_url}/chat/completions`（OpenAI 兼容），把同一份
 //!   `state` + `questions` 当作 user 消息的 JSON 文本发出，并要求结构化 JSON 输出；
 //!   答案从 `choices[0].message.content` 里解析出同一形状的 `answers`，因此上层读答案的
-//!   代码两种方式共用。
+//!   代码两种方式共用。该方式的 `base_url` 按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`
+//!   与 `[tts_api]`），因此只追加资源路径。
 //!
 //! 与 `models.toml` 分开成独立文件是刻意的：决策渠道与对话渠道是两套互不相干的服务地址
 //! 与模型命名空间，混进 `models.toml` 会被对话侧的目录与能力解析当成候选模型。
@@ -33,7 +34,8 @@ use crate::value::{python_str, truthy};
 /// 决策服务类型：Jev 原生接口（`POST {base_url}/v1/decide`）。
 pub const DECISION_MODE_JEV: &str = "jev";
 
-/// 决策服务类型：OpenAI 兼容的 Chat Completions 接口（`POST {base_url}/v1/chat/completions`）。
+/// 决策服务类型：OpenAI 兼容的 Chat Completions 接口（`POST {base_url}/chat/completions`，
+/// 基地址按 OpenAI 兼容口径填到 `/v1`）。
 pub const DECISION_MODE_CHAT_COMPLETIONS: &str = "chat_completions";
 
 /// 决策服务类型：OneJev 本地自部署（`POST {base_url}/v1/systemone`，TypeSafe 兼容接口）。
@@ -153,15 +155,40 @@ impl DecisionChannelConfig {
 
     /// 决策接口的完整地址：按 `mode` 选路径（基地址末尾斜杠已在归一化时去掉）。
     ///
-    /// 上层只认这一个入口，因此三种请求方式对调用方是同一件事。
+    /// 上层只认这一个入口，因此三种请求方式对调用方是同一件事。`chat_completions` 的基地址
+    /// 已含 `/v1`（OpenAI 兼容口径），只追加资源路径；`jev` / `onejev` 的基地址是站点根下的
+    /// API 前缀，各自补 `/v1/...`。
     pub fn decide_url(&self) -> String {
         match self.mode.as_str() {
             DECISION_MODE_CHAT_COMPLETIONS => {
-                format!("{}/v1/chat/completions", self.base_url)
+                format!("{}/chat/completions", self.base_url)
             }
             DECISION_MODE_ONEJEV => format!("{}/v1/systemone", self.base_url),
             _ => format!("{}/v1/decide", self.base_url),
         }
+    }
+
+    /// 渠道是否指向本机回环地址（自部署的 OneJev 服务）。
+    ///
+    /// `onejev` 是「本机 qev 服务」的协议形状，但云端网关（new-api 一类）也提供同一形状的
+    /// 接口，因此判断「要不要拉起本机服务」不能只看 `mode`，还要看地址确实落在回环上。
+    pub fn is_local_service(&self) -> bool {
+        let Some((_, rest)) = self.base_url.split_once("://") else {
+            return false;
+        };
+        // 去掉路径/查询/片段，只剩 authority（可能带 userinfo 与端口）。
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let authority = authority
+            .rsplit_once('@')
+            .map(|(_, host)| host)
+            .unwrap_or(authority);
+        let host = if let Some(rest) = authority.strip_prefix('[') {
+            // IPv6 字面量：取方括号内的部分。
+            rest.split(']').next().unwrap_or("")
+        } else {
+            authority.split(':').next().unwrap_or("")
+        };
+        DECISION_API_LOOPBACK_HOSTS.contains(&host.to_lowercase().as_str())
     }
 
     /// 生效的内联凭据：只认配置里的明文 `api_key`。
@@ -175,6 +202,125 @@ pub const DECISION_FEATURES_SECTION: &str = "features";
 
 /// 自部署配置的段名（`decision_models.toml` 的 `[local]`）。
 pub const DECISION_LOCAL_SECTION: &str = "local";
+
+/// 决策 REST 接口的段名（`decision_models.toml` 的 `[api]`）。
+pub const DECISION_API_SECTION: &str = "api";
+
+/// 决策 REST 服务的默认监听端口。
+///
+/// 与本地 API（8765）和 OneJev 的 `qev serve`（8766）都错开：三者常常同时在本机跑。
+pub const DEFAULT_DECISION_API_PORT: i64 = 8767;
+
+/// 决策 REST 服务只接受回环地址（它持有决策渠道凭据，是本地代理）。
+pub const DECISION_API_LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
+
+/// 决策 REST 接口的运行期配置。
+///
+/// 与决策渠道分开：渠道是「决策服务在哪」，本段是「把决策能力以什么地址暴露给本机其它程序」。
+/// 接口不做鉴权，因此只允许回环地址——本机任意进程都能调用，这是刻意的取舍。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionApiConfig {
+    /// 是否随宿主启动常驻服务。
+    pub enabled: bool,
+    pub host: String,
+    pub port: i64,
+}
+
+impl Default for DecisionApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: DEFAULT_DECISION_API_PORT,
+        }
+    }
+}
+
+impl DecisionApiConfig {
+    /// 取值域校验与归一化（错误文案带 `api` 前缀，与段名一致）。
+    pub fn normalize(mut self) -> Result<Self, ConfigError> {
+        let host = self.host.trim().to_string();
+        if !DECISION_API_LOOPBACK_HOSTS.contains(&host.to_lowercase().as_str()) {
+            return Err(ConfigError::new(
+                "决策接口 api.host 仅允许回环地址（127.0.0.1 / localhost / ::1）。",
+            ));
+        }
+        self.host = host;
+        if !(1..=65535).contains(&self.port) {
+            return Err(ConfigError::new(
+                "决策接口 api.port 必须是 1 到 65535 的整数。",
+            ));
+        }
+        Ok(self)
+    }
+
+    /// 服务能否真正监听（开关打开）。
+    pub fn usable(&self) -> bool {
+        self.enabled
+    }
+
+    /// 监听地址文本。
+    pub fn address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// 读取 `decision_models.toml` 的 `[api]` 段；缺段或读不出来时返回默认值（未启用）。
+pub fn load_decision_api_configuration(
+    env: &ConfigEnvironment,
+    decision_models_path: Option<&Path>,
+) -> DecisionApiConfig {
+    let Ok(target) = resolve_decision_models_path(env, decision_models_path) else {
+        return DecisionApiConfig::default();
+    };
+    let Ok(data) = load_config_data(env, Some(&target)) else {
+        return DecisionApiConfig::default();
+    };
+    let Ok(section) = get_section(&data, DECISION_API_SECTION) else {
+        return DecisionApiConfig::default();
+    };
+    let defaults = DecisionApiConfig::default();
+    DecisionApiConfig {
+        enabled: bool_field(&section, "enabled", defaults.enabled),
+        host: text_field(&section, "host", &defaults.host),
+        port: match section.get("port") {
+            Some(Value::Integer(value)) => *value,
+            _ => defaults.port,
+        },
+    }
+    // 校验失败（例如手改坏了监听地址）时不阻断决策功能：回落到默认值。
+    .normalize()
+    .unwrap_or(defaults)
+}
+
+/// 把决策 REST 接口配置写回 `decision_models.toml` 的 `[api]` 段（保留渠道、开关与 `version`）。
+pub fn save_decision_api_configuration(
+    env: &ConfigEnvironment,
+    configuration: &DecisionApiConfig,
+    decision_models_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    let normalized = configuration.clone().normalize()?;
+    let source = resolve_decision_models_path(env, decision_models_path)?;
+    let target = resolve_decision_models_write_path(env, decision_models_path)?;
+    let mut data = if source.exists() {
+        load_config_data(env, Some(&source))?
+    } else {
+        Table::new()
+    };
+    if !data.contains_key("version") {
+        data.insert("version".to_string(), Value::Integer(1));
+    }
+    let mut section = Table::new();
+    section.insert(
+        "enabled".to_string(),
+        Value::Boolean(normalized.enabled),
+    );
+    section.insert("host".to_string(), Value::String(normalized.host.clone()));
+    section.insert("port".to_string(), Value::Integer(normalized.port));
+    data.insert(DECISION_API_SECTION.to_string(), Value::Table(section));
+    atomic_write_text(&target, &dump_toml_text(&data))?;
+    Ok(target)
+}
 
 /// 可自部署的 OneJev 尺寸键（与 `omnicrawl-onejev` 的尺寸清单同源，由该 crate 的测试对账）。
 ///
@@ -337,6 +483,9 @@ pub const DECISION_SWITCH_KB_SEARCH: &str = "kb_search_rerank";
 /// 「提问自动托管」开关的配置键。
 pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
 
+/// 「老一轮工具调用按需淘汰」开关的配置键。
+pub const DECISION_SWITCH_TOOL_PRUNE: &str = "tool_call_prune";
+
 /// 一个决策模型功能开关：配置键、界面文案、默认值。
 ///
 /// 开关表是决策模型页下方那一组开关的唯一来源（读盘、写盘、界面、测试都读它）；
@@ -348,7 +497,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 4] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 5] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -367,6 +516,11 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 4] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_ASK_USER_CUSTODY,
         label: "提问由决策模型自动作答",
+        default: false,
+    },
+    DecisionSwitchSpec {
+        key: DECISION_SWITCH_TOOL_PRUNE,
+        label: "旧一轮工具调用按需淘汰",
         default: false,
     },
 ];
@@ -714,12 +868,14 @@ mod tests {
 
         let chat = DecisionChannelConfig {
             mode: DECISION_MODE_CHAT_COMPLETIONS.to_string(),
+            // 对话补全的基地址按 OpenAI 兼容口径填到 /v1（同 image_gen / tts_api）。
+            base_url: "https://api.openlux.ai/v1".to_string(),
             ..DecisionChannelConfig::default()
         };
         assert_eq!(
             chat.decide_url(),
-            "https://jevtypesafeai.com/api/v1/chat/completions",
-            "对话补全方式走 /v1/chat/completions"
+            "https://api.openlux.ai/v1/chat/completions",
+            "对话补全方式在基地址上追加 /chat/completions，不再重复拼 /v1"
         );
 
         let local = DecisionChannelConfig {
@@ -732,6 +888,47 @@ mod tests {
             "http://127.0.0.1:8766/v1/systemone",
             "自部署方式走 OneJev 服务的 /v1/systemone"
         );
+    }
+
+    #[test]
+    fn only_loopback_onejev_channels_count_as_local_service() {
+        // 本机自部署：回环地址，算本地服务。
+        let local = DecisionChannelConfig {
+            mode: DECISION_MODE_ONEJEV.to_string(),
+            base_url: DEFAULT_LOCAL_DECISION_BASE_URL.to_string(),
+            ..DecisionChannelConfig::default()
+        };
+        assert!(local.is_local_service(), "回环 + onejev 即本机服务");
+
+        // 云端网关也提供 onejev 形状的接口（如 new-api 的 /v1/systemone）：
+        // 不能因为 mode 相同就去拉起本机 qev 进程。
+        let cloud = DecisionChannelConfig {
+            mode: DECISION_MODE_ONEJEV.to_string(),
+            base_url: "https://api.openlux.ai".to_string(),
+            ..DecisionChannelConfig::default()
+        };
+        assert_eq!(
+            cloud.decide_url(),
+            "https://api.openlux.ai/v1/systemone",
+            "云端走同一协议路径"
+        );
+        assert!(!cloud.is_local_service(), "非回环地址不是本机服务");
+
+        // 其它写法：带端口、userinfo、路径、IPv6 字面量与 localhost。
+        for (base_url, expected) in [
+            ("http://localhost:8766", true),
+            ("http://user:pass@127.0.0.1:8766/prefix", true),
+            ("http://[::1]:8766", true),
+            ("http://192.168.1.10:8766", false),
+            ("http://127.0.0.1.example.com", false),
+        ] {
+            let channel = DecisionChannelConfig {
+                mode: DECISION_MODE_ONEJEV.to_string(),
+                base_url: base_url.to_string(),
+                ..DecisionChannelConfig::default()
+            };
+            assert_eq!(channel.is_local_service(), expected, "base_url = {base_url}");
+        }
     }
 
     #[test]
@@ -1024,6 +1221,79 @@ mod tests {
         let error = save_decision_switch(&env, "not_a_switch", true, None)
             .expect_err("未知开关应被拒绝");
         assert!(error.message().contains("not_a_switch"), "{}", error.message());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn decision_api_defaults_to_disabled() {
+        let root = temp_root("api-defaults");
+        let env = env_for(&root);
+        // 缺文件、缺段都按默认值：默认关闭。
+        let defaults = load_decision_api_configuration(&env, None);
+        assert!(!defaults.enabled);
+        assert!(!defaults.usable(), "默认关闭时接口不可用");
+        assert_eq!(defaults.host, "127.0.0.1");
+        assert_eq!(defaults.port, DEFAULT_DECISION_API_PORT);
+        assert_eq!(defaults.address(), "127.0.0.1:8767");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn decision_api_round_trips_and_keeps_other_sections() {
+        let root = temp_root("api-round-trip");
+        let env = env_for(&root);
+        let configuration = DecisionApiConfig {
+            enabled: true,
+            host: "localhost".to_string(),
+            port: 9100,
+        };
+        let path = save_decision_api_configuration(&env, &configuration, None).expect("写盘");
+        assert!(path.exists(), "接口配置写到默认位置：{path:?}");
+        let reloaded = load_decision_api_configuration(&env, None);
+        assert!(reloaded.enabled);
+        assert!(reloaded.usable());
+        assert_eq!(reloaded.host, "localhost");
+        assert_eq!(reloaded.port, 9100);
+
+        // 写接口段不能碰渠道段（与写开关、写自部署同一口径）。
+        save_decision_model_configuration(&env, &DecisionModelConfiguration::default(), None)
+            .expect("写渠道");
+        save_decision_api_configuration(&env, &configuration, None).expect("再写接口段");
+        let channels = load_decision_model_configuration(&env, None).expect("读回渠道");
+        assert_eq!(channels.channels.len(), 1);
+        assert_eq!(channels.default_key, DEFAULT_DECISION_CHANNEL_KEY);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn decision_api_rejects_non_loopback_and_bad_port() {
+        let bad_host = DecisionApiConfig {
+            enabled: true,
+            host: "0.0.0.0".to_string(),
+            ..DecisionApiConfig::default()
+        };
+        let error = bad_host.normalize().expect_err("非回环地址应被拒绝");
+        assert!(error.message().contains("回环"), "{}", error.message());
+
+        let bad_port = DecisionApiConfig {
+            port: 70000,
+            ..DecisionApiConfig::default()
+        };
+        let error = bad_port.normalize().expect_err("越界端口应被拒绝");
+        assert!(error.message().contains("api.port"), "{}", error.message());
+
+        // 手改坏了监听地址时不阻断决策功能：读回落到默认值。
+        let root = temp_root("api-bad-host");
+        let env = env_for(&root);
+        std::fs::write(
+            root.join(crate::core::runtime::USER_CONFIG_DIRNAME)
+                .join(crate::core::runtime::DEFAULT_DECISION_MODELS_FILENAME),
+            "[api]\nenabled = true\nhost = \"0.0.0.0\"\nport = 8767\n",
+        )
+        .expect("写坏配置");
+        let reloaded = load_decision_api_configuration(&env, None);
+        assert!(!reloaded.enabled, "坏配置回落到默认值");
+        assert_eq!(reloaded.host, "127.0.0.1");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -15,12 +15,14 @@ default_key = "jev-main"
 name = "Jev 主渠道"
 # 请求方式：
 #   jev             —— Jev 原生接口，POST {base_url}/v1/decide，state + questions 直接进请求体。
-#   chat_completions —— OpenAI 兼容接口，POST {base_url}/v1/chat/completions，
+#   chat_completions —— OpenAI 兼容接口，POST {base_url}/chat/completions，
+#                      base_url 与 [image_gen] / [tts_api] 同口径（填到 /v1）；
 #                      同一份 state + questions 作为 user 消息发出，从返回内容里解析 answers。
 #   onejev          —— 本机自部署的 OneJev 服务，POST {base_url}/v1/systemone，
 #                      请求与响应形状与 jev 相同；base_url 指向本地服务（见下方 [local]）。
 mode = "jev"
-# 接口基础地址（不含 /v1/decide 或 /v1/chat/completions）。
+# 接口基础地址：jev / onejev 填站点根下的 API 前缀（不含 /v1/decide、/v1/systemone）；
+# chat_completions 按 OpenAI 兼容口径填到 /v1（不含 /chat/completions）。
 base_url = "https://jevtypesafeai.com/api"
 # 内联密钥（可留空，改用下面的环境变量）。
 api_key = ""
@@ -50,6 +52,35 @@ kb_search_rerank = false
 # 你意图的一项。没有选项的提问（自由问答）照旧交给你。决策服务不可用时回退到人工
 # 提问，不会替你瞎猜；自动作答会在会话流里留一条提示。
 ask_user_custody = false
+
+# 旧一轮工具调用按需淘汰：只淘汰「刚变老」的那一批（Agent 又推进了一批之后，上一批
+# 才送审），最新一批永远保留，因此淘汰点贴近上下文尾部、前缀缓存不失效。送审按「整组」
+# 判定与移除——一次调用的请求 + 结果 + 拒绝一起走，协议不会留下半截。决策服务不可用
+# （缺渠道/凭据、超时、响应不可解析）时一律保留原文；被淘汰的调用会落一条会话事件，
+# 重启后按同一份投影重建同一份上下文。
+tool_call_prune = false
+
+# 决策 REST 接口：把决策能力暴露给本机其它程序（CLI 工具、Skill、外部脚本），
+# 它们不必经主模型就能拿到决策结果。大脑（主模型）负责规划，小脑（决策模型）负责
+# 快速判定，两者通过这个接口协同。
+#
+# 端点（成功回 {"data": ...}，失败回 {"error": {code, message}}）：
+#   GET  /health      健康检查
+#   GET  /v1/status   服务与渠道自检（不回传凭据）
+#   POST /v1/decide   通用：{state, questions} → {answers, raw}
+#   POST /v1/choice   选优：{state, options, instructions?} → {index, answers}
+#   POST /v1/rank     排序：{state, candidates, instructions?} → {order, count}
+#   POST /v1/review   审查：{payload, fail_closed?} → {approved, reason, detail, confidence}
+#
+# 接口不做鉴权：只要监听地址可达就能直接调用。因此 host 只允许回环地址
+# （127.0.0.1 / localhost / ::1），即只有本机程序能调用。
+# 随 OmniCrawl 启动时自动拉起，本机已有服务则直接复用。
+# 默认关闭。
+[api]
+enabled = false
+host = "127.0.0.1"
+# 端口：与本地 API（8765）和自部署的 OneJev 服务（8766）都错开。
+port = 8767
 
 # 自部署（OneJev）：在本机跑一份决策模型，不依赖云端服务。
 #

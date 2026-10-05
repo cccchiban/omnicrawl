@@ -1812,6 +1812,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnicrawl-decision"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "omnicrawl-config",
+ "omnicrawl-host",
+ "serde_json",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
 name = "omnicrawl-entry"
 version = "0.0.1"
 dependencies = [
@@ -1960,6 +1972,7 @@ dependencies = [
  "omnicrawl-config-chat",
  "omnicrawl-controllers",
  "omnicrawl-core",
+ "omnicrawl-decision",
  "omnicrawl-extensions",
  "omnicrawl-host",
  "omnicrawl-ipc",

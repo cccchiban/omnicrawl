@@ -30,6 +30,141 @@ const PROJECTION_ONLY_SESSION_ID: &str = "00000000-000000-000000";
 /// 一条投影结果：锚点事件 id 与协议消息。
 pub type ProjectedEntry = (String, Value);
 
+/// 按需淘汰落盘的事件类型：载荷的 `evicted_call_ids` 列出已无用的调用。
+pub const EVICTED_EVENT_TYPE: &str = "tool_call_evicted";
+
+/// 从历史事件里收集被淘汰的调用 ID（按发生顺序去重）。
+///
+/// 淘汰是**历史事实**，与压缩边界无关：压缩会按 `remaining_event_ids` 重选事件，边界之前
+/// 的标记可能因此不被选中，若只按事件顺序应用，被淘汰的内容就会在压缩重建后复活。
+/// 因此读取口径是「整份事件流」，剔除发生在投影出口（见 [`project_history_messages`]）。
+pub fn collect_evicted_call_ids(events: &[SessionEvent]) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut ids: Vec<String> = Vec::new();
+    for event in events {
+        if event.event_type != EVICTED_EVENT_TYPE {
+            continue;
+        }
+        for id in event
+            .payload
+            .get("evicted_call_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let id = id.trim();
+            if !id.is_empty() && seen.insert(id.to_string()) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// 按调用 ID 整组剔除一批工具调用，返回真正移除的**消息条数**。
+///
+/// 一组 = assistant 里 `tool_calls` 的那一项 + 对应的 `tool` 结果消息（`tool_call_evicted`
+/// 事件的粒度，见 `omnicrawl_controllers::turn::tool_prune`）。两条协议约束：
+///
+/// * `tool_calls` 项与其 `tool` 结果必须同时消失，否则 Provider 会判定协议无效；
+/// * 同一批调用全被剔除时，assistant 消息还有正文就留下正文（只摘掉 `tool_calls` 字段），
+///   没有正文就整条移除——不能留下一条空的工具调用消息。
+///
+/// 锚点随幸存条目一起保留：压缩边界（`remaining_event_ids`）之后仍按同一份锚点筛选。
+/// 与 [`evict_tool_call_messages`] 共用这一份实现（后者只是把消息列表包一层锚点）。
+pub fn evict_tool_calls(entries: &mut Vec<ProjectedEntry>, call_ids: &[String]) -> usize {
+    let wanted: BTreeSet<&str> = call_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        return 0;
+    }
+
+    let mut removed = 0usize;
+    let mut kept: Vec<ProjectedEntry> = Vec::with_capacity(entries.len());
+    for (anchor, mut message) in entries.drain(..) {
+        match message.get("role").and_then(Value::as_str) {
+            Some("tool") => {
+                let call_id = message
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if wanted.contains(call_id) {
+                    removed += 1;
+                    continue;
+                }
+            }
+            Some("assistant") => {
+                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                    let total = calls.len();
+                    let remaining: Vec<Value> = calls
+                        .iter()
+                        .filter(|call| !call_is_evicted(call, &wanted))
+                        .cloned()
+                        .collect();
+                    if remaining.len() != total {
+                        if remaining.is_empty() {
+                            if assistant_has_text(&message) {
+                                if let Some(object) = message.as_object_mut() {
+                                    object.remove("tool_calls");
+                                }
+                            } else {
+                                removed += 1;
+                                continue;
+                            }
+                        } else if let Some(object) = message.as_object_mut() {
+                            object.insert("tool_calls".to_string(), Value::Array(remaining));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        kept.push((anchor, message));
+    }
+    *entries = kept;
+    removed
+}
+
+/// 按调用 ID 整组剔除运行期上下文（内核的实时 `messages`）。
+pub fn evict_tool_call_messages(messages: &mut Vec<Value>, call_ids: &[String]) -> usize {
+    let mut entries: Vec<ProjectedEntry> = std::mem::take(messages)
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| (index.to_string(), message))
+        .collect();
+    let removed = evict_tool_calls(&mut entries, call_ids);
+    *messages = entries.into_iter().map(|(_, message)| message).collect();
+    removed
+}
+
+/// 一条 `tool_calls` 项是否属于被剔除的调用（`id` 为空的旧写法回落函数名）。
+fn call_is_evicted(call: &Value, wanted: &BTreeSet<&str>) -> bool {
+    let id = call.get("id").and_then(Value::as_str).unwrap_or_default();
+    if !id.is_empty() {
+        return wanted.contains(id);
+    }
+    call.get("function")
+        .and_then(Value::as_object)
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .map(|name| wanted.contains(name))
+        .unwrap_or(false)
+}
+
+/// assistant 消息是否还有可见正文（只有正文才值得留下这条消息）。
+fn assistant_has_text(message: &Value) -> bool {
+    match message.get("content") {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        // 多模态正文同样算有内容：不替 Provider 猜它能不能为空。
+        Some(Value::Array(parts)) => !parts.is_empty(),
+        _ => false,
+    }
+}
+
 /// 工具批次的状态：一批连续的工具调用合并成一条 assistant 消息。
 #[derive(Default)]
 struct ToolGroup {
@@ -344,12 +479,20 @@ fn payload_string_ids(value: Option<&Value>) -> Option<BTreeSet<String>> {
 }
 
 /// 把有效事件流投影为（锚点事件 id，消息）序列。
+///
+/// 出口处统一按 `tool_call_evicted` 剔除被淘汰的调用——不依赖事件顺序：压缩边界会重选事件，
+/// 若只在流中就地应用，边界之前的标记可能被落下，被淘汰的内容就会在压缩后复活。
 pub fn project_history_messages(events: &[SessionEvent]) -> Vec<ProjectedEntry> {
     let mut projector = TurnHistoryProjector::new();
     for event in events {
         projector.feed(event);
     }
-    projector.take()
+    let mut entries = projector.take();
+    let evicted = collect_evicted_call_ids(events);
+    if !evicted.is_empty() {
+        evict_tool_calls(&mut entries, &evicted);
+    }
+    entries
 }
 
 /// 投影整份会话历史，并正确处理压缩边界。
@@ -590,5 +733,291 @@ mod tool_call_summary_tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1]["content"], "结果报告", "最后一段模型输出保持在末尾");
+    }
+
+    /// 按需淘汰：批内只走指定那一组，其余调用项与结果照旧配对。
+    #[test]
+    fn evicting_one_group_keeps_the_rest_of_the_batch() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "开始"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {"id": "c0", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                    {"id": "c1", "type": "function", "function": {"name": "grep", "arguments": "{}"}},
+                ],
+            }),
+            json!({"role": "tool", "tool_call_id": "c0", "content": "结果一"}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "结果二"}),
+        ];
+
+        let removed = evict_tool_call_messages(&mut messages, &["c1".to_string()]);
+        assert_eq!(removed, 1, "只移除 c1 的结果消息；assistant 仍留着 c0 的调用项");
+        assert_eq!(messages.len(), 3);
+        let calls = messages[1]["tool_calls"].as_array().expect("仍有调用项");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "c0");
+        assert_eq!(messages[2]["tool_call_id"], "c0");
+    }
+
+    /// 整批都淘汰：没有正文的 assistant 消息整条移除，有正文的只摘掉 `tool_calls`。
+    #[test]
+    fn evicting_every_group_never_leaves_a_bare_tool_call_message() {
+        let mut messages = vec![
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"id": "c0", "type": "function", "function": {"name": "bash", "arguments": "{}"}}],
+            }),
+            json!({"role": "tool", "tool_call_id": "c0", "content": "结果"}),
+        ];
+        assert_eq!(evict_tool_call_messages(&mut messages, &["c0".to_string()]), 2);
+        assert!(messages.is_empty(), "纯工具消息整条移除：{messages:?}");
+
+        let mut with_text = vec![
+            json!({
+                "role": "assistant",
+                "content": "先看一眼目录。",
+                "tool_calls": [{"id": "c0", "type": "function", "function": {"name": "bash", "arguments": "{}"}}],
+            }),
+            json!({"role": "tool", "tool_call_id": "c0", "content": "结果"}),
+        ];
+        assert_eq!(
+            evict_tool_call_messages(&mut with_text, &["c0".to_string()]),
+            1
+        );
+        assert_eq!(with_text.len(), 1, "正文留下：{with_text:?}");
+        assert_eq!(with_text[0]["content"], "先看一眼目录。");
+        assert!(with_text[0].get("tool_calls").is_none());
+    }
+
+    /// 不在名单里的消息一律不动：孤儿结果、其它批次、用户消息都不受影响。
+    #[test]
+    fn unrelated_messages_are_untouched() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "提问"}),
+            json!({"role": "assistant", "content": "回答"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"id": "c9", "type": "function", "function": {"name": "bash", "arguments": "{}"}}],
+            }),
+            json!({"role": "tool", "tool_call_id": "c9", "content": "结果"}),
+        ];
+        assert_eq!(
+            evict_tool_call_messages(&mut messages, &["c0".to_string()]),
+            0
+        );
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[3]["tool_call_id"], "c9");
+
+        // 空名单与空 ID 都不动消息。
+        let mut untouched = messages.clone();
+        assert_eq!(evict_tool_call_messages(&mut untouched, &[]), 0);
+        assert_eq!(evict_tool_call_messages(&mut untouched, &["".to_string()]), 0);
+        assert_eq!(untouched, messages);
+    }
+
+    /// 旧写法（调用项没有 id）按函数名匹配。
+    #[test]
+    fn missing_call_id_falls_back_to_the_function_name() {
+        let mut messages = vec![
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"type": "function", "function": {"name": "bash", "arguments": "{}"}}],
+            }),
+            json!({"role": "tool", "tool_call_id": "bash", "content": "结果"}),
+        ];
+        assert_eq!(
+            evict_tool_call_messages(&mut messages, &["bash".to_string()]),
+            2
+        );
+        assert!(messages.is_empty());
+    }
+
+    /// 淘汰事件驱动的投影：被判无用的那一组整组消失，其余照旧配对。
+    ///
+    /// 这是「重启后同一份上下文」的保证：淘汰是历史事实（事件），`/resume` 与运行期
+    /// 走同一份投影，因此被淘汰的内容不会在恢复后重新出现。
+    #[test]
+    fn evicted_event_removes_exactly_the_evicted_group() {
+        let user = event("user_message", json!({"content": "任务"}));
+        let first = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c0"}),
+        );
+        let first_result = event(
+            "tool_result",
+            json!({"tool": "bash", "tool_call_id": "c0", "ok": true, "output": "过程性探查"}),
+        );
+        let second = event(
+            "tool_call_requested",
+            json!({"tool": "read", "tool_call_id": "c1"}),
+        );
+        let second_result = event(
+            "tool_result",
+            json!({"tool": "read", "tool_call_id": "c1", "ok": true, "output": "关键内容"}),
+        );
+        let evicted = event(
+            "tool_call_evicted",
+            json!({"evicted_call_ids": ["c0"]}),
+        );
+        let events = vec![
+            user,
+            first,
+            first_result,
+            second,
+            second_result,
+            evicted,
+        ];
+        let projected = project_history_messages(&events);
+        let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
+
+        // 幸存的一组仍以「assistant tool_calls + tool 结果」成对出现。
+        assert_eq!(messages.len(), 3, "用户消息 + 幸存的一组：{messages:?}");
+        assert_eq!(messages[0]["content"], "任务");
+        let calls = messages[1]["tool_calls"].as_array().expect("仍有调用项");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "c1");
+        assert_eq!(messages[2]["tool_call_id"], "c1");
+        assert!(
+            messages[2]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("关键内容"),
+            "幸存结果的内容照旧可见：{messages:?}"
+        );
+    }
+
+    /// 淘汰一整批：没有正文的 assistant 工具消息随之消失，不留下非法协议消息。
+    #[test]
+    fn evicting_a_whole_batch_leaves_no_dangling_tool_call_message() {
+        let call = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c0"}),
+        );
+        let result = event(
+            "tool_result",
+            json!({"tool": "bash", "tool_call_id": "c0", "ok": true, "output": "过程性探查"}),
+        );
+        let evicted = event("tool_call_evicted", json!({"evicted_call_ids": ["c0"]}));
+        let events = vec![call, result, evicted];
+        let projected = project_history_messages(&events);
+
+        assert!(projected.is_empty(), "整批淘汰后不留消息：{projected:?}");
+    }
+
+    /// 形状不合法的淘汰事件什么都不动（不能因为一条坏事件把上下文清空）。
+    #[test]
+    fn malformed_evicted_events_are_ignored() {
+        let call = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c0"}),
+        );
+        let result = event(
+            "tool_result",
+            json!({"tool": "bash", "tool_call_id": "c0", "ok": true, "output": "结果"}),
+        );
+        for payload in [
+            json!({}),
+            json!({"evicted_call_ids": "not-an-array"}),
+            json!({"evicted_call_ids": [1, 2]}),
+        ] {
+            let events = vec![call.clone(), result.clone(), event("tool_call_evicted", payload)];
+            let projected = project_history_messages(&events);
+            assert_eq!(projected.len(), 2, "坏事件不动上下文：{projected:?}");
+        }
+    }
+
+    /// 淘汰事件读回调用 ID：跨事件去重，形状不合法的键忽略。
+    #[test]
+    fn evicted_ids_are_read_back_from_the_event_stream() {
+        let events = vec![
+            event(
+                "tool_call_evicted",
+                json!({"evicted_call_ids": ["c1", "c2"]}),
+            ),
+            event("assistant_message", json!({"content": "回复"})),
+            event(
+                "tool_call_evicted",
+                json!({"evicted_call_ids": ["c2", "  ", "c3"]}),
+            ),
+            event("tool_call_evicted", json!({"evicted_call_ids": "not-an-array"})),
+        ];
+        assert_eq!(
+            collect_evicted_call_ids(&events),
+            vec!["c1".to_string(), "c2".to_string(), "c3".to_string()]
+        );
+    }
+
+    /// 压缩边界之后仍不复活：标记落在压缩的保留窗口之外时，剔除照样生效。
+    ///
+    /// 这是「统一在投影出口剔除」的理由：压缩按 `remaining_event_ids` 重选事件，边界之前的
+    /// 标记不会被选中，若只在事件顺序里就地应用，被淘汰的内容会在压缩后重新出现。
+    #[test]
+    fn eviction_survives_a_compaction_boundary() {
+        let call = event(
+            "tool_call_requested",
+            json!({"tool": "bash", "tool_call_id": "c0"}),
+        );
+        let result = event(
+            "tool_result",
+            json!({"tool": "bash", "tool_call_id": "c0", "ok": true, "output": "过程性探查"}),
+        );
+        let evicted = event("tool_call_evicted", json!({"evicted_call_ids": ["c0"]}));
+        // 压缩摘要声明的保留窗口**不含**淘汰标记，也不含那两条工具事件。
+        let summary = event(
+            "compact_summary",
+            json!({"content": "之前的进展", "remaining_event_ids": []}),
+        );
+        let final_reply = event("assistant_message", json!({"content": "结果报告"}));
+        let events = vec![call, result, evicted, summary, final_reply];
+
+        let projected = project_session_history(&events);
+        let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
+        assert_eq!(messages.len(), 2, "摘要 + 最终回复：{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.get("tool_calls").is_none() && message["role"] != "tool"),
+            "被淘汰的调用在压缩后不得复活：{messages:?}"
+        );
+    }
+
+    /// 投影侧的剔除保留锚点：压缩边界之后仍按同一份锚点筛选保留窗口。
+    #[test]
+    fn evicting_keeps_the_anchors_of_surviving_entries() {
+        let mut entries: Vec<ProjectedEntry> = vec![
+            (
+                "e1".to_string(),
+                json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {"id": "c0", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                        {"id": "c1", "type": "function", "function": {"name": "grep", "arguments": "{}"}},
+                    ],
+                }),
+            ),
+            (
+                "e2".to_string(),
+                json!({"role": "tool", "tool_call_id": "c0", "content": "结果一"}),
+            ),
+            (
+                "e3".to_string(),
+                json!({"role": "tool", "tool_call_id": "c1", "content": "结果二"}),
+            ),
+        ];
+        assert_eq!(evict_tool_calls(&mut entries, &["c1".to_string()]), 1);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(anchor, _)| anchor.as_str())
+                .collect::<Vec<_>>(),
+            vec!["e1", "e2"],
+            "锚点随幸存条目保留：{entries:?}"
+        );
     }
 }

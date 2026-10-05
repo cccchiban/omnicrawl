@@ -82,6 +82,8 @@ use omnicrawl_config::models::vision::{
 };
 use omnicrawl_controllers::memory::user_data_root;
 use omnicrawl_controllers::settings::{context_compaction_trigger_tokens, kernel_compaction_settings};
+// `context.prune` 的送审形状在控制层：宿主只负责把它换算成裁决输入并回调用 ID。
+use omnicrawl_controllers::turn::tool_prune::PruneCandidate;
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
 use omnicrawl_controllers::subagents::tasks::is_terminal;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
@@ -99,6 +101,7 @@ use omnicrawl_config::features::decision_model::{
     DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH,
 };
 use omnicrawl_host::plugins::PluginHost;
+use omnicrawl_host::tools::evicted_call_ids_for;
 use omnicrawl_onejev::{
     delete_model as delete_onejev_model, download_model as download_onejev_model,
     ensure_environment as ensure_onejev_environment, environment_state as onejev_environment_state,
@@ -111,10 +114,11 @@ use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::prompt_cache::build_prompt_cache_identity;
 use omnicrawl_ipc::{
     bridge::{
-        Command, HostEvent, InitializeParams, KernelCompactionConfig, KernelModelConfig,
-        KernelSessionConfig, ModelHookRequest, ModelHookResult, SessionAppendParams,
-        SessionHistoryParams, SessionListParams, SessionModelSettings, SessionRenameParams,
-        SessionResumeParams, SessionSettingsParams, SubagentRunParams, ToolBatch,
+        Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
+        KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
+        ModelHookResult, SessionAppendParams, SessionHistoryParams, SessionListParams,
+        SessionModelSettings, SessionRenameParams, SessionResumeParams, SessionSettingsParams,
+        SubagentRunParams, ToolBatch,
     },
     error_code, Frame, Id, PROTOCOL_VERSION,
 };
@@ -141,7 +145,7 @@ use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
-    nearest_compaction_percent, reasoning_label, ChannelRow, DecisionLocalChange,
+    nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, FieldValue, FormKind, McpChange,
     McpServerDraft, McpServerRow,
     McpSettingsValues, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
@@ -455,6 +459,12 @@ pub struct App {
     /// 提问托管运行期（`[decision_models.features] ask_user_custody`）：开启后有选项的提问
     /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
     custody: Option<omnicrawl_host::tools::CustodyOptions>,
+    /// 工具调用淘汰运行期（`[decision_models.features] tool_call_prune`）：开启后「刚变老」
+    /// 的那一批调用交决策模型裁决，无用的整组移出上下文；`None` 或不可用时一律保留原文。
+    ///
+    /// 与 `options` 一样对外可见：用例需要把这一步钉成「裁决不可用」，否则结果会随本机
+    /// 配置（开关开没开、决策服务在不在）漂移。
+    pub prune: Option<omnicrawl_host::tools::PruneOptions>,
     /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复。
     custody_context: omnicrawl_host::tools::CustodyContext,
     /// 审查载荷里的两条会话事实（最近一条用户消息 + 最近一次 ask_user 问答）。
@@ -715,6 +725,8 @@ impl App {
         let review = build_review_options(&llm, &environment);
         // 提问托管：与审查、检索重排同源（`[decision_models.features] ask_user_custody`）。
         let custody = Some(omnicrawl_host::tools::custody_options_from_config(&environment));
+        // 工具调用淘汰：与审查、检索重排同源（`[decision_models.features] tool_call_prune`）。
+        let prune = Some(omnicrawl_host::tools::prune_options_from_config(&environment));
         // 命令菜单的候选表来自统一命令源（注册表声明），启动时装载一次。
         state.composer.set_commands(commands::command_options());
         Ok(Self {
@@ -744,6 +756,7 @@ impl App {
             plugins,
             review,
             custody,
+            prune,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),
             file_picker: None,
@@ -1000,6 +1013,12 @@ impl App {
             session,
             // TUI 总是持有插件运行期：声明能力，内核才会在模型请求前发 `model.hook`。
             plugin_model_hooks: true,
+            // 淘汰运行期已装配就声明能力：内核才会把「刚变老」的那一批交回来裁决。
+            tool_call_prune: self
+                .prune
+                .as_ref()
+                .map(|prune| prune.enabled)
+                .unwrap_or(false),
         };
         let id = self.kernel.next_id();
         let frame = Command::Initialize(params).to_frame(id.clone());
@@ -1292,6 +1311,9 @@ impl App {
             Some(method) if method == omnicrawl_ipc::method::MODEL_HOOK => {
                 self.handle_model_hook(id, &frame);
             }
+            Some(method) if method == omnicrawl_ipc::method::CONTEXT_PRUNE => {
+                self.handle_context_prune(id, &frame);
+            }
             Some(method) => {
                 let _ = self.kernel.respond_unsupported(&id, method);
             }
@@ -1352,6 +1374,49 @@ impl App {
                         .respond_error(&id, error_code::INVALID_REQUEST, error.message());
             }
         }
+    }
+
+    /// 服务内核的 `context.prune`：把「刚变老」的那批调用交决策模型裁决，回可以移除的调用 ID。
+    ///
+    /// 与 `omnicrawl-host::turn` 的 `run_context_prune` 同一口径：开关没开、没有可用渠道、
+    /// 缺凭据、请求失败、响应不可解析都回**空列表**（等于「都留着」）——淘汰是 fail-open 的
+    /// 省上下文手段，不值得让回合失败，也绝不能在裁决不可用时误删内容。
+    ///
+    /// 任务背景直接用内核随请求带来的 `task`（内核侧就是本轮提交的原文），宿主不必另存一份。
+    fn handle_context_prune(&mut self, id: Id, frame: &Frame) {
+        let request = match ContextPruneRequest::from_frame(frame) {
+            Ok(request) => request,
+            Err(error) => {
+                let _ = self.kernel.respond_error(
+                    &id,
+                    error_code::INVALID_PARAMS,
+                    &format!("context.prune 负载不符：{error}"),
+                );
+                return;
+            }
+        };
+        let groups = request
+            .groups
+            .iter()
+            .map(|group| {
+                PruneCandidate::bounded(
+                    group.call_id.clone(),
+                    group.tool.clone(),
+                    group.arguments.clone(),
+                    group.ok,
+                    group.output.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let evicted = self
+            .prune
+            .as_ref()
+            .and_then(|prune| evicted_call_ids_for(prune, &request.task, &groups))
+            .unwrap_or_default();
+        let result = ContextPruneResult {
+            evicted_call_ids: evicted,
+        };
+        let _ = self.kernel.respond(&id, result.to_result());
     }
 
     fn handle_tool_batch(&mut self, id: Id, frame: &Frame) {
@@ -2648,7 +2713,7 @@ impl App {
         let show_thinking = load_show_thinking(&environment, None).unwrap_or(true);
         let plugins =
             load_feature_enabled(&environment, "plugins", false, None, None).unwrap_or(false);
-        let (model_options, model_key) = self.model_candidates(&environment, &llm);
+        let model_key = self.active_model_key(&environment, &llm);
         let (channel_rows, default_channel_key) = self.channel_views(&environment);
         // 决策模型页的初值：渠道、功能开关与自部署分区（读不出来就用配置默认值）。
         let (decision_rows, default_decision_key) = self.decision_views(&environment);
@@ -2707,12 +2772,13 @@ impl App {
             local_engine_available: omnicrawl_tts::local_engine_available(),
             api_ready: !tts_api_ready.is_empty(),
         };
+        let form_channel_rows = channel_rows.clone();
         Ok(SettingsValues::new(
             context_window_tokens,
             percent,
             tool_switch_rows(&self.registry),
         )
-        .with_model(model_options, &model_key)
+        .with_model(&model_key)
         .with_channels(channel_rows, &default_channel_key, channel_template)
         .with_decision_models(decision_rows, &default_decision_key, decision_template)
         .with_decision_switches(decision_switches)
@@ -2723,10 +2789,13 @@ impl App {
             self.registry_options.memory_enabled,
             plugins,
         )
-        .with_form(FormKind::Advisor, advisor_form_values(&advisor))
+        .with_form(
+            FormKind::Advisor,
+            advisor_form_values(&advisor, &form_channel_rows),
+        )
         .with_form(
             FormKind::ToolOutputCompression,
-            compression_form_values(&compression),
+            compression_form_values(&compression, &form_channel_rows),
         )
         .with_form(
             FormKind::Desensitization,
@@ -2795,34 +2864,27 @@ impl App {
         }
     }
 
-    /// 模型页的候选与当前项。
+    /// 模型管理页的当前模型渠道 key。
     ///
-    /// 候选来自 config.toml 的 profiles + models.toml 的条目（`load_channel_configuration`
-    /// 已把两侧合成渠道视图）；单模型（legacy）配置没有渠道可切，只放当前模型一项。
-    fn model_candidates(
-        &self,
-        environment: &ConfigEnvironment,
-        llm: &LlmConfig,
-    ) -> (Vec<(String, String)>, String) {
+    /// 取渠道配置的默认渠道；读不出渠道（单模型 legacy 配置）时回落当前模型的引用
+    /// （`llm.catalog_key`，即 `load_channel_configuration` 里 models.toml 的 key）。
+    fn active_model_key(&self, environment: &ConfigEnvironment, llm: &LlmConfig) -> String {
         match load_channel_configuration(environment, None, None) {
-            Ok(configuration) if !configuration.channels.is_empty() => (
-                configuration
-                    .channels
-                    .iter()
-                    .map(|channel| (channel.name.clone(), channel.key.clone()))
-                    .collect(),
-                configuration.default_key.clone(),
-            ),
-            Ok(_) => (
-                vec![(llm.model.clone(), llm.model.clone())],
-                llm.model.clone(),
-            ),
+            Ok(configuration) if !configuration.channels.is_empty() => {
+                if configuration.default_key.trim().is_empty() {
+                    configuration
+                        .channels
+                        .first()
+                        .map(|channel| channel.key.clone())
+                        .unwrap_or_default()
+                } else {
+                    configuration.default_key.clone()
+                }
+            }
+            Ok(_) => llm.catalog_key.clone(),
             Err(error) => {
-                eprintln!("[tui] 渠道配置读取失败，模型页只显示当前模型：{error}");
-                (
-                    vec![(llm.model.clone(), llm.model.clone())],
-                    llm.model.clone(),
-                )
+                eprintln!("[tui] 渠道配置读取失败，模型管理页只显示当前渠道：{error}");
+                llm.catalog_key.clone()
             }
         }
     }
@@ -3012,6 +3074,27 @@ impl App {
         self.custody = Some(omnicrawl_host::tools::custody_options_from_config(environment));
     }
 
+    /// 按最新配置重建工具调用淘汰运行期（决策渠道或开关变更后调用）。
+    ///
+    /// 淘汰由内核发起（它是唯一能看到 `messages` 与其尾部位置的一方），因此这里除了重建运行期，
+    /// 还必须把新的能力声明下发给内核：关掉时内核立刻停止发起 `context.prune`。
+    fn rebuild_prune(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
+        self.prune = Some(omnicrawl_host::tools::prune_options_from_config(environment));
+        self.push_session_settings_raw(SessionSettingsParams {
+            model: Some(Box::new(SessionModelSettings {
+                tool_call_prune: Some(
+                    self.prune
+                        .as_ref()
+                        .map(|prune| prune.enabled)
+                        .unwrap_or(false),
+                ),
+                ..SessionModelSettings::default()
+            })),
+            compaction: None,
+        });
+        Ok(())
+    }
+
     // ---------- 决策模型页（渠道 / 功能开关 / 自部署） ----------
 
     /// 保存整份决策模型配置：`api_key` 留空表示不改动，按 key 从磁盘继承。
@@ -3046,9 +3129,10 @@ impl App {
         };
         let path = save_decision_model_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 三条调用通道都按新渠道重建，保存后本会话即刻生效。
+        // 四条调用通道都按新渠道重建，保存后本会话即刻生效。
         self.rebuild_review(&environment);
         self.rebuild_custody(&environment);
+        self.rebuild_prune(&environment)?;
         self.rebuild_rerank(&environment)?;
         let reloaded = load_decision_model_configuration(&environment, None)
             .unwrap_or(configuration);
@@ -3068,9 +3152,10 @@ impl App {
         let environment = ConfigEnvironment::from_process();
         let path = save_decision_switch(&environment, key, enabled, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 开关影响的是宿主侧哪些请求走决策模型，因此三条通道都要按新值重建。
+        // 开关影响的是宿主侧哪些请求走决策模型，因此四条通道都要按新值重建。
         self.rebuild_review(&environment);
         self.rebuild_custody(&environment);
+        self.rebuild_prune(&environment)?;
         self.rebuild_rerank(&environment)?;
         let label = DECISION_SWITCHES
             .iter()
@@ -3557,6 +3642,25 @@ impl App {
 
     // ---------- 启动期自启动本地决策服务 ----------
 
+    /// 启动时按配置把决策 REST 接口准备好（`decision_models.toml` 的 `[api]` 段）。
+    ///
+    /// 端口已就绪（含**其他 OmniCrawl 实例**起的服务）就复用，不重复拉起；未启用或没配
+    /// 令牌时不动任何进程——它是可选的外部调用入口，不在启动期起一个注定拒绝监听的进程。
+    pub fn autostart_decision_api(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        let settings = omnicrawl_decision::load_settings(&environment);
+        if let Some(reason) = settings.unavailable_reason() {
+            // 未启用是常态（默认关），只有配了一半（启用了但缺令牌/渠道）才值得提示。
+            if settings.api.enabled {
+                self.startup_service_lines
+                    .push(format!("决策接口未启动：{reason}"));
+            }
+            return;
+        }
+        let outcome = omnicrawl_decision::ensure_running(&environment, &settings, false);
+        self.startup_service_lines.push(outcome.message);
+    }
+
     /// 启动时按配置把自部署决策服务准备好（渠道 `onejev` + `[local] auto_start`）。
     ///
     /// 判定与处理都集中在 `OneJevServer`：端口已就绪（含**其他 OmniCrawl 实例**起的服务）
@@ -3569,8 +3673,9 @@ impl App {
         let Some(channel) = configuration.active_channel() else {
             return;
         };
-        // 默认渠道不是自部署：本实例不用本地服务，不动任何进程。
-        if channel.mode != DECISION_MODE_ONEJEV {
+        // 默认渠道不是本机自部署：本实例不用本地服务，不动任何进程。
+        // 注意：云端网关也走 `onejev` 协议形状，因此必须同时确认地址落在回环上。
+        if channel.mode != DECISION_MODE_ONEJEV || !channel.is_local_service() {
             return;
         }
         let local = load_local_deployment(&environment, None);
@@ -4276,9 +4381,15 @@ impl App {
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         let enabled = values.first().map(|value| value.flag()).unwrap_or(false);
         let effort = field_text(values, 1);
-        let model_key = field_text(values, 2).trim().to_string();
+        // 字段表：启用 / effort / 顾问渠道 / 顾问模型。
+        let channels: Vec<ChannelRow> = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.channel_rows().to_vec())
+            .unwrap_or_default();
+        let model_key = form_model_token(values, 2, 3, &channels);
         if enabled && model_key.is_empty() {
-            return Err("设置未完成：启用顾问前请先选择顾问模型。".to_string());
+            return Err("设置未完成：启用顾问前请先选择顾问渠道与模型。".to_string());
         }
         let configuration = AdvisorConfig {
             enabled,
@@ -4368,9 +4479,15 @@ impl App {
     fn apply_compression_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let enabled = values.first().map(|value| value.flag()).unwrap_or(false);
-        let model_key = field_text(values, 7).trim().to_string();
+        // 字段表：启用 / 思考开关 / 思考深度 / 四个预算 / 压缩渠道 / 压缩模型。
+        let channels: Vec<ChannelRow> = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.channel_rows().to_vec())
+            .unwrap_or_default();
+        let model_key = form_model_token(values, 7, 8, &channels);
         if enabled && model_key.is_empty() {
-            return Err("设置未完成：启用压缩前请先选择压缩模型。".to_string());
+            return Err("设置未完成：启用压缩前请先选择压缩渠道与模型。".to_string());
         }
         let configuration = ToolOutputCompressionConfig {
             enabled,
@@ -5888,16 +6005,25 @@ fn channel_for_key(environment: &ConfigEnvironment, key: &str) -> Option<Channel
 }
 
 /// 顾问设置页的字段初值；顺序与 `FormKind::Advisor` 的字段表一致。
-fn advisor_form_values(config: &AdvisorConfig) -> Vec<FieldValue> {
+///
+/// 「顾问渠道 + 顾问模型」：把配置里的 `model_key` 拆成渠道与模型两段
+/// （与 `/advisor` 的命令行解析同一套口径，见 [`split_token`]）。
+fn advisor_form_values(config: &AdvisorConfig, channels: &[ChannelRow]) -> Vec<FieldValue> {
+    let (channel, model) = split_token(&config.model_key, channels);
     vec![
         FieldValue::Flag(config.enabled),
         FieldValue::Text(config.display_effort()),
-        FieldValue::Text(config.model_key.clone()),
+        FieldValue::Text(channel),
+        FieldValue::Text(model),
     ]
 }
 
 /// 工具输出压缩页的字段初值；顺序与 `FormKind::ToolOutputCompression` 的字段表一致。
-fn compression_form_values(config: &ToolOutputCompressionConfig) -> Vec<FieldValue> {
+fn compression_form_values(
+    config: &ToolOutputCompressionConfig,
+    channels: &[ChannelRow],
+) -> Vec<FieldValue> {
+    let (channel, model) = split_token(&config.model_key, channels);
     vec![
         FieldValue::Flag(config.enabled),
         FieldValue::Flag(config.thinking_enabled),
@@ -5906,8 +6032,36 @@ fn compression_form_values(config: &ToolOutputCompressionConfig) -> Vec<FieldVal
         FieldValue::Text(config.max_input_chars.to_string()),
         FieldValue::Text(config.max_output_chars.to_string()),
         FieldValue::Text(config.timeout_seconds.to_string()),
-        FieldValue::Text(config.model_key.clone()),
+        FieldValue::Text(channel),
+        FieldValue::Text(model),
     ]
+}
+
+/// 表单页里的「渠道 + 模型」两段值拼回配置里的模型引用。
+///
+/// 与 `/advisor`、`/model` 的解析口径同源：模型非空时写 `profile/model_id`（渠道取该
+/// 渠道记录里的 `profile_id`，与渠道页/模型发现同一份口径），只选了渠道时写渠道 key
+/// （`apply_model_selection` 会把渠道 key 解析成它自带的模型）。
+fn form_model_token(
+    values: &[FieldValue],
+    channel_index: usize,
+    model_index: usize,
+    channels: &[ChannelRow],
+) -> String {
+    let channel = field_text(values, channel_index).trim().to_string();
+    let model = field_text(values, model_index).trim().to_string();
+    if model.is_empty() {
+        return channel;
+    }
+    let profile = channels
+        .iter()
+        .find(|row| row.key == channel)
+        .map(|row| row.profile_id.trim().to_string())
+        .unwrap_or_default();
+    if profile.is_empty() {
+        return model;
+    }
+    format!("{profile}/{model}")
 }
 
 /// 消息脱敏页的字段初值；顺序与 `FormKind::Desensitization` 的字段表一致。

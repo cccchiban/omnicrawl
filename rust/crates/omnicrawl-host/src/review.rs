@@ -24,7 +24,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::desensitization::load_desensitization_config;
@@ -89,9 +88,7 @@ pub fn review_options_from_config(
 /// 开关打开但没有可用决策渠道（未配置或全部关闭）时返回 [`ReviewChannel::DecisionMissing`]，
 /// 由审查层 fail-closed 拒绝——与「决策模型审查不可用时拒绝该次调用」的约定一致。
 fn review_channel(environment: &ConfigEnvironment) -> ReviewChannel {
-    use omnicrawl_config::features::decision_model::{
-        load_decision_model_configuration, load_decision_switches, DECISION_SWITCH_TOOL_REVIEW,
-    };
+    use omnicrawl_config::features::decision_model::{load_decision_switches, DECISION_SWITCH_TOOL_REVIEW};
     let switches = load_decision_switches(environment, None);
     if !switches
         .get(DECISION_SWITCH_TOOL_REVIEW)
@@ -100,19 +97,29 @@ fn review_channel(environment: &ConfigEnvironment) -> ReviewChannel {
     {
         return ReviewChannel::Chat;
     }
-    let channel = load_decision_model_configuration(environment, None)
+    match decision_channel_from_config(environment) {
+        Some(channel) => ReviewChannel::Decision(channel),
+        None => ReviewChannel::DecisionMissing,
+    }
+}
+
+/// 按 `decision_models.toml` 装配默认决策渠道；`None` 表示没有可用渠道（未配置或全部关闭）。
+///
+/// 与功能开关无关：工具调用审查按开关决定用不用，决策 REST 服务则总是用它。
+pub fn decision_channel_from_config(
+    environment: &ConfigEnvironment,
+) -> Option<DecisionReviewOptions> {
+    use omnicrawl_config::features::decision_model::load_decision_model_configuration;
+    load_decision_model_configuration(environment, None)
         .ok()
-        .and_then(|configuration| configuration.active_channel().cloned());
-    match channel {
-        Some(channel) => ReviewChannel::Decision(DecisionReviewOptions {
+        .and_then(|configuration| configuration.active_channel().cloned())
+        .map(|channel| DecisionReviewOptions {
             mode: channel.mode,
             model: channel.model,
             base_url: channel.base_url,
             api_key: channel.api_key,
             api_key_env: channel.api_key_env,
-        }),
-        None => ReviewChannel::DecisionMissing,
-    }
+        })
 }
 
 /// 审查请求超时上限；与 Python 的 `min(config.request_timeout_seconds, 60)` 一致。
@@ -271,7 +278,8 @@ pub struct DecisionReviewOptions {
     pub mode: String,
     /// 决策模型名（`jev-latest` 或固定版本）。
     pub model: String,
-    /// 决策服务基地址（不含 `/v1/decide` 或 `/v1/chat/completions`）。
+    /// 决策服务基地址：`jev` / `onejev` 填站点根下的 API 前缀（不含 `/v1/decide`、
+    /// `/v1/systemone`）；`chat_completions` 按 OpenAI 兼容口径填到 `/v1`（不含 `/chat/completions`）。
     pub base_url: String,
     pub api_key: String,
     pub api_key_env: String,
@@ -486,7 +494,132 @@ fn review_with_decision(
         )));
     }
 
-    let (state, mut masker) = prepare_review_request(options, request)?;
+    let (state, masker) = prepare_review_request(options, request)?;
+    let timeout_seconds = options
+        .request_timeout_seconds
+        .clamp(1, REVIEW_TIMEOUT_CAP_SECONDS) as u64;
+    let verdict = decision_review_masked(decision, timeout_seconds, &json!(state), masker)?;
+    if verdict.approved {
+        return Ok(());
+    }
+    Err(review_rejected_reason(&verdict.detail))
+}
+
+/// 决策审查的结论。
+pub struct DecisionVerdict {
+    /// 是否批准执行。
+    pub approved: bool,
+    /// 决策模型选中的固定候选理由；没选出可识别理由时为 `None`。
+    pub reason: Option<String>,
+    /// 可直接展示的拒绝文案（批准时为空串）：与工具调用审查回给主模型的文案同源。
+    pub detail: String,
+    /// 结论提问的置信度（模型没给时为 `None`）。
+    pub confidence: Option<f64>,
+}
+
+/// 把一份**待审查负载**交给决策渠道判定：本地 API 的 `/v1/review` 与工具调用审查共用这一条路径。
+///
+/// `payload` 是原始（未脱敏）负载，脱敏在本函数内完成；`fail_closed` 为真时脱敏不可用即中止
+/// 请求（不外发原文），为假时按「脱敏未启用」降级。
+pub fn decision_review(
+    channel: &DecisionReviewOptions,
+    masking: Option<&ReviewMasking>,
+    fail_closed: bool,
+    timeout_seconds: u64,
+    payload: &Value,
+) -> Result<DecisionVerdict, String> {
+    let api_key = channel.resolve_api_key();
+    if api_key.trim().is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
+        return Err(review_request_failed_reason(&format!(
+            "缺少 API Key：请设置环境变量 {}。",
+            channel.api_key_env
+        )));
+    }
+    let instruction = review_instruction(payload);
+    let mut masker = match masking {
+        Some(masking) => match (masking.factory)() {
+            Ok(masker) => Some(masker),
+            Err(error) => {
+                if fail_closed {
+                    return Err(MASKING_FAIL_CLOSED_REASON.to_string());
+                }
+                eprintln!("[host] 审查请求脱敏不可用，按未启用处理：{error}");
+                None
+            }
+        },
+        None => None,
+    };
+    let masked = match masker.as_mut() {
+        Some(masker) => masker.mask(&instruction),
+        None => instruction,
+    };
+    decision_review_masked(channel, timeout_seconds, &json!(masked), masker)
+}
+
+/// 发一次决策请求：请求体先按脱敏旁路屏蔽，响应回来再还原；原文不外发。
+///
+/// 屏蔽与还原用**同一个** masker 实例（占位符序号在实例内部，换实例还原不回来），因此
+/// 两者必须收在同一个函数里。本地 REST 决策接口（`omnicrawl-decision`）的通用转发
+/// 直接调它，从而与宿主内部三处调用点共享同一套脱敏语义。
+///
+/// 脱敏构造失败一律中止（绝不外发原文）：这条路径的 `state` 由调用方直接给，没有
+/// 「按未启用降级」的余地。
+pub fn decision_post_masked(
+    channel: &DecisionReviewOptions,
+    masking: Option<&ReviewMasking>,
+    fail_closed: bool,
+    timeout_seconds: u64,
+    body_text: &str,
+) -> Result<String, String> {
+    let api_key = channel.resolve_api_key();
+    if api_key.trim().is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
+        return Err(format!(
+            "缺少 API Key：请设置环境变量 {}。",
+            channel.api_key_env
+        ));
+    }
+    let mut masker = match masking {
+        Some(masking) => match (masking.factory)() {
+            Ok(masker) => Some(masker),
+            Err(error) => {
+                if fail_closed {
+                    return Err(MASKING_FAIL_CLOSED_REASON.to_string());
+                }
+                return Err(format!("脱敏不可用，已中止本次决策请求（不外发原文）：{error}"));
+            }
+        },
+        None => None,
+    };
+    let masked = match masker.as_mut() {
+        Some(masker) => masker.mask(body_text),
+        None => body_text.to_string(),
+    };
+    let result = crate::decision_wire::post_body(
+        &channel.decide_url(),
+        &api_key,
+        &masked,
+        timeout_seconds,
+        USER_AGENT,
+    );
+    match masker.as_mut() {
+        Some(masker) => {
+            let restored =
+                result.and_then(|text| masker.restore(&text).map_err(|error| error.to_string()));
+            masker.close();
+            restored
+        }
+        None => result,
+    }
+}
+
+/// 决策审查的 core：已脱敏的 `state` 进请求，`masker` 用于还原响应。
+fn decision_review_masked(
+    channel: &DecisionReviewOptions,
+    timeout_seconds: u64,
+    state: &Value,
+    mut masker: Option<OneShotMasker>,
+) -> Result<DecisionVerdict, String> {
+    let api_key = channel.resolve_api_key();
     let questions = json!({
         DECISION_REVIEW_QUESTION_ID: {
             "type": "choice",
@@ -502,43 +635,18 @@ fn review_with_decision(
             "criteria": decision_reason_criteria(),
         }
     });
-    let body =
-        crate::decision_wire::request_body(&decision.mode, &decision.model, &json!(state), &questions);
+    let body = crate::decision_wire::request_body(&channel.mode, &channel.model, state, &questions);
 
-    let timeout_seconds = options
-        .request_timeout_seconds
-        .clamp(1, REVIEW_TIMEOUT_CAP_SECONDS);
     let body_text = serde_json::to_string(&body)
         .map_err(|error| review_request_failed_reason(&error.to_string()))?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        // 状态码不转错误：上游 4xx/5xx 的正文要留给诊断。
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let timeout = Duration::from_secs(timeout_seconds.max(1) as u64);
-    let response = agent
-        .post(decision.decide_url())
-        .config()
-        .timeout_connect(Some(timeout))
-        .timeout_recv_response(Some(timeout))
-        .timeout_recv_body(Some(timeout))
-        .build()
-        .header("Content-Type", "application/json")
-        .header("Authorization", &format!("Bearer {api_key}"))
-        .header("User-Agent", USER_AGENT)
-        .send(body_text.as_str())
-        .map_err(|error| review_request_failed_reason(&error.to_string()))?;
-    let status = response.status().as_u16();
-    let text = response
-        .into_body()
-        .read_to_string()
-        .map_err(|error| review_request_failed_reason(&error.to_string()))?;
-    if status >= 400 {
-        return Err(review_request_failed_reason(&format!(
-            "决策服务返回 HTTP {status}：{}",
-            truncate_for_reason(&text)
-        )));
-    }
+    let text = crate::decision_wire::post_body(
+        &channel.decide_url(),
+        &api_key,
+        &body_text,
+        timeout_seconds,
+        USER_AGENT,
+    )
+    .map_err(|error| review_request_failed_reason(&error))?;
 
     // 还原与结论解析同处一个失败面：还原失败归到「解析失败」（与对话模型通道一致）。
     let text = match masker.as_mut() {
@@ -552,7 +660,7 @@ fn review_with_decision(
         None => text,
     };
 
-    let answers = crate::decision_wire::extract_answers(&decision.mode, &text)
+    let answers = crate::decision_wire::extract_answers(&channel.mode, &text)
         .map_err(|error| review_parse_failed_reason(&error))?;
     let answer = answers.get(DECISION_REVIEW_QUESTION_ID);
     let choice = answer
@@ -565,12 +673,24 @@ fn review_with_decision(
         .and_then(Value::as_f64);
 
     match choice {
-        DECISION_REVIEW_APPROVE => Ok(()),
-        DECISION_REVIEW_REJECT => Err(review_rejected_reason(&decision_reject_detail(
-            &text,
+        DECISION_REVIEW_APPROVE => Ok(DecisionVerdict {
+            approved: true,
+            // 拒绝理由与诊断都只在拒绝时才有意义。
+            reason: None,
+            detail: String::new(),
             confidence,
-            answers.get(DECISION_REVIEW_REASON_QUESTION_ID),
-        ))),
+        }),
+        DECISION_REVIEW_REJECT => Ok(DecisionVerdict {
+            approved: false,
+            reason: decision_reject_reason(answers.get(DECISION_REVIEW_REASON_QUESTION_ID))
+                .map(str::to_string),
+            detail: decision_reject_detail(
+                &text,
+                confidence,
+                answers.get(DECISION_REVIEW_REASON_QUESTION_ID),
+            ),
+            confidence,
+        }),
         _ => Err(review_parse_failed_reason(&format!(
             "决策模型未返回可识别的选项：{}",
             truncate_for_reason(&text)
@@ -998,13 +1118,14 @@ mod tests {
 
     #[test]
     fn decision_channel_reads_the_choice_answer_over_chat_completions() {
-        // 同一份待审查负载，换成对话补全方式：路径与响应形状变了，结论解析不变。
+        // 同一份待审查负载，换成对话补全方式：基地址按 OpenAI 兼容口径带上 /v1，
+        // 路径与响应形状变了，结论解析不变。
         let cassette = DecisionCassette::serve();
         let decision = DecisionReviewOptions {
             mode: omnicrawl_config::features::decision_model::DECISION_MODE_CHAT_COMPLETIONS
                 .to_string(),
             model: "jev-1.13.0".to_string(),
-            base_url: cassette.base_url(),
+            base_url: format!("{}/v1", cassette.base_url()),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
         };

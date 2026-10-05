@@ -21,8 +21,10 @@ pub enum FieldKind {
     Float,
     /// 自由文本：逗号/分号分隔的列表也归这里，切分由宿主负责。
     Text,
-    /// 模型/渠道引用：候选是配置里的渠道列表（文案 = 渠道名，取值 = 渠道 key）。
-    Model,
+    /// 模型渠道引用：候选是配置里的渠道列表（文案 = 渠道名，取值 = 渠道 key）。
+    ModelChannel,
+    /// 渠道内的模型 ID：候选按当前选中的渠道发现，取值 = 模型 ID（可为空，表示用渠道自带的模型）。
+    ModelId,
 }
 
 /// 开关字段的两态文案（关, 开）。
@@ -101,10 +103,18 @@ impl FieldSpec {
         }
     }
 
-    const fn model(label: &'static str) -> Self {
+    const fn model_channel(label: &'static str) -> Self {
         Self {
             label,
-            kind: FieldKind::Model,
+            kind: FieldKind::ModelChannel,
+            flag_labels: DEFAULT_FLAG_LABELS,
+        }
+    }
+
+    const fn model_id(label: &'static str) -> Self {
+        Self {
+            label,
+            kind: FieldKind::ModelId,
             flag_labels: DEFAULT_FLAG_LABELS,
         }
     }
@@ -130,14 +140,17 @@ const THINKING_OPTIONS: [(&str, &str); 5] = [
 ];
 
 /// 顾问设置页的字段；顺序与 `app.rs` 读值时的下标一一对应。
-const ADVISOR_FIELDS: [FieldSpec; 3] = [
+///
+/// 「顾问渠道 + 顾问模型」两个下拉与「工具输出压缩」同构：先选渠道，再在该渠道的模型里选。
+const ADVISOR_FIELDS: [FieldSpec; 4] = [
     FieldSpec::flag("启用"),
     FieldSpec::enumerated("effort", &EFFORT_OPTIONS),
-    FieldSpec::model("顾问模型"),
+    FieldSpec::model_channel("顾问渠道"),
+    FieldSpec::model_id("顾问模型"),
 ];
 
 /// 工具输出压缩页的字段；顺序与 `app.rs` 读值时的下标一一对应。
-const COMPRESSION_FIELDS: [FieldSpec; 8] = [
+const COMPRESSION_FIELDS: [FieldSpec; 9] = [
     FieldSpec::flag("启用"),
     FieldSpec::toggled("思考", "关闭", "开启"),
     FieldSpec::enumerated("思考深度", &THINKING_OPTIONS),
@@ -145,7 +158,8 @@ const COMPRESSION_FIELDS: [FieldSpec; 8] = [
     FieldSpec::int("单次压缩输入上限"),
     FieldSpec::int("压缩结果上限"),
     FieldSpec::int("单条压缩超时（秒）"),
-    FieldSpec::model("压缩模型"),
+    FieldSpec::model_channel("压缩渠道"),
+    FieldSpec::model_id("压缩模型"),
 ];
 
 /// NER 推理设备候选（对映 Python 的 `NER_DEVICES`）。

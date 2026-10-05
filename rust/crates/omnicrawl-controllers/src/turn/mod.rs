@@ -15,6 +15,7 @@ pub mod environment;
 pub mod prompt_context;
 pub mod skill_command;
 pub mod tool_events;
+pub mod tool_prune;
 pub mod turn_loop;
 pub mod turn_text;
 
@@ -25,5 +26,6 @@ pub use environment::*;
 pub use prompt_context::*;
 pub use skill_command::*;
 pub use tool_events::*;
+pub use tool_prune::*;
 pub use turn_loop::*;
 pub use turn_text::*;

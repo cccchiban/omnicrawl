@@ -77,6 +77,10 @@ pub mod method {
     ///
     /// 只在宿主于 `initialize` 声明 `plugin_model_hooks` 时使用；未声明的宿主永远收不到。
     pub const MODEL_HOOK: &str = "model.hook";
+    /// 内核请宿主裁决「刚变老的那一批」工具调用里哪些已无用、可以从上下文里移除。
+    ///
+    /// 只在宿主于 `initialize` 声明 `tool_call_prune` 时使用；未声明的宿主永远收不到。
+    pub const CONTEXT_PRUNE: &str = "context.prune";
     pub const TOOL_STARTED: &str = "tool.started";
     pub const TOOL_FINISHED: &str = "tool.finished";
     pub const TOOL_OUTPUT_UPDATE: &str = "tool.output_update";
@@ -420,6 +424,12 @@ pub struct InitializeParams {
     /// 帧形状逐字一致。
     #[serde(default, skip_serializing_if = "is_false")]
     pub plugin_model_hooks: bool,
+    /// 宿主是否支持工具调用淘汰裁决（内核据此决定是否发 `context.prune` 请求）。
+    ///
+    /// 缺省 false，语义与 [`InitializeParams::plugin_model_hooks`] 相同：未声明的宿主收不到，
+    /// 内核也就不会为此阻住回合。false 时不序列化，旧宿主的帧形状逐字不变。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_call_prune: bool,
 }
 
 /// `skip_serializing_if` 辅助：false 时省掉该字段。
@@ -503,6 +513,12 @@ pub struct SessionModelSettings {
     /// 静态工具声明，整体替换；工具仍由宿主执行。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
+    /// 工具调用淘汰能力：宿主声明「是否支持把老一批调用送回裁决」。
+    ///
+    /// 它不是模型配置的一部分，而是宿主运行期的能力开关（设置面板改开关后即时下发）：
+    /// 内核据此决定要不要发起 `context.prune`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_prune: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<i64>,
     // ---- 渠道字段：切换模型渠道时一并下发，空串视作不改 ----
@@ -970,6 +986,77 @@ pub struct ModelHookResult {
 }
 
 impl ModelHookResult {
+    pub fn to_result(&self) -> Value {
+        payload_value(self)
+    }
+
+    pub fn from_result(result: &Value) -> Result<Self, BridgeError> {
+        from_params(result.clone())
+    }
+}
+
+/// 内核请宿主裁决「刚变老的那一批」工具调用：哪几次的结果已无用、可以从上下文里移除。
+///
+/// 只在宿主于 `initialize` 声明 `tool_call_prune` 时发出。`groups` 里的 `call_id` 是内核
+/// 自己的事实（它与上下文里 `tool_calls` 的 `id` 一一对应），宿主按送审形状带出去、把裁决结果
+/// 以同一份 `call_id` 回来，因此淘汰总是**整组**（请求 + 结果 + 拒绝）一起走。
+///
+/// 最新一批调用（还在被使用的「小登」）从不进这里：淘汰点因此贴近上下文尾部。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPruneRequest {
+    /// 本轮任务文本：判定「还有没有用」的背景。
+    #[serde(default)]
+    pub task: String,
+    /// 待裁决的调用组；顺序即宿主侧提问的组下标。
+    pub groups: Vec<ContextPruneGroup>,
+}
+
+/// 一个待裁决的调用组：一次调用的请求侧摘要与已执行结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPruneGroup {
+    /// 协议调用 ID：`tool_calls` 项与 `tool` 结果消息靠它配对。
+    pub call_id: String,
+    pub tool: String,
+    /// 公开投影后的参数摘要（进请求前已截断）。
+    #[serde(default)]
+    pub arguments: String,
+    #[serde(default)]
+    pub ok: bool,
+    /// 模型可见的结果正文（进请求前已截断）。
+    #[serde(default)]
+    pub output: String,
+}
+
+impl ContextPruneRequest {
+    pub fn to_frame(&self, id: Id) -> Frame {
+        Frame::request(id, method::CONTEXT_PRUNE, payload_value(self))
+    }
+
+    pub fn from_frame(frame: &Frame) -> Result<Self, BridgeError> {
+        if !frame.is_request() {
+            return Err(BridgeError::NotARequest);
+        }
+        match frame.method() {
+            Some(method::CONTEXT_PRUNE) => {
+                from_params(frame.params.clone().unwrap_or_else(|| json!({})))
+            }
+            Some(other) => Err(BridgeError::UnknownMethod(other.to_string())),
+            None => Err(BridgeError::NotARequest),
+        }
+    }
+}
+
+/// 宿主对 `context.prune` 的响应：应予淘汰的调用 ID。
+///
+/// 空列表表示「这一批都还有用」。宿主裁决不可用时以**空列表**应答（而不是错误响应）：
+/// 淘汰是 fail-open 的省上下文手段，不值得让回合失败或让内核把不可用当成淘汰。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPruneResult {
+    #[serde(default)]
+    pub evicted_call_ids: Vec<String>,
+}
+
+impl ContextPruneResult {
     pub fn to_result(&self) -> Value {
         payload_value(self)
     }

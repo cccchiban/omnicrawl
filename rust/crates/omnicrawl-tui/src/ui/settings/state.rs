@@ -24,11 +24,12 @@ use std::cell::RefCell;
 use crate::state::Composer;
 
 use super::form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
-use super::picker::{self, ModelPicker, PickerKey};
 use super::hit::{HitAction, HitRegion};
+use super::picker::ModelDiscovery;
 use super::{
-    choice_field_options, context_field_options, cycle_subagent_option, nearest_compaction_percent,
-    nearest_context_window_tokens, normalize_reasoning, reasoning_label, row_label, ROW_ORDER,
+    choice_field_options, context_compaction_options, context_window_options,
+    cycle_subagent_option, nearest_compaction_percent, nearest_context_window_tokens,
+    normalize_reasoning, reasoning_label, row_label, REASONING_OPTIONS, ROW_ORDER,
     SUBAGENT_ADVANCED_SPECS,
 };
 
@@ -44,8 +45,8 @@ pub enum Focus {
 /// 右侧当前挂载的二级面板。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    /// 上下文：上下文长度 + 压缩阈值。
-    Context,
+    /// 模型管理：渠道列表 + 渠道表单，列表下方接「模型与参数」分区行。
+    ModelManagement,
     /// 工具开关：逐工具启用/关闭。
     Tools,
     /// MCP 设置：全局策略 + Server 列表 / 编辑器。
@@ -54,8 +55,6 @@ pub enum Pane {
     Subagents,
     /// 视觉：模型原生视觉三态 + 代理开关 + 故障转移列表。
     Vision,
-    /// 模型渠道：渠道列表 + 单条渠道表单。
-    Channels,
     /// 结构化决策模型：决策渠道列表 + 单条决策渠道表单。
     DecisionModels,
     /// 单选页：一个下拉候选，选中即保存。
@@ -73,8 +72,7 @@ pub enum Pane {
 impl Pane {
     fn for_row(key: &str) -> Self {
         match key {
-            "model" => Self::Choice(ChoiceKind::Model),
-            "channels" => Self::Channels,
+            "model_management" => Self::ModelManagement,
             "decision_models" => Self::DecisionModels,
             "advisor" => Self::Form(FormKind::Advisor),
             "tool_output_compression" => Self::Form(FormKind::ToolOutputCompression),
@@ -82,12 +80,10 @@ impl Pane {
             "run_guard" => Self::Form(FormKind::RunGuard),
             "agent_workspace" => Self::Form(FormKind::AgentWorkspace),
             "image_gen" => Self::Form(FormKind::ImageGen),
-            "context" => Self::Context,
             "tools" => Self::Tools,
             "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
-            "reasoning" => Self::Choice(ChoiceKind::Reasoning),
             "show_thinking" => Self::Choice(ChoiceKind::ShowThinking),
             "memory" => Self::Choice(ChoiceKind::Memory),
             "plugins" => Self::Choice(ChoiceKind::Plugins),
@@ -98,13 +94,9 @@ impl Pane {
     }
 }
 
-/// 单选页的四+一种一级项（各自一个下拉候选，选中即保存）。
+/// 单选页：各自一个下拉候选，选中即保存。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChoiceKind {
-    /// 模型：候选来自 config.toml 的 `llm` 段与 models.toml 的渠道（可切换渠道）。
-    Model,
-    /// 推理强度：none / low / medium / high / xhigh / max。
-    Reasoning,
     /// 思考显示：开启 / 关闭。
     ShowThinking,
     /// 记忆功能：开启 / 关闭。
@@ -116,28 +108,15 @@ pub enum ChoiceKind {
 impl ChoiceKind {
     pub fn index(self) -> usize {
         match self {
-            Self::Model => 0,
-            Self::Reasoning => 1,
-            Self::ShowThinking => 2,
-            Self::Memory => 3,
-            Self::Plugins => 4,
+            Self::ShowThinking => 0,
+            Self::Memory => 1,
+            Self::Plugins => 2,
         }
     }
 
     /// 折叠框里显示的当前值（对映 Textual `Select` 显示选中项文案）。
     fn value(self, choices: &ChoicesState) -> OptionValue {
         match self {
-            // 模型页显示渠道名（候选值是渠道 key，两者不同）。
-            Self::Model => {
-                let label = choices
-                    .model_options
-                    .iter()
-                    .find(|(_, key)| key == &choices.model)
-                    .map(|(label, _)| label.clone())
-                    .unwrap_or_else(|| choices.model.clone());
-                OptionValue::Model(label)
-            }
-            Self::Reasoning => OptionValue::Text(choices.reasoning.clone()),
             Self::ShowThinking => OptionValue::Flag(choices.show_thinking),
             Self::Memory => OptionValue::Flag(choices.memory),
             Self::Plugins => OptionValue::Flag(choices.plugins),
@@ -145,12 +124,40 @@ impl ChoiceKind {
     }
 }
 
-/// 上下文页的字段。
+/// 模型管理页「模型与参数」分区里的行（选中即改，顺序即界面顺序）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContextField {
+pub enum ModelParamRow {
+    /// 当前模型渠道（选中即切换当前模型）。
+    Channel,
+    /// 上下文长度（Token）。
     Window,
+    /// 上下文压缩阈值（百分比）。
     Compaction,
+    /// 推理强度档位。
+    Reasoning,
 }
+
+impl ModelParamRow {
+    /// 分区里的行序。
+    pub const ORDER: [ModelParamRow; 4] = [
+        ModelParamRow::Channel,
+        ModelParamRow::Window,
+        ModelParamRow::Compaction,
+        ModelParamRow::Reasoning,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Channel => "当前模型渠道",
+            Self::Window => "上下文长度",
+            Self::Compaction => "上下文阈值",
+            Self::Reasoning => "推理强度",
+        }
+    }
+}
+
+/// 模型管理页「模型与参数」分区的标题。
+pub const MODEL_PARAM_SECTION: &str = "模型与参数";
 
 /// 工具页首行的行号：工具调用审查模式。
 pub const TOOLS_APPROVAL_ROW: usize = 0;
@@ -910,9 +917,10 @@ pub enum DecisionLocalChange {
 pub struct SettingsValues {
     pub context_window_tokens: i64,
     pub compaction_percent: i64,
-    /// 可切换的模型渠道（文案 = 渠道名，取值 = 渠道 key）与当前渠道 key。
-    pub model_options: Vec<(String, String)>,
+    /// 当前模型渠道 key（取值来自 channel 列表的 key）。
     pub model_key: String,
+    /// 推理强度档位（归一化后），显示在模型管理页的参数分区里。
+    pub reasoning_effort: String,
     /// 渠道页的初始列表、默认渠道与「新建」模板（模板由宿主从配置的默认渠道生成）。
     pub channels: Vec<ChannelRow>,
     pub default_channel_key: String,
@@ -925,7 +933,6 @@ pub struct SettingsValues {
     pub decision_switches: Vec<DecisionSwitchRow>,
     /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
     pub decision_local: DecisionLocalValues,
-    pub reasoning_effort: String,
     pub show_thinking: bool,
     pub memory_enabled: bool,
     pub plugins_enabled: bool,
@@ -949,7 +956,7 @@ pub struct SettingsValues {
 impl SettingsValues {
     /// 上下文长度与压缩比例都折算到候选档位后再进界面。
     ///
-    /// 单选页取与 Python 侧一致的缺省值（无渠道候选、推理强度 `none`、思考显示开启、
+    /// 单选页取与 Python 侧一致的缺省值（推理强度 `none`、思考显示开启、
     /// 记忆与插件关闭），由 [`SettingsValues::with_choices`] / [`SettingsValues::with_model`]
     /// 按当前配置覆盖。
     pub fn new(
@@ -960,8 +967,8 @@ impl SettingsValues {
         Self {
             context_window_tokens: nearest_context_window_tokens(context_window_tokens),
             compaction_percent: nearest_compaction_percent(compaction_percent),
-            model_options: Vec::new(),
             model_key: String::new(),
+            reasoning_effort: "none".to_string(),
             channels: Vec::new(),
             default_channel_key: String::new(),
             channel_template: ChannelRow::default(),
@@ -970,7 +977,6 @@ impl SettingsValues {
             decision_template: DecisionRow::default(),
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
-            reasoning_effort: "none".to_string(),
             show_thinking: true,
             memory_enabled: false,
             plugins_enabled: false,
@@ -986,7 +992,7 @@ impl SettingsValues {
         }
     }
 
-    /// 覆盖渠道页的初始列表、默认渠道与「新建」模板。
+    /// 覆盖模型管理页的渠道列表、默认渠道与「新建」模板。
     pub fn with_channels(
         mut self,
         channels: Vec<ChannelRow>,
@@ -1040,22 +1046,25 @@ impl SettingsValues {
         self
     }
 
-    /// 覆盖「模型」页的候选与当前渠道。
-    pub fn with_model(mut self, model_options: Vec<(String, String)>, model_key: &str) -> Self {
-        let fallback = model_options
-            .first()
-            .map(|(_, key)| key.clone())
-            .unwrap_or_default();
+    /// 覆盖模型管理页的当前模型渠道。
+    pub fn with_model(mut self, model_key: &str) -> Self {
+        let fallback = if self.default_channel_key.trim().is_empty() {
+            self.channels
+                .first()
+                .map(|row| row.key.clone())
+                .unwrap_or_default()
+        } else {
+            self.default_channel_key.clone()
+        };
         self.model_key = if model_key.trim().is_empty() {
             fallback
         } else {
             model_key.to_string()
         };
-        self.model_options = model_options;
         self
     }
 
-    /// 覆盖其余四个单选页的初始值（宿主从配置与运行时读出当前值后调用）。
+    /// 覆盖三个开关单选页与推理档位的初始值（宿主从配置与运行时读出当前值后调用）。
     pub fn with_choices(
         mut self,
         reasoning_effort: &str,
@@ -1121,10 +1130,12 @@ pub struct Dropdown {
     pub selected: usize,
 }
 
-/// 能展开候选的字段：上下文页的两个字段、某个单选页，或表单页的某个字段（按字段序号）。
+/// 能展开候选的字段：模型管理页的参数分区行、某个开关单选页、表单页某个字段，
+/// 或视觉页的「A 添加」。表单页的「渠道」与「模型」两列各有一套候选，由字段类型区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropdownField {
-    Context(ContextField),
+    /// 模型管理页「模型与参数」分区里的一行。
+    ModelParam(ModelParamRow),
     Choice(ChoiceKind),
     Form(usize),
     /// 视觉页的「A 添加视觉模型」候选（渠道列表）。
@@ -1132,20 +1143,15 @@ pub enum DropdownField {
 }
 
 impl DropdownField {
-    /// 静态候选（上下文两页与三个开关类单选页）。
+    /// 静态候选（开关类单选页）。
     ///
-    /// 模型页与表单页的候选都随环境变化（模型项来自配置与 models.toml，表单项跟着
-    /// 表单页的字段表走），由 [`SettingsState::options_for`] 提供，因此这里是 `None`。
+    /// 模型管理页的参数行、表单页的字段与视觉页的候选都随环境变化（渠道与模型列表
+    /// 来自配置，表单项跟着表单页的字段表走），由 [`SettingsState::options_for`] 提供，
+    /// 因此这里是 `None`。
     fn static_options(self) -> Option<Vec<(String, OptionValue)>> {
         match self {
-            Self::Context(field) => Some(
-                context_field_options(field)
-                    .into_iter()
-                    .map(|(label, value)| (label, OptionValue::Int(value)))
-                    .collect(),
-            ),
-            Self::Choice(ChoiceKind::Model) | Self::Form(_) | Self::VisionAdd => None,
             Self::Choice(kind) => Some(choice_field_options(kind)),
+            Self::ModelParam(_) | Self::Form(_) | Self::VisionAdd => None,
         }
     }
 }
@@ -1701,18 +1707,17 @@ const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑
 const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
 const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
-const CONTEXT_HINT: &str = "Tab 切换字段；选中即保存。";
+const MODEL_LIST_HINT: &str = "↑↓ 选择渠道或参数  Enter 编辑或选择  N 新建  D 删除  Esc 返回";
+const MODEL_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
 const CONFIG_CHAT_HINT: &str = "Enter 打开配置对话  Esc 返回";
 const TTS_HINT: &str =
     "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
-const CHANNELS_LIST_HINT: &str = "↑↓ 选择渠道  Enter 编辑  N 新建  D 删除  Esc 返回";
-const CHANNELS_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
+const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
+/// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
+const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
-const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
-/// 工具输出压缩页的提示：多一个「进模型选择器」的入口。
-const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  M 模型选择器  Ctrl+S 保存  Esc 返回";
 
 /// 按 [`FORM_KINDS`] 的顺序建好每页表单；宿主没给初值的页用空草稿。
 fn form_states(values: Vec<(FormKind, Vec<FieldValue>)>) -> Vec<FormState> {
@@ -1768,25 +1773,43 @@ struct ChannelForm {
     is_new: bool,
 }
 
-/// 渠道页的界面状态：列表 + 可选的表单。
+/// 模型管理页的界面状态：渠道列表 + 可选的渠道表单 + 「模型与参数」分区。
+///
+/// 分区里的行与渠道列表共用一套选中逻辑：前 `rows.len()` 行是渠道，之后依次是
+/// [`ModelParamRow::ORDER`] 的四行（`MODEL_PARAM_SECTION` 标题行不参与选中）。
 #[derive(Debug, Clone)]
-struct ChannelsState {
+struct ModelManagementState {
     rows: Vec<ChannelRow>,
     default_key: String,
     selected: usize,
     form: Option<ChannelForm>,
     /// 「新建」用的模板（宿主从配置的默认渠道生成）。
     template: ChannelRow,
+    /// 当前模型渠道 key（分区首行的取值）。
+    model_key: String,
+    window_tokens: i64,
+    percent: i64,
+    reasoning: String,
     status: String,
 }
 
-/// 上下文页的界面状态。
-#[derive(Debug, Clone)]
-struct ContextState {
-    window_tokens: i64,
-    percent: i64,
-    field: ContextField,
-    status: String,
+impl ModelManagementState {
+    /// 分区行的起始行号（渠道行之后）。
+    fn param_base(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// 渠道 + 分区行的总行数（标题行不计）。
+    fn row_count(&self) -> usize {
+        self.rows.len() + ModelParamRow::ORDER.len()
+    }
+
+    /// 选中行落在哪个分区参数上；选中的是渠道行时返回 `None`。
+    fn param_selected(&self) -> Option<ModelParamRow> {
+        ModelParamRow::ORDER
+            .get(self.selected.checked_sub(self.param_base())?)
+            .copied()
+    }
 }
 
 /// 工具开关页的界面状态。
@@ -2103,17 +2126,13 @@ struct VisionState {
     status: String,
 }
 
-/// 四个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
+/// 三个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
 #[derive(Debug, Clone)]
 struct ChoicesState {
-    /// 当前渠道 key，以及可切换的渠道候选（文案 = 渠道名，取值 = key）。
-    model: String,
-    model_options: Vec<(String, String)>,
-    reasoning: String,
     show_thinking: bool,
     memory: bool,
     plugins: bool,
-    status: [String; 5],
+    status: [String; 3],
 }
 
 impl ChoicesState {
@@ -2127,18 +2146,17 @@ pub struct SettingsState {
     focus: Focus,
     pane: Pane,
     dropdown: Option<Dropdown>,
-    context: ContextState,
     tools: ToolsState,
     mcp: McpState,
     subagents: SubagentsState,
     vision: VisionState,
     choices: ChoicesState,
-    channels: ChannelsState,
+    model_management: ModelManagementState,
     decision_models: DecisionModelsState,
     /// 每个表单页一份草稿，下标与 `FormKind::index` 一致。
     forms: Vec<FormState>,
-    /// 工具输出压缩页的内嵌双列模型选择器（进该页时按当前草稿重建）。
-    picker: Option<ModelPicker>,
+    /// 每个表单页一份模型发现状态，下标与 `FormKind::index` 一致（不带模型选择的页留空）。
+    model_discoveries: Vec<ModelDiscovery>,
     /// TTS 页的草稿状态机。
     tts: TtsState,
     /// 本次渲染记录下来的可点区域：渲染只拿 `&self`，所以用 `RefCell`。
@@ -2154,12 +2172,6 @@ impl SettingsState {
             focus: Focus::List,
             pane: Pane::for_row(ROW_ORDER[0]),
             dropdown: None,
-            context: ContextState {
-                window_tokens: values.context_window_tokens,
-                percent: values.compaction_percent,
-                field: ContextField::Window,
-                status: String::new(),
-            },
             tools: ToolsState {
                 rows: values.tools,
                 selected: 0,
@@ -2194,21 +2206,22 @@ impl SettingsState {
                 status: VISION_HINT.to_string(),
             },
             choices: ChoicesState {
-                model: values.model_key,
-                model_options: values.model_options,
-                reasoning: values.reasoning_effort,
                 show_thinking: values.show_thinking,
                 memory: values.memory_enabled,
                 plugins: values.plugins_enabled,
                 status: Default::default(),
             },
-            channels: ChannelsState {
+            model_management: ModelManagementState {
                 rows: values.channels,
                 default_key: values.default_channel_key,
                 selected: 0,
                 form: None,
                 template: values.channel_template,
-                status: CHANNELS_LIST_HINT.to_string(),
+                model_key: values.model_key,
+                window_tokens: values.context_window_tokens,
+                percent: values.compaction_percent,
+                reasoning: values.reasoning_effort,
+                status: MODEL_LIST_HINT.to_string(),
             },
             decision_models: DecisionModelsState {
                 rows: values.decision_channels,
@@ -2221,7 +2234,7 @@ impl SettingsState {
                 status: DECISION_LIST_HINT.to_string(),
             },
             forms: form_states(values.form_values),
-            picker: None,
+            model_discoveries: FORM_KINDS.iter().map(|_| ModelDiscovery::new()).collect(),
             tts: TtsState::new(values.tts),
             hits: RefCell::new(Vec::new()),
             hover: None,
@@ -2311,7 +2324,7 @@ impl SettingsState {
                     if let Some(dropdown) = self.dropdown.as_mut() {
                         dropdown.selected = index.min(count - 1);
                     }
-                } else if let Some(form) = self.channels.form.as_mut() {
+                } else if let Some(form) = self.model_management.form.as_mut() {
                     let count = form.dropdown.as_ref().map(|d| d.options.len()).unwrap_or(0);
                     if count == 0 {
                         return None;
@@ -2348,16 +2361,6 @@ impl SettingsState {
         self.dropdown = None;
         self.focus = Focus::Pane;
         match self.pane {
-            Pane::Context => {
-                let field = if index == 0 {
-                    ContextField::Window
-                } else {
-                    ContextField::Compaction
-                };
-                let already = self.context.field == field;
-                self.context.field = field;
-                already
-            }
             Pane::Tools => {
                 let target = index.min(self.tool_row_count().saturating_sub(1));
                 let already = self.tools.selected == target;
@@ -2382,9 +2385,9 @@ impl SettingsState {
                 self.tts.focused = target;
                 already
             }
-            Pane::Channels => {
-                // 列表态选渠道，表单态选字段（字段顺序就是 `ChannelField::ORDER`）。
-                if let Some(form) = self.channels.form.as_mut() {
+            Pane::ModelManagement => {
+                // 列表态选渠道或参数行，表单态选字段（字段顺序就是 `ChannelField::ORDER`）。
+                if let Some(form) = self.model_management.form.as_mut() {
                     let Some(field) = ChannelField::ORDER.get(index).copied() else {
                         return false;
                     };
@@ -2392,9 +2395,9 @@ impl SettingsState {
                     form.field = field;
                     already
                 } else {
-                    let target = index.min(self.channels.rows.len().saturating_sub(1));
-                    let already = self.channels.selected == target;
-                    self.channels.selected = target;
+                    let target = index.min(self.model_management.row_count().saturating_sub(1));
+                    let already = self.model_management.selected == target;
+                    self.model_management.selected = target;
                     already
                 }
             }
@@ -2468,16 +2471,12 @@ impl SettingsState {
         row_label(self.selected_key())
     }
 
-    pub fn context_field(&self) -> ContextField {
-        self.context.field
-    }
-
     pub fn context_window_tokens(&self) -> i64 {
-        self.context.window_tokens
+        self.model_management.window_tokens
     }
 
     pub fn compaction_percent(&self) -> i64 {
-        self.context.percent
+        self.model_management.percent
     }
 
     pub fn dropdown(&self) -> Option<Dropdown> {
@@ -2621,14 +2620,6 @@ impl SettingsState {
         }
     }
 
-    /// 工具输出压缩页的内嵌模型选择器（仅该页有）；不在该页时为 `None`。
-    pub fn model_picker(&self) -> Option<&ModelPicker> {
-        match self.pane {
-            Pane::Form(FormKind::ToolOutputCompression) => self.picker.as_ref(),
-            _ => None,
-        }
-    }
-
     /// 表单页的字段行（渲染层用）；不在表单页时为空。
     pub fn form_rows(&self) -> Vec<FormFieldView> {
         let Pane::Form(_) = self.pane else {
@@ -2643,7 +2634,10 @@ impl SettingsState {
             .map(|(index, spec)| FormFieldView {
                 label: spec.label,
                 value: self.form_field_value(form, index, *spec),
-                has_menu: matches!(spec.kind, FieldKind::Enum(_) | FieldKind::Model),
+                has_menu: matches!(
+                    spec.kind,
+                    FieldKind::Enum(_) | FieldKind::ModelChannel | FieldKind::ModelId
+                ),
                 editing: index == form.focused() && form.input().is_some(),
                 focused: index == form.focused(),
             })
@@ -2676,35 +2670,56 @@ impl SettingsState {
                 .find(|(_, option)| *option == raw)
                 .map(|(label, _)| (*label).to_string())
                 .unwrap_or_else(|| raw.to_string()),
-            // 模型项存的是渠道 key，界面显示渠道名（找不到就原样显示 key）。
-            FieldKind::Model => self
-                .choices
-                .model_options
-                .iter()
-                .find(|(_, key)| key == raw)
-                .map(|(label, _)| label.clone())
-                .unwrap_or_else(|| raw.to_string()),
+            FieldKind::ModelChannel | FieldKind::ModelId => self.model_select_value(spec, raw),
             FieldKind::Int | FieldKind::Float | FieldKind::Text => raw.to_string(),
+        }
+    }
+
+    /// 模型选择字段的显示文本：渠道列显示渠道名，模型列显示模型 ID（或「渠道默认」）。
+    ///
+    /// 草稿里存的是原始值（渠道 key 与模型 ID），这里换成界面文案。
+    fn model_select_value(&self, field: FieldSpec, raw: &str) -> String {
+        match field.kind {
+            FieldKind::ModelChannel => self
+                .model_management
+                .rows
+                .iter()
+                .find(|row| row.key == raw)
+                .map(|row| {
+                    if row.name.trim().is_empty() {
+                        row.key.clone()
+                    } else {
+                        row.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| {
+                    if raw.trim().is_empty() {
+                        "（未选择）".to_string()
+                    } else {
+                        raw.to_string()
+                    }
+                }),
+            FieldKind::ModelId => {
+                if raw.trim().is_empty() {
+                    "（渠道默认）".to_string()
+                } else {
+                    raw.to_string()
+                }
+            }
+            _ => raw.to_string(),
         }
     }
 
     /// 当前面板底部的一行状态文本；没有状态文本的面板返回空串。
     pub fn status(&self) -> &str {
         match self.pane {
-            Pane::Context => &self.context.status,
             Pane::Tools => &self.tools.status,
             Pane::Mcp => &self.mcp.status,
             Pane::Subagents => &self.subagents.status,
             Pane::Vision => &self.vision.status,
-            Pane::Channels => &self.channels.status,
+            Pane::ModelManagement => &self.model_management.status,
             Pane::DecisionModels => &self.decision_models.status,
             Pane::Choice(kind) => &self.choices.status[kind.index()],
-            Pane::Form(FormKind::ToolOutputCompression) => self
-                .picker
-                .as_ref()
-                .filter(|picker| picker.focused())
-                .map(|picker| picker.status())
-                .unwrap_or_else(|| self.form().map(|form| form.status()).unwrap_or("")),
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
             Pane::ConfigChat | Pane::Pending => "",
@@ -2714,7 +2729,6 @@ impl SettingsState {
     /// 面板内的操作提示行。
     pub fn pane_hint(&self) -> &'static str {
         match self.pane {
-            Pane::Context => CONTEXT_HINT,
             Pane::Tools => TOOLS_HINT,
             Pane::Mcp => {
                 if self.mcp.editor.is_some() {
@@ -2727,11 +2741,11 @@ impl SettingsState {
             }
             Pane::Subagents => SUBAGENTS_HINT,
             Pane::Vision => VISION_HINT,
-            Pane::Channels => {
-                if self.channels.form.is_some() {
-                    CHANNELS_FORM_HINT
+            Pane::ModelManagement => {
+                if self.model_management.form.is_some() {
+                    MODEL_FORM_HINT
                 } else {
-                    CHANNELS_LIST_HINT
+                    MODEL_LIST_HINT
                 }
             }
             Pane::DecisionModels => {
@@ -2743,13 +2757,7 @@ impl SettingsState {
             }
             // Python 的单选面板只有下拉与状态行，没有提示行。
             Pane::Choice(_) => "",
-            Pane::Form(FormKind::ToolOutputCompression) => {
-                if self.picker.as_ref().is_some_and(|picker| picker.focused()) {
-                    picker::PICKER_HINT
-                } else {
-                    COMPRESSION_HINT
-                }
-            }
+            Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::ConfigChat => CONFIG_CHAT_HINT,
@@ -2811,12 +2819,11 @@ impl SettingsState {
             return self.handle_dropdown_key(key);
         }
         match self.pane {
-            Pane::Context => self.handle_context_key(key),
             Pane::Tools => self.handle_tools_key(key),
             Pane::Mcp => self.handle_mcp_key(key),
             Pane::Subagents => self.handle_subagents_key(key),
             Pane::Vision => self.handle_vision_key(key),
-            Pane::Channels => self.handle_channels_key(key),
+            Pane::ModelManagement => self.handle_model_management_key(key),
             Pane::DecisionModels => self.handle_decision_models_key(key),
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
@@ -2839,29 +2846,49 @@ impl SettingsState {
         }
     }
 
-    /// 渠道页：列表态与表单态各有一组键位。
-    fn handle_channels_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        if self.channels.form.is_some() {
+    /// 模型管理页：列表态与表单态各有一组键位。
+    ///
+    /// 列表态的行 = 渠道行 + 「模型与参数」分区的四行（标题行不参与选中）；渠道行上
+    /// `Enter` 进表单，参数行上 `Enter`/`←`/`→` 展开候选，选中即保存。
+    fn handle_model_management_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        if self.model_management.form.is_some() {
             return self.handle_channel_form_key(key);
         }
         match key {
             KeyCode::Up => {
-                self.move_channel(-1);
+                self.move_model_row(-1);
                 None
             }
             KeyCode::Down => {
-                self.move_channel(1);
+                self.move_model_row(1);
                 None
             }
-            KeyCode::Enter | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => {
+                if self.model_management.param_selected().is_some() {
+                    self.open_dropdown();
+                    return None;
+                }
+                if key == KeyCode::Char(' ') {
+                    return None;
+                }
                 self.edit_channel();
                 None
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
+                if self.model_management.param_selected().is_some() {
+                    self.model_management.status =
+                        "只有渠道行参与新建；按 ↑ 选中渠道再按 N。".to_string();
+                    return None;
+                }
                 self.new_channel();
                 None
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
+                if self.model_management.param_selected().is_some() {
+                    self.model_management.status =
+                        "只有渠道行参与删除；按 ↑ 选中渠道再按 D。".to_string();
+                    return None;
+                }
                 self.delete_channel();
                 None
             }
@@ -2876,7 +2903,7 @@ impl SettingsState {
     /// 渠道表单：输入态 → 候选展开态 → 字段导航，三层各管各的键位。
     fn handle_channel_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         let input_active = self
-            .channels
+            .model_management
             .form
             .as_ref()
             .map(|form| form.input.is_some())
@@ -2885,7 +2912,7 @@ impl SettingsState {
             return self.handle_channel_input_key(key);
         }
         let dropdown_open = self
-            .channels
+            .model_management
             .form
             .as_ref()
             .map(|form| form.dropdown.is_some())
@@ -2931,29 +2958,7 @@ impl SettingsState {
         }
     }
 
-    fn handle_context_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        match key {
-            // Textual `Select` 折叠态的键位：enter / down / space / up 都是展开候选。
-            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
-                self.open_dropdown();
-                None
-            }
-            KeyCode::Tab => {
-                self.context.field = match self.context.field {
-                    ContextField::Window => ContextField::Compaction,
-                    ContextField::Compaction => ContextField::Window,
-                };
-                None
-            }
-            KeyCode::Esc | KeyCode::Left => {
-                self.back_to_list();
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// 单选页：只有一个下拉，键位与 Textual `Select` 一致（与上下文页同源）。
+    /// 单选页：只有一个下拉，键位与 Textual `Select` 一致（与模型管理页的参数行同源）。
     fn handle_choice_key(&mut self, key: KeyCode, _kind: ChoiceKind) -> Option<SettingsEvent> {
         match key {
             KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
@@ -2969,17 +2974,10 @@ impl SettingsState {
     }
 
     /// 表单页：输入态 → 字段导航两层各管各的键位；`Ctrl+S` 保存由宿主转发进来。
+    ///
+    /// 「渠道」与「模型」两个字段都是下拉：渠道列出配置里的渠道，模型列在选中渠道的
+    /// 候选里选（进模型列时会按需发起一次发现，结果由宿主回填）。
     fn handle_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        // 压缩页的内嵌模型选择器：拿到焦点时（或此刻要进去时）键位归它。
-        if self.picker.as_ref().is_some_and(|picker| picker.focused()) {
-            return self.handle_picker_key(key);
-        }
-        if self.picker.is_some() {
-            match key {
-                KeyCode::Char('m') | KeyCode::Char('M') => return self.focus_picker(),
-                _ => {}
-            }
-        }
         if self.form().is_some_and(|form| form.input().is_some()) {
             if let Some(form) = self.form_mut() {
                 form.input_key(key);
@@ -3009,14 +3007,12 @@ impl SettingsState {
                         }
                     }
                     // 候选字段选完不即时保存：仍要 `Ctrl+S`（与 Python 的表单页同义）。
-                    FieldKind::Enum(_) => self.open_dropdown(),
-                    // 压缩页的模型字段换成「进双列选择器」（对映 Python 内嵌的 ModelPickerPane）；
-                    // 其余表单页仍是渠道下拉。
-                    FieldKind::Model => {
-                        if self.picker.is_some() {
-                            return self.focus_picker();
-                        }
+                    FieldKind::Enum(_) | FieldKind::ModelChannel => self.open_dropdown(),
+                    // 进模型列时先按需拉一次该渠道的模型列表，再展开候选。
+                    FieldKind::ModelId => {
+                        let event = self.ensure_model_discovery(index);
                         self.open_dropdown();
+                        return event;
                     }
                     FieldKind::Int | FieldKind::Float | FieldKind::Text => {
                         if let Some(form) = self.form_mut() {
@@ -3041,28 +3037,84 @@ impl SettingsState {
         Some((index, form.field(index)?))
     }
 
-    /// 把焦点交给压缩页的模型选择器；需要时顺带请求一次模型发现。
-    fn focus_picker(&mut self) -> Option<SettingsEvent> {
-        let channels = self.channels.rows.clone();
-        {
-            let picker = self.picker.as_mut()?;
-            picker.focus(&channels);
-        }
-        if self.picker.as_ref().is_some_and(|picker| picker.wants_discovery()) {
-            return self.request_picker_discovery();
-        }
-        None
+    /// 某个表单页的「渠道 + 模型」两段草稿值（渠道 key 与模型 ID）。
+    ///
+    /// 只在「渠道」与「模型」两个字段都存在的表单页（工具输出压缩、顾问设置）上有意义。
+    fn model_draft(&self, kind: FormKind) -> Option<(String, String)> {
+        let form = self.forms.get(kind.index())?;
+        let channel_index = form
+            .specs()
+            .iter()
+            .position(|spec| matches!(spec.kind, FieldKind::ModelChannel))?;
+        let model_index = form
+            .specs()
+            .iter()
+            .position(|spec| matches!(spec.kind, FieldKind::ModelId))?;
+        Some((
+            form.value(channel_index)?.text().to_string(),
+            form.value(model_index)?.text().to_string(),
+        ))
     }
 
-    /// 请宿主发现「选择器里选中那个渠道」的可用模型。
-    fn request_picker_discovery(&mut self) -> Option<SettingsEvent> {
-        let channels = self.channels.rows.clone();
-        let picker = self.picker.as_mut()?;
-        if picker.handles_discovery() {
+    /// 该表单页的模型发现状态（只有带模型选择的表单页有）。
+    fn model_discovery(&self, kind: FormKind) -> Option<&ModelDiscovery> {
+        self.model_discoveries.get(kind.index())
+    }
+
+    /// 某个表单页当前选中的渠道记录。
+    fn selected_model_channel(&self, kind: FormKind) -> Option<&ChannelRow> {
+        let (channel, _) = self.model_draft(kind)?;
+        self.model_management
+            .rows
+            .iter()
+            .find(|row| row.key == channel)
+    }
+
+    /// 模型下拉的候选：渠道自带模型 + 该渠道的发现结果 + 当前值。
+    pub fn model_candidates_for(&self, kind: FormKind) -> Vec<String> {
+        let Some((_, model)) = self.model_draft(kind) else {
+            return Vec::new();
+        };
+        let channel = self.selected_model_channel(kind);
+        match self.model_discovery(kind) {
+            Some(discovery) => discovery.candidates(channel, &model),
+            None => {
+                let mut models = Vec::new();
+                if let Some(channel) = channel {
+                    if !channel.model_id.trim().is_empty() {
+                        models.push(channel.model_id.trim().to_string());
+                    }
+                }
+                if !model.trim().is_empty() {
+                    models.push(model.trim().to_string());
+                }
+                models
+            }
+        }
+    }
+
+    /// 需要时请宿主发现「当前渠道」的可用模型；不需要时返回 `None`。
+    fn ensure_model_discovery(&mut self, index: usize) -> Option<SettingsEvent> {
+        let kind = self.form()?.kind();
+        let (channel_key, _) = self.model_draft(kind)?;
+        if channel_key.trim().is_empty() {
             return None;
         }
-        let channel = picker.selected_channel(&channels)?.clone();
-        picker.mark_discovering();
+        let discovery = self.model_discoveries.get_mut(kind.index())?;
+        if !discovery.wants_discovery(&channel_key) {
+            return None;
+        }
+        let channel = self
+            .model_management
+            .rows
+            .iter()
+            .find(|row| row.key == channel_key)?
+            .clone();
+        discovery.mark_discovering(&channel_key);
+        if let Some(form) = self.forms.get_mut(kind.index()) {
+            form.set_status("正在发现可用模型…");
+        }
+        let _ = index;
         Some(SettingsEvent::DiscoverChannelModels {
             profile_id: channel.profile_id,
             provider: channel.provider,
@@ -3074,30 +3126,26 @@ impl SettingsState {
         })
     }
 
-    /// 选择器持有焦点时的键位翻译。
-    fn handle_picker_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        let channels = self.channels.rows.clone();
-        let action = match self.picker.as_mut() {
-            Some(picker) => picker.handle_key(key, &channels),
-            None => return None,
-        };
-        match action {
-            PickerKey::Handled | PickerKey::Nothing | PickerKey::Blur => None,
-            PickerKey::Discover => self.request_picker_discovery(),
-            PickerKey::Confirm(token) => {
-                // 只改草稿 + 状态：写盘仍是 `Ctrl+S`（与 Python 的「选择后按 Ctrl+S 保存」同义）。
-                let message = format!("压缩模型已选择：{token}；按 Ctrl+S 保存。");
-                if let Some(index) = self.compression_model_field() {
-                    if let Some(form) = self.form_mut() {
-                        form.set_value(index, FieldValue::Text(token));
-                        form.set_status(message.clone());
-                    }
-                }
-                if let Some(picker) = self.picker.as_mut() {
-                    picker.set_status(message);
-                }
-                None
+    /// 表单页里「模型」字段的下标（字段表里唯一的 [`FieldKind::ModelId`]）。
+    fn model_id_field(&self, kind: FormKind) -> Option<usize> {
+        self.forms
+            .get(kind.index())?
+            .specs()
+            .iter()
+            .position(|spec| matches!(spec.kind, FieldKind::ModelId))
+    }
+
+    /// 换渠道后把模型列清空（沿用新渠道自带的模型），并请宿主重新发现。
+    fn reset_model_for_channel(&mut self, kind: FormKind, channel: &str) {
+        if let Some(index) = self.model_id_field(kind) {
+            if let Some(form) = self.forms.get_mut(kind.index()) {
+                form.set_value(index, FieldValue::Text(String::new()));
             }
+        }
+        if let Some(discovery) = self.model_discoveries.get_mut(kind.index()) {
+            discovery.set_status(format!(
+                "已切换到渠道 {channel}；按 Enter 展开模型候选。"
+            ));
         }
     }
 
@@ -3719,40 +3767,21 @@ impl SettingsState {
         let next = Pane::for_row(self.selected_key());
         if next != self.pane {
             self.pane = next;
-            // 换面板等价于重新进入：收起下拉，字段回到第一个。
+            // 换面板等价于重新进入：收起下拉，选中行回到第一个。
             self.dropdown = None;
-            self.context.field = ContextField::Window;
-            self.ensure_picker();
+            self.model_management.selected = 0;
         }
     }
 
-    /// 进工具输出压缩页时重建模型选择器：以草稿里的当前模型为「当前值」。
-    ///
-    /// 每次进页都重建，是为了让「当前模型」始终跟着草稿走（在别处改过之后也一致），
-    /// 代价是每次进页会重新发现一次模型（与 Python 的 `refresh_on_open=False` 不同，
-    /// 见 README 的已知差异）。
-    fn ensure_picker(&mut self) {
-        if self.pane != Pane::Form(FormKind::ToolOutputCompression) {
+    /// 模型管理页列表态的行移动：渠道行与「模型与参数」分区行一起循环。
+    fn move_model_row(&mut self, delta: isize) {
+        let count = self.model_management.row_count() as isize;
+        if count <= 0 {
             return;
         }
-        let current = self
-            .compression_model_field()
-            .and_then(|index| {
-                self.form()
-                    .and_then(|form| form.value(index))
-                    .map(|value| value.text().to_string())
-            })
-            .unwrap_or_default();
-        let channels = self.channels.rows.clone();
-        self.picker = Some(ModelPicker::new(&current, &channels));
-    }
-
-    /// 压缩页里模型字段的下标（字段表里唯一的 [`FieldKind::Model`]）。
-    fn compression_model_field(&self) -> Option<usize> {
-        let form = self.form()?;
-        form.specs()
-            .iter()
-            .position(|spec| matches!(spec.kind, FieldKind::Model))
+        self.model_management.selected =
+            ((self.model_management.selected as isize + delta).rem_euclid(count)) as usize;
+        self.dropdown = None;
     }
 
     fn enter_pane(&mut self) {
@@ -3765,14 +3794,17 @@ impl SettingsState {
         self.dropdown = None;
     }
 
-    /// 当前面板正在编辑的字段；没有可展开字段（工具页/渠道页/配置对话入口页，以及表单页
+    /// 当前面板正在编辑的字段；没有可展开字段（工具页/配置对话入口页，以及表单页
     /// 的开关与整数项）时为 `None`。
     fn active_field(&self) -> Option<DropdownField> {
         match self.pane {
-            Pane::Context => Some(DropdownField::Context(self.context.field)),
             Pane::Choice(kind) => Some(DropdownField::Choice(kind)),
+            Pane::ModelManagement if self.model_management.form.is_none() => self
+                .model_management
+                .param_selected()
+                .map(DropdownField::ModelParam),
             Pane::Form(_) => match self.focused_form_field()?.1.kind {
-                FieldKind::Enum(_) | FieldKind::Model => {
+                FieldKind::Enum(_) | FieldKind::ModelChannel | FieldKind::ModelId => {
                     Some(DropdownField::Form(self.form()?.focused()))
                 }
                 _ => None,
@@ -3780,7 +3812,7 @@ impl SettingsState {
             Pane::Tools
             | Pane::Mcp
             | Pane::Subagents
-            | Pane::Channels
+            | Pane::ModelManagement
             | Pane::DecisionModels
             | Pane::Vision
             | Pane::Tts
@@ -3794,15 +3826,17 @@ impl SettingsState {
             return;
         };
         let current = match field {
-            DropdownField::Context(ContextField::Window) => {
-                OptionValue::Int(self.context.window_tokens)
+            DropdownField::ModelParam(ModelParamRow::Channel) => {
+                OptionValue::Model(self.model_management.model_key.clone())
             }
-            DropdownField::Context(ContextField::Compaction) => {
-                OptionValue::Int(self.context.percent)
+            DropdownField::ModelParam(ModelParamRow::Window) => {
+                OptionValue::Int(self.model_management.window_tokens)
             }
-            // 模型页显示的是渠道名，但游标要按候选值（渠道 key）定位。
-            DropdownField::Choice(ChoiceKind::Model) => {
-                OptionValue::Model(self.choices.model.clone())
+            DropdownField::ModelParam(ModelParamRow::Compaction) => {
+                OptionValue::Int(self.model_management.percent)
+            }
+            DropdownField::ModelParam(ModelParamRow::Reasoning) => {
+                OptionValue::Text(self.model_management.reasoning.clone())
             }
             DropdownField::Choice(kind) => kind.value(&self.choices),
             // 视觉页的候选没有「当前值」：游标停在第一项。
@@ -3817,7 +3851,7 @@ impl SettingsState {
                 };
                 let raw = form.value(index).map(|value| value.text()).unwrap_or("");
                 match spec.kind {
-                    FieldKind::Model => OptionValue::Model(raw.to_string()),
+                    FieldKind::ModelChannel => OptionValue::Model(raw.to_string()),
                     _ => OptionValue::Text(raw.to_string()),
                 }
             }
@@ -3845,17 +3879,13 @@ impl SettingsState {
         dropdown.selected = ((dropdown.selected as isize + delta).rem_euclid(count)) as usize;
     }
 
-    /// 某个字段的候选：模型项随配置变化，表单页的候选取自字段表，其余是静态表。
+    /// 某个字段的候选：模型与渠道项随配置变化，表单页的候选取自字段表，其余是静态表。
     fn options_for(&self, field: DropdownField) -> Vec<(String, OptionValue)> {
         match field {
-            DropdownField::Choice(ChoiceKind::Model) => self.model_options(),
+            DropdownField::ModelParam(row) => self.model_param_options(row),
             // 视觉页的候选是渠道列表，与「A 添加」的语义一致。
-            DropdownField::VisionAdd => self.model_options(),
+            DropdownField::VisionAdd => self.channel_options(),
             DropdownField::Form(index) => match self.form().and_then(|form| form.field(index)) {
-                Some(FieldSpec {
-                    kind: FieldKind::Model,
-                    ..
-                }) => self.model_options(),
                 Some(FieldSpec {
                     kind: FieldKind::Enum(options),
                     ..
@@ -3868,19 +3898,68 @@ impl SettingsState {
                         )
                     })
                     .collect(),
+                Some(FieldSpec {
+                    kind: FieldKind::ModelChannel,
+                    ..
+                }) => self.channel_options(),
+                Some(FieldSpec {
+                    kind: FieldKind::ModelId,
+                    ..
+                }) => {
+                    let kind = self.form().map(|form| form.kind());
+                    match kind {
+                        Some(kind) => self
+                            .model_candidates_for(kind)
+                            .into_iter()
+                            .map(|model| (model.clone(), OptionValue::Text(model)))
+                            .collect(),
+                        None => Vec::new(),
+                    }
+                }
                 _ => Vec::new(),
             },
             other => other.static_options().unwrap_or_default(),
         }
     }
 
-    /// 模型候选（文案 = 渠道名，取值 = 渠道 key）。
-    fn model_options(&self) -> Vec<(String, OptionValue)> {
-        self.choices
-            .model_options
+    /// 渠道候选（文案 = 渠道名，取值 = 渠道 key）。
+    fn channel_options(&self) -> Vec<(String, OptionValue)> {
+        self.model_management
+            .rows
             .iter()
-            .map(|(label, key)| (label.clone(), OptionValue::Model(key.clone())))
+            .map(|row| {
+                let label = if row.name.trim().is_empty() {
+                    row.key.clone()
+                } else {
+                    row.name.clone()
+                };
+                (label, OptionValue::Model(row.key.clone()))
+            })
             .collect()
+    }
+
+    /// 模型管理页参数行的候选。
+    fn model_param_options(&self, row: ModelParamRow) -> Vec<(String, OptionValue)> {
+        match row {
+            ModelParamRow::Channel => self.channel_options(),
+            ModelParamRow::Window => context_window_options()
+                .into_iter()
+                .map(|(label, value)| (label, OptionValue::Int(value)))
+                .collect(),
+            ModelParamRow::Compaction => context_compaction_options()
+                .into_iter()
+                .map(|(label, value)| (label, OptionValue::Int(value)))
+                .collect(),
+            ModelParamRow::Reasoning => REASONING_OPTIONS
+                .iter()
+                .map(|(option, label)| {
+                    (
+                        (*label).to_string(),
+                        OptionValue::Text((*option).to_string()),
+                    )
+                })
+                .collect(),
+        }
     }
 
     /// 当前展开的下拉的候选；没有展开时为空（渲染层用）。
@@ -3897,33 +3976,33 @@ impl SettingsState {
         let options = self.options_for(dropdown.field);
         let (_, value) = options.get(dropdown.selected)?.clone();
         match (dropdown.field, value) {
-            (DropdownField::Choice(ChoiceKind::Model), OptionValue::Model(key)) => {
-                if key == self.choices.model {
+            // 模型管理页的参数行：与单选页同义，选中即保存。
+            (DropdownField::ModelParam(ModelParamRow::Channel), OptionValue::Model(key)) => {
+                if key == self.model_management.model_key {
                     return None;
                 }
                 Some(SettingsEvent::Apply(SettingsChange::Model { key }))
             }
-            (DropdownField::Context(ContextField::Window), OptionValue::Int(tokens)) => {
-                if tokens == self.context.window_tokens {
+            (DropdownField::ModelParam(ModelParamRow::Window), OptionValue::Int(tokens)) => {
+                if tokens == self.model_management.window_tokens {
                     return None;
                 }
                 Some(SettingsEvent::Apply(SettingsChange::ContextWindow {
                     tokens,
                 }))
             }
-            (DropdownField::Context(ContextField::Compaction), OptionValue::Int(percent)) => {
-                if percent == self.context.percent {
+            (DropdownField::ModelParam(ModelParamRow::Compaction), OptionValue::Int(percent)) => {
+                if percent == self.model_management.percent {
                     return None;
                 }
                 Some(SettingsEvent::Apply(SettingsChange::CompactionPercent {
                     percent,
                 }))
             }
-            (DropdownField::Choice(kind), OptionValue::Text(effort)) => {
-                if effort == self.choices.reasoning {
+            (DropdownField::ModelParam(ModelParamRow::Reasoning), OptionValue::Text(effort)) => {
+                if effort == self.model_management.reasoning {
                     return None;
                 }
-                debug_assert_eq!(kind, ChoiceKind::Reasoning);
                 Some(SettingsEvent::Apply(SettingsChange::Reasoning { effort }))
             }
             (DropdownField::Choice(ChoiceKind::ShowThinking), OptionValue::Flag(enabled)) => {
@@ -3939,7 +4018,7 @@ impl SettingsState {
                     ChoiceKind::Memory => "memory",
                     ChoiceKind::Plugins => "plugins",
                     // 其余单选页没有布尔开关；走到这里说明面板映射写错了。
-                    _ => return None,
+                    ChoiceKind::ShowThinking => return None,
                 };
                 let current = match kind {
                     ChoiceKind::Memory => self.choices.memory,
@@ -3959,8 +4038,18 @@ impl SettingsState {
                     OptionValue::Text(text) | OptionValue::Model(text) => text,
                     _ => return None,
                 };
-                if let Some(form) = self.form_mut() {
-                    form.set_value(index, FieldValue::Text(text));
+                let kind = self.form().map(|form| form.kind())?;
+                let is_channel = matches!(
+                    self.form().and_then(|form| form.field(index)).map(|spec| spec.kind),
+                    Some(FieldKind::ModelChannel)
+                );
+                if let Some(form) = self.forms.get_mut(kind.index()) {
+                    form.set_value(index, FieldValue::Text(text.clone()));
+                    form.set_status(format!("已选择：{text}；按 Ctrl+S 保存。"));
+                }
+                // 换渠道后模型列清空，并让下一次进模型列重新发现。
+                if is_channel {
+                    self.reset_model_for_channel(kind, &text);
                 }
                 None
             }
@@ -3997,38 +4086,30 @@ impl SettingsState {
         }))
     }
 
-    // ---------- 渠道页：列表与表单 ----------
-
-    fn move_channel(&mut self, delta: isize) {
-        let count = self.channels.rows.len() as isize;
-        if count == 0 {
-            return;
-        }
-        self.channels.selected =
-            ((self.channels.selected as isize + delta).rem_euclid(count)) as usize;
-    }
+    // ---------- 模型管理页：渠道列表与表单 ----------
 
     /// 进入表单：编辑选中的渠道。
     fn edit_channel(&mut self) {
-        let Some(row) = self.channels.rows.get(self.channels.selected).cloned() else {
-            self.channels.status = "还没有渠道可编辑；按 N 新建一条。".to_string();
+        let selected = self.model_management.selected;
+        let Some(row) = self.model_management.rows.get(selected).cloned() else {
+            self.model_management.status = "还没有渠道可编辑；按 N 新建一条。".to_string();
             return;
         };
-        let index = self.channels.selected;
-        self.channels.status = format!("正在编辑渠道 {}；Ctrl+S 保存，Esc 返回列表。", row.key);
-        self.channels.form = Some(ChannelForm {
+        self.model_management.status =
+            format!("正在编辑渠道 {}；Ctrl+S 保存，Esc 返回列表。", row.key);
+        self.model_management.form = Some(ChannelForm {
             row,
             field: ChannelField::Name,
             input: None,
             dropdown: None,
             is_new: false,
-            index: Some(index),
+            index: Some(selected),
         });
     }
 
     /// 新建渠道：草稿只存在于表单里，`Ctrl+S` 才落进列表（`Esc` 直接丢弃）。
     fn new_channel(&mut self) {
-        let mut row = self.channels.template.clone();
+        let mut row = self.model_management.template.clone();
         let base = if row.key.trim().is_empty() {
             "新渠道".to_string()
         } else {
@@ -4036,7 +4117,12 @@ impl SettingsState {
         };
         let mut candidate = base.clone();
         let mut index = 2;
-        while self.channels.rows.iter().any(|item| item.key == candidate) {
+        while self
+            .model_management
+            .rows
+            .iter()
+            .any(|item| item.key == candidate)
+        {
             candidate = format!("{base}{index}");
             index += 1;
         }
@@ -4047,9 +4133,9 @@ impl SettingsState {
         if row.profile_id.trim().is_empty() {
             row.profile_id = format!("{candidate}-profile");
         }
-        self.channels.status =
+        self.model_management.status =
             format!("正在新建渠道 {candidate}；填好后按 Ctrl+S 保存，Esc 放弃。");
-        self.channels.form = Some(ChannelForm {
+        self.model_management.form = Some(ChannelForm {
             row,
             field: ChannelField::Name,
             input: None,
@@ -4061,28 +4147,34 @@ impl SettingsState {
 
     /// 删除选中渠道；至少保留一条（与配置侧的校验同口径）。
     fn delete_channel(&mut self) {
-        if self.channels.rows.len() <= 1 {
-            self.channels.status = "至少要保留一个模型渠道。".to_string();
+        if self.model_management.rows.len() <= 1 {
+            self.model_management.status = "至少要保留一个模型渠道。".to_string();
             return;
         }
-        let removed = self.channels.rows.remove(self.channels.selected);
-        self.channels.selected = self.channels.selected.min(self.channels.rows.len() - 1);
-        if self.channels.default_key == removed.key {
-            self.channels.default_key = self
-                .channels
+        let selected = self.model_management.selected;
+        let removed = self.model_management.rows.remove(selected);
+        self.model_management.selected = selected.min(self.model_management.rows.len() - 1);
+        if self.model_management.default_key == removed.key {
+            self.model_management.default_key = self
+                .model_management
                 .rows
                 .iter()
                 .find(|row| row.enabled)
-                .or_else(|| self.channels.rows.first())
+                .or_else(|| self.model_management.rows.first())
                 .map(|row| row.key.clone())
                 .unwrap_or_default();
         }
-        self.channels.status = format!("已删除渠道 {}；Ctrl+S 保存后才会写盘。", removed.key);
+        // 删掉的正好是当前模型渠道时，落到新的默认渠道。
+        if self.model_management.model_key == removed.key {
+            self.model_management.model_key = self.model_management.default_key.clone();
+        }
+        self.model_management.status =
+            format!("已删除渠道 {}；Ctrl+S 保存后才会写盘。", removed.key);
     }
 
     /// 表单里切换字段（`↑`/`↓` 与 `Tab` 同义）。
     fn move_channel_field(&mut self, delta: isize) {
-        let Some(form) = self.channels.form.as_mut() else {
+        let Some(form) = self.model_management.form.as_mut() else {
             return;
         };
         let count = ChannelField::ORDER.len() as isize;
@@ -4093,7 +4185,7 @@ impl SettingsState {
 
     /// `Enter`/空格：文本字段进编辑态、枚举展开候选、开关就地翻转。
     fn activate_channel_field(&mut self) -> Option<SettingsEvent> {
-        let Some(form) = self.channels.form.as_mut() else {
+        let Some(form) = self.model_management.form.as_mut() else {
             return None;
         };
         let mut event = None;
@@ -4145,7 +4237,7 @@ impl SettingsState {
                     api_key_env: form.row.api_key_env.clone(),
                     user_agent: form.row.user_agent.clone(),
                 });
-                self.channels.status =
+                self.model_management.status =
                     "正在检测模型列表…（Esc 可保留手动输入，稍候可重试）".to_string();
             }
             field => {
@@ -4162,20 +4254,21 @@ impl SettingsState {
     }
 
     /// 自动检测结果回填：有候选就展开下拉，否则退回手动输入并说明原因。
+    ///
+    /// 结果先回给「正在等它的表单页」（压缩页与顾问页的模型列）：由该页的
+    /// [`ModelDiscovery`] 收下，下一次展开模型列就有候选；否则给渠道表单的模型 ID 列。
     pub fn set_channel_models(&mut self, models: Vec<String>, message: String) {
-        // 压缩页的内嵌选择器优先：它正在等这次发现的结果（渠道表单此时不在模型字段上）。
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|picker| picker.handles_discovery())
-        {
-            let channels = self.channels.rows.clone();
-            if let Some(picker) = self.picker.as_mut() {
-                picker.set_models(models, &message, &channels);
+        if let Some(kind) = self.pending_discovery_form() {
+            if let Some(discovery) = self.model_discoveries.get_mut(kind.index()) {
+                discovery.set_models(models, &message);
+                let status = discovery.status().to_string();
+                if let Some(form) = self.forms.get_mut(kind.index()) {
+                    form.set_status(status);
+                }
             }
             return;
         }
-        let Some(form) = self.channels.form.as_mut() else {
+        let Some(form) = self.model_management.form.as_mut() else {
             return;
         };
         // 检测期间用户可能已经离开这个字段：结果直接丢弃。
@@ -4192,7 +4285,7 @@ impl SettingsState {
             composer.insert(&form.row.model_id);
             form.dropdown = None;
             form.input = Some(composer);
-            self.channels.status =
+            self.model_management.status =
                 format!("未检测到模型列表（{reason}）；可直接输入模型 ID 后按 Enter。");
             return;
         }
@@ -4206,13 +4299,21 @@ impl SettingsState {
             options: models,
             selected,
         });
-        self.channels.status =
+        self.model_management.status =
             "已检测到模型列表：↑↓ 选择，Enter 确认，Esc 收起。".to_string();
+    }
+
+    /// 哪个表单页正在等这次发现结果；没有就返回 `None`（说明是渠道表单发起的）。
+    fn pending_discovery_form(&self) -> Option<FormKind> {
+        self.model_discoveries
+            .iter()
+            .position(ModelDiscovery::handles_discovery)
+            .and_then(|index| FORM_KINDS.get(index).copied())
     }
 
     /// 枚举候选展开态：`↑`/`↓` 移动、`Enter` 确认、`Esc` 收起。
     fn handle_channel_dropdown_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        let form = self.channels.form.as_mut()?;
+        let form = self.model_management.form.as_mut()?;
         let dropdown = form.dropdown.as_mut()?;
         match key {
             KeyCode::Up => {
@@ -4256,7 +4357,7 @@ impl SettingsState {
 
     /// 文本编辑态：字符插入、光标移动、`Enter` 提交、`Esc` 取消。
     fn handle_channel_input_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
-        let form = self.channels.form.as_mut()?;
+        let form = self.model_management.form.as_mut()?;
         let field = form.field;
         let composer = form.input.as_mut()?;
         match key {
@@ -4281,13 +4382,13 @@ impl SettingsState {
     /// `Esc`：退出表单回列表（未保存的改动丢弃，草稿直接扔掉）。
     fn leave_channel_form(&mut self) {
         let drafting = self
-            .channels
+            .model_management
             .form
             .as_ref()
             .map(|form| form.is_new)
             .unwrap_or(false);
-        self.channels.form = None;
-        self.channels.status = if drafting {
+        self.model_management.form = None;
+        self.model_management.status = if drafting {
             "已放弃新建渠道（未写盘）。".to_string()
         } else {
             "已返回渠道列表（未保存的改动已丢弃）。".to_string()
@@ -4296,21 +4397,21 @@ impl SettingsState {
 
     /// `Ctrl+S`：把表单落进列表、校验后交给宿主写盘。
     fn save_channels(&mut self) -> Option<SettingsEvent> {
-        let form = self.channels.form.clone()?;
-        let mut rows = self.channels.rows.clone();
+        let form = self.model_management.form.clone()?;
+        let mut rows = self.model_management.rows.clone();
         match form.index {
             Some(index) if index < rows.len() => rows[index] = form.row.clone(),
             _ => rows.push(form.row.clone()),
         }
         if let Err(message) = validate_channels(&rows) {
-            self.channels.status = message;
+            self.model_management.status = message;
             return None;
         }
-        let default_key = pick_default_channel(&rows, &self.channels.default_key);
-        self.channels.status = "正在保存渠道配置…".to_string();
-        self.channels.rows = rows.clone();
-        self.channels.default_key = default_key.clone();
-        self.channels.form = None;
+        let default_key = pick_default_channel(&rows, &self.model_management.default_key);
+        self.model_management.status = "正在保存渠道配置…".to_string();
+        self.model_management.rows = rows.clone();
+        self.model_management.default_key = default_key.clone();
+        self.model_management.form = None;
         Some(SettingsEvent::Apply(SettingsChange::Channels {
             rows,
             default_key,
@@ -4795,7 +4896,7 @@ impl SettingsState {
     /// `Ctrl` 组合键：渠道表单与表单页的保存都走 `Ctrl+S`。
     pub fn handle_ctrl_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match self.pane {
-            Pane::Channels if self.channels.form.is_some() => match key {
+            Pane::ModelManagement if self.model_management.form.is_some() => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_channels(),
                 _ => None,
             },
@@ -4860,14 +4961,14 @@ impl SettingsState {
     pub fn apply_succeeded(&mut self, change: &SettingsChange, message: String) {
         match change {
             SettingsChange::Channels { rows, default_key } => {
-                self.channels.rows = rows.clone();
-                self.channels.default_key = default_key.clone();
-                self.channels.selected = self
-                    .channels
+                self.model_management.rows = rows.clone();
+                self.model_management.default_key = default_key.clone();
+                self.model_management.selected = self
+                    .model_management
                     .selected
-                    .min(self.channels.rows.len().saturating_sub(1));
-                self.channels.form = None;
-                self.channels.status = message;
+                    .min(self.model_management.row_count().saturating_sub(1));
+                self.model_management.form = None;
+                self.model_management.status = message;
             }
             SettingsChange::DecisionModels { rows, default_key } => {
                 self.decision_models.rows = rows.clone();
@@ -4917,16 +5018,16 @@ impl SettingsState {
                 self.decision_models.status = message;
             }
             SettingsChange::Model { key } => {
-                self.choices.model = key.clone();
-                self.choices.status[ChoiceKind::Model.index()] = message;
+                self.model_management.model_key = key.clone();
+                self.model_management.status = message;
             }
             SettingsChange::ContextWindow { tokens } => {
-                self.context.window_tokens = *tokens;
-                self.context.status = message;
+                self.model_management.window_tokens = *tokens;
+                self.model_management.status = message;
             }
             SettingsChange::CompactionPercent { percent } => {
-                self.context.percent = *percent;
-                self.context.status = message;
+                self.model_management.percent = *percent;
+                self.model_management.status = message;
             }
             SettingsChange::ToolSwitch { name, enabled } => {
                 if let Some(row) = self.tools.rows.iter_mut().find(|row| &row.name == name) {
@@ -4975,8 +5076,8 @@ impl SettingsState {
                 self.vision.status = message;
             }
             SettingsChange::Reasoning { effort } => {
-                self.choices.reasoning = effort.clone();
-                self.choices.status[ChoiceKind::Reasoning.index()] = message;
+                self.model_management.reasoning = effort.clone();
+                self.model_management.status = message;
             }
             SettingsChange::ShowThinking { enabled } => {
                 self.choices.show_thinking = *enabled;
@@ -5085,13 +5186,12 @@ impl SettingsState {
     /// 应用失败：值保持不变（界面回落到原值），只显示失败文本。
     pub fn apply_failed(&mut self, message: String) {
         match self.pane {
-            Pane::Context => self.context.status = message,
             Pane::Tools => self.tools.status = message,
             Pane::Mcp => self.mcp.status = message,
             Pane::Subagents => self.subagents.status = message,
             Pane::Vision => self.vision.status = message,
-            // 渠道页失败时保留表单，方便就地改错再按 Ctrl+S。
-            Pane::Channels => self.channels.status = message,
+            // 模型管理页失败时保留表单，方便就地改错再按 Ctrl+S。
+            Pane::ModelManagement => self.model_management.status = message,
             // 决策页同理：保留表单。
             Pane::DecisionModels => self.decision_models.status = message,
             Pane::Choice(kind) => self.choices.status[kind.index()] = message,
@@ -5113,28 +5213,21 @@ impl SettingsState {
     /// 不把值回滚（与「写盘失败」是两件事）。
     pub fn note_kernel_rejection(&mut self, change: &SettingsChange, note: &str) {
         match change {
-            SettingsChange::Channels { .. } => self.channels.status.push_str(note),
+            SettingsChange::Channels { .. } => self.model_management.status.push_str(note),
             SettingsChange::DecisionModels { .. }
             | SettingsChange::DecisionSwitch { .. }
             | SettingsChange::DecisionLocal(_) => {
                 self.decision_models.status.push_str(note);
             }
-            SettingsChange::Model { .. } => {
-                self.choices.status_mut(ChoiceKind::Model).push_str(note);
-            }
-            SettingsChange::ContextWindow { .. } | SettingsChange::CompactionPercent { .. } => {
-                self.context.status.push_str(note);
-            }
+            SettingsChange::Model { .. }
+            | SettingsChange::ContextWindow { .. }
+            | SettingsChange::CompactionPercent { .. }
+            | SettingsChange::Reasoning { .. } => self.model_management.status.push_str(note),
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
-            SettingsChange::Reasoning { .. } => {
-                self.choices
-                    .status_mut(ChoiceKind::Reasoning)
-                    .push_str(note);
-            }
             SettingsChange::ShowThinking { .. } => {
                 self.choices
                     .status_mut(ChoiceKind::ShowThinking)
@@ -5159,22 +5252,68 @@ impl SettingsState {
         }
     }
 
-    /// 渠道列表（渲染层用）。
+    /// 模型管理页的渠道列表（渲染层用）。
     pub fn channel_rows(&self) -> &[ChannelRow] {
-        &self.channels.rows
+        &self.model_management.rows
     }
 
+    /// 模型管理页列表态的选中行（渠道行 + 分区行一起编号）。
     pub fn channel_selected(&self) -> usize {
-        self.channels.selected
+        self.model_management.selected
     }
 
     pub fn channel_default_key(&self) -> &str {
-        &self.channels.default_key
+        &self.model_management.default_key
+    }
+
+    /// 当前模型渠道 key（分区首行的取值）。
+    pub fn model_key(&self) -> &str {
+        &self.model_management.model_key
+    }
+
+    /// 模型管理页「模型与参数」分区的行视图：`(标签, 取值, 是否选中, 是否可选)`。
+    pub fn model_param_rows(&self) -> Vec<(ModelParamRow, String, bool)> {
+        let selected = self.model_management.param_selected();
+        ModelParamRow::ORDER
+            .iter()
+            .copied()
+            .map(|row| {
+                let value = match row {
+                    ModelParamRow::Channel => {
+                        let key = self.model_management.model_key.trim();
+                        if key.is_empty() {
+                            "（未选择）".to_string()
+                        } else {
+                            self.model_management
+                                .rows
+                                .iter()
+                                .find(|item| item.key == key)
+                                .map(|item| {
+                                    if item.name.trim().is_empty() {
+                                        item.key.clone()
+                                    } else {
+                                        item.name.clone()
+                                    }
+                                })
+                                .unwrap_or_else(|| key.to_string())
+                        }
+                    }
+                    ModelParamRow::Window => {
+                        format!("{}K", self.model_management.window_tokens / 1000)
+                    }
+                    ModelParamRow::Compaction => {
+                        format!("{}%", self.model_management.percent)
+                    }
+                    ModelParamRow::Reasoning => reasoning_label(&self.model_management.reasoning),
+                };
+                (row, value, selected == Some(row))
+            })
+            .collect()
     }
 
     /// 正在编辑的渠道（渲染层用）；不在表单时为 `None`。
     pub fn channel_form(&self) -> Option<ChannelFormView<'_>> {
-        let form = self.channels.form.as_ref()?;
+        let form = self.model_management.form.as_ref()?;
         Some(ChannelFormView {
             row: &form.row,
             field: form.field,
@@ -5184,16 +5323,26 @@ impl SettingsState {
         })
     }
 
-    /// 工具开关页的注册标记刷新之外，渠道页在保存后也要与磁盘对齐。
+    /// 工具开关页的注册标记刷新之外，模型管理页在保存后也要与磁盘对齐。
     pub fn sync_channels(&mut self, rows: Vec<ChannelRow>, default_key: &str) {
-        self.channels.selected = self.channels.selected.min(rows.len().saturating_sub(1));
-        self.channels.default_key = if default_key.trim().is_empty() {
+        self.model_management.selected = self
+            .model_management
+            .selected
+            .min(self.model_management.row_count().saturating_sub(1));
+        self.model_management.default_key = if default_key.trim().is_empty() {
             rows.first().map(|row| row.key.clone()).unwrap_or_default()
         } else {
             default_key.to_string()
         };
-        self.channels.rows = rows;
-        self.channels.form = None;
+        // 当前模型渠道不在新列表里时，落到默认渠道（删除渠道后保存的同一口径）。
+        if !rows
+            .iter()
+            .any(|row| row.key == self.model_management.model_key)
+        {
+            self.model_management.model_key = self.model_management.default_key.clone();
+        }
+        self.model_management.rows = rows;
+        self.model_management.form = None;
     }
 
     /// 工具表重建后刷新行的注册标记与开关状态（审查模式不随之变化）。
@@ -5519,17 +5668,19 @@ mod tests {
         )
     }
 
-    /// 模型页的初始值：两个渠道，当前是第一个。
+    /// 模型管理页的初始值：两个渠道，当前模型是第一条。
     fn model_state(current: &str) -> SettingsState {
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows())
-                .with_model(
+                .with_channels(
                     vec![
-                        ("主渠道".to_string(), "gpt-main".to_string()),
-                        ("备用渠道".to_string(), "gpt-backup".to_string()),
+                        channel_row("gpt-main", "主渠道", "openai", "gpt-5.2"),
+                        channel_row("gpt-backup", "备用渠道", "openai", "gpt-4o"),
                     ],
-                    current,
+                    "gpt-main",
+                    ChannelRow::default(),
                 )
+                .with_model(current)
                 .with_choices("medium", true, true, false),
         )
     }
@@ -5561,7 +5712,7 @@ mod tests {
     }
 
     /// 渠道页的初始值：两条渠道（当前是第一条）与一份新建模板。
-    fn channels_state() -> SettingsState {
+    fn model_management_state() -> SettingsState {
         SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_channels(
             vec![
                 channel_row("gpt-main", "主渠道", "openai", "gpt-5.2"),
@@ -5603,11 +5754,11 @@ mod tests {
     #[test]
     fn list_navigation_wraps_and_switches_panes() {
         let mut state = state();
-        // 走到「上下文」行。
-        goto(&mut state, "context");
-        assert_eq!(state.selected_key(), "context");
-        assert_eq!(state.pane(), Pane::Context);
-        // 上翻依次经过「工具输出压缩」「顾问设置」「结构化决策模型」到「模型渠道」。
+        // 走到「工具设置」行。
+        goto(&mut state, "tools");
+        assert_eq!(state.selected_key(), "tools");
+        assert_eq!(state.pane(), Pane::Tools);
+        // 上翻依次经过「工具输出压缩」「顾问设置」「结构化决策模型」到「模型管理」。
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "tool_output_compression");
         assert_eq!(state.pane(), Pane::Form(FormKind::ToolOutputCompression));
@@ -5618,10 +5769,10 @@ mod tests {
         assert_eq!(state.selected_key(), "decision_models");
         assert_eq!(state.pane(), Pane::DecisionModels);
         state.handle_key(KeyCode::Up);
-        assert_eq!(state.selected_key(), "channels");
+        assert_eq!(state.selected_key(), "model_management");
+        assert_eq!(state.pane(), Pane::ModelManagement);
 
-        // 循环：继续上翻到头（模型 → 通过对话修改设置），再上翻回到末行。
-        state.handle_key(KeyCode::Up);
+        // 循环：继续上翻到头（通过对话修改设置），再上翻回到末行。
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "config_chat");
         state.handle_key(KeyCode::Up);
@@ -5636,29 +5787,87 @@ mod tests {
         assert_eq!(state.handle_key(KeyCode::Esc), Some(SettingsEvent::Close));
 
         // 进入右侧后 Esc 先回左侧，再按一次才退出。
-        goto(&mut state, "context");
+        goto(&mut state, "tools");
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.focus(), Focus::Pane);
-        assert_eq!(state.handle_key(KeyCode::Esc), None);
+        state.handle_key(KeyCode::Esc);
         assert_eq!(state.focus(), Focus::List);
         assert_eq!(state.handle_key(KeyCode::Esc), Some(SettingsEvent::Close));
     }
 
     #[test]
-    fn context_dropdown_opens_moves_and_applies() {
-        let mut state = state();
-        goto(&mut state, "context");
-        state.handle_key(KeyCode::Enter); // 进入上下文面板
-        assert_eq!(state.focus(), Focus::Pane);
-        assert_eq!(state.context_field(), ContextField::Window);
+    fn model_param_rows_show_channel_and_context_values() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        assert_eq!(state.pane(), Pane::ModelManagement);
+        assert_eq!(state.channel_rows().len(), 2);
+        assert_eq!(state.channel_default_key(), "gpt-main");
+        let rows = state.model_param_rows();
+        assert_eq!(rows.len(), ModelParamRow::ORDER.len());
+        assert_eq!(rows[0].0, ModelParamRow::Channel);
+        assert_eq!(rows[0].1, "主渠道");
+        assert_eq!(rows[1].1, "128K");
+        assert_eq!(rows[2].1, "80%");
+        assert_eq!(rows[3].1, "中");
+        assert!(!rows[0].2, "初始选中的是渠道行，不是参数行");
+    }
 
-        // 折叠态按 Enter 展开候选，游标停在当前值上。
+    #[test]
+    fn model_param_channel_switch_applies_and_moves_cursor() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter); // 进右侧面板
+        assert_eq!(state.focus(), Focus::Pane);
+
+        // ↓ 两次到「当前模型渠道」行。
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.channel_selected(), 2, "渠道 2 行 + 分区首行");
+        let rows = state.model_param_rows();
+        assert!(rows[0].2, "分区首行被选中");
+
+        // 展开候选：游标停在当前渠道（第 1 项）。
         assert_eq!(state.handle_key(KeyCode::Enter), None);
+        let dropdown = state.dropdown().expect("应展开渠道候选");
+        assert_eq!(dropdown.field, DropdownField::ModelParam(ModelParamRow::Channel));
+        assert_eq!(dropdown.selected, 0);
+        assert_eq!(state.dropdown_options().len(), 2);
+
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            Some(SettingsEvent::Apply(SettingsChange::Model {
+                key: "gpt-backup".to_string()
+            }))
+        );
+        assert_eq!(state.dropdown(), None, "确认后收起下拉");
+
+        state.apply_succeeded(
+            &SettingsChange::Model {
+                key: "gpt-backup".to_string(),
+            },
+            "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。".to_string(),
+        );
+        assert_eq!(state.model_key(), "gpt-backup");
+        assert_eq!(state.status(), "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。");
+    }
+
+    #[test]
+    fn model_param_context_rows_apply_and_report() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..3 {
+            state.handle_key(KeyCode::Down); // 到「上下文长度」
+        }
+        assert!(state.model_param_rows()[1].2);
+
+        // 折叠态按 Enter 展开候选，游标停在当前值（128K 是第 3 个候选）。
+        state.handle_key(KeyCode::Enter);
         let dropdown = state.dropdown().expect("应展开候选");
-        assert_eq!(dropdown.field, DropdownField::Context(ContextField::Window));
+        assert_eq!(dropdown.field, DropdownField::ModelParam(ModelParamRow::Window));
         assert_eq!(dropdown.selected, 2, "128K 是第 3 个候选");
 
-        // 上移一格到 64K 后确认。
         state.handle_key(KeyCode::Up);
         assert_eq!(
             state.handle_key(KeyCode::Enter),
@@ -5666,44 +5875,17 @@ mod tests {
                 tokens: 64_000
             }))
         );
-        assert_eq!(state.dropdown(), None, "确认后收起下拉");
-
-        // 宿主回填成功后值才更新。
         state.apply_succeeded(
             &SettingsChange::ContextWindow { tokens: 64_000 },
             "上下文长度已设为 64K。".to_string(),
         );
         assert_eq!(state.context_window_tokens(), 64_000);
         assert_eq!(state.status(), "上下文长度已设为 64K。");
-    }
 
-    #[test]
-    fn context_dropdown_escape_collapses_without_change() {
-        let mut state = state();
-        goto(&mut state, "context");
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Enter); // 展开
+        // 压缩阈值：↓ 到该行，展开后下移一格到 85%。
         state.handle_key(KeyCode::Down);
-        assert_eq!(state.handle_key(KeyCode::Esc), None);
-        assert_eq!(state.dropdown(), None);
-        assert_eq!(state.context_window_tokens(), 128_000);
-    }
-
-    #[test]
-    fn tab_switches_field_and_percent_applies() {
-        let mut state = state();
-        goto(&mut state, "context");
+        assert!(state.model_param_rows()[2].2);
         state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Tab);
-        assert_eq!(state.context_field(), ContextField::Compaction);
-
-        // 折叠态按 ↓ 展开候选，游标停在当前值（80%）上；再按一次才移动到 85%。
-        state.handle_key(KeyCode::Down);
-        let dropdown = state.dropdown().expect("应展开压缩阈值候选");
-        assert_eq!(
-            dropdown.field,
-            DropdownField::Context(ContextField::Compaction)
-        );
         assert_eq!(state.compaction_percent(), 80);
         state.handle_key(KeyCode::Down);
         assert_eq!(
@@ -5716,11 +5898,60 @@ mod tests {
     }
 
     #[test]
-    fn re_picking_same_value_does_not_apply() {
-        let mut state = state();
-        goto(&mut state, "context");
+    fn model_param_reasoning_row_applies() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
+        for _ in 0..5 {
+            state.handle_key(KeyCode::Down); // 到「推理强度」
+        }
+        assert!(state.model_param_rows()[3].2);
+        state.handle_key(KeyCode::Enter);
+        let dropdown = state.dropdown().expect("应展开候选");
+        assert_eq!(
+            dropdown.field,
+            DropdownField::ModelParam(ModelParamRow::Reasoning)
+        );
+        assert_eq!(dropdown.selected, 2, "medium 是第 3 个候选");
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            Some(SettingsEvent::Apply(SettingsChange::Reasoning {
+                effort: "high".to_string()
+            }))
+        );
+        state.apply_succeeded(
+            &SettingsChange::Reasoning {
+                effort: "high".to_string(),
+            },
+            "推理强度已设为 高。".to_string(),
+        );
+        assert_eq!(state.model_param_rows()[3].1, "高");
+    }
+
+    #[test]
+    fn model_param_escape_collapses_and_keeps_value() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..3 {
+            state.handle_key(KeyCode::Down);
+        }
         state.handle_key(KeyCode::Enter); // 展开
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.handle_key(KeyCode::Esc), None);
+        assert_eq!(state.dropdown(), None);
+        assert_eq!(state.context_window_tokens(), 128_000);
+    }
+
+    #[test]
+    fn re_picking_same_value_does_not_apply() {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter); // 展开「当前模型渠道」
         assert_eq!(
             state.handle_key(KeyCode::Enter),
             None,
@@ -5730,8 +5961,8 @@ mod tests {
 
     #[test]
     fn failure_keeps_previous_value_and_reports() {
-        let mut state = state();
-        goto(&mut state, "context");
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.apply_failed("设置未完成：磁盘只读。".to_string());
         assert_eq!(state.context_window_tokens(), 128_000);
@@ -5865,36 +6096,22 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_page_expands_candidates_and_applies() {
-        let mut state = choice_state();
-        goto(&mut state, "reasoning");
-        assert_eq!(state.pane(), Pane::Choice(ChoiceKind::Reasoning));
-        assert_eq!(state.choice_value(), "中", "折叠框显示当前档位的中文文案");
-
-        state.handle_key(KeyCode::Enter); // 进入右侧面板
-        assert_eq!(state.focus(), Focus::Pane);
-        assert_eq!(state.handle_key(KeyCode::Enter), None); // 展开候选
-        let dropdown = state.dropdown().expect("应展开候选");
-        assert_eq!(dropdown.field, DropdownField::Choice(ChoiceKind::Reasoning));
-        assert_eq!(dropdown.selected, 2, "medium 是第 3 个候选");
-
-        state.handle_key(KeyCode::Down);
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::Apply(SettingsChange::Reasoning {
-                effort: "high".to_string()
-            }))
-        );
-        assert_eq!(state.dropdown(), None, "确认后收起下拉");
-
-        state.apply_succeeded(
-            &SettingsChange::Reasoning {
-                effort: "high".to_string(),
-            },
-            "推理强度已设为 高，已保存到 config.toml。".to_string(),
-        );
-        assert_eq!(state.choice_value(), "高");
-        assert_eq!(state.status(), "推理强度已设为 高，已保存到 config.toml。");
+    fn shown_choice_pages_keep_their_option_lists() {
+        for kind in [
+            ChoiceKind::ShowThinking,
+            ChoiceKind::Memory,
+            ChoiceKind::Plugins,
+        ] {
+            let options = choice_field_options(kind);
+            assert_eq!(
+                options,
+                vec![
+                    ("开启".to_string(), OptionValue::Flag(true)),
+                    ("关闭".to_string(), OptionValue::Flag(false)),
+                ],
+                "开关类单选页的候选与 Python 的 SelectPane 一致"
+            );
+        }
     }
 
     #[test]
@@ -5978,84 +6195,10 @@ mod tests {
     }
 
     #[test]
-    fn model_page_lists_channels_and_emits_switch() {
+    fn model_management_lists_and_opens_form() {
         let mut state = model_state("gpt-main");
-        goto(&mut state, "model");
-        assert_eq!(state.pane(), Pane::Choice(ChoiceKind::Model));
-        assert_eq!(state.choice_value(), "主渠道", "折叠框显示渠道名");
-
-        state.handle_key(KeyCode::Enter); // 进右侧面板
-        state.handle_key(KeyCode::Enter); // 展开：游标按渠道 key 定位在第一项
-        assert_eq!(state.dropdown().map(|dropdown| dropdown.selected), Some(0));
-        assert_eq!(state.dropdown_options().len(), 2);
-
-        state.handle_key(KeyCode::Down);
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::Apply(SettingsChange::Model {
-                key: "gpt-backup".to_string()
-            }))
-        );
-        assert_eq!(state.dropdown(), None, "确认后收起下拉");
-
-        state.apply_succeeded(
-            &SettingsChange::Model {
-                key: "gpt-backup".to_string(),
-            },
-            "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。".to_string(),
-        );
-        assert_eq!(state.choice_value(), "备用渠道");
-        assert_eq!(
-            state.status(),
-            "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。"
-        );
-    }
-
-    #[test]
-    fn model_page_cursor_starts_on_current_channel() {
-        let mut state = model_state("gpt-backup");
-        goto(&mut state, "model");
-        assert_eq!(state.choice_value(), "备用渠道");
-
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(
-            state.dropdown().map(|dropdown| dropdown.selected),
-            Some(1),
-            "游标落在当前渠道上"
-        );
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            None,
-            "选中同一渠道不触发保存"
-        );
-    }
-
-    #[test]
-    fn model_page_without_channels_shows_current_model() {
-        let mut state = SettingsState::new(
-            SettingsValues::new(128_000, 80, tool_rows())
-                .with_model(vec![("gpt-5.2".to_string(), "gpt-5.2".to_string())], ""),
-        );
-        goto(&mut state, "model");
-        assert_eq!(state.choice_value(), "gpt-5.2", "空 key 回落到首个候选");
-        assert_eq!(state.dropdown_options().len(), 0, "没有展开时不给候选");
-
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(state.dropdown().map(|dropdown| dropdown.selected), Some(0));
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            None,
-            "只有一个候选且就是当前值"
-        );
-    }
-
-    #[test]
-    fn channels_page_lists_and_opens_form() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
-        assert_eq!(state.pane(), Pane::Channels);
+        goto(&mut state, "model_management");
+        assert_eq!(state.pane(), Pane::ModelManagement);
         assert_eq!(state.channel_rows().len(), 2);
         assert_eq!(state.channel_default_key(), "gpt-main");
         assert!(state.pane_hint().contains("N 新建"), "列表提示");
@@ -6072,8 +6215,8 @@ mod tests {
 
     #[test]
     fn channel_form_edits_text_field_in_place() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 编辑
         state.handle_key(KeyCode::Enter); // 进名称输入态（缓冲以当前值为起点）
@@ -6090,8 +6233,8 @@ mod tests {
 
     #[test]
     fn channel_input_escape_discards_edit() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 输入态
@@ -6105,8 +6248,8 @@ mod tests {
 
     #[test]
     fn channel_form_provider_dropdown_resets_protocol() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 编辑：字段停在渠道名
         state.handle_key(KeyCode::Down); // → Provider
@@ -6135,8 +6278,8 @@ mod tests {
 
     #[test]
     fn channel_new_draft_kept_out_of_list_and_discarded_on_escape() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Char('n'));
 
@@ -6157,8 +6300,8 @@ mod tests {
 
     #[test]
     fn channel_save_validates_then_emits_change() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 编辑主渠道
 
@@ -6271,8 +6414,8 @@ mod tests {
 
     #[test]
     fn channel_delete_keeps_at_least_one() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Char('d'));
         assert_eq!(state.channel_rows().len(), 1);
@@ -6289,8 +6432,8 @@ mod tests {
 
     #[test]
     fn channel_sync_from_disk_replaces_rows() {
-        let mut state = channels_state();
-        goto(&mut state, "channels");
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 进表单
 
@@ -6304,15 +6447,32 @@ mod tests {
     }
 
     #[test]
-    fn empty_choice_value_falls_back_to_first_candidate() {
+    fn empty_reasoning_value_falls_back_to_none() {
         let mut state = SettingsState::new(
-            SettingsValues::new(128_000, 80, tool_rows()).with_choices("", true, false, false),
+            SettingsValues::new(128_000, 80, tool_rows())
+                .with_channels(
+                    vec![
+                        channel_row("gpt-main", "主渠道", "openai", "gpt-5.2"),
+                        channel_row("gpt-backup", "备用渠道", "openai", "gpt-4o"),
+                    ],
+                    "gpt-main",
+                    ChannelRow::default(),
+                )
+                .with_model("gpt-main")
+                .with_choices("", true, false, false),
         );
-        goto(&mut state, "reasoning");
-        assert_eq!(state.choice_value(), "关闭", "空串折算到 none");
+        goto(&mut state, "model_management");
+        assert_eq!(
+            state.model_param_rows()[3].1,
+            "关闭",
+            "空串折算到 none"
+        );
 
         state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Enter);
+        for _ in 0..5 {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Enter); // 展开推理档位
         assert_eq!(state.dropdown().map(|dropdown| dropdown.selected), Some(0));
         assert_eq!(
             state.handle_key(KeyCode::Enter),
@@ -6323,49 +6483,39 @@ mod tests {
 
     // ---------- 表单页（顾问设置 / 工具输出压缩） ----------
 
-    /// 顾问设置页的初始值：停用、effort=high、未选模型。
+    /// 顾问设置页的初始值：停用、effort=high、选主渠道、未选模型。
     fn advisor_state() -> SettingsState {
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows())
-                .with_model(
+                .with_channels(
                     vec![
-                        ("主渠道".to_string(), "gpt-main".to_string()),
-                        ("备用渠道".to_string(), "gpt-backup".to_string()),
+                        channel_row("gpt-main", "主渠道", "openai", "gpt-5.2"),
+                        channel_row("gpt-backup", "备用渠道", "openai", "gpt-4o"),
                     ],
                     "gpt-main",
+                    ChannelRow::default(),
                 )
+                .with_model("gpt-main")
                 .with_form(
                     FormKind::Advisor,
                     vec![
                         FieldValue::Flag(false),
                         FieldValue::Text("high".to_string()),
+                        FieldValue::Text("gpt-main".to_string()),
                         FieldValue::Text(String::new()),
                     ],
                 ),
         )
     }
 
-    /// 压缩页 + 两个渠道：用来驱动内嵌模型选择器。
+    /// 压缩页 + 两个渠道：用来驱动「渠道 + 模型」两段选择与模型发现。
     fn compression_state_with_channels() -> SettingsState {
-        fn channel(key: &str, name: &str, model: &str) -> ChannelRow {
-            ChannelRow {
-                key: key.to_string(),
-                profile_id: key.to_string(),
-                name: name.to_string(),
-                provider: "openai".to_string(),
-                protocol: "openai_chat_completions".to_string(),
-                base_url: "https://example.test/v1".to_string(),
-                model_id: model.to_string(),
-                enabled: true,
-                ..ChannelRow::default()
-            }
-        }
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows())
                 .with_channels(
                     vec![
-                        channel("channel", "主渠道", "deepseek-v4.1-flash"),
-                        channel("channel-2", "硅基流动", ""),
+                        channel_row("channel", "主渠道", "openai", "deepseek-v4.1-flash"),
+                        channel_row("channel-2", "硅基流动", "openai", ""),
                     ],
                     "channel",
                     ChannelRow::default(),
@@ -6380,13 +6530,14 @@ mod tests {
                         FieldValue::Text("24000".to_string()),
                         FieldValue::Text("1500".to_string()),
                         FieldValue::Text("60".to_string()),
+                        FieldValue::Text("channel".to_string()),
                         FieldValue::Text(String::new()),
                     ],
                 ),
         )
     }
 
-    /// 工具输出压缩页的初始值：停用、思考关闭、思考深度 low、四个预算与未选模型。
+    /// 工具输出压缩页的初始值：停用、思考关闭、思考深度 low、四个预算、未选渠道与模型。
     fn compression_state() -> SettingsState {
         SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_form(
             FormKind::ToolOutputCompression,
@@ -6399,6 +6550,7 @@ mod tests {
                 FieldValue::Text("1500".to_string()),
                 FieldValue::Text("60".to_string()),
                 FieldValue::Text(String::new()),
+                FieldValue::Text(String::new()),
             ],
         ))
     }
@@ -6409,7 +6561,7 @@ mod tests {
         goto(&mut state, "advisor");
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.focus(), Focus::Pane);
-        assert_eq!(state.form_rows().len(), 3);
+        assert_eq!(state.form_rows().len(), 4);
 
         // 「启用」就地翻转，不产生保存事件。
         assert_eq!(state.handle_key(KeyCode::Enter), None);
@@ -6438,19 +6590,38 @@ mod tests {
     }
 
     #[test]
-    fn form_page_model_field_keeps_channel_key() {
+    fn form_page_channel_and_model_dropdowns_write_the_draft() {
         let mut state = advisor_state();
         goto(&mut state, "advisor");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Down);
-        assert_eq!(state.form_rows()[2].value, "", "初始未选模型");
+        assert!(state.form_rows()[2].value.contains("主渠道"), "渠道列显示渠道名");
+        assert!(
+            state.form_rows()[3].value.contains("渠道默认"),
+            "模型列未选时标注「渠道默认」：{}",
+            state.form_rows()[3].value
+        );
 
+        // 渠道列：候选来自渠道列表，选第二条后草稿写渠道 key。
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.dropdown_options().len(), 2, "候选来自渠道列表");
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.form_rows()[2].value, "备用渠道", "显示渠道名");
+        assert!(
+            state.form_rows()[2].value.contains("备用渠道"),
+            "{}",
+            state.form_rows()[2].value
+        );
+
+        // 模型列：候选 = 该渠道自带的模型 ID（这里没发现结果）。
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        let options = state.dropdown_options();
+        assert_eq!(options.len(), 1, "只有渠道自带的模型：{options:?}");
+        assert_eq!(options[0].0, "gpt-4o");
+        state.handle_key(KeyCode::Enter);
+        assert!(state.form_rows()[3].value.contains("gpt-4o"));
 
         let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
             state.handle_ctrl_key(KeyCode::Char('s'))
@@ -6460,60 +6631,88 @@ mod tests {
         assert_eq!(
             values[2],
             FieldValue::Text("gpt-backup".to_string()),
-            "草稿里存的是渠道 key，不是显示用的渠道名"
+            "渠道列写渠道 key"
+        );
+        assert_eq!(
+            values[3],
+            FieldValue::Text("gpt-4o".to_string()),
+            "模型列写模型 ID"
         );
     }
 
     #[test]
-    fn compression_page_picker_writes_the_profile_model_into_the_draft() {
+    fn compression_page_model_column_discovers_then_writes_the_draft() {
         let mut state = compression_state_with_channels();
         goto(&mut state, "tool_output_compression");
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.form_field_count(), 8);
-        assert!(state.model_picker().is_some(), "压缩页应有内嵌模型选择器");
+        assert_eq!(state.form_field_count(), 9);
+        assert_eq!(state.pane_hint(), super::COMPRESSION_HINT);
 
-        // 走到模型字段（第 8 项）按 Enter：进选择器并自动请求一次发现。
-        for _ in 0..7 {
+        // 走到模型列（第 9 项）按 Enter：先按需发现一次，再展开候选。
+        for _ in 0..8 {
             state.handle_key(KeyCode::Down);
         }
         let event = state.handle_key(KeyCode::Enter);
         assert!(
             matches!(event, Some(SettingsEvent::DiscoverChannelModels { .. })),
-            "进选择器应自动发现一次：{event:?}"
+            "进模型列应先发现一次：{event:?}"
         );
-        let picker = state.model_picker().expect("选择器");
-        assert!(picker.focused(), "焦点交给选择器");
-        assert_eq!(state.pane_hint(), super::picker::PICKER_HINT);
-        state.set_channel_models(vec!["deepseek-v4.1-flash".to_string()], String::new());
+        let dropdown = state.dropdown().expect("应展开模型候选");
+        assert_eq!(dropdown.field, DropdownField::Form(8));
 
-        // 左列换到第二个渠道，右列挑发现回来的模型（`r` 才会请宿主再发现一次）。
-        state.handle_key(KeyCode::Left);
+        // 发现结果回填后候选里多出远端模型（草稿里的当前值也保留）。
+        state.set_channel_models(
+            vec!["deepseek-v4.1-flash".to_string(), "gpt-5.2".to_string()],
+            String::new(),
+        );
         state.handle_key(KeyCode::Down);
-        let event = state.handle_key(KeyCode::Char('r'));
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            None,
+            "模型候选只落进草稿，不即时保存"
+        );
+        assert_eq!(state.form_rows()[8].value, "gpt-5.2");
+
+        let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(kind, FormKind::ToolOutputCompression);
+        assert_eq!(values[7], FieldValue::Text("channel".to_string()));
+        assert_eq!(values[8], FieldValue::Text("gpt-5.2".to_string()));
+    }
+
+    #[test]
+    fn switching_the_channel_clears_the_model_and_rediscovers() {
+        let mut state = compression_state_with_channels();
+        goto(&mut state, "tool_output_compression");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..7 {
+            state.handle_key(KeyCode::Down);
+        }
+        // 渠道列：换到第二条渠道。
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        assert!(
+            state.form_rows()[7].value.contains("硅基流动"),
+            "{}",
+            state.form_rows()[7].value
+        );
+        assert!(
+            state.form_rows()[8].value.contains("渠道默认"),
+            "换渠道后模型清空：{}",
+            state.form_rows()[8].value
+        );
+
+        // 进模型列：新渠道还没发现过，应再发一次发现。
+        state.handle_key(KeyCode::Down);
+        let event = state.handle_key(KeyCode::Enter);
         assert!(
             matches!(event, Some(SettingsEvent::DiscoverChannelModels { .. })),
-            "按 r 要重新发现：{event:?}"
+            "换渠道后模型列要重新发现：{event:?}"
         );
-        state.set_channel_models(vec!["Qwen/Qwen3.5-35B-A3B".to_string()], String::new());
-        state.handle_key(KeyCode::Right);
-        state.handle_key(KeyCode::Enter);
-
-        assert_eq!(
-            state.form_rows()[7].value, "channel-2/Qwen/Qwen3.5-35B-A3B",
-            "确认后写回草稿的是 profile/model_id"
-        );
-        assert!(
-            state.status().contains("压缩模型已选择"),
-            "{}",
-            state.status()
-        );
-
-        // Esc 回到字段行，草稿与内容不变；`M` 也能再进去。
-        state.handle_key(KeyCode::Esc);
-        assert!(!state.model_picker().expect("选择器").focused());
-        assert_eq!(state.pane_hint(), super::COMPRESSION_HINT);
-        assert_eq!(state.handle_key(KeyCode::Char('m')), None);
-        assert!(state.model_picker().expect("选择器").focused());
     }
 
     #[test]
@@ -6521,7 +6720,7 @@ mod tests {
         let mut state = compression_state();
         goto(&mut state, "tool_output_compression");
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.form_rows().len(), 8);
+        assert_eq!(state.form_rows().len(), 9);
 
         // 第 4 个字段是「最小压缩字符数」：进输入态、清空、重打。
         for _ in 0..3 {
@@ -6824,13 +7023,15 @@ mod tests {
     fn vision_state() -> SettingsState {
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows())
-                .with_model(
+                .with_channels(
                     vec![
-                        ("主渠道".to_string(), "gpt-main".to_string()),
-                        ("备用渠道".to_string(), "gpt-backup".to_string()),
+                        channel_row("gpt-main", "主渠道", "openai", "gpt-5.2"),
+                        channel_row("gpt-backup", "备用渠道", "openai", "gpt-4o"),
                     ],
                     "gpt-main",
+                    ChannelRow::default(),
                 )
+                .with_model("gpt-main")
                 .with_vision(false, vec![VisionModelRef::custom("gpt-main")], None),
         )
     }

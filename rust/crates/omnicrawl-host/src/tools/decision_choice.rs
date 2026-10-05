@@ -13,7 +13,6 @@
 //! 问题与上下文同样屏蔽后再外发；脱敏构造失败按「托管不可用」处理，绝不外发原文。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::decision_model::{
@@ -30,7 +29,6 @@ const CUSTODY_TIMEOUT_SECONDS: u64 = 20;
 const USER_AGENT: &str = "omnicrawl-ask-user-custody/0.0.1";
 /// 提问 ID；候选项键就是它在 `criteria` 里的下标（`o0`、`o1`…），便于把回答映射回选项。
 const QUESTION_ID: &str = "best_option";
-const OPTION_KEY_PREFIX: &str = "o";
 
 /// 托管用的决策渠道：与审查、检索重排同源（`decision_models.toml` 的默认决策渠道）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +176,7 @@ pub fn chosen_option(
         .enumerate()
         .map(|(index, text)| {
             (
-                format!("{OPTION_KEY_PREFIX}{index}"),
+                crate::decision_wire::option_key(index),
                 format!("选择「{}」：{}", option_text(text), CUSTODY_CHOICE_CRITERIA),
             )
         })
@@ -236,7 +234,10 @@ const CUSTODY_INSTRUCTIONS: &str = "模型在任务中途向用户提问，需�
 const CUSTODY_CHOICE_CRITERIA: &str = "该选项最符合用户意图且最能推进当前任务。";
 
 /// 真实实现：`POST {base_url}/v1/decide`，一个 choice 问题，读回胜出选项。
-struct DecisionChoiceClient;
+///
+/// 公开是因为本地 REST 决策接口（`omnicrawl-decision`）直接复用这一条出站路径：
+/// 请求形状、脱敏旁路与选项解析都只有这一份实现。
+pub struct DecisionChoiceClient;
 
 impl ChoiceClient for DecisionChoiceClient {
     fn choose(&self, request: &ChoiceRequest<'_>) -> Result<usize, String> {
@@ -279,67 +280,27 @@ impl ChoiceClient for DecisionChoiceClient {
             None => body_text,
         };
 
-        let timeout = Duration::from_secs(CUSTODY_TIMEOUT_SECONDS);
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            // 状态码不转错误：上游 4xx/5xx 的正文要留给诊断。
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let response = agent
-            .post(channel.decide_url())
-            .config()
-            .timeout_connect(Some(timeout))
-            .timeout_recv_response(Some(timeout))
-            .timeout_recv_body(Some(timeout))
-            .build()
-            .header("Content-Type", "application/json")
-            .header("Authorization", &format!("Bearer {api_key}"))
-            .header("User-Agent", USER_AGENT)
-            .send(body_text.as_str())
-            .map_err(|error| error.to_string())?;
-        let status = response.status().as_u16();
-        let text = response.into_body().read_to_string().map_err(|error| error.to_string())?;
-        if status >= 400 {
-            return Err(format!(
-                "决策服务返回 HTTP {status}：{}",
-                truncate(text.trim(), 200)
-            ));
-        }
+        let timeout = CUSTODY_TIMEOUT_SECONDS;
+        let text = crate::decision_wire::post_body(
+            &channel.decide_url(),
+            &api_key,
+            &body_text,
+            timeout,
+            USER_AGENT,
+        )?;
         parse_choice(&text, &channel.mode, request.criteria.len())
     }
 }
 
 /// 解析答案里的胜出选项：`choice` 是候选项键；缺失时退化成概率最高的一项。
 fn parse_choice(text: &str, mode: &str, count: usize) -> Result<usize, String> {
-    let answers = crate::decision_wire::extract_answers(mode, text)?;
-    let answer = answers.get(QUESTION_ID);
-    if let Some(index) = answer
-        .and_then(|value| value.get("choice"))
-        .and_then(Value::as_str)
-        .and_then(option_index)
-        .filter(|index| *index < count)
-    {
-        return Ok(index);
-    }
-    let best = answer
-        .and_then(|value| value.get("probabilities"))
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, value)| Some((option_index(key)?, value.as_f64()?)))
-        .filter(|(index, _)| *index < count)
-        .max_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(index, _)| index);
-    best.ok_or_else(|| {
-        format!(
-            "决策模型未返回可用选项：{}",
-            truncate(text.trim(), 200)
-        )
-    })
-}
-
-fn option_index(key: &str) -> Option<usize> {
-    key.strip_prefix(OPTION_KEY_PREFIX)?.parse::<usize>().ok()
+    crate::decision_wire::parse_choice_index(
+        mode,
+        text,
+        QUESTION_ID,
+        count,
+        crate::decision_wire::OPTION_KEY_PREFIX,
+    )
 }
 
 /// 选项进请求前的收敛：空白压成单空格，超长截断。
@@ -348,16 +309,7 @@ fn option_text(text: &str) -> String {
 }
 
 fn collapse(text: &str, limit: usize) -> String {
-    truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), limit)
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    let characters: Vec<char> = text.chars().collect();
-    if characters.len() <= limit {
-        return characters.iter().collect();
-    }
-    let head: String = characters[..limit].iter().collect();
-    format!("{head}…")
+    crate::decision_wire::collapse_text(text, limit)
 }
 
 #[cfg(test)]
@@ -551,13 +503,14 @@ mod tests {
 
     #[test]
     fn chat_completions_round_trip_keeps_the_same_semantics() {
-        // 同一份上下文与选项，换成对话补全方式：路径换成 /v1/chat/completions，
-        // state 与 questions 走 user 消息，选出的选项不变。
+        // 同一份上下文与选项，换成对话补全方式：基地址按 OpenAI 兼容口径带上 /v1，
+        // 只追加资源路径，state 与 questions 走 user 消息，选出的选项不变。
         let cassette = CustodyCassette::serve();
         let options = CustodyOptions {
             enabled: true,
             channel: Some(ChoiceChannel {
                 mode: CHAT.to_string(),
+                base_url: format!("{}/v1", cassette.base_url()),
                 ..channel(&cassette.base_url())
             }),
             ..CustodyOptions::default()

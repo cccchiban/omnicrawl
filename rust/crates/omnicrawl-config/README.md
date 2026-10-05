@@ -115,7 +115,8 @@ Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 par
 
 * `jev`（默认）——Jev 原生接口：`POST {base_url}/v1/decide`、Bearer 鉴权，`state` + `questions`
   直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
-* `chat_completions`——OpenAI 兼容接口：`POST {base_url}/v1/chat/completions`，同一份
+* `chat_completions`——OpenAI 兼容接口：`POST {base_url}/chat/completions`（`base_url` 按
+  OpenAI 兼容口径填到 `/v1`，同 `[image_gen]` / `[tts_api]`），同一份
   `state` + `questions` 作为一条 user 消息的 JSON 文本发出并要求 JSON 输出，答案从
   `choices[0].message.content` 里解析出同一形状的 `answers`（负载组装与解析在
   `omnicrawl-host::decision_wire`）。

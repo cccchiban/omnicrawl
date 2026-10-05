@@ -17,7 +17,7 @@
 | `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
-| `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
+| `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`form.rs` 表单页字段表、`picker.rs` 模型发现状态与 token 折算） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
 
 ## 渲染与刷新（性能）
@@ -561,8 +561,8 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 （聚焦/展开换白色粗边框）、展开的候选列表是白框浮层且高亮项用琥珀底色。
 
 键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
-右侧 `Esc`/`←` 先回左栏；上下文页 `Tab` 切换字段，Textual `Select` 的 `Enter`/`↑`/`↓`/`空格` 展开候选，
-展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起（单选页与上下文页共用这套键位）；
+右侧 `Esc`/`←` 先回左栏；模型管理页的参数分区行与三个开关单选页共用 Textual `Select` 的键位：
+`Enter`/`↑`/`↓`/`空格` 展开候选，展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起；
 工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，其余行切换工具开关）；
 结构化决策模型页的渠道行 `Enter`/`→` 进表单，其下方的功能开关行同样用 `←`/`→`/`Enter`/空格 就地切换。
 
@@ -570,15 +570,12 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
-| 模型 | 已实现（离线版） | 候选 = config.toml 的 profiles + models.toml 条目合成的渠道（`load_channel_configuration`），显示渠道名、取值是渠道 key；选定后写 `llm.active_model`（legacy 配置写 `llm.model`）并把模型 id + 整条渠道（Provider/协议/基地址/凭据变量名）推给内核，本会话即刻生效。**未迁**：Python 那套双列选择器（左列渠道 + 右列远端自动发现的模型） |
-| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**模型 ID 自动检测的凭据**：先读 `api_key_env` 指向的环境变量，没设时退回该行的内联密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径；只把密钥留在 config.toml 的用户也能拉到模型列表）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（与压缩页双列选择器同款的 `window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
-| 上下文 | 已实现 | 两个下拉：上下文长度（32K–2048K，折算到最近档）与压缩阈值（5%–95%，5% 一档，按当前窗口换算 Token）；写回 `llm.context_window_tokens` 与 `context_compaction.trigger_context_*` |
-| 推理强度 | 已实现 | 六档（关闭/低/中/高/超高/最大）；写回 `llm.reasoning_effort`，并经 `session.settings` 推给内核的生成选项 |
+| 模型管理 | 已实现 | 渠道列表 + 单条渠道表单 + 「模型与参数」分区，合并了原「模型」「模型渠道」「上下文」「推理强度」四个一级项。**渠道列表**：两行行式（`› [x] 渠道名 [默认]` + `Provider / 协议  模型 ID  Base URL`），`↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；**渠道表单**（渠道名称 / 请求方式 / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用）：`↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**模型 ID 自动检测的凭据**：先读 `api_key_env` 指向的环境变量，没设时退回该行的内联密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径；只把密钥留在 config.toml 的用户也能拉到模型列表）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（`window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**「模型与参数」分区**（渠道列表之后，`↑↓` 与渠道行连成一条行序）：当前模型渠道 / 上下文长度 / 上下文阈值 / 推理强度，四项都选中即保存——首行写 `llm.active_model` 并把整条渠道推给内核（本会话即刻生效），后三行分别写 `llm.context_window_tokens`、`context_compaction.trigger_context_*` 与 `llm.reasoning_effort`。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
-| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/v1/chat/completions`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前四项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期 |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前四项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期 |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 
 TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成后端**（接口 / 本地，后端行会写明
@@ -593,25 +590,20 @@ TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成�
 面板保存时同时写 `[tts]` 与 `[tts_api]` 两段（接口段里界面上没编辑的 `response_format` /
 `timeout_seconds` 按磁盘原值保留），随后重建工具表让新后端即时生效。
 
-工具输出压缩页多一块**内嵌双列模型选择器**（对映 Python `ToolOutputCompressionSettingsPane` 里
-`selection_only=True` 的 `ModelPickerPane`）：字段行下面是一行搜索/提示行 + 左「渠道选择」右「模型」
-两个并列列框；列里只画 4 条并带「... 前面 N 个 / ... 后面 N 个」省略行（与 Python 的
-`window_size = 4` 一致），当前值标 `●`、光标位标 `›`。
+工具输出压缩页与顾问设置页的模型选择都是**两个普通下拉**（渠道 + 模型），不再有双列选择器：
 
-- 进选择器：在模型字段上按 `Enter`/`空格`，或在压缩页任意位置按 `M`；列内 `↑↓` 移动（循环）、
-  `←→` 切列（活动列换绿框）、`/`（或 `Tab`）开搜索、`r` 重新发现模型、`Enter` 确认、
-  `Esc` 回字段行（再按一次 `Esc` 才回左栏）。
-- 确认只改**草稿**，状态行写成「压缩模型已选择：…；按 Ctrl+S 保存。」——写盘仍是 `Ctrl+S`
-  （与 Python「选择后按 Ctrl+S」同义）；落盘值形如 `channel-2/Qwen/Qwen3.5-35B-A3B`，内核按
-  `apply_model_selection` 解析（支持自定义 key、`profile/model_id` 与裸 model_id）。
-- 进选择器会自动请宿主机发现一次当前渠道的模型（后台线程，不卡界面），结果经
-  `SettingsState::set_channel_models` 回填；发现失败只改状态行、保留已有候选。右列候选 = 该渠道已
-  发现的模型 + 渠道配置里的 `model_id`；换渠道时右列跟着换（发现结果不跨渠道复用）。
-- **已知差异**：右列不做 models.toml 的 custom/detected 目录归一化（Python 走 `build_catalog`）；
-  搜索是 `/` 开的输入缓冲而不是常驻 `Input`，且 `Esc` 只取消本次搜索；每次进页都会重建选择器并
-  重新发现一次（Python 是 `refresh_on_open=False`）；选择器内的鼠标点击尚未接线（其余键位完整）。
+- **压缩渠道 / 顾问渠道**：候选是配置里的渠道（文案 = 渠道名，取值 = 渠道 key）；
+- **压缩模型 / 顾问模型**：候选 = 该渠道配置里的 `model_id` + 该渠道已发现的模型 + 当前值，
+  取值是模型 ID。进这一列时若该渠道还没发现过，会先请宿主机后台拉一次模型列表
+  （不卡界面），结果经 `SettingsState::set_channel_models` 回填；发现失败只在状态行写明原因，
+  已选值不受影响。换渠道后模型列清空（沿用新渠道自带的模型）并重新发现一次。
+- 选择只改**草稿**，写盘仍是 `Ctrl+S`；落盘时两段拼回 `profile/model_id`（模型列留空则写渠道 key，
+  由内核按 `apply_model_selection` 解析成该渠道自带的模型）。
+- **已知差异**：不做 models.toml 的 custom/detected 目录归一化（Python 走 `build_catalog`）；
+  Python 侧的搜索框没有对映（改为直接在下拉里翻候选）。
 - 未做（另一个可选项）：Python 还有的「作用域：bash / powershell / git / grep」信息行与字段
   两两并排版式，Rust 侧仍是通用表单的一行一字段。
+
 | 通过对话修改设置 | 已实现 | 本行是**动作行**：`Enter`/`→` 关闭设置面板并打开配置对话弹层（与 `/settings --chat` 同一入口）。一句话经 `omnicrawl-config-chat` 的本地路由器折成命令，全部校验通过后原子写盘并同步运行态；不经过模型、不带上下文 |
 
 ### Provider 配置接线（`initialize.model`）
@@ -647,7 +639,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 
 1. 写盘：复用 `omnicrawl-config` 的 `save_context_window_tokens` / `save_context_compaction_trigger_percent` /
    `save_tool_switch` / `save_reasoning_effort` / `save_show_thinking` / `save_feature_enabled`，
-   不做第二套 TOML 读写；上下文页按 Python 的口径「先写窗口、再写阈值，第二段失败就把窗口改回旧值」，
+   不做第二套 TOML 读写；模型管理页的参数行按 Python 的口径「先写窗口、再写阈值，第二段失败就把窗口改回旧值」，
    不留「新窗口 + 旧百分比」的自相矛盾配置。
 2. 宿主侧：工具开关与记忆开关立刻重建工具表（`rebuild_registry`）；重建时把旧表的 `MonitorManager` 与
    `CancelToken` 带过去，否则一次开关会把在跑的后台任务从宿主账上抹掉。思考显示改的是界面状态本身。

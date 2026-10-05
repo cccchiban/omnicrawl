@@ -8,6 +8,7 @@
 //   payload/omnicrawl[.exe]        内核（协议 v1 服务端，宿主按同目录查找）
 //   payload/omnicrawl-tui[.exe]    终端工作台
 //   payload/omnicrawl-api[.exe]    本地 HTTP/SSE 服务
+//   payload/omnicrawl-decision[.exe] 决策接口（结构化决策模型的本地 REST 服务）
 //   payload/omnicrawl-mcp-server[.exe]
 //   payload/rust/assets/templates/          提示词与模式模板（源在 rust/assets/templates；缺失时用内嵌副本）
 //   payload/rust/assets/config-templates/   首次配置的三份 TOML 模板（源在 rust/assets/config-templates）
@@ -64,7 +65,7 @@ const zigbuild = process.argv.includes('--zigbuild')
 const skipBuild = process.argv.includes('--skip-build')
 
 /** 载荷里必须存在的可执行文件（平台后缀按目标平台给）。 */
-const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-mcp-server']
+const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-mcp-server']
 
 function directorySize(path) {
   let total = 0
@@ -94,6 +95,7 @@ function buildRust() {
     'omnicrawl-cli',
     'omnicrawl-tui',
     'omnicrawl-api',
+    'omnicrawl-decision',
     'omnicrawl-mcp',
   ]
   const cargoArgs = [zigbuild ? 'zigbuild' : 'build', '--release']

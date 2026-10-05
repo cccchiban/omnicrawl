@@ -1,0 +1,32 @@
+[package]
+name = "omnicrawl-decision"
+description = "结构化决策模型的本地 REST 接口：把决策能力暴露给本机其它程序（CLI / Skill / 外部工具）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_decision"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-decision"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+omnicrawl-config = { path = "../omnicrawl-config" }
+# 决策请求的线格式、审查判定与常驻进程控制都复用宿主执行层，不写第二套。
+omnicrawl-host = { path = "../omnicrawl-host" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+# 出站决策请求是阻塞式的（与宿主各处一致），在 axum 处理函数里用 spawn_blocking 承接。
+ureq = { workspace = true }
+
+[dev-dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-host = { path = "../omnicrawl-host" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }

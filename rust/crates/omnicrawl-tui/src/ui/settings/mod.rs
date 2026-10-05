@@ -5,8 +5,8 @@
 //! 推内核、按需重建工具表，再把结果写回界面（成功/失败都只是一行状态文本）。
 //! 这样设置面板可以脱离内核单独用 `TestBackend` 驱动。
 //!
-//! 已落地 `settings.py` 的一级菜单，以及上下文、工具开关、子任务设置、视觉、模型渠道、
-//! 五个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成
+//! 已落地 `settings.py` 的一级菜单，以及模型管理、工具开关、子任务设置、视觉、
+//! 三个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成
 //! 六个表单页、TTS 页与 MCP 设置；「通过对话修改设置」是一个动作行，`Enter` 直接把
 //! 控制权交给配置对话弹层（见 `crate::ui::config_chat`），因此它没有右侧面板。
 
@@ -20,19 +20,21 @@ use omnicrawl_config::models::llm::normalize_reasoning_effort;
 
 pub use form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
 pub use hit::{HitAction, HitRegion};
-pub use picker::{ModelPicker, PickerKey, PICKER_HINT, PICKER_WINDOW};
+pub use picker::{split_token, ModelDiscovery};
 
 pub use state::{
     channel_field_value, decision_field_value, display_value, ChannelDropdown, ChannelField,
-    ChannelFormView, ChannelRow, ChoiceKind, ContextField, DecisionDropdown, DecisionField,
+    ChannelFormView, ChannelRow, ChoiceKind, DecisionDropdown, DecisionField,
     DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues, DecisionRow,
     DecisionSwitchRow, Dropdown, DropdownField, Focus, McpChange,
-    McpEditorRowView, McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, OptionValue,
+    McpEditorRowView, McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, ModelParamRow,
+    OptionValue,
     Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow,
     ToolSwitchRow, TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef,
     DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION, DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION,
     MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT,
-    MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS,
+    MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
+    TOOLS_APPROVAL_OPTIONS,
     TOOLS_APPROVAL_ROW, TTS_DEVICE_OPTIONS, TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS,
     TTS_THREAD_COUNTS,
 };
@@ -42,15 +44,12 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 20] = [
+pub const ROW_ORDER: [&str; 17] = [
     "config_chat",
-    "model",
-    "channels",
+    "model_management",
     "decision_models",
     "advisor",
     "tool_output_compression",
-    "context",
-    "reasoning",
     "tools",
     "mcp",
     "vision",
@@ -69,13 +68,10 @@ pub const ROW_ORDER: [&str; 20] = [
 pub fn row_label(key: &str) -> String {
     let label = match key {
         "config_chat" => "通过对话修改设置",
-        "model" => "模型",
-        "channels" => "模型渠道",
+        "model_management" => "模型管理",
         "decision_models" => "结构化决策模型",
         "advisor" => "顾问设置",
         "tool_output_compression" => "工具输出压缩",
-        "context" => "上下文",
-        "reasoning" => "推理强度",
         "tools" => "工具设置",
         "mcp" => "MCP 设置",
         "vision" => "视觉",
@@ -235,20 +231,10 @@ pub fn reasoning_label(effort: &str) -> String {
 
 /// 某个单选页的候选（文案 + 取值）。
 ///
-/// 模型页的候选来自 config.toml 的渠道与 models.toml 的条目，随环境变化，
-/// 由 `SettingsState` 自己提供，这里返回空表。
+/// 三个单选页都是开关，候选与 Python 的 SelectPane 一致；候选随环境变化的字段
+/// （渠道与模型、上下文与推理档位）挂在模型管理页与表单页上，不在静态表里。
 pub fn choice_field_options(kind: ChoiceKind) -> Vec<(String, OptionValue)> {
     match kind {
-        ChoiceKind::Model => Vec::new(),
-        ChoiceKind::Reasoning => REASONING_OPTIONS
-            .iter()
-            .map(|(option, label)| {
-                (
-                    (*label).to_string(),
-                    OptionValue::Text((*option).to_string()),
-                )
-            })
-            .collect(),
         // 「思考显示 / 记忆 / 插件」都是开关，候选与 Python 的 SelectPane 一致。
         ChoiceKind::ShowThinking | ChoiceKind::Memory | ChoiceKind::Plugins => vec![
             ("开启".to_string(), OptionValue::Flag(true)),
@@ -257,18 +243,20 @@ pub fn choice_field_options(kind: ChoiceKind) -> Vec<(String, OptionValue)> {
     }
 }
 
-/// 某个上下文字段的候选（文案 + 取值）。
-pub fn context_field_options(field: ContextField) -> Vec<(String, i64)> {
-    match field {
-        ContextField::Window => CONTEXT_WINDOW_OPTIONS_K
-            .iter()
-            .map(|k| (format!("{k}K"), k * 1000))
-            .collect(),
-        ContextField::Compaction => CONTEXT_COMPACTION_PERCENT_OPTIONS
-            .iter()
-            .map(|percent| (format!("{percent}%"), *percent))
-            .collect(),
-    }
+/// 上下文长度的候选（文案 + Token）。
+pub fn context_window_options() -> Vec<(String, i64)> {
+    CONTEXT_WINDOW_OPTIONS_K
+        .iter()
+        .map(|k| (format!("{k}K"), k * 1000))
+        .collect()
+}
+
+/// 上下文压缩阈值的候选（文案 + 百分比）。
+pub fn context_compaction_options() -> Vec<(String, i64)> {
+    CONTEXT_COMPACTION_PERCENT_OPTIONS
+        .iter()
+        .map(|percent| (format!("{percent}%"), *percent))
+        .collect()
 }
 
 #[cfg(test)]
@@ -309,21 +297,6 @@ mod tests {
 
     #[test]
     fn choice_options_cover_every_kind() {
-        assert!(
-            choice_field_options(ChoiceKind::Model).is_empty(),
-            "模型页的候选来自配置，不在静态表里"
-        );
-        let reasoning = choice_field_options(ChoiceKind::Reasoning);
-        assert_eq!(reasoning.len(), REASONING_OPTIONS.len());
-        assert_eq!(
-            reasoning[0],
-            ("关闭".to_string(), OptionValue::Text("none".to_string()))
-        );
-        assert_eq!(
-            reasoning[5],
-            ("最大".to_string(), OptionValue::Text("max".to_string()))
-        );
-
         for kind in [
             ChoiceKind::ShowThinking,
             ChoiceKind::Memory,
@@ -361,12 +334,12 @@ mod tests {
 
     #[test]
     fn field_options_match_python_candidates() {
-        let window = context_field_options(ContextField::Window);
+        let window = context_window_options();
         assert_eq!(window.len(), CONTEXT_WINDOW_OPTIONS_K.len());
         assert_eq!(window[0], ("32K".to_string(), 32_000));
         assert_eq!(window[6], ("2048K".to_string(), 2_048_000));
 
-        let percent = context_field_options(ContextField::Compaction);
+        let percent = context_compaction_options();
         assert_eq!(percent.len(), 19);
         assert_eq!(percent[0], ("5%".to_string(), 5));
         assert_eq!(percent[18], ("95%".to_string(), 95));

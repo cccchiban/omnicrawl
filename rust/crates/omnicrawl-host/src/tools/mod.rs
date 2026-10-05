@@ -14,6 +14,7 @@ pub mod arguments;
 pub mod command;
 pub mod declarations;
 pub mod decision_choice;
+pub mod decision_prune;
 pub mod decision_search;
 pub mod edit;
 pub mod error;
@@ -42,6 +43,9 @@ pub mod write;
 pub use advisor::AdvisorOptions;
 pub use decision_choice::{
     chosen_option, custody_options_from_config, ChoiceClient, CustodyContext, CustodyOptions,
+};
+pub use decision_prune::{
+    evicted_call_ids_for, prune_options_from_config, PruneChannel, PruneClient, PruneOptions,
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
 pub use error::{ToolError, ToolOutcome};

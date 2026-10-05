@@ -172,6 +172,8 @@ fn prepare_startup(
     }
     // 自部署决策服务：渠道启用后随实例自启动（本机已有服务时只复用，不重复拉起）。
     app.autostart_local_decision_service();
+    // 决策 REST 接口：`[api]` 启用后随实例自启动（供 CLI / Skill 等外部程序调用）。
+    app.autostart_decision_api();
     for line in app.startup_service_lines.clone() {
         sink.write_line(&line, LogLevel::Info);
     }

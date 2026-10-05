@@ -11,9 +11,9 @@ use ratatui::Terminal;
 
 use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
-    ChannelRow, ChoiceKind, ContextField, DecisionRow, DecisionSwitchRow, FieldValue, Focus,
-    FormKind, HitAction, Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
-    SubagentRow, ToolSwitchRow, VisionModelRef,
+    ChannelRow, ChoiceKind, DecisionRow, DecisionSwitchRow, DropdownField, FieldValue, Focus,
+    FormKind, HitAction, ModelParamRow, Pane, SettingsChange, SettingsEvent, SettingsState,
+    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
 };
 
 const WIDTH: u16 = 100;
@@ -66,6 +66,22 @@ fn channel(key: &str, name: &str, provider: &str, model_id: &str, enabled: bool)
     }
 }
 
+/// 模型管理页的初始状态：两个渠道，当前模型是第一条。
+fn model_management_state() -> SettingsState {
+    SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows())
+            .with_channels(
+                vec![
+                    channel("gpt-main", "主渠道", "openai", "gpt-5.2", true),
+                    channel("claude-backup", "备用渠道", "anthropic", "claude-4", false),
+                ],
+                "gpt-main",
+                channel("新渠道", "新渠道", "openai", "gpt-5.2", true),
+            )
+            .with_model("gpt-main"),
+    )
+}
+
 /// 渲染一帧并返回终端缓冲。
 fn draw(state: &SettingsState, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
@@ -116,16 +132,21 @@ fn renders_both_columns_with_row_labels() {
     let screen = text(&draw(&state(), WIDTH, HEIGHT));
 
     assert!(screen.contains("通过对话修改设置"), "左栏第一项：{screen}");
-    assert!(screen.contains("上下文"));
+    assert!(screen.contains("模型管理"), "合并后的模型页：{screen}");
     assert!(screen.contains("工具设置"));
     assert!(screen.contains("思考显示"), "左栏最后一项");
+    // 合并掉的三项不再作为一级项出现。
     assert!(
-        screen.contains("该设置页尚未迁移到 Rust 宿主"),
-        "未迁移的一级项要给出提示：{screen}"
+        !screen.contains("模型渠道"),
+        "旧「模型渠道」页已合并：{screen}"
     );
     assert!(
-        screen.contains("↑↓ 选择设置项（右侧实时预览）"),
-        "底部帮助行"
+        !screen.contains("推理强度"),
+        "旧「推理强度」页已合并：{screen}"
+    );
+    assert!(
+        !screen.contains("↑↓ 选择设置项（右侧实时预览）"),
+        "底部帮助行已删除：{screen}"
     );
     assert!(screen.contains("通过对话修改设置"), "右侧标题显示当前项");
 }
@@ -141,6 +162,10 @@ fn crosshair_border_follows_focus() {
     assert_eq!(find(&list_focus, "⇗").0, COLUMN_PADDING);
     assert_eq!(find(&list_focus, "⇖").0, left_box_right);
 
+    // 「通过对话修改设置」是动作行，不进右侧面板：先挪到有面板的一级项。
+    while state.selected_key() != "tools" {
+        state.handle_key(KeyCode::Down);
+    }
     state.handle_key(KeyCode::Enter);
     assert_eq!(state.focus(), Focus::Pane);
     let pane_focus = draw(&state, WIDTH, HEIGHT);
@@ -154,31 +179,39 @@ fn crosshair_border_follows_focus() {
 }
 
 #[test]
-fn context_panel_shows_current_values() {
-    let mut state = state();
-    while state.selected_key() != "context" {
+fn model_management_panel_shows_channels_and_params() {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
-    assert_eq!(state.pane(), Pane::Context);
+    assert_eq!(state.pane(), Pane::ModelManagement);
     let screen = text(&draw(&state, WIDTH, HEIGHT));
 
-    assert!(screen.contains("上下文长度"));
-    assert!(screen.contains("128K"), "当前窗口：{screen}");
-    assert!(screen.contains("上下文阈值"));
-    assert!(screen.contains("80%"));
-    assert!(screen.contains("Tab 切换字段；选中即保存。"));
+    assert!(screen.contains("主渠道"), "渠道列表：{screen}");
+    assert!(screen.contains("[默认]"), "默认渠道要有标记：{screen}");
+    assert!(screen.contains("模型与参数"), "分区标题：{screen}");
+    assert!(screen.contains("当前模型渠道：主渠道"), "{screen}");
+    assert!(screen.contains("上下文长度：128K"), "{screen}");
+    assert!(screen.contains("上下文阈值：80%"), "{screen}");
+    assert!(screen.contains("推理强度：关闭"), "{screen}");
+    assert!(screen.contains("N 新建"), "列表提示：{screen}");
 }
 
 #[test]
-fn context_dropdown_overlay_lists_candidates_and_highlights_current() {
-    let mut state = state();
-    while state.selected_key() != "context" {
+fn model_param_dropdown_overlay_lists_candidates_and_highlights_current() {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter); // 进入右栏
+    for _ in 0..3 {
+        state.handle_key(KeyCode::Down); // 渠道 2 条 → 分区行 → 「上下文长度」
+    }
     state.handle_key(KeyCode::Enter); // 展开候选
-    assert_eq!(state.context_field(), ContextField::Window);
-    assert!(state.dropdown().is_some());
+    assert_eq!(
+        state.dropdown().map(|dropdown| dropdown.field),
+        Some(DropdownField::ModelParam(ModelParamRow::Window)),
+    );
 
     let buffer = draw(&state, WIDTH, HEIGHT);
     let screen = text(&buffer);
@@ -186,8 +219,6 @@ fn context_dropdown_overlay_lists_candidates_and_highlights_current() {
     assert!(screen.contains("2048K"));
 
     // 高亮项（当前值 128K）用琥珀底色。
-    let (x, y) = find(&buffer, "⇘");
-    assert!(x > 0 && y == 0);
     let highlighted = buffer
         .content
         .iter()
@@ -197,11 +228,13 @@ fn context_dropdown_overlay_lists_candidates_and_highlights_current() {
 
 #[test]
 fn esc_collapses_dropdown_then_returns_then_closes() {
-    let mut state = state();
-    while state.selected_key() != "context" {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
-    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Enter); // 展开
     assert_eq!(
         state.handle_key(KeyCode::Esc),
@@ -235,7 +268,10 @@ fn tools_panel_lists_switch_states() {
         "未注册的工具要标注：{screen}"
     );
     assert!(screen.contains("↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回"));
-    assert!(screen.contains("工具调用审查：自动审查"), "首行是审查模式：{screen}");
+    assert!(
+        screen.contains("工具调用审查：自动审查"),
+        "首行是审查模式：{screen}"
+    );
 }
 
 #[test]
@@ -312,60 +348,22 @@ fn narrow_terminal_shrinks_left_column_and_keeps_both_boxes() {
 }
 
 #[test]
-fn model_page_renders_current_channel_and_candidates() {
-    let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_model(
-        vec![
-            ("主渠道".to_string(), "gpt-main".to_string()),
-            ("备用渠道".to_string(), "gpt-backup".to_string()),
-        ],
-        "gpt-main",
-    ));
-    while state.selected_key() != "model" {
+fn model_management_page_renders_list_then_form() {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
-    let collapsed = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(
-        collapsed.contains("主渠道"),
-        "折叠框显示当前渠道：{collapsed}"
-    );
-
-    state.handle_key(KeyCode::Enter); // 进右侧面板
-    state.handle_key(KeyCode::Enter); // 展开候选
-    let screen = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(
-        screen.contains("备用渠道"),
-        "候选里要有第二个渠道：{screen}"
-    );
-    assert!(screen.contains("主渠道"));
-}
-
-#[test]
-fn channels_page_renders_list_then_form() {
-    let mut state =
-        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_channels(
-            vec![
-                channel("gpt-main", "主渠道", "openai", "gpt-5.2", true),
-                channel("claude-backup", "备用渠道", "anthropic", "claude-4", false),
-            ],
-            "gpt-main",
-            channel("新渠道", "新渠道", "openai", "gpt-5.2", true),
-        ));
-    while state.selected_key() != "channels" {
-        state.handle_key(KeyCode::Down);
-    }
-    let list = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(list.contains("主渠道"), "渠道列表：{list}");
-    assert!(list.contains("（当前）"), "默认渠道要有标记：{list}");
-    assert!(list.contains("已关闭"), "第二条显示关闭：{list}");
-    assert!(list.contains("N 新建"), "列表提示：{list}");
 
     state.handle_key(KeyCode::Enter); // 进右侧面板
     state.handle_key(KeyCode::Enter); // 编辑选中渠道
     let form = text(&draw(&state, WIDTH, HEIGHT));
     assert!(form.contains("渠道名称：主渠道"), "表单字段：{form}");
-    assert!(form.contains("Provider：openai"), "{form}");
+    assert!(form.contains("请求方式：openai"), "{form}");
     // 新增的 API Key 行：只给掩码，明文不进界面。
-    assert!(form.contains("API Key：****…-key"), "密钥行应只显示掩码：{form}");
+    assert!(
+        form.contains("API Key：****…-key"),
+        "密钥行应只显示掩码：{form}"
+    );
     assert!(form.contains("模型 ID：gpt-5.2"), "{form}");
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }
@@ -385,15 +383,16 @@ fn decision(key: &str, name: &str, model: &str, enabled: bool) -> DecisionRow {
 /// 结构化决策模型页：列表 → 表单 → 候选，与渠道页同形且可独立设置渠道与模型。
 #[test]
 fn decision_models_page_renders_list_then_form() {
-    let mut state =
-        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
             vec![
                 decision("jev-main", "Jev 主渠道", "jev-latest", true),
                 decision("jev-pinned", "固定版本渠道", "jev-1.13.0", false),
             ],
             "jev-main",
             decision("新渠道", "新渠道", "jev-latest", true),
-        ));
+        ),
+    );
     while state.selected_key() != "decision_models" {
         state.handle_key(KeyCode::Down);
     }
@@ -409,21 +408,28 @@ fn decision_models_page_renders_list_then_form() {
     let form = text(&draw(&state, WIDTH, HEIGHT));
     assert!(form.contains("渠道名称：Jev 主渠道"), "表单字段：{form}");
     assert!(form.contains("请求方式：jev"), "{form}");
-    assert!(form.contains("模型 ID：jev-latest"), "决策模型单独可配：{form}");
+    assert!(
+        form.contains("模型 ID：jev-latest"),
+        "决策模型单独可配：{form}"
+    );
     // 密钥只显示掩码，明文不进界面。
-    assert!(form.contains("API Key：（未配置）"), "未配密钥时给出占位：{form}");
+    assert!(
+        form.contains("API Key：（未配置）"),
+        "未配密钥时给出占位：{form}"
+    );
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }
 
 /// 决策渠道的「请求方式」候选（当前只有 Jev）：展开、移动、确认都写回草稿。
 #[test]
 fn decision_mode_dropdown_selects_the_service() {
-    let mut state =
-        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
             vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
             "jev-main",
             decision("新渠道", "新渠道", "jev-latest", true),
-        ));
+        ),
+    );
     while state.selected_key() != "decision_models" {
         state.handle_key(KeyCode::Down);
     }
@@ -435,18 +441,22 @@ fn decision_mode_dropdown_selects_the_service() {
     assert!(expanded.contains("↑↓ 选择"), "展开态提示：{expanded}");
     state.handle_key(KeyCode::Enter); // 确认候选
     let collapsed = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(!collapsed.contains("↑↓ 选择"), "确认后收起候选：{collapsed}");
+    assert!(
+        !collapsed.contains("↑↓ 选择"),
+        "确认后收起候选：{collapsed}"
+    );
 }
 
 /// `N` 新建的草稿在 `Ctrl+S` 之前不进列表，`Esc` 直接丢弃。
 #[test]
 fn decision_new_channel_is_drafted_until_saved() {
-    let mut state =
-        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
             vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
             "jev-main",
             decision("新渠道", "新渠道", "jev-latest", true),
-        ));
+        ),
+    );
     while state.selected_key() != "decision_models" {
         state.handle_key(KeyCode::Down);
     }
@@ -455,11 +465,7 @@ fn decision_new_channel_is_drafted_until_saved() {
     let drafting = text(&draw(&state, WIDTH, HEIGHT));
     assert!(drafting.contains("新渠道"), "草稿表单应可编辑：{drafting}");
     state.handle_key(KeyCode::Esc);
-    assert_eq!(
-        state.decision_rows().len(),
-        1,
-        "Esc 丢弃草稿，列表不变"
-    );
+    assert_eq!(state.decision_rows().len(), 1, "Esc 丢弃草稿，列表不变");
 
     // Ctrl+S 才写盘（这里只验证产出的变更事件）。
     state.handle_key(KeyCode::Char('n'));
@@ -476,12 +482,13 @@ fn decision_new_channel_is_drafted_until_saved() {
 /// 决策页的 `D` 删除至少保留一条。
 #[test]
 fn decision_page_keeps_at_least_one_channel() {
-    let mut state =
-        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
             vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
             "jev-main",
             decision("新渠道", "新渠道", "jev-latest", true),
-        ));
+        ),
+    );
     while state.selected_key() != "decision_models" {
         state.handle_key(KeyCode::Down);
     }
@@ -536,7 +543,6 @@ fn decision_page_renders_and_toggles_feature_switches() {
     assert_eq!(state.decision_rows().len(), rows_before, "N 只作用于渠道行");
 }
 
-
 /// 「模型 ID」自动检测出的候选列表：超出一屏时窗口跟着游标走，前后各留一行省略提示。
 #[test]
 fn channel_model_candidates_scroll_with_the_selection() {
@@ -546,7 +552,7 @@ fn channel_model_candidates_scroll_with_the_selection() {
             "gpt-main",
             channel("新渠道", "新渠道", "openai", "gpt-5.2", true),
         ));
-    while state.selected_key() != "channels" {
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter); // 进右侧面板
@@ -592,19 +598,22 @@ fn very_short_terminal_still_renders() {
 }
 
 #[test]
-fn reasoning_page_renders_value_and_candidate_overlay() {
-    let mut state = state();
-    while state.selected_key() != "reasoning" {
+fn model_management_reasoning_row_renders_candidate_overlay() {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
-    assert_eq!(state.pane(), Pane::Choice(ChoiceKind::Reasoning));
     let collapsed = text(&draw(&state, WIDTH, HEIGHT));
     assert!(
-        collapsed.contains("关闭"),
+        collapsed.contains("推理强度：关闭"),
         "缺省档位 none 的文案：{collapsed}"
     );
 
-    state.handle_key(KeyCode::Enter); // 进右侧面板：边框变白粗
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    for _ in 0..5 {
+        state.handle_key(KeyCode::Down); // 渠道 2 条 + 三个参数行
+    }
+    assert!(state.model_param_rows()[3].2, "选中推理强度行");
     state.handle_key(KeyCode::Enter); // 展开候选
     let buffer = draw(&state, WIDTH, HEIGHT);
     let screen = text(&buffer);
@@ -651,23 +660,26 @@ fn choice_page_status_line_reports_saved_path() {
     assert!(screen.contains("开启"), "折叠框已翻到开启");
 }
 
-/// 带表单初值的设置状态：顾问页（停用 / effort=high / 选备用渠道）与压缩页（启用）。
+/// 带表单初值的设置状态：顾问页（停用 / effort=high / 渠道+模型）与压缩页（启用）。
 fn form_state() -> SettingsState {
     SettingsState::new(
         SettingsValues::new(128_000, 80, tool_rows())
-            .with_model(
+            .with_channels(
                 vec![
-                    ("主渠道".to_string(), "gpt-main".to_string()),
-                    ("备用渠道".to_string(), "gpt-backup".to_string()),
+                    channel("gpt-main", "主渠道", "openai", "gpt-5.2", true),
+                    channel("gpt-backup", "备用渠道", "anthropic", "claude-4", true),
                 ],
                 "gpt-main",
+                channel("新渠道", "新渠道", "openai", "gpt-5.2", true),
             )
+            .with_model("gpt-main")
             .with_form(
                 FormKind::Advisor,
                 vec![
                     FieldValue::Flag(false),
                     FieldValue::Text("high".to_string()),
                     FieldValue::Text("gpt-backup".to_string()),
+                    FieldValue::Text("claude-4".to_string()),
                 ],
             )
             .with_form(
@@ -681,6 +693,7 @@ fn form_state() -> SettingsState {
                     FieldValue::Text("1500".to_string()),
                     FieldValue::Text("60".to_string()),
                     FieldValue::Text("gpt-main".to_string()),
+                    FieldValue::Text("gpt-5.2".to_string()),
                 ],
             ),
     )
@@ -699,8 +712,12 @@ fn advisor_page_renders_fields_and_candidate_overlay() {
         "字段与当前值：{collapsed}"
     );
     assert!(
-        collapsed.contains("顾问模型：备用渠道"),
-        "模型项显示渠道名：{collapsed}"
+        collapsed.contains("顾问渠道：备用渠道"),
+        "渠道列显示渠道名：{collapsed}"
+    );
+    assert!(
+        collapsed.contains("顾问模型：claude-4"),
+        "模型列显示模型 ID：{collapsed}"
     );
     assert!(
         !collapsed.contains("该设置页尚未迁移到 Rust 宿主"),
@@ -735,8 +752,12 @@ fn compression_page_renders_budgets_and_status() {
     assert!(screen.contains("最小压缩字符数：1200"), "{screen}");
     assert!(screen.contains("单条压缩超时（秒）：60"), "{screen}");
     assert!(
-        screen.contains("压缩模型：主渠道"),
-        "模型项显示渠道名：{screen}"
+        screen.contains("压缩渠道：主渠道"),
+        "渠道列显示渠道名：{screen}"
+    );
+    assert!(
+        screen.contains("压缩模型：gpt-5.2"),
+        "模型列显示模型 ID：{screen}"
     );
     assert!(screen.contains("Ctrl+S 保存"), "表单提示：{screen}");
 
@@ -751,24 +772,27 @@ fn compression_page_renders_budgets_and_status() {
 }
 
 #[test]
-fn compression_page_renders_the_inline_model_picker() {
+fn compression_page_renders_channel_and_model_dropdowns() {
     let mut state = form_state();
     while state.selected_key() != "tool_output_compression" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);
+    // 走到「压缩渠道」并展开：候选是配置里的渠道。
+    for _ in 0..7 {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
     let screen = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(screen.contains("M 模型选择器"), "提示行里要有入口：{screen}");
-    assert!(screen.contains("渠道选择"), "左列标题：{screen}");
-    assert!(screen.contains("模型"), "右列标题：{screen}");
-    assert!(screen.contains("按 / 搜索"), "搜索提示行：{screen}");
+    assert!(screen.contains("备用渠道"), "渠道候选要列出来：{screen}");
+    assert!(!screen.contains("渠道选择"), "双列选择器已移除：{screen}");
 
-    // `M` 进选择器：左列列出渠道（当前渠道带 ● 标记），提示行换成选择器键位。
-    state.handle_key(KeyCode::Char('m'));
-    assert!(state.model_picker().is_some_and(|picker| picker.focused()));
+    // 「压缩模型」列展开：候选是当前渠道自带的模型 ID。
+    state.handle_key(KeyCode::Esc);
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Enter);
     let screen = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(screen.contains("主渠道"), "左列列出渠道：{screen}");
-    assert!(screen.contains("切换列"), "选择器提示行：{screen}");
+    assert!(screen.contains("gpt-5.2"), "模型候选：{screen}");
 }
 
 #[test]
@@ -962,14 +986,17 @@ fn approval_row_is_the_first_clickable_row_and_cycles() {
 
 #[test]
 fn dropdown_option_click_confirms_the_choice() {
-    let mut state = state();
-    while state.selected_key() != "reasoning" {
+    let mut state = model_management_state();
+    while state.selected_key() != "model_management" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);
+    for _ in 0..3 {
+        state.handle_key(KeyCode::Down); // 渠道 2 条 → 分区行 → 「上下文长度」
+    }
     state.handle_key(KeyCode::Enter); // 展开候选
     let options = state.dropdown_options();
-    assert!(!options.is_empty(), "推理强度页应当有候选");
+    assert!(!options.is_empty(), "上下文长度行应当有候选");
     draw(&state, WIDTH, HEIGHT);
 
     // 浮层画在面板之上：同一个落点应当先命中候选行。
@@ -977,18 +1004,17 @@ fn dropdown_option_click_confirms_the_choice() {
         40u16,
         (0..HEIGHT as usize)
             .map(|row| row as u16)
-            .find(|row| state.hit_at(40, *row) == Some(HitAction::Option(2)))
-            .expect("浮层第 3 项应当可点"),
+            .find(|row| state.hit_at(40, *row) == Some(HitAction::Option(3)))
+            .expect("浮层第 4 项应当可点"),
     );
     let action = state.hit_at(column, row).expect("浮层候选可点");
     let event = state.click(action).expect("选候选并确认");
     match event {
-        SettingsEvent::Apply(SettingsChange::Reasoning { effort }) => {
-            assert_eq!(effort, "medium", "第三项应当是中档")
+        SettingsEvent::Apply(SettingsChange::ContextWindow { tokens }) => {
+            assert_eq!(tokens, 256_000, "第 4 项应当是 256K")
         }
-        other => panic!("应当产出推理强度变更：{other:?}"),
+        other => panic!("应当产出上下文长度变更：{other:?}"),
     }
-    // 状态机只产出事件：界面上的取值由 `App` 落盘后回填，这里不看 `choice_value()`。
 }
 
 #[test]
@@ -1031,7 +1057,11 @@ fn pane_hint_sits_on_the_bottom_border() {
     assert!(!hint.is_empty(), "进入面板后应当有键位提示");
 
     let line = state.pane_hint();
-    let marker = line.split_whitespace().next().unwrap_or_default().to_string();
+    let marker = line
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
     assert!(
         marker.starts_with('↑') || marker.contains('↑'),
         "提示以方向键开头：{line}"

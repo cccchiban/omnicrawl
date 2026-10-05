@@ -50,11 +50,21 @@ pub trait ReplySource {
 ///
 /// 刻意不提供逐工具回调，防止 Host 在审批尚未完成时提前执行同批中的某个工具。
 pub trait ToolBatchHost {
+    /// 一个批次的执行点：`calls` 是模型本次要求的全部调用，`first_step` 是起始步号。
     fn execute_tool_batch(
         &mut self,
         calls: &[ToolCall],
         first_step: usize,
     ) -> Result<Vec<AgentLoopObservation>, LoopError>;
+
+    /// 执行本批之前的上下文钩子：此刻**上一批**调用刚变成「老」的一批。
+    ///
+    /// 默认空实现。带上下文的实现（工具调用按需淘汰）在这里决定上一批里哪些已无用、
+    /// 并把它们整组从 `messages` 里移除——淘汰点因此始终贴近尾部，已发过的前缀逐字不变。
+    /// 钩子在新的 assistant 工具消息入列之后、执行本批之前调用，最新一批从不被淘汰。
+    fn before_tool_batch(&mut self, _messages: &mut Vec<Value>) -> Result<(), LoopError> {
+        Ok(())
+    }
 }
 
 /// 循环边界回调：取消检查与停止检查。
@@ -132,6 +142,9 @@ impl AgentLoopRunner {
 
             // assistant tool-call 消息必须与其对应的工具观察一起进入上下文。
             messages.push(reply.message.clone());
+            // 新一轮调用出现，上一批因此变「老」：给它一次按需淘汰的机会（默认空实现）。
+            // 淘汰点紧跟新的 assistant 工具消息，因此只动上下文尾部，前缀逐字不变。
+            tool_batch.before_tool_batch(messages)?;
             let observations = tool_batch.execute_tool_batch(&reply.tool_calls, tool_calls + 1)?;
             if observations.len() != reply.tool_calls.len() {
                 return Err(LoopError::ObservationMismatch(format!(

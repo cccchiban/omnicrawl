@@ -16,11 +16,13 @@ use omnicrawl_entry::startup;
 
 const KERNEL_COMMAND: &str = "kernel";
 const API_COMMAND: &str = "api";
+const DECISION_COMMAND: &str = "decision";
 const PLUGIN_COMMAND: &str = "plugin";
 const BINARY_ENV: &str = "OMNICRAWL_BINARY";
 const TUI_ENV: &str = "OMNICRAWL_TUI_BINARY";
 const API_ENV: &str = "OMNICRAWL_API_BINARY";
 const KERNEL_ENV: &str = "OMNICRAWL_KERNEL_BINARY";
+const DECISION_ENV: &str = "OMNICRAWL_DECISION_BINARY";
 
 fn main() -> ExitCode {
     match run(env::args_os().skip(1).collect()) {
@@ -73,6 +75,10 @@ fn run(args: Vec<OsString>) -> Result<i32, String> {
         }
         Some(API_COMMAND) => {
             let target = resolve_target(API_ENV, "omnicrawl-api", None)?;
+            run_child(&target, &args[1..], &context.workspace_root)
+        }
+        Some(DECISION_COMMAND) => {
+            let target = resolve_target(DECISION_ENV, "omnicrawl-decision", None)?;
             run_child(&target, &args[1..], &context.workspace_root)
         }
         _ => run_tui(&args, &context.workspace_root),
@@ -170,6 +176,7 @@ fn print_help() {
         "用法：omnicrawl [选项] [指令]\n\n\
          无参数        启动 Rust 终端工作台\n\
          api           启动 Rust 本地 HTTP 服务\n\
+         decision ...  决策接口（serve / ensure / stop / status）\n\
          plugin ...    插件管理（install / list / info / enable / disable / update /\n\
                        rollback / uninstall / system / doctor）\n\
          kernel ...    直连 Rust 内核进程\n\n\
@@ -188,6 +195,7 @@ mod tests {
         let _ = print_help as fn();
         assert_eq!(KERNEL_COMMAND, "kernel");
         assert_eq!(API_COMMAND, "api");
+        assert_eq!(DECISION_COMMAND, "decision");
     }
 
     #[test]

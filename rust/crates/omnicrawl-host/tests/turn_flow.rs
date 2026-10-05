@@ -175,6 +175,8 @@ fn runner_with_custody(
         plugins: None,
         review: None,
         custody,
+        // 不做工具调用淘汰：测试只关心提问托管的分支。
+        prune: None,
         prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")

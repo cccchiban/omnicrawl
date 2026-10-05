@@ -33,6 +33,8 @@ omnicrawl-ipc = { path = "../omnicrawl-ipc" }
 omnicrawl-mcp = { path = "../omnicrawl-mcp" }
 # 决策模型的自部署：OneJev 尺寸清单、权重下载、专用虚拟环境与本地服务进程。
 omnicrawl-onejev = { path = "../omnicrawl-onejev" }
+# 决策接口（本机 REST）：启动时按配置拉起并复用，供 CLI / Skill 等外部程序调用。
+omnicrawl-decision = { path = "../omnicrawl-decision" }
 # TTS 设置页的模型下载 / 音色克隆（引擎与下载器都在 omnicrawl-tts）。
 omnicrawl-tts = { path = "../omnicrawl-tts" }
 # 主 Agent 隔离工作区：启动准备（worktree/local）与退出收尾（apply + 清理）。

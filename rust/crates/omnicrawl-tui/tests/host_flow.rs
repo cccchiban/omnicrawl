@@ -277,6 +277,26 @@ fn tool_batch(id: i64, body: &str) -> String {
     format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tool.batch\",\"params\":{body}}}\n")
 }
 
+/// 内核发来的 `context.prune` 请求：只在宿主声明了 `tool_call_prune` 能力时才会发。
+fn context_prune(id: i64, task: &str, calls: &[(&str, &str)]) -> String {
+    let groups: Vec<Value> = calls
+        .iter()
+        .map(|(call_id, tool)| {
+            json!({
+                "call_id": call_id,
+                "tool": tool,
+                "arguments": "{}",
+                "ok": true,
+                "output": "输出",
+            })
+        })
+        .collect();
+    let params = json!({"task": task, "groups": groups});
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"context.prune\",\"params\":{params}}}\n"
+    )
+}
+
 #[test]
 fn handshake_submits_turn_and_answers_tool_batch() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
@@ -548,6 +568,37 @@ fn unsupported_model_reply_is_refused() {
         "内核自带 provider runtime 时宿主不代答模型"
     );
     assert!(error.message.contains("model.reply"), "{}", error.message);
+}
+
+/// 声明了 `tool_call_prune` 能力就必须实现 `context.prune`：漏了处理器会回 `-32601`，
+/// 内核把该错误当成「宿主执行工具批次失败」直接中止整个回合（回归：TUI 曾只认
+/// `tool.batch` 与 `model.hook` 两个请求，其余一律回未实现）。
+#[test]
+fn context_prune_is_answered_instead_of_refused() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    // 固定成「淘汰运行期不可用」：测试机上的 `[decision_models.features] tool_call_prune`
+    // 是开着的，真的去问决策渠道就把用例变成看配置和网络说话了。裁决真的回答 drop 后
+    // 返回对应 ID 的那段在 `omnicrawl-host` 的 `decision_prune` 用例里覆盖。
+    harness.app.prune = None;
+    harness.send(&context_prune(
+        11,
+        "整理仓库",
+        &[("c1", "bash"), ("c2", "grep")],
+    ));
+
+    let response = harness.expect_response(11);
+    assert!(
+        response.error.is_none(),
+        "不该回错误响应（那会让内核中止回合）：{:?}",
+        response.error
+    );
+    let evicted = &response.result.expect("响应应带 result")["evicted_call_ids"];
+    // 裁决不可用时必须回**空列表**（都留着，fail-open）：既不能报错，也不能误删上下文。
+    assert!(
+        evicted.as_array().is_some_and(|list| list.is_empty()),
+        "淘汰不可用时回空列表，实际：{evicted}"
+    );
 }
 
 /// 后台命令监控：`monitor` 在 manual 模式下不弹确认，批次间能拿到同一个任务并收尾。

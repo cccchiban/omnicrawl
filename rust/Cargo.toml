@@ -8,6 +8,7 @@ members = [
     "crates/omnicrawl-connectors",
     "crates/omnicrawl-controllers",
     "crates/omnicrawl-core",
+    "crates/omnicrawl-decision",
     "crates/omnicrawl-extensions",
     "crates/omnicrawl-host",
     "crates/omnicrawl-ipc",

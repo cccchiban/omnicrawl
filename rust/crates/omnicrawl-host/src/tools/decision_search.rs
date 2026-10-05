@@ -17,7 +17,6 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::decision_model::{
@@ -329,7 +328,9 @@ pub fn apply_order<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
 }
 
 /// 真实实现：`POST {base_url}/v1/decide`，一个 choice 问题，读回各候选项的置信度。
-struct DecisionRerankClient;
+///
+/// 公开是因为本地 REST 决策接口（`omnicrawl-decision`）直接复用这一条出站路径。
+pub struct DecisionRerankClient;
 
 impl RerankClient for DecisionRerankClient {
     fn rank(&self, request: &RerankRequest<'_>) -> Result<Vec<usize>, String> {
@@ -347,7 +348,7 @@ impl RerankClient for DecisionRerankClient {
             .enumerate()
             .map(|(index, text)| {
                 (
-                    format!("{CANDIDATE_KEY_PREFIX}{index}"),
+                    crate::decision_wire::option_key_with(CANDIDATE_KEY_PREFIX, index),
                     Value::String(candidate_text(text)),
                 )
             })
@@ -378,103 +379,25 @@ impl RerankClient for DecisionRerankClient {
             None => body_text,
         };
 
-        let timeout = Duration::from_secs(RERANK_TIMEOUT_SECONDS);
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            // 状态码不转错误：上游 4xx/5xx 的正文要留给诊断。
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let response = agent
-            .post(channel.decide_url())
-            .config()
-            .timeout_connect(Some(timeout))
-            .timeout_recv_response(Some(timeout))
-            .timeout_recv_body(Some(timeout))
-            .build()
-            .header("Content-Type", "application/json")
-            .header("Authorization", &format!("Bearer {api_key}"))
-            .header("User-Agent", USER_AGENT)
-            .send(body_text.as_str())
-            .map_err(|error| error.to_string())?;
-        let status = response.status().as_u16();
-        let text = response.into_body().read_to_string().map_err(|error| error.to_string())?;
-        if status >= 400 {
-            return Err(format!(
-                "决策服务返回 HTTP {status}：{}",
-                truncate(text.trim(), 200)
-            ));
-        }
+        let text = crate::decision_wire::post_body(
+            &channel.decide_url(),
+            &api_key,
+            &body_text,
+            RERANK_TIMEOUT_SECONDS,
+            USER_AGENT,
+        )?;
         parse_ranking(&text, &channel.mode, request.candidates.len())
     }
 }
 
 /// 解析答案里的候选项排序：先按置信度降序，取不到的候选按本地顺序补在后面。
 fn parse_ranking(text: &str, mode: &str, count: usize) -> Result<Vec<usize>, String> {
-    let answers = crate::decision_wire::extract_answers(mode, text)?;
-    let answer = answers.get(QUESTION_ID);
-    let mut ranked: Vec<(f64, usize)> = Vec::new();
-    if let Some(probabilities) = answer
-        .and_then(|value| value.get("probabilities"))
-        .and_then(Value::as_object)
-    {
-        for (key, value) in probabilities {
-            let Some(index) = candidate_index(key) else {
-                continue;
-            };
-            if index >= count {
-                continue;
-            }
-            let Some(probability) = value.as_f64() else {
-                continue;
-            };
-            ranked.push((probability, index));
-        }
-    }
-    if ranked.is_empty() {
-        // 没有逐项置信度时退化用胜出项：它排第一，其余保持本地顺序。
-        let winner = answer
-            .and_then(|value| value.get("choice"))
-            .and_then(Value::as_str)
-            .and_then(candidate_index)
-            .filter(|index| *index < count)
-            .ok_or_else(|| {
-                format!("决策模型未返回可用的候选项排序：{}", truncate(text.trim(), 200))
-            })?;
-        ranked.push((1.0, winner));
-    }
-    ranked.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
-
-    let mut order: Vec<usize> = Vec::with_capacity(count);
-    for (_, index) in ranked {
-        if !order.contains(&index) {
-            order.push(index);
-        }
-    }
-    for index in 0..count {
-        if !order.contains(&index) {
-            order.push(index);
-        }
-    }
-    Ok(order)
-}
-
-fn candidate_index(key: &str) -> Option<usize> {
-    key.strip_prefix(CANDIDATE_KEY_PREFIX)?.parse::<usize>().ok()
+    crate::decision_wire::parse_ranking_order(mode, text, QUESTION_ID, count, CANDIDATE_KEY_PREFIX)
 }
 
 /// 候选项进请求前的收敛：空白压成单空格，超长截断（相关度判断不需要整段正文）。
 fn candidate_text(text: &str) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    truncate(&collapsed, CANDIDATE_MAX_CHARS)
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    let characters: Vec<char> = text.chars().collect();
-    if characters.len() <= limit {
-        return characters.iter().collect();
-    }
-    let head: String = characters[..limit].iter().collect();
-    format!("{head}…")
+    crate::decision_wire::collapse_text(text, CANDIDATE_MAX_CHARS)
 }
 
 #[cfg(test)]
@@ -629,13 +552,14 @@ mod tests {
 
     #[test]
     fn chat_completions_round_trip_keeps_the_same_semantics() {
-        // 同一份候选与判定标准，换成对话补全方式：路径换成 /v1/chat/completions，
-        // state 与 questions 走 user 消息，排序结果不变。
+        // 同一份候选与判定标准，换成对话补全方式：基地址按 OpenAI 兼容口径带上 /v1，
+        // 只追加资源路径，state 与 questions 走 user 消息，排序结果不变。
         let cassette = RerankCassette::serve();
         let options = RerankOptions {
             enabled: true,
             channel: Some(RerankChannel {
                 mode: CHAT.to_string(),
+                base_url: format!("{}/v1", cassette.base_url()),
                 ..channel(&cassette.base_url())
             }),
             ..RerankOptions::default()

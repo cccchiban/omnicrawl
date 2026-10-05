@@ -135,6 +135,9 @@ pub struct ServiceOptions {
     /// 提问托管运行期（`[decision_models.features] ask_user_custody`）；`None` 表示不托管，
     /// 有选项的提问照旧等 HTTP 提交的答案。
     pub custody: Option<omnicrawl_host::tools::CustodyOptions>,
+    /// 工具调用淘汰运行期（`[decision_models.features] tool_call_prune`）；`None` 表示不淘汰，
+    /// 「刚变老」的那一批调用照旧全部留在上下文里。
+    pub prune: Option<omnicrawl_host::tools::PruneOptions>,
     /// 模型发现缓存：跨请求存活，`POST /models/refresh` 清空它。
     pub discovery_cache: Arc<DiscoveryCache>,
     /// 内核可执行文件：运行期重起内核（切换会话 / 工作区）需要它；嵌入模式可以不给。
@@ -168,6 +171,7 @@ impl ServiceOptions {
             plugins: None,
             review: None,
             custody: None,
+            prune: None,
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
@@ -1292,6 +1296,8 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     options.review = build_review_options(&llm, env);
     // 提问托管：与 TUI 同源（`[decision_models.features] ask_user_custody`）。
     options.custody = Some(omnicrawl_host::tools::custody_options_from_config(env));
+    // 工具调用淘汰：与 TUI 同源（`[decision_models.features] tool_call_prune`）。
+    options.prune = Some(omnicrawl_host::tools::prune_options_from_config(env));
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
@@ -1355,6 +1361,8 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         review: options.review.clone(),
         // 提问托管同源：与审查一样走决策渠道，失败一律退回人工提问。
         custody: options.custody.clone(),
+        // 工具调用淘汰同源：与审查一样走决策渠道，失败一律保留原文。
+        prune: options.prune.clone(),
         // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。
         prompt: options.prompt.clone(),
     }
@@ -2027,6 +2035,8 @@ impl AgentService {
             protocol: non_empty(&llm.protocol),
             base_url: non_empty(&llm.base_url),
             api_key_env: non_empty(&llm.api_key_env),
+            // 淘汰能力不是模型配置的一部分：它是宿主运行期的开关，由 `rebuild_prune` 单独下发。
+            ..SessionModelSettings::default()
         };
         // 窗口变了要同步触发阈值：「窗口的百分之几时压缩」是一个配置关系，
         // 只改窗口会留下「新窗口 + 旧阈值」的自相矛盾组合（TUI 侧同样成对下发）。

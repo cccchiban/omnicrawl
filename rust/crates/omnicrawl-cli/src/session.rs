@@ -32,6 +32,9 @@ use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
 use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
 };
+use omnicrawl_controllers::turn::tool_prune::{
+    evicted_event_payload, PruneCandidate, EVICTED_EVENT_TYPE,
+};
 use omnicrawl_controllers::turn::{is_continue_last_task_request, resolve_continue_request};
 use omnicrawl_core::{
     AgentLoopLimits, AgentLoopObservation, AgentLoopResult, AgentLoopRunner, AgentModelReply,
@@ -39,13 +42,14 @@ use omnicrawl_core::{
 };
 use omnicrawl_ipc::bridge::{
     initialize_result, method, unsupported_version_error, BridgeError, Command,
-    ContextCompactionPayload, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig,
-    MessagePayload, ModelHookRequest, ModelHookResult, ModelRequest, ModelRequestErrorPayload,
+    ContextCompactionPayload, ContextPruneGroup, ContextPruneRequest, ContextPruneResult,
+    HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
+    ModelHookRequest, ModelHookResult, ModelRequest, ModelRequestErrorPayload,
     ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
-    SessionRenameParams, SessionResumeParams, SessionSettingsParams, SubagentEventPayload,
-    SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch,
-    ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload,
-    TurnCancelParams, TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
+    SessionRenameParams, SessionResumeParams, SessionSettingsParams, SessionModelSettings,
+    SubagentEventPayload, SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload,
+    ToolBatch, ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload, TurnCancelParams,
+    TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
@@ -86,7 +90,8 @@ use omnicrawl_controllers::subagents::worktrees::{
 };
 use omnicrawl_controllers::context_compaction::SourceEvent;
 use omnicrawl_session::{
-    tool_result_message, user_message_with_images, utc_now, SessionListQuery, SessionStore,
+    evict_tool_call_messages, tool_result_message, user_message_with_images, utc_now,
+    SessionListQuery, SessionStore,
 };
 
 use crate::compression::KernelCompressor;
@@ -193,6 +198,8 @@ struct Conn {
     session: Option<KernelSession>,
     /// 宿主是否支持插件模型 Hook：声明后才发 `model.hook` 请求（否则不阻住回合）。
     plugin_model_hooks: bool,
+    /// 宿主是否支持工具调用淘汰裁决：声明后才发 `context.prune`（否则不阻住回合）。
+    tool_call_prune: bool,
     /// 本回合模型请求的用量累计与最近一次请求消息（压缩判定与前缀复用都要用）。
     usage: Rc<RefCell<TurnUsage>>,
     /// 后台任务借用连接的端口；接收端也在这里，服务方始终是当前正在跑的那条线程。
@@ -269,12 +276,34 @@ impl Conn {
     }
 
     /// 应用一次 `session.settings`：模型配置与会话压缩配置，对后续回合生效。
+    ///
+    /// `tool_call_prune` 不在模型配置里：它是宿主运行期的能力开关，因此单独落到
+    /// [`Conn::tool_call_prune`]（设置面板改开关后即时生效，不必重起内核）。
     fn apply_settings(
         &mut self,
         params: &SessionSettingsParams,
     ) -> Result<Vec<String>, crate::settings::SettingsRejection> {
-        let config = self.session.as_mut().map(|session| &mut session.config);
-        crate::settings::apply(&mut self.model, config, params)
+        let prune = params
+            .model
+            .as_deref()
+            .and_then(|settings| settings.tool_call_prune);
+        // 只有这一项时按「能力更新」处理：它不属于模型配置，不能因为没有模型配置而被拒。
+        let model_only_prune = prune.is_some()
+            && params
+                .model
+                .as_deref()
+                .is_some_and(|settings| settings_without_prune_is_empty(settings));
+        let mut applied = if model_only_prune {
+            Vec::new()
+        } else {
+            let config = self.session.as_mut().map(|session| &mut session.config);
+            crate::settings::apply(&mut self.model, config, params)?
+        };
+        if let Some(enabled) = prune {
+            self.tool_call_prune = enabled;
+            applied.push("model.tool_call_prune".to_string());
+        }
+        Ok(applied)
     }
 
     /// 退出前的会话收尾：补写 `session_closed` 并丢弃空占位。
@@ -424,6 +453,7 @@ impl Conn {
                     self.model = Some(*config);
                 }
                 self.plugin_model_hooks = plugin_model_hooks_of(frame.params.as_ref());
+                self.tool_call_prune = tool_call_prune_of(frame.params.as_ref());
                 if let Some(settings) = session_config_of(frame.params.as_ref()) {
                     match KernelSession::open(*settings) {
                         Ok(opened) => self.session = Some(opened),
@@ -1095,6 +1125,24 @@ fn plugin_model_hooks_of(params: Option<&Value>) -> bool {
         .unwrap_or(false)
 }
 
+/// 从 `initialize` 参数里取「宿主支持工具调用淘汰裁决」的能力声明；缺省 false。
+fn tool_call_prune_of(params: Option<&Value>) -> bool {
+    params
+        .and_then(|value| value.get("tool_call_prune"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// 这份模型设置除了 `tool_call_prune` 之外是否没有任何字段（纯能力更新）。
+///
+/// 纯能力更新不该走模型配置的校验：它不碰模型，也就不能在「内核没有模型配置」时被拒
+/// （报告模式的嵌入宿主同样要能改这个开关）。
+fn settings_without_prune_is_empty(settings: &SessionModelSettings) -> bool {
+    let mut rest = settings.clone();
+    rest.tool_call_prune = None;
+    rest == SessionModelSettings::default()
+}
+
 /// 从 `initialize` 参数里取模型配置；给了就给，缺字段或形状不对按「没给」处理。
 fn model_config_of(params: Option<&Value>) -> Option<Box<KernelModelConfig>> {
     let value = params?.get("model")?;
@@ -1104,6 +1152,22 @@ fn model_config_of(params: Option<&Value>) -> Option<Box<KernelModelConfig>> {
     serde_json::from_value::<KernelModelConfig>(value.clone())
         .ok()
         .map(Box::new)
+}
+
+/// 一次已执行的调用 → 淘汰裁决的送审形状。
+///
+/// 参数走公开投影（`public_tool_arguments`，与事件落盘同一份）：进决策请求的正文因此不含
+/// shell 全文与密钥原文；结果取**模型可见输出**（`ToolResult::output`，与回填模型的文本同源）。
+fn prune_candidate_of(observation: &AgentLoopObservation) -> PruneCandidate {
+    let tool = observation.tool_call.name.as_str();
+    let arguments = public_tool_arguments(tool, &observation.tool_call.arguments);
+    PruneCandidate::bounded(
+        observation.tool_call.id.clone(),
+        tool,
+        omnicrawl_controllers::json::python_dumps_compact(&arguments),
+        observation.result.ok,
+        &observation.result.output,
+    )
 }
 
 /// 工具端口：整批交给宿主执行，按调用顺序取回观察。
@@ -1122,9 +1186,75 @@ struct RemoteTools {
     /// 格子里是本批的 assistant 原文。**`None` 表示这批不落事件**——后台子任务批次走的就是
     /// 这条路，对应 Python 子代理循环里的 `persist_session_events=False`。
     active_assistant: Option<ActiveAssistantSlot>,
+    /// 本回合任务文本：淘汰裁决用它判断「这次调用的结果还有没有用」。
+    task_hint: String,
+    /// **上一批**调用（刚变老的那批）的送审形状；本批开始时若判为无用就整组移出上下文。
+    ///
+    /// 只保存最近一批：淘汰点因此始终贴着尾部，最新一批（还在被使用）从不被淘汰。
+    previous_batch: Vec<PruneCandidate>,
 }
 
 impl ToolBatchHost for RemoteTools {
+    /// 执行本批之前：把**上一批**（刚变老的那批）交宿主裁决，判为无用的整组移出上下文。
+    ///
+    /// 钩子点由回合循环给（新的 assistant 工具消息入列之后、本批执行之前），因此：
+    /// * 淘汰只动上下文尾部，前面已发过的前缀逐字不变（前缀缓存不失效）；
+    /// * 最新一批（本批，还没执行）永不送审——它正是被后续步骤使用的「小登」；
+    /// * 一组的粒度是「一次调用」：调用项与其 `tool` 结果一起走，协议不会留下半截。
+    ///
+    /// 宿主未声明能力、上一批为空、裁决不可用（开关关、无渠道、失败、不可解析）都原样保留。
+    fn before_tool_batch(&mut self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
+        if self.previous_batch.is_empty() {
+            return Ok(());
+        }
+        let groups = std::mem::take(&mut self.previous_batch);
+        let supported = self.conn.borrow().tool_call_prune;
+        if !supported {
+            return Ok(());
+        }
+        let request = ContextPruneRequest {
+            task: self.task_hint.clone(),
+            groups: groups
+                .iter()
+                .map(|group| ContextPruneGroup {
+                    call_id: group.call_id.clone(),
+                    tool: group.tool.clone(),
+                    arguments: group.arguments.clone(),
+                    ok: group.ok,
+                    output: group.output.clone(),
+                })
+                .collect(),
+        };
+        let params = serde_json::to_value(&request)
+            .expect("context.prune 负载是serde_json::Value字段，必须可序列化");
+        let value = self
+            .conn
+            .borrow_mut()
+            .request(method::CONTEXT_PRUNE, params)
+            .map_err(PortFailure::into_tool_error)?;
+        let result = ContextPruneResult::from_result(&value)
+            .map_err(|error| LoopError::ToolBatch(format!("context.prune 响应无法解析：{error}")))?;
+        if result.evicted_call_ids.is_empty() {
+            return Ok(());
+        }
+        // 淘汰是历史事实：先落事件，再把同一份 ID 用于本回合的实时上下文——
+        // 投影据此在重启（`/resume`）后重建出同一份被淘汰的上下文。
+        let payload = evicted_event_payload(&result.evicted_call_ids, &groups);
+        if let Some(session) = self.conn.borrow().session.as_ref() {
+            if let Err(detail) = session.append(EVICTED_EVENT_TYPE, payload) {
+                eprintln!("[kernel] 会话写入工具调用淘汰失败：{detail}");
+            }
+        }
+        let removed = evict_tool_call_messages(messages, &result.evicted_call_ids);
+        eprintln!(
+            "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息（保留 {} 组原文）。",
+            result.evicted_call_ids.len(),
+            removed,
+            groups.len() - result.evicted_call_ids.len()
+        );
+        Ok(())
+    }
+
     fn execute_tool_batch(
         &mut self,
         calls: &[ToolCall],
@@ -1287,6 +1417,12 @@ impl ToolBatchHost for RemoteTools {
                     &session.session_id,
                 );
             }
+        }
+        // 本批执行完就记成「上一批」：下一次 `before_tool_batch` 时它正是刚变老的那批，
+        // 送审裁决就在那里发生（本批此刻还是「小登」，从不被淘汰）。
+        // 只有落事件的批次参与：子代理批次的调用不进父会话，也不该按父会话的历史淘汰。
+        if persist_events {
+            self.previous_batch = ordered.iter().map(prune_candidate_of).collect();
         }
         Ok(ordered)
     }
@@ -2380,6 +2516,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         undo: Some(Rc::clone(&undo)),
         todos: Some(Rc::clone(&active_todos)),
         active_assistant: Some(active_assistant),
+        task_hint: model_text.clone(),
+        previous_batch: Vec::new(),
     };
     let build_cancel_check = || {
         let cancel_source = Rc::clone(conn);
@@ -3116,12 +3254,14 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             model,
             session,
             plugin_model_hooks,
+            tool_call_prune,
             ..
         }) => {
             if let Some(config) = model {
                 conn.borrow_mut().model = Some(*config);
             }
             conn.borrow_mut().plugin_model_hooks = plugin_model_hooks;
+            conn.borrow_mut().tool_call_prune = tool_call_prune;
             if let Some(settings) = session {
                 match KernelSession::open(*settings) {
                     Ok(opened) => {
@@ -3875,6 +4015,7 @@ pub fn run_stdio() -> Result<(), String> {
         model: None,
         session: None,
         plugin_model_hooks: false,
+        tool_call_prune: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
         background: background_sender,
         background_receiver,
@@ -4006,6 +4147,9 @@ fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
                 // 子代理的工具调用不落父会话：Python 在子代理循环里传
                 // `persist_session_events=False`。
                 active_assistant: None,
+                // 后台批次不参与淘汰：它的调用不进父会话，也不该按父会话的历史裁决。
+                task_hint: String::new(),
+                previous_batch: Vec::new(),
             };
             let outcome = tools
                 .execute_tool_batch(&calls, 0)

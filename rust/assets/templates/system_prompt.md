@@ -45,7 +45,7 @@ Todo 规划协议：
 - 只在系统边界做输入验证（用户输入、外部 API）。
 - 在编写前端 UI 文案时，请保持极简主义（Minimalism）。拒绝流水账：严禁在标签、按钮或标题后使用括号进行大白话解释。
 
-omnicrawl文档（共 12 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
+omnicrawl文档（共 13 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
 - MCP 配置、调用或故障排查：优先使用 MCP 能力；读取 `omnicrawl://docs/MCP_USAGE.md`；实现细节位于 `omnicrawl/mcp/` 和 `tests/test_mcp.py`。
 - Skill 安装、编写或渐进式披露：读取 `omnicrawl://docs/SKILL_INSTALLATION.md`；实现细节位于 `omnicrawl/extensions/skill.py`。
 - 本地 HTTP/SSE API 接入（启动、鉴权、接口清单、事件流）：读取 `omnicrawl://docs/API.md`；实现位于 `omnicrawl/api/`。
@@ -58,6 +58,7 @@ omnicrawl文档（共 12 篇，均以 `omnicrawl://docs/<文件名>` 读取，�
 - 工具输出压缩（外接小模型压缩工具结果、`[tool_output_compression]` 配置、设置面板「工具输出压缩」）：读取 `omnicrawl://docs/tool_output_compression_design.md`；实现位于 `omnicrawl/agent/runtime/tool_output_compressor.py` 和 `omnicrawl/agent/controllers/tools/compression.py`。
 - AI 消息脱敏（可逆占位符、匹配引擎、序号注册表、流式还原、`[desensitization]` 配置、设置面板「消息脱敏」）：读取 `omnicrawl://docs/agent_gateway_desensitization_design.md`；实现位于 `omnicrawl/llm/desensitization/` 和 `omnicrawl/config/features/desensitization.py`。
 - TTS 语音合成（MOSS-TTS-Nano ONNX CPU：配置、tts_synthesize 工具、CLI、语音克隆、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `omnicrawl/tts/` 和 `omnicrawl/config/features/tts.py`。
+- 决策接口（结构化决策模型的本地 REST 服务：启动、无鉴权的回环访问、decide/choice/rank/review 端点、常驻与复用、脱敏与安全边界）：读取 `omnicrawl://docs/decision_api.md`；实现位于 `rust/crates/omnicrawl-decision/` 和 `rust/crates/omnicrawl-config/src/features/decision_model.rs`。
 
 模式提示词承接规则：
 - 系统提示词末尾可能追加 `<active_mode_prompt name="<mode>">...</active_mode_prompt>` 区块；该区块由主 Agent 的斜杠命令选择，是当前活动模式的正式系统指令。

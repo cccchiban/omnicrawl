@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
-    Command, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
-    ModelHookRequest, ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload,
-    ToolBatch, ToolEventPayload, ToolStartedPayload,
+    Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult, HostEvent,
+    InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelHookRequest,
+    ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch,
+    ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
     error_code, Frame, Id, ToolBatchResult, TurnCancelParams, TurnSubmitParams, PROTOCOL_VERSION,
@@ -33,6 +34,7 @@ use crate::prompt::PromptRuntime;
 use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
+use crate::tools::decision_prune::{evicted_call_ids_for, PruneOptions};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
@@ -66,6 +68,10 @@ pub struct RunnerOptions {
     /// 提问托管（`decision_models.toml` 的 `ask_user_custody` 开关）：开启后**有选项**的提问
     /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
     pub custody: Option<CustodyOptions>,
+    /// 工具调用淘汰（`decision_models.toml` 的 `tool_call_prune` 开关）：开启后内核会把「刚变老
+    /// 的那一批」调用交回来裁决，判为无用的整组移出上下文；`None` 或不可用时一律保留原文
+    /// （fail-open）。
+    pub prune: Option<PruneOptions>,
     /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
     ///
     /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
@@ -249,6 +255,14 @@ impl TurnRunner {
             session: self.options.session.clone().map(Box::new),
             // 有插件运行期就声明能力：内核才会在模型请求前发 `model.hook`。
             plugin_model_hooks: self.options.plugins.is_some(),
+            // 淘汰运行期只有在装配出配置时才声明：未声明时内核永不发 `context.prune`，
+            // 也就不会为一次无效裁决阻住回合。
+            tool_call_prune: self
+                .options
+                .prune
+                .as_ref()
+                .map(|prune| prune.enabled)
+                .unwrap_or(false),
         };
         let id = self.kernel.next_id();
         self.kernel
@@ -648,6 +662,23 @@ impl TurnRunner {
                     }
                 }
             }
+            Some(method) if method == omnicrawl_ipc::bridge::method::CONTEXT_PRUNE => {
+                match ContextPruneRequest::from_frame(&frame) {
+                    Ok(request) => {
+                        let result = self.run_context_prune(request);
+                        if let Err(error) = self.kernel.respond(&id, result.to_result()) {
+                            eprintln!("[host] 回 context.prune 失败：{error}");
+                        }
+                    }
+                    Err(error) => {
+                        let _ = self.kernel.respond_error(
+                            &id,
+                            error_code::INVALID_PARAMS,
+                            &format!("context.prune 负载不符：{error}"),
+                        );
+                    }
+                }
+            }
             // 内核自带 provider runtime，`model.reply` 代答路径不再需要。
             Some(method) => {
                 let _ = self.kernel.respond_unsupported(&id, method);
@@ -678,6 +709,38 @@ impl TurnRunner {
             .model_request_before(&mut messages, &model, session_id.as_deref())
             .map_err(|error| error.message().to_string())?;
         Ok(ModelHookResult { messages })
+    }
+
+    /// `context.prune`：把内核送来的「刚变老」那批调用交决策模型裁决，回可以移除的调用 ID。
+    ///
+    /// 可用性判据在 [`evicted_call_ids_for`]：开关关闭、没有可用渠道、缺凭据、请求失败、
+    /// 响应不可解析都返回 `None`，这里回**空列表**（等于「都留着」）——淘汰是 fail-open 的
+    /// 省上下文手段，不值得让回合失败，也绝不能在裁决不可用时误删内容。
+    fn run_context_prune(&mut self, request: ContextPruneRequest) -> ContextPruneResult {
+        let groups = request
+            .groups
+            .iter()
+            .map(|group| {
+                omnicrawl_controllers::turn::tool_prune::PruneCandidate::bounded(
+                    group.call_id.clone(),
+                    group.tool.clone(),
+                    group.arguments.clone(),
+                    group.ok,
+                    group.output.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        // 任务背景取本轮提交的原文（与审查的意图摘要同一份事实，见 `review_context`）。
+        let task = self.review_context.user_intent_summary.clone();
+        let evicted = self
+            .options
+            .prune
+            .as_ref()
+            .and_then(|prune| evicted_call_ids_for(prune, &task, &groups))
+            .unwrap_or_default();
+        ContextPruneResult {
+            evicted_call_ids: evicted,
+        }
     }
 
     /// 跑完一整批工具：先把整批定调（自持工具就地办、敏感工具逐个问），再并发执行，最后回观察。
