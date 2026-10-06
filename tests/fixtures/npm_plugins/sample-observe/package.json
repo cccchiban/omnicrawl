@@ -17,7 +17,7 @@
       {
         "id": "on-turn-end",
         "hook": "turn.end",
-        "mode": "observe"
+        "mode": "notify"
       }
     ]
   }

@@ -191,7 +191,10 @@ fn entry_from_dict_matches_python() {
     }
 }
 
+// 结果里的项目路径是 Windows 形态（`<ROOT>\proj`），被测实现按 win32 分支做字符串化：
+// POSIX 主机上必然形态不符。这条对照只在 Windows 主机上有意义。
 #[test]
+#[cfg(windows)]
 fn store_traces_match_python() {
     let fixture = fixture();
     let env = env();
