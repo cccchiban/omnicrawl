@@ -43,7 +43,7 @@ R  README.md  |  第 1-120 行  ✓ 成功  120ms
 
 OpenAI GPT 的 Chat Completions 与 Responses Runtime 都从稳定的系统提示、项目规范、Skill 和工具 schema 身份生成 `prompt_cache_key`；当前网关若不接受该参数，会自动去掉后重试一次。`CA` 来自 Provider 返回的缓存输入 Token，是 `IN` 的子集，不应与 `IN` 相加；顶部 `CH%` 即缓存率 = `CA ÷ IN`（缓存命中输入占本次总输入的比例），与上下文窗口大小无关。
 
-Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是输出 Token，`CA` 是缓存命中的输入 Token，`CTX` 使用 `IN / llm.context_window_tokens` 表示当前上下文占用。`CH%` 为缓存率（`CA / IN`，无输入时为 0，异常数据封顶 100%）。`tok/s` 位于 `MCP` 之前，是会话累计的统计平均速率：总输出 Token ÷ 总输出时长，token 来自流式思考与正文增量的字符估算（CJK 字符按 1 token、其他字符按 4 字符 1 token），时长只累计相邻增量间隔内的连续输出，间隔超过 2 秒视为待机（工具执行、模型停顿、回合间隙）不计时，因此数值反映实际平均输出速度而非瞬时值；每 0.5 秒刷新一次，生成期间显示一位小数值，输出停止或回合结束后平均值保留不归零，尚无任何输出记录时显示 `--`；模型流中断回滚重试时会撤销本次回合已累计的量后重新计算。占用条和百分比随动态数值统一使用终端默认前景色，不以颜色编码阈值。终端自适应令牌统一定义在 `omnicrawl/ui/fullscreen/theme.py`：Textual CSS 使用 `ansi_default`/`ansi_*`，Rich 文本使用 `default` 与标准 ANSI 色名。
+Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是输出 Token，`CA` 是缓存命中的输入 Token，`CTX` 使用 `IN / llm.context_window_tokens` 表示当前上下文占用。`CH%` 为缓存率（`CA / IN`，无输入时为 0，异常数据封顶 100%）。`tok/s` 位于 `MCP` 之前，是会话累计的统计平均速率：总输出 Token ÷ 总输出时长，token 来自流式思考与正文增量的字符估算（CJK 字符按 1 token、其他字符按 4 字符 1 token），时长只累计相邻增量间隔内的连续输出，间隔超过 2 秒视为待机（工具执行、模型停顿、回合间隙）不计时，因此数值反映实际平均输出速度而非瞬时值；每 0.5 秒刷新一次，生成期间显示一位小数值，输出停止或回合结束后平均值保留不归零，尚无任何输出记录时显示 `--`；模型流中断回滚重试时会撤销本次回合已累计的量后重新计算。占用条和百分比随动态数值统一使用终端默认前景色，不以颜色编码阈值。终端自适应令牌统一定义在 `rust/crates/omnicrawl-tui/src/ui/`：Textual CSS 使用 `ansi_default`/`ansi_*`，Rich 文本使用 `default` 与标准 ANSI 色名。
 
 启动准备完成后即进入可发送的 TUI；MCP 能力发现由后台线程继续执行（不阻塞 splash 与首屏），首个回合在模型请求前会等待发现完成后再重建工具表，避免工具缺失或重复触发能力加载。发现只向服务器请求它在 initialize 响应中声明支持的能力，未声明的能力（如仅支持 tools 的远程服务器不提供 resources/prompts）不再各付一次往返。加载失败时诊断写入 MCP 状态（`/mcp` 可查）与运行日志，不阻止后续使用内置工具。
 
@@ -62,7 +62,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 
 ## 文件边界
 
-- `omnicrawl/ui/fullscreen/`：Textual 应用、全屏布局、流式事件桥接和人工确认模态框。业务逻辑按职责拆入子包，`__init__.py` 只做再导出（`OmniCrawlApp`、`run_fullscreen_tui` 与斜杠命令处理器是既有测试/扩展的导入契约，仅保证可按名导入；子包内部静态导入，monkeypatch 门面名称不再生效）。
+- `rust/crates/omnicrawl-tui/src/ui/`：Textual 应用、全屏布局、流式事件桥接和人工确认模态框。业务逻辑按职责拆入子包，`__init__.py` 只做再导出（`OmniCrawlApp`、`run_fullscreen_tui` 与斜杠命令处理器是既有测试/扩展的导入契约，仅保证可按名导入；子包内部静态导入，monkeypatch 门面名称不再生效）。
   - `app/`：装配与进程入口——`core.py`（`OmniCrawlApp` 组合类、CSS/BINDINGS/常量/状态）、`runner.py`（`run_fullscreen_tui`）、`startup.py`（启动参数）。
   - `turn/`：回合执行——`execution.py`（回合循环与取消）、`announcer.py`（TTS 朗读器线程）。
   - `support/`：无 Textual 支持层——`turns.py`（Agent 回合控制器）、`commands.py`（斜杠命令分派）、`monitor.py`（Monitor 游标/轮询适配）。
@@ -73,7 +73,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
   - `conversation/`：会话视图——`view.py`（消息窗口/清空/历史重放）。
   - `input/`：输入区——`composer.py`、`editing.py`、`menu.py`、`sessions_menu.py`。
 - `main.py`：默认创建 Agent 后直接启动全屏工作台。
-- `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`、`inline_input.py`：旧纯 Python ANSI TUI 已删除，不再提供；纯文本兼容导出仅保留 `omnicrawl.ui.UIStartupError`。
+- `rust/crates/omnicrawl-tui/src/`、`stream_turn.py`、`chat_session.py`、`inline_input.py`：旧纯 Python ANSI TUI 已删除，不再提供；纯文本兼容导出仅保留 `omnicrawl.ui.UIStartupError`。
 - 测试：`tests/test_fullscreen_*.py`（turns/scroll_anchor/tool_diff/monitor/carousel/pending_queue/runtime_status/visibility_regression 等）与 `tests/test_fsapp_*.py`、`tests/test_settings_*.py`：全屏工作台与设置面板边界回归。
 - `omnicrawl/docs/TERMINAL_UI.md`：本文档。
 - `rust/crates/omnicrawl-tui/`：Rust 全屏工作台（协议 v1 宿主前端）的分阶段替代实现，边界见该 crate 的 README；Python 侧本目录仍是当前在服役的实现。

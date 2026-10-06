@@ -2,7 +2,7 @@
 
 用法（构建脚本与 setuptools 的 build_ext 都会调用）：
 
-    python native/build.py --out omnicrawl/_ocsearch.pyd
+    python native/build.py --out native/_ocsearch.pyd
 
 需要本机具备 Go 工具链与 C 编译器（cgo 要求 gcc/clang，Windows 上是 MinGW-w64，
 MSVC 的 cl.exe 不被 cgo 支持）。构建失败时以非零退出码返回，由调用方决定是
@@ -23,7 +23,7 @@ from pathlib import Path
 # 原生搜索核心的源码目录（本文件所在目录）。
 NATIVE_DIR = Path(__file__).resolve().parent
 
-# 扩展模块名：Python 侧 `from omnicrawl import _ocsearch` 依赖它。
+# 扩展模块名：CPython 侧按这个名字加载（`PyInit__ocsearch`）。
 MODULE_NAME = "_ocsearch"
 
 # cgo 需要 gcc/clang（不支持 MSVC 的 cl.exe）。Windows 上常见的安装位置不一定
@@ -156,7 +156,7 @@ def main() -> int:
     parser.add_argument(
         "--out",
         required=True,
-        help="扩展产物路径，通常为 omnicrawl/_ocsearch.pyd（或 .so）",
+        help="扩展产物路径，通常为 native/_ocsearch.pyd（或 .so）",
     )
     parser.add_argument("--quiet", action="store_true", help="只输出错误信息")
     arguments = parser.parse_args()

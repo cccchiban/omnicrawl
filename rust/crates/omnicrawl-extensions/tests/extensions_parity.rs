@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/extensions/` 真实现的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_extensions_fixture.py` 生成：同一批输入喂给真实现，
+//! 数据集是冻结的对照契约：同一批输入喂给真实现，
 //! 这里用同一份输入重放 Rust 实现并逐字段比对。改了任一侧都要重跑生成脚本。
 
 use omnicrawl_extensions::install;

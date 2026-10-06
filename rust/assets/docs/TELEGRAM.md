@@ -1,6 +1,6 @@
 # Telegram 远程接入（Bot）说明
 
-OmniCrawl 通过 `omnicrawl/connectors/telegram.py` 提供 **Telegram Bot 远程接入**：
+OmniCrawl 通过 `rust/crates/omnicrawl-connectors/src/telegram/` 提供 **Telegram Bot 远程接入**：
 用户创建自己的 Bot 后，可在手机/任意设备上的 Telegram 中远程操作当前工作区的
 OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状态、管理会话、切换工作区、
 接收文件并交给 Agent 处理。
@@ -169,9 +169,9 @@ Agent 处理；消息 `caption` 作为补充说明一并附带（例如发截图
 
 ## 文件边界
 
-- `omnicrawl/connectors/telegram.py`：Bot 轮询服务、命令分发、任务执行、工具确认桥。
-- `omnicrawl/connectors/__init__.py`、`README.md`：包说明与使用约定。
-- `omnicrawl/config/workspace.py`：`[workspace] root` 持久化（跨端工作区同步）。
+- `rust/crates/omnicrawl-connectors/src/telegram/`：Bot 轮询服务、命令分发、任务执行、工具确认桥。
+- `rust/crates/omnicrawl-connectors/src/lib.rs`、`README.md`：包说明与使用约定。
+- `rust/crates/omnicrawl-config/src/features/agent_workspace.rs`：`[workspace] root` 持久化（跨端工作区同步）。
 - `tests/test_telegram_connector.py`：回归测试（mock Telegram API 与 Agent，无网络）。
 - `omnicrawl/docs/TELEGRAM.md`：本文档。
 
@@ -181,7 +181,7 @@ Agent 处理；消息 `caption` 作为补充说明一并附带（例如发截图
 
 ```powershell
 python -m pytest tests/test_telegram_connector.py tests/test_api_module_boundaries.py -q
-python -m compileall -q omnicrawl/connectors/telegram.py
+python -m compileall -q rust/crates/omnicrawl-connectors/src/telegram/
 ```
 
 手工冒烟：给自己 Bot 发 `/status` 应返回状态文本；发普通文本应启动任务并流式回发；

@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/cli.py` 参数面的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_plugin_cli_fixture.py` 生成：同一批 argv 喂给
+//! 数据集是冻结的对照契约：同一批 argv 喂给
 //! `build_parser().parse_args()`，记录解析出的 namespace 或 argparse 的退出码；同一批 argv
 //! 再喂给 `_resolve_scope`，记录三种工作区形态下的作用域结论。改了任一侧都要重跑生成脚本。
 //!

@@ -22,6 +22,7 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::decision_model::{
     load_decision_model_configuration, load_decision_switches, DecisionChannelConfig,
 };
+use omnicrawl_core::diagnostics;
 use serde_json::{json, Map, Value};
 
 use crate::review::{masking_from_config, ReviewMasking};
@@ -222,7 +223,7 @@ pub fn reranked_order(
                 per_batch.push(ranked);
             }
             Err(error) => {
-                eprintln!("[host] 检索重排不可用，改用本地排序：{error}");
+                diagnostics::warn(format!("[host] 检索重排不可用，改用本地排序：{error}"));
                 failed += 1;
             }
         }

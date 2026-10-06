@@ -1,6 +1,6 @@
 //! `omnicrawl/agent/controllers/` 的跨语言对照（parity）。
 //!
-//! 期望值来自 Python 真实现：改动任一侧后先跑
+//! 数据集是冻结的对照契约：改动任一侧后先跑
 //! `python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json`，再跑本套件用同一份输入重放并逐字段比对。
 //!

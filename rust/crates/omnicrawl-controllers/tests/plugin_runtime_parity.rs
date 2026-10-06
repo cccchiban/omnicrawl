@@ -1,6 +1,6 @@
 //! `controllers/plugins.py` 运行期编排的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `plugin_runtime` 段——探针用不同形状的
 //! PluginManager 真跑冻结、回合钩子与会话生命周期钩子。本套件用同一批输入重放 Rust 的
 //! 决策，逐项比对（含「标准上下文原样采用、普通对象才归一化」这条差别）。

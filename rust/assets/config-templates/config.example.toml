@@ -168,7 +168,7 @@ failure_fallback = "deterministic"
 # AI 消息可逆脱敏（opt-in，默认关闭）：把发往模型的消息副本中命中的敏感值
 # 替换为 ｛Desensitized:n｝ 占位符，模型返回后按序号还原；原文不出本机。
 # 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计文档见
-# omnicrawl/docs/agent_gateway_desensitization_design.md。
+# omnicrawl://docs/agent_gateway_desensitization_design.md。
 # 说明：熵检测兜底（entropy_*）为 P2 增强，键位已保留。
 # [desensitization]
 # enabled = false                # 显式启用后才生效；未启用零成本
@@ -192,7 +192,7 @@ failure_fallback = "deterministic"
 # detect_url = false                    # 网址（http / https / ftp）
 # detect_mac_address = true             # MAC 地址
 # detect_license_plate = true           # 中国大陆车牌
-# gitleaks 开源规则：默认加载内置离线快照（omnicrawl/llm/desensitization/gitleaks.toml）；
+# gitleaks 开源规则：默认加载内置离线快照（rust/crates/omnicrawl-llm/data/gitleaks.toml）；
 # gitleaks_config_path 指向自定义文件时按规则 id 覆盖 / 追加（失败回退内置快照）。
 # NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）：结构 / 规则 / 熵之外的最后一道语义
 # 兜底，输入是前几层处理后的文本且只对中文片段兜底（非中文字符已等长隔离）；

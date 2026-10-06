@@ -1,6 +1,6 @@
 //! `controllers/turn/loop.py` 回合文本判定与收尾消息的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `turn_text` 段（直接调 `TurnLoopMixin` 的
 //! 静态/实例方法）。本套件用同一批输入重放 Rust 实现，逐项比对文案与消息形状。
 

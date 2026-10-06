@@ -80,6 +80,10 @@ pub mod method {
     /// 内核请宿主裁决「刚变老的那一批」工具调用里哪些已无用、可以从上下文里移除。
     ///
     /// 只在宿主于 `initialize` 声明 `tool_call_prune` 时使用；未声明的宿主永远收不到。
+    ///
+    /// 宿主判为无用的调用**不会立刻离开上下文**：内核先把它当成一次「标注」落进转录
+    /// （`tool_call_evicted` 事件），本回合的上下文原样保留，到**回合收尾**才把所有标注
+    /// 一次性移出（先于工具调用概括与上下文压缩，见内核 `run_session_tail`）。
     pub const CONTEXT_PRUNE: &str = "context.prune";
     pub const TOOL_STARTED: &str = "tool.started";
     pub const TOOL_FINISHED: &str = "tool.finished";
@@ -1002,9 +1006,13 @@ impl ModelHookResult {
 /// 以同一份 `call_id` 回来，因此淘汰总是**整组**（请求 + 结果 + 拒绝）一起走。
 ///
 /// 最新一批调用（还在被使用的「小登」）从不进这里：淘汰点因此贴近上下文尾部。
+///
+/// 淘汰范围已由内核先收敛：记忆与知识库工具、`write_file` / `Edit_file` 与 `git`
+/// 永不进 `groups`（`omnicrawl_controllers::turn::tool_prune::prunable_tool`）；
+/// `read` / `grep` 参与送审（文件与检索结果重读重查即可拿回）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextPruneRequest {
-    /// 本轮任务文本：判定「还有没有用」的背景。
+    /// 用户本回合提交的请求原文：判定「还有没有用」的背景，宿主直接当决策请求的任务背景。
     #[serde(default)]
     pub task: String,
     /// 待裁决的调用组；顺序即宿主侧提问的组下标。
@@ -1050,6 +1058,9 @@ impl ContextPruneRequest {
 ///
 /// 空列表表示「这一批都还有用」。宿主裁决不可用时以**空列表**应答（而不是错误响应）：
 /// 淘汰是 fail-open 的省上下文手段，不值得让回合失败或让内核把不可用当成淘汰。
+///
+/// 这里的 ID 是内核要**标注**的调用，不是「已经移出」的调用：当回合上下文不动，
+/// 到回合收尾才统一剔除（宿主侧无需关心时机，只回 ID）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextPruneResult {
     #[serde(default)]

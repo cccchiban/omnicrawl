@@ -1,6 +1,6 @@
 //! 跨语言 parity：用 Python 真实现产出的期望值校验 Rust 流解析层。
 //!
-//! fixture 由 `rust/tools/gen_llm_stream_fixture.py` 生成，覆盖四组：参数完整性、
+//! fixture 是冻结的对照契约，覆盖四组：参数完整性、
 //! 工具调用分片归并、SSE 负载解码、SSE 负载流消费。
 
 use std::collections::{BTreeMap, BTreeSet};

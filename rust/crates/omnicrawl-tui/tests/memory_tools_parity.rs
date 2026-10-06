@@ -1,6 +1,6 @@
 //! 对照：Rust 记忆工具 vs Python 真实现。
 //!
-//! 数据集由 `python rust/tools/gen_memory_tools_fixture.py` 生成（期望值取自
+//! 数据集是冻结的对照契约（期望值取自
 //! `omnicrawl/agent/toolkit/memory_tools.py` 与 `omnicrawl/state/memory.py`）。
 //! 记忆 id 与时间戳由存储层各自生成，两侧不逐字相同——数据集与测试都把它们规范化成
 //! `{ID}` / `{TS}`：存储层的生成规则已由 `omnicrawl-session` 的 `memory_store` 对照覆盖，

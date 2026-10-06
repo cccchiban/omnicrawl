@@ -1,6 +1,6 @@
 //! `controllers/tools/implementations.py` 判定面的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `tool_impl` 段后，本套件用同一批入参
 //! 重放 Rust 的投影与解析，逐字段比对（含清单输出文本与提问信封的字节形状）。
 

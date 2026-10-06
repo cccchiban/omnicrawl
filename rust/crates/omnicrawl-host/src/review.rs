@@ -35,6 +35,7 @@ use omnicrawl_controllers::approval::{
     REVIEW_EMPTY_DETAIL, REVIEW_THINKING_ONLY_DETAIL, REVIEW_USER_SUMMARY_MAX_CHARS,
     TOOL_REVIEW_SYSTEM_PROMPT,
 };
+use omnicrawl_core::diagnostics;
 use omnicrawl_llm::desensitization::ner::NerLayerOptions;
 use omnicrawl_llm::desensitization::rules::{
     CATEGORY_BANK_CARD, CATEGORY_DB_CONNECTION_STRING, CATEGORY_EMAIL, CATEGORY_EXTERNAL_IP,
@@ -464,7 +465,7 @@ fn prepare_review_request(
                 if masking.fail_closed {
                     return Err(MASKING_FAIL_CLOSED_REASON.to_string());
                 }
-                eprintln!("[host] 审查请求脱敏不可用，按未启用处理：{error}");
+                diagnostics::warn(format!("[host] 审查请求脱敏不可用，按未启用处理：{error}"));
                 None
             }
         },
@@ -543,7 +544,7 @@ pub fn decision_review(
                 if fail_closed {
                     return Err(MASKING_FAIL_CLOSED_REASON.to_string());
                 }
-                eprintln!("[host] 审查请求脱敏不可用，按未启用处理：{error}");
+                diagnostics::warn(format!("[host] 审查请求脱敏不可用，按未启用处理：{error}"));
                 None
             }
         },

@@ -1,6 +1,6 @@
 //! 对照：Rust TTS 音频 I/O 与声线库 vs Python `omnicrawl/tts/{audio,custom_voices}.py`。
 //!
-//! 数据集由 `python rust/tools/gen_tts_io_fixture.py` 生成：WAV 样本以 Base64 内嵌，
+//! 数据集是冻结的对照契约：WAV 样本以 Base64 内嵌，
 //! 写入用例记录 Python 写出的完整文件字节。
 
 use std::path::{Path, PathBuf};

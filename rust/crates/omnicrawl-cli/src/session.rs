@@ -8,7 +8,7 @@
 //! 会立即中止当前端口调用，其余请求照常应答，不阻塞宿主。
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +33,7 @@ use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
 };
 use omnicrawl_controllers::turn::tool_prune::{
-    evicted_event_payload, PruneCandidate, EVICTED_EVENT_TYPE,
+    evicted_event_payload, prunable_tool, PruneCandidate, EVICTED_EVENT_TYPE,
 };
 use omnicrawl_controllers::turn::{is_continue_last_task_request, resolve_continue_request};
 use omnicrawl_core::{
@@ -202,6 +202,12 @@ struct Conn {
     tool_call_prune: bool,
     /// 本回合模型请求的用量累计与最近一次请求消息（压缩判定与前缀复用都要用）。
     usage: Rc<RefCell<TurnUsage>>,
+    /// 本轮「淘汰标注」账本：裁决判为无用的调用 ID。
+    ///
+    /// 与 `usage` 一样是**每回合清零**的运行期状态，不进转录：裁决当刻只落
+    /// `tool_call_evicted` 事件（=标注），真正的剔除留到回合收尾一次性做
+    /// （见 [`run_session_tail`]）——这就是用户要的「先标注-后压缩」。
+    evict_marks: Rc<RefCell<Vec<String>>>,
     /// 后台任务借用连接的端口；接收端也在这里，服务方始终是当前正在跑的那条线程。
     background: mpsc::Sender<BackgroundRequest>,
     background_receiver: mpsc::Receiver<BackgroundRequest>,
@@ -1195,15 +1201,19 @@ struct RemoteTools {
 }
 
 impl ToolBatchHost for RemoteTools {
-    /// 执行本批之前：把**上一批**（刚变老的那批）交宿主裁决，判为无用的整组移出上下文。
+    /// 执行本批之前：把**上一批**（刚变老的那批）交宿主裁决，判为无用的**标注**下来。
     ///
     /// 钩子点由回合循环给（新的 assistant 工具消息入列之后、本批执行之前），因此：
-    /// * 淘汰只动上下文尾部，前面已发过的前缀逐字不变（前缀缓存不失效）；
+    /// * 送审只盯上下文尾部，前面已发过的前缀逐字不变（前缀缓存不失效）；
     /// * 最新一批（本批，还没执行）永不送审——它正是被后续步骤使用的「小登」；
     /// * 一组的粒度是「一次调用」：调用项与其 `tool` 结果一起走，协议不会留下半截。
     ///
+    /// 处理方式（用户指定的「先标注-后压缩」）：裁决结果只当场**标注**（落到
+    /// [`EVICTED_EVENT_TYPE`] 事件与本轮账本），**不改写本回合的上下文**；整组剔除统一在
+    /// 回合收尾做（见 `run_session_tail`），且优先于其他工具调用压缩与上下文压缩。
+    ///
     /// 宿主未声明能力、上一批为空、裁决不可用（开关关、无渠道、失败、不可解析）都原样保留。
-    fn before_tool_batch(&mut self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
+    fn before_tool_batch(&mut self, _messages: &mut Vec<Value>) -> Result<(), LoopError> {
         if self.previous_batch.is_empty() {
             return Ok(());
         }
@@ -1237,19 +1247,28 @@ impl ToolBatchHost for RemoteTools {
         if result.evicted_call_ids.is_empty() {
             return Ok(());
         }
-        // 淘汰是历史事实：先落事件，再把同一份 ID 用于本回合的实时上下文——
-        // 投影据此在重启（`/resume`）后重建出同一份被淘汰的上下文。
+        // 「先标注-后压缩」：裁决当刻只落 `tool_call_evicted` 事件（=标注，转录与投影据此
+        // 记住这次判定，重启 `/resume` 后照样生效）并记进本轮账本，**不动本回合的上下文**。
+        // 真正的整组剔除留到回合收尾统一做（`run_session_tail`）——那里它先于其他工具调用
+        // 压缩与上下文压缩；被淘汰的原文因此不会再经由压缩摘要回流。
         let payload = evicted_event_payload(&result.evicted_call_ids, &groups);
         if let Some(session) = self.conn.borrow().session.as_ref() {
             if let Err(detail) = session.append(EVICTED_EVENT_TYPE, payload) {
                 eprintln!("[kernel] 会话写入工具调用淘汰失败：{detail}");
             }
         }
-        let removed = evict_tool_call_messages(messages, &result.evicted_call_ids);
+        {
+            let conn = self.conn.borrow();
+            let mut marks = conn.evict_marks.borrow_mut();
+            for call_id in &result.evicted_call_ids {
+                if !marks.contains(call_id) {
+                    marks.push(call_id.clone());
+                }
+            }
+        }
         eprintln!(
-            "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息（保留 {} 组原文）。",
+            "[kernel] 工具调用淘汰标注：{} 组待淘汰（保留 {} 组原文），回合收尾统一处理。",
             result.evicted_call_ids.len(),
-            removed,
             groups.len() - result.evicted_call_ids.len()
         );
         Ok(())
@@ -1422,7 +1441,14 @@ impl ToolBatchHost for RemoteTools {
         // 送审裁决就在那里发生（本批此刻还是「小登」，从不被淘汰）。
         // 只有落事件的批次参与：子代理批次的调用不进父会话，也不该按父会话的历史淘汰。
         if persist_events {
-            self.previous_batch = ordered.iter().map(prune_candidate_of).collect();
+            // 淘汰范围在这里定：记忆 / 知识库 / `read` / `grep` 永不进送审（`prunable_tool`）。
+            // 放在内核而不是宿主，是为了让这些原文根本不离开本进程——送审负载是出网内容，
+            // 「判了也大概率保留」的调用没必要先带出去再请宿主说保留。
+            self.previous_batch = ordered
+                .iter()
+                .filter(|observation| prunable_tool(&observation.tool_call.name))
+                .map(prune_candidate_of)
+                .collect();
         }
         Ok(ordered)
     }
@@ -2435,6 +2461,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     let user_images = params.images.clone();
     let usage = Rc::clone(&conn.borrow().usage);
     usage.borrow_mut().reset();
+    // 上一轮可能被取消/出错而没走到收尾：标注账本每回合清零，绝不跨回合累积。
+    conn.borrow().evict_marks.borrow_mut().clear();
     // 短「继续/重试」要还原成上一轮未完成的真实任务：待续文本与清单从会话推测（只有真是
     // 「继续」才读一次转录），之后的持久化与模型上下文都用还原后的文本——与 Python 的
     // `_resolve_continue_request` 同一时机（早于 user_message 落盘与请求组装）。
@@ -2652,7 +2680,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
                     conn,
                     &mut session,
                     &run_guard,
-                    &messages,
+                    &mut messages,
                     &final_text,
                     &user_text,
                     &turn_id,
@@ -2822,6 +2850,20 @@ fn recover_context_overflow(
 /// 概括落盘后**重建运行期历史**：投影会据此剔除被概括的逐条工具事件，下一轮请求带的是
 /// 概括文本而不是原始输出。少了这一步，事件只在转录里「看起来」被压缩了，模型仍然收到全文。
 /// 返回压缩后的上下文 Token 估算，供 `turn.finished` 刷新宿主遥测。
+/// 这条工具事件是否属于本轮被淘汰的那次调用。
+///
+/// `tool_call_requested` / `tool_result` / `tool_call_denied` 的载荷都带 `tool_call_id`；
+/// 没有 ID 的旧事件无从对应，按「未淘汰」处理——概括宁可多带一条，也不静默丢内容。
+fn evicted_tool_event(payload: &Value, evicted_calls: &BTreeSet<String>) -> bool {
+    if evicted_calls.is_empty() {
+        return false;
+    }
+    payload
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .is_some_and(|call_id| evicted_calls.contains(call_id))
+}
+
 fn summarize_turn_after_turn(
     conn: &Rc<RefCell<Conn>>,
     session: &mut KernelSession,
@@ -2845,6 +2887,10 @@ fn summarize_turn_after_turn(
             return None;
         }
     };
+    // 「淘汰优先于工具调用压缩」：本轮被标注淘汰的调用不进概括——它们已经离开上下文，
+    // 若照旧进概括，原文会顺着概括文本回流（`covered_event_ids` 也不再包含它们）。
+    let evicted_calls: BTreeSet<String> =
+        conn.borrow().evict_marks.borrow().iter().cloned().collect();
     let source: Vec<SourceEvent> = events
         .into_iter()
         .map(|event| SourceEvent {
@@ -2852,6 +2898,7 @@ fn summarize_turn_after_turn(
             event_type: event.event_type,
             payload: Value::Object(event.payload),
         })
+        .filter(|event| !evicted_tool_event(&event.payload, &evicted_calls))
         .collect();
     let request = TurnSummaryRequest {
         events: &source,
@@ -2898,7 +2945,7 @@ fn run_session_tail(
     conn: &Rc<RefCell<Conn>>,
     session: &mut KernelSession,
     run_guard: &TurnRunGuard,
-    working_messages: &[Value],
+    working_messages: &mut Vec<Value>,
     final_text: &str,
     task_hint: &str,
     turn_id: &str,
@@ -2932,6 +2979,26 @@ fn run_session_tail(
         }
     }
 
+    // 「先标注-后压缩」的收口：本轮裁决过的调用在这里一次性移出上下文。
+    //
+    // 位置就是优先级：本块在 `compact_after_turn`（上下文压缩）与 `summarize_turn_after_turn`
+    // （工具调用压缩）之前——先按标注把上下文瘦下来，再让两套压缩在瘦后的上下文上工作：
+    // * `working_messages` 正是压缩的判定与摘要输入，先剔除即压缩看到的是淘汰后的规模；
+    // * 重建运行期历史后，下一次请求看到的就是淘汰后的上下文；
+    // * 工具调用概括的输入事件在 `summarize_turn_after_turn` 里同步剔除这批 ID。
+    // 被淘汰的原文因此既不会被压缩摘要盖回去，也不会被概括再描述一遍。
+    let evict_marks = conn.borrow().evict_marks.borrow().clone();
+    if !evict_marks.is_empty() {
+        let removed = evict_tool_call_messages(working_messages, &evict_marks);
+        if let Err(detail) = session.reload_history() {
+            eprintln!("[kernel] 工具调用淘汰后重建运行期历史失败：{detail}");
+        }
+        eprintln!(
+            "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息（回合收尾统一处理）。",
+            evict_marks.len(),
+            removed
+        );
+    }
 
     let model = conn.borrow().model.clone();
     let Some(model) = model else {
@@ -2958,7 +3025,7 @@ fn run_session_tail(
         usage,
         last_request_input_tokens,
         &last_request_messages,
-        working_messages,
+        working_messages.as_slice(),
         task_hint,
     ) {
         Ok(report) => {
@@ -4017,6 +4084,7 @@ pub fn run_stdio() -> Result<(), String> {
         plugin_model_hooks: false,
         tool_call_prune: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
+        evict_marks: Rc::new(RefCell::new(Vec::new())),
         background: background_sender,
         background_receiver,
         tasks: None,
@@ -4471,9 +4539,32 @@ mod runtime_selection_tests {
 
 #[cfg(test)]
 mod session_tests {
-    use super::{cancelled_turn_summary, provider_warning_event};
+    use super::{cancelled_turn_summary, evicted_tool_event, provider_warning_event};
     use omnicrawl_ipc::bridge::HostEvent;
     use omnicrawl_protocol::ProviderWarning;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    /// 「淘汰优先于工具调用压缩」的判定：被淘汰的那次调用的工具事件不进概括输入。
+    #[test]
+    fn evicted_calls_are_filtered_out_of_the_turn_summary_input() {
+        let marks: BTreeSet<String> = ["call-b".to_string()].into_iter().collect();
+        assert!(evicted_tool_event(
+            &json!({"tool_call_id": "call-b", "tool": "read_file"}),
+            &marks
+        ));
+        assert!(!evicted_tool_event(
+            &json!({"tool_call_id": "call-a", "tool": "read_file"}),
+            &marks
+        ));
+        // 没有 ID 的旧事件无从对应，按未淘汰处理：宁可多带一条，也不静默丢内容。
+        assert!(!evicted_tool_event(&json!({"tool": "read_file"}), &marks));
+        // 本回合没有标注时一律不过滤。
+        assert!(!evicted_tool_event(
+            &json!({"tool_call_id": "call-b"}),
+            &BTreeSet::new()
+        ));
+    }
 
     #[test]
     fn cancelled_summary_counts_executed_tools() {

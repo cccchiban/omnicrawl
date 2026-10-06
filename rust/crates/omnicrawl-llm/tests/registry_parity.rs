@@ -1,4 +1,4 @@
-//! 模型能力与协议解析的跨语言 parity：期望值来自 Python 真实现。
+//! 模型能力与协议解析的跨语言 parity：数据集是冻结的对照契约。
 //!
 //! 覆盖 `capabilities_from_mapping` / `merge_capabilities` / `to_dict` / 四个保守默认值，
 //! 以及 `resolve_protocol` / `protocol_for_provider` 的选取结果与三条报错文案。

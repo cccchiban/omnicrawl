@@ -90,7 +90,6 @@ Rust 统一启动入口，对应 Python `omnicrawl/entry.py` 的路由与子进�
 ## 对照
 
 ```bash
-python rust/tools/gen_plugin_cli_fixture.py   # 期望值来自 omnicrawl/cli.py 的 argparse 面
 cd rust && cargo test -p omnicrawl-entry
 ```
 

@@ -135,12 +135,25 @@ struct Kernel {
     child: Child,
     stdin: ChildStdin,
     frames: Receiver<Value>,
+    /// 本实例的隔离配置根：`~/.omnicrawl` 指向它，`Drop` 时连同子进程一起清掉。
+    home: PathBuf,
 }
 
 impl Kernel {
     fn spawn() -> Self {
+        // 隔离配置环境：内核会按宿主 HOME 去读 `~/.omnicrawl/*`（工具输出压缩、上下文压缩、
+        // 脱敏、决策通道……）。用例只钉「淘汰」这一条链路，必须与开发机的真实配置和凭据无关——
+        // 否则回合末的整轮概括会真的发往压缩模型，断言也会随本机开关（如
+        // `[tool_output_compression].enabled`）时绿时红。`process_home()` 在 Windows 认
+        // `USERPROFILE`、其余平台认 `HOME`，两个都指向临时目录。
+        let home =
+            std::env::temp_dir().join(format!("omnicrawl-toolprune-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("无法建隔离配置根");
         let mut child = Command::new(env!("CARGO_BIN_EXE_omnicrawl"))
             .env("OMNICRAWL_TEST_KEY", TEST_KEY)
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -169,6 +182,7 @@ impl Kernel {
             child,
             stdin,
             frames,
+            home,
         }
     }
 
@@ -215,6 +229,7 @@ impl Drop for Kernel {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.home);
     }
 }
 
@@ -234,11 +249,22 @@ fn run_turn_with_prune(
     user_text: &str,
     evict: impl Fn(&Value) -> Option<Vec<String>>,
 ) -> TurnTraffic {
+    run_turn_frames(kernel, 2, "turn-1", user_text, evict)
+}
+
+/// 同上的显式版本：指定帧 ID 与 `turn_id`，供需要跑第二轮（验证标注在回合末生效）的用例调用。
+fn run_turn_frames(
+    kernel: &mut Kernel,
+    request_id: i64,
+    turn_id: &str,
+    user_text: &str,
+    evict: impl Fn(&Value) -> Option<Vec<String>>,
+) -> TurnTraffic {
     kernel.send(json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": request_id,
         "method": "turn.submit",
-        "params": {"turn_id": "turn-1", "user_text": user_text},
+        "params": {"turn_id": turn_id, "user_text": user_text},
     }));
 
     let mut traffic = TurnTraffic::default();
@@ -385,10 +411,11 @@ fn tool_result_ids_in(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// 核心语义：最新一批（小登）不被送审；上一批（老登）按裁决整组消失，且协议仍成对。
+/// 核心语义：最新一批（小登）不被送审；上一批（老登）先只落**标注**——当回合上下文原样保留，
+/// 到回合收尾才整组移出（下一次请求就再也看不到它），协议始终成对。
 #[test]
-fn only_the_previous_batch_is_pruned_and_its_pairs_leave_together() {
-    // 三个模型回复：第一批调用（两个调用）→ 第二批调用 → 收尾文本。
+fn annotated_calls_stay_in_turn_and_leave_the_context_at_turn_end() {
+    // 四个模型回复：第一批调用（两个调用）→ 第二批调用 → 收尾文本 → 第二轮收尾文本。
     let server = StubServer::spawn(vec![
         tool_batch_stream(&[
             ("call-a", "read_file", "{\"path\":\"a.txt\"}"),
@@ -396,6 +423,7 @@ fn only_the_previous_batch_is_pruned_and_its_pairs_leave_together() {
         ]),
         tool_batch_stream(&[("call-c", "read_file", "{\"path\":\"c.txt\"}")]),
         text_stream("看完了。"),
+        text_stream("第二轮没有工具调用。"),
     ]);
     let root = temp_root("previous-batch");
     let mut kernel = Kernel::spawn();
@@ -436,27 +464,41 @@ fn only_the_previous_batch_is_pruned_and_its_pairs_leave_together() {
         "淘汰事件记下被淘汰的调用 ID：{evicted}"
     );
 
-    // 第二次工具批次之后的请求体：call-b 的调用项与结果一起消失，call-a 仍成对保留。
+    // 回合内：标注只是标注，当回合的请求体里 call-b 的调用项与结果都还在。
     let bodies = server.bodies();
     assert!(bodies.len() >= 3, "三次模型请求：{bodies:?}");
-    let after_eviction = &bodies[2];
-    let calls = call_ids_in(after_eviction);
-    let results = tool_result_ids_in(after_eviction);
-    assert!(!calls.contains(&"call-b".to_string()), "调用项应被移除：{calls:?}");
+    let during_turn = &bodies[2];
+    let calls = call_ids_in(during_turn);
+    let results = tool_result_ids_in(during_turn);
     assert!(
-        !results.contains(&"call-b".to_string()),
-        "结果消息应被移除：{results:?}"
+        calls.contains(&"call-b".to_string()) && results.contains(&"call-b".to_string()),
+        "先标注-后压缩：当回合不剔除：{calls:?} / {results:?}"
     );
-    assert!(calls.contains(&"call-a".to_string()), "未被淘汰的调用保留：{calls:?}");
+    for id in ["call-a", "call-c"] {
+        assert!(
+            calls.contains(&id.to_string()) && results.contains(&id.to_string()),
+            "{id} 成对保留：{calls:?} / {results:?}"
+        );
+    }
+
+    // 回合收尾统一处理：下一轮第一次请求里 call-b 整组消失，未淘汰的照旧成对。
+    let next = run_turn_frames(&mut kernel, 3, "turn-2", "接着做", |_| {
+        panic!("第二轮没有工具批次，不该收到裁决")
+    });
+    assert!(next.prunes.is_empty());
+    let after_turn = server.bodies().last().cloned().unwrap_or_default();
+    let calls = call_ids_in(&after_turn);
+    let results = tool_result_ids_in(&after_turn);
     assert!(
-        results.contains(&"call-a".to_string()),
-        "未被淘汰的结果保留：{results:?}"
+        !calls.contains(&"call-b".to_string()) && !results.contains(&"call-b".to_string()),
+        "回合收尾应当整组移出：{calls:?} / {results:?}"
     );
-    // 最新一批（小登）在送审时还没执行；执行后它必须完整留在上下文里。
-    assert!(
-        calls.contains(&"call-c".to_string()) && results.contains(&"call-c".to_string()),
-        "最新一批始终保留：{calls:?} / {results:?}"
-    );
+    for id in ["call-a", "call-c"] {
+        assert!(
+            calls.contains(&id.to_string()) && results.contains(&id.to_string()),
+            "{id} 成对保留：{calls:?} / {results:?}"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -517,6 +559,114 @@ fn empty_verdict_keeps_everything_and_writes_no_event() {
         calls.contains(&"call-a".to_string()) && calls.contains(&"call-b".to_string()),
         "空裁决不删任何东西：{calls:?}"
     );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 白名单：记忆 / 知识库 / 编辑替换 / `git` 不进送审；`read` / `grep` 与普通工具一起送审。
+/// 回合收尾统一处理时，也只有进过送审的那几次会被移出上下文。
+#[test]
+fn excluded_tools_are_never_sent_for_review() {
+    let server = StubServer::spawn(vec![
+        tool_batch_stream(&[
+            ("call-r", "read", "{\"path\":\"a.txt\"}"),
+            ("call-g", "grep", "{\"pattern\":\"x\"}"),
+            ("call-m", "memory_search", "{\"query\":\"偏好\"}"),
+            ("call-k", "kb_search", "{\"query\":\"规范\"}"),
+            ("call-w", "write_file", "{\"path\":\"b.txt\"}"),
+            ("call-e", "Edit_file", "{\"path\":\"c.txt\"}"),
+            ("call-t", "git", "{\"command\":\"status\"}"),
+            ("call-b1", "bash", "{\"command\":\"ls\"}"),
+        ]),
+        tool_batch_stream(&[("call-b2", "bash", "{\"command\":\"pwd\"}")]),
+        text_stream("看完了。"),
+        text_stream("第二轮没有工具调用。"),
+    ]);
+    let root = temp_root("excluded-tools");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(
+        model_config(&server),
+        json!({"root": root_param(&root)}),
+        true,
+    );
+
+    let traffic = run_turn_with_prune(&mut kernel, "整理仓库", |params| {
+        let ids: Vec<String> = params["groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group["call_id"].as_str())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "call-r".to_string(),
+                "call-g".to_string(),
+                "call-b1".to_string()
+            ],
+            "read / grep 进送审，记忆 / 知识库 / 编辑替换 / git 不进：{params}"
+        );
+        assert_eq!(params["task"], "整理仓库", "送审要带用户本回合的请求");
+        Some(vec![
+            "call-r".to_string(),
+            "call-g".to_string(),
+            "call-b1".to_string(),
+        ])
+    });
+
+    assert_eq!(traffic.prunes.len(), 1, "只裁决一次：{traffic:?}");
+
+    // 回合收尾统一处理：进过送审的三次整组消失，被排除的与最新一批原样成对保留。
+    run_turn_frames(&mut kernel, 3, "turn-2", "接着做", |_| {
+        panic!("第二轮没有工具批次，不该收到裁决")
+    });
+    let after = server.bodies().last().cloned().unwrap_or_default();
+    let calls = call_ids_in(&after);
+    let results = tool_result_ids_in(&after);
+    for id in ["call-r", "call-g", "call-b1"] {
+        assert!(
+            !calls.contains(&id.to_string()) && !results.contains(&id.to_string()),
+            "{id} 被淘汰后应当整组消失：{calls:?} / {results:?}"
+        );
+    }
+    for id in ["call-m", "call-k", "call-w", "call-e", "call-t", "call-b2"] {
+        assert!(
+            calls.contains(&id.to_string()) && results.contains(&id.to_string()),
+            "{id} 必须成对留在上下文里：{calls:?} / {results:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 整批都是被排除的工具时连裁决请求都不发：不必为一个裁决不了的批次多跑一次决策往返。
+#[test]
+fn a_batch_of_only_excluded_tools_skips_the_review_entirely() {
+    let server = StubServer::spawn(vec![
+        tool_batch_stream(&[
+            ("call-m", "memory_search", "{\"query\":\"偏好\"}"),
+            ("call-k", "kb_search", "{\"query\":\"规范\"}"),
+            ("call-w", "write_file", "{\"path\":\"b.txt\"}"),
+            ("call-e", "Edit_file", "{\"path\":\"c.txt\"}"),
+            ("call-t", "git", "{\"command\":\"status\"}"),
+        ]),
+        tool_batch_stream(&[("call-b", "bash", "{\"command\":\"ls\"}")]),
+        text_stream("看完了。"),
+    ]);
+    let root = temp_root("only-excluded");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(
+        model_config(&server),
+        json!({"root": root_param(&root)}),
+        true,
+    );
+
+    let traffic = run_turn_with_prune(&mut kernel, "看看文件", |_| {
+        panic!("整批都被排除时不该收到 context.prune")
+    });
+    assert_eq!(traffic.batches.len(), 2);
+    assert!(traffic.prunes.is_empty());
 
     let _ = std::fs::remove_dir_all(&root);
 }

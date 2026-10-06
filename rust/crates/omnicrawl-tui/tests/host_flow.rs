@@ -9,7 +9,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
 use serde_json::{json, Value};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
@@ -599,6 +602,207 @@ fn context_prune_is_answered_instead_of_refused() {
         evicted.as_array().is_some_and(|list| list.is_empty()),
         "淘汰不可用时回空列表，实际：{evicted}"
     );
+}
+
+/// 淘汰裁决必须跑在后台线程：它是网络请求（超时 20s），放在 UI 线程上会冻住整个界面。
+///
+/// 用户反馈：每次工具批次后界面都会卡住一两秒，动画停、按键无响应。根因是内核在
+/// 每批工具前发的 `context.prune` 由 `handle_context_prune` 就地同步执行。这里用一个
+/// **会阻塞的桩**钉住修复：桩在裁决里睡满 1.5s，`drain_frames` 必须在毫秒级返回，
+/// 且裁决结果回来后仍照常应答内核。
+#[test]
+fn context_prune_does_not_block_the_ui_thread() {
+    /// 桩裁决：睡满指定时长后返回第 0 组，用来模拟慢网络。
+    struct SlowPruneClient {
+        delay: Duration,
+    }
+
+    impl omnicrawl_tui::tools::PruneClient for SlowPruneClient {
+        fn evict(
+            &self,
+            _request: &omnicrawl_tui::tools::decision_prune::PruneRequest<'_>,
+        ) -> Result<Vec<usize>, String> {
+            thread::sleep(self.delay);
+            Ok(vec![0])
+        }
+    }
+
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    // 开关打开 + 有渠道：裁决真的会被执行（`active()` 要求两者都成立）。
+    harness.app.prune = Some(omnicrawl_tui::tools::PruneOptions {
+        enabled: true,
+        channel: Some(omnicrawl_tui::tools::PruneChannel {
+            mode: "jev".to_string(),
+            model: "stub".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "stub".to_string(),
+            api_key_env: "STUB".to_string(),
+        }),
+        masking: None,
+        client: Arc::new(SlowPruneClient {
+            delay: Duration::from_millis(1500),
+        }),
+    });
+
+    harness.send(&context_prune(
+        21,
+        "整理仓库",
+        &[("c1", "bash"), ("c2", "grep")],
+    ));
+
+    // 关键断言：裁决还在睡的时候，UI 线程必须已经返回（不再等网络）。
+    let started = Instant::now();
+    harness.app.drain_frames();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "处理 context.prune 不该阻塞 UI 线程，实际耗时 {elapsed:?}"
+    );
+    assert!(
+        harness.recorder.response(21).is_none(),
+        "裁决未完成前不该应答内核（内核按响应等结果）"
+    );
+
+    // 裁决完成后仍要应答，且带上桩判定的调用 ID。
+    let response = harness.expect_response(21);
+    assert!(response.error.is_none(), "不该回错误响应");
+    let evicted = &response.result.expect("响应应带 result")["evicted_call_ids"];
+    assert_eq!(
+        evicted,
+        &json!(["c1"]),
+        "应回桩判定的第 0 组（c1），实际：{evicted}"
+    );
+}
+
+/// 库里的运行期诊断（宿主与 TUI 自身的 `eprintln!` 调用点）进会话流，不再写 stderr 盖住画布。
+///
+/// 用户反馈：这些报错会打在终端光标处，面画布只在「内容变了」时才重画对应区域，
+/// 于是残留在画面上、盖住会话区与输入区。这里钉住两件事：诊断变成 `Record::Notice`（会话流），
+/// 且**不过滤**（信息级也进，用户选择「原样入流」）。
+#[test]
+fn runtime_diagnostics_land_in_the_session_stream() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    harness.app.attach_diagnostics(receiver);
+
+    sender
+        .send((
+            omnicrawl_core::diagnostics::Level::Warning,
+            "[host] 工具调用淘汰不可用，保留原文：测试".to_string(),
+        ))
+        .expect("假宿主投递诊断");
+    sender
+        .send((
+            omnicrawl_core::diagnostics::Level::Info,
+            "[tui] 常规进度也要进会话流。".to_string(),
+        ))
+        .expect("假宿主投递诊断");
+    harness.app.drain_frames();
+
+    let notices: Vec<&String> = harness
+        .app
+        .state
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Notice(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|text| text.contains("工具调用淘汰不可用")),
+        "降级诊断应当出现在会话流里：{notices:?}"
+    );
+    assert!(
+        notices.iter().any(|text| text.contains("常规进度")),
+        "信息级诊断不过滤，也要进会话流：{notices:?}"
+    );
+}
+
+/// 输入框：点一下把插入点挪到点中的那一格，拖一段松手就复制（与会话区拖选同一套）。
+///
+/// 用真实坐标喂 `handle_event`：命中区由 `composer_text_rect` 从布局里算出来，
+/// 与渲染同源，而不是测试里自己猜一个矩形。
+#[test]
+fn composer_click_places_the_caret_and_drag_copies_the_selection() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+    harness.app.state.composer.set_text("abcdef 中文");
+    let area = harness.app.composer_text_rect();
+    assert!(
+        area.width > 8 && area.height == 1,
+        "单行输入的正文区：{area:?}"
+    );
+
+    // 点第 4 格：插入点落在第 4 个字符之前（`a` 占 0-3 列的左边）。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 3,
+        area.y,
+    ));
+    assert_eq!(harness.app.state.composer.cursor_position(area.width), (0, 3));
+    harness.app.handle_event(mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 3,
+        area.y,
+    ));
+    assert_eq!(
+        harness.app.state.composer.selection(),
+        None,
+        "只点了一下：定位插入点，不算选取"
+    );
+
+    // 从第 2 格拖到第 6 格：选中 `bcde`。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 1,
+        area.y,
+    ));
+    harness.app.handle_event(mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 5,
+        area.y,
+    ));
+    assert_eq!(
+        harness.app.state.composer.selected_text().as_deref(),
+        Some("bcde")
+    );
+    harness.app.handle_event(mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 5,
+        area.y,
+    ));
+    let notice = harness
+        .app
+        .state
+        .notice_line_text(Instant::now())
+        .unwrap_or_default()
+        .to_string();
+    if harness.app.state.composer.selection().is_none() {
+        assert_eq!(
+            omnicrawl_tui::clipboard::read_text().as_deref(),
+            Some("bcde"),
+            "松手复制的就是选中的那几个字符"
+        );
+    } else {
+        // 没有可用剪切板（无桌面会话）时保留高亮并明说失败，是既有行为，不当失败。
+        assert!(notice.contains("复制失败"), "提示行应说明复制失败：{notice}");
+    }
+}
+
+/// 一只不按修饰键的鼠标事件（鼠标用例专用）。
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// 后台命令监控：`monitor` 在 manual 模式下不弹确认，批次间能拿到同一个任务并收尾。

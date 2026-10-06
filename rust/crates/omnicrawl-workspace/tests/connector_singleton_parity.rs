@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/workspace/connector_singleton.py` 真实现的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_workspace_connector_singleton_fixture.py` 生成：同一批平台名
+//! 数据集是冻结的对照契约：同一批平台名
 //! 与锁文件内容喂给真实现（`connector_lock_path` / `_locked_pid` / `ConnectorInstanceLock`），
 //! 这里重放 Rust 实现并逐字段比对。改了任一侧都要重跑生成脚本。
 //!

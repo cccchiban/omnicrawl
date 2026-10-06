@@ -1,6 +1,6 @@
 //! `controllers/turn/loop.py` 手动技能命令的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `skill_command` 段——探针用技能管理器桩真跑
 //! `_apply_skill_command`。本套件用同一批输入重放 Rust 实现，比对命令解析、状态提示与匹配结果。
 

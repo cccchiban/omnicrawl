@@ -1,4 +1,4 @@
-//! Gemini Generate Content 的跨语言 parity：期望值来自 Python 真实现。
+//! Gemini Generate Content 的跨语言 parity：数据集是冻结的对照契约。
 //!
 //! 覆盖 `_to_gemini_contents`、`_sanitize_options`、请求 kwargs（contents + config）、
 //! 真 SDK 线上请求体（路径 + body）、流事件映射、`usage_from_gemini_payload` 与 `_format_gemini_error`。

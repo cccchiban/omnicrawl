@@ -25,7 +25,6 @@ crates/omnicrawl-mcp/
 Python 侧是语义基准，不靠人读代码对齐：
 
 ```bash
-python rust/tools/gen_mcp_fixture.py       # 用 omnicrawl/mcp/ 真实现生成期望值
 cd rust && cargo test -p omnicrawl-mcp
 ```
 
@@ -45,10 +44,11 @@ cd rust && cargo test -p omnicrawl-mcp
 另有 `tests/stdio_e2e.rs`：管理器真的拉起 `omnicrawl-mcp-server` 子进程，握手、分帧、
 stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
 
-> `omnicrawl/docs/*.md` 改过之后要重新跑一次生成脚本：内置文档是编译期嵌进二进制的，
-> 数据集里的内容哈希会随之失效（这是有意的——它保证二进制里的文档与安装包一致）。
+> `rust/assets/docs/*.md` 改过之后要同步更新 `tests/fixtures/mcp_parity.json` 里对应的
+> `bundled_docs.hashes`：内置文档是编译期嵌进二进制的，数据集里的内容哈希会随之失效
+> （这是有意的——它保证二进制里的文档与安装包一致）。
 
-## 与 Python 的已知差异
+## 与语义基准的已知差异
 
 1. **错误类型统一**：Python 用 `MCPConfigError` / `MCPClientError` / `TimeoutError` / `ValueError`
    四种异常区分来源，Rust 统一为 `Result` 加错误枚举（`McpConfigError`、`McpClientError`、

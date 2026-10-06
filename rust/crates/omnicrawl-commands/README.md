@@ -61,21 +61,10 @@
 - `name.replace('-', " ")`、「按字符数截断」等与 Python 同口径；`casefold()` 用
   `to_lowercase()` 代替（命令名与别名都是 ASCII 或中文，两者同效）。
 
-## 验证（本机不跑 cargo）
+## 验证
 
-本环境禁止任何编译/构建/测试类命令（`cargo fmt/check/build/test` 一律不跑），因此改动只能用
-源码级对照脚本核对：
-
-```bash
-python .omnicrawl/.agent_tmp/scripts/check_commands_parity.py   # Python 真实现 ↔ Rust 命令表逐字段比对
-python .omnicrawl/.agent_tmp/scripts/check_rust_balance.py rust/crates/omnicrawl-commands/src/*.rs
-```
-
-对照脚本用 `ast` 解析 `omnicrawl/commands/slash.py` 的 `@REGISTRY.command(...)`，与
-`build_registry()` 逐条比对名称、处理器名、别名、用法、类型、参数提示、隐藏、说明文案与
-补全形态；当前 27 条命令全部一致（0 失败）。
-
-有 cargo 的机器上按仓库约定验证：
+命令表的元数据由冻结数据集钉住；27 条内置命令的名称、别名、用法、类型、参数提示、
+隐藏、说明文案与补全形态都在 `tests/` 里逐条比对。
 
 ```bash
 cd rust && cargo test -p omnicrawl-commands && cargo clippy -p omnicrawl-commands --all-targets -- -D warnings

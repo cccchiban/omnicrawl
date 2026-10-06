@@ -1,6 +1,6 @@
 # 工具输出压缩（Tool Output Compression）设计文档
 
-> 快速落点：核心实现 `omnicrawl/agent/runtime/tool_output_compressor.py`、`omnicrawl/agent/controllers/tools/compression.py`；配置 `omnicrawl/config/features/tool_output_compression.py`；提示词 `omnicrawl/templates/tool_output_compression_system.md`；设置面板 `omnicrawl/ui/fullscreen/screens/tool_output_compression_settings.py`。
+> 快速落点：核心实现 `rust/crates/omnicrawl-controllers/src/compression.rs`、`rust/crates/omnicrawl-controllers/src/compression.rs`；配置 `rust/crates/omnicrawl-config/src/features/tool_output_compression.rs`；提示词 `omnicrawl/templates/tool_output_compression_system.md`；设置面板 `rust/crates/omnicrawl-tui/src/ui/settings/`。
 
 ## 1. 定位与数据流
 
@@ -69,13 +69,13 @@ timeout_seconds = 60
 
 | 层 | 位置 |
 |---|---|
-| 配置 | `omnicrawl/config/features/tool_output_compression.py`；挂入 `AgentConfig.tool_output_compression`（`omnicrawl/agent/core.py`） |
-| 压缩器 | `omnicrawl/agent/runtime/tool_output_compressor.py` |
-| 批次压缩 | `omnicrawl/agent/controllers/tools/compression.py` |
-| 回合钩子 | `omnicrawl/agent/controllers/turn/loop.py`：`run_stream`/`_execute_tool_batch` 的可选回调 `on_tool_output_update` / `report_tool_output_update`；压缩点在 `_apply_batch_output_budget` 之后 |
-| 运行态配置 | `omnicrawl/agent/controllers/session/settings.py`：`set_tool_output_compression_configuration` |
+| 配置 | `rust/crates/omnicrawl-config/src/features/tool_output_compression.rs`；挂入 `AgentConfig.tool_output_compression`（`rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`） |
+| 压缩器 | `rust/crates/omnicrawl-controllers/src/compression.rs` |
+| 批次压缩 | `rust/crates/omnicrawl-controllers/src/compression.rs` |
+| 回合钩子 | `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`：`run_stream`/`_execute_tool_batch` 的可选回调 `on_tool_output_update` / `report_tool_output_update`；压缩点在 `_apply_batch_output_budget` 之后 |
+| 运行态配置 | `rust/crates/omnicrawl-controllers/src/settings.rs`：`set_tool_output_compression_configuration` |
 | TUI 卡片 | `rendering/widgets.py`：`ToolDisclosure.update_body`；`rendering/pipeline.py`：已收口卡片表（上限 32）+ `_handle_tool_output_update`；`app/core.py`：`_finished_tool_cards`；`support/turns.py` + `turn/execution.py`：回调透传 |
-| 设置面板 | `omnicrawl/ui/fullscreen/screens/tool_output_compression_settings.py`；`screens/settings.py` 注册行与 `_build_tool_output_compression_pane` |
+| 设置面板 | `rust/crates/omnicrawl-tui/src/ui/settings/`；`screens/settings.py` 注册行与 `_build_tool_output_compression_pane` |
 | 提示词 | `omnicrawl/templates/tool_output_compression_system.md`（随包发布） |
 
 ## 7. 维护与验证
@@ -96,5 +96,5 @@ timeout_seconds = 60
 ## 9. 参考
 
 - `omnicrawl/docs/advisor_design.md`（外接模型 + 独立 Runtime 同款模式）
-- `omnicrawl/agent/runtime/vision_proxy.py`（外接模型旁路调用与结果回注）
+- `rust/crates/omnicrawl-controllers/src/vision_proxy.rs`（外接模型旁路调用与结果回注）
 - `omnicrawl/docs/session_design.md`（`tool_result` 事件与恢复投影）

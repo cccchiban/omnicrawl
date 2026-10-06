@@ -92,6 +92,11 @@ fn run() -> Result<ExitCode, String> {
     )?;
 
     let mut guard = TerminalGuard::start()?;
+    // 运行期诊断改走会话流（用户要求：不要再盖住画布）。启动期诊断仍归启动画面日志框，
+    // 所以接收端在这里才装：`install` 之后，进程内库代码（含宿主 crate）的诊断都不再写 stderr。
+    omnicrawl_tui::diagnostics::install_panic_hook(&environment);
+    let diagnostic_lines = omnicrawl_tui::diagnostics::install(&environment);
+    app.attach_diagnostics(diagnostic_lines);
     // 事件循环按时间窗等待终端事件：Windows 默认计时器粒度约 15.6ms，睡 20ms 可能变成 31ms，
     // 这段白等待直接叠加在「回车 → 首字」上。提升到 1ms，随进程退出恢复。
     let timer_resolution = TimerResolutionGuard::acquire();
@@ -107,6 +112,8 @@ fn run() -> Result<ExitCode, String> {
     // 内核已退出（或已被强杀）：补发 `session.close.after`，与 Python
     // `close()` 里 before → 写事件 → after 的顺序对齐。
     app.finish_session_close();
+    // 收尾诊断已经进过日志文件，这里摘掉接收端：之后的写入回落 stderr（此时已不占画布）。
+    omnicrawl_tui::diagnostics::uninstall();
     drop(timer_resolution);
     drop(guard);
     result?;

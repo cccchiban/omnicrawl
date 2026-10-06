@@ -10,6 +10,8 @@
 mod runner;
 mod types;
 
+pub mod diagnostics;
+
 pub use runner::{AgentLoopRunner, Clock, LoopGuards, ReplySource, SystemClock, ToolBatchHost};
 pub use types::{
     AgentLoopLimits, AgentLoopObservation, AgentLoopResult, AgentModelReply, LoopError, ToolCall,

@@ -56,12 +56,9 @@ session 怎么串、波形怎么落盘，都必须由 Rust 自己回答。
 
 ## 验证
 
-对照数据集由 Python 真实现生成：
+对照数据集是冻结的契约，随仓库提交：
 
 ```bash
-python rust/tools/gen_tts_fixture.py          # 文本归一化
-python rust/tools/gen_tts_io_fixture.py       # 音频 I/O 与声线库
-python rust/tools/gen_tts_runtime_fixture.py  # greedy 生成帧（需要模型）
 
 cd rust && cargo test -p omnicrawl-tts                     # 默认：不含推理链路
 cd rust && cargo test -p omnicrawl-tts --features onnx     # 含 runtime 逐帧对照

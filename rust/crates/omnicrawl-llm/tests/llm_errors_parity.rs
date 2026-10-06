@@ -1,6 +1,6 @@
 //! 错误分类（`omnicrawl/llm/errors.py` 的 `map_openai_exception`）的跨语言 parity。
 //!
-//! 期望值来自 Python 真实现：数据集记录分类函数真正读到的字段（错误文本、类型名、
+//! 数据集是冻结的对照契约：数据集记录分类函数真正读到的字段（错误文本、类型名、
 //! `exc.body`、`exc.response.json()`、状态码）与它给出的码 / 文案 / 可重试标记 / 状态码。
 
 use omnicrawl_llm::{map_exception, ExceptionView};

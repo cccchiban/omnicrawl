@@ -1,7 +1,7 @@
 //! `omnicrawl/agent/context_compaction/` 编排层（账本 / 证据恢复 / 结构化摘要 / 压缩编排）与
 //! `omnicrawl/agent/controllers/turn/compaction.py` 判定面的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：改任一侧后先跑
+//! 数据集是冻结的对照契约：改任一侧后先跑
 //! `python rust/tools/gen_controllers_fixture.py`，再用同一份输入重放本套件。
 //! 摘要提示词模板按仓库布局读取 `rust/assets/templates/`——对照的是「读到了什么」。
 

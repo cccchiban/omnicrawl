@@ -1,6 +1,6 @@
 //! 对照：Rust `image_gen` vs Python `ImageGenerator`。
 //!
-//! 数据集由 `python rust/tools/gen_image_gen_fixture.py` 生成：Python 侧注入桩客户端（不联网），
+//! 数据集是冻结的对照契约：Python 侧注入桩客户端（不联网），
 //! 因此可以逐字对照结果文本、落盘文件名与文件内容。文件名与输出里的时间戳规范化成 `{STAMP}`，
 //! 工作区路径规范化成 `{WORKSPACE}`。
 //!

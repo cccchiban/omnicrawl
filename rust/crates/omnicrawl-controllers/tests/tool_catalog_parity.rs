@@ -1,6 +1,6 @@
 //! `agent/toolkit/tools.py` 工具目录的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `tool_catalog` 段后，本套件用同一批 runner
 //! 绑定与开关重放 Rust 的注册规则，逐工具比对名称、说明、Schema 与两个开关。
 //! 目录数据本身由 `rust/tools/gen_agent_tools_data.py` 从真实现导出（见 crate README）。

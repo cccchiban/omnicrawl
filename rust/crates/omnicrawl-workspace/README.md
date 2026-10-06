@@ -75,7 +75,6 @@
 ## 对照
 
 ```bash
-python rust/tools/gen_workspace_isolation_fixture.py   # 用 Python 真实现生成期望值
 cd rust && cargo test -p omnicrawl-workspace
 ```
 

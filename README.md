@@ -9,17 +9,17 @@ OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），
 ## 功能特性
 
 - **多模型协议**：通过统一运行时调用 OpenAI Chat Completions / Responses、Anthropic Messages、Google Gemini Generate Content（各用原生 SDK），支持思考模式、流式输出与中断自动重试。
-- **终端 TUI**：Rust 全屏工作台（`omnicrawl-tui`），键盘交互，内置模型热切换、渠道管理、设置面板、审批控制、事务式 `/undo` 回退、取消回合上下文保留。（`omnicrawl/ui/` 里的 Python Textual UI 保留为样式/行为对照参照，不是产品入口，也不随 npm 分发。）
+- **终端 TUI**：Rust 全屏工作台（`omnicrawl-tui`），键盘交互，内置模型热切换、渠道管理、设置面板、审批控制、事务式 `/undo` 回退、取消回合上下文保留。
 - **HTTP/SSE API**：本地服务可对接 Web 或桌面前端，`Swagger UI` 文档开箱即用。
 - **工具与安全**：内置文件读写、文本搜索、本地图片读取、视觉模型代理、Bash/PowerShell、Windows 桌面控制、记忆与 SubAgent 等工具，可在 `config.toml` 的 `tools` 段逐工具开关；SubAgent 支持独立 Git worktree 隔离执行。子代理全局设置与每个子代理的模型选择放在独立的 `subagents.toml`（模板见 `subagents.example.toml`），已从 `config.toml` 完全迁移，不再回退读取 `config.toml` 的 `[subagents]` 段。
-- **统一工具分发**：模型只看到固定的 `search_tools` 与 `invoke_tool`；真实工具 Schema、审批策略、MCP 能力和执行器由 Host 侧目录维护，详见 `omnicrawl/docs/TOOL_CALLING.md`。
+- **统一工具分发**：模型只看到固定的 `search_tools` 与 `invoke_tool`；真实工具 Schema、审批策略、MCP 能力和执行器由 Host 侧目录维护，详见 `rust/assets/docs/TOOL_CALLING.md`。
 - **可扩展**：支持 NPM Hook 插件、Skill 技能、MCP Server 接入，以及自定义 `models.toml` 模型目录。
 
 ## 环境要求
 
 - 产品是 Rust 二进制：运行**不需要** Python 运行时；插件功能需要 Node.js 20+
 - `grep`/`find` 的文本搜索由 Rust 侧实现（`rust/crates/omnicrawl-host` 的 `regex`/`ignore`，
-  与 `native/` 的 Go 扩展语义对齐）；Python 侧的 Go 原生扩展只服务对照测试
+  与 `native/` 的 Go 扩展语义对齐）；Go 原生扩展只服务对照测试
 
 ## 安装
 
@@ -45,22 +45,12 @@ cargo test --workspace                       # 全量对照测试
 `rust/docs/python-free-build.md`；发布载荷由 `packages/cli/scripts/build-host.mjs` 装配，
 `prepare.mjs` 组装 npm 产物。
 
-### Python 侧（冻结的语义基准，不是产品）
+### 原生搜索扩展
 
-`omnicrawl/` 只服务 `rust/tools/gen_*.py` 生成对照数据集与 `tests/` 的对照断言：
-它**没有入口点、不随 npm 分发、也不提供命令行命令**（`pip install -e .` 只装入一个可导入的基准包）。
-定位、边界与操作规则见 `rust/docs/frozen-reference.md`。
-
-带上 textual 依赖的解释器可直接跑保留的 Textual 工作台做逐屏对照：
+Go 原生搜索扩展（`native/`，与 Rust 侧搜索语义对齐）可就地重建（仅服务对照测试，不再随包分发）：
 
 ```powershell
-python rust/tools/run_python_tui.py
-```
-
-Go 原生搜索扩展（`native/`，与 Rust 侧搜索语义对齐）仍可就地重建（仅服务对照测试，不再随包分发）：
-
-```powershell
-python native/build.py --out omnicrawl/_ocsearch.pyd
+python native/build.py --out native/_ocsearch.pyd
 ```
 
 构建需要 Go 1.21+ 与 cgo 可用的 C 编译器（`gcc`/`clang`，Windows 上是 MinGW-w64，**MSVC 的 `cl.exe` 不被 cgo 支持**；可 `winget install BrechtSanders.WinLibs.POSIX.UCRT`）。
@@ -83,7 +73,7 @@ omnicrawl
 TUI，退出 TUI 时会自动回收连接器。同一平台同一用户只允许一个活动连接器实例：
 多个 TUI/API 进程并存时，后启动方会自动跳过，避免 Telegram/飞书重复长连接。
 设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭该联动。配置方法与安全边界见
-`omnicrawl/docs/TELEGRAM.md`、`omnicrawl/docs/FSAPP.md`。
+`rust/assets/docs/TELEGRAM.md`、`rust/assets/docs/FSAPP.md`。
 
 常用操作：
 
@@ -99,20 +89,24 @@ $env:OMNICRAWL_API_TOKEN = "请替换为随机长令牌"
 omnicrawl api
 ```
 
-默认监听 `127.0.0.1:8765`，Swagger UI 位于 `http://127.0.0.1:8765/docs`，机器可读契约位于 `/openapi.json`。除健康检查与文档外，所有接口需携带 `Authorization: Bearer <token>`。完整接入说明见 `omnicrawl/docs/API.md`。
+默认监听 `127.0.0.1:8765`，Swagger UI 位于 `http://127.0.0.1:8765/docs`，机器可读契约位于 `/openapi.json`。除健康检查与文档外，所有接口需携带 `Authorization: Bearer <token>`。完整接入说明见 `rust/assets/docs/API.md`。
 
 ## 项目结构
 
 ```text
 omnicrawl/
-├── agent/         # Agent 循环、SubAgent、上下文压缩与技能
-├── api/           # 本地 HTTP/SSE 服务
-├── config/        # 配置加载（core/ 基础仓库、models/ 模型渠道、features/ 功能开关）
-├── llm/           # 多协议模型运行时
-├── ui/            # Textual 终端 UI（已弃用，保留作开发对照；产品 TUI 在 rust/crates/omnicrawl-tui）
-├── workspace/     # 工作区工具与搜索后端封装
-├── connectors/    # Telegram/飞书远程连接与自动启动监督器
-└── docs/          # 技术文档
+├── rust/                       # 产品本体：内核 + 宿主 + TUI + API + MCP（纯 Rust）
+│   ├── crates/omnicrawl-cli/       # 内核进程（协议 v1 NDJSON）
+│   ├── crates/omnicrawl-tui/       # 全屏终端工作台
+│   ├── crates/omnicrawl-host/      # 宿主：工具执行、审批、审查
+│   ├── crates/omnicrawl-api/       # 本地 HTTP/SSE 服务
+│   ├── crates/omnicrawl-mcp/       # MCP Server
+│   ├── crates/omnicrawl-decision/  # 结构化决策模型本地服务
+│   ├── crates/omnicrawl-tts/       # 语音合成
+│   └── assets/docs/                # 内置技术文档（omnicrawl://docs/）
+├── packages/                   # npm 分发：启动器、平台包、插件 SDK/Host
+├── native/                     # Go 原生搜索扩展（仅服务对照测试）
+└── designs/                    # 设计稿与规划
 ```
 
 ## 开源协议

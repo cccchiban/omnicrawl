@@ -24,6 +24,9 @@
   发过来（`plugin_model_hooks` → `model.hook`，`tool_call_prune` → `context.prune`）。宿主漏了
   处理器会回 `-32601`，而内核把「工具往返类请求」的响应错误当成批次失败、直接中止整个回合
   ——所以「未知方法回 `-32601`」只是兜底，不是「声明了也可以不实现」。
+- **`context.prune` 的应答是「标注」，不是「立刻生效」**：宿主回回来的调用 ID 由内核先落一条
+  `tool_call_evicted` 事件（转录与投影据此记住这次判定），**当回合的上下文原样保留原文**，
+  到回合收尾才统一移出，且先于其他工具调用压缩与上下文压缩。宿主不必关心这个时机，只回 ID。
 
 ## 测试
 
@@ -35,7 +38,7 @@ cd rust && cargo test -p omnicrawl-ipc
 - `tests/bridge_round_trip.rs`：13 个宿主事件与 4 个命令的负载样本覆盖检查 + 逐行往返，
   另有 `tool.batch` 与其观察结果的往返。
 - `tests/host_bridge_parity.rs`：与 Python 真实现的契约对照，期望值由
-  `python rust/tools/gen_host_bridge_fixture.py` 反射 `run_stream` 与循环 `run` 的签名生成。
+  该契约由冻结数据集钉住。
 
 ## 已知边界
 

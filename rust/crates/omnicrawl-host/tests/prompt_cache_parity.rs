@@ -1,6 +1,6 @@
 //! 对照：Rust 的 prompt cache 身份指纹 vs Python 真实现。
 //!
-//! 数据集由 `python rust/tools/gen_prompt_cache_fixture.py` 生成，期望值取自
+//! 数据集是冻结的对照契约，期望值取自
 //! `omnicrawl/agent/context/prompt_context.py::build_prompt_cache_identity` 与
 //! `omnicrawl/llm/providers/openai_common.py::build_prompt_cache_key`。
 //!

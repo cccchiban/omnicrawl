@@ -1,6 +1,6 @@
 //! `controllers/tools/approval.py` 编排面的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `approval_flow` 段——探针按真实流程跑
 //! `_approve_tool_for_batch` / `_execute_approved_tool`，记录钩子与落盘事件的轨迹、
 //! 事件载荷与展示文本。本套件用内核阶段表推导期望轨迹，再与 Python 轨迹逐项比对。

@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/workspace/` 真实现的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_workspace_isolation_fixture.py` 生成：同一批输入（含合成
+//! 数据集是冻结的对照契约：同一批输入（含合成
 //! 出来的 gitdir 目录树、隔离区元数据、清扫条目）喂给真实现，这里照 `tree` 描述重建目录后
 //! 重放 Rust 实现并逐字段比对。改了任一侧都要重跑生成脚本。
 //!

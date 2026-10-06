@@ -1,4 +1,4 @@
-//! OpenAI Responses 请求构建的跨语言 parity：期望值来自 Python 真实现。
+//! OpenAI Responses 请求构建的跨语言 parity：数据集是冻结的对照契约。
 //!
 //! 覆盖 `messages_to_responses_input`（含 reasoning item 的 SHA-1 id 与分块边界）、
 //! `_tools_for_responses`、`_flatten_tool_history_to_text`、工具历史判定的 400 分支，

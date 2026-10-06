@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omnicrawl_core::diagnostics;
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
     Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult, HostEvent,
@@ -536,12 +537,12 @@ impl TurnRunner {
                         break outcome;
                     }
                     Ok(event) => on_event(event),
-                    Err(error) => eprintln!("[host] 未识别的内核通知：{error}"),
+                    Err(error) => diagnostics::warn(format!("[host] 未识别的内核通知：{error}")),
                 }
                 continue;
             }
             let Some(frame_id) = frame.id().cloned() else {
-                eprintln!("[host] 内核发来没有 id 的帧，已忽略。");
+                diagnostics::warn("[host] 内核发来没有 id 的帧，已忽略。");
                 continue;
             };
             if frame.is_response() && frame.id() == Some(&id) {
@@ -596,7 +597,7 @@ impl TurnRunner {
         if frame.is_notification() {
             match HostEvent::from_frame(&frame) {
                 Ok(event) => on_event(event),
-                Err(error) => eprintln!("[host] 未识别的内核通知：{error}"),
+                Err(error) => diagnostics::warn(format!("[host] 未识别的内核通知：{error}")),
             }
             return;
         }
@@ -625,7 +626,7 @@ impl TurnRunner {
                         let observations = self.run_batch(batch, interactor, on_event);
                         let result = ToolBatchResult { observations }.to_result();
                         if let Err(error) = self.kernel.respond(&id, result) {
-                            eprintln!("[host] 回工具批次失败：{error}");
+                            diagnostics::warn(format!("[host] 回工具批次失败：{error}"));
                         }
                     }
                     Err(error) => {
@@ -642,7 +643,7 @@ impl TurnRunner {
                     Ok(request) => match self.run_model_hook(request) {
                         Ok(result) => {
                             if let Err(error) = self.kernel.respond(&id, result.to_result()) {
-                                eprintln!("[host] 回 model.hook 失败：{error}");
+                                diagnostics::warn(format!("[host] 回 model.hook 失败：{error}"));
                             }
                         }
                         Err(message) => {
@@ -667,7 +668,7 @@ impl TurnRunner {
                     Ok(request) => {
                         let result = self.run_context_prune(request);
                         if let Err(error) = self.kernel.respond(&id, result.to_result()) {
-                            eprintln!("[host] 回 context.prune 失败：{error}");
+                            diagnostics::warn(format!("[host] 回 context.prune 失败：{error}"));
                         }
                     }
                     Err(error) => {
@@ -730,13 +731,13 @@ impl TurnRunner {
                 )
             })
             .collect::<Vec<_>>();
-        // 任务背景取本轮提交的原文（与审查的意图摘要同一份事实，见 `review_context`）。
-        let task = self.review_context.user_intent_summary.clone();
+        // 判定背景取**用户本回合提交的原文**：内核随请求带来（每回合刷新），比宿主自己维护的
+        // 意图摘要更全，也与 TUI 宿主读同一份事实（`handle_context_prune`）。
         let evicted = self
             .options
             .prune
             .as_ref()
-            .and_then(|prune| evicted_call_ids_for(prune, &task, &groups))
+            .and_then(|prune| evicted_call_ids_for(prune, &request.task, &groups))
             .unwrap_or_default();
         ContextPruneResult {
             evicted_call_ids: evicted,
@@ -1052,10 +1053,10 @@ impl TurnRunner {
                     // 截止时间到了：未回填的调用写成超时结果，后台线程继续跑但结果被丢弃
                     // （与 Python 的批次绝对截止时间语义一致）。
                     pending.fill_timeout(self.options.tool_timeout_seconds);
-                    eprintln!(
+                    diagnostics::warn(format!(
                         "[host] 工具执行超过 {} 秒仍未完成，已按超时回收等待。",
                         self.options.tool_timeout_seconds
-                    );
+                    ));
                     return;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -1091,10 +1092,10 @@ impl TurnRunner {
         };
         let mut arguments = call.arguments.clone();
         if let Err(error) = plugins.tool_call_before(&call.name, &mut arguments) {
-            eprintln!(
+            diagnostics::warn(format!(
                 "[host] {0} 被插件挡下（tool.call.before）：{error}",
                 call.name
-            );
+            ));
             return Err(omnicrawl_controllers::approval::plugin_call_denied_reason(
                 &call.name,
             ));
@@ -1122,10 +1123,10 @@ impl TurnRunner {
         if let Err(error) =
             plugins.tool_approval_before(&call.name, arguments, requires_confirmation, mode)
         {
-            eprintln!(
+            diagnostics::warn(format!(
                 "[host] {0} 被插件挡下（tool.approval.before）：{error}",
                 call.name
-            );
+            ));
             return Err(omnicrawl_controllers::approval::plugin_approval_denied_reason(&call.name));
         }
         Ok(())
@@ -1137,10 +1138,10 @@ impl TurnRunner {
             return Ok(());
         };
         if let Err(error) = plugins.tool_execute_before(&call.name, &call.arguments) {
-            eprintln!(
+            diagnostics::warn(format!(
                 "[host] {0} 被插件挡下（tool.execute.before）：{error}",
                 call.name
-            );
+            ));
             return Err(omnicrawl_controllers::approval::plugin_execute_denied_reason(&call.name));
         }
         Ok(())

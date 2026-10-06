@@ -1,6 +1,6 @@
 //! 对照：Rust 知识库工具 vs Python 真实现。
 //!
-//! 数据集由 `python rust/tools/gen_knowledge_fixture.py` 生成（期望值取自
+//! 数据集是冻结的对照契约（期望值取自
 //! `omnicrawl/knowledge/__init__.py` 与 `omnicrawl/agent/toolkit/knowledge_tools.py`）。
 //! 用例按生成顺序重放：写/追加类用例会改变知识库状态，顺序本身也是对照的一部分。
 

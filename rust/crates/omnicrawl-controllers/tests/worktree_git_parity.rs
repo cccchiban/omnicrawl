@@ -1,6 +1,6 @@
 //! `agent/subagents/worktree.py` 判定面的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `worktree_git` 段——分支名直接调真函数，
 //! 脏树门禁与变更统计用 `_run_git` 桩驱动真流程。本套件用同一批输入重放 Rust 实现。
 

@@ -2,7 +2,7 @@
 
 > 文档性质：现行系统设计（已实现并运行）。本文与源码核对于 2026-09-12；如与代码、测试不一致，以代码与测试为准。
 > 何时读取：需要理解、调试或修改 `advisor` 工具、`[advisor]` 配置、`/advisor` 命令、设置面板「顾问设置」页或顾问调用链路时。
-> 快速落点：核心实现 `omnicrawl/agent/controllers/advisor.py`；配置 `omnicrawl/config/features/advisor.py`；测试 `tests/test_advisor.py`、`tests/test_advisor_settings.py`。
+> 快速落点：核心实现 `rust/crates/omnicrawl-controllers/src/advisor.rs`；配置 `rust/crates/omnicrawl-config/src/features/advisor.rs`；测试 `tests/test_advisor.py`、`tests/test_advisor_settings.py`。
 
 ## 1. 定位与数据流
 
@@ -147,17 +147,17 @@ ToolResult（纯文本指导 / 错误信封）
 
 | 职责 | 文件 |
 |---|---|
-| 核心 Mixin 与纯函数（分支构造 / 按摩 / 工具清单 / 调用） | `omnicrawl/agent/controllers/advisor.py` |
-| 配置定义与读写 | `omnicrawl/config/features/advisor.py` |
+| 核心 Mixin 与纯函数（分支构造 / 按摩 / 工具清单 / 调用） | `rust/crates/omnicrawl-controllers/src/advisor.rs` |
+| 配置定义与读写 | `rust/crates/omnicrawl-config/src/features/advisor.rs` |
 | 顾问系统提示模板 | `omnicrawl/templates/advisor_system.md` |
-| 工具定义（零参数、无审批、有界输出） | `omnicrawl/agent/toolkit/tools.py`（`ADVISOR_TOOL_NAME`、`_meta_tool_definitions`） |
-| 工具注册/剥离 + 使用准则区块 | `omnicrawl/agent/controllers/tools/building.py`（`_build_tools`、`_advisor_guidelines_block`） |
-| 回合接线（工作消息快照、状态上报、ask_user 超时提示） | `omnicrawl/agent/controllers/turn/loop.py`、`omnicrawl/agent/controllers/shared.py` |
-| Agent 配置字段与 Mixin 组合 | `omnicrawl/agent/core.py` |
+| 工具定义（零参数、无审批、有界输出） | `rust/crates/omnicrawl-controllers/src/tool_catalog.rs`（`ADVISOR_TOOL_NAME`、`_meta_tool_definitions`） |
+| 工具注册/剥离 + 使用准则区块 | `rust/crates/omnicrawl-controllers/src/building.rs`（`_build_tools`、`_advisor_guidelines_block`） |
+| 回合接线（工作消息快照、状态上报、ask_user 超时提示） | `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`、`rust/crates/omnicrawl-controllers/src/shared.rs` |
+| Agent 配置字段与 Mixin 组合 | `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs` |
 | `/advisor` 命令 | `omnicrawl/commands/slash.py`（`handle_advisor_command`） |
-| 设置面板与路由 | `omnicrawl/ui/fullscreen/screens/advisor_settings.py`、`settings.py`、`model_picker.py` |
-| 运行时配置 setter | `omnicrawl/agent/controllers/session/settings.py`（`set_advisor_configuration`） |
-| 连接器命令分发 | `omnicrawl/connectors/fsapp.py`、`omnicrawl/connectors/telegram.py` |
+| 设置面板与路由 | `rust/crates/omnicrawl-tui/src/ui/settings/`、`settings.py`、`model_picker.py` |
+| 运行时配置 setter | `rust/crates/omnicrawl-controllers/src/settings.rs`（`set_advisor_configuration`） |
+| 连接器命令分发 | `rust/crates/omnicrawl-connectors/src/feishu/`、`rust/crates/omnicrawl-connectors/src/telegram/` |
 | 测试 | `tests/test_advisor.py`、`tests/test_advisor_settings.py` |
 
 ## 8. 维护与验证

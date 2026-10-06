@@ -41,10 +41,6 @@ src/
 Python 侧是语义基准，期望值由脚本在**真实现**上跑出来：
 
 ```bash
-python rust/tools/gen_connectors_telegram_fixture.py
-python rust/tools/gen_connectors_feishu_fixture.py
-python rust/tools/gen_feishu_inbox_fixture.py
-python rust/tools/gen_feishu_file_send_fixture.py
 cd rust && cargo test -p omnicrawl-connectors
 ```
 
@@ -91,7 +87,7 @@ cd rust && cargo test -p omnicrawl-connectors
 （`tests/feishu_file_send_parity.json`：12 例本地文件 + 6 例标记扫描，对照上传/发送调用序列与结果；
 `tests/feishu_upload.rs` 用传输桩件钉住 multipart 字节形状。）
 
-改任一侧实现都要重跑生成脚本再跑测试；卡片负载按**字符串**比对，缩进与分隔符也是契约。
+改了实现要让冻结数据集同步更新；卡片负载按**字符串**比对，缩进与分隔符也是契约。
 
 ## 尚未移植
 

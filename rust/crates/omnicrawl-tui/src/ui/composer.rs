@@ -20,7 +20,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::fullscreen::terminal::theme;
-use crate::state::{AppState, COMPOSER_MAX_LINES};
+use crate::state::{AppState, ComposerRow, COMPOSER_MAX_LINES};
 
 /// 占位文案：`› ` 属于占位符本身（对映 Python `placeholder="› 输入消息或 / 命令"`）。
 const PLACEHOLDER: &str = "› 输入消息或 / 命令";
@@ -78,6 +78,17 @@ fn box_block(status: Option<Vec<Span<'static>>>) -> Block<'static> {
 /// 正文可用列宽：框内宽度扣掉右侧滚动条列（边框已由方框占掉，不再重复扣）。
 pub fn body_width(inner_width: u16) -> u16 {
     inner_width.saturating_sub(SCROLLBAR_WIDTH).max(1)
+}
+
+/// 输入框正文的矩形：框内输入区扣掉右侧那一列滚动条。
+///
+/// 渲染与鼠标命中（点一下定位插入点、拖选）共用它：两处各算一遍就会错开一列，
+/// 变成一个「看到的行」与「点到的是哪一格」对不上的动画。
+pub fn text_rect(area: Rect) -> Rect {
+    Rect {
+        width: area.width.saturating_sub(SCROLLBAR_WIDTH),
+        ..area
+    }
 }
 
 /// 输入框上方菜单占用的行数：`/sessions` 会话菜单优先，其次才是命令菜单。
@@ -150,11 +161,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // `area` 已经是方框**内部**的输入区（由 `ui::layout` 从方框里切出来），
     // 所以这里不再画边框，正文紧贴方框左右边框。
     let body = body_width(area.width);
-    let (lines, cursor_row, start, total) = state.composer.visible_window(body);
-    let text = Rect {
-        width: area.width.saturating_sub(SCROLLBAR_WIDTH),
-        ..area
-    };
+    let (rows, cursor_row, start, total) = state.composer.visible_rows(body);
+    let text = text_rect(area);
     if text.width == 0 {
         return;
     }
@@ -170,22 +178,57 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             )),
             text,
         );
-        let line = lines.first().cloned().unwrap_or_default();
+        let line = rows.first().map(|row| row.text.clone()).unwrap_or_default();
         paint_block_cursor(frame.buffer_mut(), text, &line, 0, 0);
         return;
     }
 
-    let rendered: Vec<Line<'static>> = lines.iter().map(|line| Line::raw(line.clone())).collect();
+    let selection = state.composer.selection();
+    let rendered: Vec<Line<'static>> = rows.iter().map(|row| styled_row(row, selection)).collect();
     frame.render_widget(Paragraph::new(rendered), text);
 
     let (_, column) = state.composer.cursor_position(body);
+    let cursor_line = rows
+        .get(cursor_row)
+        .map(|row| row.text.as_str())
+        .unwrap_or_default();
     paint_block_cursor(
         frame.buffer_mut(),
         text,
-        &lines[cursor_row.min(lines.len().saturating_sub(1))],
+        cursor_line,
         cursor_row as u16,
         column,
     );
+}
+
+/// 把一行拆成「未选中 / 选中 / 未选中」三段；选中段反白（与消息区拖选同一套观感）。
+///
+/// 选区按**全文字符区间**给，行里存的是自己在全文里的区间（`[start, end)`），所以先求交
+/// 再换算到行内下标：直接用行长度累加会在换行符处错一格。
+fn styled_row(row: &ComposerRow, selection: Option<(usize, usize)>) -> Line<'static> {
+    let Some((start, end)) = selection else {
+        return Line::raw(row.text.clone());
+    };
+    let from = start.max(row.start).saturating_sub(row.start);
+    let to = end.min(row.end).saturating_sub(row.start);
+    if from >= to {
+        return Line::raw(row.text.clone());
+    }
+    let characters: Vec<char> = row.text.chars().collect();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let head: String = characters[..from].iter().collect();
+    if !head.is_empty() {
+        spans.push(Span::raw(head));
+    }
+    spans.push(Span::styled(
+        characters[from..to].iter().collect::<String>(),
+        Style::new().add_modifier(Modifier::REVERSED),
+    ));
+    let tail: String = characters[to..].iter().collect();
+    if !tail.is_empty() {
+        spans.push(Span::raw(tail));
+    }
+    Line::from(spans)
 }
 
 /// 内容超出可见行数时的细线滚动条（与消息区同款：透明轨道 + `█` 滑块）。
@@ -283,5 +326,35 @@ mod tests {
         // 整组高度 = 两条边框 + 组内各区间 + 输入本体。
         let state = state();
         assert_eq!(group_height(&state, 80), 2 + height(&state, 78));
+    }
+
+    #[test]
+    fn selection_is_painted_reversed_over_the_selected_characters() {
+        // 行自带它在全文里的字符区间（`start`/`end`），选区也是全文字符下标。
+        let row = ComposerRow {
+            text: "abcdef".to_string(),
+            start: 10,
+            end: 16,
+        };
+        assert_eq!(styled_row(&row, None).spans.len(), 1, "没选区就是一行原样");
+
+        // 选中 `cd`：切成三段，中间那段反白。
+        let line = styled_row(&row, Some((12, 14)));
+        let texts: Vec<&str> = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(texts, vec!["ab", "cd", "ef"]);
+        assert!(line.spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED));
+
+        // 选区跨到本行之外：只高亮交上的那一段。
+        assert_eq!(styled_row(&row, Some((0, 12))).spans.len(), 2);
+        // 选区完全不沾本行：不能凭空多画高亮。
+        assert_eq!(styled_row(&row, Some((0, 5))).spans.len(), 1);
+        assert_eq!(styled_row(&row, Some((16, 20))).spans.len(), 1);
     }
 }

@@ -1,6 +1,6 @@
 //! 对照：Rust TTS 文本归一化 vs Python `omnicrawl/tts/normalize.py`。
 //!
-//! 数据集由 `python rust/tools/gen_tts_fixture.py` 生成，覆盖稳健清洗管道、中文 WeText 连字符保护、
+//! 数据集是冻结的对照契约，覆盖稳健清洗管道、中文 WeText 连字符保护、
 //! 语言推断与合成前预处理。
 
 use serde_json::Value;

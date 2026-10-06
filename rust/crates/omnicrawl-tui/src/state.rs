@@ -252,6 +252,18 @@ pub struct Telemetry {
     pub rate: RateEstimator,
 }
 
+/// 输入框可见窗口里的一行：文本 + 它在全文里的**字符区间** `[start, end)`。
+///
+/// 区间用的是字符下标（与 [`Composer::cursor`] 同一套），渲染鼠标选区高亮时按它把
+/// 选区换算到行内位置。行与行之间的换行符不属于任何一行，所以上一行的 `end` 不等于
+/// 下一行的 `start`——换算时必须按区间来，不能用行长度累加。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerRow {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// 单行起步、按显示宽度软折行的输入框；最多显示 [`COMPOSER_MAX_LINES`] 行。
 ///
 /// 输入框自己带着斜杠命令菜单与候选表：菜单跟着文本变化刷新（对映 Textual 的
@@ -261,6 +273,11 @@ pub struct Telemetry {
 pub struct Composer {
     text: String,
     cursor: usize,
+    /// 鼠标在输入框里拖出来的选区：两个**字符下标**（锚点、拖动端），不保证大小顺序。
+    ///
+    /// 只在鼠标按下到松手之间活着：松手即复制并清掉（同消息区拖选），文本一改也作废——
+    /// 旧下标在改动后会指向别的字符，留着高亮就会出现「选中的和复制出去的不一致」。
+    selection: Option<(usize, usize)>,
     commands: Vec<CommandOption>,
     menu: CommandMenu,
     /// 粘贴折叠：占位符 → 原始文本（对映 Python `_compact_pastes`）。
@@ -590,8 +607,18 @@ impl Composer {
     }
 
     /// 按当前文本重新筛选候选（对映 `on_text_area_changed` 的刷新时机）。
+    ///
+    /// 文本改动都会走到这里（插入、删字、清空、替换全文），所以鼠标选区也在这里作废：
+    /// 选区按字符下标记，改动之后旧下标指向别处，留着高亮就会出现「选中的和复制出去的
+    /// 不一致」。只动光标的 [`Self::move_left`] 等不刷新菜单，那边单独清。
     fn refresh_menu(&mut self) {
+        self.clear_mouse_selection();
         self.menu.refresh(&self.text, &self.commands);
+    }
+
+    /// 作废鼠标选区（见 [`Self::refresh_menu`] 的说明）。
+    fn clear_mouse_selection(&mut self) {
+        self.selection = None;
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -647,6 +674,7 @@ impl Composer {
 
     /// 左右移动把占位符当一格：光标停在块首/块尾，不会停到块中间。
     pub fn move_left(&mut self) {
+        self.clear_mouse_selection();
         if self.cursor == 0 {
             return;
         }
@@ -658,6 +686,7 @@ impl Composer {
     }
 
     pub fn move_right(&mut self) {
+        self.clear_mouse_selection();
         let length = self.text.chars().count();
         if self.cursor >= length {
             return;
@@ -669,6 +698,7 @@ impl Composer {
     }
 
     pub fn move_home(&mut self) {
+        self.clear_mouse_selection();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[..at]
@@ -679,6 +709,7 @@ impl Composer {
     }
 
     pub fn move_end(&mut self) {
+        self.clear_mouse_selection();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[at..]
@@ -686,6 +717,108 @@ impl Composer {
             .position(|ch| *ch == '\n')
             .map(|index| at + index)
             .unwrap_or(chars.len());
+    }
+
+    /// 鼠标选区（**归一化**后的字符区间）；空选区（刚按下还没拖）返回 `None`。
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let (anchor, head) = self.selection?;
+        let (start, end) = if anchor <= head {
+            (anchor, head)
+        } else {
+            (head, anchor)
+        };
+        (start < end).then_some((start, end))
+    }
+
+    /// 在输入框里按下左键：把插入点挪过去，同时起一个新选区的锚点。
+    ///
+    /// 与消息区同一套语义：只按下不拖（空选区）就是「点一下定位插入点」，拖出去才是选取。
+    pub fn begin_selection(&mut self, index: usize) {
+        let index = self.clamped_index(index);
+        self.selection = Some((index, index));
+        self.cursor = index;
+    }
+
+    /// 拖动中：把选区的另一端（也是插入点，供粗光标与窗口跟随）挪到新位置。
+    pub fn extend_selection(&mut self, index: usize) {
+        let index = self.clamped_index(index);
+        if let Some((anchor, _)) = self.selection {
+            self.selection = Some((anchor, index));
+            self.cursor = index;
+        }
+    }
+
+    /// 清掉鼠标选区（复制完成 / 点到别处 / 文本改了）。
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// 选区里的文本（空选区返回 `None`）；写剪切板用。
+    ///
+    /// 取的是输入框里**显示出来的**文本：粘贴折叠块不展开（「所选即所见」，折叠原文
+    /// 只在提交时还原）。全是空白的选区照样返回，要不要写剪切板由调用方判定。
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection()?;
+        Some(self.text.chars().skip(start).take(end - start).collect())
+    }
+
+    /// 屏幕坐标反查：输入框可见窗口里的（行, 显示列）→ 字符下标。
+    ///
+    /// 折行、宽字符、超出行数上限后的窗口滚动都用 [`Self::visible_rows`] 同一套结果，
+    /// 否则鼠标点到的字符会和落下去的光标对不上。点在某行末尾之后就算该行末尾（下一行的
+    /// 行首在那个换行符之后），点在整个文本之后就是末尾；落在占位符块中间时按块取近端
+    /// （块在输入框里是一整块，光标不停在块里，与左右键同一套语义）。
+    pub fn char_index_at(&self, width: u16, row: usize, column: usize) -> usize {
+        let (_, _, start_row, _) = self.visible_rows(width);
+        let width = width.max(1) as usize;
+        let target = start_row + row;
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut row_now = 0usize;
+        let mut cell = 0usize;
+        let mut found = chars.len();
+        for (index, ch) in chars.iter().enumerate() {
+            if *ch == '\n' {
+                // 行尾：点在这一行最后一个字符之后，插入点落在这个换行符之前（渲染出来
+                // 就在本行末尾；落到 `index + 1` 会画到下一行行首）。
+                if row_now == target && column >= cell {
+                    found = index;
+                    break;
+                }
+                row_now += 1;
+                cell = 0;
+                continue;
+            }
+            let char_width = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+            if cell + char_width > width && cell > 0 {
+                row_now += 1;
+                cell = 0;
+            }
+            if row_now > target || (row_now == target && cell >= column) {
+                found = index;
+                break;
+            }
+            cell += char_width;
+        }
+        self.snap_to_placeholder(found)
+    }
+
+    /// 把下标夹进文本长度以内（鼠标算出的行尾列可能落在文本之后）。
+    fn clamped_index(&self, index: usize) -> usize {
+        index.min(self.text.chars().count())
+    }
+
+    /// 落在占位符块中间时取近端的一半：块内不停光标（与左右键、整块删除同一套语义）。
+    fn snap_to_placeholder(&self, index: usize) -> usize {
+        match self.placeholder_span(index) {
+            Some((start, end)) => {
+                if index - start <= end - index {
+                    start
+                } else {
+                    end
+                }
+            }
+            None => index,
+        }
     }
 
     /// 按显示宽度软折行；阶段一按列断行，不做英文单词级避断。
@@ -742,28 +875,54 @@ impl Composer {
         (lines, cursor)
     }
 
-    /// 与 [`Self::visible_lines`] 同一个窗口，另外给出窗口起点与总行数。
+    /// 可见窗口：行（带全文字符区间）+ 光标在窗口里的行号 + 窗口起点行号 + 总行数。
+    ///
+    /// 窗口算法只在这一处：折行、跟着光标滚动、上限裁剪都在这里定，
+    /// [`Self::visible_lines`] 与 [`Self::visible_window`] 都从它派生——高度计算、
+    /// 渲染与鼠标点击换算因此共用同一套换行结果，不会各算一份而对不上。
+    pub fn visible_rows(&self, width: u16) -> (Vec<ComposerRow>, usize, usize, usize) {
+        let lines = self.wrapped_lines(width);
+        let total = lines.len();
+        let (row, _) = self.cursor_position(width);
+        let (start, count, cursor) = if total <= COMPOSER_MAX_LINES {
+            (0, total, row.min(COMPOSER_MAX_LINES - 1))
+        } else {
+            let start = row
+                .saturating_sub(COMPOSER_MAX_LINES - 1)
+                .min(total - COMPOSER_MAX_LINES);
+            (start, COMPOSER_MAX_LINES, row - start)
+        };
+        // 每行在全文里的字符区间：折行行内不含换行符，行与行之间把它跳过去。
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut index = 0usize;
+        let mut rows: Vec<ComposerRow> = Vec::with_capacity(count);
+        for (position, text) in lines.into_iter().enumerate() {
+            while chars.get(index) == Some(&'\n') {
+                index += 1;
+            }
+            let row_start = index;
+            index += text.chars().count();
+            if position >= start && rows.len() < count {
+                rows.push(ComposerRow {
+                    text,
+                    start: row_start,
+                    end: index,
+                });
+            }
+        }
+        (rows, cursor, start, total)
+    }
+
+    /// 与 [`Self::visible_rows`] 同一个窗口，另外给出窗口起点与总行数。
     ///
     /// 输入卡右侧的细线滚动条要画滑块，需要知道「当前可见的是哪一段」。
     pub fn visible_window(&self, width: u16) -> (Vec<String>, usize, usize, usize) {
-        let lines = self.wrapped_lines(width);
-        let (row, _) = self.cursor_position(width);
-        if lines.len() <= COMPOSER_MAX_LINES {
-            return (
-                lines.clone(),
-                row.min(COMPOSER_MAX_LINES - 1),
-                0,
-                lines.len(),
-            );
-        }
-        let start = row
-            .saturating_sub(COMPOSER_MAX_LINES - 1)
-            .min(lines.len() - COMPOSER_MAX_LINES);
+        let (rows, cursor, start, total) = self.visible_rows(width);
         (
-            lines[start..start + COMPOSER_MAX_LINES].to_vec(),
-            row - start,
+            rows.into_iter().map(|row| row.text).collect(),
+            cursor,
             start,
-            lines.len(),
+            total,
         )
     }
 }
@@ -4141,6 +4300,101 @@ mod tests {
         composer.move_end();
         composer.insert("\n第二行");
         assert_eq!(composer.text, "好a世b\n第二行");
+    }
+
+    #[test]
+    /// 鼠标坐标 → 字符下标：宽字符按显示列算，行尾之后算行尾，整个文本之后算末尾。
+    #[test]
+    fn click_maps_to_the_character_under_the_cursor() {
+        let mut composer = Composer::default();
+        composer.set_text("中文abc");
+        // 「中」占列 0-1、「文」占 2-3、`a` 在列 4：点某一格就落在该格所属的字符之前。
+        assert_eq!(composer.char_index_at(40, 0, 0), 0);
+        assert_eq!(composer.char_index_at(40, 0, 2), 1);
+        assert_eq!(composer.char_index_at(40, 0, 4), 2);
+        assert_eq!(composer.char_index_at(40, 0, 5), 3);
+        // 行尾之后：插入点落在末尾（这一行没有换行符）。
+        assert_eq!(composer.char_index_at(40, 0, 99), 5);
+    }
+
+    /// 软折行与窗口滚动下也要对得上：行号是**可见窗口内**的行号，不是全文行号。
+    #[test]
+    fn click_maps_across_wrapped_and_scrolled_rows() {
+        let mut composer = Composer::default();
+        composer.set_text("abcd");
+        // 宽 2：两行 `ab` / `cd`；点第二行第 1 格 → 第 3 个字符。
+        assert_eq!(composer.char_index_at(2, 0, 1), 1);
+        assert_eq!(composer.char_index_at(2, 1, 0), 2);
+        assert_eq!(composer.char_index_at(2, 1, 9), 4);
+
+        // 超过 5 行时窗口跟着光标滚：`visible_rows` 给的是窗口里的行，
+        // 点窗口第一行应当落到被滚上去的那一行，而不是全文第一行。
+        let mut composer = Composer::default();
+        composer.set_text("1\n2\n3\n4\n5\n6\n7");
+        let (rows, cursor, start, total) = composer.visible_rows(40);
+        assert_eq!((rows.len(), cursor, start, total), (5, 4, 2, 7));
+        assert_eq!(rows[0].text, "3");
+        // 窗口第一行第 0 格 → 全文里的「3」（下标 4：`1\n2\n` 各占一格）。
+        assert_eq!(composer.char_index_at(40, 0, 0), 4);
+        // 每行的字符区间要跳过行与行之间的换行符。
+        assert_eq!((rows[0].start, rows[0].end), (4, 5));
+        assert_eq!((rows[1].start, rows[1].end), (6, 7));
+    }
+
+    /// 拖选：两个端点的字符下标取自全文，反向拖也照样归一化；空选区不算选区。
+    #[test]
+    fn mouse_selection_reads_back_the_selected_characters() {
+        let mut composer = Composer::default();
+        composer.set_text("中文 abc");
+        composer.begin_selection(2);
+        assert_eq!(composer.selection(), None, "只按下还没拖：不是选区");
+        assert_eq!(composer.selected_text(), None);
+
+        composer.extend_selection(6);
+        assert_eq!(composer.selection(), Some((2, 6)));
+        assert_eq!(composer.selected_text().as_deref(), Some(" abc"));
+        // 锚点在心里是 2，反向拖到 0：归一化后是 (0, 2)。
+        composer.extend_selection(0);
+        assert_eq!(composer.selection(), Some((0, 2)));
+        assert_eq!(composer.selected_text().as_deref(), Some("中文"));
+
+        composer.clear_selection();
+        assert_eq!(composer.selection(), None);
+        assert_eq!(composer.selected_text(), None);
+    }
+
+    /// 文本一改、光标一动，旧选区就作废：下标会指向别的字符，高亮与复制就会不一致。
+    #[test]
+    fn editing_or_moving_the_caret_drops_the_mouse_selection() {
+        let mut composer = Composer::default();
+        composer.set_text("abcd");
+        composer.begin_selection(1);
+        composer.extend_selection(3);
+        composer.insert("x");
+        assert_eq!(composer.selection(), None, "插入后选区作废");
+
+        composer.begin_selection(1);
+        composer.extend_selection(3);
+        composer.move_left();
+        assert_eq!(composer.selection(), None, "左右键后选区作废");
+    }
+
+    /// 鼠标点在占位符块中间时取近端：块在输入框里是一整块，光标不停在块里。
+    #[test]
+    fn click_inside_a_placeholder_snaps_to_the_nearer_edge() {
+        let mut composer = Composer::default();
+        composer.insert_paste(&"a\n".repeat(7));
+        let placeholder = "[粘贴 #1 +8 行]";
+        assert_eq!(composer.text(), placeholder, "8 行会被折成占位符");
+        let length = placeholder.chars().count();
+        // 块内取近端：左半边回块首，右半边到块尾。
+        assert_eq!(composer.snap_to_placeholder(1), 0);
+        assert_eq!(composer.snap_to_placeholder(length - 1), length);
+        // 块外照旧，一点不动。
+        assert_eq!(composer.snap_to_placeholder(0), 0);
+        assert_eq!(composer.snap_to_placeholder(length), length);
+        // 点在块首那一格：光标就落在块首，不会跑进块里。
+        assert_eq!(composer.char_index_at(40, 0, 0), 0);
     }
 
     #[test]

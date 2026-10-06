@@ -1,7 +1,7 @@
 //! features 其余模块（advisor / agent_workspace / desensitization / image_gen /
 //! tool_output_compression / tts）的对照测试。
 //!
-//! 期望值来自 Python 真实现（生成器 `rust/tools/gen_config_features_extra_fixture.py`）。
+//! 数据集是冻结的对照契约。
 
 use std::path::{Path, PathBuf};
 

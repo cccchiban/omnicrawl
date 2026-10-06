@@ -1,6 +1,6 @@
 //! `controllers/turn/loop.py` 工具调用事件字段的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `tool_events` 段（直接调 `TurnLoopMixin` 的
 //! 静态方法）。本套件用同一批输入重放 Rust 实现，比对字段内容、键序与「协议原文不落盘」边界。
 

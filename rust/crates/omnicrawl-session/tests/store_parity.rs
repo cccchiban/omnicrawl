@@ -1,7 +1,7 @@
 //! 会话存储的跨语言 parity：同一串操作，Python 真实现与 Rust 存储各跑一遍，
 //! 比对「步骤产出 + 磁盘上的文件字节 + 目录骨架」。
 //!
-//! fixture 由 `rust/tools/gen_session_store_fixture.py` 生成：它在临时目录里跑真
+//! fixture 是冻结的对照契约：它在临时目录里跑真
 //! `SessionStore`，把结果连同每个文件的确切内容一起记下来。两边都会做同样的归一化
 //! （会话 id、事件 id 是随机值；`session_started` 里的运行时身份依赖各自环境）。
 

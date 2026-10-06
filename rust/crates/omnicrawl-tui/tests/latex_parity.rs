@@ -1,6 +1,6 @@
 //! 对照：Rust LaTeX 转换层 vs Python 真实现 `omnicrawl/ui/fullscreen/rendering/latex.py`。
 //!
-//! 数据集由 `python rust/tools/gen_latex_fixture.py` 生成（期望值取自 Python 真实现）。
+//! 数据集是冻结的对照契约（期望值取自 Python 真实现）。
 //! 覆盖行内 / 块级 / 数学 fenced / 裸公式四类转换、块级分段与块级公式快判。
 //! 改了任一侧实现都要重跑生成脚本再跑本测试。
 

@@ -1,6 +1,6 @@
 //! 本地 API 配置面（`api/models.py::APIConfig` 与 `api/app.py::load_api_config`）的对照测试。
 //!
-//! 期望值来自 Python 真实现（生成器 `rust/tools/gen_api_config_fixture.py`）：
+//! 数据集是冻结的对照契约：
 //! 逐条比对归一化字段，或比对异常文案字符串。
 
 use omnicrawl_api::config::{api_config_from_section, ApiConfig, DEFAULT_HOST};

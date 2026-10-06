@@ -4,7 +4,7 @@
 //! CORS 与路由装配。Agent 运行时（回合、工具批次、会话与后台任务）由宿主层提供，
 //! 与 Python 侧 `service.py` 只做编排、不碰 HTTP 细节的分工一致。
 //!
-//! 契约来源：`omnicrawl/docs/API.md` 与 `tests/test_api.py`；
+//! 契约来源：内置文档 `omnicrawl://docs/API.md`；
 //! 逐项对照关系与已知差异见 `README.md`。
 
 pub mod app;

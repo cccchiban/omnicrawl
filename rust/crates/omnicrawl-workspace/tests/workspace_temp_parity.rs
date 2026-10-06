@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/workspace/temp.py` 真实现的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_workspace_temp_fixture.py` 生成：同一批输入（配置片段、
+//! 数据集是冻结的对照契约：同一批输入（配置片段、
 //! 目录配置字符串、子路径、待清理条目、`.last_cleanup` 时间戳）喂给真实现，这里照原样重建
 //! 目录与文件后重放 Rust 实现并逐字段比对。改了任一侧都要重跑生成脚本。
 //!

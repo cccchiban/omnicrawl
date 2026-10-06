@@ -1,6 +1,6 @@
 //! 审批判定层的跨语言对照（parity）。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `approval` 段后，本套件用同一份语料重放
 //! Rust 的手写匹配器逐条比对。语料是新旧两侧共同的语义基准，改规则必须同时重跑生成器。
 

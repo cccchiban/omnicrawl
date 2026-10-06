@@ -273,14 +273,9 @@ Python 用正则表达，这里全部用**手写匹配器**实现（字符类与
 - `to_json_line` 不含换行符；分隔符紧凑、不转义非 ASCII，与 Python 的
   `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` 同形。
 
-## parity 工作流
+## 对照（parity）验证
 
 ```bash
-python rust/tools/gen_session_fixture.py      # 期望值来自 session_models.py 真实现
-python rust/tools/gen_project_fixture.py      # 项目列表存储：纯函数 + ProjectStore 流程轨迹
-python rust/tools/gen_session_records_fixture.py  # 记录解码与诊断：迁移 / 解码 / 转录读取 / 索引文档 / 切行
-python rust/tools/gen_prompt_history_fixture.py   # 提示历史：展示清洗 / 条目构造与解析 / 存储轨迹
-python rust/tools/gen_turn_snapshot_fixture.py    # 工作区快照：脚本化 git 场景（捕获 / 回退 / 冲突）
 cd rust && cargo test -p omnicrawl-session
 ```
 

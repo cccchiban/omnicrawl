@@ -626,7 +626,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 `build_prompt_cache_identity` 已接线：宿主在 `handshake()` 里按稳定前缀算出七字段身份
 （`omnicrawl-host::prompt_cache::build_prompt_cache_identity`）交给内核的 `initialize.model`。
 哈希规则与 Python 逐字节对齐（文本 → `sha256`；结构化值 → `python_dumps_compact_sorted` 后再 sha256），
-由 `tests/prompt_cache_parity.rs` + `rust/tools/gen_prompt_cache_fixture.py` 钉住（含中文、空数组、
+由 `tests/prompt_cache_parity.rs` 钉住（含中文、空数组、
 键序与 `.strip()` 四类边界，并复核最终 `prompt_cache_key`）。
 
 `prompt_cache_capable` 取自 `LlmConfig.prompt_cache`（自定义模型条目声明的 `capabilities.prompt_cache`）；
@@ -752,9 +752,6 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p omnicrawl-cli          # 端到端用例需要内核二进制
-python rust/tools/gen_tui_tools_fixture.py   # 改了工具语义时重生成对照数据集
-python rust/tools/gen_latex_fixture.py       # 改了 LaTeX 语义时重生成对照数据集
-python rust/tools/gen_tool_diff_fixture.py   # 改了工具卡标题/正文渲染时重生成对照数据集
 cargo test -p omnicrawl-tui
 ```
 

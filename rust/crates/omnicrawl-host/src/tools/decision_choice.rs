@@ -18,6 +18,7 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::decision_model::{
     load_decision_model_configuration, load_decision_switches, DecisionChannelConfig,
 };
+use omnicrawl_core::diagnostics;
 use serde_json::{json, Map, Value};
 
 use crate::review::{masking_from_config, ReviewMasking};
@@ -191,11 +192,13 @@ pub fn chosen_option(
     match options.client.choose(&request) {
         Ok(index) if index < choices.len() => Some(index),
         Ok(index) => {
-            eprintln!("[host] 提问托管返回越界选项（{index}），改为人工提问。");
+            diagnostics::warn(format!(
+                "[host] 提问托管返回越界选项（{index}），改为人工提问。"
+            ));
             None
         }
         Err(error) => {
-            eprintln!("[host] 提问托管不可用，改为人工提问：{error}");
+            diagnostics::warn(format!("[host] 提问托管不可用，改为人工提问：{error}"));
             None
         }
     }

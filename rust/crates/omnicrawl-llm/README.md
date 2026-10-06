@@ -123,21 +123,9 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
 - 凭据由调用方注入；本 crate 不读配置、不读环境变量。
 - 流事件与最终回复同时交付：事件按发生顺序喂给 `TurnSink`（进程主据此写 NDJSON），`run_turn` 同时返回归并结果。
 
-## parity 工作流
+## 对照（parity）验证
 
 ```bash
-python rust/tools/gen_llm_stream_fixture.py    # 流解析
-python rust/tools/gen_llm_request_fixture.py   # 请求构建
-python rust/tools/gen_llm_usage_fixture.py     # 用量归一化
-python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
-python rust/tools/gen_llm_anthropic_fixture.py # Anthropic：请求构建、流映射、用量与错误文案
-python rust/tools/gen_llm_gemini_fixture.py    # Gemini：contents / config / 线上请求体 / 流映射 / 用量 / 错误文案
-python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
-python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
-python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
-python rust/tools/gen_desensitization_engine_fixture.py  # 消息脱敏：匹配引擎
-python rust/tools/gen_desensitization_plan_cache_fixture.py  # 消息脱敏：屏蔽计划缓存
-python rust/tools/gen_stream_registry_fixture.py         # 回合资源注册表：注册 / 注销 / 计数 / 关闭轨迹
 cd rust && cargo test -p omnicrawl-llm
 ```
 
@@ -316,7 +304,7 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - 对照：`tests/runtime_manager_parity.rs`，数据集
   `tests/fixtures/llm_runtime_manager_parity.json`（5 条轨迹：未初始化取回合、启动与占用、
   回合中拒绝/放行切换、持久化失败保留旧模型、窗口写回与关闭），
-  生成器 `rust/tools/gen_llm_runtime_manager_fixture.py`。
+  冻结数据集。
 
 ## 依赖
 
@@ -431,7 +419,7 @@ release 实测 5.6s → 1.4s。
   按 token 预算分批、共享抽取器池、`build_ner_layer` 的静默降级。
 - **真实推理**：`ner_weights.rs` 从 `data/ner_bilstm_crf.bin` 加载权重（Embedding → BiLSTM
   1 层双向 → Linear → 带约束的 CRF，Viterbi 解码）。
-- **权重来源**：`rust/tools/gen_ner_fixture.py` 把 Python checkpoint（zip + pickle 的 torch
+- **权重来源**：构建期把 checkpoint（zip + pickle 的 torch
   存档）转成「魔数 + 头部 JSON + f32 数据块」的自描述二进制；内核不实现 pickle 解析。
 - **对照**：`tests/ner_parity.rs`（6 项）——纯逻辑逐例对照，外加 **10 条文本的端到端实体区间
   与 Python/torch 逐位一致**。
@@ -459,7 +447,7 @@ release 实测 5.6s → 1.4s。
 - Python 侧的模块级单例在内核里都是**实例**（由调用方持有），便于测试与配置变更后失效。
   计划缓存与逐消息缓存都由 `DesensitizationRuntime` 持有，`close()` 时两处一起清空（计数保留）。
 
-计划缓存的对照数据集由 `gen_desensitization_plan_cache_fixture.py` 生成。注意该脚本
+计划缓存的对照数据集是冻结契约。注意历史生成过程曾
 **按文件路径**加载 `plan_cache.py`：Python 侧的 `engine.py` / `middleware.py` 当前带着未合并的
 冲突标记，走包导入会直接 `SyntaxError`；模块本身只依赖标准库，按路径加载不受影响。
 合并收口后可以把加载方式换回包导入（模块级行为不变），引擎重放路径的对照用例也可随那一批补。

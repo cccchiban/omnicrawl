@@ -1,6 +1,6 @@
 //! 对照：Rust 联网工具 vs Python 真实现。
 //!
-//! 数据集由 `python rust/tools/gen_net_tools_fixture.py` 生成：
+//! 数据集是冻结的对照契约：
 //! `web_search` 把 httpx 客户端换成记录型桩，因此引擎端点、查询参数编码与页面解析都可
 //! 逐字对照；`fetcher` 的抓取链路依赖 `curl_cffi` 会话，无从注入，对照的是它的纯函数
 //! （URL 解析、内网判定、meta refresh、标题与正文提取、截断、格式化）。

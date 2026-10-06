@@ -252,15 +252,15 @@ while (true) {
 
 ## 6. 源码边界
 
-API 实现已按资源拆分，公共导入保持 `from omnicrawl.api import create_app, AgentAPIService, APIConfig`：
+API 实现已按资源拆分：
 
 ```text
-omnicrawl/api/
-├── __init__.py          # 公共导出门面
-├── __main__.py          # python -m omnicrawl.api
-├── app.py               # 应用工厂、CORS、配置装载
-├── models.py            # 请求/响应模型
-├── service.py           # AgentAPIService 运行编排
-├── deps.py              # 鉴权与依赖注入
+rust/crates/omnicrawl-api/src/
+├── lib.rs               # 公共导出门面
+├── main.rs              # 服务入口
+├── app.rs               # 应用工厂、CORS、配置装载
+├── openapi.rs           # 请求/响应模型与 OpenAPI 契约
+├── service.rs           # AgentAPIService 运行编排
+├── error.rs             # 错误面与响应封装
 └── routes/              # system/runs/monitors/sessions/projects/configuration/support
 ```

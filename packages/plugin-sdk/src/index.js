@@ -3,8 +3,7 @@
  *
  * 分工：Cordis 负责插件加载、依赖注入、事件分发与可逆副作用；本模块只负责 OmniCrawl 的契约层
  * ——钩子白名单、Handler 模式约束、模式到 Cordis 分发方式的映射，以及跨墙超时策略。
- * 钩子表由 `rust/tools/gen_plugin_hook_table.py` 从 `omnicrawl/extensions/plugin_models.py` 抽取，
- * 不在本文件手写，避免与 Python 侧漂移。
+ * 钩子表在 `hooks.generated.json` 里，不在本文件手写，避免与内核侧漂移。
  */
 
 import { readFileSync } from 'node:fs'

@@ -1,7 +1,7 @@
 //! 跨语言 parity：同一份请求输入与同一份 SSE，Python 真 runtime 与 Rust 内核各跑一遍，
 //! 比对事件序列、请求体、归并结果与失败文案。
 //!
-//! fixture 由 `rust/tools/gen_llm_runtime_fixture.py` 生成：它起一个本机回环服务端，
+//! fixture 是冻结的对照契约：它起一个本机回环服务端，
 //! 把固定 SSE 喂给 `OpenAIChatCompletionsRuntime`（真 SDK 客户端 + 仓库的 httpx 客户端工厂），
 //! 记录真实现收到的事件、实际发出的请求体与失败时的错误文案。
 

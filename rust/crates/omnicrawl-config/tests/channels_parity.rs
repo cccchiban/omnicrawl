@@ -1,6 +1,6 @@
 //! 模型渠道配置（channels）的对照测试。
 //!
-//! 期望值来自 Python 真实现（生成器 `rust/tools/gen_config_channels_fixture.py`）。
+//! 数据集是冻结的对照契约。
 
 use std::path::{Path, PathBuf};
 

@@ -167,10 +167,7 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
 
 ## 对照数据集
 
-生成器：`rust/tools/gen_config_runtime_fixture.py`、`rust/tools/gen_config_models_fixture.py`、
-`rust/tools/gen_config_features_fixture.py`、`rust/tools/gen_config_features_extra_fixture.py`、
-`rust/tools/gen_config_core_fixture.py`、`rust/tools/gen_config_channels_fixture.py`、
-`rust/tools/gen_config_catalog_fixture.py`（期望值全部来自 Python 真实现）。
+数据集是冻结契约，随仓库提交。
 
 - `tests/fixtures/config_runtime_parity.json`：路径解析 26 例、用户目录与旧目录 5 例、
   `get_section` 10 例、`load_config_data` 15 例、写回文本 22 例、迁移 5 例 + 冲突递增 1 例。

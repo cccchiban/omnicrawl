@@ -1,6 +1,6 @@
 # 原生搜索扩展（Go）
 
-`grep`/`find` 的文本搜索核心。此前由随 wheel 分发的 ripgrep 二进制承担
+`grep`/`find` 的文本搜索核心，与 Rust 侧搜索语义对齐。此前由随 wheel 分发的 ripgrep 二进制承担
 （Windows/Linux/macOS 的 x86_64 与 arm64 共 5 份，解压后约 26MB）；现在改为随包
 编译的 Go 原生扩展，单平台约 2.5MB，且用 abi3 稳定 ABI，一份产物覆盖 Python 3.9+。
 
@@ -19,14 +19,11 @@ Go 模块零第三方依赖（只用标准库），因此离线也能构建，�
 
 ```bash
 # 需要 Go 1.21+ 与 cgo 可用的 C 编译器
-python native/build.py --out omnicrawl/_ocsearch.pyd   # Windows
-python native/build.py --out omnicrawl/_ocsearch.so    # Linux/macOS
+python native/build.py --out native/_ocsearch.pyd   # Windows
+python native/build.py --out native/_ocsearch.so    # Linux/macOS
 ```
 
-`pip install .` / `python setup.py bdist_wheel` 会通过 `setup.py` 的 `build_ext`
-自动调用同一份脚本。缺少 Go 或 C 编译器时构建会降级（打印 warning，不中断安装），
-运行时回退到 PATH 上的 `rg`；设置 `OMNICRAWL_REQUIRE_NATIVE_SEARCH=1` 可让降级
-直接失败，适合发布流水线。
+缺少 Go 或 C 编译器时构建会降级（打印 warning，不中断安装），运行时回退到 PATH 上的 `rg`。
 
 C 编译器：Linux/macOS 用系统 `gcc`/`clang`；Windows 需要 MinGW-w64
 （`winget install BrechtSanders.WinLibs.POSIX.UCRT`），cgo 不支持 MSVC 的 `cl.exe`。
@@ -34,8 +31,7 @@ C 编译器：Linux/macOS 用系统 `gcc`/`clang`；Windows 需要 MinGW-w64
 
 ## 行为对齐
 
-Python 侧 `omnicrawl/workspace/tools.py` 仍然按 ripgrep 的参数与输出格式调用后端
-（`run_search` 返回 `(stdout, 退出码)`），因此格式化、截断、落盘与安全过滤逻辑
+Rust 侧按 ripgrep 的参数与输出格式调用后端，因此格式化、截断、落盘与安全过滤逻辑
 保持不变。Go 侧实现的是项目实际用到的参数子集：
 
 - `--json --line-number`：NDJSON 记录，`path.text`/`line_number`/`lines.text`

@@ -1,6 +1,6 @@
 //! 跨语言 parity：用 Python 真实现产出的期望值校验 Rust 的 usage 归一化。
 //!
-//! fixture 由 `rust/tools/gen_llm_usage_fixture.py` 生成，覆盖输入/输出 token 的多种
+//! fixture 是冻结的对照契约，覆盖输入/输出 token 的多种
 //! 字段名、缓存命中写法、推理 token 的三种来源，以及非整数取值视为缺失的判定；
 //! 数值边界（负值不归零）单独成组，见 `openai_chat_usage_boundary_parity.json`。
 

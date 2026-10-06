@@ -2,7 +2,7 @@
 //!
 //! 对应 `omnicrawl/api/service.py` 的 `AgentAPIService`。差别只在宿主形态：Python 侧
 //! Agent 就在本进程，这里由 `omnicrawl-host` 起内核子进程、用协议 v1 驱动一个回合，
-//! 并把内核通知翻成 `omnicrawl/docs/API.md` 列出的 SSE 事件。
+//! 并把内核通知翻成 `omnicrawl://docs/API.md` 列出的 SSE 事件。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,6 +1,6 @@
 //! `controllers/session/{control,settings}.py` 生命周期编排的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `lifecycle` 段——用探针对象真跑一遍
 //! `close()` / `_finalize_attached_isolation()` / `_cancel_subagents_for_session_transition()`，
 //! 记录副作用轨迹与失败文案。本套件用同一批输入重放 Rust 的决策，逐字段比对。

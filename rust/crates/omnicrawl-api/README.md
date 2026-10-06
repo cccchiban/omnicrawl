@@ -1,6 +1,6 @@
 # omnicrawl-api
 
-本地 HTTP/SSE API 服务端：`omnicrawl/api/` 的 Rust 移植。契约来源是 `omnicrawl/docs/API.md`、
+本地 HTTP/SSE API 服务端：`omnicrawl/api/` 的 Rust 移植。契约来源是内置文档 `omnicrawl://docs/API.md`、
 Python 真实现（`omnicrawl/api/`）与行为测试（`tests/test_api*.py`、`tests/test_settings_api.py`）。
 
 分工与 Python 侧一致：`omnicrawl/api/service.py` 只做运行编排、不碰 HTTP 细节，`app.py` 负责
@@ -116,7 +116,7 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
 ## 对照与验证
 
 - Python 基线：`python -m pytest tests/test_api.py tests/test_settings_api.py tests/test_api_module_boundaries.py tests/test_api_multiworker.py -q`。
-- 配置面逐条对照：`rust/tools/gen_api_config_fixture.py` + `tests/config_parity.rs`。
+- 配置面逐条对照：`tests/config_parity.rs`（冻结数据集）。
 - 装配面端到端：`tests/server.rs` 在真实回环端口上跑鉴权、信封、CORS、预检与框架级错误。
 - 协议面：`omnicrawl-ipc` 的 `tests/bridge_round_trip.rs` 覆盖 `Command::METHODS` 全部方法。
 - 管理面：本机禁止编译，因此只做只读静态校验——逐个 Python `@router.*` 路径与 Rust 注册表比对

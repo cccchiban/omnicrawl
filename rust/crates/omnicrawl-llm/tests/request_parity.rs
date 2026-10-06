@@ -1,6 +1,6 @@
 //! 跨语言 parity：用 Python 真实现产出的期望值校验 Rust 请求构建层。
 //!
-//! fixture 由 `rust/tools/gen_llm_request_fixture.py` 生成，覆盖六组：请求体组装
+//! fixture 是冻结的对照契约，覆盖六组：请求体组装
 //!（messages 转换、工具声明、生成选项、prompt_cache_key）、provider_options 校验、
 //! GPT 系列判定、prompt_cache_key 计算、工具调用参数串的书写形式、浮点写法。
 

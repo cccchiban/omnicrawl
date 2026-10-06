@@ -67,5 +67,5 @@ export function apply(ctx, config) {
 
 ## 契约来源
 
-`src/hooks.generated.json` 由 `python rust/tools/gen_plugin_hook_table.py` 从
-`omnicrawl/extensions/plugin_models.py` 生成，请勿手改。
+`src/hooks.generated.json` 是钩子契约表的唯一来源，请勿手改；改钩子时同步改 Rust 侧
+`omnicrawl-extensions` 的模型与校验，两边必须一致。

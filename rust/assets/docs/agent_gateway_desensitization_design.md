@@ -2,7 +2,7 @@
 
 > 文档性质：现行系统设计（已实现并运行）。本文与源码核对于 2026-09-12；如与代码、测试不一致，以代码与测试为准。
 > 何时读取：需要理解、调试或修改出网消息脱敏（占位符、匹配引擎、序号注册表、流式还原、`[desensitization]` 配置、设置面板「消息脱敏」页）时。
-> 快速落点：核心模块 `omnicrawl/llm/desensitization/`；值类型规则 `rules.py`、gitleaks 规则 `gitleaks.py`（快照 `gitleaks.toml`）；配置 `omnicrawl/config/features/desensitization.py`；接线 `omnicrawl/llm/registry.py`；测试 `tests/test_desensitization.py`、`tests/test_desensitization_settings.py`、`tests/test_desensitization_rules.py`。
+> 快速落点：核心模块 `rust/crates/omnicrawl-llm/src/desensitization/`；值类型规则 `rules.py`、gitleaks 规则 `gitleaks.py`（快照 `gitleaks.toml`）；配置 `rust/crates/omnicrawl-config/src/features/desensitization.rs`；接线 `rust/crates/omnicrawl-llm/src/registry.rs`；测试 `tests/test_desensitization.py`、`tests/test_desensitization_settings.py`、`tests/test_desensitization_rules.py`。
 
 ## 1. 定位与目标
 
@@ -33,7 +33,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 | 方向 | 本地落盘 / 展示 / 审计 | 出网消息（发给模型） |
 | 可逆性 | 不可逆 | 可逆（序号注册表还原） |
 | 数据面 | 会话事件、日志、飞书卡片等 | AI 消息（含工具调用消息） |
-| 实现 | `omnicrawl/mcp/security.py`、`omnicrawl/state/session_artifacts.py` 等 | `omnicrawl/llm/desensitization/`（本层） |
+| 实现 | `rust/crates/omnicrawl-mcp/src/security.rs`、`rust/crates/omnicrawl-session/src/artifact.rs` 等 | `rust/crates/omnicrawl-llm/src/desensitization/`（本层） |
 
 本层**不写任何原文到日志、会话事件、SSE、异常与缓存**；原文只进内存注册表，且用完即销（§7.1、§10.2）。
 
@@ -41,7 +41,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 
 ### 2.1 处理范围（IN）
 
-- 发往模型：统一消息模型（`omnicrawl/llm/protocol.py`）中的
+- 发往模型：统一消息模型（`rust/crates/omnicrawl-protocol/src/`）中的
   - `TextBlock.text`（user / assistant 文本）；
   - `ToolCallBlock.arguments`（工具调用参数，dict 递归找值）；
   - `ToolResultBlock.content`（工具结果文本，含其中可解析的结构片段）；
@@ -81,13 +81,13 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 
 | 组件 | 职责 | 实现 |
 |---|---|---|
-| 匹配引擎 | 键名 / 结构感知 + 值类型规则 + 熵检测兜底，产出「待脱敏值」并完成替换 | `omnicrawl/llm/desensitization/engine.py` |
-| 值类型规则层 | PEM / 连接串 / 邮箱 / 银行卡 / IP / URL / MAC / 车牌 / gitleaks 的正则识别与重叠去重 | `omnicrawl/llm/desensitization/rules.py`、`gitleaks.py` |
-| 序列号注册表 | 分配 / 复用 / 查询 / 注销序号；原文仅内存驻留 | `omnicrawl/llm/desensitization/registry.py` |
-| 出站屏蔽器 + 入站还原器 | 运行时装饰器：屏蔽 `request.messages`、逐事件还原 | `omnicrawl/llm/desensitization/middleware.py` |
-| 流式还原状态机 | 尾部挂起缓冲、占位符还原、告警 | `omnicrawl/llm/desensitization/stream.py` |
-| 旁路一次性脱敏器 | 非统一运行时链路（审批审查）的单次屏蔽 / 还原 | `omnicrawl/llm/desensitization/oneshot.py` |
-| 配置与审计 | `[desensitization]` 配置；仅计数 / 规则 / 序号级观测 | `omnicrawl/config/features/desensitization.py` |
+| 匹配引擎 | 键名 / 结构感知 + 值类型规则 + 熵检测兜底，产出「待脱敏值」并完成替换 | `rust/crates/omnicrawl-llm/src/desensitization/engine.rs` |
+| 值类型规则层 | PEM / 连接串 / 邮箱 / 银行卡 / IP / URL / MAC / 车牌 / gitleaks 的正则识别与重叠去重 | `rust/crates/omnicrawl-llm/src/desensitization/rules.rs`、`gitleaks.py` |
+| 序列号注册表 | 分配 / 复用 / 查询 / 注销序号；原文仅内存驻留 | `rust/crates/omnicrawl-llm/src/desensitization.rs` |
+| 出站屏蔽器 + 入站还原器 | 运行时装饰器：屏蔽 `request.messages`、逐事件还原 | `rust/crates/omnicrawl-llm/src/desensitization/middleware.rs` |
+| 流式还原状态机 | 尾部挂起缓冲、占位符还原、告警 | `rust/crates/omnicrawl-llm/src/desensitization/stream.rs` |
+| 旁路一次性脱敏器 | 非统一运行时链路（审批审查）的单次屏蔽 / 还原 | `rust/crates/omnicrawl-llm/src/desensitization/oneshot.rs` |
+| 配置与审计 | `[desensitization]` 配置；仅计数 / 规则 / 序号级观测 | `rust/crates/omnicrawl-config/src/features/desensitization.rs` |
 
 生命周期总览：
 
@@ -105,7 +105,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 
 ### 4.1 主接线（统一运行时装饰器）
 
-在 `omnicrawl/llm/registry.py::build_runtime()` 返回处包一层「脱敏运行时」（`maybe_wrap_runtime`）：
+在 `rust/crates/omnicrawl-llm/src/registry.rs::build_runtime()` 返回处包一层「脱敏运行时」（`maybe_wrap_runtime`）：
 
 - 配置未启用或配置不可读 → 原样返回内层运行时（零成本）；
 - 启用 → 返回 `DesensitizationRuntime`：实现 `ModelRuntime` 协议，`identity`/`capabilities` 透传内层；
@@ -119,20 +119,20 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 
 以下链路均在各自 `ModelRuntimeManager().bootstrap()`/`switch()` 中经 `build_runtime()` 创建运行时，自动受本层保护：
 
-- 主回合（`omnicrawl/agent/controllers/turn/loop.py`）；
-- SubAgent（`omnicrawl/agent/controllers/subagents/orchestration.py`）；
-- 顾问（`omnicrawl/agent/controllers/advisor.py`）；
-- 上下文压缩摘要（`omnicrawl/agent/context_compaction/summary.py`）；
-- 视觉代理（`omnicrawl/agent/runtime/vision_proxy.py`）；
-- 模型切换 / 设置（`omnicrawl/agent/controllers/session/settings.py`）。
+- 主回合（`rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`）；
+- SubAgent（`rust/crates/omnicrawl-controllers/src/subagents/orchestration.rs`）；
+- 顾问（`rust/crates/omnicrawl-controllers/src/advisor.rs`）；
+- 上下文压缩摘要（`rust/crates/omnicrawl-controllers/src/context_compaction/`）；
+- 视觉代理（`rust/crates/omnicrawl-controllers/src/vision_proxy.rs`）；
+- 模型切换 / 设置（`rust/crates/omnicrawl-controllers/src/settings.rs`）。
 
 ### 4.3 旁路处理（不经统一运行时的模型调用）
 
 | 旁路 | 处置 | 说明 |
 |---|---|---|
-| 审批自动审查（`omnicrawl/agent/controllers/tools/approval.py`，直接走 Responses API） | **已接入** | 用 `OneShotMasker` 对审查请求出站屏蔽、对审查结论还原；屏蔽失败按 fail-closed 中止（fail-open 配置时降级发送原文并告警） |
+| 审批自动审查（`rust/crates/omnicrawl-controllers/src/approval.rs`，直接走 Responses API） | **已接入** | 用 `OneShotMasker` 对审查请求出站屏蔽、对审查结论还原；屏蔽失败按 fail-closed 中止（fail-open 配置时降级发送原文并告警） |
 | 旧直连回退 `AgentLLMProtocol._request_via_openai_client` | **不接入** | 仅在未提供 `runtime_manager`（遗留最小夹具 / 嵌入调用）时触发；生产配置统一走统一运行时；docstring 已标注边界 |
-| 旧版 `OpenAIResponseLLM.ask / ask_stream`（`omnicrawl/config/models/llm_client.py`） | **不接入** | 全仓库无调用方（仅类定义与兼容导出） |
+| 旧版 `OpenAIResponseLLM.ask / ask_stream`（`rust/crates/omnicrawl-config/src/models/llm.rs`） | **不接入** | 全仓库无调用方（仅类定义与兼容导出） |
 
 ### 4.4 配置读取时点
 
@@ -152,7 +152,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
     - `key: value`（YAML / TOML 行内片段，冒号后要求空白，避免误伤 URL 等形态）；
     - JSON 字符串值对（含多行文本中的片段）。
 - 键名规则：
-  - 默认敏感键词表：种子与 `omnicrawl/mcp/security.py::_SENSITIVE_FIELD_NAMES` 同步（`api_key` / `apikey` / `access_key` / `secret_key` / `authorization` / `cookie` / `password` / `secret` / `token` / `access_token` / `refresh_token` / `id_token`，由测试守护一致性），并扩展 `passwd` / `pwd` / `credential` / `private_key` / `session` / `csrf` 与中文词（密码 / 密钥 / 令牌 / 身份证 / 手机号 / 银行卡 / 口令）；
+  - 默认敏感键词表：种子与 `rust/crates/omnicrawl-mcp/src/security.rs::_SENSITIVE_FIELD_NAMES` 同步（`api_key` / `apikey` / `access_key` / `secret_key` / `authorization` / `cookie` / `password` / `secret` / `token` / `access_token` / `refresh_token` / `id_token`，由测试守护一致性），并扩展 `passwd` / `pwd` / `credential` / `private_key` / `session` / `csrf` 与中文词（密码 / 密钥 / 令牌 / 身份证 / 手机号 / 银行卡 / 口令）；
   - 归一化匹配：大小写不敏感，`-` / 空格归一为 `_`，折叠重复下划线；支持下划线分段命中与简单复数（`tokens` → `token`）；
   - 豁免表优先于命中：默认含 `public_key` / `example`（如示例占位值）；敏感键与豁免键均支持用户扩展（`extra_sensitive_keys` / `exempt_keys`）。
 - 值约束：
@@ -192,15 +192,15 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 | MAC 地址 | `detect_mac_address`（**开**） | `aa:bb:cc:dd:ee:ff` / `aa-bb-…` / Cisco `aabb.ccdd.eeff` |
 | 中国大陆车牌 | `detect_license_plate`（**开**） | 省份简称 + 字母 + 5 位（普通）或 + D/F + 5 位数字（新能源） |
 
-- 内置规则清单与实现：`omnicrawl/llm/desensitization/rules.py`；顺序即优先级，重叠区间由先命中的规则占位（如网址优先于其中的 IP）。
+- 内置规则清单与实现：`rust/crates/omnicrawl-llm/src/desensitization/rules.rs`；顺序即优先级，重叠区间由先命中的规则占位（如网址优先于其中的 IP）。
 - 规则语义：`keywords` 文本级预过滤、`min_entropy` 熵下限、`validator` 形态校验（Luhn / `ipaddress` 分类）、`allowlist` / `stopwords` 豁免。
 - 值尾部标点 / 空白留在原文（占位符只替换值本体），不破坏 JSON、引号与句子结构。
 - 命中计数：`DesensitizationStats.rules_masked`。
 
 #### 5.3.1 gitleaks 开源规则
 
-- 默认加载**内置离线快照** `omnicrawl/llm/desensitization/gitleaks.toml`（上游 `config/gitleaks.toml` 的逐字副本，MIT，共 222 条规则；`pkcs12-file` 仅按文件路径匹配，纯文本链路跳过，实际可用 221 条）。
-- `[desensitization].gitleaks_config_path` 指向自定义 `gitleaks.toml` 时，按规则 id 覆盖 / 追加；文件不可读或解析失败回退内置快照，不中断运行时（解析实现：`omnicrawl/llm/desensitization/gitleaks.py`）。
+- 默认加载**内置离线快照** `rust/crates/omnicrawl-llm/src/desensitization/gitleaks.toml`（上游 `config/gitleaks.toml` 的逐字副本，MIT，共 222 条规则；`pkcs12-file` 仅按文件路径匹配，纯文本链路跳过，实际可用 221 条）。
+- `[desensitization].gitleaks_config_path` 指向自定义 `gitleaks.toml` 时，按规则 id 覆盖 / 追加；文件不可读或解析失败回退内置快照，不中断运行时（解析实现：`rust/crates/omnicrawl-llm/src/desensitization/gitleaks.rs`）。
 - 遵循 gitleaks 语义：`keywords` 预过滤、`entropy` 下限、`secretGroup` 指定秘密捕获组、规则级 / 全局 allowlist 的 `regexes` 与 `stopwords` 命中即跳过。
 - 无法在「纯文本、无文件路径 / 无行上下文」下忠实执行的豁免条件保守跳过（`paths`、`commits`、`regexTarget = "line"`、`condition = "AND"`）——宁可多脱敏，不可漏脱敏。
 - 兼容性归一：Go 的 `\z` → `\Z`；出现在模式中部的全局内联标志 `(?i)` 上提到开头；编译失败的规则整条跳过（上游 222 条在 Python 3.9 下全部可编译）。
@@ -262,7 +262,7 @@ NER 语义兜底命中（人名 / 地名 / 机构名）→ 脱敏
 
 **适用**：形态普通、随机性低、既无敏感键名也无法用正则刻画的**语义敏感值**——人名、地名、机构名。前几层都覆盖不到它们（熵层要求高随机性，规则层要求固定形态），只有语义模型能识别。
 
-- **模型**：字符级 BiLSTM-CRF（手写 CRF + 非法 BIO 转移约束），BIO 标签体系 `O / B,I-PER / B,I-ORG / B,I-LOC`；权重随包分发（`omnicrawl/llm/desensitization/models/bilstm_crf_best.pt`，约 5MB，dev F1 0.868 / test micro-F1 0.863）；词表内嵌在 checkpoint 中。
+- **模型**：字符级 BiLSTM-CRF（手写 CRF + 非法 BIO 转移约束），BIO 标签体系 `O / B,I-PER / B,I-ORG / B,I-LOC`；权重随包分发（`rust/crates/omnicrawl-llm/data/bilstm_crf_best.pt`，约 5MB，dev F1 0.868 / test micro-F1 0.863）；词表内嵌在 checkpoint 中。
 - **接线位置**：`engine.mask_text` 的**最末端**，即结构 → 规则 → 熵之后。输入是已屏蔽文本，命中值（含其它层已替换的占位符）不参与候选。只产出「实体区间」，替换仍由 `MaskContext.placeholder_for` 走标准序号分配；**还原 / 流式 / 周期注销全部沿用既有机制，本层不新增还原路径**。
 - **能力边界**：只识别 PER / ORG / LOC，**不识别邮箱 / 手机号 / 身份证号**等结构化敏感信息（由值类型规则层负责）。为控制误报：入口做中文片段隔离、丢弃整体未落在中文片段内的实体（模型在拉丁字母片段上的误报多来自邮箱 / 网址 / 编号）、默认丢弃单字实体（`ner_min_entity_chars=2`，规避「日 / 美 / 京」这类歧义单字）、丢弃与既有占位符重叠的实体。
 - **中文隔离**：入口把非中文字符等长替换为分隔符后才送进模型（`·` / `・` 视为中文姓名连接符），因此拉丁字母、数字与其它符号不参与推理；出口再要求实体区间**整体**落在中文片段内（至少一个汉字、其余只能是连接符），跨片段实体不成立。偏移与原文一一对应，切块与缓存口径不变。
@@ -413,7 +413,7 @@ StableSequenceIndex(
 - 四种协议（Chat Completions / Responses / Anthropic / Gemini）：在统一消息层处理，协议无关；
 - 压缩摘要 / SubAgent / 顾问 / 视觉代理：经统一运行时，自动受保护；
 - 审批自动审查与旧直连路径：见 §4.3 接线清单；
-- **实现注意**：`omnicrawl/state/session_projection.py` 与 `turn/loop.py::_raw_tool_call_arguments` 维护「运行期 / 恢复 / 压缩三路逐字一致 + 前缀缓存保护」的约束。宿主侧唯一事实仍是原文，屏蔽只发生在序列化边界；对同一历史内容的屏蔽结果需可复现（否则影响前缀缓存命中，见 §10.2 指标）。该约束的落点是 §7.2 的稳定序号：同值同号保证脱敏后的历史逐字可复现（回归测试 `tests/test_desensitization_prefix_cache.py`）。
+- **实现注意**：`rust/crates/omnicrawl-session/src/projection.rs` 与 `turn/loop.py::_raw_tool_call_arguments` 维护「运行期 / 恢复 / 压缩三路逐字一致 + 前缀缓存保护」的约束。宿主侧唯一事实仍是原文，屏蔽只发生在序列化边界；对同一历史内容的屏蔽结果需可复现（否则影响前缀缓存命中，见 §10.2 指标）。该约束的落点是 §7.2 的稳定序号：同值同号保证脱敏后的历史逐字可复现（回归测试 `tests/test_desensitization_prefix_cache.py`）。
 
 ### 9.4 安全与威胁模型（摘要）
 
@@ -459,8 +459,8 @@ ner_min_entity_chars = 2              # 最小实体长度（2 规避单字地�
 ner_cache_size = 2048                 # 推理结果缓存容量（单位为「块」，0 关闭）
 ```
 
-- 读 / 写：`load_desensitization_config` / `save_desensitization_config`（`omnicrawl/config/features/desensitization.py`）；写回时保留 config.toml 其他段；
-- 键位说明见 `omnicrawl/config/templates/config.example.toml`。
+- 读 / 写：`load_desensitization_config` / `save_desensitization_config`（`rust/crates/omnicrawl-config/src/features/desensitization.rs`）；写回时保留 config.toml 其他段；
+- 键位说明见 `rust/assets/config-templates/config.example.toml`。
 
 ### 10.2 可观测性（只记录「数量级」信息）
 
@@ -478,21 +478,21 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 
 | 职责 | 文件 |
 |---|---|
-| 匹配引擎（键名 / 结构 / 值类型规则 / 熵兜底 / NER 兜底） | `omnicrawl/llm/desensitization/engine.py` |
-| NER 兜底层（设备 / 路径解析、抽取器、过滤、缓存、共享实例） | `omnicrawl/llm/desensitization/ner.py` |
-| NER 模型结构（BiLSTM-CRF，仅 torch；延迟导入） | `omnicrawl/llm/desensitization/ner_model.py` |
-| NER 模型权重（随包分发） | `omnicrawl/llm/desensitization/models/bilstm_crf_best.pt` |
-| 值类型规则定义与扫描 | `omnicrawl/llm/desensitization/rules.py` |
-| gitleaks 规则解析（内置快照 + 自定义） | `omnicrawl/llm/desensitization/gitleaks.py`、`gitleaks.toml` |
-| 序列号注册表与周期 | `omnicrawl/llm/desensitization/registry.py` |
-| 运行时装饰器（出站屏蔽 / 入站还原） | `omnicrawl/llm/desensitization/middleware.py` |
-| 流式还原状态机 | `omnicrawl/llm/desensitization/stream.py` |
-| 旁路一次性脱敏器 | `omnicrawl/llm/desensitization/oneshot.py` |
-| 模块导出 | `omnicrawl/llm/desensitization/__init__.py` |
-| 配置 | `omnicrawl/config/features/desensitization.py`、`omnicrawl/config/templates/config.example.toml` |
-| 主接线 | `omnicrawl/llm/registry.py`（`build_runtime` → `maybe_wrap_runtime`） |
-| 审批旁路接入 | `omnicrawl/agent/controllers/tools/approval.py` |
-| 设置面板 | `omnicrawl/ui/fullscreen/screens/desensitization_settings.py`、`settings.py` |
+| 匹配引擎（键名 / 结构 / 值类型规则 / 熵兜底 / NER 兜底） | `rust/crates/omnicrawl-llm/src/desensitization/engine.rs` |
+| NER 兜底层（设备 / 路径解析、抽取器、过滤、缓存、共享实例） | `rust/crates/omnicrawl-llm/src/desensitization/ner.rs` |
+| NER 模型结构（BiLSTM-CRF，仅 torch；延迟导入） | `rust/crates/omnicrawl-llm/src/desensitization/ner_weights.rs` |
+| NER 模型权重（随包分发） | `rust/crates/omnicrawl-llm/data/bilstm_crf_best.pt` |
+| 值类型规则定义与扫描 | `rust/crates/omnicrawl-llm/src/desensitization/rules.rs` |
+| gitleaks 规则解析（内置快照 + 自定义） | `rust/crates/omnicrawl-llm/src/desensitization/gitleaks.rs`、`gitleaks.toml` |
+| 序列号注册表与周期 | `rust/crates/omnicrawl-llm/src/desensitization.rs` |
+| 运行时装饰器（出站屏蔽 / 入站还原） | `rust/crates/omnicrawl-llm/src/desensitization/middleware.rs` |
+| 流式还原状态机 | `rust/crates/omnicrawl-llm/src/desensitization/stream.rs` |
+| 旁路一次性脱敏器 | `rust/crates/omnicrawl-llm/src/desensitization/oneshot.rs` |
+| 模块导出 | `rust/crates/omnicrawl-llm/src/desensitization.rs` |
+| 配置 | `rust/crates/omnicrawl-config/src/features/desensitization.rs`、`rust/assets/config-templates/config.example.toml` |
+| 主接线 | `rust/crates/omnicrawl-llm/src/registry.rs`（`build_runtime` → `maybe_wrap_runtime`） |
+| 审批旁路接入 | `rust/crates/omnicrawl-controllers/src/approval.rs` |
+| 设置面板 | `rust/crates/omnicrawl-tui/src/ui/settings/`、`settings.py` |
 | 测试 | `tests/test_desensitization.py`、`tests/test_desensitization_settings.py`、`tests/test_desensitization_rules.py` |
 
 ## 12. 行为样例与回归矩阵
@@ -565,8 +565,8 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 
 ## 14. 参考
 
-- 消息与协议模型：`omnicrawl/llm/protocol.py`；运行时管理与构建：`omnicrawl/llm/runtime.py`、`omnicrawl/llm/registry.py`；
-- 协议适配器：`omnicrawl/llm/providers/openai_chat.py`、`openai_responses.py`、`anthropic.py`、`gemini.py`；
+- 消息与协议模型：`rust/crates/omnicrawl-protocol/src/`；运行时管理与构建：`rust/crates/omnicrawl-llm/src/runtime.rs`、`rust/crates/omnicrawl-llm/src/registry.rs`；
+- 协议适配器：`rust/crates/omnicrawl-llm/src/openai_chat.rs`、`openai_responses.py`、`anthropic.py`、`gemini.py`；
 - 链路使用方与既有脱敏：见 §4.2 / §1.1；
 - 内置文档 URI：`omnicrawl://docs/agent_gateway_desensitization_design.md`。
 
@@ -576,7 +576,7 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 
 ### 15.1 逐消息屏蔽结果缓存（消除「每轮全量重脱敏」的 O(n^2)）
 
-- 落点：`omnicrawl/llm/desensitization/middleware.py` 的 `_MessageMaskMemo`。键是消息内容的 blake2b-16 摘要，覆盖**全部决定复用安全的字段**（role / 文本块 / 工具参数 / 工具结果 / 思考，以及 `tool_call_id` / 函数名 / `provider_call_id` / `ok` / 图片数据）；复用结果按「当前消息 + 缓存里的屏蔽后字段」重建，因此未参与屏蔽的字段（如 per-message 工具声明）不会因复用而丢失。
+- 落点：`rust/crates/omnicrawl-llm/src/desensitization/middleware.rs` 的 `_MessageMaskMemo`。键是消息内容的 blake2b-16 摘要，覆盖**全部决定复用安全的字段**（role / 文本块 / 工具参数 / 工具结果 / 思考，以及 `tool_call_id` / 函数名 / `provider_call_id` / `ok` / 图片数据）；复用结果按「当前消息 + 缓存里的屏蔽后字段」重建，因此未参与屏蔽的字段（如 per-message 工具声明）不会因复用而丢失。
 - 命中时用 `PlaceholderCycle.adopt` 把该消息的 (序号, 原文) 重新登记进**本周期的还原集合**：跳过扫描但还原照旧，模型回引历史占位符不会落入「未注册序号」分支。
 - 预算 `_MEMO_MAX_CHARS = 1024 * 1024`（1MB 字符；同时是「被屏蔽值原文」在缓存里的驻留上限），设为 0 关闭缓存（退回每轮全量重扫），`close()` 清空。
 - 淘汰策略为 **MRU**（淘汰最近用过的条目）：历史是每轮从头到尾顺序全扫，LRU 在「历史总量 > 预算」时会抖动到 0 命中，MRU 等价于把历史头部钉在缓存里，命中率随预算线性下降。
@@ -643,8 +643,8 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 
 | 职责 | 文件 |
 |---|---|
-| 会话级映射的持有 / 注入 / 释放 | `omnicrawl/llm/desensitization/registry.py`（`SequenceRegistry._entries`、`PlaceholderCycle.entries`、`PlaceholderCycle.close`、`SequenceRegistry.drop_all`） |
-| 还原路径（未改动） | `omnicrawl/llm/desensitization/stream.py`（`StreamRestorer` 逐处还原）；`middleware.py` 的逐消息缓存命中校验（§15.7）因此更易满足 |
+| 会话级映射的持有 / 注入 / 释放 | `rust/crates/omnicrawl-llm/src/desensitization.rs`（`SequenceRegistry._entries`、`PlaceholderCycle.entries`、`PlaceholderCycle.close`、`SequenceRegistry.drop_all`） |
+| 还原路径（未改动） | `rust/crates/omnicrawl-llm/src/desensitization/stream.rs`（`StreamRestorer` 逐处还原）；`middleware.py` 的逐消息缓存命中校验（§15.7）因此更易满足 |
 
 ### 16.3 回归与验证
 
@@ -658,11 +658,11 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 
 §16.1 的第一版把映射放在注册表实例里，而注册表随运行时创建 / 关闭：**切换模型会重建运行时并关闭旧运行时**，映射随之丢失，与「单会话内缓存」的目标不一致。本轮把映射的所有权上移到**会话所有者**：
 
-- 新类型 `SessionSequenceCache`（`omnicrawl/llm/desensitization/registry.py`）：持有 `session_id` 与 `seq → 原文` 映射，`rebind(session_id)` 在会话标识变化时丢弃上一会话的原文，`clear()` 供会话关闭使用；原文仍只在本进程内存驻留。
+- 新类型 `SessionSequenceCache`（`rust/crates/omnicrawl-llm/src/desensitization.rs`）：持有 `session_id` 与 `seq → 原文` 映射，`rebind(session_id)` 在会话标识变化时丢弃上一会话的原文，`clear()` 供会话关闭使用；原文仍只在本进程内存驻留。
 - `SequenceRegistry(store_provider=...)`：每个发送周期开始时向 `store_provider` 取当前会话的映射；注册表不再自己保管映射的归属——**注入的映射不随 `drop_all`（运行时关闭）释放**，未注入时退化为注册表私有映射（等价于旧行为，旁路 / 测试不受影响）。
 - `maybe_wrap_runtime(runtime, *, store_provider=...)`、`build_runtime(profile, model, *, store_provider=...)`：把会话映射透传到运行时装饰器。
-- 会话所有者：Agent 的 `current_desensitization_sequences()`（`omnicrawl/agent/controllers/session/store.py`）持有一个映射实例，调用时按 `current_session_id` `rebind`，因此会话新建 / 恢复 / 工作区切换后自动换新。
-- 会话内运行时构建点注入该映射：`omnicrawl/agent/controllers/turn/loop.py::_ensure_runtime_manager`（首次 bootstrap 与模型变化 switch）以及模型切换路径 `omnicrawl/agent/controllers/session/settings.py`（`switch(..., runtime_factory=partial(build_runtime, store_provider=...))`）。
+- 会话所有者：Agent 的 `current_desensitization_sequences()`（`rust/crates/omnicrawl-controllers/src/store.rs`）持有一个映射实例，调用时按 `current_session_id` `rebind`，因此会话新建 / 恢复 / 工作区切换后自动换新。
+- 会话内运行时构建点注入该映射：`rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs::_ensure_runtime_manager`（首次 bootstrap 与模型变化 switch）以及模型切换路径 `rust/crates/omnicrawl-controllers/src/settings.rs`（`switch(..., runtime_factory=partial(build_runtime, store_provider=...))`）。
 - 未注入映射的运行时（顾问、子代理、压缩摘要、视觉代理、工具输出压缩）保持原语义：各自的私有映射随该运行时关闭释放（它们的请求自带上下文，屏蔽 / 还原在本次运行内闭环）。
 
 行为归属总览：

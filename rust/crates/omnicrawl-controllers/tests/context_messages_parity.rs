@@ -1,6 +1,6 @@
 //! 上下文消息装配的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `context_messages` 段——项目规范消息由真函数产出，
 //! 插件附加上下文则由探针真跑 `_context_messages`（基线消息用桩替换）得到。本套件用同一批输入
 //! 重放 Rust 实现，逐项比对消息形状、顺序与收尾载荷。

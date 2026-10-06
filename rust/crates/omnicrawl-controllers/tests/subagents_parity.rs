@@ -1,6 +1,6 @@
 //! `agent/subagents/definitions.py` 的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_subagents_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_subagents_fixture.py` 重新生成
 //! `fixtures/subagents_parity.json` 后，本套件在临时目录里重放解析用例、真实模板与
 //! 四层来源发现。数据集里的临时根与仓库根是 `<ROOT>` / `<REPO>` 占位，两侧各自还原。
 
@@ -484,7 +484,7 @@ fn recovery_snapshots_match_python() {
 }
 // `agent/subagents/tasks.py` 的跨语言对照。
 //
-// 期望值来自 Python 真实现：静态投影（`_bound_result` / `_bound_error`）直接调用，
+// 数据集是冻结的对照契约：静态投影（`_bound_result` / `_bound_error`）直接调用，
 // 五个脚本化场景用真 `SubAgentTaskManager` 跑一遍，时间戳统一换成 `<TIME>` 占位后比对。
 
 use std::sync::Arc;

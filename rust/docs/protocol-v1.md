@@ -288,7 +288,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 经 `model.reply` 由宿主代答（Python 侧本来就把模型客户端放在宿主），`stop_check` 由内核判定、
 不是协议方法。内核自带 provider runtime（`omnicrawl-llm`）后 `model.reply` 不再被使用。
 
-映射的完整性由 `rust/tools/gen_host_bridge_fixture.py` 反射 Python 真实现生成 fixture 来钉住：
+映射的完整性由 `tests/host_bridge_parity.rs` 的冻结 fixture 钉住：
 回调多一个、少一个或改名，`cargo test -p omnicrawl-ipc` 就会红。
 
 ### 负载结构

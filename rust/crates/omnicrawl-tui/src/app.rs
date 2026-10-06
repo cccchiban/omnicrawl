@@ -91,6 +91,7 @@ use omnicrawl_controllers::workspace::{
     pending_worktrees_error, resolve_switch_target, subagent_drain_error, WorktreeRef,
 };
 use omnicrawl_controllers::AgentError;
+use omnicrawl_core::diagnostics::{self, Level};
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_config::features::decision_model::{
     load_decision_model_configuration, load_decision_switches, load_local_deployment,
@@ -221,26 +222,26 @@ fn plugin_tool_guards(
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
     let mut arguments = call.arguments.clone();
     if let Err(error) = plugins.tool_call_before(&call.name, &mut arguments) {
-        eprintln!(
+        diagnostics::warn(format!(
             "[tui] {0} 被插件挡下（tool.call.before）：{error}",
             call.name
-        );
+        ));
         return Err(format!("插件拒绝工具调用：{}。", call.name));
     }
     if let Err(error) =
         plugins.tool_approval_before(&call.name, &arguments, requires_confirmation, mode)
     {
-        eprintln!(
+        diagnostics::warn(format!(
             "[tui] {0} 被插件挡下（tool.approval.before）：{error}",
             call.name
-        );
+        ));
         return Err(format!("插件在审批前拒绝：{}。", call.name));
     }
     if let Err(error) = plugins.tool_execute_before(&call.name, &arguments) {
-        eprintln!(
+        diagnostics::warn(format!(
             "[tui] {0} 被插件挡下（tool.execute.before）：{error}",
             call.name
-        );
+        ));
         return Err(format!("插件在执行前拒绝：{}。", call.name));
     }
     if arguments == call.arguments {
@@ -320,7 +321,7 @@ fn load_prompt_runtime(
     match PromptRuntime::load(environment, prompt_options) {
         Ok(prompt) => Ok(prompt),
         Err(error) => {
-            eprintln!("[tui] 系统提示词装配失败，改用命令行给的文本：{error}");
+            report_startup_log(LogLevel::Warning, &format!("系统提示词装配失败，改用命令行给的文本：{error}"));
             let mut fallback = PromptOptions::new(workspace.to_path_buf());
             fallback.system_prompt_override = options.system_prompt.clone();
             PromptRuntime::load(environment, fallback)
@@ -501,16 +502,40 @@ pub struct App {
     slow_task: Option<SlowTask>,
     /// 会话区右缘滚动条正在被按住拖动（松手才结束）。
     scrollbar_drag: bool,
+    /// 输入框里正在拖选（左键按在输入框正文上才算）：松手时复制并清掉高亮。
+    ///
+    /// 不能只看「当前有没有选区」——只按一下不拖是**空选区**，那一下的作用是定位插入点，
+    /// 不是选取；有了这个标记，拖动中的「只剩光标」与「选区折叠」才能分开。
+    composer_drag: bool,
     /// 内核 stderr 的逐行通道：运行期报错转成会话区提示，不再直接写终端盖住输入框。
     kernel_logs: Option<Receiver<String>>,
+    /// 运行期诊断通道：库里（宿主与 TUI 自身）的诊断经它进会话流，不再直接写 stderr 盖住画布。
+    ///
+    /// 与 `kernel_logs` 同一手法，只是来源不同：那条是内核**子进程**的 stderr，
+    /// 这条是**本进程**内库代码的诊断（`crate::diagnostics` 装接收端，见那里为何要搬）。
+    diagnostic_lines: Option<Receiver<(Level, String)>>,
     /// 渠道页「模型 ID」的自动检测后台任务。
     channel_models_task: Option<Receiver<ChannelModelsResult>>,
+    /// 工具调用淘汰裁决的请求通道：裁决是网络请求（超时 20s），不能占着 UI 线程等。
+    prune_sender: Sender<PruneTaskResult>,
+    prune_results: Receiver<PruneTaskResult>,
+    /// 仍在后台跑的裁决数：>0 时主循环按活动帧率轮询，结果一到就应答内核。
+    prune_in_flight: usize,
 }
 
 /// 渠道模型列表自动检测的产出：候选模型 ID 与失败原因。
 struct ChannelModelsResult {
     models: Vec<String>,
     message: String,
+}
+
+/// 淘汰裁决的产出：要回给内核的请求 id 与判为无用的调用 ID。
+///
+/// 应答由 UI 线程在 [`App::drain_prune_results`] 里发出——裁决线程只负责算，
+/// 不碰内核连接（那是 UI 线程独占的）。
+struct PruneTaskResult {
+    id: Id,
+    evicted_call_ids: Vec<String>,
 }
 
 /// 后台 TTS 任务的产出（下载 / 克隆），由 UI 线程的轮询取回。
@@ -697,11 +722,12 @@ impl App {
             .unwrap_or(0);
         let prompt = load_prompt_runtime(&ConfigEnvironment::from_process(), &options, workspace)?;
         let (completion_sender, completions) = mpsc::channel();
+        let (prune_sender, prune_results) = mpsc::channel();
         // 模型/渠道视图：配置读不出来时退回环境变量默认值，界面照常可用（缺什么会由内核回错）。
         let llm = match load_llm_config(&ConfigEnvironment::from_process()) {
             Ok(config) => config,
             Err(error) => {
-                eprintln!("[tui] 模型配置读取失败，按环境变量默认值启动：{error}");
+                report_startup_log(LogLevel::Warning, &format!("模型配置读取失败，按环境变量默认值启动：{error}"));
                 LlmConfig::with_environment(&ConfigEnvironment::from_process())
             }
         };
@@ -772,16 +798,29 @@ impl App {
             session_close_before_sent: false,
             slow_task: None,
             scrollbar_drag: false,
+            composer_drag: false,
             startup_plugin_lines,
             startup_service_lines: Vec::new(),
             kernel_logs: None,
+            diagnostic_lines: None,
             channel_models_task: None,
+            prune_sender,
+            prune_results,
+            prune_in_flight: 0,
         })
     }
 
     /// 接管内核 stderr 通道：由 [`Self::drain_kernel_logs`] 把报错转成会话区提示。
     pub fn attach_kernel_logs(&mut self, logs: Receiver<String>) {
         self.kernel_logs = Some(logs);
+    }
+
+    /// 接管运行期诊断通道：由 [`Self::drain_diagnostics`] 把每条诊断写进会话流。
+    ///
+    /// 接收端由 `crate::diagnostics::install` 装在 `omnicrawl_core::diagnostics` 上，
+    /// TUI 进程内所有库诊断（含宿主 crate）都从这一个口子进会话区。
+    pub fn attach_diagnostics(&mut self, lines: Receiver<(Level, String)>) {
+        self.diagnostic_lines = Some(lines);
     }
 
     /// 挂载主 Agent 隔离区会话：退出收尾时自动 apply + 清理。
@@ -815,7 +854,7 @@ impl App {
             summaries.push(sub_summary);
         }
         if !summaries.is_empty() {
-            eprintln!("[isolation] {}", summaries.join("；"));
+            diagnostics::info(format!("[isolation] {}", summaries.join("；")));
         }
     }
 
@@ -1109,6 +1148,8 @@ impl App {
             || self.tts_task.is_some()
             || self.onejev_task.is_some()
             || self.channel_models_task.is_some()
+            // 淘汰裁决还在后台跑：结果一到就要应答内核（内核正等这条响应）。
+            || self.prune_in_flight > 0
             || self.state.has_running_activity()
             // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。
             || self.state.is_reasoning_revealing()
@@ -1135,7 +1176,9 @@ impl App {
             self.handle_frame(frame);
         }
         self.drain_completions();
+        self.drain_prune_results();
         self.drain_kernel_logs();
+        self.drain_diagnostics();
         self.drain_channel_models();
         self.enforce_tool_deadline();
         // 内核退出只收尾一次（本函数每 50ms 跑一遍），且**不**顺手退出界面：
@@ -1204,6 +1247,38 @@ impl App {
         // 内核退出时通道断开：保留 `None`，不再每帧空转。
         if !disconnected {
             self.kernel_logs = Some(logs);
+        }
+    }
+
+    /// 把库里的运行期诊断写进会话流：不再落在终端光标处盖住画布（用户要求）。
+    ///
+    /// 与内核 stderr 那条不同，这里**不做任何过滤**（用户选择「原样入流」）：诊断文案
+    /// 本身就是结论，漏一条就只能靠猜。样式与内核报错完全一致——`Record::Notice`，
+    /// 渲染成 `· ` 开头的暗灰提示行，跟着会话流一起滚动、可回看。
+    fn drain_diagnostics(&mut self) {
+        let Some(lines) = self.diagnostic_lines.take() else {
+            return;
+        };
+        let mut messages: Vec<String> = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match lines.try_recv() {
+                // 级别暂不参与展示（用户选择与内核报错同一种提示行）；
+                // 级别已经落在 `logs/tui.log` 里，需要分级排查时看那里。
+                Ok((_level, message)) => messages.push(message),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        for message in messages {
+            self.state.notice(message);
+        }
+        // 接收端已摘（退出收尾）时保留 `None`，不再每帧空转。
+        if !disconnected {
+            self.diagnostic_lines = Some(lines);
         }
     }
 
@@ -1292,12 +1367,12 @@ impl App {
                         self.drain_pending_inputs();
                     }
                 }
-                Err(error) => eprintln!("[tui] 未识别的内核通知：{error}"),
+                Err(error) => diagnostics::warn(format!("[tui] 未识别的内核通知：{error}")),
             }
             return;
         }
         let Some(id) = frame.id().cloned() else {
-            eprintln!("[tui] 内核发来没有 id 的帧，已忽略。");
+            diagnostics::warn("[tui] 内核发来没有 id 的帧，已忽略。");
             return;
         };
         match frame.method() {
@@ -1383,6 +1458,10 @@ impl App {
     /// 省上下文手段，不值得让回合失败，也绝不能在裁决不可用时误删内容。
     ///
     /// 任务背景直接用内核随请求带来的 `task`（内核侧就是本轮提交的原文），宿主不必另存一份。
+    ///
+    /// 裁决是网络请求（`PRUNE_TIMEOUT_SECONDS` 20s），与审查同档：**不能放在 UI 线程上**，
+    /// 否则每批工具后的这次送审都会冻住整个界面（动画停、按键无响应）。这里只解析请求，
+    /// 真正的裁决交给 [`Self::spawn_prune_job`]，应答在 [`Self::drain_prune_results`] 里发。
     fn handle_context_prune(&mut self, id: Id, frame: &Frame) {
         let request = match ContextPruneRequest::from_frame(frame) {
             Ok(request) => request,
@@ -1408,15 +1487,45 @@ impl App {
                 )
             })
             .collect::<Vec<_>>();
-        let evicted = self
-            .prune
-            .as_ref()
-            .and_then(|prune| evicted_call_ids_for(prune, &request.task, &groups))
-            .unwrap_or_default();
-        let result = ContextPruneResult {
-            evicted_call_ids: evicted,
+        self.spawn_prune_job(id, request.task, groups);
+    }
+
+    /// 后台线程跑淘汰裁决，结果经 [`App::prune_results`] 回填。
+    ///
+    /// 与 [`Self::spawn_review_job`] 同一手法：一个请求一个线程，UI 线程不等它。
+    /// 运行期缺失（开关关、无渠道）时不值得起线程，直接回空列表。
+    fn spawn_prune_job(&mut self, id: Id, task: String, groups: Vec<PruneCandidate>) {
+        let Some(prune) = self.prune.clone() else {
+            let _ = self.kernel.respond(
+                &id,
+                ContextPruneResult {
+                    evicted_call_ids: Vec::new(),
+                }
+                .to_result(),
+            );
+            return;
         };
-        let _ = self.kernel.respond(&id, result.to_result());
+        let sender = self.prune_sender.clone();
+        self.prune_in_flight += 1;
+        thread::spawn(move || {
+            let evicted_call_ids =
+                evicted_call_ids_for(&prune, &task, &groups).unwrap_or_default();
+            let _ = sender.send(PruneTaskResult {
+                id,
+                evicted_call_ids,
+            });
+        });
+    }
+
+    /// 取回后台裁决结果并应答内核。
+    fn drain_prune_results(&mut self) {
+        while let Ok(result) = self.prune_results.try_recv() {
+            self.prune_in_flight = self.prune_in_flight.saturating_sub(1);
+            let payload = ContextPruneResult {
+                evicted_call_ids: result.evicted_call_ids,
+            };
+            let _ = self.kernel.respond(&result.id, payload.to_result());
+        }
     }
 
     fn handle_tool_batch(&mut self, id: Id, frame: &Frame) {
@@ -1856,19 +1965,36 @@ impl App {
             MouseEventKind::ScrollUp => self.state.scroll_by(-WHEEL_STEP),
             MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
             MouseEventKind::Down(MouseButton::Left) if interactive => {
-                if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
+                // 点输入框：把插入点挪到点中的那一格（用户要求鼠标能定插入位置），
+                // 同时起选区锚点：接着拖就是选取输入框里的文字。
+                if let Some(index) = self.composer_index(mouse.column, mouse.row) {
+                    self.state.clear_selection();
+                    self.composer_drag = true;
+                    self.state.composer.begin_selection(index);
+                } else if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
                     if !shift {
+                        // 两处选区不同时亮着：否则松手时分不清该复制哪一个。
+                        self.composer_drag = false;
+                        self.state.composer.clear_selection();
                         self.state.begin_selection(point.0, point.1);
                     }
                 }
                 self.handle_click(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) if interactive && !shift => {
-                if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
+                if self.composer_drag {
+                    self.extend_composer_selection(mouse.column, mouse.row);
+                } else if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
                     self.state.extend_selection(point.0, point.1);
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) if interactive => self.finish_selection(),
+            MouseEventKind::Up(MouseButton::Left) if interactive => {
+                if std::mem::take(&mut self.composer_drag) {
+                    self.finish_composer_selection();
+                } else {
+                    self.finish_selection();
+                }
+            }
             _ => {}
         }
     }
@@ -1891,6 +2017,76 @@ impl App {
         )?;
         let text = conversation::text_area(area);
         Some((line, usize::from(column.saturating_sub(text.x))))
+    }
+
+    /// 输入框正文区的屏幕矩形（鼠标命中用）。
+    ///
+    /// 公开可见是为了让集成测试用同一套换算喂鼠标坐标——测试自己重算一遍布局，
+    /// 测的就不再是真正在敲的那个区域了。
+    pub fn composer_text_rect(&self) -> Rect {
+        ui::composer::text_rect(ui::layout(self.viewport, &self.state).composer)
+    }
+
+    /// 屏幕坐标 → 输入框里的字符下标；不在输入框正文区时返回 `None`。
+    ///
+    /// 与渲染共用 [`ui::composer::text_rect`] 和 [`crate::state::Composer::char_index_at`]，
+    /// 软折行、宽字符、内容超上限后的窗口滚动都不会错位。
+    fn composer_index(&self, column: u16, row: u16) -> Option<usize> {
+        let area = self.composer_text_rect();
+        if !area.contains(Position::new(column, row)) {
+            return None;
+        }
+        Some(self.state.composer.char_index_at(
+            area.width,
+            usize::from(row - area.y),
+            usize::from(column - area.x),
+        ))
+    }
+
+    /// 拖选输入框：把拖动端挪到鼠标位置。
+    ///
+    /// 拖出正文区时不跨到会话流（那是另一条选区），而是贴到最近的一行：右侧越界自然成了
+    /// 「到行尾」（列值大于行宽），下方越界贴到最后一行（输入框最多 5 行）。
+    fn extend_composer_selection(&mut self, column: u16, row: u16) {
+        let area = self.composer_text_rect();
+        // 只在正文区里算行号：越下越界贴到最后一行，越上贴到第一行（不会跨到会话流）。
+        // 零高区域收不到按下事件，但拖选仍可能被叫到，所以先按 `max(1)` 挡一道除零。
+        let height = usize::from(area.height.max(1));
+        let row_in = usize::from(row.saturating_sub(area.y)).min(height - 1);
+        let index = self.state.composer.char_index_at(
+            area.width,
+            row_in,
+            usize::from(column.saturating_sub(area.x)),
+        );
+        self.state.composer.extend_selection(index);
+    }
+
+    /// 松左键：输入框里有选区就写剪切板（与会话区拖选同一套：复制完清掉高亮）。
+    ///
+    /// 只点一下（空选区）不算：那次点击的作用是定位插入点，光标已经落好了，
+    /// 不该往剪切板里塞一个空字符串。
+    fn finish_composer_selection(&mut self) {
+        let Some(text) = self.state.composer.selected_text() else {
+            self.state.composer.clear_selection();
+            return;
+        };
+        let characters = text.chars().count();
+        let rows = text.lines().count();
+        match crate::clipboard::copy_text(&text) {
+            Ok(()) => {
+                self.state.composer.clear_selection();
+                let message = if rows > 1 {
+                    format!("已复制输入框里选中的 {rows} 行到剪切板。")
+                } else {
+                    format!("已复制输入框里选中的 {characters} 个字符到剪切板。")
+                };
+                self.state.show_notice_line(message, Instant::now());
+            }
+            Err(error) => self.state.show_notice_line(
+                format!("复制失败：{error}（可按住 Shift 拖选，用终端自带的复制）"),
+                Instant::now(),
+            ),
+        }
     }
 
     /// 松左键：有选区就写剪切板并清掉高亮；没拖动（空选区）就当普通点击。
@@ -2043,8 +2239,11 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => {
-                // 有选区时 Ctrl+C 复制（终端惯例）；否则维持「清空输入框」。
-                if self.state.selection().is_some() {
+                // 有选区时 Ctrl+C 复制（终端惯例）；**输入框里的选区优先**——选中了文字
+                // 再按 Ctrl+C 却把整个输入框清空，等于一手毁掉草稿；两处都没有才保持原行为。
+                if self.state.composer.selected_text().is_some() {
+                    self.finish_composer_selection();
+                } else if self.state.selection().is_some() {
                     self.finish_selection();
                 } else {
                     self.state.composer.clear();
@@ -2829,7 +3028,7 @@ impl App {
                 configuration.default_key.clone(),
             ),
             Err(error) => {
-                eprintln!("[tui] 渠道配置读取失败，渠道页留空：{error}");
+                diagnostics::warn(format!("[tui] 渠道配置读取失败，渠道页留空：{error}"));
                 (Vec::new(), String::new())
             }
         }
@@ -2850,7 +3049,9 @@ impl App {
                 configuration.default_key.clone(),
             ),
             Err(error) => {
-                eprintln!("[tui] 决策模型配置读取失败，决策页用默认渠道：{error}");
+                diagnostics::warn(format!(
+                    "[tui] 决策模型配置读取失败，决策页用默认渠道：{error}"
+                ));
                 let fallback = DecisionModelConfiguration::default();
                 (
                     fallback
@@ -2883,7 +3084,9 @@ impl App {
             }
             Ok(_) => llm.catalog_key.clone(),
             Err(error) => {
-                eprintln!("[tui] 渠道配置读取失败，模型管理页只显示当前渠道：{error}");
+                diagnostics::warn(format!(
+                    "[tui] 渠道配置读取失败，模型管理页只显示当前渠道：{error}"
+                ));
                 llm.catalog_key.clone()
             }
         }
@@ -4280,7 +4483,9 @@ impl App {
         match load_mcp_config(environment, None) {
             Ok(config) => mcp_values_from_config(&config),
             Err(error) => {
-                eprintln!("[tui] MCP 配置读取失败，MCP 设置页用默认值：{error}");
+                diagnostics::warn(format!(
+                    "[tui] MCP 配置读取失败，MCP 设置页用默认值：{error}"
+                ));
                 McpSettingsValues::default()
             }
         }

@@ -1,6 +1,6 @@
 //! `agent/controllers/plugins.py` 判定层的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/controllers` 数据集里的 `plugins` 段后，本套件重放 fail-closed 判定、拒绝事实、
 //! 拒绝文案与分发结局逐条比对。进程级 Plugin Runtime 与 Worker 生命周期属于宿主。
 

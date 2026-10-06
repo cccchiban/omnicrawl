@@ -1,8 +1,6 @@
 // 启动自动更新：检测 npm registry 上的 `omnicrawl-cli` 最新版，落后时全局升级并重启。
 //
-// 语义与 Python `omnicrawl/maintenance/{version_check,updater}.py` 一路对齐，差别只在版本源与
-// 升级方式：版本源从 PyPI RSS 换成 npm registry 的 `latest`，升级方式从
-// `pip install --upgrade` 换成 `npm install -g`。
+// 版本源是 npm registry 的 `latest`，升级方式是 `npm install -g`。
 //
 // 流程（仅默认工作台路径，非逃生口）：
 //
@@ -170,7 +168,7 @@ export function loadUpdateEnabled(home = homedir()) {
  * 判断是否从源码检出 / 开发环境运行（此类环境不自动更新）。
  *
  * npm 全局安装的启动器会落在 `node_modules/@omnicrawl/cli/bin` 这类目录里，祖先里没有 `.git`；
- * 仓库内开发时祖先里有 `.git`。与 Python `is_source_checkout`（`pyproject.toml + .git`）同义。
+ * 仓库内开发时祖先里有 `.git`。
  */
 export function isSourceCheckout(launcherPath, maxDepth = 8) {
   let current = dirname(resolve(launcherPath))

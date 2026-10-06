@@ -23,6 +23,7 @@ use omnicrawl_controllers::turn::tool_prune::{
     evicted_call_ids, prune_question_id, prune_questions, prune_state, PruneCandidate, PRUNE_DROP,
     PRUNE_KEEP,
 };
+use omnicrawl_core::diagnostics;
 use serde_json::Value;
 
 use crate::review::{masking_from_config, ReviewMasking};
@@ -175,7 +176,7 @@ pub fn evicted_call_ids_for(
             }
         }
         Err(error) => {
-            eprintln!("[host] 工具调用淘汰不可用，保留原文：{error}");
+            diagnostics::warn(format!("[host] 工具调用淘汰不可用，保留原文：{error}"));
             None
         }
     }

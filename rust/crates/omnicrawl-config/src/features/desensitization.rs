@@ -1,7 +1,7 @@
 //! 脱敏（Agent 网关消息脱敏）配置（对应 `omnicrawl/config/features/desensitization.py`）。
 //!
 //! 默认关闭：未启用时运行时不做任何包装（零成本）。字段与设计稿
-//! `omnicrawl/docs/agent_gateway_desensitization_design.md` 的 `[desensitization]` 段一一对应。
+//! `omnicrawl://docs/agent_gateway_desensitization_design.md` 的 `[desensitization]` 段一一对应。
 
 use std::path::{Path, PathBuf};
 

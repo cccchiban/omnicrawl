@@ -40,10 +40,9 @@ Provider 无关的 Agent 回合循环。语义基准是 Python 侧的
 - `max_model_turns` / `max_tool_calls`：正整数；`0` 非法 → 「{name} 必须是正整数或 None。」
 - `timeout_seconds`：正数 → 「timeout_seconds 必须是正数或 None。」；NaN 与 Python 一致地通过校验。
 
-## parity 工作流
+## 对照（parity）验证
 
 ```bash
-python rust/tools/gen_parity_fixture.py      # 由 Python 真实实现产出期望值
 cd rust && cargo test -p omnicrawl-core      # 同输入重放并逐字段比对
 ```
 

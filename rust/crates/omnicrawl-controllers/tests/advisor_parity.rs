@@ -1,6 +1,6 @@
 //! `agent/controllers/advisor.py` 判定层的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `advisor` 段后，本套件用同一批消息分支与
 //! 配置重放 Rust 实现逐条比对。模型选择、Runtime 引导与协议调用属于宿主，不在对照范围。
 

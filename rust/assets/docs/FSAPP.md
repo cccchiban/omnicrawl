@@ -1,6 +1,6 @@
 # FSAPP：飞书机器人连接器配置指南
 
-`omnicrawl/connectors/fsapp.py` 是 OmniCrawl 的飞书远程连接器。它通过
+`rust/crates/omnicrawl-connectors/src/feishu/` 是 OmniCrawl 的飞书远程连接器。它通过
 `lark-oapi` 的 WebSocket 长连接接收飞书消息，再交给当前 OmniCrawl Agent 执行，
 并把状态、工具调用结果和最终回答发送回飞书。
 
@@ -91,9 +91,9 @@ WebSocket 长连接。
 - 调用一开始就发送独立消息（`● 摘要 · … 调用中`），结果落地后在同一张卡上补齐状态、真实耗时与采样正文；任务取消或失败时仍在运行的记录收口为 `↷ 已取消`：
 
   ```text
-  ● read omnicrawl/connectors/fsapp.py · 第 1-120 行 · ✓ 成功 · 136ms
+  ● read rust/crates/omnicrawl-connectors/src/feishu/ · 第 1-120 行 · ✓ 成功 · 136ms
   ● bash pytest -q tests/test_fsapp_display.py · ✓ 成功 · 1.8s
-  ● Edit_file omnicrawl/connectors/fsapp.py · +12 -3 · ✓ 成功 · 420ms
+  ● Edit_file rust/crates/omnicrawl-connectors/src/feishu/ · +12 -3 · ✓ 成功 · 420ms
   ```
 
 - 摘要包含工具名与关键参数（路径、搜索目标、命令、文件变更统计等）；其余工具附带紧凑参数摘要，MCP 工具保留 `server.operation` 原名；
@@ -499,8 +499,8 @@ pip install lark-oapi
 
 | 路径 | 作用 |
 |---|---|
-| `omnicrawl/connectors/fsapp.py` | 飞书 WebSocket 连接、消息分派、Agent 任务、审批和文件收发 |
-| `omnicrawl/connectors/feishu_inbox.py` | 飞书入站持久队列与跨重启去重（先落盘后处理） |
+| `rust/crates/omnicrawl-connectors/src/feishu/` | 飞书 WebSocket 连接、消息分派、Agent 任务、审批和文件收发 |
+| `rust/crates/omnicrawl-connectors/src/feishu/` | 飞书入站持久队列与跨重启去重（先落盘后处理） |
 | `omnicrawl/docs/FSAPP.md` | 本配置与排障指南 |
 | `~/.OmniCrawl/config.toml` | 本机运行配置，包含 `[feishu]` 凭证和白名单 |
 | `<user_config>/connector-inbox/feishu/` | 飞书入站队列持久化目录（`pending.jsonl`/`done.jsonl`/`state.json`） |
@@ -515,7 +515,7 @@ pip install lark-oapi
 
 ```powershell
 python -m omnicrawl.connectors.fsapp --check
-python -m py_compile omnicrawl/connectors/fsapp.py
+python -m py_compile rust/crates/omnicrawl-connectors/src/feishu/
 ```
 
 然后在飞书客户端完成：

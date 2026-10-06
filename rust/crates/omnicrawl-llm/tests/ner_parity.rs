@@ -1,6 +1,6 @@
 //! NER 兜底层的对照测试（纯逻辑 + 真实权重推理）。
 //!
-//! 期望值来自 Python 真实现（生成器 `rust/tools/gen_ner_fixture.py`），
+//! 数据集是冻结的对照契约，
 //! 权重是 Python checkpoint 的逐位转换结果。
 
 use std::path::Path;

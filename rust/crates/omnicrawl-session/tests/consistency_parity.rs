@@ -1,6 +1,6 @@
 //! 会话一致性诊断的对照测试。
 //!
-//! 期望值由 `rust/tools/gen_session_consistency_fixture.py` 驱动 Python 真实现生成
+//! 数据集是冻结的对照契约
 //! （`omnicrawl/state/session_consistency.py`）；这里用同一份输入重放 Rust 实现，
 //! 按序列化后的字符串逐字段比对——workspace 开了 `preserve_order`，键序也是契约的一部分。
 

@@ -1,6 +1,6 @@
 //! 与 Python `omnicrawl/connectors/autostart.py` 真实现的对照测试。
 //!
-//! 数据集由 `python rust/tools/gen_connectors_autostart_fixture.py` 生成：同一批「配置文件 +
+//! 数据集是冻结的对照契约：同一批「配置文件 +
 //! 环境变量 + 采集日志开关」喂给真监督器（`Popen` 换成记录用的假实现），这里用假启动器重放
 //! Rust 监督器并逐字段比对。改了任一侧都要重跑生成脚本。
 //!

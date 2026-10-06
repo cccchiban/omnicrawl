@@ -1,6 +1,6 @@
 //! 对照：Rust 工具卡渲染层 vs Python 真实现 `omnicrawl/ui/fullscreen/rendering/tool_diff.py`。
 //!
-//! 数据集由 `python rust/tools/gen_tool_diff_fixture.py` 生成（期望值取自 Python 真实现）。
+//! 数据集是冻结的对照契约（期望值取自 Python 真实现）。
 //! 覆盖标题（状态色点、文件变更分支、工作区摘要分支、MCP 命名空间、路径压缩）、
 //! 正文（文件变更预览 / fetcher 精选 / read 与记忆类隐藏 / 其余原样输出）与纯文本标题。
 //! 每条用例都比对**纯文本**与**(样式, 文本) 运行段**——正文的 diff 着色与「隐藏类正文为空」

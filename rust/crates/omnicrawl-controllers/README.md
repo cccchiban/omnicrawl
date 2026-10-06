@@ -30,7 +30,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
 | `agent/subagents/worktree.py`（判定面） | `src/subagents/worktrees.rs` | 分支名片段清洗（非安全字符折叠 + 48 字符截断）、主树脏时的门禁文案（8 行预览）、worktree 变更统计（目录不存在即无变更、`rev-list` 失败保守记 1） |
 | `agent/subagents/read_only_commands.py`（判定构件） | `src/subagents/read_only.rs` | 可执行名归一化、命令链分段（重定向/空片段/未闭合引号）、`shlex.split` 子集与逐 token 段判定（白名单 + git/curl/sed/find/浏览器/PowerShell Web 请求专项）、策略入口（monitor 白名单、命令文本与 diagnostic 复核） |
-| `agent/toolkit/tools.py`（目录与注册） | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据由 `rust/tools/gen_agent_tools_data.py` 导出；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
+| 工具目录与注册 | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据在 `data/agent_tools.json`；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
 | `agent/toolkit/tools.py`、`host_tools.py` | `src/tool_args.rs` | 工具名/参数名归一化、参数投影（Session/确认页/SSE）、紧凑 Schema、Schema 校验与结果信封 |
 | Python `json.dumps` 子集 | `src/json.rs` | Python 风格 JSON 文本与 `repr`（工具结果信封、审查指令、参数摘要共用） |
 | `controllers/tools/output.py` | `src/output.rs` | 批次输出预算与落盘预览、工具结果消息、视觉旁路文案 |
@@ -97,7 +97,6 @@ git 快照能力由宿主实现，crate 内不起子进程。
 语义基准是 Python 真实现，不靠人读代码对齐：
 
 ```bash
-python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers/ 生成期望值
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 

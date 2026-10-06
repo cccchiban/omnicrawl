@@ -1,6 +1,6 @@
 //! 运行配置仓库（`omnicrawl/config/core/runtime.py`）的对照测试。
 //!
-//! 期望值来自 Python 真实现（生成器 `rust/tools/gen_config_runtime_fixture.py`）。
+//! 数据集是冻结的对照契约。
 //! 临时目录里的绝对路径在数据集里写作 `{root}`，这里替换成测试自己的临时根；
 //! 路径形态按 Windows 对照（`pathlib` 的字符串化规则已在 `runtime` 里对齐）。
 

@@ -1,6 +1,6 @@
 //! `config/features/subagents.py` 的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_config_subagents_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_config_subagents_fixture.py` 重新生成
 //! `fixtures/config_subagents_parity.json` 后，本套件重放设置面板校验与读盘用例。
 //! 环境变量由 `ConfigEnvironment` 注入，用例之间的取值互不干扰。
 

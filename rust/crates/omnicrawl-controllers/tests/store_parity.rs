@@ -1,6 +1,6 @@
 //! `controllers/session/store.py` 事件投影编排的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `store` 段后，本套件用同一批入参重放
 //! Rust 实现，比对内存事件的逐字段形状，以及「按落盘与否选投影方式」这条规则。
 

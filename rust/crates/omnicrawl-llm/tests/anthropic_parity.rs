@@ -1,4 +1,4 @@
-//! Anthropic Claude Messages 的跨语言 parity：期望值来自 Python 真实现。
+//! Anthropic Claude Messages 的跨语言 parity：数据集是冻结的对照契约。
 //!
 //! 覆盖 `_to_anthropic_messages`、`_sanitize_options`、`_format_anthropic_error`、
 //! 请求 kwargs 摊平后的线上请求体、流事件映射与 `usage_from_anthropic_payload`。

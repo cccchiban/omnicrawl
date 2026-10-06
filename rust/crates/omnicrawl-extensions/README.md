@@ -3,7 +3,7 @@
 `omnicrawl/extensions/` 的 Rust 内核移植：插件模型与校验、注册表与执行计划、
 Hook 分发与 Worker 生命周期、Skill 发现与匹配、npm 安装器。
 
-语义基准仍是 Python 侧真实现；两侧靠 `rust/tools/gen_extensions_fixture.py` 生成的
+对照数据集是冻结契约；两侧靠
 对照数据集对齐，不靠人读代码。
 
 ## 模块分工
@@ -21,7 +21,6 @@ Hook 分发与 Worker 生命周期、Skill 发现与匹配、npm 安装器。
 ## 对照工作流
 
 ```bash
-python rust/tools/gen_extensions_fixture.py   # 期望值来自 omnicrawl/extensions/ 真实现
 cd rust && cargo test -p omnicrawl-extensions
 ```
 
@@ -31,7 +30,7 @@ plugins 配置解析与区间校验、Handler 声明校验、自定义事件声�
 模式默认超时、注册表合并、执行计划、`replaces` 冲突与环、Skill 名称 / 描述校验、
 frontmatter 解析、描述推断、渐进式披露输出，以及安装器的包规格与 URL 编码。
 
-改了任一侧的实现都要重跑生成脚本再跑测试。
+改了实现要让冻结数据集同步更新。
 
 ### 真实链路测试
 

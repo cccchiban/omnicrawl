@@ -397,7 +397,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 - 目标：修复 API 流式事件重连问题。
 - 已完成：增加递增事件 ID 和内存事件缓冲。
 - 当前状态：验证客户端从 Last-Event-ID 继续读取。
-- 关键文件：`omnicrawl/api/service.py`、`omnicrawl/api/routes/runs.py`。
+- 关键文件：`rust/crates/omnicrawl-api/src/service.rs`、`rust/crates/omnicrawl-api/src/routes/runs.rs`。
 - 约束：不返回模型隐藏推理内容。
 - 下一步：补充 SSE 重放测试并执行 API 冒烟验证。
 ```
@@ -513,7 +513,7 @@ class SessionStore:
 
 ### 14.1 对 `LocalToolAgent` 的最小改造
 
-> 实施状态：该改造已落地。`LocalToolAgent` 已按领域拆分为组合门面 + 16 个领域 Mixin（见第 18 节）：`__init__` 保留在 `omnicrawl/agent/core.py`；会话创建/恢复由 `SessionStoreMixin._create_session_store` / `_start_or_resume_session`（`omnicrawl/agent/controllers/session/store.py`）实现；`run_stream()` 位于 `TurnLoopMixin`（`omnicrawl/agent/controllers/turn/loop.py`），在关键节点写入会话事件。以下为当时的实施建议，保留用于追溯。
+> 实施状态：该改造已落地。`LocalToolAgent` 已按领域拆分为组合门面 + 16 个领域 Mixin（见第 18 节）：`__init__` 保留在 `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`；会话创建/恢复由 `SessionStoreMixin._create_session_store` / `_start_or_resume_session`（`rust/crates/omnicrawl-controllers/src/store.rs`）实现；`run_stream()` 位于 `TurnLoopMixin`（`rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`），在关键节点写入会话事件。以下为当时的实施建议，保留用于追溯。
 
 建议先在 `LocalToolAgent` 中注入 `SessionManager`：
 
@@ -592,8 +592,8 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 
 ### 18.1 门面与组合
 
-- `omnicrawl/agent/core.py`（约 390 行）：`AgentConfig` 配置模型、`LocalToolAgent.__init__` 与 16 个领域 Mixin 的组合继承。
-- `omnicrawl/agent/controllers/`：按类别分目录存放领域实现（session / memory / workspace / subagents / tools / turn / plugins / undo）。
+- `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`（约 390 行）：`AgentConfig` 配置模型、`LocalToolAgent.__init__` 与 16 个领域 Mixin 的组合继承。
+- `rust/crates/omnicrawl-controllers/src/`：按类别分目录存放领域实现（session / memory / workspace / subagents / tools / turn / plugins / undo）。
 
 ```text
 LocalToolAgent(
@@ -656,7 +656,7 @@ LocalToolAgent(
 
 ### 19.2 事件驱动的协议轨迹投影
 
-`omnicrawl/state/session_projection.py` 中的 `TurnHistoryProjector` 是唯一实现：
+`rust/crates/omnicrawl-session/src/projection.rs` 中的 `TurnHistoryProjector` 是唯一实现：
 
 ```text
 SessionEvent（tool_call_requested / tool_result / user_message / assistant_message / ...）

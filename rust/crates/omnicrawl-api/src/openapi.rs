@@ -4,7 +4,7 @@
 //! 因此这里按同一份路由清单手工构造 OpenAPI 3.1 文档——路径、方法、标签、路径/查询参数
 //! 与请求体模型逐条对照 `omnicrawl/api/routes/*`，成功响应统一为 `{"data": ...}` 信封。
 //!
-//! 两个端点都在鉴权层之外（与 `/health` 同层），契约见 `omnicrawl/docs/API.md`：
+//! 两个端点都在鉴权层之外（与 `/health` 同层），契约见 `omnicrawl://docs/API.md`：
 //! 「除 `/health`、`/docs` 和 `/openapi.json` 外，请求必须携带 Bearer Token」。
 //!
 //! 所有对象/数组都显式构造，`json!` 只用于字面量结构——契约里嵌套了函数调用与

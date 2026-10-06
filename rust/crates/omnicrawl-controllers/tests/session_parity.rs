@@ -1,6 +1,6 @@
 //! `agent/controllers/session/`（settings / control）判定层的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `settings` / `control` 段后，本套件用同一批
 //! 输入重放 Rust 侧校验、归一化与阈值换算逐条比对。setter 的事务（重建工具表 / Runtime /
 //! MCP Manager、失败回滚）与资源关闭属于宿主，不在对照范围。

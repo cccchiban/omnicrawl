@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use omnicrawl_config::core::bootstrap::default_api_key_env;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::models::llm::load_llm_config;
+use omnicrawl_core::diagnostics;
 use omnicrawl_ipc::{error_code, ErrorObject, Frame, Id};
 
 pub struct KernelClient {
@@ -171,10 +172,12 @@ impl KernelClient {
                             }
                         }
                         // 协议约定：非法行丢弃并记日志，不断开连接。
-                        Err(error) => eprintln!("[tui] 丢弃内核发出的非法帧：{error}"),
+                        Err(error) => {
+                            diagnostics::warn(format!("[tui] 丢弃内核发出的非法帧：{error}"))
+                        }
                     },
                     Err(error) => {
-                        eprintln!("[tui] 读取内核输出失败：{error}");
+                        diagnostics::warn(format!("[tui] 读取内核输出失败：{error}"));
                         break;
                     }
                 }

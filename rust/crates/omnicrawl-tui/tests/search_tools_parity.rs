@@ -1,6 +1,6 @@
 //! 对照：Rust 搜索与 git 工具 vs Python 真实现。
 //!
-//! 数据集由 `python rust/tools/gen_tui_tools_fixture.py` 生成（期望值取自
+//! 数据集是冻结的对照契约（期望值取自
 //! `omnicrawl/workspace/tools.py` 与 `omnicrawl/agent/toolkit/git_tools.py`）。
 //! 用例按生成顺序重放：list → find → grep；find 的候选顺序依赖修改时间，
 //! 两侧都把 mtime 钉死到同一时刻，才能逐字对照。

@@ -1,6 +1,6 @@
 //! `agent/subagents/read_only_commands.py` 判定构件的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `read_only_commands` 段（直接调私有判定函数）。
 //! 本套件用同一批输入重放 Rust 实现，比对可执行名、命令分段、两类写入判定、
 //! 单段只读判定与策略入口。

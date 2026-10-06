@@ -1,6 +1,6 @@
 //! `agent/toolkit/{tools,host_tools}.py` 参数层的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `tool_args` 段后，本套件用同一批工具 schema 与
 //! 参数重放 Rust 实现逐字段比对。
 

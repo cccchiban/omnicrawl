@@ -1,4 +1,4 @@
-//! 配置对话的跨语言 parity：期望值来自 Python 真实现（生成器 `rust/tools/gen_config_router_fixture.py`）。
+//! 配置对话的跨语言 parity：数据集是冻结的对照契约。
 //!
 //! 五组对照：
 //!

@@ -44,7 +44,7 @@ test/kernel-bridge.test.mjs  node:test：驱动真内核跑通回合、拒绝、
 | 回合结束 | `turn.end` | notify | 内核 `turn.finished` 的参数 |
 | 回合取消/失败 | `turn.cancelled` / `turn.error` | notify | 按内核错误码分流（-32003 → cancelled） |
 
-载荷键名与 Python 侧一致（`tool` / `arguments` / `displayText` / `annotations`），同一批插件在两个宿主上读到同一套字段。
+载荷键名（`tool` / `arguments` / `displayText` / `annotations`）是契约的一部分，插件据此读取字段。
 
 ## 运行
 
@@ -78,17 +78,14 @@ Context（Cordis 仍是唯一框架，不需要另写一套）。
 
 ## 已知缺口（后续步骤）
 
-1. 真实工具层与审批仍在 Python 过渡宿主；本仓库只提供工具注册表，由调用方把工具交进来。
+1. 真实工具层与审批在 Rust 宿主；本仓库只提供工具注册表，由调用方把工具交进来。
 2. TypeScript 类型：SDK 目前是纯 ESM JS，插件作者的 `.d.ts` 待补。
 3. 失败熔断：`on_handler_error` / `disable_plugin_on_error` 尚未实现（当前只有超时策略）。
 4. 热重载：`@cordisjs/plugin-loader` 未接入。
-5. npm 安装、manifest 解析与审批仍由 Python 侧持有。
-6. 自研 hook 分发（`omnicrawl/extensions/plugin_protocol.py`、`node_runner.mjs` 的 `hook.invoke`）
-   已冻结、待删除。
+5. npm 安装、manifest 解析与审批由内核 `omnicrawl-extensions` 持有。
 
-## 与 Python 侧的一致性
+## 与宿主侧的一致性
 
-钩子契约表由 `python rust/tools/gen_plugin_hook_table.py` 从
-`omnicrawl/extensions/plugin_models.py` 抽取生成（`packages/plugin-sdk/src/hooks.generated.json`）。
-Python 侧改了钩子就必须重新生成，否则宿主侧契约与实现脱节。协议 v1 的方法名与错误码以
-`rust/docs/protocol-v1.md` 为准，JS 侧镜像在 `@omnicrawl/plugin-sdk` 的 `protocol.js`。
+钩子契约表由 `packages/plugin-sdk/src/hooks.generated.json` 固化，宿主侧契约与实现必须一致，
+改钩子时两边同步更新。协议 v1 的方法名与错误码以
+`rust/crates/omnicrawl-ipc/src/bridge.rs` 为准，JS 侧镜像在 `@omnicrawl/plugin-sdk` 的 `protocol.js`。

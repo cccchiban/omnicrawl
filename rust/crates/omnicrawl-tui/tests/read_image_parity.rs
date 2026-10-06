@@ -1,6 +1,6 @@
 //! 对照：Rust `read_image` vs Python `read_image_file`。
 //!
-//! 数据集由 `python rust/tools/gen_read_image_fixture.py` 生成：图片以 Base64 存进 fixture，
+//! 数据集是冻结的对照契约：图片以 Base64 存进 fixture，
 //! 两侧用同一份样本铺工作区；工作区根在两侧不同（临时目录），因此比对前统一规范化为
 //! `{WORKSPACE}`（路径大小写不敏感）。
 

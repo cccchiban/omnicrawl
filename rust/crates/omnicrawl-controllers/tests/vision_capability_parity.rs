@@ -1,6 +1,6 @@
 //! `controllers/turn/loop.py` 视觉能力判定的跨语言对照。
 //!
-//! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
+//! 数据集是冻结的对照契约：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `vision_capability` 段——用不同形状的运行时
 //! 快照与 `config.llm.native_vision` 组合真跑判定。本套件用同一批输入重放 Rust 实现。
 
