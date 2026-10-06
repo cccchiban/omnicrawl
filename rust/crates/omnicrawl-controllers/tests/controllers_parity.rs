@@ -518,6 +518,10 @@ fn undo_restore_precheck_matches_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn undo_artifact_path_matches_python() {
     let data = fixture();
     for case in data["undo"]["artifact_path"].as_array().expect("cases") {
@@ -705,6 +709,10 @@ impl memory::ExpiredMemoryStore for FakeExpiredStore {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn memory_project_root_matches_python() {
     let data = fixture();
     for case in data["memory"]["project_root"].as_array().expect("cases") {

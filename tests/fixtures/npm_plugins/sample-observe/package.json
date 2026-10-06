@@ -8,6 +8,10 @@
   "omnicrawl": {
     "apiVersion": "1",
     "entry": "index.mjs",
+    "engines": {
+      "omnicrawl": ">=0.1.0",
+      "node": ">=20"
+    },
     "permissions": ["hook:turn.end"],
     "hooks": [
       {

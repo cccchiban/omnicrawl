@@ -216,8 +216,9 @@ mod tests {
         let (paths, _root) = workspace("kind");
         let files_only =
             find_files(&paths, &args(json!({"pattern": "src", "kind": "file"}))).expect("只查文件");
+        // 目录在输出里带尾随分隔符，用它判断「目录没出现」（分隔符随平台）。
         assert!(
-            !files_only.contains("src/"),
+            !files_only.contains(&format!("src{}", std::path::MAIN_SEPARATOR)),
             "只查文件时目录不出现：{files_only}"
         );
 
@@ -227,7 +228,9 @@ mod tests {
         )
         .expect("只查目录");
         assert!(
-            dirs_only.lines().all(|line| line.ends_with('/')),
+            dirs_only
+                .lines()
+                .all(|line| line.ends_with(std::path::MAIN_SEPARATOR)),
             "{dirs_only}"
         );
 

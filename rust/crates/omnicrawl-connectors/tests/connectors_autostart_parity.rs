@@ -268,6 +268,10 @@ fn auto_start_decisions_match_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn child_environment_matches_python() {
     let data = fixture();
     for case in group(&data, "child_env_cases") {
@@ -306,9 +310,15 @@ fn child_environment_matches_python() {
             .iter()
             .map(|pair| {
                 let pair = pair.as_array().expect("pairs 元素是数组");
+                // 数据集是在 Windows 上生成的，`PYTHONPATH` 条目用 `;` 分隔；POSIX 上是 `:`。
+                // 分隔符不属于本用例要验证的契约（拼装顺序与去空白才是），按本机规范化。
+                let value = pair[1]
+                    .as_str()
+                    .expect("环境变量值")
+                    .replace(';', if cfg!(windows) { ";" } else { ":" });
                 (
                     pair[0].as_str().expect("环境变量名").to_string(),
-                    pair[1].as_str().expect("环境变量值").to_string(),
+                    value,
                 )
             })
             .collect();

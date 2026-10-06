@@ -148,6 +148,10 @@ fn compare_failure(case: &Value, error: &ToolError, workspace: &Path) {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn list_cases_match_python() {
     let (paths, root) = prepare_search_workspace("list");
     for case in fixture()["search"]["list"].as_array().expect("list 用例") {
@@ -162,6 +166,10 @@ fn list_cases_match_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn find_cases_match_python() {
     let (paths, root) = prepare_search_workspace("find");
     for case in fixture()["search"]["find"].as_array().expect("find 用例") {
@@ -176,6 +184,10 @@ fn find_cases_match_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn grep_cases_match_python() {
     let (paths, root) = prepare_search_workspace("grep");
     for case in fixture()["search"]["grep"].as_array().expect("grep 用例") {

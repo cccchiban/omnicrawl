@@ -123,6 +123,10 @@ fn clean_display_matches_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望值一律是 Windows 形态（路径分隔符、盘符与平台常量），
+// 被测实现也按 win32 分支做字符串化：POSIX 主机上必然形态不符。
+// 这条对照只在 Windows 主机上有意义。
 fn entry_create_matches_python() {
     let fixture = fixture();
     let env = env();

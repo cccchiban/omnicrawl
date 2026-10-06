@@ -267,6 +267,12 @@ mod platform {
         if pid == 0 {
             return false;
         }
+        // `pid as i32` 对 >i32::MAX 的值会变成负数，而负数 pid 在 `kill` 里是「进程组」语义
+        // （-1 更是「所有进程」）——哨兵值 4_294_967_295 因此会被误判为存活。超出 i32 正区间的
+        // pid 不可能是真实进程，直接判为不在运行。
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         // SAFETY: 信号 0 不投递任何信号，仅返回是否可作用于该进程。
         unsafe { kill(pid as i32, 0) == 0 }
     }

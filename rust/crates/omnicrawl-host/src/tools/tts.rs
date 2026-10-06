@@ -313,9 +313,11 @@ mod tests {
 
     #[test]
     fn absolute_output_dir_is_not_joined_with_workspace() {
+        // 用平台原生的绝对路径：Windows 上盘符（`D:/...`）才算绝对，POSIX 上要以 `/` 开头。
+        let absolute = if cfg!(windows) { "D:/tts-out" } else { "/tts-out" };
         let configuration = TtsConfiguration {
             enabled: true,
-            output_dir: "D:/tts-out".to_string(),
+            output_dir: absolute.to_string(),
             ..TtsConfiguration::default()
         };
         let options = TtsOptions::new(
@@ -324,7 +326,7 @@ mod tests {
             PathBuf::from("/models"),
             PathBuf::from("/ws"),
         );
-        assert!(options.default_output_path().starts_with("D:/tts-out"));
+        assert!(options.default_output_path().starts_with(absolute));
     }
 
     /// 后端选择：`api` 为 `Some` 就是接口合成，音色取 `[tts_api].voice`。
