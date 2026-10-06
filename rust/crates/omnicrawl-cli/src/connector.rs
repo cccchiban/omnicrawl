@@ -793,7 +793,9 @@ enabled = true
     }
 
     #[test]
-    fn environment_wins_over_config_file() {
+    fn config_file_wins_over_environment_variables() {
+        // 配置口径已在「配置只读 TOML」统一：环境变量不再参与模型解析，
+        // 即便设了 OMNICRAWL_MODEL / OPENAI_*，也一律以 config.toml 为准。
         let home = temp_home("model-env");
         write_model_files(&home);
         let env = ConfigEnvironment::new(home.clone(), "windows")
@@ -801,10 +803,10 @@ enabled = true
             .with_env_value("OPENAI_API_KEY", "env-key")
             .with_env_value("OPENAI_BASE_URL", "https://env.example/v1/");
 
-        let settings = ModelSettings::load(&env).expect("环境变量齐备");
-        assert_eq!(settings.model, "env-model");
-        assert_eq!(settings.api_key, "env-key");
-        assert_eq!(settings.base_url, "https://env.example/v1", "末尾斜杠应去掉");
+        let settings = ModelSettings::load(&env).expect("配置里已有模型通道，应能加载");
+        assert_eq!(settings.model, "config-model");
+        assert_eq!(settings.api_key, "config-secret");
+        assert_eq!(settings.base_url, "https://config.example/v1");
     }
 
     #[test]
@@ -813,10 +815,9 @@ enabled = true
         let env = ConfigEnvironment::new(home, "windows");
         // 不用 `expect_err`：`ModelSettings` 持有 api_key，刻意不实现 Debug（避免凭据进日志）。
         let error = match ModelSettings::load(&env) {
-            Ok(_) => panic!("三处都没有模型名应报错"),
+            Ok(_) => panic!("config.toml 里没有模型名应报错"),
             Err(error) => error,
         };
-        assert!(error.contains("OMNICRAWL_MODEL"), "{error}");
         assert!(error.contains("config.toml"), "{error}");
     }
 

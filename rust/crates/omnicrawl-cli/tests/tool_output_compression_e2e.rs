@@ -397,7 +397,14 @@ fn session_config_with_trigger(dir: &std::path::Path, trigger: Option<i64>) -> V
 }
 
 /// 写一份启用压缩的 config.toml，返回路径。
-fn write_config(name: &str, min_chars: usize) -> PathBuf {
+///
+/// 必须带 `[llm]` 段：压缩渠道的凭据与基地址都只从配置读（配置只读 TOML 后，环境变量
+/// 不再参与凭据解析）。没有可解析的 `[llm]` 时压缩器拿不到凭据，会静默跳过压缩，
+/// 于是这些用例收不到任何压缩请求。
+///
+/// `base_url` 传回环桩地址：裸 `model_key` 只换模型名、沿用 Profile 的连接，
+/// 压缩请求因此会打到桩服务上。
+fn write_config(name: &str, base_url: &str, min_chars: usize) -> PathBuf {
     let dir =
         std::env::temp_dir().join(format!("omnicrawl-compress-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("建临时配置目录");
@@ -405,7 +412,19 @@ fn write_config(name: &str, min_chars: usize) -> PathBuf {
     std::fs::write(
         &path,
         format!(
-            "[tool_output_compression]\nenabled = true\nmodel_key = \"compress-model\"\n\
+            "version = 2\n\
+             [llm]\n\
+             [llm.active_model]\n\
+             source = \"detected\"\n\
+             profile = \"stub\"\n\
+             model_id = \"main-model\"\n\
+             protocol = \"openai_chat_completions\"\n\
+             [llm.profiles.stub]\n\
+             provider = \"openai\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"OMNICRAWL_TEST_KEY\"\n\
+             api_key = \"{LITERAL_KEY}\"\n\
+             [tool_output_compression]\nenabled = true\nmodel_key = \"compress-model\"\n\
              thinking_enabled = false\nreasoning_effort = \"high\"\nmin_chars = {min_chars}\n\
              max_input_chars = 4000\nmax_output_chars = 400\ntimeout_seconds = 5\n"
         ),
@@ -421,7 +440,7 @@ fn both_compactions_run_at_the_same_time() {
     // 模型回复压缩的请求仍应先到达（否则就是排队执行）。
     // 阈值必然触发：两段压缩（工具调用 + 模型回复）在回合末并发发起。
     let server = StubServer::spawn_parallel_compressions(Duration::from_millis(900));
-    let config = write_config("parallel", 100);
+    let config = write_config("parallel", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
     kernel.initialize(
         model_config(&server),
@@ -480,7 +499,7 @@ fn both_compactions_run_at_the_same_time() {
 fn tool_calls_are_summarized_once_after_the_turn() {
     // 新粒度：批内不再逐条压缩，整轮结束把全部工具调用压成一段注入上下文。
     let server = StubServer::spawn();
-    let config = write_config("enabled", 100);
+    let config = write_config("enabled", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
     kernel.initialize(model_config(&server), Some(session_config(config.parent().expect("配置目录"))));
 
@@ -545,7 +564,7 @@ fn tool_compaction_rebuilds_history_and_reports_the_new_context_size() {
     // 概括不只是「转录里看起来被压缩了」：它必须重建运行期历史，让下一轮请求真的带概括文本；
     // 同时把压缩后的上下文大小随 `turn.finished` 报给宿主刷新遥测。
     let server = StubServer::spawn();
-    let config = write_config("history", 100);
+    let config = write_config("history", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
     kernel.initialize(
         model_config(&server),
@@ -716,7 +735,7 @@ fn every_tool_call_participates_regardless_of_length() {
     // 新粒度不再按工具名与长度筛选：短输出同样进整轮概括，
     // 概括粒度由模型决定，长度由 `max_output_chars` 兜底。
     let server = StubServer::spawn();
-    let config = write_config("short", 100_000);
+    let config = write_config("short", &server.addr, 100_000);
     let mut kernel = Kernel::spawn(&config);
     kernel.initialize(
         model_config(&server),
