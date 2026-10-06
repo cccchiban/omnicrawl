@@ -1057,13 +1057,15 @@ pub fn cleanup_eligible(
 
 /// 清理隔离区目录（四层门禁 + worktree 移除 + 元数据删除）。
 ///
+/// `now` 为空时取当前时间；测试用固定时刻绕过保留期。
 /// `force=true` 跳过门禁，仅用于显式手动清理。
 pub fn cleanup_isolation_session(
     session: &IsolationSession,
     in_use: Option<&HashSet<String>>,
     force: bool,
+    now: Option<f64>,
 ) -> (bool, String) {
-    let (eligible, reason) = cleanup_eligible(session, in_use, None, "origin");
+    let (eligible, reason) = cleanup_eligible(session, in_use, now, "origin");
     if !force && !eligible {
         return (false, reason);
     }
@@ -1174,7 +1176,7 @@ pub fn finalize_isolation_session(
     }
     match cleanup_on_exit {
         "auto" => {
-            let (removed, reason) = cleanup_isolation_session(session, in_use, false);
+            let (removed, reason) = cleanup_isolation_session(session, in_use, false, None);
             if removed {
                 messages.push("隔离区已清理".to_string());
             } else {
@@ -1208,7 +1210,7 @@ pub fn finalize_subagent_worktrees(in_use: Option<&HashSet<String>>, remote_ref:
             messages.push(format!("{} 保留（{reason}）", session.entry_name()));
             continue;
         }
-        let (removed_ok, remove_reason) = cleanup_isolation_session(&session, in_use, true);
+        let (removed_ok, remove_reason) = cleanup_isolation_session(&session, in_use, true, None);
         if removed_ok {
             unregister_isolation_session(&session.instance_id);
             messages.push(format!("{} 已清理", session.entry_name()));
@@ -1460,7 +1462,7 @@ pub fn sweep_expired_isolation_sessions(options: SweepOptions) -> IsolationSweep
             kept.push((instance_id, reason));
             continue;
         }
-        let (removed_ok, remove_reason) = cleanup_isolation_session(&session, Some(&guarded), true);
+        let (removed_ok, remove_reason) = cleanup_isolation_session(&session, Some(&guarded), true, None);
         if removed_ok {
             removed.push(instance_id);
         } else {

@@ -1,6 +1,6 @@
 {
   "source": "omnicrawl/llm/desensitization/gitleaks.py",
-  "snapshot_sha256": "8a451c112faa00b12a94abf167821f9e1897f1c892562fc65ff8ad7591ab2f2c",
+  "snapshot_sha256": "de686c2537acdd7ea3c8d9c26120ab1718c54c9cccdbffca3dbc0a672e4c6d12",
   "rule_count": 221,
   "rules": [
     {

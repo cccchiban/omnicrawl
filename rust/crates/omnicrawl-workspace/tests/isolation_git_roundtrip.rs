@@ -175,7 +175,7 @@ fn worktree_roundtrip_applies_changes_and_cleans_up() {
     // 应用之后隔离区是干净的：四层门禁全过，可以自动清理。
     let (eligible, reason) = cleanup_eligible(&session, None, Some(later), "origin");
     assert!(eligible, "应用后应可清理，实际：{reason}");
-    let (removed, reason) = cleanup_isolation_session(&session, None, false);
+    let (removed, reason) = cleanup_isolation_session(&session, None, false, Some(later));
     assert!(removed, "清理失败：{reason}");
     assert!(!session.worktree_path.exists(), "隔离区目录应已删除");
     assert!(
@@ -231,7 +231,7 @@ fn worktree_reuse_restores_baseline_without_recreating() {
         "复用不应重建目录"
     );
 
-    let (removed, reason) = cleanup_isolation_session(&second, None, true);
+    let (removed, reason) = cleanup_isolation_session(&second, None, true, None);
     assert!(removed, "强制清理失败：{reason}");
 }
 
@@ -277,7 +277,7 @@ fn local_mode_mirrors_changes_back() {
         "value\n"
     );
 
-    let (removed, reason) = cleanup_isolation_session(&session, None, true);
+    let (removed, reason) = cleanup_isolation_session(&session, None, true, None);
     assert!(removed, "清理失败：{reason}");
     assert!(read_isolation_metadata(&worktrees, "aw-localmode").is_none());
 }
@@ -318,6 +318,6 @@ fn finalize_reports_apply_and_keep_policy() {
     );
     assert!(session.worktree_path.exists(), "keep 策略下隔离区必须保留");
 
-    let (removed, reason) = cleanup_isolation_session(&session, None, true);
+    let (removed, reason) = cleanup_isolation_session(&session, None, true, None);
     assert!(removed, "收尾后强制清理失败：{reason}");
 }

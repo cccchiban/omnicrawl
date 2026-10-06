@@ -1,0 +1,20 @@
+{
+  "name": "@omnicrawl-fixture/sample-observe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "集成测试用的最小插件包：无 npm 依赖，node_runner.mjs 可直接加载。",
+  "type": "module",
+  "main": "index.mjs",
+  "omnicrawl": {
+    "apiVersion": "1",
+    "entry": "index.mjs",
+    "permissions": ["hook:turn.end"],
+    "hooks": [
+      {
+        "id": "on-turn-end",
+        "hook": "turn.end",
+        "mode": "observe"
+      }
+    ]
+  }
+}

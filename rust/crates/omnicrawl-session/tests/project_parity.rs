@@ -162,7 +162,11 @@ fn path_key_matches_python() {
     }
 }
 
+// 数据集里的输入是 Windows 绝对路径（`C:\Users\...`），判定基准是本机的
+// `home_directory()`：POSIX 主机上它返回 `/home/...`，Windows 路径不可能是其子路径，
+// 比对必然不符。这条对照只在 Windows 主机上有意义。
 #[test]
+#[cfg(windows)]
 fn agent_worktrees_judgement_matches_python() {
     let fixture = fixture();
     for case in fixture["pure"]["under_agent_worktrees"]
