@@ -129,6 +129,7 @@ fn after_turn_compacts_archives_and_rebuilds_history() {
         usage: TokenUsageSample::new(100, 20, 50).expect("用量非负"),
         last_request_input_tokens: 0,
         workspace_root: "/workspace",
+        task_hint: "整理仓库",
     };
     let report = driver.after_turn(&boundary).expect("压缩不抛错");
 
@@ -193,6 +194,7 @@ fn below_threshold_only_records_measurement() {
         usage: TokenUsageSample::new(10, 2, 0).expect("用量非负"),
         last_request_input_tokens: 0,
         workspace_root: "/workspace",
+        task_hint: "短任务",
     };
     let report = driver.after_turn(&boundary).expect("测量不抛错");
 
