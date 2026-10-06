@@ -56,18 +56,6 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn read() -> Option<String> {
-        None
-    }
-
-    /// 非 Windows 没有这份实现：粘贴图片在那里不可用（`Ctrl+V` 只粘文本）。
-    pub fn read_image() -> Option<Vec<u8>> {
-        None
-    }
-}
-
-#[cfg(not(windows))]
-mod imp {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -105,6 +93,15 @@ mod imp {
             }
         }
         Err(last_error)
+    }
+
+    pub fn read() -> Option<String> {
+        None
+    }
+
+    /// 非 Windows 没有这份实现：粘贴图片在那里不可用（`Ctrl+V` 只粘文本）。
+    pub fn read_image() -> Option<Vec<u8>> {
+        None
     }
 }
 
