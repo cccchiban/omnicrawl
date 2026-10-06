@@ -12,9 +12,10 @@
 //! 与 Python 的差异只有一处：切分用**手写扫描器**替代 `re.split`（分隔符集合固定、
 //! 不依赖正则语义，见 [`split_clauses`]）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::assets::{LabelsDocument, ALIASES_FILENAME, LABELS_FILENAME};
 use crate::router_weights::{mean_pool, normalize, RouterWeights, WEIGHTS_FILENAME};
@@ -62,6 +63,7 @@ impl fmt::Display for ConfigRouterError {
 impl std::error::Error for ConfigRouterError {}
 
 /// 本地无上下文的配置对话路由器：权重 + 标签表 + 别名向量索引。
+#[derive(Clone)]
 pub struct ConfigRouter {
     weights: RouterWeights,
     /// `kind == "section"` 的配置路径（开关动作要改写成 `<段>.enabled`）。
@@ -74,7 +76,31 @@ pub struct ConfigRouter {
 
 impl ConfigRouter {
     /// 从内核资源目录读取 `config_router.bin` / `labels.json` / `aliases.json`。
+    ///
+    /// 装配含别名索引：907 条别名要逐条跑一遍前向，实测单次约 50 秒（release）。
+    /// 进程内按资源目录缓存，重复取用只付一次代价——否则每开一次配置对话面板都要再等一遍。
     pub fn load(assets_dir: &Path) -> Result<Self, ConfigRouterError> {
+        static CACHE: OnceLock<Mutex<HashMap<PathBuf, Result<ConfigRouter, ConfigRouterError>>>> =
+            OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = assets_dir.to_path_buf();
+        if let Some(hit) = cache
+            .lock()
+            .expect("配置对话路由器缓存锁")
+            .get(&key)
+            .cloned()
+        {
+            return hit;
+        }
+        let loaded = Self::load_uncached(assets_dir);
+        cache
+            .lock()
+            .expect("配置对话路由器缓存锁")
+            .insert(key, loaded.clone());
+        loaded
+    }
+
+    fn load_uncached(assets_dir: &Path) -> Result<Self, ConfigRouterError> {
         let weights_path = assets_dir.join(WEIGHTS_FILENAME);
         let weights = std::fs::read(&weights_path).map_err(|error| {
             ConfigRouterError::Unavailable(format!(
