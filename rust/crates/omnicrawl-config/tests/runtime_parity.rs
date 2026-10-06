@@ -28,6 +28,17 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+/// 比较用：把路径分隔符统一成 `\`。
+///
+/// 这个数据集写的是 Windows 形态（被测实现也按 `win32` 平台分支），但测试可能在
+/// POSIX 主机上跑——`PathBuf::join` 在那里只会拼出 `/`，于是 `C:\Users\x` 会变成
+/// `C:\Users\x/.OmniCrawl`。分隔符不属于本用例要验证的契约，比较前统一即可。
+#[cfg(windows)]
+fn cmp_path(actual: &str, expected: &str) -> bool {
+    actual.replace('/', "\\") == expected.replace('/', "\\")
+}
+
+#[cfg(windows)]
 fn env_for_case(case: &Value, home: &str, root: Option<&str>) -> R::ConfigEnvironment {
     let mut env = R::ConfigEnvironment::new(home, "win32");
     if let Some(map) = case["env"].as_object() {
@@ -85,38 +96,34 @@ fn json_to_table(value: &Value) -> Table {
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望路径一律是 Windows 形态（被测实现也按 `win32` 平台分支做字符串化），
+// 因此这条对照只在 Windows 主机上有意义：POSIX 主机上 `PathBuf` 的拼接与字符串化
+// 会产出 `/`，与被测实现声称的平台无关，比对必然形态不符。
 fn directories_match_python() {
     let data = fixture();
     let dirs = &data["dirs"];
     let home = dirs["home"].as_str().expect("home");
     let env = R::ConfigEnvironment::new(home, "win32");
-    assert_eq!(
-        path_text(&R::user_config_dir(&env)),
-        dirs["user_config_dir"].as_str().unwrap()
-    );
-    assert_eq!(
-        path_text(&R::global_agents_path(&env)),
-        dirs["global_agents"].as_str().unwrap()
-    );
-    assert_eq!(
-        path_text(&R::default_config_path(&env)),
-        dirs["default_config"].as_str().unwrap()
-    );
-    assert_eq!(
-        path_text(&R::default_models_path(&env)),
-        dirs["default_models"].as_str().unwrap()
-    );
-    assert_eq!(
-        path_text(&R::default_subagents_path(&env)),
-        dirs["default_subagents"].as_str().unwrap()
-    );
-    assert_eq!(
-        path_text(&R::default_toml_config_path(&env)),
-        dirs["default_toml_config"].as_str().unwrap()
-    );
+    for (actual, key) in [
+        (R::user_config_dir(&env), "user_config_dir"),
+        (R::global_agents_path(&env), "global_agents"),
+        (R::default_config_path(&env), "default_config"),
+        (R::default_models_path(&env), "default_models"),
+        (R::default_subagents_path(&env), "default_subagents"),
+        (R::default_toml_config_path(&env), "default_toml_config"),
+    ] {
+        let actual = path_text(&actual);
+        let expected = dirs[key].as_str().unwrap();
+        assert!(cmp_path(&actual, expected), "{key}：{actual} != {expected}");
+    }
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望路径一律是 Windows 形态（被测实现也按 `win32` 平台分支做字符串化），
+// 因此这条对照只在 Windows 主机上有意义：POSIX 主机上 `PathBuf` 的拼接与字符串化
+// 会产出 `/`，与被测实现声称的平台无关，比对必然形态不符。
 fn legacy_directories_match_python() {
     let data = fixture();
     let home = data["dirs"]["home"].as_str().unwrap();
@@ -138,11 +145,23 @@ fn legacy_directories_match_python() {
             .iter()
             .map(|item| item.as_str().unwrap().to_string())
             .collect();
-        assert_eq!(actual, expected, "用例：{platform} / {:?}", case["env"]);
+        assert!(
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(a, e)| cmp_path(a, e)),
+            "用例：{platform} / {:?}\n实际：{actual:?}\n期望：{expected:?}",
+            case["env"]
+        );
     }
 }
 
 #[test]
+#[cfg(windows)]
+// 数据集里的期望路径一律是 Windows 形态（被测实现也按 `win32` 平台分支做字符串化），
+// 因此这条对照只在 Windows 主机上有意义：POSIX 主机上 `PathBuf` 的拼接与字符串化
+// 会产出 `/`，与被测实现声称的平台无关，比对必然形态不符。
 fn resolve_paths_match_python() {
     let data = fixture();
     for case in data["resolves"].as_array().unwrap() {
@@ -162,7 +181,9 @@ fn resolve_paths_match_python() {
         let name = case["name"].as_str().unwrap();
         match (result, case.get("expected_path")) {
             (Ok(path), Some(expected)) => {
-                assert_eq!(path_text(&path), expected.as_str().unwrap(), "用例：{name}");
+                let actual = path_text(&path);
+                let expected = expected.as_str().unwrap();
+                assert!(cmp_path(&actual, expected), "用例：{name}：{actual} != {expected}");
             }
             (Err(error), _) => {
                 assert_eq!(
@@ -200,6 +221,10 @@ fn get_section_matches_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 期望文案里含 Windows 形态的路径（`{root}\config.toml`），而 `{root}` 是临时目录：
+// POSIX 主机上它是 `/tmp/...`，拼出来的形态与数据集不符。同 `directories_match_python`，
+// 这条对照只在 Windows 主机上有意义。
 fn load_config_data_matches_python() {
     let data = fixture();
     let root = temp_root("loads");

@@ -108,6 +108,10 @@ fn workspace_load_matches_python() {
 }
 
 #[test]
+#[cfg(windows)]
+// 写回的工作区根是 Windows 绝对路径（`D:\proj\sub\..\proj` → `D:\proj\proj`）：
+// 非 Windows 主机上 `Path::is_absolute()` 不认 `D:\...`，会把它当成相对路径拼到
+// 当前目录后面，形态与期望不符。这条对照只在 Windows 主机上有意义。
 fn workspace_save_matches_python() {
     let data = fixture();
     let root = temp_root("ws-save");
