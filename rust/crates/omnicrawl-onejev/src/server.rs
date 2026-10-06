@@ -633,6 +633,14 @@ pub fn healthy(host: &str, port: u16, timeout_seconds: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
+    /// 串行化所有会占用 `LOCAL_PORT` 的用例：它们默认并发执行，会互相干扰。
+    fn port_guard() -> &'static Mutex<()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| Mutex::new(()))
+    }
+
     use super::*;
     use crate::sizes::ONEJEV_SIZES;
 
@@ -677,6 +685,7 @@ mod tests {
 
     #[test]
     fn stopped_server_reports_stopped_and_has_no_model() {
+        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("oc-onejev-stopped-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建临时根目录");
@@ -694,6 +703,8 @@ mod tests {
 
     #[test]
     fn start_without_weights_fails_with_a_readable_reason() {
+        // 与占用 `LOCAL_PORT` 的其它用例串行化，否则「无服务」前提会被并发用例破坏。
+        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("oc-onejev-start-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         // 端口上真跑着服务时这条用例的前提（无服务）不成立：跳过而不是误判。
@@ -736,8 +747,13 @@ mod tests {
     }
 
     /// 多实例共用的核心约定：端口上已有服务时启动只复用、不再拉起第二个进程。
+    ///
+    /// 与 `stopped_server_reports_stopped_and_has_no_model` 共用 `LOCAL_PORT`，而测试默认
+    /// 并发执行：本用例保持监听期间，那条用例的 `healthy()` 会看到端口被占、走进「端口上
+    /// 仍有服务」分支。加锁串行化，避免两条用例互相干扰。
     #[test]
     fn start_reuses_a_service_that_is_already_listening() {
+        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("oc-onejev-reuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建临时根目录");
