@@ -366,12 +366,8 @@ fn real_kernel_executes_an_approved_tool_call() {
                 .collect()
         })
         .unwrap_or_default();
-    // `powershell` 是 Windows 专有工具，非 Windows 平台不会申报。
-    let mut expected_tools = vec!["read", "write_file", "Edit_file", "bash"];
-    if cfg!(windows) {
-        expected_tools.push("powershell");
-    }
-    for expected in expected_tools {
+    // 只断言确实存在的内置工具；`powershell` 是 monitor 的 shell 取值，不是独立工具。
+    for expected in ["read", "write_file", "Edit_file", "bash"] {
         assert!(
             names.contains(&expected.to_string()),
             "缺少声明 {expected}：{names:?}"

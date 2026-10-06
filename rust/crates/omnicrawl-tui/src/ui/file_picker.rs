@@ -141,11 +141,14 @@ impl FilePickerState {
                     });
                 }
                 // 目录在前、同类按名字排序（对映 Python `DirectoryTree` 的展示顺序）。
+                // 小写键相同时（如 `ref.WAV` 与 `ref.wav`）再按原名比较：否则顺序会落到
+                // `read_dir` 的枚举顺序上，而它在不同文件系统/平台并不一致。
                 entries.sort_by(|left, right| {
                     right
                         .is_dir
                         .cmp(&left.is_dir)
                         .then_with(|| sort_key(&left.name).cmp(&sort_key(&right.name)))
+                        .then_with(|| left.name.cmp(&right.name))
                 });
                 self.dir = path.to_path_buf();
                 self.entries = entries;
