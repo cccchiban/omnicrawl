@@ -96,9 +96,18 @@ impl RuntimeError {
             ..ExceptionView::default()
         };
         let mapped = map_exception(&view, &[]);
+        // 与 HTTP 错误面同口径：只有工具状态类拒绝才把网关原话带出来。
+        let mut text = format!("Agent 流式回复中断：{}", mapped.message);
+        if looks_like_tool_state_rejection(message) {
+            if let Some(detail) = provider_error_detail_value(message, body) {
+                if !text.contains(&detail) {
+                    text = format!("{text}（上游原话：{detail}）");
+                }
+            }
+        }
         Self {
             kind: RuntimeErrorKind::StreamInterrupted,
-            message: format!("Agent 流式回复中断：{}", mapped.message),
+            message: text,
             // 流内错误没有 HTTP 状态，只扫文案（Python `is_retryable_model_request_error` 同）。
             retryable: is_retryable_model_request_error(message, None),
             status_code: None,
@@ -350,7 +359,94 @@ pub fn http_status_error_with_body(status: u16, body: &str) -> ModelError {
         status_code: Some(i64::from(status)),
         ..ExceptionView::default()
     };
-    map_exception(&view, &[])
+    let mut mapped = map_exception(&view, &[]);
+    // 分类阶梯回的是「认得出的固定文案」（冻结的 parity 契约），而**工具状态类拒绝**是例外：
+    // 重试前要不要换 id、要不要换渠道，完全取决于网关原话说了什么（例如「同一请求不能重复
+    // 提交相同的 call_id，type: invalid_tool_state」）。这类拒绝才把正文摘要在文案后面补上，
+    // 其余错误维持原样：固定文案已经够用，冻结的文案不该因为无关错误而漂移。
+    if looks_like_tool_state_rejection(trimmed) {
+        if let Some(detail) = provider_error_detail(trimmed) {
+            if !mapped.message.contains(&detail) {
+                mapped.message = format!("{}（上游原话：{}）", mapped.message, detail);
+            }
+        }
+    }
+    mapped
+}
+
+/// 文案/正文是否在说「工具状态不对」，最典型的就是「同一请求重复提交了相同的 call_id」。
+///
+/// 内核重试时靠它判断要不要把尾部工具调用的 id 轮换一批（见 `omnicrawl-cli` 的模型端口）。
+/// 关键话只收这四个：宁可多轮换一次，也不要对普通错误乱改 id。
+pub fn looks_like_tool_state_rejection(text: &str) -> bool {
+    const KEYS: [&str; 4] = ["重复提交", "invalid_tool_state", "tool_state", "call_id"];
+    let lowered = text.to_lowercase();
+    KEYS.iter()
+        .any(|key| text.contains(key) || lowered.contains(key))
+}
+
+/// 上游错误正文里的「人话」摘要（字符串形态）：优先取 JSON 的 `error.message` /
+/// `error` / `message`，取不到就退化成原文。
+///
+/// 刻意不碰 HTML 错误页（网关超时经常返回整页 HTML，灌进会话只会污染上下文），也刻意
+/// 只留一句话：错误正文可能很长，而宿主提示与转录都不适合放大段文本。
+fn provider_error_detail(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let text = serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| {
+                    error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .or_else(|| error.as_str())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        })
+        .unwrap_or_else(|| trimmed.to_string());
+    collapse_provider_text(&text)
+}
+
+/// 上游错误正文里的「人话」摘要（已解析形态 + 流内错误文本）。
+///
+/// 流内错误（SSE 里回错误对象）拿不到 HTTP 状态码，网关原话只在这两个地方：
+/// 已解析的 `body` 的结构化字段，或错误文本本身。
+fn provider_error_detail_value(message: &str, body: Option<&Value>) -> Option<String> {
+    if let Some(body) = body {
+        let fragments = structured_error_text(&ExceptionView {
+            body: Some(body),
+            ..ExceptionView::default()
+        });
+        if let Some(detail) = collapse_provider_text(&fragments) {
+            return Some(detail);
+        }
+    }
+    collapse_provider_text(message)
+}
+
+/// 压成单行、截断到 200 字符；HTML 错误页与空文本一律丢弃。
+fn collapse_provider_text(text: &str) -> Option<String> {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() || looks_like_html_error(&collapsed) {
+        return None;
+    }
+    const LIMIT: usize = 200;
+    let mut detail: String = collapsed.chars().take(LIMIT).collect();
+    if collapsed.chars().count() > LIMIT {
+        detail.push('…');
+    }
+    Some(detail)
 }
 
 /// 上下文超限的归类文案：内核用它识别「本回合被上下文撑爆」，宿主也据此决定是否走恢复路径。

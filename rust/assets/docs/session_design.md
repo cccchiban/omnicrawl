@@ -750,3 +750,60 @@ HTTP 400 The `reasoning_content` in the thinking mode must be passed back to the
 | 参数脱敏不回落 | `tests/test_session_store.py::test_sensitive_tool_arguments_are_redacted_in_session_events` |
 | 压缩后运行期与恢复一致 | `tests/test_context_overflow_recovery.py`、`tests/test_context_compaction_integration.py` |
 | 思考模式 `reasoning_content` 三条链路 | `tests/test_reasoning_content_inheritance.py` |
+
+## 20. 工具调用 id 的线上一致性（2026-10-06）
+
+### 20.1 事故与判定规则
+
+网关（new-api 一族的自建中继）会对**同一次请求**里的工具调用 id 做状态校验，重复提交直接判
+HTTP 400：
+
+```text
+failed to stream request: Request failed: Bad Request,
+error: 同一请求不能重复提交相同的 call_id, type: invalid_tool_state
+```
+
+对应到内核的行为契约是三条，缺一不可：
+
+| 规则 | 说明 |
+|------|------|
+| assistant 侧唯一 | 一次请求里所有 `tool_calls[].id` 互不重复。中继常按「请求内序号」发 id（`call_0`、`call_1`…），一个回合里的多个批次因此在同一请求里撞车。 |
+| tool 侧唯一 | 一次请求里所有 `tool` 消息的 `tool_call_id` 互不重复。 |
+| 双向配对 | 每个 `tool_call_id` 都能找到一个 assistant 调用，反之亦然；两侧都不允许空 id。 |
+
+历史投影本身是干净的（全量转录扫描：1688 个会话、0 个重复 call_id），所以这类重复只可能出现在
+**运行期拼出来的那一份**：中继按序号发 id、流式重试、跨批次复用 id 都会造成它。
+
+### 20.2 实现：只在「要发出去的那份副本」上修
+
+`omnicrawl-protocol::codec` 提供两个纯函数，内核在 `KernelModelPort::request_reply` 里调用：
+
+| 函数 | 作用 |
+|------|------|
+| `normalize_call_ids` | 体检并就地修复：同一原 id 的第 k 次出现在两侧拿到同一个新 id（按出现顺序配对），首次出现保留原 id；空 id 同样补唯一名。配对缺口（缺结果的调用 / 缺调用的结果）只上报不改写——凭空补占位会伪造事实，凭空删调用会丢上下文。 |
+| `rotate_tail_call_ids` | 轮换**尾部一批**（最近一条带 `tool_calls` 的 assistant 消息及其结果）的 id，用于重试。 |
+
+三条设计约束：
+
+- **只改副本**：运行期消息与转录事件保持网关原样 id。淘汰标注（`tool_call_evicted`）按原始 id
+  匹配、转录是既成事实，改写它们会让「线上 id / 落盘 id」两套身份互相打架；重启后投影重算得到
+  原 id，副本式修复天然幂等。
+- **保留首次出现的原 id**：历史里没问题的部分逐字不变，提示缓存不受影响。
+- **重试轮换只认网关原话**：`omnicrawl_llm::looks_like_tool_state_rejection`（重复提交 /
+  `invalid_tool_state` / `tool_state` / `call_id`）命中才轮换尾部 id。原样重发等于把同一份提交
+  再发一遍，正是那句报错的字面含义；其余失败仍按原样重试（保住前缀缓存）。
+
+### 20.3 错误面：网关原话必须可查
+
+`http_status_error_with_body` / `openai_provider_error_stream` 在这类拒绝上把正文摘要
+（单行、截断 200 字符、不取 HTML 页）接在固定文案之后，形如
+`…（上游原话：同一请求不能重复提交相同的 call_id）`；宿主提示与会话终态因此都能直接看到原因，
+不必再去云端后台翻日志。其余错误维持固定文案，冻结的 parity 用例逐字不变。
+
+### 20.4 验证
+
+| 验证 | 位置 |
+|------|------|
+| id 体检、按序配对改写、空 id、配对缺口上报、尾部轮换 | `omnicrawl-protocol/src/codec.rs`（`call_id_tests`） |
+| 网关原话进错误面、HTML 不回灌 | `omnicrawl-llm/tests/http_error_body.rs` |
+| 端到端：同请求重复 id 发出前修复且转录不变；400 后重试前轮换尾部 id | `omnicrawl-cli/tests/call_id_wire_e2e.rs` |

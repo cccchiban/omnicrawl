@@ -176,8 +176,14 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   映射结果取自 `map_exception`（等价 `format_openai_error`），可重试标记取自
   `is_retryable_model_request_error`（同一张关键词表）。因此认不出的负载落到「未识别」通用文案
   （`Agent 流式回复中断：模型请求失败，但未能识别具体原因。…错误类型：APIError。`）且不可重试；
-  命中「连接断开 / 超时 / 限流」一类文案时标记可重试。上游 message 本身不落到用户可见文本里。
+  命中「连接断开 / 超时 / 限流」一类文案时标记可重试。
   仍不可对齐的一处：`type(exc).__name__` 固定为 `APIError`（SDK 子类名如 `RateLimitError` 拿不到）。
+- **工具状态类拒绝会把上游原话带出来**（2026-10-06 补）：`looks_like_tool_state_rejection`
+  命中「重复提交 / `invalid_tool_state` / `tool_state` / `call_id`」时，HTTP 错误面与流内错误面
+  都会把正文摘要（单行、截断 200 字符、不取 HTML 页）接在固定文案之后，形如
+  `…（上游原话：同一请求不能重复提交相同的 call_id）`。这类拒绝的处置（重试前换 id、还是换渠道）
+  完全取决于网关说了什么，原话丢了就只能去云端后台查；其余错误维持固定文案，
+  冻结的 parity 用例因此逐字不变（`runtime_parity` 的 401/503 与流内 `boom` 用例照旧）。
 - **传输中断的文案不同**：Python 会带 SDK 异常类型名（如 `ReadTimeout`），内核只能给出 IO 描述
   （`Agent 流式回复中断：{io}`），类型名不可对齐。
 - **超时语义**：映射 Python 的 `timeout` 为建连、等响应头、以及**每次**读取响应体的空闲超时

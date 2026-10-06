@@ -35,8 +35,8 @@ pub use anthropic::{
 pub use capabilities::{merge_capabilities, ModelCapabilities};
 pub use errors::{
     http_status_error, http_status_error_with_body, is_retryable_model_request_error,
-    map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError, RuntimeErrorKind,
-    CONTEXT_LENGTH_EXCEEDED_MESSAGE,
+    looks_like_tool_state_rejection, map_exception, ExceptionView, ModelError, ModelErrorCode,
+    RuntimeError, RuntimeErrorKind, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 pub use gemini::{
     build_generate_content_request, format_gemini_error, gemini_model_path, generate_content_body,

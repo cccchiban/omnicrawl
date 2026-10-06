@@ -13,8 +13,9 @@ pub mod tool_names;
 
 pub use aggregate::{aggregate_stream_events, aggregate_stream_events_ref};
 pub use codec::{
-    blocks_from_openai_content_parts, conversation_from_openai_messages, parse_arguments_object,
-    tool_spec_from_openai_item, tools_from_conversation_messages,
+    blocks_from_openai_content_parts, conversation_from_openai_messages, normalize_call_ids,
+    parse_arguments_object, rotate_tail_call_ids, tool_spec_from_openai_item,
+    tools_from_conversation_messages, CallIdReport,
 };
 pub use event::{
     ModelReply, ModelStreamEvent, ProviderWarning, ReasoningDelta, TextDelta,

@@ -65,8 +65,9 @@ use omnicrawl_llm::{
     ProviderProfile, RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 use omnicrawl_protocol::{
-    conform_tool_names, conversation_from_openai_messages, tool_spec_from_openai_item,
-    GenerationOptions, ModelReply, ModelStreamEvent, ToolNameMap, ToolSpec,
+    conform_tool_names, conversation_from_openai_messages, normalize_call_ids, rotate_tail_call_ids,
+    tool_spec_from_openai_item, GenerationOptions, ModelReply, ModelStreamEvent, ToolNameMap,
+    ToolSpec,
 };
 use serde_json::{json, Map, Value};
 
@@ -637,13 +638,24 @@ impl TurnRequestParts {
 impl ReplySource for KernelModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
         // model.request.before：宿主声明支持时才发请求，允许插件改写消息或拒绝本轮。
-        // 必须在记录「最近一次请求消息」之前：压缩前缀复用取的是改写后的消息（与 Python 同序）。
+        // 必须在体检与记录「最近一次请求消息」之前：压缩前缀复用取的是改写后的消息（与 Python 同序）。
         self.run_request_hook(messages)?;
-        {
-            // 摘要请求要逐字复用最近一次主请求：这里记下它真正发出的消息。
-            let mut usage = self.usage.borrow_mut();
-            usage.last_request_messages = messages.clone();
-            usage.last_request_input_tokens = 0;
+        // 工具调用 id 的线上体检：同一次请求里 assistant `tool_calls` 的 id 必须互不重复、
+        // `tool` 结果必须与之逐一双向配对。网关会把「同一请求重复提交相同的 call_id」直接判成
+        // HTTP 400（`type: invalid_tool_state`），整段会话就此断掉。修复只做在**发出去的副本**上：
+        // 运行期消息与转录事件保持原样，按原始 id 匹配的淘汰标注与重启后的历史投影都不受影响。
+        let mut wire_messages = messages.clone();
+        let id_report = normalize_call_ids(&mut wire_messages);
+        if id_report.has_violation() {
+            let detail = id_report.describe();
+            eprintln!("[kernel] 工具调用 id 线上体检：{detail}");
+            if id_report.repaired() {
+                self.conn
+                    .borrow_mut()
+                    .notify(HostEvent::Notice(MessagePayload {
+                        message: format!("工具调用 id 线上修复：{detail}"),
+                    }));
+            }
         }
         // 运行时在本回合内只构建一次，整段循环（含失败重试）都借用同一实例；
         // 跨回合仍命中同一实例时连构建都省掉（见 `Conn::runtime_cache`）。
@@ -652,26 +664,47 @@ impl ReplySource for KernelModelPort {
         let parts = self.request_parts()?;
         let (tools, name_map) = (&parts.tools, &parts.name_map);
         let options = &parts.options;
-        let conversation = conversation_from_openai_messages(messages);
         let identity = self.config.prompt_cache_identity.clone();
-        let input = ChatRequestInput {
-            model: &self.config.model,
-            system_prompt: &self.config.system_prompt,
-            messages: &conversation,
-            tools: &tools,
-            options: &options,
-            profile_request_timeout_seconds: self
-                .config
-                .request_timeout_seconds
-                .filter(|seconds| *seconds > 0.0)
-                .unwrap_or_default(),
-            prompt_cache_capable: self.config.prompt_cache_capable,
-            prompt_cache_identity: &identity,
-        };
         let limit = self.config.request_retry_count.max(1);
         let mut attempt = 0;
+        // 重试前的 call_id 轮换开关：只有网关明确判过「重复提交相同 call_id」才打开。
+        let mut rotate_ids = false;
 
         loop {
+            // 轮换只发生在重试路径：网关的重复提交判定按 id 认，原样再发等于再犯一次。
+            // 只轮换尾部一批（最近一条 assistant `tool_calls` 及其结果），历史前缀逐字保留。
+            let attempt_messages = if rotate_ids {
+                rotate_ids = false;
+                let mut list = wire_messages.clone();
+                let rotated = rotate_tail_call_ids(&mut list, &format!("r{attempt}"));
+                self.notify_retry(format!(
+                    "网关判定工具调用重复提交，重试前已轮换 {rotated} 个 call_id"
+                ));
+                list
+            } else {
+                wire_messages.clone()
+            };
+            // 摘要请求要逐字复用最近一次真实发出的消息（含重试轮换后的 id）。
+            {
+                let mut usage = self.usage.borrow_mut();
+                usage.last_request_messages = attempt_messages.clone();
+                usage.last_request_input_tokens = 0;
+            }
+            let conversation = conversation_from_openai_messages(&attempt_messages);
+            let input = ChatRequestInput {
+                model: &self.config.model,
+                system_prompt: &self.config.system_prompt,
+                messages: &conversation,
+                tools,
+                options,
+                profile_request_timeout_seconds: self
+                    .config
+                    .request_timeout_seconds
+                    .filter(|seconds| *seconds > 0.0)
+                    .unwrap_or_default(),
+                prompt_cache_capable: self.config.prompt_cache_capable,
+                prompt_cache_identity: &identity,
+            };
             let mut sink = ProtocolSink {
                 conn: Rc::clone(&self.conn),
                 usage: Rc::clone(&self.usage),
@@ -720,6 +753,9 @@ impl ReplySource for KernelModelPort {
                             return Err(LoopError::Cancelled("回合已取消。".to_string()));
                         }
                         self.notify_retry(format!("请求失败，正在自动重试（第{attempt}次）"));
+                        // 这次失败是网关在说「同一个 call_id 又提交了一次」：原样重发只会
+                        // 再被拒，下一轮用轮换过的尾部 id 发，这份提交就不再是同一份。
+                        rotate_ids = is_tool_state_rejection(&error.message);
                         let backoff_ms = (400u64 << (attempt - 1).min(3)).min(2_000);
                         std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         continue;
@@ -1069,6 +1105,14 @@ fn parse_tools(config: &KernelModelConfig) -> Vec<ToolSpec> {
 
 fn is_empty_reply(reply: &ModelReply) -> bool {
     reply.content.trim().is_empty() && reply.tool_calls.is_empty()
+}
+
+/// 网关是否在说「同一请求重复提交了相同的 call_id」。
+///
+/// 判定与解释都在 [`omnicrawl_llm::looks_like_tool_state_rejection`]：这类错误面里带着网关
+/// 自己的原话，重试时把尾部工具调用的 id 换一批就不算同一份提交了。
+fn is_tool_state_rejection(message: &str) -> bool {
+    omnicrawl_llm::looks_like_tool_state_rejection(message)
 }
 
 /// 归并后的回复 → 循环要的形状；assistant 消息按 OpenAI 形状回填进上下文。
