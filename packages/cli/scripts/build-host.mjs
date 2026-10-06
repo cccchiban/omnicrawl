@@ -39,7 +39,16 @@
 // 目录是 `<triple>/release`，与无 `--target` 的 `release/` 不是同一处）。
 // `--zigbuild` 换成 `cargo zigbuild`：musl 目标的 BoringSSL 需要能编 C++ 的交叉工具链，
 // 而 `musl-tools` 只给 `musl-gcc`（C），所以这类目标要传它并先在 PATH 上装好 zig。
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,6 +75,17 @@ const skipBuild = process.argv.includes('--skip-build')
 
 /** 载荷里必须存在的可执行文件（平台后缀按目标平台给）。 */
 const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-mcp-server']
+
+/** 逐文件递归复制：Node 22.22 的目录级 cpSync 在本机会静默崩掉整个进程。 */
+function copyTree(source, destination) {
+  mkdirSync(destination, { recursive: true })
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name)
+    const to = join(destination, entry.name)
+    if (entry.isDirectory()) copyTree(from, to)
+    else if (entry.isFile()) copyFileSync(from, to)
+  }
+}
 
 function directorySize(path) {
   let total = 0
@@ -121,36 +141,27 @@ function buildRust() {
       console.error(`[host] 缺少 cargo 产物：${candidate}`)
       process.exit(1)
     }
-    cpSync(candidate, join(payloadDir, `${name}${suffix}`))
+    copyFileSync(candidate, join(payloadDir, `${name}${suffix}`))
   }
   // 资源源在 rust/assets/*（脱离 Python 包树后的单一来源），载荷里放到运行期搜索的
   // 第一候选 `<可执行文件祖先>/rust/assets/*`；读不到时运行期还有编译期内嵌副本。
-  cpSync(
+  copyTree(
     join(repoRoot, 'rust', 'assets', 'extensions'),
     join(payloadDir, 'rust', 'assets', 'extensions'),
-    { recursive: true },
   )
-  cpSync(join(repoRoot, 'rust', 'assets', 'templates'), join(payloadDir, 'rust', 'assets', 'templates'), {
-    recursive: true,
-  })
-  cpSync(
+  copyTree(join(repoRoot, 'rust', 'assets', 'templates'), join(payloadDir, 'rust', 'assets', 'templates'))
+  copyTree(
     join(repoRoot, 'rust', 'assets', 'config-templates'),
     join(payloadDir, 'rust', 'assets', 'config-templates'),
-    { recursive: true },
   )
   // 旧布局 `omnicrawl/<资源>`：只在可执行文件名带后缀（Windows）时补一份——不带后缀的目标
   // 内核文件就叫 `omnicrawl`，再建 `omnicrawl/` 目录会直接撞名。
   if (suffix) {
-    cpSync(join(repoRoot, 'rust', 'assets', 'extensions'), join(payloadDir, 'omnicrawl', 'extensions'), {
-      recursive: true,
-    })
-    cpSync(join(repoRoot, 'rust', 'assets', 'templates'), join(payloadDir, 'omnicrawl', 'templates'), {
-      recursive: true,
-    })
-    cpSync(
+    copyTree(join(repoRoot, 'rust', 'assets', 'extensions'), join(payloadDir, 'omnicrawl', 'extensions'))
+    copyTree(join(repoRoot, 'rust', 'assets', 'templates'), join(payloadDir, 'omnicrawl', 'templates'))
+    copyTree(
       join(repoRoot, 'rust', 'assets', 'config-templates'),
       join(payloadDir, 'omnicrawl', 'config', 'templates'),
-      { recursive: true },
     )
   }
 

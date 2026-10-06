@@ -14,7 +14,6 @@
 //   node packages/cli/scripts/prepare.mjs --require-host  # 缺任一宿主载荷就失败（发布前跑）
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -119,11 +118,22 @@ function hostPayload(target) {
   return { payload, meta: JSON.parse(readFileSync(metaPath, 'utf8')) }
 }
 
+/** 逐文件递归复制：Node 22.22 的目录级 cpSync 在本机会静默崩掉整个进程（见 stageLauncher）。 */
+function copyTree(source, destination) {
+  mkdirSync(destination, { recursive: true })
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name)
+    const to = join(destination, entry.name)
+    if (entry.isDirectory()) copyTree(from, to)
+    else if (entry.isFile()) copyFileSync(from, to)
+  }
+}
+
 function stagePlatform(target, source, version, host) {
   const packageDir = join(staging, target.name.replace('@omnicrawl/', ''))
   mkdirSync(join(packageDir, 'bin'), { recursive: true })
   copyFileSync(source, join(packageDir, 'bin', target.file))
-  if (host) cpSync(host.payload, join(packageDir, 'host'), { recursive: true })
+  if (host) copyTree(host.payload, join(packageDir, 'host'))
 
   writeJson(join(packageDir, 'version.json'), {
     name: target.name,
