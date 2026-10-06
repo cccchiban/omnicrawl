@@ -19,7 +19,22 @@ use serde_json::{json, Map, Value};
 const FIXTURE: &str = include_str!("fixtures/project_parity.json");
 const ROOT_PLACEHOLDER: &str = "<ROOT>";
 const TEMP_PLACEHOLDER: &str = "<TEMP>";
+/// 本机用户主目录。`under_agent_worktrees` 的判定基准是它，而数据集里写死的是
+/// 生成机器上的 `C:\Users\Administrator`——换成占位符，跨机器与跨平台都成立。
+const HOME_PLACEHOLDER: &str = "<HOME>";
 const FIXED_NOW: &str = "2026-01-02T03:04:05.123456+00:00";
+
+/// 本机用户主目录，取值口径与 `omnicrawl_session::project` 的 `home_directory` 一致。
+fn home_directory_text() -> String {
+    for name in ["HOME", "USERPROFILE"] {
+        if let Ok(value) = std::env::var(name) {
+            if !value.trim().is_empty() {
+                return value;
+            }
+        }
+    }
+    std::env::temp_dir().to_string_lossy().to_string()
+}
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("fixture 不是合法 JSON")
@@ -28,6 +43,7 @@ fn fixture() -> Value {
 struct Env {
     root: PathBuf,
     temp: PathBuf,
+    home: PathBuf,
 }
 
 fn env() -> &'static Env {
@@ -41,7 +57,10 @@ fn env() -> &'static Env {
         let temp = PathBuf::from(
             normalize_project_path(&std::env::temp_dir().to_string_lossy()).expect("解析临时根"),
         );
-        let prepared = Env { root, temp };
+        let home = PathBuf::from(
+            normalize_project_path(&home_directory_text()).expect("解析用户主目录"),
+        );
+        let prepared = Env { root, temp, home };
         prepared.build_layout();
         prepared
     })
@@ -76,6 +95,7 @@ impl Env {
     fn unmask(&self, text: &str) -> String {
         text.replace(ROOT_PLACEHOLDER, &self.root.to_string_lossy())
             .replace(TEMP_PLACEHOLDER, &self.temp.to_string_lossy())
+            .replace(HOME_PLACEHOLDER, &self.home.to_string_lossy())
     }
 
     fn mask(&self, text: &str) -> String {
@@ -83,6 +103,7 @@ impl Env {
         for (base, placeholder) in [
             (self.root.to_string_lossy().to_string(), ROOT_PLACEHOLDER),
             (self.temp.to_string_lossy().to_string(), TEMP_PLACEHOLDER),
+            (self.home.to_string_lossy().to_string(), HOME_PLACEHOLDER),
         ] {
             out = out.replace(&base.replace('\\', "\\\\"), placeholder);
             out = out.replace(&base, placeholder);
@@ -166,20 +187,22 @@ fn path_key_matches_python() {
     }
 }
 
-// 数据集里的输入是 Windows 绝对路径（`C:\Users\...`），判定基准是本机的
-// `home_directory()`：POSIX 主机上它返回 `/home/...`，Windows 路径不可能是其子路径，
-// 比对必然不符。这条对照只在 Windows 主机上有意义。
+// 数据集里的输入用 `<HOME>` 占位符，判定基准是本机的 home（见 `home_directory_text`）；
+// 路径分隔符也按本机规范化，跨平台与跨机器都成立。
 #[test]
-#[cfg(windows)]
 fn agent_worktrees_judgement_matches_python() {
+    let env = env();
     let fixture = fixture();
     for case in fixture["pure"]["under_agent_worktrees"]
         .as_array()
         .expect("under_agent_worktrees")
     {
-        let input = case["input"].as_str().expect("input");
+        let raw = case["input"].as_str().expect("input");
+        let input = env
+            .unmask(raw)
+            .replace('\\', std::path::MAIN_SEPARATOR_STR);
         assert_eq!(
-            under_agent_worktrees(input),
+            under_agent_worktrees(&input),
             case["expected"].as_bool().expect("expected"),
             "隔离工作树判定（{input}）"
         );

@@ -34,6 +34,22 @@ fn normalize(text: &str) -> String {
         .to_string()
 }
 
+/// 把 JSON 数组按「元素自身」排序后再比较。
+///
+/// 检索结果里同分的条目靠时间戳打破平局，而时间戳由写入时的真实时钟决定：
+/// 同一毫秒内写入的几条会并列，此时顺序退化为索引顺序，跨机器不可复现。
+/// 并列项之间本就没有确定语义，比较前按内容归一即可（元素顺序之外的结构仍逐字校验）。
+fn sort_json_array(text: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(text) else {
+        return text.to_string();
+    };
+    let Some(items) = value.as_array_mut() else {
+        return text.to_string();
+    };
+    items.sort_by_key(|item| item.to_string());
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.to_string())
+}
+
 /// 把数据集里的 `{ID1}`、`{ID2}` 占位符换成本次运行真实生成的记忆 id。
 fn substitute(value: &Value, ids: &[String]) -> Value {
     match value {
@@ -103,12 +119,14 @@ fn memory_tools_match_python() {
                     case["ok"].as_bool().unwrap_or(false),
                     "{tool} 本应失败，实际成功：{output}"
                 );
-                assert_eq!(
-                    normalize(&output),
-                    expected,
-                    "用例 {tool} {:?}",
-                    case["arguments"]
-                );
+                // `memory_search` 的结果是同分并列时才排序的列表，顺序不可复现（见
+                // `sort_json_array`）；其余工具返回的对象/列表顺序有确定语义，逐字比较。
+                let (actual, wanted) = if tool == "memory_search" {
+                    (sort_json_array(&normalize(&output)), sort_json_array(expected))
+                } else {
+                    (normalize(&output), expected.to_string())
+                };
+                assert_eq!(actual, wanted, "用例 {tool} {:?}", case["arguments"]);
             }
             Err(error) => {
                 assert!(

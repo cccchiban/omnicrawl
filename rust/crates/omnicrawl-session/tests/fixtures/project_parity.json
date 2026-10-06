@@ -57,19 +57,19 @@
     ],
     "under_agent_worktrees": [
       {
-        "input": "C:\\Users\\Administrator\\.omnicrawl\\agent-worktrees\\aw-123",
+        "input": "<HOME>\\.omnicrawl\\agent-worktrees\\aw-123",
         "expected": true
       },
       {
-        "input": "C:\\Users\\Administrator\\.omnicrawl\\agent-worktrees",
+        "input": "<HOME>\\.omnicrawl\\agent-worktrees",
         "expected": true
       },
       {
-        "input": "C:\\Users\\Administrator\\.omnicrawl\\other",
+        "input": "<HOME>\\.omnicrawl\\other",
         "expected": false
       },
       {
-        "input": "C:\\Users\\Administrator",
+        "input": "<HOME>",
         "expected": false
       },
       {
