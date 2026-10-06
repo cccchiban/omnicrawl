@@ -6,7 +6,8 @@ export function activate(context) {
   context.hooks.on({
     id: "on-turn-end",
     hook: "turn.end",
-    mode: "observe",
+    // 必须与 manifest 声明的 mode 一致，否则握手会因「运行期 Handler 与 manifest 不一致」失败。
+    mode: "notify",
     handler: (event) => ({
       action: "continue",
       annotations: [`fixture observed ${event?.eventId ?? "unknown"}`],
