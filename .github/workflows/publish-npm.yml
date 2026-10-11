@@ -15,7 +15,7 @@ name: 发布 npm 包
 # 原因见 rust/docs/python-free-build.md「发布产物的目标选择」。
 # 但平台二进制仍只能在对应 runner 上构建（或交叉编译），因此矩阵里每个平台
 # 各自构建内核（+ 宿主）并上传暂存产物，发布任务把所有平台下载齐、跑安装冒烟后才逐一发布。
-# 没有宿主载荷的平台（32 位 Windows、armv7 嵌入式）只发内核，启动器会退回协议直连。
+# 没有宿主载荷的平台（armv7 嵌入式）只发内核，启动器会退回协议直连。
 on:
   push:
     tags:
@@ -35,29 +35,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # platform 显式声明载荷键，不靠构建机推导：Windows runner 都是 x64，
+          # 32 位任务推导出的 win32-x64 会让 prepare.mjs 找不到 hostKey=win32-ia32 的宿主。
           - package: cli-win32-x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: win32-x64
             host: true
           - package: cli-win32-ia32
             runner: windows-latest
             target: i686-pc-windows-msvc
-            host: false
+            platform: win32-ia32
+            host: true
           - package: cli-linux-x64
             # 内核是 musl 静态；宿主载荷是原生 gnu 目标（依赖 glibc，见构建宿主载荷那一步的注释）。
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
+            platform: linux-x64
             host: true
             zigbuild: true
           - package: cli-linux-arm-musl
             runner: ubuntu-latest
             target: armv7-unknown-linux-musleabihf
+            platform: linux-arm
             host: false
             zigbuild: true
           - package: cli-linux-arm64-musl
             # 同 x64：内核 musl 静态，宿主载荷原生 gnu 目标。
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
+            platform: linux-arm64
             host: true
             zigbuild: true
     steps:
@@ -147,9 +154,11 @@ jobs:
             cargo build --release -p omnicrawl-cli --target ${{ matrix.target }}
           fi
 
+      # --platform 必须给：Windows runner 都是 x64，靠构建机推导会把 32 位载荷落到
+      # win32-x64 键下，prepare.mjs 按 hostKey 找不到宿主，于是静默发出只带内核的包。
       - name: 构建宿主载荷（Windows：指到内核那个三元组）
         if: matrix.host && runner.os == 'Windows'
-        run: node packages/cli/scripts/build-host.mjs --target ${{ matrix.target }}
+        run: node packages/cli/scripts/build-host.mjs --target ${{ matrix.target }} --platform ${{ matrix.platform }}
 
       # Linux 侧刻意不带 `--target`：宿主载荷按构建机的原生 gnu 目标构建，因此发布包依赖
       # runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。
@@ -162,7 +171,7 @@ jobs:
 
       - name: 宿主冒烟（无终端提示）
         if: matrix.host
-        run: node packages/cli/scripts/host-smoke.mjs
+        run: node packages/cli/scripts/host-smoke.mjs --platform ${{ matrix.platform }}
 
       - name: 暂存平台包
         run: node packages/cli/scripts/prepare.mjs

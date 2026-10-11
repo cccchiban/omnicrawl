@@ -40,10 +40,24 @@ const GIT_POLL: Duration = Duration::from_millis(20);
 
 /// 命令菜单的候选表：统一命令源（内置命令与它们的补全形态）。
 ///
-/// 运行期 Skill 候选由内核侧发现，宿主暂时给不出同一份列表，因此菜单只列内置命令；
 /// 命令名与参数提示都来自同一份注册表声明，帮助、补全与真实可执行命令不会各自硬编码。
+/// 运行期 Skill 不在注册表里，由 [`command_options_with_skills`] 追加。
 pub fn command_options() -> Vec<CommandOption> {
     omnicrawl_commands::slash::registry().options(false)
+}
+
+/// 在注册表声明之后追加运行期 Skill 候选（`/skill:<名>`）。
+///
+/// 与命令层的 `build_slash_command_options` 同形：宿主自己按工作区发现 Skill，
+/// 因此菜单里能输入的命令与 `/skill:` 真正能跑的命令是同一份清单。
+pub fn command_options_with_skills(skills: &[SkillMeta]) -> Vec<CommandOption> {
+    let mut options = command_options();
+    options.extend(
+        skills
+            .iter()
+            .map(|meta| CommandOption::skill(&meta.name, &meta.description)),
+    );
+    options
 }
 
 /// 命令层看到的宿主能力面。
@@ -269,12 +283,13 @@ impl CommandAgent for TuiHostAgent<'_> {
     // ── Skill / 记忆 ──────────────────────────────────────────
 
     fn skill_metas(&self) -> Option<Vec<SkillMeta>> {
-        // 与本地 API（`omnicrawl-api`）同口径：宿主自己按工作区发现 Skill 目录，
-        // 内核与宿主的发现规则一致，因此这份清单就是模型看到的清单。
-        let root = self.app.borrow().command_workspace_root();
-        let mut manager = omnicrawl_extensions::skill::SkillManager::new();
-        manager.discover(Some(root.as_path()), &[]);
-        Some(manager.list_all())
+        // 与提示词装配同源：`/skills` 列出的就是模型索引里看到的，
+        // 含 `[skills].extra_paths` 带进来的条目，不再自己另扫一遍目录。
+        Some(self.app.borrow().command_skills().0)
+    }
+
+    fn skill_diagnostics(&self) -> Option<Vec<omnicrawl_extensions::skill::SkillDiagnostic>> {
+        Some(self.app.borrow().command_skills().1)
     }
 
     fn clean_memory(&self) -> Result<Vec<String>, AgentError> {
@@ -506,10 +521,34 @@ mod tests {
             .expect("应有 /settings");
         assert_eq!(settings.insert, "/settings");
         assert_eq!(
-            settings.parameters.as_ref().map(Vec::len),
-            Some(1),
-            "参数提示来自命令声明"
+            settings.parameters.as_deref(),
+            Some([].as_slice()),
+            "/settings 不接受参数，声明的参数提示为空"
         );
+    }
+
+    #[test]
+    fn skill_options_join_the_registry_table() {
+        let skills = vec![omnicrawl_extensions::skill::SkillMeta {
+            name: "bili-note".to_string(),
+            description: "提取 B 站内容".to_string(),
+            source_path: PathBuf::from("D:/work/.omnicrawl/skills/bili-note/SKILL.md"),
+            base_dir: PathBuf::from("D:/work/.omnicrawl/skills/bili-note"),
+            scope: "project".to_string(),
+            disable_model_invocation: false,
+        }];
+        let options = command_options_with_skills(&skills);
+        let names: Vec<&str> = options
+            .iter()
+            .map(|option| option.command.as_str())
+            .collect();
+        // 内置命令照旧在表里，Skill 追加在后面且带回显进菜单的搜索文本。
+        assert!(names.contains(&"/settings"), "{names:?}");
+        assert_eq!(names.last(), Some(&"/skill:bili-note"));
+        let skill = options.last().expect("应有 Skill 候选");
+        assert_eq!(skill.insert, "/skill:bili-note");
+        assert_eq!(skill.title, "bili-note");
+        assert!(skill.search.contains("/skill:bili-note"));
     }
 
     /// 建一个只开项目级的隔离选项。

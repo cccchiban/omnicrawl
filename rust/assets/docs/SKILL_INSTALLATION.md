@@ -13,8 +13,8 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 /skill:<skill-name> 你的任务描述
 ```
 
-- `/skills`：查看当前已加载的 Skill。
-- `/skill:<skill-name>`：手动指定本轮使用某个 Skill。
+- `/skills`：查看当前已加载的 Skill；发现阶段的问题（路径不存在、同名冲突、名称不合法）会附在列表后面。
+- `/skill:<skill-name>`：手动指定本轮使用某个 Skill（命中后正文注入本轮，未命中会列出可用名称）。
 - 普通输入：Agent 会根据已索引的 `name` 和 `description` 判断是否加载匹配的 Skill。
 
 ## 2. 安装到哪里
@@ -27,9 +27,9 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 | 个人级 | `~/.omnicrawl/skills/<skill-name>/SKILL.md` | 当前用户多个项目复用 |
 | 企业级 | `$OMNICRAWL_ENTERPRISE_DIR/<skill-name>/SKILL.md` | 管理员统一分发 |
 
-同名 Skill 按当前实现由后加载作用域覆盖前面作用域：项目级优先于个人级，个人级优先于企业级。额外路径 `skill_paths` 的优先级最高。
+同名 Skill 的取舍规则是「先扫描到的作用域胜出」，扫描顺序为：企业级 → 个人级 → 项目级 → 额外路径。因此**企业级优先于个人级，个人级优先于项目级**；每次覆盖都会在 `/skills` 的发现诊断里留一条冲突记录。额外路径由 `config.toml` 的 `[skills].extra_paths` 指定（目录或 `.md` 文件，相对路径按工作区解析），排在最后扫描。
 
-个人级 `~/.omnicrawl/skills/` 与项目级 `.omnicrawl/skills/` 目录会在 OmniCrawl 启动（`discover`）时自动创建，无需手工 `mkdir`。企业级目录由环境变量显式指定，不自动创建。
+个人级 `~/.omnicrawl/skills/` 与项目级 `.omnicrawl/skills/` 目录会在 OmniCrawl 启动（`discover`）时自动创建，无需手工 `mkdir`。企业级目录由环境变量 `OMNICRAWL_ENTERPRISE_DIR` 显式指定，不自动创建。
 
 推荐目录结构：
 
@@ -80,6 +80,8 @@ disable-model-invocation: false
 | `description` | 是 | 不为空，最长 1024 字符；用于自动匹配 |
 | `disable-model-invocation` | 否 | `true` 时不会自动匹配，只能 `/skill:name` 手动调用 |
 
+`description` 支持 YAML 块标量：`>-`（折叠成一行）或 `|`（保留换行），长描述可跨多行书写。
+
 ## 4. 渐进式披露规则
 
 Agent 对 Skill 的读取分三层：
@@ -88,7 +90,11 @@ Agent 对 Skill 的读取分三层：
 |------|----------|----------|------|
 | L1 索引 | 程序启动或重新发现时 | `name`、`description`、位置、开关 | 低成本知道有哪些 Skill |
 | L2 匹配 | 用户输入一轮任务时 | 已索引元数据 | 判断是否需要某个 Skill |
-| L3 加载 | 自动命中或 `/skill:name` 时 | 完整 `SKILL.md` 正文 | 注入专用流程和约束 |
+| L3 加载 | 手动 `/skill:name` 时 | 完整 `SKILL.md` 正文 | 注入专用流程和约束 |
+
+L2 的匹配由 Agent 自己完成：索引（`name` + `description` + `location`）进上下文，Agent 判断命中后用 `read` 打开对应 `SKILL.md`。宿主侧的关键词打分（`SkillManager::match_skills`）只作为可复用的判定函数保留，不参与自动注入，避免同一件事有两套判定。
+
+L3 目前只有 `/skill:<name>` 这一条入口：命中后正文以活动 Skill 块注入**本轮**，回合结束即换回索引。
 
 编写 Skill 时也要遵循这个思想：
 
@@ -162,17 +168,18 @@ Agent 对 Skill 的读取分三层：
 | 检查项 | 通过标准 |
 |--------|----------|
 | `/skills` 可见 | 列表中出现 Skill 名称、作用域和描述 |
-| 手动调用 | `/skill:<name> 测试任务` 能加载该 Skill |
+| 手动调用 | `/skill:<name> 测试任务` 能加载该 Skill（状态行提示「已加载 Skill：<name>」） |
 | 自动匹配 | 普通任务命中 description 关键词时能按 Skill 流程回答 |
 | 资源路径 | 正文中引用的 `references/`、`scripts/` 路径相对 `SKILL.md` 所在目录可解析 |
 | 安全边界 | Skill 没有要求跳过用户确认或绕过工具安全限制 |
 
 常见问题：
 
-- `/skills` 看不到：检查目录层级是否是 `<skill-name>/SKILL.md`，或是否放错作用域。
+- `/skills` 看不到：检查目录层级是否是 `<skill-name>/SKILL.md`，或是否放错作用域；`/skills` 末尾的发现诊断会说明路径不存在、同名冲突或名称不合法。
 - 名称不合法：改成 kebab-case，例如 `python-code-review`。
 - 自动不触发：优化 `description`，写清楚任务关键词和适用场景。
 - 只想手动触发：设置 `disable-model-invocation: true`。
+- description 写多行：用 `description: >-` 块标量，不要写成一堆单行键。
 
 ## 7. 维护约定
 

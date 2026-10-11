@@ -1,4 +1,4 @@
-//! 控制台输入模式自愈（对映 Python `ui/fullscreen/terminal/handling.py` 的
+//! 控制台模式自愈（对映 Python `ui/fullscreen/terminal/handling.py` 的
 //! `_restore_windows_vt_input_mode_if_needed` 与周期看门狗）。
 //!
 //! 背景：Windows 上锁屏 / 息屏 / 从休眠恢复时，系统会把控制台模式重置回普通
@@ -11,6 +11,11 @@
 //! 与焦点报告的终端协议序列。核对失败（重定向输入、非控制台宿主、终端正在关闭）
 //! 一律按「未恢复」处理，不把异常抛给事件循环——Python 侧同样把这里定义为自愈
 //! 边界而非主流程。
+//!
+//! 输出侧同样要自愈，且**必须与输入侧各自核对**：工具子进程会把输出句柄的 VT 处理位
+//! 一起抹掉，此后 ratatui 发出的 ANSI 序列不再被解析，会以字面文本打印到屏幕上
+//! （画面上出现 `?[39m` 一类序列）盖住会话区；而输入模式此时通常还是健康的，挂在
+//! 输入自愈里就永远轮不到它。
 //!
 //! 目标模式必须与 crossterm 自己设的值**整值一致**，这是本模块最容易写错的地方：
 //! crossterm 0.29 的 Windows 事件源走 win32 控制台记录路径（`INPUT_RECORD` 交给
@@ -95,12 +100,7 @@ mod platform {
     /// 核对并恢复控制台输入模式。
     pub fn heal_console_input_mode() -> HealOutcome {
         // SAFETY: 只读取标准句柄，不做所有权转移。
-        let (input, output) = unsafe {
-            (
-                GetStdHandle(STD_INPUT_HANDLE),
-                GetStdHandle(STD_OUTPUT_HANDLE),
-            )
-        };
+        let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
         let Some(input_mode) = console_mode(input) else {
             return HealOutcome::Unavailable;
         };
@@ -111,14 +111,31 @@ mod platform {
         if !set_console_mode(input, required) {
             return HealOutcome::Unavailable;
         }
-        // 输出侧同样可能被重置：VT 处理关闭后所有 ANSI 序列都会原样打印成乱码。
-        if let Some(output_mode) = console_mode(output) {
-            let wanted = output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-            if wanted != output_mode {
-                set_console_mode(output, wanted);
-            }
-        }
         HealOutcome::Restored
+    }
+
+    /// 输出句柄要达到的整值：只补 VT 处理位，其余位一个不动。
+    pub fn required_output_mode(current: u32) -> u32 {
+        current | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    }
+
+    /// 核对并恢复输出句柄的 VT 处理位；返回是否真的恢复过。
+    ///
+    /// 与输入模式**各自独立核对**：`cmd`、`python` 一类工具子进程会把共享控制台的
+    /// 输出模式连 VT 位一起改掉，此后 ratatui 发出的 ANSI 序列不再被解析，会以字面
+    /// 文本（画面上出现 `?[39m` 一类序列）打印出来并盖住内容；而输入模式此时通常
+    /// 还是健康的，挂在输入自愈里就永远轮不到它。
+    pub fn heal_output_mode() -> bool {
+        // SAFETY: 同 `heal_console_input_mode`。
+        let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        let Some(mode) = console_mode(output) else {
+            return false;
+        };
+        let wanted = required_output_mode(mode);
+        if wanted == mode {
+            return false;
+        }
+        set_console_mode(output, wanted)
     }
 }
 
@@ -129,6 +146,11 @@ mod platform {
     /// 非 Windows 平台永远不需要自愈（终端模式由 termios 与本进程共同维护）。
     pub fn heal_console_input_mode() -> HealOutcome {
         HealOutcome::NoChange
+    }
+
+    /// 非 Windows 平台没有可恢复的输出模式位。
+    pub fn heal_output_mode() -> bool {
+        false
     }
 }
 
@@ -150,9 +172,9 @@ impl HealOutcome {
     }
 }
 
-pub use platform::heal_console_input_mode;
+pub use platform::{heal_console_input_mode, heal_output_mode};
 #[cfg(windows)]
-pub use platform::required_input_mode;
+pub use platform::{required_input_mode, required_output_mode};
 
 #[cfg(test)]
 mod tests {
@@ -185,11 +207,25 @@ mod tests {
         assert_eq!(healthy, 0x0098, "健康值就是 crossterm 鼠标捕获后的值");
     }
 
+    /// 输出模式只补 VT 位、不改动其它位，且与被抹掉的输入模式互不牵连。
+    ///
+    /// 防回归要点：输入模式通常一直是健康的，输出自愈不能挂在输入自愈的提前返回之后。
+    #[test]
+    #[cfg(windows)]
+    fn output_mode_only_adds_the_vt_processing_bit() {
+        // 典型「被工具子进程写了输出模式」后的值：原有位保留，缺 VT 位。
+        const CLEARED: u32 = 0x0003;
+        const VT: u32 = 0x0004;
+        assert_eq!(required_output_mode(CLEARED), CLEARED | VT);
+        assert_eq!(required_output_mode(CLEARED | VT), CLEARED | VT, "已含 VT 位时是不动点");
+    }
+
     /// 非 Windows 平台没有可恢复的模式。
     #[test]
     #[cfg(not(windows))]
     fn other_platforms_never_report_a_restore() {
         assert_eq!(heal_console_input_mode(), HealOutcome::NoChange);
         assert!(!heal_console_input_mode().is_restored());
+        assert!(!heal_output_mode(), "非 Windows 平台没有输出 VT 位可恢复");
     }
 }

@@ -5,8 +5,11 @@
 //! 超限恢复批次的选择、`trigger_reached` / `emergency_ratio_reached` 的判定。摘要模型调用、
 //! Session I/O 与投影仍是宿主的活（`service.py` 未搬）。
 
+use std::collections::BTreeSet;
+
 use crate::error::AgentError;
 use crate::json::python_dumps_compact_sorted;
+use crate::turn::tool_prune::EVICTED_EVENT_TYPE;
 use serde_json::{Map, Value};
 
 pub const COMPACT_SUMMARY_PREFIX: &str = "会话压缩摘要：\n";
@@ -447,7 +450,7 @@ impl DefaultContextBudgetManager {
         } else {
             candidates.extend(events.iter().cloned());
         }
-        let recoverable: Vec<SourceEvent> = candidates
+        let recoverable: Vec<SourceEvent> = drop_evicted_tool_events(candidates, events)
             .into_iter()
             .filter(|event| is_model_context_event(&event.event_type))
             .collect();
@@ -472,6 +475,7 @@ impl DefaultContextBudgetManager {
         } else {
             candidates.extend(events.iter().cloned());
         }
+        let candidates = drop_evicted_tool_events(candidates, events);
         let turns = complete_turns(&candidates);
         if turns.is_empty() {
             return None;
@@ -515,6 +519,299 @@ impl DefaultContextBudgetManager {
 
 fn is_model_context_event(event_type: &str) -> bool {
     MODEL_CONTEXT_EVENT_TYPES.contains(&event_type)
+}
+
+/// 单条 inline 摘录的字符上限。
+const DETERMINISTIC_EXCERPT_CHARS: usize = 400;
+
+/// 确定性摘要：不调用模型，按事件顺序抽取正文，产出与模型摘要同形的结构。
+///
+/// 模型摘要不可用或校验不通过时用它兜底（配置 `failure_fallback = "deterministic"` 承诺的
+/// 就是这条路）。此前只有配置解析在读这个字段、没有消费方，于是「摘要失败」等于「本回合
+/// 完全不压缩」，上下文只会继续涨。
+///
+/// 抽取而不是概括是有意为之：兜底路径没有模型可判断重要性，能逐字保留的原文比有损改写更
+/// 可靠；条数不做裁剪，避免漏掉校验要求的覆盖项（失败调用、写入文件、用户消息）。
+pub fn deterministic_structured_summary(
+    events: &[SourceEvent],
+    previous_summary: Option<&Value>,
+) -> Value {
+    let mut objective: Vec<Value> = Vec::new();
+    let mut user_messages: Vec<Value> = Vec::new();
+    let mut failed_attempts: Vec<Value> = Vec::new();
+    let mut modified_files: Vec<Value> = Vec::new();
+    let mut completed: Vec<Value> = Vec::new();
+    let mut exact_evidence: Vec<Value> = Vec::new();
+    let mut last_reply: Option<String> = None;
+    let mut results: Vec<(String, &SourceEvent)> = Vec::new();
+
+    for event in events {
+        let content = event
+            .payload
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        match event.event_type.as_str() {
+            "user_message" => {
+                let Some(content) = content else { continue };
+                objective.push(Value::from(excerpt(content, DETERMINISTIC_EXCERPT_CHARS)));
+                user_messages.push(single_ref_entry(content, &event.event_id));
+            }
+            "assistant_message" => {
+                let Some(content) = content else { continue };
+                last_reply = Some(content.to_string());
+                completed.push(single_ref_entry(
+                    &excerpt(content, DETERMINISTIC_EXCERPT_CHARS),
+                    &event.event_id,
+                ));
+            }
+            "tool_result" => {
+                let call_id = event
+                    .payload
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                results.push((call_id, event));
+            }
+            _ => {}
+        }
+    }
+
+    let call_by_id: Vec<(&str, &SourceEvent)> = events
+        .iter()
+        .filter(|event| event.event_type == "tool_call_requested")
+        .filter_map(|event| {
+            event
+                .payload
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .map(|call_id| (call_id, event))
+        })
+        .collect();
+
+    for (call_id, result) in &results {
+        let requested = call_by_id
+            .iter()
+            .find(|(existing, _)| existing == call_id)
+            .map(|(_, event)| *event);
+        let tool = result
+            .payload
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let output = result
+            .payload
+            .get("model_output")
+            .or_else(|| result.payload.get("output"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let ok = result
+            .payload
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut refs: Vec<String> = Vec::new();
+        if let Some(requested) = requested {
+            refs.push(requested.event_id.clone());
+        }
+        refs.push(result.event_id.clone());
+
+        if ok {
+            let path = requested
+                .and_then(|event| event.payload.get("arguments"))
+                .and_then(Value::as_object)
+                .and_then(|arguments| arguments.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !path.is_empty() && matches!(tool.as_str(), "write_file" | "Edit_file") {
+                let mut item = Map::new();
+                item.insert("path".to_string(), Value::from(path));
+                item.insert(
+                    "description".to_string(),
+                    Value::from("确定性兜底：写入已执行，变更内容见归档原文。"),
+                );
+                item.insert(
+                    "source_event_ids".to_string(),
+                    Value::Array(refs.iter().cloned().map(Value::from).collect()),
+                );
+                modified_files.push(Value::Object(item));
+            }
+            continue;
+        }
+
+        let summary = if tool.is_empty() {
+            "工具调用失败。".to_string()
+        } else {
+            format!(
+                "{tool} 失败：{}",
+                excerpt(output.trim(), DETERMINISTIC_EXCERPT_CHARS)
+            )
+        };
+        failed_attempts.push(entry(&summary, &refs));
+        // 精确证据要求逐字一致，截断过的文本不再等于原文，因此只收完整片段。
+        let raw = output.trim();
+        if !raw.is_empty() && raw.chars().count() <= DETERMINISTIC_EXCERPT_CHARS {
+            exact_evidence.push(entry(raw, &refs));
+        }
+    }
+
+    let current_state = last_reply
+        .as_deref()
+        .map(|text| excerpt(text, DETERMINISTIC_EXCERPT_CHARS))
+        .unwrap_or_else(|| "（压缩窗口内没有可抽取的助手回复。）".to_string());
+
+    let mut structured = Map::new();
+    structured.insert("objective".to_string(), Value::Array(objective));
+    structured.insert(
+        "current_state".to_string(),
+        Value::Array(vec![Value::from(current_state)]),
+    );
+    structured.insert(
+        "constraints".to_string(),
+        Value::Array(previous_constraints(previous_summary)),
+    );
+    structured.insert("decisions".to_string(), Value::Array(Vec::new()));
+    structured.insert("completed".to_string(), Value::Array(completed));
+    structured.insert("open_issues".to_string(), Value::Array(Vec::new()));
+    structured.insert("artifacts".to_string(), Value::Array(Vec::new()));
+    structured.insert("read_files".to_string(), Value::Array(Vec::new()));
+    structured.insert("modified_files".to_string(), Value::Array(modified_files));
+    structured.insert("failed_attempts".to_string(), Value::Array(failed_attempts));
+    structured.insert("excluded_approaches".to_string(), Value::Array(Vec::new()));
+    structured.insert("key_concepts".to_string(), Value::Array(Vec::new()));
+    structured.insert(
+        "problem_solving_process".to_string(),
+        Value::Array(Vec::new()),
+    );
+    structured.insert("user_messages".to_string(), Value::Array(user_messages));
+    structured.insert("next_steps".to_string(), Value::Array(Vec::new()));
+    structured.insert("exact_evidence".to_string(), Value::Array(exact_evidence));
+    Value::Object(structured)
+}
+
+/// 上一次摘要里的约束：确定性兜底必须原样保留，否则会被判为「既有约束丢失」。
+///
+/// 入参是 `compact_summary` 的**载荷**（结构化摘要嵌套在 `structured` 下），与
+/// `validate_previous_constraints` 读同一层；结构不符时返回空。
+fn previous_constraints(previous_summary: Option<&Value>) -> Vec<Value> {
+    let Some(previous_summary) = previous_summary else {
+        return Vec::new();
+    };
+    let structured = previous_summary
+        .get("structured")
+        .filter(|value| value.is_object())
+        .unwrap_or(previous_summary);
+    let Some(items) = structured.get("constraints").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.as_object())
+        .filter_map(|item| {
+            let text = item.get("text").and_then(Value::as_str)?;
+            let refs = item.get("source_event_ids")?.as_array()?.clone();
+            let mut entry = Map::new();
+            entry.insert("text".to_string(), Value::from(text));
+            entry.insert("source_event_ids".to_string(), Value::Array(refs));
+            Some(Value::Object(entry))
+        })
+        .collect()
+}
+
+/// 带来源引用的条目。
+fn entry(text: &str, refs: &[String]) -> Value {
+    let mut item = Map::new();
+    item.insert("text".to_string(), Value::from(text));
+    item.insert(
+        "source_event_ids".to_string(),
+        Value::Array(refs.iter().cloned().map(Value::from).collect()),
+    );
+    Value::Object(item)
+}
+
+/// 单事件条目的便捷封装。
+fn single_ref_entry(text: &str, event_id: &str) -> Value {
+    let mut item = Map::new();
+    item.insert("text".to_string(), Value::from(text));
+    item.insert(
+        "source_event_ids".to_string(),
+        Value::Array(vec![Value::from(event_id)]),
+    );
+    Value::Object(item)
+}
+
+/// 按字符截断并补省略号。
+fn excerpt(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(limit).collect::<String>())
+}
+
+/// 收集被 `tool_call_evicted` 标注淘汰的调用 ID。
+fn evicted_call_ids(events: &[SourceEvent]) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    for event in events {
+        if event.event_type != EVICTED_EVENT_TYPE {
+            continue;
+        }
+        for call_id in event
+            .payload
+            .get("evicted_call_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let call_id = call_id.trim();
+            if !call_id.is_empty() {
+                ids.insert(call_id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// 丢掉被淘汰调用的工具事件（`tool_call_requested` / `tool_result` / `tool_call_denied`）。
+///
+/// 淘汰的语义是「这次调用的原文已离开模型上下文」，所以压缩窗口必须与历史投影用同一份口径：
+/// 若把已淘汰的工具事件照旧算进待压缩窗口，索引里会列出模型已无从对齐的条目、完整性校验
+/// 还会要求模型为它们写 `failed_attempts`，摘要必然被反复判为不合格（实测带淘汰标注的会话
+/// 触发压缩 4 次、成功 0 次）。
+///
+/// 淘汰标注本身不是模型上下文事件，交由调用方的类型过滤处理；没有 `tool_call_id` 的旧事件
+/// 无从对应，按未淘汰处理——宁可多留一条，也不静默丢内容。
+fn drop_evicted_tool_events(
+    candidates: Vec<SourceEvent>,
+    all_events: &[SourceEvent],
+) -> Vec<SourceEvent> {
+    let evicted = evicted_call_ids(all_events);
+    if evicted.is_empty() {
+        return candidates;
+    }
+    candidates
+        .into_iter()
+        .filter(|event| {
+            if !matches!(
+                event.event_type.as_str(),
+                "tool_call_requested" | "tool_result" | "tool_call_denied"
+            ) {
+                return true;
+            }
+            let call_id = event
+                .payload
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            call_id.is_empty() || !evicted.contains(call_id)
+        })
+        .collect()
 }
 
 fn summary_boundary(events: &[SourceEvent]) -> (i64, Option<Value>, Vec<String>) {
@@ -738,5 +1035,195 @@ mod prompt_payload_tests {
         .to_index_dict(200);
         let preview = index["preview"].as_str().unwrap_or_default();
         assert!(!preview.contains("ZZZZZZZZ"), "预览里不该有 Base64：{preview}");
+    }
+}
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+
+    fn event(event_id: &str, event_type: &str, payload: Value) -> SourceEvent {
+        SourceEvent {
+            event_id: event_id.to_string(),
+            event_type: event_type.to_string(),
+            payload,
+        }
+    }
+
+    fn bash_call(event_id: &str, call_id: &str, ok: bool) -> SourceEvent {
+        event(
+            event_id,
+            "tool_result",
+            serde_json::json!({
+                "tool": "bash",
+                "tool_call_id": call_id,
+                "ok": ok,
+                "output": "输出",
+            }),
+        )
+    }
+
+    /// 被淘汰调用的工具事件不进待压缩窗口；未淘汰的照旧保留。
+    #[test]
+    fn evicted_calls_leave_the_compaction_window() {
+        let events = vec![
+            event("u1", "user_message", serde_json::json!({"content": "问"})),
+            event(
+                "c1",
+                "tool_call_requested",
+                serde_json::json!({"tool": "bash", "tool_call_id": "keep"}),
+            ),
+            bash_call("r1", "keep", false),
+            event(
+                "c2",
+                "tool_call_requested",
+                serde_json::json!({"tool": "bash", "tool_call_id": "drop"}),
+            ),
+            bash_call("r2", "drop", false),
+            event(
+                "m1",
+                "tool_call_evicted",
+                serde_json::json!({"evicted_call_ids": ["drop"], "evicted_tool_names": ["bash"]}),
+            ),
+            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let batch = DefaultContextBudgetManager
+            .select_batch(&events)
+            .expect("有完整回合");
+        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
+        assert!(ids.contains(&"c1") && ids.contains(&"r1"), "未淘汰的调用保留：{ids:?}");
+        assert!(
+            !ids.contains(&"c2") && !ids.contains(&"r2"),
+            "淘汰调用的请求与结果都必须离开窗口：{ids:?}"
+        );
+        // 淘汰标注本身不是工具事件，批次照旧带上它（投影与校验都按事件类型自行忽略）。
+        assert!(ids.contains(&"m1"), "标注不属于被剔除的对象：{ids:?}");
+    }
+
+    /// 没有 `tool_call_id` 的旧事件无从对应，按未淘汰处理（宁可多留，不静默丢内容）。
+    #[test]
+    fn tool_events_without_call_id_are_kept() {
+        let events = vec![
+            event("u1", "user_message", serde_json::json!({"content": "问"})),
+            event("c1", "tool_call_requested", serde_json::json!({"tool": "read"})),
+            event("r1", "tool_result", serde_json::json!({"tool": "read", "ok": true})),
+            event(
+                "m1",
+                "tool_call_evicted",
+                serde_json::json!({"evicted_call_ids": ["x"]}),
+            ),
+            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let batch = DefaultContextBudgetManager
+            .select_batch(&events)
+            .expect("有完整回合");
+        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
+        assert!(ids.contains(&"c1") && ids.contains(&"r1"), "无 ID 不参与淘汰：{ids:?}");
+    }
+
+    /// 恢复批次的豁免必须与普通批次同一口径，否则超限恢复会把已淘汰原文捞回来。
+    #[test]
+    fn recovery_batch_also_drops_evicted_calls() {
+        let events = vec![
+            event("u1", "user_message", serde_json::json!({"content": "问"})),
+            event(
+                "c1",
+                "tool_call_requested",
+                serde_json::json!({"tool": "bash", "tool_call_id": "drop"}),
+            ),
+            bash_call("r1", "drop", false),
+            event(
+                "m1",
+                "tool_call_evicted",
+                serde_json::json!({"evicted_call_ids": ["drop"]}),
+            ),
+            event("u2", "user_message", serde_json::json!({"content": "还没答完"})),
+        ];
+        let batch = DefaultContextBudgetManager
+            .select_recovery_batch(&events)
+            .expect("最后一条是用户消息时可选");
+        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
+        assert!(!ids.contains(&"c1") && !ids.contains(&"r1"), "恢复批次同样剔除：{ids:?}");
+    }
+
+    /// 确定性兜底产出与模型摘要同形的结构，并覆盖校验关心的三类事实。
+    #[test]
+    fn deterministic_fallback_covers_the_checked_facts() {
+        let events = vec![
+            event("u1", "user_message", serde_json::json!({"content": "目标一"})),
+            event(
+                "c1",
+                "tool_call_requested",
+                serde_json::json!({"tool": "write_file", "tool_call_id": "w1",
+                                   "arguments": {"path": "src/a.py"}}),
+            ),
+            event(
+                "r1",
+                "tool_result",
+                serde_json::json!({"tool": "write_file", "tool_call_id": "w1", "ok": true,
+                                   "output": "已写入"}),
+            ),
+            event(
+                "c2",
+                "tool_call_requested",
+                serde_json::json!({"tool": "bash", "tool_call_id": "b1"}),
+            ),
+            event(
+                "r2",
+                "tool_result",
+                serde_json::json!({"tool": "bash", "tool_call_id": "b1", "ok": false,
+                                   "output": "boom"}),
+            ),
+            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let structured = deterministic_structured_summary(&events, None);
+        assert_eq!(structured["objective"][0], Value::from("目标一"));
+        assert_eq!(
+            structured["user_messages"][0]["text"],
+            Value::from("目标一"),
+            "用户消息逐字保留"
+        );
+        assert_eq!(
+            structured["modified_files"][0]["path"],
+            Value::from("src/a.py"),
+            "成功写入的文件必须被覆盖"
+        );
+        assert_eq!(
+            structured["failed_attempts"][0]["source_event_ids"],
+            serde_json::json!(["c2", "r2"]),
+            "失败调用要带上请求与结果两个事件"
+        );
+        assert_eq!(
+            structured["exact_evidence"][0]["text"],
+            Value::from("boom"),
+            "失败输出完整时进精确证据"
+        );
+    }
+
+    /// 上一次摘要的约束必须原样保留，否则兜底摘要会被判为「既有约束丢失」。
+    ///
+    /// 入参是 `compact_summary` 的载荷形状（结构化摘要嵌在 `structured` 下）。
+    #[test]
+    fn deterministic_fallback_carries_previous_constraints() {
+        let previous = serde_json::json!({
+            "structured": {
+                "constraints": [{"text": "不要改公开 API", "source_event_ids": ["old"]}],
+            },
+        });
+        let events = vec![event("u1", "user_message", serde_json::json!({"content": "继续"}))];
+        let structured = deterministic_structured_summary(&events, Some(&previous));
+        assert_eq!(
+            structured["constraints"][0]["text"],
+            Value::from("不要改公开 API")
+        );
+        assert_eq!(
+            structured["constraints"][0]["source_event_ids"],
+            serde_json::json!(["old"])
+        );
+
+        // 旧版纯文本载荷没有结构化约束：按空处理，不报错。
+        let legacy = serde_json::json!({"content": "旧摘要"});
+        let structured = deterministic_structured_summary(&events, Some(&legacy));
+        assert_eq!(structured["constraints"], serde_json::json!([]));
     }
 }

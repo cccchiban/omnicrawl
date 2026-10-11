@@ -15,8 +15,8 @@ use serde_json::Value;
 
 use super::{
     char_offsets, find_placeholders, has_open_brace, match_placeholder, matches_marker,
-    skip_whitespace, DesensitizationError, DesensitizationStats, PlaceholderCycle,
-    FULLWIDTH_OPEN_BRACE, PLACEHOLDER_MARKER,
+    normalize_ascii_width, skip_whitespace, DesensitizationError, DesensitizationStats,
+    PlaceholderCycle, FULLWIDTH_OPEN_BRACE, PLACEHOLDER_MARKER,
 };
 
 /// Provider 以「正常结束」形态表达输出被截断的 finish_reason 值。
@@ -390,13 +390,13 @@ fn is_partial_prefix(tail: &str) -> bool {
     if index >= characters.len() {
         return true;
     }
-    if !matches!(characters[index], ':' | '\u{ff1a}') {
+    if normalize_ascii_width(characters[index]) != ':' {
         return false;
     }
     index = skip_whitespace(&characters, index + 1);
     while characters
         .get(index)
-        .is_some_and(|character| character.is_ascii_digit())
+        .is_some_and(|character| normalize_ascii_width(*character).is_ascii_digit())
     {
         index += 1;
     }
@@ -424,7 +424,9 @@ fn count_placeholder_prefixes(text: &str) -> usize {
 }
 
 /// 单字符小写比较：Python 的 `str.lower()` 可能展开成多个字符，那种情况不算相等。
+///
+/// 比较前先做全半角归一化：模型把 `Desensitized` 打成全角时，半截前缀也要能挂起。
 fn lower_equals(character: char, expected: char) -> bool {
-    let mut lowered = character.to_lowercase();
+    let mut lowered = normalize_ascii_width(character).to_lowercase();
     matches!(lowered.next(), Some(value) if value == expected && lowered.next().is_none())
 }

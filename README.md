@@ -29,8 +29,8 @@ omnicrawl                      # 全屏 TUI
 ```
 
 平台包按 `os/cpu` 分发：`@omnicrawl/cli-win32-x64`、`cli-win32-ia32`、`cli-linux-x64`、
-`cli-linux-arm64-musl`、`cli-linux-arm-musl`（后两个分别覆盖 arm64 与 armv7；32 位 Windows
-与 armv7 只带内核，启动器会自动退回协议直连）。
+`cli-linux-arm64-musl`、`cli-linux-arm-musl`（后两个分别覆盖 arm64 与 armv7），
+五个平台包都带完整宿主载荷。
 
 ### 从源码构建
 

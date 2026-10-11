@@ -778,3 +778,101 @@ fn real_kernel_undoes_the_last_turn_from_slash_command() {
         "撤销应当把文件恢复成本轮开始前"
     );
 }
+
+/// `/skill:<名>` 端到端：命中时技能正文档必须进本轮请求，且用户消息是余下任务。
+#[test]
+fn real_kernel_loads_skill_body_for_the_turn() {
+    let Some(binary) = kernel_binary() else {
+        eprintln!("跳过：找不到内核二进制，先执行 `cargo build -p omnicrawl-cli`");
+        return;
+    };
+    let workspace = workspace_dir("skill");
+    // 项目级 Skill：正文里带一句只可能来自 SKILL.md 的标记。
+    let skill_dir = workspace.join(".omnicrawl").join("skills").join("e2e-skill");
+    std::fs::create_dir_all(&skill_dir).expect("建 skill 目录");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: e2e-skill\ndescription: 端到端测试技能\n---\n\n正文标记 SKILL-BODY-MARKER 请照做。\n",
+    )
+    .expect("写 SKILL.md");
+
+    let server = StubServer::spawn(vec![text_stream()]);
+    std::env::set_var("OMNICRAWL_TUI_E2E_SKILL_KEY", TEST_KEY);
+
+    let options = Options {
+        kernel: binary,
+        model: "stub-model".to_string(),
+        base_url: server.base_url.clone(),
+        api_key_env: "OMNICRAWL_TUI_E2E_SKILL_KEY".to_string(),
+        system_prompt: Some("你是端到端测试助手。".to_string()),
+        session_root: None,
+        context_window_tokens: Some(128_000),
+        approval: ApprovalMode::Manual,
+        command_timeout_seconds: 360,
+        tool_timeout_seconds: 120,
+        native_vision: false,
+        image_gen: Default::default(),
+        advisor: Default::default(),
+    };
+    let kernel = KernelClient::spawn(&options.kernel).expect("无法启动内核进程");
+    let mut app = App::new(options, kernel, &workspace).expect("工具表应当构建成功");
+    app.handshake().expect("握手应当成功");
+
+    app.state.composer.insert("/skill:e2e-skill 做点事");
+    app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        app.drain_frames();
+        if app
+            .state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Assistant(text) if text.contains("你好")))
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    app.request_shutdown();
+    app.kernel.wait_or_kill(Duration::from_secs(5));
+
+    // 1) 状态行给出「已加载 Skill」。
+    assert!(
+        app.state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Notice(text) if text.contains("已加载 Skill：e2e-skill"))),
+        "应有加载提示：{:?}",
+        app.state.records
+    );
+    // 2) 用户消息是余下任务，`/skill:` 原文不进模型。
+    assert!(
+        !app.state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::User(message) if message.text.contains("/skill:"))),
+        "`/skill:` 原文不该进对话：{:?}",
+        app.state.records
+    );
+    // 3) 技能正文与 `disable_model_invocation` 一起出现在本轮请求里。
+    let request = server
+        .bodies()
+        .into_iter()
+        .find(|body| {
+            body.to_string().contains("做点事")
+        })
+        .expect("应有一次携带任务的模型请求");
+    let rendered = request.to_string();
+    assert!(
+        rendered.contains("SKILL-BODY-MARKER"),
+        "本轮请求应带技能正文：{rendered}"
+    );
+    assert!(
+        rendered.contains("<active_skill_instructions"),
+        "应使用活动技能块而不是索引：{rendered}"
+    );
+}

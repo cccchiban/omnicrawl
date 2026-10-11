@@ -10,7 +10,7 @@ use crate::error::ConfigError;
 use crate::toml::Value;
 
 /// 可开关的内置工具（含条件注册工具；未注册条件下配置开关不会报错）。
-pub const TOOL_SWITCH_KEYS: [&str; 26] = [
+pub const TOOL_SWITCH_KEYS: [&str; 27] = [
     "list",
     "find",
     "read",
@@ -37,10 +37,11 @@ pub const TOOL_SWITCH_KEYS: [&str; 26] = [
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "config_edit",
 ];
 
 /// 开关名 → 界面文案。
-pub const TOOL_SWITCH_LABELS: [(&str, &str); 26] = [
+pub const TOOL_SWITCH_LABELS: [(&str, &str); 27] = [
     ("list", "列出目录内容"),
     ("find", "按名称或路径查找文件"),
     ("read", "读取文件内容"),
@@ -67,6 +68,7 @@ pub const TOOL_SWITCH_LABELS: [(&str, &str); 26] = [
     ("memory_read", "读取长期记忆"),
     ("memory_expand_related", "展开相关长期记忆"),
     ("memory_write", "写入长期记忆（scope 选作用域）"),
+    ("config_edit", "读取或修改配置"),
 ];
 
 /// 默认开关：除 `powershell` 外全部启用。

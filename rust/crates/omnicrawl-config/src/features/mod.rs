@@ -12,6 +12,7 @@ pub mod decision_model;
 pub mod desensitization;
 pub mod image_gen;
 pub mod run_guard;
+pub mod skills;
 pub mod subagents;
 pub mod tool_output_compression;
 pub mod tools;

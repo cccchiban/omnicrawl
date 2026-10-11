@@ -255,10 +255,8 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     registry.register(
         Command::new("settings", handle_settings_command)
             .description("打开中文设置面板，修改运行时开关并立即保存。")
-            .usage("/settings [--chat]")
-            .command_type(CommandType::Ui)
-            .arg_prompt("--chat")
-            .parameters([("--chat", "无上下文配置对话")]),
+            .usage("/settings")
+            .command_type(CommandType::Ui),
     )?;
 
     registry.register(
@@ -663,6 +661,18 @@ pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
         };
         lines.push(format!("  {}{suffix}  ({})", meta.name, meta.scope));
         lines.push(format!("    {}", meta.description));
+    }
+    // 发现阶段的诊断直接跟在列表后：路径写错、名称冲突、名称不合法时用户能当场看到原因。
+    if let Some(diagnostics) = agent.skill_diagnostics() {
+        if !diagnostics.is_empty() {
+            lines.push(format!("发现诊断 {} 条：", diagnostics.len()));
+            for diagnostic in &diagnostics {
+                lines.push(format!(
+                    "  [!] {}（{}）",
+                    diagnostic.message, diagnostic.path
+                ));
+            }
+        }
     }
     lines.join("\n")
 }
@@ -1534,19 +1544,13 @@ pub fn handle_quit_command(ctx: &CommandContext<'_>) -> CommandResult {
     CommandResult::default().with_exit_requested()
 }
 
-/// 请求交互端打开设置面板或无上下文配置对话。
+/// 请求交互端打开设置面板。
 pub fn handle_settings_command(ctx: &CommandContext<'_>) -> CommandResult {
     if ctx.is_remote() {
         return CommandResult::message("远程连接不支持 /settings；请在本地 TUI 中打开设置面板。");
     }
-    if ctx.args.trim().to_lowercase() == "--chat" {
-        return CommandResult::message("进入配置对话")
-            .with_open_config_chat()
-            .with_clear_conversation()
-            .with_refresh_context();
-    }
     if !ctx.args.trim().is_empty() {
-        return CommandResult::error("/settings 只支持可选参数 --chat。");
+        return CommandResult::error("/settings 不接受参数。");
     }
     CommandResult::message("打开设置面板")
         .with_open_settings()
@@ -1945,7 +1949,7 @@ pub fn build_slash_commands(agent: &dyn CommandAgent) -> Vec<String> {
 /// 构建可供交互客户端使用的斜杠命令元数据。
 ///
 /// TUI 使用命令字符串做 Tab 补全；API 客户端可使用说明、显示标题和搜索文本；
-/// `parameters` 是命令声明的可选参数 `(参数, 说明)`，供输入框提示 `--chat`。
+/// `parameters` 是命令声明的可选参数 `(参数, 说明)`，供输入框提示参数名。
 /// 内置命令的说明与是否接受参数都由注册表声明派生，只有运行时 Skill 在此拼接，
 /// 避免不同交互入口的命令不一致。
 pub fn build_slash_command_options(agent: &dyn CommandAgent) -> Vec<CommandOption> {
@@ -2321,6 +2325,38 @@ mod tests {
         assert!(text.contains("    提取 B 站内容"));
     }
 
+    /// 发现诊断必须出现在 `/skills` 输出里：路径写错、同名冲突时用户能当场看到原因。
+    #[test]
+    fn skills_list_appends_discovery_diagnostics() {
+        let mut agent = FakeAgent::default();
+        agent.skills = Some(vec![skill("bili-note", "提取 B 站内容")]);
+        agent.skill_diagnostics = Some(vec![
+            omnicrawl_extensions::skill::SkillDiagnostic::warning(
+                "Skill 路径不存在",
+                "D:\\missing-skills",
+            ),
+            omnicrawl_extensions::skill::SkillDiagnostic {
+                kind: "collision".to_string(),
+                message: "Skill 名称 \"demo\" 冲突".to_string(),
+                path: "C:\\skills\\demo\\SKILL.md".to_string(),
+                collision: None,
+            },
+        ]);
+        let text = format_skills_list(&agent);
+        assert!(text.contains("发现诊断 2 条："), "{text}");
+        assert!(text.contains("[!] Skill 路径不存在（D:\\missing-skills）"), "{text}");
+        assert!(text.contains("[!] Skill 名称 \"demo\" 冲突"), "{text}");
+    }
+
+    /// 没有诊断时不多打一行。
+    #[test]
+    fn skills_list_omits_empty_diagnostics() {
+        let mut agent = FakeAgent::default();
+        agent.skills = Some(vec![skill("bili-note", "提取 B 站内容")]);
+        agent.skill_diagnostics = Some(Vec::new());
+        assert!(!format_skills_list(&agent).contains("发现诊断"));
+    }
+
     #[test]
     fn plugins_status_falls_back_to_interface_hint() {
         let agent = FakeAgent::default();
@@ -2396,20 +2432,14 @@ mod tests {
     }
 
     #[test]
-    fn settings_supports_chat_switch_and_rejects_extra_arguments() {
+    fn settings_opens_the_panel_and_rejects_arguments() {
         let agent = FakeAgent::default();
-        let chat = registry().dispatch("/settings --chat", &agent, Channel::Tui, None);
-        assert!(chat.open_config_chat);
-        assert!(chat.clear_conversation);
-
         let panel = registry().dispatch("/settings", &agent, Channel::Tui, None);
         assert!(panel.open_settings);
+        assert!(!panel.clear_conversation);
 
         let invalid = registry().dispatch("/settings --other", &agent, Channel::Tui, None);
-        assert_eq!(
-            invalid.error.as_deref(),
-            Some("/settings 只支持可选参数 --chat。")
-        );
+        assert_eq!(invalid.error.as_deref(), Some("/settings 不接受参数。"));
     }
 
     #[test]

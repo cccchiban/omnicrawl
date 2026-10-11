@@ -38,14 +38,14 @@ pub const PRUNE_TASK_CHARS: usize = 1_200;
 ///
 /// 共同点是「结果本身就是事实，不能靠重跑拿回来」：
 /// * 记忆 / 知识库是跨回合持久知识的读写口，输出即后续步骤要引用的原文；
-/// * `write_file` / `Edit_file` 是**已落盘的副作用**，记录一旦被删，模型就不知道文件已经变成什么样、
-///   也无从判断后续还要不要接着改（重跑一次未必得到同一结果，甚至可能冲突）；
+/// * `write_file` / `Edit_file` / `config_edit` 是**已落盘的副作用**，记录一旦被删，模型就不知道
+///   文件或配置已经变成什么样、也无从判断后续还要不要接着改（重跑一次未必得到同一结果，甚至冲突）；
 /// * `git` 的结果是仓库在当时的快照（提交、差异、分支状态），重跑可能落到另一个状态上。
 /// 让决策模型去判「还有没有用」既不可靠也不划算，因此直接从送审范围里排除。
 ///
 /// `read` / `grep` **不在**名单里（用户指定）：文件内容与检索结果重读重查就能拿回，
 /// 判错了也补得回来，所以交给决策模型判断。
-pub const PRUNE_EXCLUDED_TOOLS: [&str; 12] = [
+pub const PRUNE_EXCLUDED_TOOLS: [&str; 13] = [
     // 记忆组（`omnicrawl_controllers::tool_catalog` 的 `memory` 组）。
     "memory_search",
     "memory_read",
@@ -57,9 +57,10 @@ pub const PRUNE_EXCLUDED_TOOLS: [&str; 12] = [
     "kb_write",
     "kb_append",
     "kb_list",
-    // 编辑与替换：已落盘的副作用，记录本身就是要留的证据（注意大小写，写作 `Edit_file`）。
+    // 编辑、替换与配置写入：已落盘的副作用，记录本身就是要留的证据（注意大小写，写作 `Edit_file`）。
     "write_file",
     "Edit_file",
+    "config_edit",
     // 版本库查询：结果是仓库在当时的快照，重跑未必落在同一状态上。
     "git",
 ];
@@ -252,6 +253,7 @@ mod tests {
         // 排除名单是精确匹配：`read_image` 不是 `read`；`Edit_file` 的大小写也不能含糊。
         assert!(!PRUNE_EXCLUDED_TOOLS.contains(&"read_image"));
         assert!(!prunable_tool("Edit_file") && !prunable_tool("write_file"));
+        assert!(!prunable_tool("config_edit"), "配置写入是已落盘的副作用");
         assert!(!prunable_tool("git"), "`git` 在本轮被加进白名单");
         assert!(
             prunable_tool("edit_file"),

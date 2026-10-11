@@ -30,7 +30,9 @@ use omnicrawl_tui::clipboard;
 use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
 use omnicrawl_tui::paste;
 use omnicrawl_tui::ui;
-use omnicrawl_tui::ui::fullscreen::terminal::console_heal::heal_console_input_mode;
+use omnicrawl_tui::ui::fullscreen::terminal::console_heal::{
+    heal_console_input_mode, heal_output_mode,
+};
 use omnicrawl_tui::ui::fullscreen::terminal::timer_resolution::TimerResolutionGuard;
 use omnicrawl_tui::ui::splash::{self, LogLevel, StartupLogSink};
 use omnicrawl_workspace::agent_isolation::{
@@ -217,7 +219,6 @@ fn event_loop(
         app.state.tick_notice_line(now);
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
-        app.tick_config_chat();
         app.tick_monitor_events(now);
         app.drain_frames();
         // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
@@ -227,7 +228,17 @@ fn event_loop(
         // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块自上次绘制以来都没变时
         // 整帧跳过绘制——空闲的 TUI 不再以 20fps 空转，也不重算任何一块的内容。
         // 尺寸变化（resize 事件）与模态弹层都由 `needs_redraw` 一并覆盖。
-        if app.needs_redraw() {
+        // 自愈标志先取再判，避免被 `||` 短路后留在守卫里、下一帧又强制重画一次。
+        let healed = guard.take_force_redraw();
+        let changed = app.needs_redraw();
+        if healed {
+            // 输出 VT 位恢复前打印的转义序列不在 ratatui 的缓冲里，普通增量绘制不会覆盖
+            // 它们：先清屏（同时重置后台缓冲）再整帧重画。
+            terminal
+                .clear()
+                .map_err(|error| format!("清理终端失败：{error}"))?;
+        }
+        if healed || changed {
             terminal
                 .draw(|frame| {
                     ui::render(
@@ -235,7 +246,6 @@ fn event_loop(
                         &app.state,
                         app.settings.as_ref(),
                         app.file_picker.as_ref(),
-                        app.config_chat.as_ref(),
                     )
                 })
                 .map_err(|error| format!("渲染失败：{error}"))?;
@@ -247,7 +257,7 @@ fn event_loop(
         if guard.heal_if_needed(now) && guard.notice_due(now) {
             // 不再直接写终端（会盖住底部输入框）：改成会话流里的提示行。
             app.state
-                .notice("控制台输入模式被重置，已恢复鼠标与键盘协议。".to_string());
+                .notice("控制台模式被重置，已恢复终端显示与鼠标键盘协议。".to_string());
         }
         // 等待时长按「下一件要做的事」定：空闲（无回合、无动画、无在途结果）时久睡，
         // 有活动时按活动帧率短睡，避免固定 50ms 节拍白等。粘贴挂起期间还要缩短上限，
@@ -369,6 +379,8 @@ struct TerminalGuard {
     last_heal: Instant,
     /// 上一次向用户提示自愈的时间；一分钟内的重复恢复只恢复、不再刷屏。
     last_notice: Option<Instant>,
+    /// 下一次绘制必须整帧重画而不是走块级增量（输出模式恢复后抹掉屏幕上的转义序列）。
+    force_redraw: bool,
 }
 
 impl TerminalGuard {
@@ -381,6 +393,11 @@ impl TerminalGuard {
         }
         self.last_notice = Some(now);
         true
+    }
+
+    /// 取走「本帧必须整屏重画」的标志（取走后清空）。
+    fn take_force_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.force_redraw)
     }
 
     fn start() -> Result<Self, String> {
@@ -397,24 +414,34 @@ impl TerminalGuard {
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
+            force_redraw: false,
         })
     }
 
-    /// 周期核对控制台输入模式；返回是否真的恢复过（调用方据此提示用户）。
+    /// 周期核对控制台输入与输出模式；返回是否真的恢复过（调用方据此提示用户并重画）。
     fn heal_if_needed(&mut self, now: Instant) -> bool {
         if now.saturating_duration_since(self.last_heal) < CONSOLE_HEAL_INTERVAL {
             return false;
         }
         self.last_heal = now;
-        if !heal_console_input_mode().is_restored() {
+        // 输出 VT 位独立核对：输入模式健康时也要查，否则工具子进程抹掉 VT 位后
+        // ratatui 的 ANSI 序列会以字面文本打印出来，盖住会话区与输入区。
+        let input_restored = heal_console_input_mode().is_restored();
+        let output_restored = heal_output_mode();
+        if !input_restored && !output_restored {
             return false;
         }
-        // 控制台模式被系统重置后不会再产生可识别的 AppFocus，必须主动重发
-        // 鼠标与焦点报告序列，否则「模式恢复了但事件依旧不来」。
-        // （重发鼠标捕获会把模式整值设回 crossterm 的目标值，与自愈目标一致，
-        // 不再互相覆盖——两者若不一致就会一秒一次地互相判定为「被重置」。）
-        let mut out = stdout();
-        let _ = execute!(out, EnableMouseCapture, EnableFocusChange);
+        if input_restored {
+            // 控制台模式被系统重置后不会再产生可识别的 AppFocus，必须主动重发
+            // 鼠标与焦点报告序列，否则「模式恢复了但事件依旧不来」。
+            // （重发鼠标捕获会把模式整值设回 crossterm 的目标值，与自愈目标一致，
+            // 不再互相覆盖——两者若不一致就会一秒一次地互相判定为「被重置」。）
+            let mut out = stdout();
+            let _ = execute!(out, EnableMouseCapture, EnableFocusChange);
+        }
+        // 输出恢复前打印出来的转义序列已经在屏幕上：整屏重画一次把它们抹掉。
+        // 重画只做一次、不写提示行，因此不会与正常的块级增量刷新打架。
+        self.force_redraw = true;
         true
     }
 }

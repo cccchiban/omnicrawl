@@ -116,6 +116,11 @@ show_thinking = true
 [memory]
 enabled = true
 
+# Skill 额外路径：目录或 .md 文件，相对路径按工作区解析。
+# 与内置作用域一起参与发现，扫描顺序排在最后；同名 Skill 由先扫描到的作用域胜出。
+# [skills]
+# extra_paths = ["./my-skills", "~/.omnicrawl/shared-skills"]
+
 # 内置工具开关：默认除 powershell 关闭外，其余全部启用。
 # 只在需要禁用某个工具时取消注释并设为 false。
 # [tools]

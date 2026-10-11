@@ -20,10 +20,13 @@ pub const DEFAULT_MAX_RESULTS: usize = 3;
 
 /// 默认扫描的作用域目录（优先级从低到高，后加载的覆盖先加载的）。
 pub const SKILL_SCOPES: [(&str, &str); 3] = [
-    ("enterprise", ""),
+    ("enterprise", "OMNICRAWL_ENTERPRISE_DIR"),
     ("user", "~/.omnicrawl/skills"),
     ("project", ".omnicrawl/skills"),
 ];
+
+/// 企业级 skills 目录的环境变量名（由管理员显式指定，不自动创建）。
+pub const ENTERPRISE_SKILL_DIR_ENV: &str = "OMNICRAWL_ENTERPRISE_DIR";
 
 /// Skill 加载过程中产生的警告或冲突信息。
 #[derive(Debug, Clone, PartialEq)]
@@ -186,6 +189,7 @@ pub struct SkillManager {
     real_paths: HashSet<String>,
     last_cwd: Option<PathBuf>,
     last_extra_paths: Vec<String>,
+    last_enterprise_dir: Option<String>,
 }
 
 impl SkillManager {
@@ -195,9 +199,24 @@ impl SkillManager {
 
     /// 遍历所有作用域目录，构建 Skill 索引。
     ///
-    /// 加载顺序（低优先级先，高优先级覆盖）：
-    /// 企业级 → 个人级 → 项目级 → 额外路径；同名 Skill 保留先加载的，记录碰撞诊断。
+    /// 扫描顺序：企业级 → 个人级 → 项目级 → 额外路径。同名 Skill **保留先扫描到的**
+    /// （企业级优先于个人级，个人级优先于项目级），并在 `diagnostics` 里留一条碰撞记录；
+    /// 这与 Python `_add_skill` 的语义一致。
     pub fn discover(&mut self, cwd: Option<&Path>, extra_paths: &[String]) {
+        let enterprise_dir = std::env::var(ENTERPRISE_SKILL_DIR_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.discover_with_enterprise(cwd, extra_paths, enterprise_dir.as_deref());
+    }
+
+    /// 与 [`Self::discover`] 同路径，但企业级目录由调用方显式给出（测试与宿主注入用）。
+    pub fn discover_with_enterprise(
+        &mut self,
+        cwd: Option<&Path>,
+        extra_paths: &[String],
+        enterprise_dir: Option<&str>,
+    ) {
         self.index.clear();
         self.body_cache.clear();
         self.diagnostics.clear();
@@ -211,12 +230,23 @@ impl SkillManager {
         };
         self.last_cwd = Some(work_dir.clone());
         self.last_extra_paths = extra_paths.to_vec();
+        self.last_enterprise_dir = enterprise_dir.map(|value| value.to_string());
         let home_dir = home_directory();
 
         for (scope, _path_spec) in SKILL_SCOPES {
             match scope {
-                // enterprise 层不再有环境变量目录，只保留 user / project 两层。
-                "enterprise" => {}
+                // 企业级目录由环境变量显式指定，只读不建。
+                "enterprise" => {
+                    if let Some(raw) = enterprise_dir {
+                        let expanded = expand_user(raw);
+                        let candidate = if expanded.is_absolute() {
+                            expanded
+                        } else {
+                            work_dir.join(expanded)
+                        };
+                        self.scan_directory(&resolve_path(&candidate), scope);
+                    }
+                }
                 "user" => {
                     let user_skills = home_dir.join(".omnicrawl").join("skills");
                     ensure_scope_dir(&user_skills);
@@ -329,6 +359,8 @@ impl SkillManager {
         self.real_paths.insert(real_key);
 
         if let Some((_, existing)) = self.index.iter().find(|(name, _)| *name == meta.name) {
+            // 同名：保留先扫描到的（企业级 > 个人级 > 项目级 > 额外路径），
+            // 与 Python `_add_skill` 的语义一致；碰撞记录里 winner 是已索引的、loser 是新条目。
             let mut collision = Map::new();
             collision.insert("resourceType".to_string(), Value::from("skill"));
             collision.insert("name".to_string(), Value::from(meta.name.clone()));
@@ -491,7 +523,8 @@ impl SkillManager {
     pub fn reload(&mut self) {
         let cwd = self.last_cwd.clone();
         let extra = self.last_extra_paths.clone();
-        self.discover(cwd.as_deref(), &extra);
+        let enterprise = self.last_enterprise_dir.clone();
+        self.discover_with_enterprise(cwd.as_deref(), &extra, enterprise.as_deref());
     }
 
     /// 将所有 Skill 的元数据以 XML 格式输出，供上下文消息使用。
@@ -597,8 +630,11 @@ pub fn parse_frontmatter(content: &str) -> (Map<String, Value>, String) {
     let body = normalized[end_index + 4..].trim().to_string();
 
     let mut result = Map::new();
-    for line in yaml_str.split('\n') {
-        let line = line.trim();
+    let lines: Vec<&str> = yaml_str.split('\n').collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index].trim();
+        index += 1;
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -606,6 +642,29 @@ pub fn parse_frontmatter(content: &str) -> (Map<String, Value>, String) {
             continue;
         };
         let value = value.trim();
+        // 块标量（`>-` / `>` / `|-` / `|`）：值在后续缩进行里，逐行收进来。
+        if let Some(style) = block_scalar_style(value) {
+            let mut collected: Vec<String> = Vec::new();
+            while index < lines.len() {
+                let raw = lines[index];
+                if raw.trim().is_empty() {
+                    collected.push(String::new());
+                    index += 1;
+                    continue;
+                }
+                if !raw.starts_with(' ') && !raw.starts_with('\t') {
+                    break;
+                }
+                collected.push(raw.trim().to_string());
+                index += 1;
+            }
+            // 收尾空行不属于内容（`-` 截断指示符的常见写法）。
+            while collected.last().is_some_and(|item| item.is_empty()) {
+                collected.pop();
+            }
+            result.insert(key, Value::from(join_block_scalar(&collected, style)));
+            continue;
+        }
         let lowered = value.to_lowercase();
         if lowered == "true" || lowered == "false" {
             result.insert(key, Value::from(lowered == "true"));
@@ -623,6 +682,44 @@ pub fn parse_frontmatter(content: &str) -> (Map<String, Value>, String) {
         result.insert(key, Value::from(value));
     }
     (result, body)
+}
+
+/// 识别块标量指示符，返回 `>`（折叠）或 `|`（保留换行）。
+fn block_scalar_style(value: &str) -> Option<char> {
+    let style = value.chars().next()?;
+    if style != '>' && style != '|' {
+        return None;
+    }
+    // 只允许 `>`、`>-`、`>+`、`|`、`|-`、`|+` 这几种写法。
+    let indicator = value[style.len_utf8()..].trim();
+    if indicator.is_empty() || indicator == "-" || indicator == "+" {
+        Some(style)
+    } else {
+        None
+    }
+}
+
+/// 块标量正文：`>` 折叠成一行（空行分段），`|` 逐行保留。
+fn join_block_scalar(lines: &[String], style: char) -> String {
+    if style == '|' {
+        return lines.join("\n");
+    }
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        current.push(line.as_str());
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join(" "));
+    }
+    paragraphs.join("\n")
 }
 
 /// `^([a-zA-Z][\w-]*):\s*(.*)`：首字符必须是 ASCII 字母。

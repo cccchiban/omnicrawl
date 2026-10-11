@@ -14,12 +14,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omnicrawl_controllers::turn::skill_command::{
+    parse_skill_command, skill_default_prompt, skill_not_found_message,
+};
 use omnicrawl_core::diagnostics;
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
     Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult, HostEvent,
     InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelHookRequest,
-    ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch,
+    ModelHookResult, SessionModelSettings, SessionSettingsParams, SubagentQueryParams,
+    TodoUpdatePayload, ToolBatch,
     ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
@@ -36,6 +40,7 @@ use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
 use crate::tools::decision_prune::{evicted_call_ids_for, PruneOptions};
+use crate::tools::decision_suggest::{insert_suggestion, suggested_tools, SuggestOptions};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
@@ -73,6 +78,10 @@ pub struct RunnerOptions {
     /// 的那一批」调用交回来裁决，判为无用的整组移出上下文；`None` 或不可用时一律保留原文
     /// （fail-open）。
     pub prune: Option<PruneOptions>,
+    /// 工具建议（`decision_models.toml` 的 `tool_suggestion` 开关）：开启后提交回合前先问一次
+    /// 决策模型「本次该用哪些工具」，把结果拼进 user 尾部；`None` 或不可用时原文照发
+    /// （fail-open）。
+    pub suggest: Option<SuggestOptions>,
     /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
     ///
     /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
@@ -448,12 +457,44 @@ impl TurnRunner {
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn += 1;
         let session_id = self.session_id();
+        // `/skill:<名> [余下文本]` 在 `turn.start` 之前处理（与 Python 的
+        // `_apply_skill_command` 同位）：命中就把本轮上下文换成技能正文，未命中就换成
+        // 带可用列表的说明文本。
+        let mut restore_skill_context = false;
+        let text = match self.skill_command_turn(text) {
+            Some((task, Some(messages))) => {
+                let params = SessionSettingsParams {
+                    model: Some(Box::new(SessionModelSettings {
+                        context_messages: Some(messages),
+                        ..SessionModelSettings::default()
+                    })),
+                    compaction: None,
+                };
+                match self.apply_session_settings(params, on_event) {
+                    Ok(_) => restore_skill_context = true,
+                    Err(error) => diagnostics::warn(format!("[host] 下发活动 Skill 上下文失败：{error}")),
+                }
+                task
+            }
+            Some((task, None)) => task,
+            None => text.to_string(),
+        };
+        let text = text.as_str();
         // `turn.start` 在提交给内核之前分发：transform 类 Handler 可以改写 `userText`，
         // 守卫类 Handler 拒绝时本轮根本不进内核（与 Python 的 `turn_payload` 同上位）。
+        // 拒绝时会先恢复常规上下文再返回：已经下发的活动 Skill 正文不能留到下一轮。
         let user_text = match self.options.plugins.as_ref() {
-            Some(plugins) => plugins
-                .turn_start(text, session_id.as_deref(), Some(&turn_id))
-                .map_err(|error| TurnError::PluginDenied(error.to_string()))?,
+            Some(plugins) => {
+                match plugins.turn_start(text, session_id.as_deref(), Some(&turn_id)) {
+                    Ok(rewritten) => rewritten,
+                    Err(error) => {
+                        if restore_skill_context {
+                            self.restore_skill_context(on_event);
+                        }
+                        return Err(TurnError::PluginDenied(error.to_string()));
+                    }
+                }
+            }
             None => text.to_string(),
         };
         // 审查闸的意图摘要取本轮提交的原文（与 Python 从消息快照取的最近一条用户消息同义）。
@@ -462,7 +503,12 @@ impl TurnRunner {
         self.custody_context.question.clear();
         self.custody_context.user_prompt = user_text.clone();
         self.custody_context.advisor_replies.clear();
+        // 工具建议：把「本次该用哪些工具」拼进 user 尾部（不可用或没有建议时原文照发）。
+        let user_text = self.with_tool_suggestion(user_text);
         let result = self.run_turn(&turn_id, &user_text, control, interactor, on_event);
+        if restore_skill_context {
+            self.restore_skill_context(on_event);
+        }
         if let Some(plugins) = self.options.plugins.as_ref() {
             match &result {
                 Ok(_) => plugins.turn_end(session_id.as_deref(), Some(&turn_id)),
@@ -477,6 +523,59 @@ impl TurnRunner {
         result
     }
 
+    /// 处理一轮开头的 `/skill:<名> [余下文本]`。
+    ///
+    /// 返回 `(本轮文本, 活动技能上下文消息)`；不是该命令或宿主没有提示词装配时返回 `None`。
+    /// 与 Python `_apply_skill_command` 同序：命中时余下文本当任务（没写就用默认提示），
+    /// 未命中时把带可用列表的说明当本轮文本。
+    fn skill_command_turn(&self, text: &str) -> Option<(String, Option<Vec<Value>>)> {
+        let (name, rest) = parse_skill_command(text)?;
+        let prompt = self.options.prompt.as_ref()?;
+        let name = name.trim().to_string();
+        let Some(context) = prompt.active_skill_context(&name) else {
+            let available: Vec<String> = prompt
+                .skill_metas()
+                .iter()
+                .map(|meta| meta.name.clone())
+                .collect();
+            return Some((skill_not_found_message(&name, &available), None));
+        };
+        let has_tools = !self.registry.declarations().is_empty();
+        let messages = prompt
+            .active_skill_messages(has_tools, &context)
+            .ok()
+            .map(Some)
+            .unwrap_or(None);
+        let task = rest.unwrap_or_else(|| skill_default_prompt(&name));
+        Some((task, messages))
+    }
+
+    /// 回合收尾：把 `/skill:` 用过的活动技能正文换回常规上下文装配。
+    fn restore_skill_context(&mut self, on_event: &mut dyn FnMut(HostEvent)) {
+        let Some(prompt) = self.options.prompt.clone() else {
+            return;
+        };
+        let has_tools = !self.registry.declarations().is_empty();
+        let Ok(messages) = prompt.context_messages_with_plugins(
+            has_tools,
+            self.options.plugins.as_deref(),
+            self.session_id().as_deref(),
+            None,
+        ) else {
+            return;
+        };
+        let params = SessionSettingsParams {
+            model: Some(Box::new(SessionModelSettings {
+                context_messages: Some(messages),
+                ..SessionModelSettings::default()
+            })),
+            compaction: None,
+        };
+        if let Err(error) = self.apply_session_settings(params, on_event) {
+            diagnostics::warn(format!("[host] 恢复常规上下文失败：{error}"));
+        }
+    }
+
     /// 会话标识：`session` 块里的会话 id；空串表示由内核新建，此时不作为 Hook 的会话键。
     fn session_id(&self) -> Option<String> {
         self.options
@@ -484,6 +583,21 @@ impl TurnRunner {
             .as_ref()
             .filter(|session| !session.session_id.trim().is_empty())
             .map(|session| session.session_id.clone())
+    }
+
+    /// 在 user 尾部拼上决策模型的工具建议；开关没开、没有可用渠道或没有建议时原文照发。
+    ///
+    /// 候选清单直接来自**本宿主的工具表**：`disabled_tools` 关掉的与当前没有运行期的工具都
+    /// 已经被工具表挡在外面，因此送审的每个名字都是模型真能调到的。
+    fn with_tool_suggestion(&self, user_text: String) -> String {
+        let Some(suggest) = self.options.suggest.as_ref().filter(|it| it.active()) else {
+            return user_text;
+        };
+        let inventory = self.registry.tool_inventory();
+        match suggested_tools(suggest, &inventory, &user_text) {
+            Some(names) => insert_suggestion(&user_text, &names),
+            None => user_text,
+        }
     }
 
     /// 一个回合的主体：提交 `turn.submit` 并跑到 `turn.finished`。

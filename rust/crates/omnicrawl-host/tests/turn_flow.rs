@@ -177,6 +177,8 @@ fn runner_with_custody(
         custody,
         // 不做工具调用淘汰：测试只关心提问托管的分支。
         prune: None,
+        // 不做工具建议：user 原文照发。
+        suggest: None,
         prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
@@ -230,6 +232,54 @@ impl omnicrawl_host::tools::ChoiceClient for FixedChoice {
         ));
         Ok(self.index)
     }
+}
+
+/// 固定建议名单的桩，并记下送审的候选清单与提问正文。
+struct FixedSuggest {
+    names: Vec<String>,
+    seen: Arc<Mutex<Option<(String, Vec<String>)>>>,
+}
+
+impl omnicrawl_host::tools::SuggestClient for FixedSuggest {
+    fn suggest(
+        &self,
+        request: &omnicrawl_host::tools::decision_suggest::SuggestRequest<'_>,
+    ) -> Result<Vec<String>, String> {
+        *self.seen.lock().expect("记录未被毒化") = Some((
+            request.user_prompt.to_string(),
+            request
+                .candidates
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect(),
+        ));
+        Ok(self.names.clone())
+    }
+}
+
+fn runner_with_suggest(
+    client: KernelClient,
+    root: &Path,
+    suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+) -> TurnRunner {
+    let mut options = RunnerOptions {
+        workspace_root: root.to_path_buf(),
+        model: model(),
+        session: None,
+        approval: ApprovalMode::Manual,
+        command_timeout_seconds: 5,
+        tool_timeout_seconds: 5,
+        attach_vision_images: false,
+        client_name: "omnicrawl-host-test".to_string(),
+        plugins: None,
+        review: None,
+        custody: None,
+        prune: None,
+        suggest: None,
+        prompt: None,
+    };
+    options.suggest = suggest;
+    TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
 }
 
 #[test]
@@ -391,6 +441,7 @@ fn custody_answers_the_question_without_asking_the_user() {
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         }),
         masking: None,
         client: Arc::new(FixedChoice {
@@ -448,6 +499,145 @@ fn custody_answers_the_question_without_asking_the_user() {
     assert!(state.contains("选哪个？"), "{state}");
     assert!(state.contains("问一下"), "{state}");
     assert_eq!(criteria, vec!["o0", "o1"]);
+    pipe.close();
+}
+
+/// 工具建议：进内核的 `user_text` 已带上建议行，送审的清单直接来自工具表。
+#[test]
+fn the_suggestion_is_appended_to_the_user_text_sent_to_the_kernel() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("suggest");
+    let seen = Arc::new(Mutex::new(None));
+    let suggest = omnicrawl_host::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
+        }),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["web_search".to_string()],
+            seen: Arc::clone(&seen),
+        }),
+    };
+    let mut subject = runner_with_suggest(client, &root, Some(suggest));
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit(
+            "帮我把这个任务拆成几路",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
+        .expect("回合应当跑完");
+
+    // 送审的清单直接来自工具表：进表的工具（含泛化工具）都在其中，说明取描述首句。
+    let (prompt, candidates) = seen.lock().expect("记录未被毒化").clone().expect("建议被调用");
+    assert_eq!(prompt, "帮我把这个任务拆成几路");
+    assert!(
+        candidates.contains(&"web_search".to_string()),
+        "{candidates:?}"
+    );
+    assert!(candidates.contains(&"bash".to_string()), "{candidates:?}");
+    assert!(candidates.contains(&"read".to_string()), "{candidates:?}");
+    assert!(
+        candidates.contains(&"kb_search".to_string()),
+        "{candidates:?}"
+    );
+    // 决定送审范围的是工具表本身：记忆组默认不进表，因此也不在清单里。
+    assert!(
+        !candidates.contains(&"memory_search".to_string()),
+        "{candidates:?}"
+    );
+
+    // 进内核的 user_text 尾部带上了建议行。
+    let submitted = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "帮我把这个任务拆成几路\n\n当前请求建议调用tool：web_search。"
+    );
+    pipe.close();
+}
+
+/// 没有建议（名单为空）时 user 原文照发：不留下任何插入痕迹。
+#[test]
+fn an_empty_shortlist_sends_the_prompt_untouched() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("suggest-empty");
+    let suggest = omnicrawl_host::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
+        }),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: Vec::new(),
+            seen: Arc::new(Mutex::new(None)),
+        }),
+    };
+    let mut subject = runner_with_suggest(client, &root, Some(suggest));
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit("你好", &TurnControl::new(), &mut interactor, &mut |_| {})
+        .expect("回合应当跑完");
+
+    let submitted = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(submitted, "你好", "无建议时提问原文照发");
     pipe.close();
 }
 
@@ -580,4 +770,160 @@ fn kernel_exit_fails_the_turn() {
         .submit("你好", &TurnControl::new(), &mut interactor, &mut |_| {})
         .expect_err("内核退出后回合必须失败");
     assert_eq!(error, TurnError::KernelExited);
+}
+
+/// `/skill:<名>`：命中时先下发活动技能上下文，再把余下任务当本轮文本；
+/// 未命中时把带可用列表的说明当本轮文本，两者都不带 `/skill:` 原文。
+#[test]
+fn skill_command_swaps_context_and_submits_the_task() {
+    use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
+
+    let root = workspace("skill-command");
+    let skill_dir = root.join(".omnicrawl").join("skills").join("turn-skill");
+    std::fs::create_dir_all(&skill_dir).expect("建 skill 目录");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: turn-skill\ndescription: 回合测试技能\n---\n\n正文标记 TURN-SKILL-BODY。\n",
+    )
+    .expect("写 SKILL.md");
+
+    let env = omnicrawl_config::core::runtime::ConfigEnvironment::new("bundle", "test");
+    let load_prompt = || {
+        PromptRuntime::load(&env, PromptOptions::new(root.clone())).expect("提示词装配应当成功")
+    };
+
+    // ── 命中：上下文换成技能正文，提交的是余下任务 ──
+    let (client, recorder, pipe) = kernel();
+    let options = skill_runner_options(&root, load_prompt());
+    let mut subject =
+        TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成");
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(r#"{"jsonrpc":"2.0","id":3,"result":{"applied":["model.context_messages"]}}"#);
+    pipe.push(r#"{"jsonrpc":"2.0","id":4,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+    let mut interactor = Scripted {
+        approve: false,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit(
+            "/skill:turn-skill 做点事",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
+        .expect("回合应当跑完");
+
+    let methods = recorder.methods();
+    assert!(
+        methods.iter().any(|name| name == "session.settings"),
+        "命中时应当先下发活动技能上下文：{methods:?}"
+    );
+    let submitted: Vec<String> = recorder
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .filter_map(|frame| frame.params)
+        .filter_map(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(submitted, vec!["做点事".to_string()]);
+    let settings = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("session.settings"))
+        .and_then(|frame| frame.params)
+        .expect("设置帧带参数");
+    let rendered = settings.to_string();
+    assert!(rendered.contains("TURN-SKILL-BODY"), "应下发技能正文：{rendered}");
+    assert!(
+        rendered.contains("<active_skill_instructions"),
+        "应使用活动技能块：{rendered}"
+    );
+
+    // ── 未命中：把说明当本轮文本，且不下发活动技能上下文 ──
+    let (client, recorder, pipe) = kernel();
+    let options = skill_runner_options(&root, load_prompt());
+    let mut subject =
+        TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成");
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-2","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+    let mut interactor = Scripted {
+        approve: false,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit(
+            "/skill:no-such-skill 做点事",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
+        .expect("回合应当跑完");
+
+    let mut methods = recorder.methods();
+    methods.retain(|name| !name.starts_with("turn."));
+    assert!(
+        !methods.iter().any(|name| name == "session.settings"),
+        "未命中不该下发活动技能上下文：{methods:?}"
+    );
+    let submitted: Vec<String> = recorder
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .filter_map(|frame| frame.params)
+        .filter_map(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(submitted.len(), 1, "{submitted:?}");
+    assert!(
+        submitted[0].contains("Skill「no-such-skill」不存在"),
+        "未命中应回可用列表：{submitted:?}"
+    );
+    assert!(
+        submitted[0].contains("turn-skill"),
+        "可用列表应含已发现的 Skill：{submitted:?}"
+    );
+}
+
+/// 带提示词装配的运行器选项（`/skill:` 需要它来加载正文）。
+fn skill_runner_options(
+    root: &Path,
+    prompt: omnicrawl_host::prompt::PromptRuntime,
+) -> RunnerOptions {
+    RunnerOptions {
+        workspace_root: root.to_path_buf(),
+        model: model(),
+        session: None,
+        approval: ApprovalMode::Manual,
+        command_timeout_seconds: 5,
+        tool_timeout_seconds: 5,
+        attach_vision_images: false,
+        client_name: "omnicrawl-host-test".to_string(),
+        plugins: None,
+        review: None,
+        custody: None,
+        prune: None,
+        suggest: None,
+        prompt: Some(Arc::new(prompt)),
+    }
 }

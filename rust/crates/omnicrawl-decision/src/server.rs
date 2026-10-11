@@ -382,6 +382,7 @@ mod tests {
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "k".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         });
         let outcome = ensure_running(&environment, &settings, false);
         assert!(outcome.ready(), "{}", outcome.message);

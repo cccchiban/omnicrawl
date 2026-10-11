@@ -17,7 +17,7 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::advisor::AdvisorConfig;
 use omnicrawl_config::models::llm::LlmConfig;
 pub use omnicrawl_controllers::AgentError;
-use omnicrawl_extensions::skill::SkillMeta;
+use omnicrawl_extensions::skill::{SkillDiagnostic, SkillMeta};
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -161,6 +161,11 @@ pub trait CommandAgent {
         None
     }
 
+    /// Skill 发现阶段的诊断（路径不存在、同名冲突、名称不合法等）；`None` 表示没有该接口。
+    fn skill_diagnostics(&self) -> Option<Vec<SkillDiagnostic>> {
+        None
+    }
+
     /// 清理过期长期记忆，返回被删除的记忆路径。
     fn clean_memory(&self) -> Result<Vec<String>, AgentError>;
 
@@ -224,6 +229,7 @@ pub(crate) mod testing {
         pub archived: Vec<SessionIndexEntry>,
         pub history: Vec<PromptHistoryEntry>,
         pub skills: Option<Vec<SkillMeta>>,
+        pub skill_diagnostics: Option<Vec<SkillDiagnostic>>,
         pub git: HashMap<String, Option<GitOutput>>,
         pub llm: LlmConfig,
         pub subagent_tasks: Vec<Value>,
@@ -251,6 +257,7 @@ pub(crate) mod testing {
                 archived: Vec::new(),
                 history: Vec::new(),
                 skills: None,
+                skill_diagnostics: None,
                 git: HashMap::new(),
                 llm: LlmConfig::with_environment(&environment),
                 subagent_tasks: Vec::new(),
@@ -438,6 +445,10 @@ pub(crate) mod testing {
 
         fn skill_metas(&self) -> Option<Vec<SkillMeta>> {
             self.skills.clone()
+        }
+
+        fn skill_diagnostics(&self) -> Option<Vec<SkillDiagnostic>> {
+            self.skill_diagnostics.clone()
         }
 
         fn clean_memory(&self) -> Result<Vec<String>, AgentError> {

@@ -10,8 +10,9 @@ use crate::shared::python_round;
 
 use super::ledger::UsageLedger;
 use super::policy::{
-    estimate_json_tokens, CompactionBatch, ContextBudgetSnapshot, DefaultContextBudgetManager,
-    MeasureInput, SourceEvent,
+    deterministic_structured_summary, estimate_json_tokens, CompactionBatch,
+    ContextBudgetSnapshot, DefaultContextBudgetManager, MeasureInput, SourceEvent,
+    TokenUsageSample,
 };
 use super::projection::{
     event_to_model_message, latest_final_reply_event, render_summary_markdown, ContextAssembler,
@@ -81,6 +82,9 @@ pub struct ContextCompactionService {
     assembler: ContextAssembler,
     ledger: UsageLedger,
     placeholder_guard: Option<Box<PlaceholderGuard>>,
+    /// 模型摘要不可用或校验不通过时是否改用确定性摘要兜底
+    /// （配置 `failure_fallback = "deterministic"`）。
+    deterministic_fallback: bool,
 }
 
 impl ContextCompactionService {
@@ -96,6 +100,12 @@ impl ContextCompactionService {
     /// 落库守卫：压缩产物含无法还原的占位符时不把它写进会话 / 记忆。
     pub fn with_placeholder_guard(mut self, guard: Box<PlaceholderGuard>) -> Self {
         self.placeholder_guard = Some(guard);
+        self
+    }
+
+    /// 确定性摘要兜底：模型摘要失败或校验不通过时，改用不调用模型的抽取式摘要。
+    pub fn with_deterministic_fallback(mut self, enabled: bool) -> Self {
+        self.deterministic_fallback = enabled;
         self
     }
 
@@ -241,16 +251,15 @@ impl ContextCompactionService {
         let mut feedback: Vec<String> = Vec::new();
         let mut generation: Option<ModelSummaryResult> = None;
         let mut validation: Option<SummaryValidation> = None;
+        let mut model_error = String::new();
         for _attempt in 0..2 {
             let generated = match compactor.compact(batch, target_summary_tokens, &feedback) {
                 Ok(generated) => generated,
                 Err(error) => {
-                    return Ok(ContextCompactionOutcome {
-                        measurement_payload,
-                        fallback_required: true,
-                        diagnostic: error.message().to_string(),
-                        ..ContextCompactionOutcome::default()
-                    })
+                    // 调用失败也交给下面的兜底分支：不兜底时「模型不可用」等于
+                    // 「本回合完全不压缩」，上下文只会继续涨。
+                    model_error = error.message().to_string();
+                    break;
                 }
             };
             let checked = self.validator.validate(&SummaryValidationInput {
@@ -274,11 +283,48 @@ impl ContextCompactionService {
             .as_ref()
             .map(|checked| checked.valid)
             .unwrap_or(false);
+        // 模型摘要失败或校验不通过：按 `failure_fallback = "deterministic"` 的约定改用
+        // 不调用模型的抽取式摘要。就地兜底而不是把失败抛回宿主，否则「摘要失败」等于
+        // 「本回合完全不压缩」，上下文只会继续涨，下一回合又原样触发一次。
+        //
+        // 兜底产物自己也要过一遍校验：它按事件类型逐条抽取，正常情况下能覆盖失败调用、
+        // 写入文件与用户消息；万一仍不达标，就按原样上报失败，不落一份不合格的摘要。
+        let mut deterministic = false;
+        if (generation.is_none() || !valid) && self.deterministic_fallback {
+            let fallback =
+                deterministic_structured_summary(&batch.events, batch.previous_summary.as_ref());
+            let checked = self.validator.validate(&SummaryValidationInput {
+                structured: &fallback,
+                source_events,
+                target_summary_tokens,
+                previous_summary: batch.previous_summary.as_ref(),
+                preserve_exact_evidence,
+                completeness_events: Some(&batch.events),
+            });
+            if checked.valid {
+                deterministic = true;
+                generation = Some(ModelSummaryResult {
+                    structured: fallback,
+                    usage: TokenUsageSample::default(),
+                    profile: "deterministic".to_string(),
+                    provider: String::new(),
+                    attempts: 0,
+                });
+                validation = Some(checked);
+            }
+        }
+
+        let valid = validation
+            .as_ref()
+            .map(|checked| checked.valid)
+            .unwrap_or(false);
         if generation.is_none() || !valid {
             return Ok(ContextCompactionOutcome {
                 measurement_payload,
                 fallback_required: true,
-                diagnostic: if feedback.is_empty() {
+                diagnostic: if !model_error.is_empty() {
+                    model_error
+                } else if feedback.is_empty() {
                     "结构化摘要校验失败。".to_string()
                 } else {
                     format!("结构化摘要校验失败：{}", feedback.join("; "))
@@ -373,7 +419,8 @@ impl ContextCompactionService {
         quality.insert("critical_facts_checked".to_string(), Value::from(true));
         quality.insert("attempts".to_string(), Value::from(generated.attempts));
         payload.insert("quality".to_string(), Value::Object(quality));
-        payload.insert("model_generated".to_string(), Value::from(true));
+        // 兜底摘要不是模型产出的：留痕以便回放区分「模型摘要」与「抽取式兜底」。
+        payload.insert("model_generated".to_string(), Value::from(!deterministic));
         payload.insert("manual".to_string(), Value::from(manual));
         payload.insert(
             "single_large_turn".to_string(),

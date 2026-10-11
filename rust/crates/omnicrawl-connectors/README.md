@@ -96,7 +96,8 @@ cd rust && cargo test -p omnicrawl-connectors
   （`_send_message`），没有同类文件回传，因此这一侧无对应缺口。
 - ~~`connectors/autostart.py` 的子进程自动启动与单例锁~~ 已落地：`src/autostart.rs`
   （`ConnectorProcessManager`：跨进程单例锁、子进程编排、日志尾与 Windows Job Object 收尾），
-  由 `omnicrawl-entry/src/startup.rs` 在宿主启动时装配。
+  由 `omnicrawl-entry/src/startup.rs` 在宿主启动时装配。平台单例锁覆盖连接器运行期：Python 由
+  连接器子进程自己持锁，Rust 侧由监督器持有到子进程退出。
 - 飞书 SDK 的 `Content-Disposition` 文件名解析已落地：`download_resource` 先取响应头的
   `filename*`（RFC 5987 扩展参数，非 ASCII 名字走这条）再取 `filename`（RFC 6266），两者都
   拿不到才回落成 `file_key`，再由资源类型补扩展名（`.jpg`/`.opus`/`.bin`）。只取最后一个

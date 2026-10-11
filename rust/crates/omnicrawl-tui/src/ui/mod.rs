@@ -10,7 +10,6 @@
 //! `user：` 标签消息、无边框工具卡（`●` 状态点 + 缩进正文）。运行状态写在方框上边框上。
 
 pub mod composer;
-pub mod config_chat;
 pub mod conversation;
 pub mod file_picker;
 pub mod fullscreen;
@@ -148,12 +147,7 @@ pub fn render(
     state: &AppState,
     settings: Option<&settings::SettingsState>,
     picker: Option<&file_picker::FilePickerState>,
-    chat: Option<&config_chat::ConfigChatState>,
 ) {
-    if let Some(chat) = chat {
-        config_chat::render(frame, frame.area(), chat);
-        return;
-    }
     if let Some(settings) = settings {
         settings::render::render(frame, frame.area(), settings);
         if let Some(picker) = picker {
