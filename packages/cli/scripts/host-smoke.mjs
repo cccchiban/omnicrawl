@@ -1,6 +1,7 @@
 // 宿主载荷冒烟：在无终端环境下，冻结宿主必须给出可执行的提示，而不是崩溃或静默退出。
 //
-// 用法：node packages/cli/scripts/host-smoke.mjs（需要先跑 build-host.mjs）
+// 用法：node packages/cli/scripts/host-smoke.mjs [--platform <键>]（需要先跑 build-host.mjs）
+//   --platform：交叉构建时载荷键与构建机不同（Windows runner 都是 x64），必须与 build-host.mjs 一致。
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -8,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
-const platformKey = `${process.platform}-${process.arch}`
+const platformIndex = process.argv.indexOf('--platform')
+const platformKey = platformIndex === -1 ? `${process.platform}-${process.arch}` : process.argv[platformIndex + 1]
 const entry = join(
   repoRoot,
   'dist',

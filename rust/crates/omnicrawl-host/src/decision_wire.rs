@@ -60,12 +60,65 @@ pub fn request_body(mode: &str, model: &str, state: &Value, questions: &Value) -
     json!({"model": model, "state": state, "questions": questions})
 }
 
-/// 发一次决策请求：返回响应正文；连接失败与 4xx/5xx 都回 `Err`（正文带进错误便于诊断）。
+/// 决策请求失败后的默认重试次数（不含首次请求）。
+pub const DEFAULT_RETRY_COUNT: u64 = 3;
+/// 单次重试的退避基数（毫秒）：第 n 次重试前等 `BASE << (n-1)`，上限 [`MAX_RETRY_BACKOFF_MILLIS`]。
+const BASE_RETRY_BACKOFF_MILLIS: u64 = 200;
+/// 退避上限（毫秒）：决策在回合路径上同步等待，重试不能让用户等太久。
+const MAX_RETRY_BACKOFF_MILLIS: u64 = 2_000;
+
+/// 发一次决策出站请求（失败按 `retry_count` 重试）：返回响应正文；连接失败与 4xx/5xx 都回
+/// `Err`（正文带进错误便于诊断）。
 ///
 /// 这是决策出站的唯一传输落点——工具调用审查、检索重排、提问托管与本地 REST 决策接口
 /// 都经它发出，因此超时、鉴权头、`User-Agent` 与「状态码不转错误、正文留给诊断」的口径
 /// 只有一份实现。请求体由调用方给（脱敏发生在构造请求体之后、发送之前）。
+///
+/// 失败按次数重试（`retry_count` 不含首次请求）：网关抖动、限流、瞬时被拒都不该让一次决策
+/// 白等。**4xx 不重试**——那是请求本身的问题，原样再发一次还是同一个错。
 pub fn post_body(
+    decide_url: &str,
+    api_key: &str,
+    body_text: &str,
+    timeout_seconds: u64,
+    user_agent: &str,
+    retry_count: u64,
+) -> Result<String, String> {
+    let mut attempt = 0u64;
+    loop {
+        match post_body_once(decide_url, api_key, body_text, timeout_seconds, user_agent) {
+            Ok(text) => return Ok(text),
+            Err(error) => {
+                if attempt >= retry_count || !retryable_failure(&error) {
+                    return Err(error);
+                }
+                attempt += 1;
+                let backoff = (BASE_RETRY_BACKOFF_MILLIS << (attempt - 1).min(4))
+                    .min(MAX_RETRY_BACKOFF_MILLIS);
+                std::thread::sleep(std::time::Duration::from_millis(backoff));
+            }
+        }
+    }
+}
+
+/// 该失败是否值得重试：连接/超时一类传输失败与上游 5xx 重试；4xx 与响应不可解析不重试。
+fn retryable_failure(error: &str) -> bool {
+    match http_status_of(error) {
+        Some(status) => status >= 500,
+        None => true,
+    }
+}
+
+/// 从 `post_body_once` 的错误文案里取出 HTTP 状态码；不是 HTTP 错误时返回 `None`。
+fn http_status_of(error: &str) -> Option<u16> {
+    error
+        .split_once("HTTP ")
+        .and_then(|(_, rest)| rest.split(|character: char| !character.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+}
+
+/// 发一次决策请求（不含重试）。
+fn post_body_once(
     decide_url: &str,
     api_key: &str,
     body_text: &str,
@@ -303,8 +356,139 @@ fn truncate_to(text: &str, limit: usize) -> String {
 mod tests {
     use super::*;
     use omnicrawl_config::features::decision_model::DECISION_MODE_JEV;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     const JEV: &str = DECISION_MODE_JEV;
+
+    /// 一个只回固定状态码的假上游；计数收到的请求次数。
+    fn flaky_upstream(statuses: Vec<u16>) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
+        let port = listener.local_addr().expect("本地地址").port();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let index = seen.fetch_add(1, Ordering::SeqCst);
+                let status = statuses.get(index).copied().unwrap_or(503);
+                let mut reader = BufReader::new(stream.try_clone().expect("克隆流"));
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let text = header.trim_end();
+                    if text.is_empty() {
+                        break;
+                    }
+                    if let Some((key, value)) = text.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let payload = if status >= 400 {
+                    "{\"error\":\"上游抖动\"}".to_string()
+                } else {
+                    "{\"answers\":{\"q\":{\"choice\":\"o0\"}}}".to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), calls)
+    }
+
+    #[test]
+    fn transient_failures_are_retried_up_to_the_configured_count() {
+        // 两次 503 + 一次 200：retry_count = 2 时应当自愈。
+        let (base_url, calls) = flaky_upstream(vec![503, 503, 200]);
+        let text = post_body(
+            &format!("{base_url}/v1/decide"),
+            "jv_test",
+            "{}",
+            5,
+            "test-agent",
+            2,
+        )
+        .expect("重试后可拿到响应");
+        assert!(text.contains("answers"), "{text}");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "两次失败 + 一次成功");
+    }
+
+    #[test]
+    fn retries_are_bounded_and_the_last_error_is_reported() {
+        let (base_url, calls) = flaky_upstream(vec![500, 500, 500, 500, 500]);
+        let error = post_body(
+            &format!("{base_url}/v1/decide"),
+            "jv_test",
+            "{}",
+            5,
+            "test-agent",
+            2,
+        )
+        .expect_err("重试耗尽后仍要如实报错");
+        assert!(error.contains("HTTP 500"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "首次 + 两次重试");
+    }
+
+    #[test]
+    fn client_errors_are_not_retried() {
+        // 4xx 是请求本身的问题，原样再发一次还是同一个错。
+        let (base_url, calls) = flaky_upstream(vec![400, 200]);
+        let error = post_body(
+            &format!("{base_url}/v1/decide"),
+            "jv_test",
+            "{}",
+            5,
+            "test-agent",
+            3,
+        )
+        .expect_err("400 不做重试");
+        assert!(error.contains("HTTP 400"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "只发一次");
+    }
+
+    #[test]
+    fn zero_retries_sends_exactly_one_request() {
+        let (base_url, calls) = flaky_upstream(vec![503]);
+        assert!(post_body(
+            &format!("{base_url}/v1/decide"),
+            "jv_test",
+            "{}",
+            5,
+            "test-agent",
+            0,
+        )
+        .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retry_predicate_splits_server_errors_from_client_errors() {
+        assert!(retryable_failure("决策服务返回 HTTP 503：上游暂时不可用"));
+        assert!(retryable_failure("决策服务返回 HTTP 500：内部错误"));
+        assert!(!retryable_failure("决策服务返回 HTTP 400：参数不对"));
+        assert!(!retryable_failure("决策服务返回 HTTP 401：未授权"));
+        // 连接失败一类没有状态码，按可重试处理。
+        assert!(retryable_failure("连接被拒绝：connection refused"));
+        assert_eq!(http_status_of("决策服务返回 HTTP 503：上游暂时不可用"), Some(503));
+        assert_eq!(http_status_of("连接被拒绝：connection refused"), None);
+    }
 
     #[test]
     fn decide_url_follows_the_request_mode() {

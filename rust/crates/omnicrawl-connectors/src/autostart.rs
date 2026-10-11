@@ -4,6 +4,10 @@
 //! 这里只负责三件事：无网络地读取两个连接器的本地配置并判断平台是否已配置；对已配置的平台
 //! 启动独立子进程；在宿主退出时终止子进程及其后代，避免留下轮询进程。
 //!
+//! 平台单例锁（`connector-<平台>.lock`）覆盖连接器子进程的**整个运行期**：取锁成功后锁交给
+//! 该连接器的监督记录持有，直到子进程退出（或被 `close` 回收）才释放。只在启动瞬间持锁挡不住
+//! 并存的宿主——第一个宿主放锁后第二个再取必然成功，同一平台会出现多个长连接。
+//!
 //! 连接器的 App Secret、Bot Token 等凭证只由子进程从继承的环境变量或 `config.toml` 读取，
 //! 绝不出现在命令行参数中。
 //!
@@ -20,6 +24,9 @@
 //!   日志文件直接交给子进程的 stdout/stderr，父进程不保留句柄。对使用方可见的行为一致：
 //!   子进程直接写日志文件、文件在退出后保留。
 //! - **监督线程 join**：Python 的 join 有 5 秒上限并告警；Rust 直接 join（终止请求已发出）。
+//! - **单例锁持有期**：Python 的监督器在 `finally` 里立刻放锁，长期互斥实际由连接器子进程
+//!   自己在 `main` 里持锁到退出承担；Rust 侧没有「连接器进程自带加锁」这一层，改由监督器持有
+//!   到子进程退出，语义与 Python 的合并效果一致（同一平台只有一个活动连接器）。
 //! - **自定义平台**：宿主给出的非 Telegram / 非飞书平台没有已知的凭证来源，按「已配置」处理。
 
 use std::path::{Path, PathBuf};
@@ -325,6 +332,11 @@ struct EntryShared {
     /// 进程句柄用 `Arc` 共享：启动失败的回收路径与监督线程可能同时持有同一份。
     process: Arc<Mutex<Box<dyn ManagedProcess>>>,
     job_handle: Mutex<Option<isize>>,
+    /// 平台单例锁：随连接器子进程生命周期持有，子进程退出（或被回收）时释放。
+    ///
+    /// 只在「启动窗口」持锁挡不住并存的宿主：第一个宿主拉起连接器后立刻放锁，第二个宿主
+    /// 再取锁必然成功，同一平台就会出现多个长连接。锁必须覆盖连接器运行期。
+    instance_lock: Mutex<Option<ConnectorInstanceLock>>,
 }
 
 struct ManagerState {
@@ -336,6 +348,21 @@ struct ManagerState {
 struct ManagerHandle {
     state: Arc<Mutex<ManagerState>>,
     diagnostics: Arc<Mutex<Vec<String>>>,
+}
+
+/// 释放连接器持有的平台单例锁；未持有时是空操作。
+///
+/// watcher 与 `close` 都可能走到这里（连接器自行退出 / 宿主收尾），因此锁槽用 `Option`
+/// 配互斥量，取走即释放，重复调用不会误删别人的锁文件。
+fn release_instance_lock(shared: &Arc<EntryShared>) {
+    let lock = shared
+        .instance_lock
+        .lock()
+        .unwrap_or_else(|item| item.into_inner())
+        .take();
+    if let Some(mut lock) = lock {
+        lock.release();
+    }
 }
 
 impl ManagerHandle {
@@ -361,6 +388,8 @@ impl ManagerHandle {
             .unwrap_or_else(|item| item.into_inner())
             .take();
         close_windows_handle(job_handle);
+        // 连接器已退出：平台单例随之释放，下一次启动才能重新拉起同一平台。
+        release_instance_lock(shared);
         let closed = self
             .state
             .lock()
@@ -483,6 +512,8 @@ impl ConnectorProcessManager {
                 .lock()
                 .unwrap_or_else(|item| item.into_inner());
             terminate_process_tree(&mut **process, job_handle, true);
+            // 连接器已回收，平台单例随之释放。取走即放，watcher 若已先放过这里是空操作。
+            release_instance_lock(shared);
         }
 
         for (name, watcher) in watchers {
@@ -496,8 +527,9 @@ impl ConnectorProcessManager {
 
     /// 启动单个平台；锁住注册过程，避免 `close` 与启动竞态。
     ///
-    /// 启动前先获取该平台的跨进程单例锁：若已有其他进程在运行同一平台的连接器（例如另一个
-    /// 宿主或手工启动的实例），直接跳过，避免同一平台出现多个长连接子进程。
+    /// 启动前先获取该平台的跨进程单例锁：若另一个宿主已经在运行并持有该平台（例如并存的
+    /// 另一个 TUI），直接跳过，避免同一平台出现多个长连接子进程。取到的锁不会在这里释放，
+    /// 而是随连接器子进程一起交出去，由监督记录持有到子进程退出。
     fn start_one(&self, spec: &ConnectorSpec) -> Result<(), String> {
         if self.lock_state().closed {
             // 监督器已进入关闭流程，不启动新进程。
@@ -515,12 +547,15 @@ impl ConnectorProcessManager {
             return Ok(());
         }
 
-        let outcome = self.spawn_and_register(spec);
-        instance_lock.release();
-        outcome
+        // 锁要覆盖连接器整个运行期：交给 EntryShared 持有，等子进程退出或被回收时再释放。
+        self.spawn_and_register(spec, instance_lock)
     }
 
-    fn spawn_and_register(&self, spec: &ConnectorSpec) -> Result<(), String> {
+    fn spawn_and_register(
+        &self,
+        spec: &ConnectorSpec,
+        instance_lock: ConnectorInstanceLock,
+    ) -> Result<(), String> {
         let mut log_path: Option<PathBuf> = None;
         let mut stdout = OutputTarget::Null;
         let mut stderr = OutputTarget::Null;
@@ -575,6 +610,7 @@ impl ConnectorProcessManager {
             name: spec.name.clone(),
             process: Arc::clone(&process),
             job_handle: Mutex::new(job_handle),
+            instance_lock: Mutex::new(Some(instance_lock)),
         });
 
         let mut state = self.lock_state();
@@ -583,6 +619,8 @@ impl ConnectorProcessManager {
             drop(state);
             let mut guard = process.lock().unwrap_or_else(|item| item.into_inner());
             terminate_process_tree(&mut **guard, job_handle, true);
+            // 进程已回收，平台单例必须一并放掉，否则会成为粘滞锁挡住下次启动。
+            release_instance_lock(&shared);
             return Ok(());
         }
 
@@ -611,6 +649,7 @@ impl ConnectorProcessManager {
                 // 没有监督者的连接器孤儿。
                 let mut guard = process.lock().unwrap_or_else(|item| item.into_inner());
                 terminate_process_tree(&mut **guard, job_handle, true);
+                release_instance_lock(&shared);
                 Err(format!(
                     "{} 连接器监督线程创建失败：{}",
                     spec.name,

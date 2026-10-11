@@ -15,6 +15,7 @@ use omnicrawl_controllers::tool_args::{
 use omnicrawl_controllers::tool_catalog::{
     build_agent_tools, McpItemRef, McpToolRef, ToolCatalogOptions, ToolSpec,
 };
+use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_controllers::types::ToolImageAttachment;
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_mcp::client::McpClientManager;
@@ -22,6 +23,7 @@ use serde_json::{Map, Value};
 
 use super::advisor::{self, AdvisorOptions};
 use super::command::{CancelToken, CommandRunner, Shell, DEFAULT_COMMAND_TIMEOUT_SECONDS};
+use super::config_tool;
 use super::decision_search::RerankOptions;
 use super::declarations::declaration;
 use super::error::{command_result, text_failure, text_success, ToolError};
@@ -37,7 +39,7 @@ use super::windows;
 use super::{edit, finding, git, grep, listing, read, read_image, write};
 
 /// 本宿主已实现执行体的工具。
-pub const IMPLEMENTED_TOOLS: [&str; 30] = [
+pub const IMPLEMENTED_TOOLS: [&str; 31] = [
     "read",
     "read_image",
     "write_file",
@@ -68,6 +70,7 @@ pub const IMPLEMENTED_TOOLS: [&str; 30] = [
     "windows_clipboard",
     "windows_screenshot",
     "advisor",
+    "config_edit",
 ];
 /// 内核自持的工具：声明进表，执行体在本宿主（`update_todos` / `ask_user` / `pause_work`）。
 pub const META_RUNNERS: [&str; 3] = ["update_todos", "ask_user", "pause_work"];
@@ -141,6 +144,8 @@ pub struct RegistryOptions {
     pub disabled_tools: Vec<String>,
     /// 知识库根目录；未配置时用 `~/.OmniCrawl/knowledge`。
     pub knowledge_root: Option<PathBuf>,
+    /// 配置工具的配置环境；未注入时按进程环境解析 `~/.OmniCrawl`。
+    pub config_env: Option<ConfigEnvironment>,
     /// 知识库检索重排（`decision_models.toml` 的 `kb_search_rerank` 开关）。
     pub knowledge_rerank: Arc<RerankOptions>,
     /// 联网工具的运行期配置（传输可注入，测试用桩替换）。
@@ -179,6 +184,8 @@ pub struct ToolRegistry {
     tts: Option<Arc<TtsOptions>>,
     advisor: AdvisorOptions,
     mcp: Option<Arc<McpClientManager>>,
+    /// 配置工具的配置环境（构造时定下，之后不随工作区切换而变）。
+    config_env: ConfigEnvironment,
     /// MCP 能力名：工具用逻辑名，资源/Prompt 用各自的适配工具名。
     mcp_tool_names: BTreeSet<String>,
     mcp_resource_names: Vec<(String, String)>,
@@ -346,6 +353,10 @@ impl ToolRegistry {
             tts: options.tts.clone(),
             advisor,
             mcp: options.mcp.clone(),
+            config_env: options
+                .config_env
+                .clone()
+                .unwrap_or_else(ConfigEnvironment::from_process),
             mcp_tool_names,
             mcp_resource_names,
             mcp_prompt_names,
@@ -557,6 +568,7 @@ impl ToolRegistry {
             "windows_input" => outcome_result(windows::windows_input(&arguments)),
             "windows_clipboard" => outcome_result(windows::windows_clipboard(&arguments)),
             "advisor" => outcome_result(advisor::advisor(&self.advisor, &arguments)),
+            "config_edit" => outcome_result(config_tool::config_edit(&self.config_env, &arguments)),
             _ => return None,
         };
         Some(ToolExecution {
@@ -757,6 +769,7 @@ mod tests {
             "windows_screenshot",
             // 视觉工具始终进表（与 Python `_build_tools` 一致），图片去向由内核路由。
             "read_image",
+            "config_edit",
         ] {
             assert!(names.contains(expected), "缺少 {expected}：{names:?}");
         }
@@ -767,6 +780,81 @@ mod tests {
         for meta in META_RUNNERS {
             assert!(names.contains(meta), "缺少 {meta}");
         }
+    }
+
+    /// `config_edit` 真的经工具表读配置：读出来的是注入环境指到的文件，不是进程家目录。
+    ///
+    /// 顺带钉住两点：写操作在声明里标了需要确认；`RegistryOptions.config_env` 一旦漏接，
+    /// 工具就会去读真实用户配置，这个用例会立刻发现。
+    #[test]
+    fn config_edit_reads_and_writes_through_the_registry() {
+        let root = std::env::temp_dir().join("omnicrawl-config-edit-registry");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".OmniCrawl")).expect("建配置目录");
+        std::fs::write(
+            root.join(".OmniCrawl").join("config.toml"),
+            "[approval]
+mode = \"review\"
+",
+        )
+        .expect("写测试配置");
+        let options = RegistryOptions {
+            config_env: Some(omnicrawl_config::core::runtime::ConfigEnvironment::new(
+                &root, "windows",
+            )),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(names.contains("config_edit"), "配置工具应当进表：{names:?}");
+        let spec = registry
+            .specs()
+            .iter()
+            .find(|spec| spec.name == "config_edit")
+            .expect("config_edit 声明");
+        assert!(spec.requires_confirmation, "写配置必须走确认/审查");
+
+        let read = registry
+            .execute(&call("config_edit", json!({"action": "read"})))
+            .expect("宿主认识这个工具");
+        assert!(read.ok, "{}", read.output);
+        assert!(read.output.contains("mode = \"review\""), "{}", read.output);
+
+        let written = registry
+            .execute(&call(
+                "config_edit",
+                json!({"action": "set", "path": "memory.enabled", "value": true}),
+            ))
+            .expect("宿主认识这个工具");
+        assert!(written.ok, "{}", written.output);
+        let text = std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml"))
+            .expect("读回配置");
+        assert!(
+            text.contains("[memory]") && text.contains("enabled = true"),
+            "新段应当写进去：{text}"
+        );
+        assert!(text.contains("mode = \"review\""), "其余配置段必须保留：{text}");
+
+        // 显式 file 落到对应文件，且不碰主配置。
+        let models = registry
+            .execute(&call(
+                "config_edit",
+                json!({"action": "set", "file": "models", "path": "llm.defaults.context_window_tokens", "value": 200000}),
+            ))
+            .expect("宿主认识这个工具");
+        assert!(models.ok, "{}", models.output);
+        let models_text = std::fs::read_to_string(root.join(".OmniCrawl").join("models.toml"))
+            .expect("读回模型配置");
+        assert!(
+            models_text.contains("context_window_tokens = 200000"),
+            "{models_text}"
+        );
+        let config_text = std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml"))
+            .expect("读回配置");
+        assert!(
+            !config_text.contains("context_window_tokens"),
+            "写 models.toml 不得污染 config.toml：{config_text}"
+        );
     }
 
     #[test]

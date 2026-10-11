@@ -96,6 +96,22 @@ Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被
 
 SubAgent 只读 profile 不暴露 `git` 工具；只读 git 查询通过被只读命令包装的 `bash` 完成。
 
+## 配置工具
+
+`config_edit` 读写 `~/.OmniCrawl` 下的四份配置（设置面板改的是同一批文件），参数是：
+
+- `action`：`read` 或 `set`（必填）。
+- `file`：可选，`config` / `models` / `subagents` / `decision_models`（即 `config.toml`、`models.toml`、`subagents.toml`、`decision_models.toml`）。省略时 `read` 逐份读出全部配置，`set` 写主配置 `config.toml`。
+- `path`：`set` 时的点分配置路径（`llm.defaults.reasoning_effort`）；中间层缺失自动补齐，路径穿过标量则报错且不写入。
+- `value`：`set` 时的目标值（bool/int/float/string/array/object；`null` 被拒绝）。
+
+`read` 返回配置文本，**凭据值打码为 `<已隐藏>`**（键名与结构保留，`api_key_env` 这类指针不算凭据）。`set` 复用 `omnicrawl-config` 的原子写盘，与设置面板写出的 TOML 形状一致；写入只落在 `file` 指定的那一份，其余三份保持原样。
+
+该工具默认与其他工具一样受工具调用审查：声明里 `requires_confirmation` 为真，`manual` 模式人工确认，`review` 模式按现有删除/写入意图规则走。它同时被排除在工具结果淘汰（`context.prune`）范围外——写配置是已落盘的副作用，记录必须留在上下文里。
+
+- `rust/crates/omnicrawl-host/src/tools/config_tool.rs`：路径导航、取值折算与凭据打码（判定面）。
+- `rust/crates/omnicrawl-host/src/tools/registry.rs`：执行分发与 `RegistryOptions.config_env`。
+
 - `rust/crates/omnicrawl-host/src/tools/mod.rs`：Host 目录、可见性过滤、声明构建、`build_provider_tools` 和参数校验。
 - `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`：`LocalToolAgent` 组合门面（`AgentConfig` + `__init__` + 16 个领域 Mixin 继承），对外 API 不变。
 - `rust/crates/omnicrawl-controllers/src/building.rs`：工具表构建、`_build_tools` / `_load_system_prompt_template`，Provider 顶层工具面。

@@ -4,7 +4,6 @@ members = [
     "crates/omnicrawl-commands",
     "crates/omnicrawl-compaction",
     "crates/omnicrawl-config",
-    "crates/omnicrawl-config-chat",
     "crates/omnicrawl-connectors",
     "crates/omnicrawl-controllers",
     "crates/omnicrawl-core",

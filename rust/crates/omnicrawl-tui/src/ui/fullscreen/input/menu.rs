@@ -1,7 +1,7 @@
 //! 斜杠命令菜单的实时筛选与渲染（对映 Python `input/menu.py`）。
 //!
 //! 输入框里键入 `/` 时弹出命令候选：按当前前缀过滤统一命令源、上下键选择、
-//! Enter/Tab 补全，命令名之后出现空格则改为按参数提示筛选（`/settings --` → `--chat`）。
+//! Enter/Tab 补全，命令名之后出现空格则改为按参数提示筛选（`/settings --` → `--tools`）。
 //!
 //! 与 Python 的分工一致：候选来源是 [`omnicrawl_commands::slash::build_slash_command_options`]
 //! （由调用方传入，本模块不持有宿主），输入框本身的文本写入与光标移动由调用方按
@@ -288,7 +288,7 @@ mod tests {
             option(
                 "/settings",
                 "打开设置",
-                &[("--chat", "通过对话改设置"), ("--tools", "工具开关")],
+                &[("--tools", "工具开关"), ("--json", "输出 JSON")],
             ),
             option("/sessions", "会话列表", &[]),
         ]
@@ -351,10 +351,10 @@ mod tests {
         let mut menu = CommandMenu::new();
         menu.refresh("/settings", &options());
         let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["/settings", "--chat", "--tools"]);
-        assert_eq!(menu.matches()[1].insert, "/settings --chat");
+        assert_eq!(names, vec!["/settings", "--tools", "--json"]);
+        assert_eq!(menu.matches()[1].insert, "/settings --tools");
         assert_eq!(menu.matches()[1].category, PARAMETER_CATEGORY);
-        assert_eq!(menu.matches()[1].search, "--chat");
+        assert_eq!(menu.matches()[1].search, "--tools");
     }
 
     #[test]
@@ -362,14 +362,14 @@ mod tests {
         let mut menu = CommandMenu::new();
         menu.refresh("/settings --", &options());
         let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["--chat", "--tools"]);
+        assert_eq!(names, vec!["--tools", "--json"]);
 
-        menu.refresh("/settings --c", &options());
+        menu.refresh("/settings --j", &options());
         let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["--chat"]);
+        assert_eq!(names, vec!["--json"]);
 
         // 参数已输入完整 → 不再提示。
-        menu.refresh("/settings --chat", &options());
+        menu.refresh("/settings --json", &options());
         assert!(!menu.is_open());
     }
 

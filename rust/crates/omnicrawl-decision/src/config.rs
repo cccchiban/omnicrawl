@@ -71,6 +71,7 @@ pub fn load_settings(environment: &ConfigEnvironment) -> DecisionSettings {
             base_url: channel.base_url,
             api_key: channel.api_key,
             api_key_env: channel.api_key_env,
+            retry_count: channel.retry_count.max(0) as u64,
         });
     DecisionSettings { api, channel }
 }

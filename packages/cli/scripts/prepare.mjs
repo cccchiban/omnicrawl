@@ -6,7 +6,7 @@
 //
 // 宿主载荷由 packages/cli/scripts/build-host.mjs 产出（cargo release 产物 + 模板资源，
 // 可 `--target` 指定三元组；产品路径全是 Rust 二进制，构建期不碰 Python）。
-// hostKey 为 null 的目标（32 位 Windows、armv7 嵌入式）只带内核，启动器会退回协议直连。
+// hostKey 为 null 的目标只带内核，启动器会退回协议直连（当前五个平台都有宿主载荷）。
 //
 // 用法：
 //   node packages/cli/scripts/prepare.mjs                 # 拷已构建的平台，缺的只警告
@@ -30,6 +30,16 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '../../..')
 const staging = join(repoRoot, 'dist', 'npm')
 
+/** 宿主载荷里的可执行文件（与 build-host.mjs 的 HOST_FILES 一致，不含 .exe 后缀）。 */
+const HOST_EXECUTABLES = [
+  'omnicrawl-host',
+  'omnicrawl',
+  'omnicrawl-tui',
+  'omnicrawl-api',
+  'omnicrawl-decision',
+  'omnicrawl-mcp-server',
+]
+
 const TARGETS = [
   {
     name: '@omnicrawl/cli-win32-x64',
@@ -46,9 +56,10 @@ const TARGETS = [
     triple: 'i686-pc-windows-msvc',
     os: 'win32',
     cpu: 'ia32',
-    // 32 位 Windows 只发内核（宿主要链接 BoringSSL，i686 未纳入发布矩阵）。
-    hostKey: null,
-    description: 'OmniCrawl 内核二进制（Windows 32 位）',
+    // 宿主的 BoringSSL 在 i686 上走 btls-sys 的「Windows 交叉」分支（OPENSSL_NO_ASM），
+    // 由本机 VS2022 的 32 位工具集构建，见 rust/docs/python-free-build.md。
+    hostKey: 'win32-ia32',
+    description: 'OmniCrawl 平台包（Windows 32 位：内核 + 完整宿主）',
   },
   {
     name: '@omnicrawl/cli-linux-x64',
@@ -65,9 +76,9 @@ const TARGETS = [
     triple: 'armv7-unknown-linux-musleabihf',
     os: 'linux',
     cpu: 'arm',
-    // 嵌入式目标只跑静态内核（armv7 宿主载荷不在发布矩阵内，需要交叉编译 BoringSSL）。
-    hostKey: null,
-    description: 'OmniCrawl 内核二进制（Linux armv7，musl 静态，嵌入式目标）',
+    // 宿主载荷须交叉编译 BoringSSL；本机用 cargo zigbuild 产出，见 rust/docs/python-free-build.md。
+    hostKey: 'linux-arm',
+    description: 'OmniCrawl 平台包（Linux armv7，musl 静态：内核 + 完整宿主）',
   },
   {
     name: '@omnicrawl/cli-linux-arm64-musl',
@@ -157,14 +168,28 @@ function stagePlatform(target, source, version, host) {
     },
     os: [target.os],
     cpu: [target.cpu],
-    // npm 打包时会把 bin 指向的文件写成 0755。不声明 bin，Windows 上打出的
-    // tarball 里内核二进制就是 0644，Linux/macOS 安装后 spawn 会 EACCES。
+    // npm 打包会把未在 bin 里声明的文件权限位归一化成 0644，POSIX 下按需补回可执行位。
     //
     // 名字不能叫 omnicrawl：启动器自己也声明了 omnicrawl，而平台包在安装树里同样会生成
     // node_modules/.bin 条目，两者撞名时平台包会抢走 .bin/omnicrawl → 本地安装与 npx 下
     // `omnicrawl` 变成直连内核（只打印 `omnicrawl 0.0.1`）。改名 omnicrawl-kernel 后
     // `.bin/omnicrawl` 只归启动器，内核仍有一个显式入口（协议调试可直接用 `omnicrawl kernel`）。
-    bin: { 'omnicrawl-kernel': `bin/${target.file}` },
+    //
+    // 宿主的 6 个可执行文件同样必须列进 bin，否则 `npm pack` 会把它们写成 0644，
+    // 而宿主是直接用 Command::new 拉起同目录的 tui/api/内核，不看 .bin——安装后必然
+    // Permission denied。列进 bin 才能让 npm 在安装时补上可执行位（已在开发板实测）。
+    // 载荷里的 `omnicrawl` 是内核副本，与启动器撞名，故另取 omnicrawl-host-kernel。
+    bin: {
+      'omnicrawl-kernel': `bin/${target.file}`,
+      ...(host
+        ? Object.fromEntries(
+            HOST_EXECUTABLES.map((name) => [
+              name === 'omnicrawl' ? 'omnicrawl-host-kernel' : name,
+              `host/${name}${target.file.endsWith('.exe') ? '.exe' : ''}`,
+            ]),
+          )
+        : {}),
+    },
     files: [...(host ? ['bin', 'host', 'version.json'] : ['bin', 'version.json'])],
     license: 'MIT',
   })

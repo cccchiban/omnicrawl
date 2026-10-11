@@ -305,24 +305,29 @@ ELF 不带 PDB，且 `strip` 后不保留符号表。
 一条链路把五个平台包与启动器都装出来（本机实测全通，耗时约 15 分钟构建 + 1 分钟装配）：
 
 ```bash
-# 1) Windows x64 宿主载荷 + 32 位内核：构建目录必须是纯 ASCII（见第 4 节），
+# 1) Windows x64 + x86 宿主载荷 + 两个内核：构建目录必须是纯 ASCII（见第 4 节），
 #    产物先落在自定义 target 目录，再拷回 rust/target/<三元组>/release（打包脚本按它找）。
+#    该 toolchain file 对 i686 不是必需的：不设它时 btls-sys 会走自己的 Windows 分支
+#    （OPENSSL_NO_ASM=YES，不编汇编）。设了则两侧都编 NASM 汇编，体积与性能都更好，
+#    但 nasm 的 -gcv8 会对路径做哈希，构建目录含非 ASCII 字符时直接失败。
 export CARGO_TARGET_DIR=C:/ocl-target LIBCLANG_PATH=<libclang 目录>
 export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"
 export CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
-cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target x86_64-pc-windows-msvc
-cargo build --release -p omnicrawl-cli --target i686-pc-windows-msvc
+export CMAKE_TOOLCHAIN_FILE_i686_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
+cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target x86_64-pc-windows-msvc
+cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target i686-pc-windows-msvc
 
 # 2) 三个 musl 内核 + 两个 musl 宿主载荷：不要设 CARGO_TARGET_DIR / CMAKE_TOOLCHAIN_FILE，
 #    产物要落到 rust/target/<三元组>/release。
-unset CARGO_TARGET_DIR CMAKE_TOOLCHAIN_FILE CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc
+unset CARGO_TARGET_DIR CMAKE_TOOLCHAIN_FILE CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc CMAKE_TOOLCHAIN_FILE_i686_pc_windows_msvc
 export LIBCLANG_PATH=<libclang 目录>
-cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target x86_64-unknown-linux-musl
-cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target aarch64-unknown-linux-musl
+cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target aarch64-unknown-linux-musl
 cargo zigbuild --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
 
 # 3) 装配载荷 → 暂存 npm 包 → 干净前缀真装一遍
-node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc --skip-build
+node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc --platform win32-x64   --skip-build
+node packages/cli/scripts/build-host.mjs --target i686-pc-windows-msvc   --platform win32-ia32  --skip-build
 node packages/cli/scripts/build-host.mjs --target x86_64-unknown-linux-musl  --platform linux-x64   --skip-build
 node packages/cli/scripts/build-host.mjs --target aarch64-unknown-linux-musl --platform linux-arm64 --skip-build
 node packages/cli/scripts/prepare.mjs --require-all --require-host

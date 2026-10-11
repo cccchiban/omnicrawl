@@ -4427,7 +4427,7 @@ mod tests {
             .iter()
             .map(|option| option.command.as_str())
             .collect();
-        assert_eq!(names, vec!["/settings", "--chat"]);
+        assert_eq!(names, vec!["/settings"], "/settings 没有声明参数，不再附参数提示");
         assert_eq!(
             composer.menu_handle_key(MenuKey::Enter),
             MenuAction::Passthrough
@@ -4443,19 +4443,19 @@ mod tests {
         );
     }
 
+    /// 真实注册表里已没有声明可选参数的命令：输入空格后不再出现参数候选。
+    ///
+    /// 参数候选本身的筛选与补全由 `ui::fullscreen::input::menu` 的夹具用例覆盖。
     #[test]
-    fn composer_menu_switches_to_parameter_candidates_after_a_space() {
+    fn composer_menu_has_no_parameter_candidates_for_builtin_commands() {
         let mut composer = Composer::default();
         composer.set_commands(crate::commands::command_options());
         composer.insert("/settings --");
-        let names: Vec<&str> = composer
-            .menu()
-            .matches()
-            .iter()
-            .map(|option| option.command.as_str())
-            .collect();
-        assert_eq!(names, vec!["--chat"]);
-        assert_eq!(composer.menu().matches()[0].insert, "/settings --chat");
+        assert!(
+            composer.menu().matches().is_empty(),
+            "没有声明参数的命令不该给出参数候选：{:?}",
+            composer.menu().matches()
+        );
     }
 
     #[test]

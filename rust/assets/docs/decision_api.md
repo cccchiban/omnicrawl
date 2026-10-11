@@ -56,6 +56,20 @@ OmniCrawl 退出（含崩溃）都不会回收它。因此 CLI / Skill 随时可
 
 默认地址：`http://127.0.0.1:8767`。
 
+### 2.3 上游重试（`decision_models.toml` 的 `channels.<key>.retry_count`）
+
+决策渠道按 `retry_count` 重试失败的出站请求（**不含**首次请求，默认 3、上限 10、0 表示不重试）：
+
+```toml
+[channels.jev-main]
+retry_count = 3
+```
+
+- 重试对象：连接失败、超时与上游 5xx——网关抖动、限流、瞬时被拒不该让一次决策白等。
+- 不重试：4xx（请求本身的问题，原样再发还是同一个错）与「响应读不出可用答案」（不猜、不编）。
+- 节奏：`0.2s → 0.4s → 0.8s → 1.6s`（封顶 2s）退避。
+- 同一份渠道配置对宿主内部五处调用点与本地 REST 接口**同时生效**：两边共用同一个出站落点。
+
 ## 3. 访问控制与响应格式
 
 **接口不做鉴权**：只要监听地址可达就能直接调用。准入控制只有两条：
@@ -109,7 +123,8 @@ OmniCrawl 退出（含崩溃）都不会回收它。因此 CLI / Skill 随时可
       "model": "jev-latest",
       "base_url": "https://jevtypesafeai.com/api",
       "api_key_env": "JEV_API_KEY",
-      "api_key_configured": true
+      "api_key_configured": true,
+      "retry_count": 3
     },
     "unavailable_reason": null
   }
@@ -285,6 +300,8 @@ with urllib.request.urlopen(request) as response:
   脱敏构造失败时**中止**请求（绝不外发原文）。屏蔽与还原用同一个 masker 实例，因此占位符
   能正确还原。
 - **超时**：默认 20 秒（与宿主内部同一量级）；`timeout_seconds` 可覆盖，上限 300 秒。
+  上游失败按渠道的 `retry_count` 重试（见 2.3 节），因此一次调用的最长等待是
+  「(重试次数 + 1) × 超时 + 退避」。
 - **不落盘**：请求与响应都不写会话，也不进任何日志正文（日志只有诊断错误）。
 - **失败不猜测**：读不到可用答案一律 502。调用方要 fail-open 还是 fail-closed 由自己决定
   （例如 `choice` 失败就退回默认分支）；接口不为调用方编造一个答案。
@@ -307,4 +324,5 @@ rust/crates/omnicrawl-decision/
 
 **不写第二套决策逻辑**：请求构造、响应解析、脱敏旁路、审查提问都复用
 `rust/crates/omnicrawl-host/src/decision_wire.rs` 与 `rust/crates/omnicrawl-host/src/review.rs`，
-因此这个接口与宿主内部三处调用点在语义上天然一致。
+因此这个接口与宿主内部五处调用点（工具调用审查、检索重排、提问托管、工具调用淘汰与
+工具建议）在语义上天然一致。

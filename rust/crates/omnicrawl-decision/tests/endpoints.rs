@@ -127,6 +127,7 @@ fn spawn_api(base_url: &str) -> SocketAddr {
             base_url: base_url.to_string(),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         }),
     };
     let environment = ConfigEnvironment::new("C:\\oc-decision-test", "win32");

@@ -697,6 +697,18 @@ SessionEvent（tool_call_requested / tool_result / user_message / assistant_mess
 - 恢复侧 `project_session_history()` 使用同一规则，因此「压缩后继续对话」与「压缩后重启恢复」得到相同历史；
 - 确定性压缩按「轮」边界切分（`agent/session/history.py`），不会把 `tool_calls` 与其结果拆开。
 
+### 19.4.1 淘汰与压缩的口径必须同源
+
+工具调用淘汰（`tool_call_evicted`）的语义是「这次调用的原文已离开模型上下文」，因此**凡是要喂给模型或要校验模型产出的地方，都必须用同一份淘汰后的视图**：历史投影（`project_history_messages`）、工具调用概括（`summarize_turn_after_turn`）与上下文压缩的待压缩批次（`select_batch` / `select_recovery_batch`）。
+
+偏差会直接毁掉压缩：待压缩窗口若保留已淘汰的工具事件，`events_index` 会列出模型无从对齐的条目，完整性校验还会要求模型为它们写 `failed_attempts`——摘要被反复判为不合格，而模型摘要失败此前等于「本回合完全不压缩」，上下文继续涨。（实测：带淘汰标注的会话触发压缩 4 次、成功 0 次；不带淘汰标注的 45 个会话成功 47 次。）
+
+摘要请求复用的前缀同样要按淘汰后重建（`evicted_prefix`）：前缀里若留着已淘汰调用的全文，模型会读到它们却拿不到对应索引，只能拿别的 ref 硬凑，随后被判为「引用了不存在的事件」。淘汰点贴近上下文尾部，因此前缀前段仍与主请求逐字相同，前缀缓存基本不受影响。
+
+### 19.4.2 摘要失败的确定性兜底
+
+`context_compaction.failure_fallback` 只允许 `deterministic`：模型摘要调用失败、或产出未通过校验时，改用不调用模型的抽取式摘要（`deterministic_structured_summary`），逐条保留用户消息原文、失败调用的请求与结果、成功写入的文件路径与上一次摘要的约束，并同样过一遍校验；不达标才按失败上报。落地载荷以 `model_generated: false` 留痕，回放可区分「模型摘要」与「兜底摘要」。
+
 ### 19.5 安全边界
 
 `arguments` 在事件里只保存**脱敏后的公开参数投影**（`public_tool_arguments` + `SessionStore` 的值级脱敏），协议原文不落盘：

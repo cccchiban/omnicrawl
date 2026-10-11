@@ -284,7 +284,12 @@ fn build_driver(
         DEFAULT_MAX_INPUT_TOKENS,
     )
     .map_err(|error| error.message().to_string())?;
-    let service = ContextCompactionService::new().with_compactor(Box::new(compactor));
+    let service = ContextCompactionService::new()
+        .with_compactor(Box::new(compactor))
+        // 兜底是配置 `context_compaction.failure_fallback` 的承诺（校验只允许 `deterministic`）：
+        // 模型摘要失败或校验不通过时改用抽取式摘要，避免「摘要失败 = 本回合完全不压缩」。
+        // 服务层默认关闭，对照数据集按「失败即降级上报」的旧行为断言。
+        .with_deterministic_fallback(true);
     let mut driver =
         CompactionDriver::new(Arc::clone(&session.store), service, session.config.clone());
     if let Some(compressor) = crate::compression::KernelCompressor::load(model) {

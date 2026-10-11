@@ -8,8 +8,6 @@
 //!   Textual `Select` 的键位是 `Enter`/`↓`/`Space`/`↑` 展开候选，
 //!   展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起。
 //! - 工具开关页：`↑`/`↓` 选行，`←`/`→`/`Enter`/`Space` 切换开关。
-//! - 「通过对话修改设置」行：`Enter`/`→` 不进右侧面板，直接产出
-//!   [`SettingsEvent::OpenConfigChat`]，由 `app.rs` 关闭面板并拉起配置对话弹层。
 
 use crossterm::event::KeyCode;
 use omnicrawl_config::features::approval::{
@@ -63,8 +61,6 @@ pub enum Pane {
     Form(FormKind),
     /// TTS 设置页：开关 / 音色 / 模型目录 / 设备与线程 + 模型下载与音色克隆。
     Tts,
-    /// 通过对话修改设置：本页只是一个入口，`Enter` 直接把控制权交给配置对话弹层。
-    ConfigChat,
     /// 未知一级项（一级表与面板表不同步时的兜底）。
     Pending,
 }
@@ -88,7 +84,6 @@ impl Pane {
             "memory" => Self::Choice(ChoiceKind::Memory),
             "plugins" => Self::Choice(ChoiceKind::Plugins),
             "tts" => Self::Tts,
-            "config_chat" => Self::ConfigChat,
             _ => Self::Pending,
         }
     }
@@ -429,6 +424,8 @@ pub struct DecisionRow {
     pub api_key: String,
     pub api_key_env: String,
     pub model: String,
+    /// 请求失败后的重试次数（不含首次请求）。
+    pub retry_count: i64,
     pub enabled: bool,
 }
 
@@ -441,18 +438,20 @@ pub enum DecisionField {
     ApiKey,
     ApiKeyEnv,
     ModelId,
+    RetryCount,
     Enabled,
 }
 
 impl DecisionField {
     /// 表单里的字段顺序。
-    pub const ORDER: [DecisionField; 7] = [
+    pub const ORDER: [DecisionField; 8] = [
         DecisionField::Name,
         DecisionField::Mode,
         DecisionField::BaseUrl,
         DecisionField::ApiKey,
         DecisionField::ApiKeyEnv,
         DecisionField::ModelId,
+        DecisionField::RetryCount,
         DecisionField::Enabled,
     ];
 
@@ -465,6 +464,7 @@ impl DecisionField {
             Self::ApiKey => "API Key",
             Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
+            Self::RetryCount => "失败重试次数",
             Self::Enabled => "启用",
         }
     }
@@ -1684,8 +1684,6 @@ pub enum SettingsEvent {
     Close,
     /// 应用一项设置（宿主负责写盘、推内核、按需重建工具表）。
     Apply(SettingsChange),
-    /// 打开配置对话弹层（「通过对话修改设置」行）：面板该让位，键盘交给弹层。
-    OpenConfigChat,
     /// 自动检测某个渠道的模型列表（宿主在后台发起，结果经
     /// [`SettingsState::set_channel_models`] 回填进「模型 ID」下拉）。
     DiscoverChannelModels {
@@ -1709,7 +1707,6 @@ const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
 const MODEL_LIST_HINT: &str = "↑↓ 选择渠道或参数  Enter 编辑或选择  N 新建  D 删除  Esc 返回";
 const MODEL_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
-const CONFIG_CHAT_HINT: &str = "Enter 打开配置对话  Esc 返回";
 const TTS_HINT: &str =
     "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
@@ -2447,7 +2444,7 @@ impl SettingsState {
                 form.set_focused(index);
                 already
             }
-            Pane::ConfigChat | Pane::Pending => false,
+            Pane::Pending => false,
         }
     }
 
@@ -2722,7 +2719,7 @@ impl SettingsState {
             Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
-            Pane::ConfigChat | Pane::Pending => "",
+            Pane::Pending => "",
         }
     }
 
@@ -2760,7 +2757,6 @@ impl SettingsState {
             Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
-            Pane::ConfigChat => CONFIG_CHAT_HINT,
             Pane::Pending => "",
         }
     }
@@ -2800,11 +2796,6 @@ impl SettingsState {
                 None
             }
             KeyCode::Enter | KeyCode::Right => {
-                // 「通过对话修改设置」没有右侧面板：它本身就是一个动作，直接把控制权
-                // 交给配置对话弹层（与 `/settings --chat` 同一个入口）。
-                if self.pane == Pane::ConfigChat {
-                    return Some(SettingsEvent::OpenConfigChat);
-                }
                 self.enter_pane();
                 None
             }
@@ -2828,14 +2819,6 @@ impl SettingsState {
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
-            Pane::ConfigChat => match key {
-                KeyCode::Enter | KeyCode::Right => Some(SettingsEvent::OpenConfigChat),
-                KeyCode::Esc | KeyCode::Left => {
-                    self.back_to_list();
-                    None
-                }
-                _ => None,
-            },
             Pane::Pending => match key {
                 KeyCode::Esc | KeyCode::Left => {
                     self.back_to_list();
@@ -3816,7 +3799,6 @@ impl SettingsState {
             | Pane::DecisionModels
             | Pane::Vision
             | Pane::Tts
-            | Pane::ConfigChat
             | Pane::Pending => None,
         }
     }
@@ -5202,7 +5184,7 @@ impl SettingsState {
                 }
             }
             Pane::Tts => self.tts.status = message,
-            Pane::ConfigChat | Pane::Pending => {}
+            Pane::Pending => {}
         }
         self.dropdown = None;
     }
@@ -5459,6 +5441,7 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
         DecisionField::ApiKey => mask_api_key(&row.api_key),
         DecisionField::ApiKeyEnv => row.api_key_env.clone(),
         DecisionField::ModelId => row.model.clone(),
+        DecisionField::RetryCount => row.retry_count.to_string(),
         DecisionField::Enabled => {
             if row.enabled {
                 "开启".to_string()
@@ -5484,6 +5467,12 @@ fn set_decision_field(row: &mut DecisionRow, field: DecisionField, value: String
         }
         DecisionField::ApiKeyEnv => row.api_key_env = value.trim().to_string(),
         DecisionField::ModelId => row.model = value.trim().to_string(),
+        // 非数字输入原样保留（保存前的本地校验会给出可读提示），越界值由配置侧收口。
+        DecisionField::RetryCount => {
+            if let Ok(count) = value.trim().parse::<i64>() {
+                row.retry_count = count;
+            }
+        }
         DecisionField::Enabled => row.enabled = value == "开启",
     }
 }
@@ -5724,31 +5713,12 @@ mod tests {
     }
 
     #[test]
-    fn starts_on_first_row_with_context_pane() {
+    fn starts_on_first_row_with_its_pane() {
         let state = state();
-        assert_eq!(state.selected_key(), "config_chat");
-        assert_eq!(state.pane(), Pane::ConfigChat);
+        assert_eq!(state.selected_key(), "model_management");
+        assert_eq!(state.pane(), Pane::ModelManagement);
         assert_eq!(state.focus(), Focus::List);
-        assert_eq!(state.title(), "通过对话修改设置");
-    }
-
-    /// 「通过对话修改设置」是动作行：不进右侧面板，`Enter`/`→` 直接产出打开事件。
-    ///
-    /// 弹层拉起后设置面板整体关闭，因此焦点始终留在左侧（`Esc` 一路退出面板）。
-    #[test]
-    fn config_chat_row_opens_the_chat_layer() {
-        let mut state = state();
-        assert_eq!(state.pane(), Pane::ConfigChat);
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::OpenConfigChat)
-        );
-        assert_eq!(state.focus(), Focus::List, "动作行不进右侧面板");
-        assert_eq!(
-            state.handle_key(KeyCode::Right),
-            Some(SettingsEvent::OpenConfigChat)
-        );
-        assert_eq!(state.handle_key(KeyCode::Esc), Some(SettingsEvent::Close));
+        assert_eq!(state.title(), "模型管理");
     }
 
     #[test]
@@ -5772,13 +5742,11 @@ mod tests {
         assert_eq!(state.selected_key(), "model_management");
         assert_eq!(state.pane(), Pane::ModelManagement);
 
-        // 循环：继续上翻到头（通过对话修改设置），再上翻回到末行。
-        state.handle_key(KeyCode::Up);
-        assert_eq!(state.selected_key(), "config_chat");
+        // 循环：模型管理已是首行，再上翻直接回到末行，下翻再回首行。
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "show_thinking");
         state.handle_key(KeyCode::Down);
-        assert_eq!(state.selected_key(), "config_chat");
+        assert_eq!(state.selected_key(), "model_management");
     }
 
     #[test]
@@ -6084,15 +6052,6 @@ mod tests {
         assert_eq!(cycle_approval_mode("manual", -1), "auto", "到底回最后一档");
         assert_eq!(nearest_approval_mode("去死"), "review", "不认得的值回落默认档");
         assert_eq!(nearest_approval_mode("always"), "auto", "别名照常折算");
-    }
-
-    /// 配置对话页没有状态行（写回结论在弹层里），但按键提示要给出打开方式。
-    #[test]
-    fn config_chat_pane_has_pane_hint_only() {
-        let state = state();
-        assert_eq!(state.status(), "");
-        assert_eq!(state.pane_hint(), CONFIG_CHAT_HINT);
-        assert!(state.pane_hint().contains("Enter"));
     }
 
     #[test]

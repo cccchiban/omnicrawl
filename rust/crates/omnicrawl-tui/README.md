@@ -347,7 +347,7 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 - 欢迎 Logo 动画按「起始时刻 → 经过时间」换算帧号（Python 用 Textual 定时器计次推进）：总帧数（24）与落定时刻（1.2s）一致，首帧是进度 0 的纯乱码帧（Python 首帧为 1/24）；
 - 渲染入口（`src/ui/mod.rs::render`）已是工作台本体：消息流 / 任务清单 / 面板 / 底部单行轮播 HUD / 输入卡与补全菜单各一模块，设置页与文件选择弹层另行接管整屏。
 - **页面版式已按 Python 当前版对齐**（主页面，不含设置屏）：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s + 解密扫描过渡）、悬浮圆角输入卡（占位文案 `› 输入消息或 / 命令`）、用户消息的 `user：` 标签 + 青色竖条、思考块暗底、无边框工具卡（`●` 状态点 + 缩进正文）与会话流内的运行状态行；设置屏与审批/提问面板沿用原样式。
-- **工具卡正文与 Python 同一来源**：正文不再用「工具输出拆行」，而是走对映层 `tool_diff::tool_disclosure_body` —— `write_file`/`Edit_file` 从**参数**画出旁注行号 diff（运行中就能看到）且豁免五行折叠，`fetcher` 只留 URL/状态/标题，`read` 与记忆/知识库类工具正文**为空且不出现提示行**，其余工具原样输出；超宽行按显示宽度**软折行**（对映 Textual 的默认 `text-wrap`，不再截断加 `…`），空行不加缩进（对映 `_indent_body_lines`），缩略态点卡片不再展开（只提醒示行展开，与 Python `ToolDisclosure.on_click` 一致）。
+- **工具卡正文与 Python 同一来源**：正文不再用「工具输出拆行」，而是走对映层 `tool_diff::tool_disclosure_body` —— `write_file`/`Edit_file` 从**参数**画出旁注行号 diff（运行中就能看到）且豁免五行折叠，`fetcher` 只留 URL/状态/标题，`read` 与记忆/知识库类工具正文**为空且不出现提示行**，其余工具原样输出；超宽行按显示宽度**软折行**（对映 Textual 的默认 `text-wrap`，不再截断加 `…`），空行不加缩进（对映 `_indent_body_lines`），**续行保持同一结构缩进**（带旁注行号的正文折行后不落回行首、始终对齐在行号右边），缩略态点卡片不再展开（只提醒示行展开，与 Python `ToolDisclosure.on_click` 一致）。
 - 工具卡的两处非视觉差异：Python 在终态后按 12 块 × 30ms 释放正文（逐行出现的观感），Rust 一次铺满；Python 渲染完会清空 `arguments`/`result_text` 省内存，Rust 保留（展开/收起需要正文源）。
 
 ## 本阶段（骨架）的边界
@@ -465,6 +465,10 @@ OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字
 **标题换行**：工具卡标题（`● bash ls -la …`）超宽时**换行**而不是省略号截断，续行缩进到
 参数起始列（`ls` 正下方），参数列表能对齐着读。
 
+**工具建议行挂在 `user：` 上**：`tool_suggestion` 把「当前请求建议调用tool：…」拼在 user 文本
+尾部，会话区由 `split_suggestion` 把这一行拆出来挂在 `user：` 标签之后（提问正文仍另起行铺开），
+不再作为 user 块下方独立的一行。
+
 **输入区方框**：任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体**共用一个圆角方框**
 （对映 Python `#composer-wrap`），不再裸在屏幕上；运行状态 `⠋ 正在调用 [ ESC ]` 写在方框的
 **上边框**上（`-------⠋ 正在调用[ESC]-------`，用 `Block::title_top`），不再作为会话流里的
@@ -525,7 +529,6 @@ Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，
 收尾旧工作区的 MCP 与后台任务 → 提交并下发 `session.settings`，再请内核在同一会话转录
 `workspace_switched`）；
 `/mcp` 走宿主工具表的 `McpClientManager::format_status()`（工作线程读）；
-`/settings --chat` 打开配置对话页（`omnicrawl-config-chat`），保存后由宿主重建工具表并下发内核；
 `/advisor` 由宿主同步顾问选项并重建工具表（写盘由命令层负责，宿主重建失败时回滚运行期选项）；
 `/memory:clean` 由宿主按三个作用域调 `omnicrawl-session` 的过期清理，不需要新协议入口。
 
@@ -575,7 +578,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
-| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前四项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期 |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前六项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发（见 `omnicrawl-host/src/tools/decision_suggest.rs`），开关变更即时重建建议运行期 |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 
 TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成后端**（接口 / 本地，后端行会写明
@@ -604,7 +607,6 @@ TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成�
 - 未做（另一个可选项）：Python 还有的「作用域：bash / powershell / git / grep」信息行与字段
   两两并排版式，Rust 侧仍是通用表单的一行一字段。
 
-| 通过对话修改设置 | 已实现 | 本行是**动作行**：`Enter`/`→` 关闭设置面板并打开配置对话弹层（与 `/settings --chat` 同一入口）。一句话经 `omnicrawl-config-chat` 的本地路由器折成命令，全部校验通过后原子写盘并同步运行态；不经过模型、不带上下文 |
 
 ### Provider 配置接线（`initialize.model`）
 
@@ -657,8 +659,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 布局，把几何记在画它的那一刻比再描述一遍更不容易失同步（后画的区域优先，所以浮层盖住面板时
 命中的是浮层）。
 
-- 左栏：单击即切页并进入右栏（等价 `↑`/`↓` + `Enter`；切页不写配置，但「通过对话修改设置」
-  这一行的 `Enter` 就是打开配置对话，点它等同于此）；
+- 左栏：单击即切页并进入右栏（等价 `↑`/`↓` + `Enter`；切页不写配置）；
 - 右栏：首次点击只把该页的选中行 / 字段移到落点，**再点当前行**才等同 `Enter`——工具开关、
   枚举循环这些行被误触一次就是一次配置变更；
 - 浮层候选：单击即选中并确认（浮层本来就是为这一次选择展开的），包括渠道表单的内联候选；
@@ -727,12 +728,13 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    点击工具卡省略提示行展开完整正文、展开态点击卡片收起、点击思考段切换折叠（见上文「生成期间的
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~子任务进度树~~、~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）。
-   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/tasks`、`/task`、`/undo`、`/compact`、
+   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
    `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/workspace` 能真正执行；
-   `/mcp` 与 `/settings --chat` 已接线（见上文）；
-   菜单不列运行期 Skill 候选（内核侧发现，宿主给不出同一份清单）；设置面板的一级菜单全部落地
+   `/mcp` 已接线（见上文）；
+   `/skill:<名>` 是运行期命令（Skill 不在注册表里）：命中时先经 `session.settings` 把技能正文下发为本轮上下文、
+   回合收尾再换回索引，未命中时把带可用名称的说明当本轮文本；菜单候选与实际可执行的清单同源（`command_options_with_skills`）；设置面板的一级菜单全部落地
    （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、插件、顾问、工具输出压缩、视觉、
-   图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP、通过对话修改设置）；
+   图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP）；
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
    自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的
    `0x0098`，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列，并对提示做一分钟限流；

@@ -68,6 +68,11 @@ pub const DEFAULT_DECISION_API_KEY_ENV: &str = "JEV_API_KEY";
 /// 首次生成配置时使用的默认渠道 key。
 pub const DEFAULT_DECISION_CHANNEL_KEY: &str = "jev-main";
 
+/// 一次决策请求失败后的默认重试次数（不含首次请求）。
+pub const DEFAULT_DECISION_RETRY_COUNT: i64 = 3;
+/// 重试次数上限：决策在回合路径上同步等待，重试次数要有界（读盘越界值按上限收口）。
+pub const MAX_DECISION_RETRY_COUNT: i64 = 10;
+
 /// 一个决策渠道：一套服务地址 + 凭据 + 模型。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionChannelConfig {
@@ -81,6 +86,8 @@ pub struct DecisionChannelConfig {
     pub api_key_env: String,
     /// 决策模型名（`jev-latest` 或固定版本）。
     pub model: String,
+    /// 一次请求失败后的重试次数（不含首次请求）；0 表示不重试。
+    pub retry_count: i64,
     pub enabled: bool,
 }
 
@@ -94,6 +101,7 @@ impl Default for DecisionChannelConfig {
             api_key: String::new(),
             api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
             model: DEFAULT_DECISION_MODEL.to_string(),
+            retry_count: DEFAULT_DECISION_RETRY_COUNT,
             enabled: true,
         }
     }
@@ -150,6 +158,10 @@ impl DecisionChannelConfig {
         } else {
             api_key_env
         };
+        // 负值与越界值收口而不是报错：它是一个纯退避参数，不该让整条渠道失效。
+        self.retry_count = self
+            .retry_count
+            .clamp(0, MAX_DECISION_RETRY_COUNT);
         Ok(self)
     }
 
@@ -486,6 +498,9 @@ pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
 /// 「老一轮工具调用按需淘汰」开关的配置键。
 pub const DECISION_SWITCH_TOOL_PRUNE: &str = "tool_call_prune";
 
+/// 「新提问自动建议工具」开关的配置键。
+pub const DECISION_SWITCH_TOOL_SUGGEST: &str = "tool_suggestion";
+
 /// 一个决策模型功能开关：配置键、界面文案、默认值。
 ///
 /// 开关表是决策模型页下方那一组开关的唯一来源（读盘、写盘、界面、测试都读它）；
@@ -497,7 +512,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 5] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 6] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -521,6 +536,11 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 5] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_PRUNE,
         label: "旧一轮工具调用按需淘汰",
+        default: false,
+    },
+    DecisionSwitchSpec {
+        key: DECISION_SWITCH_TOOL_SUGGEST,
+        label: "新提问自动建议工具",
         default: false,
     },
 ];
@@ -775,6 +795,10 @@ pub fn save_decision_model_configuration(
             Value::String(channel.api_key_env.clone()),
         );
         entry.insert("model".to_string(), Value::String(channel.model.clone()));
+        entry.insert(
+            "retry_count".to_string(),
+            Value::Integer(channel.retry_count),
+        );
         entry.insert("enabled".to_string(), Value::Boolean(channel.enabled));
         section.insert(channel.key.clone(), Value::Table(entry));
     }
@@ -792,6 +816,10 @@ fn parse_channel(key: &str, section: &Table) -> Result<DecisionChannelConfig, Co
         api_key: python_str(section.get("api_key")),
         api_key_env: text_field(section, "api_key_env", DEFAULT_DECISION_API_KEY_ENV),
         model: text_field(section, "model", DEFAULT_DECISION_MODEL),
+        retry_count: match section.get("retry_count") {
+            Some(Value::Integer(value)) => *value,
+            _ => DEFAULT_DECISION_RETRY_COUNT,
+        },
         enabled: bool_field(section, "enabled", true),
     }
     .normalize()
@@ -1018,6 +1046,7 @@ mod tests {
                     api_key: String::new(),
                     api_key_env: "JEV_API_KEY".to_string(),
                     model: "jev-1.13.0".to_string(),
+                    retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     enabled: true,
                 },
                 DecisionChannelConfig {
@@ -1028,6 +1057,7 @@ mod tests {
                     api_key: "jv_live_test".to_string(),
                     api_key_env: String::new(),
                     model: "jev-latest".to_string(),
+                    retry_count: 0,
                     enabled: true,
                 },
             ],
@@ -1041,6 +1071,11 @@ mod tests {
         assert_eq!(reloaded.channels.len(), 2);
         assert_eq!(reloaded.channels[0].base_url, "https://jevtypesafeai.com/api");
         assert_eq!(reloaded.channels[0].model, "jev-1.13.0");
+        assert_eq!(
+            reloaded.channels[0].retry_count, DEFAULT_DECISION_RETRY_COUNT,
+            "缺省重试次数是 3"
+        );
+        assert_eq!(reloaded.channels[1].retry_count, 0, "0 表示不重试，要原样往返");
         // 空的环境变量名回落到默认名。
         assert_eq!(reloaded.channels[1].api_key_env, DEFAULT_DECISION_API_KEY_ENV);
         assert_eq!(
@@ -1064,6 +1099,7 @@ mod tests {
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
                     api_key: String::new(),
                     api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
+                    retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
                     enabled: false,
                 },
@@ -1074,6 +1110,7 @@ mod tests {
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
                     api_key: String::new(),
                     api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
+                    retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
                     enabled: true,
                 },
@@ -1095,6 +1132,7 @@ mod tests {
             base_url: DEFAULT_DECISION_BASE_URL.to_string(),
             api_key: String::new(),
             api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
+            retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),
             enabled: true,
         };
@@ -1108,6 +1146,7 @@ mod tests {
             base_url: "jevtypesafeai.com".to_string(),
             api_key: String::new(),
             api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
+            retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),
             enabled: true,
         };
@@ -1120,6 +1159,25 @@ mod tests {
         };
         let error = unsupported_mode.normalize().expect_err("未知服务类型应被拒绝");
         assert!(error.message().contains("请求方式"), "{}", error.message());
+    }
+
+    #[test]
+    fn retry_count_is_clamped_instead_of_failing_the_channel() {
+        let negative = DecisionChannelConfig {
+            retry_count: -5,
+            ..DecisionChannelConfig::default()
+        }
+        .normalize()
+        .expect("负值只收口不报错");
+        assert_eq!(negative.retry_count, 0, "负值按 0 处理");
+
+        let huge = DecisionChannelConfig {
+            retry_count: 999,
+            ..DecisionChannelConfig::default()
+        }
+        .normalize()
+        .expect("越界只收口不报错");
+        assert_eq!(huge.retry_count, MAX_DECISION_RETRY_COUNT, "越界按上限收口");
     }
 
     #[test]
@@ -1158,6 +1216,12 @@ mod tests {
             Some(false)
         );
         assert!(!decision_switch_default(DECISION_SWITCH_ASK_USER_CUSTODY));
+        // 工具建议开关同样默认关闭。
+        assert_eq!(
+            switches.get(DECISION_SWITCH_TOOL_SUGGEST).copied(),
+            Some(false)
+        );
+        assert!(!decision_switch_default(DECISION_SWITCH_TOOL_SUGGEST));
 
         let path = save_decision_switch(&env, DECISION_SWITCH_TOOL_REVIEW, true, None)
             .expect("写开关");
@@ -1182,10 +1246,15 @@ mod tests {
         save_decision_switch(&env, DECISION_SWITCH_KB_SEARCH, true, None).expect("写知识库开关");
         save_decision_switch(&env, DECISION_SWITCH_ASK_USER_CUSTODY, true, None)
             .expect("写提问托管开关");
+        save_decision_switch(&env, DECISION_SWITCH_TOOL_SUGGEST, true, None).expect("写工具建议开关");
         let reloaded = load_decision_switches(&env, None);
         assert_eq!(reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(true));
         assert_eq!(
             reloaded.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
+            Some(true)
+        );
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_TOOL_SUGGEST).copied(),
             Some(true)
         );
         assert_eq!(

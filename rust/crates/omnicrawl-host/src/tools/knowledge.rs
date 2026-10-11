@@ -1256,6 +1256,7 @@ mod tests {
                 base_url: "http://127.0.0.1:1".to_string(),
                 api_key: "jv_test".to_string(),
                 api_key_env: "JEV_API_KEY".to_string(),
+                retry_count: 0,
             }),
             client: Arc::new(StubRerank {
                 order: vec![2, 1, 0],

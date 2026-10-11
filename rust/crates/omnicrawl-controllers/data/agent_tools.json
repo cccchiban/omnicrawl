@@ -136,6 +136,15 @@
         "model_output_is_bounded": true,
         "run_in_subprocess": true,
         "runner": "git"
+      },
+      {
+        "name": "config_edit",
+        "description": "是什么：读取或修改 OmniCrawl 配置目录（~/.OmniCrawl）下的 TOML 配置。怎么做：需要确认某项配置的当前值，或需要落盘修改配置时使用；改的是设置面板同一批文件，改完即时生效、无需重启。怎样做：file 可选 config/models/subagents/decision_models；action=read 省略 file 时逐份读出全部配置，给了 file 只读该份（凭据值打码为 <已隐藏>，键名与结构保留）；action=set 省略 file 时写主配置 config.toml，需同时给点分 path 与 value，path 指向的中间层不存在会自动补齐，value 为 null 或路径穿过标量时报错且不写入。建议：先 read 确认现有值与路径写法，再 set；一次只改一个键。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"read\", \"set\"]}, \"file\": {\"type\": \"string\", \"enum\": [\"config\", \"models\", \"subagents\", \"decision_models\"]}, \"path\": {\"type\": \"string\", \"minLength\": 1}, \"value\": {\"type\": [\"boolean\", \"integer\", \"number\", \"string\", \"array\", \"object\"]}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
       }
     ],
     "knowledge": [

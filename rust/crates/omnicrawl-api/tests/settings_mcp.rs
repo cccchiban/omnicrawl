@@ -233,6 +233,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         review: None,
         custody: None,
         prune: None,
+        suggest: None,
         prompt: None,
     }
 }

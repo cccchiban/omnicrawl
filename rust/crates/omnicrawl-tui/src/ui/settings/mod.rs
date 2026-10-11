@@ -7,8 +7,7 @@
 //!
 //! 已落地 `settings.py` 的一级菜单，以及模型管理、工具开关、子任务设置、视觉、
 //! 三个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成
-//! 六个表单页、TTS 页与 MCP 设置；「通过对话修改设置」是一个动作行，`Enter` 直接把
-//! 控制权交给配置对话弹层（见 `crate::ui::config_chat`），因此它没有右侧面板。
+//! 六个表单页、TTS 页与 MCP 设置。
 
 pub mod form;
 pub mod hit;
@@ -44,8 +43,7 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 17] = [
-    "config_chat",
+pub const ROW_ORDER: [&str; 16] = [
     "model_management",
     "decision_models",
     "advisor",
@@ -67,7 +65,6 @@ pub const ROW_ORDER: [&str; 17] = [
 /// 一级项的界面文案（对映 Python 的 `_row_labels`）；未知键回落为键名本身。
 pub fn row_label(key: &str) -> String {
     let label = match key {
-        "config_chat" => "通过对话修改设置",
         "model_management" => "模型管理",
         "decision_models" => "结构化决策模型",
         "advisor" => "顾问设置",
@@ -268,7 +265,6 @@ mod tests {
         for key in ROW_ORDER {
             assert_ne!(row_label(key), key, "一级项 {key} 缺少界面文案");
         }
-        assert_eq!(row_label("config_chat"), "通过对话修改设置");
     }
 
     #[test]

@@ -120,6 +120,7 @@ pub fn decision_channel_from_config(
             base_url: channel.base_url,
             api_key: channel.api_key,
             api_key_env: channel.api_key_env,
+            retry_count: channel.retry_count.max(0) as u64,
         })
 }
 
@@ -284,6 +285,8 @@ pub struct DecisionReviewOptions {
     pub base_url: String,
     pub api_key: String,
     pub api_key_env: String,
+    /// 请求失败后的重试次数（不含首次请求）。
+    pub retry_count: u64,
 }
 
 impl DecisionReviewOptions {
@@ -601,6 +604,7 @@ pub fn decision_post_masked(
         &masked,
         timeout_seconds,
         USER_AGENT,
+        channel.retry_count,
     );
     match masker.as_mut() {
         Some(masker) => {
@@ -646,6 +650,7 @@ fn decision_review_masked(
         &body_text,
         timeout_seconds,
         USER_AGENT,
+        channel.retry_count,
     )
     .map_err(|error| review_request_failed_reason(&error))?;
 
@@ -996,6 +1001,7 @@ mod tests {
                 base_url: "http://127.0.0.1:1".to_string(),
                 api_key: String::new(),
                 api_key_env: "OMNICRAWL_TEST_DECISION_KEY".to_string(),
+                retry_count: 0,
             }),
             ..ReviewOptions::default()
         };
@@ -1016,6 +1022,7 @@ mod tests {
             base_url: cassette.base_url(),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         };
         let request = ReviewRequest {
             tool_name: "git",
@@ -1073,6 +1080,7 @@ mod tests {
             base_url: cassette.base_url(),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         };
         let request = ReviewRequest {
             tool_name: "bash",
@@ -1129,6 +1137,7 @@ mod tests {
             base_url: format!("{}/v1", cassette.base_url()),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         };
         let request = ReviewRequest {
             tool_name: "git",

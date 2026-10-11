@@ -11,12 +11,23 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
+
+/** 宿主载荷里的可执行文件（与 build-host.mjs 的 HOST_FILES 一致，不含 .exe 后缀）。 */
+const HOST_EXECUTABLES = [
+  'omnicrawl-host',
+  'omnicrawl',
+  'omnicrawl-tui',
+  'omnicrawl-api',
+  'omnicrawl-decision',
+  'omnicrawl-mcp-server',
+]
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const staging = join(repoRoot, 'dist', 'npm')
@@ -95,6 +106,20 @@ try {
   }
   const kernelBin = join(binDir, isWindows ? 'omnicrawl-kernel.cmd' : 'omnicrawl-kernel')
   if (!existsSync(kernelBin)) fail(`.bin 里缺少内核入口 omnicrawl-kernel：${kernelBin}`)
+
+  // 宿主载荷里的可执行文件必须真有可执行位。npm 打包会把未在 package.json 的 bin 里声明的
+  // 文件权限归一化成 0644，而宿主用 Command::new 直接拉起同目录的 tui/api/内核（不看 .bin），
+  // 于是安装后必然 Permission denied——0.2.6 的 linux 包就是这样，开发者板实测过。
+  if (!isWindows) {
+    const hostDir = join(app, 'node_modules', platformPackage, 'host')
+    for (const name of HOST_EXECUTABLES) {
+      const file = join(hostDir, name)
+      if (!existsSync(file)) fail(`宿主载荷缺少可执行文件：${file}`)
+      if ((statSync(file).mode & 0o111) === 0) {
+        fail(`宿主载荷的 ${name} 没有可执行位（mode ${statSync(file).mode.toString(8)}）：npm 打包时它没进 bin 字段。`)
+      }
+    }
+  }
 
   // 链路闭环：默认（无参数）应真的把宿主拉起来。这里没有终端，宿主应给出提示并退 2。
   const hosted = spawnSync(process.execPath, [launcher], { encoding: 'utf8', cwd: app, input: '' })

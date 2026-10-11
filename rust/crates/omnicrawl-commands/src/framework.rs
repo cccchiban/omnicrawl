@@ -180,7 +180,6 @@ pub struct CommandResult {
     pub refresh_context: bool,
     pub exit_requested: bool,
     pub open_settings: bool,
-    pub open_config_chat: bool,
     pub clear_conversation: bool,
     pub replay_conversation: bool,
     pub workspace_switch_requested: bool,
@@ -201,7 +200,6 @@ impl Default for CommandResult {
             refresh_context: false,
             exit_requested: false,
             open_settings: false,
-            open_config_chat: false,
             clear_conversation: false,
             replay_conversation: false,
             workspace_switch_requested: false,
@@ -300,11 +298,6 @@ impl CommandResult {
         self
     }
 
-    pub fn with_open_config_chat(mut self) -> Self {
-        self.open_config_chat = true;
-        self
-    }
-
     pub fn with_exit_requested(mut self) -> Self {
         self.exit_requested = true;
         self
@@ -369,8 +362,8 @@ pub type Handler = fn(&CommandContext<'_>) -> CommandResult;
 ///
 /// - `completions`：共享同一处理器的额外补全/帮助形态（纯展示，不参与分发）。
 /// - `usage` 缺省时由 `name` 生成 `/name`。
-/// - `parameters`：可选参数 `(参数, 一句话说明)`；交互端在命令名后提示并补全 `--chat`
-///   这类开关参数，处理器自行解析 `ctx.args`。
+/// - `parameters`：可选参数 `(参数, 一句话说明)`；交互端在命令名后提示并补全参数名，
+///   处理器自行解析 `ctx.args`。
 #[derive(Debug, Clone)]
 pub struct Command {
     pub name: String,

@@ -2846,7 +2846,8 @@ fn recover_context_overflow(
 ) -> Option<Vec<Value>> {
     let mut session = conn.borrow_mut().session.take()?;
     let api_key = read_api_key(model_config).unwrap_or_default();
-    let last_request_messages = conn.borrow().usage.borrow().last_request_messages.clone();
+    let snapshot = conn.borrow().usage.borrow().last_request_messages.clone();
+    let last_request_messages = evicted_prefix(conn, &snapshot);
     let projection = match recover_after_overflow(
         &session,
         model_config,
@@ -2906,6 +2907,24 @@ fn evicted_tool_event(payload: &Value, evicted_calls: &BTreeSet<String>) -> bool
         .get("tool_call_id")
         .and_then(Value::as_str)
         .is_some_and(|call_id| evicted_calls.contains(call_id))
+}
+
+/// 摘要请求复用的前缀：把本轮淘汰标注作用到「最近一次主请求」的快照上。
+///
+/// 前缀与待压缩窗口必须来自同一份上下文。淘汰在回合收尾**先于**压缩执行，真实的下一轮
+/// 上下文里已经没有这批调用；若摘要请求照旧复用未淘汰的快照，模型会在前缀里读到它们的
+/// 全文，却拿不到对应的索引条目（`events_index` 已按淘汰口径剔除），只能拿别的 ref 硬凑，
+/// 摘要随后被判为「引用了不存在的事件」。
+///
+/// 淘汰点贴近上下文尾部（见 `turn::tool_prune`），因此前缀的前段仍与主请求逐字相同，
+/// 前缀缓存基本不受影响。
+fn evicted_prefix(conn: &Rc<RefCell<Conn>>, messages: &[Value]) -> Vec<Value> {
+    let marks = conn.borrow().evict_marks.borrow().clone();
+    let mut messages = messages.to_vec();
+    if !marks.is_empty() {
+        evict_tool_call_messages(&mut messages, &marks);
+    }
+    messages
 }
 
 fn summarize_turn_after_turn(
@@ -3068,7 +3087,7 @@ fn run_session_tail(
         &api_key,
         usage,
         last_request_input_tokens,
-        &last_request_messages,
+        &evicted_prefix(conn, &last_request_messages),
         working_messages.as_slice(),
         task_hint,
     ) {
@@ -3174,11 +3193,12 @@ fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
         return;
     };
     let api_key = read_api_key(&model).unwrap_or_default();
-    let last_request_messages = {
+    let snapshot = {
         let connection = conn.borrow();
         let usage = connection.usage.borrow();
         usage.last_request_messages.clone()
     };
+    let last_request_messages = evicted_prefix(conn, &snapshot);
     let outcome = {
         let connection = conn.borrow();
         let Some(session) = connection.session.as_ref() else {

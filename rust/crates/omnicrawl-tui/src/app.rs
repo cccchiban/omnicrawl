@@ -24,6 +24,11 @@ use omnicrawl_commands::slash::{
     WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
 use omnicrawl_commands::SessionSummary;
+use omnicrawl_controllers::turn::skill_command::{
+    parse_skill_command, skill_default_prompt, skill_loaded_status, skill_not_found_message,
+    skill_not_found_status,
+};
+use omnicrawl_extensions::skill::{SkillDiagnostic, SkillMeta};
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::core::settings::{
@@ -99,7 +104,7 @@ use omnicrawl_config::features::decision_model::{
     DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
     DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
     DEFAULT_LOCAL_DECISION_CHANNEL_KEY, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
-    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH,
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DEFAULT_DECISION_RETRY_COUNT,
 };
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::tools::evicted_call_ids_for;
@@ -139,7 +144,6 @@ use crate::tools::{
     AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry, TtsOptions,
 };
 use crate::ui;
-use crate::ui::config_chat::{ConfigChatEvent, ConfigChatState};
 use crate::ui::conversation::{self, LineHit};
 use crate::ui::file_picker::{FilePickerEvent, FilePickerState};
 use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
@@ -436,6 +440,11 @@ pub struct App {
     settings_request: Option<(Id, SettingsChange)>,
     /// 待回填的「提示词更新」请求（`/plan` 启用模式后下发 system prompt 与上下文消息）。
     prompt_request: Option<Id>,
+    /// `/skill:<名>` 本轮的活动技能上下文消息：提交回合前先 `session.settings` 下发，
+    /// 回合收尾后清掉（下一轮回到常规装配）。
+    pending_skill_context: Option<Vec<Value>>,
+    /// 本轮下发过活动技能正文：回合收尾要把上下文消息换回常规装配。
+    restore_skill_context_after_turn: bool,
     /// 启动期插件加载诊断：由 `main.rs` 写进启动页日志框（不进对话流，避免顶掉首屏 Logo）。
     pub startup_plugin_lines: Vec<String>,
     /// 启动期自部署决策服务的处理结论（同上，走启动页日志框）。
@@ -466,14 +475,17 @@ pub struct App {
     /// 与 `options` 一样对外可见：用例需要把这一步钉成「裁决不可用」，否则结果会随本机
     /// 配置（开关开没开、决策服务在不在）漂移。
     pub prune: Option<omnicrawl_host::tools::PruneOptions>,
+    /// 工具建议运行期（`[decision_models.features] tool_suggestion`）：开启后提交前先问一次决策
+    /// 模型「本次该用哪些工具」，把结果拼进 user 尾部；`None` 或不可用时原文照发。
+    ///
+    /// 与 `prune` 一样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
+    pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
     /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复。
     custody_context: omnicrawl_host::tools::CustodyContext,
     /// 审查载荷里的两条会话事实（最近一条用户消息 + 最近一次 ask_user 问答）。
     review_context: omnicrawl_host::review::ReviewContext,
     /// 文件选择弹层（TTS 参考音频）：`Some` 时铺在设置面板之上，键盘都归它。
     pub file_picker: Option<FilePickerState>,
-    /// 配置对话弹层（`/settings --chat`）：`Some` 时铺满整屏，键盘都归它。
-    pub config_chat: Option<ConfigChatState>,
     /// 后台 TTS 任务（模型下载 / 音色克隆）的结果通道。
     tts_task: Option<Receiver<TtsTaskResult>>,
     /// 后台自部署任务（环境安装 / 权重下载 / 服务启停）的结果通道。
@@ -521,6 +533,20 @@ pub struct App {
     prune_results: Receiver<PruneTaskResult>,
     /// 仍在后台跑的裁决数：>0 时主循环按活动帧率轮询，结果一到就应答内核。
     prune_in_flight: usize,
+    /// 工具建议的请求通道：建议是网络请求（超时 20s），不能占着 UI 线程等。
+    suggest_sender: Sender<SuggestTaskResult>,
+    suggest_results: Receiver<SuggestTaskResult>,
+    /// 仍在后台跑的建议数：>0 时主循环按活动帧率轮询，结果一到就提交回合。
+    suggest_in_flight: usize,
+}
+
+/// 工具建议的产出：拼好建议后待提交的提问。
+///
+/// 提交由 UI 线程在 [`App::drain_suggest_results`] 里做——工作线程只负责算，
+/// 不碰内核连接（那是 UI 线程独占的）。
+struct SuggestTaskResult {
+    text: String,
+    images: Vec<PendingImage>,
 }
 
 /// 渠道模型列表自动检测的产出：候选模型 ID 与失败原因。
@@ -723,6 +749,7 @@ impl App {
         let prompt = load_prompt_runtime(&ConfigEnvironment::from_process(), &options, workspace)?;
         let (completion_sender, completions) = mpsc::channel();
         let (prune_sender, prune_results) = mpsc::channel();
+        let (suggest_sender, suggest_results) = mpsc::channel();
         // 模型/渠道视图：配置读不出来时退回环境变量默认值，界面照常可用（缺什么会由内核回错）。
         let llm = match load_llm_config(&ConfigEnvironment::from_process()) {
             Ok(config) => config,
@@ -753,8 +780,13 @@ impl App {
         let custody = Some(omnicrawl_host::tools::custody_options_from_config(&environment));
         // 工具调用淘汰：与审查、检索重排同源（`[decision_models.features] tool_call_prune`）。
         let prune = Some(omnicrawl_host::tools::prune_options_from_config(&environment));
-        // 命令菜单的候选表来自统一命令源（注册表声明），启动时装载一次。
-        state.composer.set_commands(commands::command_options());
+        // 工具建议：与审查、检索重排同源（`[decision_models.features] tool_suggestion`）。
+        let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(&environment));
+        // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
+        // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
+        state
+            .composer
+            .set_commands(commands::command_options_with_skills(&prompt.skill_metas()));
         Ok(Self {
             state,
             options,
@@ -776,6 +808,8 @@ impl App {
             settings: None,
             settings_request: None,
             prompt_request: None,
+            pending_skill_context: None,
+            restore_skill_context_after_turn: false,
             llm,
             viewport: Rect::default(),
             drawn: None,
@@ -783,10 +817,10 @@ impl App {
             review,
             custody,
             prune,
+            suggest,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),
             file_picker: None,
-            config_chat: None,
             tts_task: None,
             onejev_task: None,
             onejev_progress: None,
@@ -807,6 +841,9 @@ impl App {
             prune_sender,
             prune_results,
             prune_in_flight: 0,
+            suggest_sender,
+            suggest_results,
+            suggest_in_flight: 0,
         })
     }
 
@@ -863,18 +900,26 @@ impl App {
         self.viewport = area;
     }
 
+    /// 重装命令菜单候选表：注册表声明 + 当前工作区发现的 Skill。
+    ///
+    /// Skill 清单随工作区变化，而候选表是启动时装载一次的，切换工作区后不重装
+    /// 就会留下旧工作区的 `/skill:*`。
+    fn refresh_command_menu(&mut self) {
+        let skills = self.prompt.skill_metas();
+        self.state
+            .composer
+            .set_commands(commands::command_options_with_skills(&skills));
+    }
+
     /// 本帧是否需要重画：三个刷新块（会话 / 输入框 / 底部）自上次绘制以来是否变过，
     /// 再加上终端是否换过尺寸。
     ///
     /// 全都没变时返回 `false`，事件循环就整帧跳过 `terminal.draw`——空闲时 TUI
     /// 不再以 20fps 空转（三块的内容也不会被无谓地重建）。
-    /// 模态弹层（设置 / 配置对话 / 文件选择）自己铺满整屏，仍按老规矩每帧重画。
+    /// 模态弹层（设置 / 文件选择）自己铺满整屏，仍按老规矩每帧重画。
     pub fn needs_redraw(&mut self) -> bool {
         let current = (self.state.refresh_versions(), self.viewport);
-        if self.settings.is_some()
-            || self.config_chat.is_some()
-            || self.file_picker.is_some()
-        {
+        if self.settings.is_some() || self.file_picker.is_some() {
             self.drawn = Some(current);
             return true;
         }
@@ -1143,13 +1188,14 @@ impl App {
     /// - 其余（真正空闲）→ 睡到上限，靠终端事件唤醒。
     pub fn poll_budget(&self, now: Instant) -> Duration {
         let active = self.state.turn.is_running()
-            || self.config_chat.is_some()
             || self.slow_task.is_some()
             || self.tts_task.is_some()
             || self.onejev_task.is_some()
             || self.channel_models_task.is_some()
             // 淘汰裁决还在后台跑：结果一到就要应答内核（内核正等这条响应）。
             || self.prune_in_flight > 0
+            // 工具建议还在后台跑：结果一到就要把提问发出去。
+            || self.suggest_in_flight > 0
             || self.state.has_running_activity()
             // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。
             || self.state.is_reasoning_revealing()
@@ -1177,6 +1223,7 @@ impl App {
         }
         self.drain_completions();
         self.drain_prune_results();
+        self.drain_suggest_results();
         self.drain_kernel_logs();
         self.drain_diagnostics();
         self.drain_channel_models();
@@ -1189,9 +1236,8 @@ impl App {
             // 「回工具批次失败」「工具超时」这类二次噪音。
             self.tool_deadline = None;
             self.state.cancel_batch();
-            // 模态页先收起来：设置/配置对话/文件选择都要靠内核落地，留着只会盖住报错。
+            // 模态页先收起来：设置/文件选择都要靠内核落地，留着只会盖住报错。
             self.file_picker = None;
-            self.config_chat = None;
             self.settings = None;
             self.state.fail_turn(KERNEL_LOST_MESSAGE.to_string());
             self.plugins
@@ -1363,6 +1409,8 @@ impl App {
                     }
                     self.state.apply(&event, Instant::now());
                     if finished {
+                        // `/skill:` 的上下文消息只覆盖本轮：落地后换回常规装配。
+                        self.restore_skill_context();
                         self.plugins.turn_end(None, turn_id.as_deref());
                         self.drain_pending_inputs();
                     }
@@ -1894,11 +1942,6 @@ impl App {
                     self.handle_file_picker_key(key);
                     return;
                 }
-                // 配置对话弹层同为最上层模态（`/settings --chat` 打开）。
-                if self.config_chat.is_some() {
-                    self.handle_config_chat_key(key);
-                    return;
-                }
                 // 设置面板是模态页：它开着时按键都归它（与 Python 的 `SettingsScreen` 一致）；
                 // 鼠标同理——面板铺满整屏，落点只能按面板自己的命中区判。
                 if self.settings.is_some() {
@@ -1912,19 +1955,10 @@ impl App {
             // 抬起也可能来自文本粘贴，此时 `paste_clipboard_image` 自己返回 `false`，不干扰正文。
             Event::Key(key) if is_ctrl_v_release(key) => self.handle_ctrl_v_release(),
             Event::Mouse(_) if self.file_picker.is_some() => {}
-            Event::Mouse(_) if self.config_chat.is_some() => {}
             Event::Mouse(mouse) if self.settings.is_some() => self.handle_settings_mouse(mouse),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             // 弹层开着时粘贴不落到主输入框（路径输入用键盘）。
             Event::Paste(_) if self.file_picker.is_some() => {}
-            Event::Paste(text) if self.config_chat.is_some() => {
-                // 配置对话接受粘贴的整句描述（本机输入法长句常用）。
-                if let Some(chat) = self.config_chat.as_mut() {
-                    for character in text.chars() {
-                        chat.handle_key(KeyCode::Char(character));
-                    }
-                }
-            }
             Event::Paste(text) if self.settings.is_none() && !self.kernel_lost => {
                 // 整段就是一个存在的图片路径 → 转成图片附件；否则按文本折叠
                 // （多行折成 `[粘贴 #n +N 行]`，提交时还原）。
@@ -2501,7 +2535,7 @@ impl App {
     /// 不如当场说清为什么没插进去。剪贴板里是文本时返回 `false`，让终端自己送来的
     /// 文本粘贴照常处理。
     fn paste_clipboard_image(&mut self) -> bool {
-        if self.settings.is_some() || self.file_picker.is_some() || self.config_chat.is_some() {
+        if self.settings.is_some() || self.file_picker.is_some() {
             return false;
         }
         let Some(png) = crate::clipboard::read_image_png() else {
@@ -2526,7 +2560,7 @@ impl App {
     /// 避免粘贴代码时把路径片段误当图片。没有视觉通路时保持文本原样、不插入也不提示——
     /// 路径对模型照样可读，正是「不转换」最合理的结果。
     fn paste_image_path(&mut self, text: &str) -> bool {
-        if self.settings.is_some() || self.file_picker.is_some() || self.config_chat.is_some() {
+        if self.settings.is_some() || self.file_picker.is_some() {
             return false;
         }
         if !self.vision_route_available() {
@@ -2604,9 +2638,74 @@ impl App {
             self.dispatch_command(text, parsed);
             return;
         }
+        // `/skill:<名> [任务]` 是运行期命令（Skill 不在注册表里）：命中就换成活动技能
+        // 正文块，未命中就回一份可用列表，两种情况都当作本轮提交。
+        if let Some((name, rest)) = parse_skill_command(&text) {
+            self.dispatch_skill_command(&text, &name, rest);
+            return;
+        }
         // 非斜杠命令的提交记入输入框历史，供上下键回看（对映 Python `_submit` 中的
         // `history_record`：命令不记录）。
         self.state.composer.history_record(&text);
+        // 建议还在后台跑：这一条排队等它——两条同时提交会被内核按 `TURN_BUSY` 拒掉一条。
+        if self.suggest_in_flight > 0 {
+            self.state.queue_pending(text, images);
+            return;
+        }
+        // 工具建议：先问一次决策模型「本次该用哪些工具」（网络请求，超时 20s，不能占 UI
+        // 线程），结果回来再提交；不可用或没有建议时立即提交，原文照发（fail-open）。
+        if let Some((text, images)) = self.start_tool_suggestion(text, images) {
+            self.submit_to_kernel(text, images);
+        }
+    }
+
+    /// 起一次工具建议：需要建议时把提问交给后台线程并返回 `None`；不需要时原样返回提问。
+    fn start_tool_suggestion(
+        &mut self,
+        text: String,
+        images: Vec<PendingImage>,
+    ) -> Option<(String, Vec<PendingImage>)> {
+        let Some(suggest) = self.suggest.clone().filter(|it| it.active()) else {
+            // 开关没开或没有可用渠道：立即提交，原文照发。
+            return Some((text, images));
+        };
+        // 工具表里一个工具都没有：没有可送审的候选，不必白跑一次网络。
+        let inventory = self.registry.tool_inventory();
+        if inventory.is_empty() {
+            return Some((text, images));
+        }
+        let sender = self.suggest_sender.clone();
+        let prompt = text.clone();
+        self.suggest_in_flight += 1;
+        thread::spawn(move || {
+            let text = match omnicrawl_host::tools::suggested_tools(&suggest, &inventory, &prompt) {
+                Some(names) => omnicrawl_host::tools::insert_suggestion(&prompt, &names),
+                None => prompt,
+            };
+            let _ = sender.send(SuggestTaskResult { text, images });
+        });
+        None
+    }
+
+    /// 取回后台建议结果：拼好的提问在这里提交（提交必须在 UI 线程做）。
+    fn drain_suggest_results(&mut self) {
+        while let Ok(result) = self.suggest_results.try_recv() {
+            self.suggest_in_flight = self.suggest_in_flight.saturating_sub(1);
+            self.submit_to_kernel(result.text, result.images);
+        }
+        // 建议期间排队的输入接着按 FIFO 提交（对映回合结束后的排空）。
+        if self.suggest_in_flight == 0 {
+            self.drain_pending_inputs();
+        }
+    }
+
+    /// 把一次提交发给内核：`turn.start` 在进内核之前分发，界面显示最终文本。
+    fn submit_to_kernel(&mut self, text: String, images: Vec<PendingImage>) {
+        if self.kernel_lost {
+            // 内核对不上就不发；顺手丢掉本轮的活动 Skill 上下文，免得落到下一轮。
+            self.pending_skill_context = None;
+            return;
+        }
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn += 1;
         // `turn.start` 在进内核之前分发：transform 类 Handler 可改写 `userText`，
@@ -2614,6 +2713,8 @@ impl App {
         let text = match self.plugins.turn_start(&text, None, Some(&turn_id)) {
             Ok(rewritten) => rewritten,
             Err(error) => {
+                // 本轮没发出去，活动 Skill 上下文也不能留到下一轮。
+                self.pending_skill_context = None;
                 self.state.notice(error.to_string());
                 return;
             }
@@ -2633,11 +2734,49 @@ impl App {
         // 新回合开始：清掉上一回合 Esc 留下的取消标记。工具表的取消令牌跨回合沿用
         // （重建工具表 / 切工作区都不换），不复位会让本回合每个 `bash` 一启动就被判为已取消。
         self.registry.cancel_token().reset();
+        // 活动 Skill 的上下文消息必须赶在 `turn.submit` 之前下发（同一连接按序处理，
+        // 因此本轮的请求就带技能正文）；回合收尾时再推回常规装配。
+        if let Some(messages) = self.pending_skill_context.take() {
+            let _ = self.send(Command::SessionSettings(Box::new(SessionSettingsParams {
+                model: Some(Box::new(SessionModelSettings {
+                    context_messages: Some(messages),
+                    ..SessionModelSettings::default()
+                })),
+                compaction: None,
+            })));
+            self.restore_skill_context_after_turn = true;
+        }
         self.send(Command::TurnSubmit(omnicrawl_ipc::TurnSubmitParams {
             turn_id,
             user_text: text,
             images,
         }));
+    }
+
+    /// 回合收尾：把 `/skill:` 用过的活动技能正文换回常规上下文装配。
+    fn restore_skill_context(&mut self) {
+        if !self.restore_skill_context_after_turn {
+            return;
+        }
+        self.restore_skill_context_after_turn = false;
+        let has_tools = !self.registry.declarations().is_empty();
+        let session_id = self.current_session_id();
+        let messages = match self.prompt.context_messages_with_plugins(
+            has_tools,
+            Some(self.plugins.as_ref()),
+            (!session_id.is_empty()).then_some(session_id.as_str()),
+            None,
+        ) {
+            Ok(messages) => messages,
+            Err(_) => return,
+        };
+        self.push_session_settings_raw(SessionSettingsParams {
+            model: Some(Box::new(SessionModelSettings {
+                context_messages: Some(messages),
+                ..SessionModelSettings::default()
+            })),
+            compaction: None,
+        });
     }
 
     /// 执行一条已解析的斜杠命令。
@@ -2669,6 +2808,51 @@ impl App {
             command_registry().dispatch(&text, &agent, Channel::Tui, None)
         };
         self.apply_command_result(result);
+    }
+
+    /// 处理 `/skill:<名> [余下任务]`：命中就加载技能正文并提交余下任务，未命中回可用列表。
+    ///
+    /// 与 Python `_apply_skill_command` 同序：命中时状态行提示已加载、余下文本当任务
+    /// （没写任务就用默认提示），未命中时把带可用列表的说明当作本轮文本；两种情况都继续
+    /// 走一次回合，因此输入框历史记的是原始输入。
+    fn dispatch_skill_command(&mut self, text: &str, name: &str, rest: Option<String>) {
+        if self.kernel_lost {
+            return;
+        }
+        self.state.composer.history_record(text);
+        let name = name.trim().to_string();
+        let task = match self.prompt.load_skill(&name) {
+            Some(skill) => {
+                let context = omnicrawl_host::prompt::active_skill_context_for(&skill);
+                let has_tools = !self.registry.declarations().is_empty();
+                match self.prompt.active_skill_messages(has_tools, &context) {
+                    Ok(messages) => {
+                        self.pending_skill_context = Some(messages);
+                        self.state.notice(skill_loaded_status(&name));
+                        rest.unwrap_or_else(|| skill_default_prompt(&name))
+                    }
+                    Err(error) => {
+                        self.state
+                            .notice(format!("活动 Skill 上下文装配失败：{error}"));
+                        return;
+                    }
+                }
+            }
+            None => {
+                self.state.notice(skill_not_found_status(&name));
+                skill_not_found_message(&name, &self.skill_names())
+            }
+        };
+        self.submit_to_kernel(task, Vec::new());
+    }
+
+    /// `/skill:` 未命中时列出的可用名称（与 `/skills` 展示同源）。
+    fn skill_names(&self) -> Vec<String> {
+        self.prompt
+            .skill_metas()
+            .iter()
+            .map(|meta| meta.name.clone())
+            .collect()
     }
 
     /// 把命令结果落到界面上：消息进消息流，调度标记交给对应的界面动作。
@@ -2706,17 +2890,12 @@ impl App {
         if let Some(status) = result.working_status.take() {
             self.state.set_status(Some(status));
         }
-        // 打开类命令（`/settings`、`/settings --chat`）不追加提示：Python 在
-        // `open_settings` / `open_config_chat` 分支里直接 return，`message`（如
-        // 「打开设置面板」）从来不会进消息流；这里同样先处理再 return，
-        // 否则会多出一条「· 打开设置面板」这类纯提醒。
+        // 打开类命令（`/settings`）不追加提示：Python 在 `open_settings` 分支里直接
+        // `return`，`message`（如「打开设置面板」）从来不会进消息流；这里同样先处理再
+        // `return`，否则会多出一条「· 打开设置面板」这类纯提醒。
         if result.clear_conversation {
             self.state.clear_conversation();
             self.state.scroll_to_bottom();
-        }
-        if result.open_config_chat {
-            self.open_config_chat();
-            return;
         }
         if result.open_settings {
             self.open_settings();
@@ -3121,16 +3300,11 @@ impl App {
         self.dispatch_settings_event(event);
     }
 
-    /// 面板事件 → 宿主动作：关闭、交出键盘给配置对话，或执行一次设置变更并回填结果。
+    /// 面板事件 → 宿主动作：关闭，或执行一次设置变更并回填结果。
     fn dispatch_settings_event(&mut self, event: Option<SettingsEvent>) {
         match event {
             None => {}
             Some(SettingsEvent::Close) => self.settings = None,
-            Some(SettingsEvent::OpenConfigChat) => {
-                // 与 `/settings --chat` 同一入口：面板让位，弹层接管键盘。
-                self.settings = None;
-                self.open_config_chat();
-            }
             Some(SettingsEvent::Apply(change)) => {
                 let outcome = self.apply_settings_change(&change);
                 if let Some(settings) = self.settings.as_mut() {
@@ -3277,6 +3451,14 @@ impl App {
         self.custody = Some(omnicrawl_host::tools::custody_options_from_config(environment));
     }
 
+    /// 按最新配置重建工具建议运行期（决策渠道或开关变更后调用）。
+    ///
+    /// 建议由宿主在提交前发起（它是唯一握得住「用户这一条原文」的一方），因此只需
+    /// 换掉运行期，没有要下发给内核的能力声明。
+    fn rebuild_suggest(&mut self, environment: &ConfigEnvironment) {
+        self.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(environment));
+    }
+
     /// 按最新配置重建工具调用淘汰运行期（决策渠道或开关变更后调用）。
     ///
     /// 淘汰由内核发起（它是唯一能看到 `messages` 与其尾部位置的一方），因此这里除了重建运行期，
@@ -3332,10 +3514,11 @@ impl App {
         };
         let path = save_decision_model_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 四条调用通道都按新渠道重建，保存后本会话即刻生效。
+        // 五条调用通道都按新渠道重建，保存后本会话即刻生效。
         self.rebuild_review(&environment);
         self.rebuild_custody(&environment);
         self.rebuild_prune(&environment)?;
+        self.rebuild_suggest(&environment);
         self.rebuild_rerank(&environment)?;
         let reloaded = load_decision_model_configuration(&environment, None)
             .unwrap_or(configuration);
@@ -3355,10 +3538,11 @@ impl App {
         let environment = ConfigEnvironment::from_process();
         let path = save_decision_switch(&environment, key, enabled, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 开关影响的是宿主侧哪些请求走决策模型，因此四条通道都要按新值重建。
+        // 开关影响的是宿主侧哪些请求走决策模型，因此五条通道都要按新值重建。
         self.rebuild_review(&environment);
         self.rebuild_custody(&environment);
         self.rebuild_prune(&environment)?;
+        self.rebuild_suggest(&environment);
         self.rebuild_rerank(&environment)?;
         let label = DECISION_SWITCHES
             .iter()
@@ -3621,6 +3805,7 @@ impl App {
             api_key: String::new(),
             api_key_env: DEFAULT_LOCAL_DECISION_API_KEY_ENV.to_string(),
             model: model_name,
+            retry_count: DEFAULT_DECISION_RETRY_COUNT,
             enabled: true,
         };
         match configuration
@@ -3636,6 +3821,7 @@ impl App {
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         self.rebuild_review(&environment);
         self.rebuild_custody(&environment);
+        self.rebuild_suggest(&environment);
         self.rebuild_rerank(&environment)?;
         let rows: Vec<DecisionRow> = configuration
             .channels
@@ -4090,40 +4276,6 @@ impl App {
         self.file_picker = Some(FilePickerState::new(&start, "选择参考音频"));
     }
 
-    /// 打开配置对话弹层：工作线程在后台装载路由器（约一分钟），弹层里给出进度提示。
-    fn open_config_chat(&mut self) {
-        let chat = ConfigChatState::start();
-        if !chat.available() {
-            self.state
-                .notice(format!("配置对话不可用：{}", chat.unavailable_reason()));
-        }
-        self.config_chat = Some(chat);
-    }
-
-    /// 配置对话弹层的按键：Esc 关闭，Enter 把一句话交给工作线程。
-    fn handle_config_chat_key(&mut self, key: KeyEvent) {
-        let event = self
-            .config_chat
-            .as_mut()
-            .and_then(|chat| chat.handle_key(key.code));
-        match event {
-            None => {}
-            Some(ConfigChatEvent::Close) => {
-                self.config_chat = None;
-                // 配置可能已改（模型/上下文/工具开关等），设置面板下次打开时重新取初值。
-                self.settings = None;
-            }
-            Some(ConfigChatEvent::Submit(text)) => {
-                if let Some(chat) = self.config_chat.as_mut() {
-                    chat.push(true, text.clone());
-                    if let Some(message) = chat.submit(&text) {
-                        chat.push(false, message);
-                    }
-                }
-            }
-        }
-    }
-
     /// 弹层按键：取消 / 选中都关闭弹层，选中时回填参考音频路径。
     fn handle_file_picker_key(&mut self, key: KeyEvent) {
         let event = self
@@ -4140,13 +4292,6 @@ impl App {
                     settings.set_tts_busy(false, format!("已选择参考音频：{}", path.display()));
                 }
             }
-        }
-    }
-
-    /// 每帧轮询配置对话工作线程：就绪状态与结论行都从这里回到弹层。
-    pub fn tick_config_chat(&mut self) {
-        if let Some(chat) = self.config_chat.as_mut() {
-            chat.tick();
         }
     }
 
@@ -5241,6 +5386,7 @@ impl App {
         self.registry_options = options;
         self.registry = Arc::new(candidate);
         self.prompt = prompt;
+        self.refresh_command_menu();
         self.monitor_state.resume_polling();
         if let Some(settings) = self.settings.as_mut() {
             settings.refresh_tools(tool_switch_rows(&self.registry));
@@ -5598,6 +5744,11 @@ impl App {
 
     pub(crate) fn command_workspace_root(&self) -> PathBuf {
         self.workspace.clone()
+    }
+
+    /// 命令层读取 Skill 索引与诊断：与提示词装配同源（含 `[skills].extra_paths`）。
+    pub(crate) fn command_skills(&self) -> (Vec<SkillMeta>, Vec<SkillDiagnostic>) {
+        (self.prompt.skill_metas(), self.prompt.skill_diagnostics())
     }
 
     /// 当前审批模式名（`manual` / `review` / `auto`，与 Python 的 `approval_mode()` 同形）。
@@ -6485,6 +6636,7 @@ fn decision_row_from_config(channel: &DecisionChannelConfig) -> DecisionRow {
         api_key: channel.api_key.clone(),
         api_key_env: channel.api_key_env.clone(),
         model: channel.model.clone(),
+        retry_count: channel.retry_count,
         enabled: channel.enabled,
     }
 }
@@ -6499,6 +6651,7 @@ fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConfig {
         api_key: row.api_key.trim().to_string(),
         api_key_env: row.api_key_env.trim().to_string(),
         model: row.model.trim().to_string(),
+        retry_count: row.retry_count,
         enabled: row.enabled,
     }
 }

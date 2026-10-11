@@ -12,7 +12,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；另提供**凭据注入**（`model_credentials_env` / `kernel_credentials_env` / `frame_api_key_env`）——协议帧只带变量名，内核只从环境读密钥，所以 `config.toml` 里的字面 `api_key` 必须由宿主在起内核时补进子进程环境 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`（两条后端：接口合成默认、本地 ONNX 需 `omnicrawl-tts/onnx`）、`advisor`、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`（两条后端：接口合成默认、本地 ONNX 需 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
@@ -29,8 +29,12 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   → 顾问准则（启用且未命中黑名单时）→ `<active_mode_prompt>`（模式已启用时）。
 - **项目规范**：用户级 `~/.OmniCrawl/AGENTS.md` 与项目级 `<工作区>/AGENTS.md` 合并，
   项目级排在后面并优先；**读不到文件不算错误**，没有规范时不注入该消息。
-- **Skill**：`SkillManager.discover(工作区, 额外路径)` 扫描企业 / 个人 / 项目 / 额外路径，
+- **Skill**：`SkillManager.discover(工作区, 额外路径)` 扫描企业 / 个人 / 项目 / 额外路径
+  （企业级取 `OMNICRAWL_ENTERPRISE_DIR`，额外路径取 `[skills].extra_paths`），
   `format_skills_for_prompt` 产出索引段（不注入正文；命中时才走 `read` 读 SKILL.md）。
+  `/skill:<名> [任务]` 在 `TurnRunner::submit` 里处理：命中时先用 `session.settings`
+  把活动技能正文当本轮上下文下发，回合收尾再换回常规装配；未命中时把带可用列表的说明
+  当本轮文本。两条路径都不改持久化历史。
 
 装配结果经 `initialize.model.system_prompt` / `context_messages` 交给内核；模式切换
 （`/plan`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
@@ -65,6 +69,9 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - 工具开关只影响这张表，所以设置面板改开关时重建工具表会把旧表的 `monitors` / `cancel` 两个句柄
   带进新表（`RegistryOptions.monitors` / `.cancel`）：否则一次开关会把正在跑的后台命令从宿主账上抹掉、
   并丢掉回合取消的进程树回收语义。宿主若不传这两个字段，新表照旧各建一份。
+- `config_edit` 读写的是 `~/.OmniCrawl/config.toml`：配置环境由 `RegistryOptions.config_env` 注入
+  （未注入时按进程环境解析）。读整份配置时凭据值打码为 `<已隐藏>`，键名与结构保留；写按点分路径设值，
+  中间层缺失自动补齐、穿过标量则报错不写。它是写操作，声明里标了 `requires_confirmation`。
 - 取消令牌（`tools::command::CancelToken`）既然跨回合、跨重建沿用，**就必须在每回合开始时复位**
   （`CancelToken::reset`）：TUI 在 `dispatch_submission` 发 `turn.submit` 前复位，无头运行器在
   `TurnRunner::run_turn` 开头复位。不复位时「`Esc` 取消后继续对话」的下一回合里，每个
@@ -108,11 +115,42 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - `RerankClient` 是注入点：测试用桩（`memory.rs` 的 `StubRerank`）替换真实 HTTP 调用，回环用例在
   `decision_search.rs` 内部自带。
 
-三个调用点（`review.rs` 的工具调用审查、本模块的检索重排与提问托管）共用 `decision_wire`
+五个调用点（`review.rs` 的工具调用审查、本模块的检索重排、提问托管、工具调用淘汰与工具建议）
+共用 `decision_wire`
 这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 走
 `POST /v1/decide`；`chat_completions` 走 `POST {base_url}/chat/completions`，基地址按 OpenAI
 兼容口径填到 `/v1`，作为 user 消息发出），并从响应里取出同一形状的 `answers`（后者从
 `choices[0].message.content` 里解析）。新增请求方式只需改配置域与这一层，调用点的解析逻辑不动。
+
+`post_body` 是这一层唯一的传输落点，因此**上游重试也只实现一次**：按渠道的 `retry_count`
+（默认 3）对连接失败、超时与 5xx 做 `0.2s → 0.4s → 0.8s`（封顶 2s）退避重试，4xx 立即回错
+（请求本身的问题），响应读不出可用答案不重试（不猜、不编）。
+
+## 工具建议（可选，默认关闭）
+
+`tools/decision_suggest.rs` 在你每发一条新提问时先问一次决策模型「本次该用哪些工具」
+（`decision_models.toml` 的 `[features] tool_suggestion`，`suggest_options_from_config(env)`
+由 TUI 与本地 API 共用）。
+
+- 送审只有**当前这条提问的正文**（`state.user_prompt`，不带任何历史）与**本宿主工具表的全部
+  已启用工具**（`state.tools`，每项是名字 + 描述首句截断到 `TOOL_SUMMARY_MAX_CHARS` 字）。
+  候选不做人工取舍：`disabled_tools` 关掉的、当前没有运行期的（语音合成、顾问、Windows 组）
+  都已被工具表挡在外面，进表的即送审，工具表增删后清单自动跟着变。
+- 该用专用工具还是顺手用泛化工具，交给决策模型按 `SUGGEST_REQUIREMENTS` 判断：专用工具
+  （子代理、生图、语音、桌面操作等）贴合任务特殊性；读文件、写文件、搜代码、执行命令、
+  记待办、向用户提问这类通用工具几乎每轮都能顺手用一下，除非本次任务明确围绕它展开，
+  否则判为用不到。
+- 判定是每个工具一个 `noul` 提问，外加一个兜底提问 `no_tool`（本条是否属于普通对话、
+  寒暄或无从判断的异常任务）。阈值 `SUGGEST_THRESHOLD`（0.5）是唯一判定面：概率 ≥0.5 进建议
+  名单、<0.5 排除；兜底提问过阈值时整份建议作废。
+- 名单非空时在 user 尾部追加一行（`insert_suggestion`）：`当前请求建议调用tool：a、b。`；
+  名单为空时原文照发，不插入任何内容。展示层用 `split_suggestion` 把这一行拆出来挂在
+  `user：` 标签之后，正文照旧另起行铺开。
+- **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都按
+  「本次无建议」处理（与检索重排、提问托管、工具淘汰同一语义）。
+- 出网脱敏复用审查通道的 `[desensitization]` 旁路；脱敏构造失败按「建议不可用」处理，绝不外发原文。
+- 两个接入点都在提交前：无头宿主的 `TurnRunner::submit` 里就地拼接；TUI 因为不能阻塞 UI 线程，
+  把建议放到后台线程（`start_tool_suggestion` / `drain_suggest_results`），结果回来才提交回合。
 
 ## 提问托管（可选，默认关闭）
 
@@ -165,12 +203,12 @@ let outcome = runner.submit("你好", &control, &mut interactor, &mut |event| { 
 
 ```bash
 cd rust
-cargo test -p omnicrawl-host        # 176 个单元测试 + tests/turn_flow.rs 的 6 组流程测试
+cargo test -p omnicrawl-host        # 单元测试 + tests/turn_flow.rs 的流程测试
 cargo clippy -p omnicrawl-host --all-targets -- -D warnings
 ```
 
 `tests/turn_flow.rs` 用一对内存管道做脚本化假内核，钉住握手（含被拒）、整批工具定调、
-提问作答、取消、取消后继续与内核退出六条路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
+提问作答、提问托管、工具建议（含无建议）、取消、取消后继续与内核退出等路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
 `crates/omnicrawl-tui/tests/*_parity.rs`（按原路径驱动本 crate 的工具表）。
 
 ## 插件运行期

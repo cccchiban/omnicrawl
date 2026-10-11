@@ -221,6 +221,8 @@ fn runner_options(root: &Path) -> RunnerOptions {
         custody: None,
         // 不做工具调用淘汰：「刚变老」的那批调用全部留在上下文里。
         prune: None,
+        // 不做工具建议：user 原文照发。
+        suggest: None,
         prompt: None,
     }
 }

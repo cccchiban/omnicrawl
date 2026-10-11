@@ -611,7 +611,40 @@ fn matches_marker(characters: &[char], index: usize) -> bool {
         .skip(index)
         .take(PLACEHOLDER_MARKER.len())
         .collect();
-    marker.eq_ignore_ascii_case(PLACEHOLDER_MARKER)
+    eq_ignore_ascii_case_width(&marker, PLACEHOLDER_MARKER)
+}
+
+/// 大小写不敏感 + 全半角归一化的 ASCII 比较。
+///
+/// 模型偶发把 `Desensitized` 里的字母打成全角（`Ｄｅｓｅｎｓｉｔｉｚｅｄ`）或混用大小写，
+/// 两者都仍应还原成原文，而不是当成畸形占位符留在回复里。
+fn eq_ignore_ascii_case_width(text: &str, expected: &str) -> bool {
+    let mut actual = text.chars().map(normalize_ascii_width);
+    let mut wanted = expected.chars();
+    loop {
+        match (actual.next(), wanted.next()) {
+            (None, None) => return true,
+            (Some(left), Some(right)) => {
+                if !left.eq_ignore_ascii_case(&right) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// 全角 ASCII 变体归一化为对应的半角字符；其余字符原样返回。
+///
+/// 覆盖 `U+FF01..=U+FF5E`（全角标点与字母数字）与 `U+3000`（全角空格）。
+fn normalize_ascii_width(character: char) -> char {
+    match character {
+        '\u{3000}' => ' ',
+        '\u{ff01}'..='\u{ff5e}' => {
+            char::from_u32(character as u32 - 0xfee0).unwrap_or(character)
+        }
+        other => other,
+    }
 }
 
 fn match_placeholder(characters: &[char], index: usize) -> Option<(usize, u64)> {
@@ -623,22 +656,26 @@ fn match_placeholder(characters: &[char], index: usize) -> Option<(usize, u64)> 
         return None;
     }
     cursor = skip_whitespace(characters, cursor + PLACEHOLDER_MARKER.len());
-    match characters.get(cursor)? {
-        ':' | '\u{ff1a}' => cursor += 1,
+    match characters.get(cursor).map(|value| normalize_ascii_width(*value)) {
+        Some(':') => cursor += 1,
         _ => return None,
     }
     cursor = skip_whitespace(characters, cursor);
+    // 序号同样接受全角数字（`１２`）：模型把整段占位符全角化时数字通常一起变全角。
     let digits_start = cursor;
     while characters
         .get(cursor)
-        .is_some_and(|character| character.is_ascii_digit())
+        .is_some_and(|character| normalize_ascii_width(*character).is_ascii_digit())
     {
         cursor += 1;
     }
     if cursor == digits_start {
         return None;
     }
-    let digits: String = characters[digits_start..cursor].iter().collect();
+    let digits: String = characters[digits_start..cursor]
+        .iter()
+        .map(|character| normalize_ascii_width(*character))
+        .collect();
     let seq = digits.parse::<u64>().ok()?;
     cursor = skip_whitespace(characters, cursor);
     if !is_close_brace(characters.get(cursor)) {

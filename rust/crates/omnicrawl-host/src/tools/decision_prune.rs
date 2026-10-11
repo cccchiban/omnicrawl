@@ -41,6 +41,8 @@ pub struct PruneChannel {
     pub base_url: String,
     pub api_key: String,
     pub api_key_env: String,
+    /// 请求失败后的重试次数（不含首次请求）。
+    pub retry_count: u64,
 }
 
 impl PruneChannel {
@@ -51,6 +53,7 @@ impl PruneChannel {
             base_url: channel.base_url.clone(),
             api_key: channel.api_key.clone(),
             api_key_env: channel.api_key_env.clone(),
+            retry_count: channel.retry_count.max(0) as u64,
         }
     }
 
@@ -207,6 +210,7 @@ impl PruneClient for DecisionPruneClient {
                 base_url: channel.base_url.clone(),
                 api_key: channel.api_key.clone(),
                 api_key_env: channel.api_key_env.clone(),
+                retry_count: channel.retry_count,
             },
             request.masking,
             // 脱敏失败即放弃本次淘汰（不外发原文），与「失败一律 fail-open」一致。
@@ -272,6 +276,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: "jv_test".to_string(),
             api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
         }
     }
 

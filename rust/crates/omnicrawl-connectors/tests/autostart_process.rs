@@ -146,6 +146,11 @@ fn started_connector_is_reaped_and_lock_released() {
     assert!(pid_is_running(pid), "子进程应当仍在运行");
     assert_ne!(pid, std::process::id() as i64, "子进程应当是另一个进程");
 
+    // 连接器运行期间平台单例必须被占住：否则第二个宿主会再拉起一个同平台连接器，
+    // 同一平台出现多个长连接（本次修复的核心回归点）。
+    let mut busy = ConnectorInstanceLock::new(&lock_env, TELEGRAM_PLATFORM);
+    assert!(!busy.try_acquire(), "连接器运行期间不应能拿到平台单例");
+
     manager.close();
     let deadline = Instant::now() + Duration::from_secs(15);
     while pid_is_running(pid) && Instant::now() < deadline {
@@ -157,4 +162,56 @@ fn started_connector_is_reaped_and_lock_released() {
     let mut lock = ConnectorInstanceLock::new(&lock_env, TELEGRAM_PLATFORM);
     assert!(lock.try_acquire(), "收尾后应当能重新拿到平台单例");
     lock.release();
+}
+
+#[test]
+fn other_host_skips_while_connector_is_running() {
+    // 第二个宿主启动时，第一个宿主的连接器仍在跑：必须判定为「已有实例」并跳过，
+    // 而不是各自再拉一个连接器子进程。
+    let root = TempDir::new("busy");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("创建工作区");
+    let config_path = root.join("config.toml");
+    std::fs::write(&config_path, telegram_config().as_bytes()).expect("写配置");
+
+    let env = ConfigEnvironment::new(root.path(), std::env::consts::OS);
+    let program = std::env::current_exe().expect("取测试可执行文件");
+    let specs = vec![ConnectorSpec::new(
+        TELEGRAM_PLATFORM,
+        program,
+        CHILD_ARGS.iter().map(|item| item.to_string()).collect(),
+    )];
+
+    let first = ConnectorProcessManager::new(
+        workspace.as_path(),
+        ConnectorManagerOptions::new(env.clone())
+            .with_specs(specs.clone())
+            .with_capture_logs(true)
+            .with_config_path(Some(config_path.clone())),
+    );
+    assert_eq!(
+        first.start(),
+        vec![TELEGRAM_PLATFORM.to_string()],
+        "第一个宿主应当拉起 Telegram"
+    );
+
+    let second = ConnectorProcessManager::new(
+        workspace.as_path(),
+        ConnectorManagerOptions::new(env)
+            .with_specs(specs)
+            .with_capture_logs(true)
+            .with_config_path(Some(config_path)),
+    );
+    assert!(
+        second.start().is_empty(),
+        "已有连接器在跑时，第二个宿主不应再拉起同一平台"
+    );
+    assert_eq!(
+        second.diagnostics(),
+        vec![format!("连接器 {TELEGRAM_PLATFORM} 已有实例在运行，跳过本次自动启动。")],
+        "跳过时应当留下同一条诊断"
+    );
+
+    first.close();
+    second.close();
 }

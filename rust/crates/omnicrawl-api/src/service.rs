@@ -138,6 +138,9 @@ pub struct ServiceOptions {
     /// 工具调用淘汰运行期（`[decision_models.features] tool_call_prune`）；`None` 表示不淘汰，
     /// 「刚变老」的那一批调用照旧全部留在上下文里。
     pub prune: Option<omnicrawl_host::tools::PruneOptions>,
+    /// 工具建议运行期（`[decision_models.features] tool_suggestion`）；`None` 表示不建议，
+    /// user 原文照发。
+    pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
     /// 模型发现缓存：跨请求存活，`POST /models/refresh` 清空它。
     pub discovery_cache: Arc<DiscoveryCache>,
     /// 内核可执行文件：运行期重起内核（切换会话 / 工作区）需要它；嵌入模式可以不给。
@@ -172,6 +175,7 @@ impl ServiceOptions {
             review: None,
             custody: None,
             prune: None,
+            suggest: None,
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
@@ -1298,6 +1302,8 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     options.custody = Some(omnicrawl_host::tools::custody_options_from_config(env));
     // 工具调用淘汰：与 TUI 同源（`[decision_models.features] tool_call_prune`）。
     options.prune = Some(omnicrawl_host::tools::prune_options_from_config(env));
+    // 工具建议：与 TUI 同源（`[decision_models.features] tool_suggestion`）。
+    options.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(env));
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
@@ -1363,6 +1369,8 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         custody: options.custody.clone(),
         // 工具调用淘汰同源：与审查一样走决策渠道，失败一律保留原文。
         prune: options.prune.clone(),
+        // 工具建议同源：提交前问一次决策模型该用哪些工具，失败一律原文照发。
+        suggest: options.suggest.clone(),
         // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。
         prompt: options.prompt.clone(),
     }
@@ -2167,14 +2175,28 @@ impl AgentService {
 
     /// `GET /skills`：按工作区重新发现 Skill 索引（与 TUI 同源，不缓存到进程）。
     pub fn skills(&self) -> Vec<Map<String, Value>> {
+        if let Some(prompt) = self.options.prompt.as_ref() {
+            return prompt
+                .skill_metas()
+                .iter()
+                .map(|meta| meta.to_dict())
+                .collect();
+        }
         let mut manager = SkillManager::new();
         let root = self.workspace_root();
-        manager.discover(Some(root.as_path()), &[]);
+        manager.discover(Some(root.as_path()), &self.skill_extra_paths());
         manager
             .list_all()
             .iter()
             .map(|meta| meta.to_dict())
             .collect()
+    }
+
+    /// `[skills].extra_paths`：读不到配置时按空处理（发现仍然可用）。
+    fn skill_extra_paths(&self) -> Vec<String> {
+        omnicrawl_config::features::skills::load_skills_config(&self.options.env, None)
+            .map(|config| config.extra_paths)
+            .unwrap_or_default()
     }
 
     /// 插件运行期句柄（未装配插件时为 `None`）。

@@ -49,7 +49,7 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 `load_approval_mode`（`mode` 键 > `auto_review` > `auto_approve` > 默认审查）、
 `save_approval_mode`、`load_approval_review_model`。
 
-**`features/tools`**：26 个内置工具开关的键表与界面文案、默认表（除 `powershell` 全开）、
+**`features/tools`**：27 个内置工具开关的键表与界面文案、默认表（除 `powershell` 全开）、
 旧版按作用域拆分的记忆工具名归一化、`load_tool_switches` / `load_disabled_tools`、
 批量写回（先全校验再一次性写盘；写回顺序跟调用方给的顺序）。
 
@@ -126,13 +126,15 @@ Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 par
 字段）。同样不进 parity 数据集，自带模块内测试（默认一条 Jev 渠道、两种请求方式的端点折算、
 读写往返、默认渠道折算、取值域与重复 key 校验）。
 接入点：`DecisionChannelConfig::decide_url()` 与 `resolve_api_key()`，以及
-`DecisionModelConfiguration::active_channel()`。
+`DecisionModelConfiguration::active_channel()`。渠道级 `retry_count`（默认 3、上限 10、0 表示
+不重试）交由出站落点 `omnicrawl-host::decision_wire::post_body` 消费。
 
 同一文件里的 `[features]` 段是决策模型的功能开关（`DECISION_SWITCHES` 是唯一来源：读盘、
-写盘、界面与测试都读它；新增开关只需往表里加一项）。当前四项：
+写盘、界面与测试都读它；新增开关只需往表里加一项）。当前六项：
 `tool_call_review`（工具调用审查使用决策模型）、`memory_search_rerank`（记忆搜索使用决策模型
-排序）、`kb_search_rerank`（知识库检索使用决策模型排序）与 `ask_user_custody`（提问由决策模型
-自动作答），均默认关闭；读写走 `load_decision_switches` / `save_decision_switch`——前者读不出来时
+排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`ask_user_custody`（提问由决策模型
+自动作答）、`tool_call_prune`（旧一轮工具调用按需淘汰）与 `tool_suggestion`（新提问自动建议
+工具），均默认关闭；读写走 `load_decision_switches` / `save_decision_switch`——前者读不出来时
 按默认值回落，后者保留同段其他键与 `channels` 段。
 
 **`core/settings`**：`load_feature_enabled`（`subagents` 段走独立文件）、

@@ -6,16 +6,18 @@
 //! `omnicrawl/agent/toolkit/image_tools.py`（本机图片读取）、`omnicrawl/net/`（搜索与抓取）与
 //! `omnicrawl/agent/controllers/tools/implementations.py`（工具包装）。已搬入 `read` /
 //! `read_image` / `write_file` / `Edit_file` / `bash` / `powershell` / `list` / `find` / `grep` /
-//! `git` / `monitor`、五个 `kb_*`、四个 `memory_*` 与 `web_search` / `fetcher` 执行体；
+//! `git` / `monitor`、五个 `kb_*`、四个 `memory_*`、`web_search` / `fetcher` 与 `config_edit` 执行体；
 //! 工具表、参数归一化、Schema 校验与压缩复用内核已搬好的 `omnicrawl-controllers`。
 
 pub mod advisor;
 pub mod arguments;
 pub mod command;
+pub mod config_tool;
 pub mod declarations;
 pub mod decision_choice;
 pub mod decision_prune;
 pub mod decision_search;
+pub mod decision_suggest;
 pub mod edit;
 pub mod error;
 pub mod fetcher;
@@ -48,6 +50,10 @@ pub use decision_prune::{
     evicted_call_ids_for, prune_options_from_config, PruneChannel, PruneClient, PruneOptions,
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
+pub use decision_suggest::{
+    insert_suggestion, split_suggestion, suggest_options_from_config, suggested_tools,
+    SuggestClient, SuggestOptions,
+};
 pub use error::{ToolError, ToolOutcome};
 pub use fetcher::FetcherOptions;
 pub use image_gen::ImageGenOptions;

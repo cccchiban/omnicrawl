@@ -243,7 +243,6 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::Choice(_) => render_choice(frame, body, state, focused),
         Pane::Form(_) => render_form(frame, body, state, focused),
         Pane::Tts => render_tts(frame, body, state, focused),
-        Pane::ConfigChat => render_config_chat(frame, body, state),
         Pane::Pending => render_pending(frame, body),
     }
     render_dropdown_overlay(frame, body, state, focused);
@@ -1476,47 +1475,6 @@ fn render_pending(frame: &mut Frame, area: Rect) {
         theme::rich_style(theme::TEXT_MUTED),
     );
     Paragraph::new(line).render(Rect { height: 1, ..area }, frame.buffer_mut());
-}
-
-/// 「通过对话修改设置」：本页只是一个入口，说明用途并把按键写清楚。
-///
-/// 真正的对话在 [`crate::ui::config_chat`] 的独立弹层里：设置面板是一整屏模态页，把会话
-/// 塞进右侧会挤掉其余一级项的可读宽度（与 Python 把 `config_chat` 做成独立页面同因）。
-fn render_config_chat(frame: &mut Frame, area: Rect, state: &SettingsState) {
-    let lines: Vec<Line<'static>> = vec![
-        Line::styled(
-            fit(
-                "用一句话改配置：模型、上下文、工具开关、TTS 等。",
-                area.width as usize,
-            ),
-            theme::rich_style(theme::TEXT_PRIMARY),
-        ),
-        Line::styled(
-            fit(
-                "按 Enter 打开配置对话（本地路由器，不经过模型）。",
-                area.width as usize,
-            ),
-            theme::rich_style(theme::TEXT_SECONDARY),
-        ),
-    ];
-    Paragraph::new(lines).render(
-        Rect {
-            height: area.height.min(2),
-            ..area
-        },
-        frame.buffer_mut(),
-    );
-    render_pane_tail(
-        frame,
-        Rect {
-            y: area.y + area.height.saturating_sub(2),
-            height: area.height.min(2),
-            ..area
-        },
-        state.status(),
-        state.pane_hint(),
-        theme::rich_style(theme::TEXT_MUTED),
-    );
 }
 
 /// 面板底部的状态行（1 空行 + 最多 2 行文本）。

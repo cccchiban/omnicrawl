@@ -97,11 +97,16 @@ fn draw(state: &SettingsState, width: u16, height: u16) -> Buffer {
 /// `Paragraph` 把宽字符写进一格后按宽度前进，续格留空（未标记 `skip`），
 /// 所以这里按显示宽度跳过续格，才能还原出可比的文本。
 fn text(buffer: &Buffer) -> String {
+    text_of(buffer, 0, buffer.area.width)
+}
+
+/// 只取 `[start, end)` 这几列的文本；用于把断言限定在某一栏。
+fn text_of(buffer: &Buffer, start: u16, end: u16) -> String {
     let mut lines: Vec<String> = Vec::new();
     for y in 0..buffer.area.height {
         let mut line = String::new();
         let mut skip = 0usize;
-        for x in 0..buffer.area.width {
+        for x in start..end.min(buffer.area.width) {
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -129,26 +134,22 @@ fn find(buffer: &Buffer, glyph: &str) -> (u16, u16) {
 
 #[test]
 fn renders_both_columns_with_row_labels() {
-    let screen = text(&draw(&state(), WIDTH, HEIGHT));
+    let buffer = draw(&state(), WIDTH, HEIGHT);
+    let screen = text(&buffer);
+    // 一级项只在左栏：右栏会把当前项的细节（如「当前模型渠道」）画出来，不能混进来比对。
+    let left = text_of(&buffer, 0, LEFT_COLUMN_WIDTH);
 
-    assert!(screen.contains("通过对话修改设置"), "左栏第一项：{screen}");
-    assert!(screen.contains("模型管理"), "合并后的模型页：{screen}");
-    assert!(screen.contains("工具设置"));
-    assert!(screen.contains("思考显示"), "左栏最后一项");
+    assert!(left.contains("模型管理"), "左栏第一项：{left}");
+    assert!(left.contains("工具设置"), "左栏项：{left}");
+    assert!(left.contains("思考显示"), "左栏最后一项：{left}");
     // 合并掉的三项不再作为一级项出现。
-    assert!(
-        !screen.contains("模型渠道"),
-        "旧「模型渠道」页已合并：{screen}"
-    );
-    assert!(
-        !screen.contains("推理强度"),
-        "旧「推理强度」页已合并：{screen}"
-    );
+    assert!(!left.contains("模型渠道"), "旧「模型渠道」页已合并：{left}");
+    assert!(!left.contains("推理强度"), "旧「推理强度」页已合并：{left}");
     assert!(
         !screen.contains("↑↓ 选择设置项（右侧实时预览）"),
         "底部帮助行已删除：{screen}"
     );
-    assert!(screen.contains("通过对话修改设置"), "右侧标题显示当前项");
+    assert!(screen.contains("模型管理"), "右侧标题显示当前项");
 }
 
 #[test]
@@ -162,7 +163,6 @@ fn crosshair_border_follows_focus() {
     assert_eq!(find(&list_focus, "⇗").0, COLUMN_PADDING);
     assert_eq!(find(&list_focus, "⇖").0, left_box_right);
 
-    // 「通过对话修改设置」是动作行，不进右侧面板：先挪到有面板的一级项。
     while state.selected_key() != "tools" {
         state.handle_key(KeyCode::Down);
     }
@@ -342,7 +342,7 @@ fn narrow_terminal_shrinks_left_column_and_keeps_both_boxes() {
         COLUMN_PADDING + (expected_left - COLUMN_PADDING * 2) - 1
     );
     let screen = text(&buffer);
-    assert!(screen.contains("通过对话修改设置"));
+    assert!(screen.contains("模型管理"));
     // 页面底部那行全局帮助已删除（用户要求）；提示改画在右侧面板的下边框上。
     assert!(!screen.contains("↑↓ 选择设置项"), "不应再有底部帮助行");
 }
@@ -368,7 +368,7 @@ fn model_management_page_renders_list_then_form() {
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }
 
-/// 决策渠道行的构造：凭据留空（渲染只看 key/名称/服务/地址/模型/开关）。
+/// 决策渠道行的构造：凭据留空（渲染只看 key/名称/服务/地址/模型/重试次数/开关）。
 fn decision(key: &str, name: &str, model: &str, enabled: bool) -> DecisionRow {
     let mut row = DecisionRow::default();
     row.key = key.to_string();
@@ -376,6 +376,7 @@ fn decision(key: &str, name: &str, model: &str, enabled: bool) -> DecisionRow {
     row.mode = "jev".to_string();
     row.base_url = "https://jevtypesafeai.com/api".to_string();
     row.model = model.to_string();
+    row.retry_count = omnicrawl_config::features::decision_model::DEFAULT_DECISION_RETRY_COUNT;
     row.enabled = enabled;
     row
 }
@@ -411,6 +412,10 @@ fn decision_models_page_renders_list_then_form() {
     assert!(
         form.contains("模型 ID：jev-latest"),
         "决策模型单独可配：{form}"
+    );
+    assert!(
+        form.contains("失败重试次数：3"),
+        "重试次数默认 3 且可改：{form}"
     );
     // 密钥只显示掩码，明文不进界面。
     assert!(

@@ -888,17 +888,40 @@ pub fn collapsed_body(
 ///
 /// 对映 CSS `.user-message { color: $terminal-white; border-left: solid $terminal-cyan }`
 /// 与 `pipeline.py` 的 `_append_message`（去掉旧版的 `$ ` 前缀）。
+///
+/// `tool_suggestion` 拼进文本尾部的建议行不属于用户的提问正文，这里按
+/// [`omnicrawl_host::tools::split_suggestion`] 拆出来挂到 `user：` 标签之后，正文照旧另起行铺开。
 fn push_user(lines: &mut Vec<DisplayLine>, message: &UserRecord, width: usize, state: &AppState) {
     let stripe = Style::new().bg(Color::Cyan);
-    let label_style = theme::rich_style(&format!("{} italic", theme::TOOL_TEXT));
     let body_style = theme::rich_style(theme::ACCENT_WHITE);
     let body_width = width.saturating_sub(display_width(MESSAGE_PAD)).max(1);
-    lines.push(DisplayLine::plain(striped_line(
+    let (body, suggestion) = omnicrawl_host::tools::split_suggestion(&message.text);
+    let mut label = StyledText::new();
+    label.push(
         &format!("{MESSAGE_PAD}user："),
-        label_style,
-        stripe,
-    )));
-    for chunk in wrap_display(&message.text.replace('\r', ""), body_width) {
+        &format!("{} italic", theme::TOOL_TEXT),
+    );
+    if let Some(suggestion) = suggestion {
+        label.push(&suggestion, theme::TEXT_MUTED);
+    }
+    // 建议行可能撑满整行：续行补一格内边距，与首行的 `user：` 之后对齐（相应收窄一行预算）。
+    let pad_width = display_width(MESSAGE_PAD);
+    for (index, row) in wrap_spans(
+        &label.to_spans(),
+        body_width,
+        body_width.saturating_sub(pad_width).max(1),
+    )
+    .into_iter()
+    .enumerate()
+    {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(USER_STRIPE, stripe)];
+        if index > 0 {
+            spans.push(Span::raw(MESSAGE_PAD.to_string()));
+        }
+        spans.extend(row.spans);
+        lines.push(DisplayLine::plain(Line::from(spans)));
+    }
+    for chunk in wrap_display(&body.replace('\r', ""), body_width) {
         lines.push(DisplayLine::plain(striped_line(
             &format!("{MESSAGE_PAD}{chunk}"),
             body_style,
@@ -1325,33 +1348,84 @@ fn message_line(text: &StyledText, width: usize) -> Line<'static> {
 /// 按显示宽度软折行。
 ///
 /// 折行对映 Textual `Static` 的默认 `text-wrap`：正文只做 160 字预截断
-/// （`_clip_line`），剩下的由组件按终端宽度折，而不是在这里加省略号。续行不缩进，
-/// 与「缩进是加在整段文本首部的一格 span」一致。
+/// （`_clip_line`），剩下的由组件按终端宽度折，而不是在这里加省略号。**续行保持同样的
+/// 结构缩进**（用户要求）：带旁注行号的正文折行后若续行落回行首，文字会跑到行号左边、
+/// 看着像溢出了卡片；续行补一段与首行前缀等宽的空白，正文因此始终对齐在行号右边。
 ///
 /// 提示行按 CSS `ToolDisclosure > .tool-disclosure-hint { color: $terminal-text-gray;
 /// text-style: underline italic }` 加下划线斜体，缩进本身不画下划线（与 Python 一致）。
 fn tool_body_rows(line: &StyledText, width: usize, hint: bool) -> Vec<Line<'static>> {
     let indent = format!("{MESSAGE_PAD}{TOOL_BODY_INDENT}");
-    let indent_width = display_width(&indent);
     let base = theme::rich_style(theme::TOOL_TEXT);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if !line.is_blank() {
-        // 对映 `_indent_body_lines`：只给非空行加缩进。
-        let style = if hint {
-            base.add_modifier(Modifier::ITALIC)
-        } else {
-            base
-        };
-        spans.push(Span::styled(indent, style));
-    }
-    if hint {
+    let blank = line.is_blank();
+    // 对映 `_indent_body_lines`：只给非空行加缩进。
+    let indent_style = if hint {
+        base.add_modifier(Modifier::ITALIC)
+    } else {
+        base
+    };
+    let content: Vec<Span<'static>> = if hint {
         let style = base.add_modifier(Modifier::ITALIC | Modifier::UNDERLINED);
-        spans.push(Span::styled(line.plain(), style));
+        vec![Span::styled(line.plain(), style)]
     } else {
         // 正文样式由对映层给出（文件变更预览的 +/− 着色就在里面），不再覆盖。
-        spans.extend(line.to_spans());
+        line.to_spans()
+    };
+    // 旁注行号与标记不参与折行预算：它们只在首行出现，正文按剩余宽度排字。
+    let (gutter, rest) = if blank {
+        (Vec::new(), content)
+    } else {
+        match split_gutter_prefix(&content) {
+            Some((gutter, rest)) => (gutter, rest),
+            None => (Vec::new(), content),
+        }
+    };
+    let gutter_width: usize = gutter
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum();
+    let prefix_width = if blank {
+        0
+    } else {
+        display_width(&indent) + gutter_width
+    };
+    let budget = width.saturating_sub(prefix_width).max(1);
+    wrap_spans(&rest, budget, budget)
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if !blank && index == 0 {
+                spans.push(Span::styled(indent.clone(), indent_style));
+                spans.extend(gutter.iter().cloned());
+            } else if !blank {
+                // 续行留出与首行前缀等宽的空白：正文对齐在行号右边，不落回行首。
+                spans.push(Span::raw(" ".repeat(prefix_width)));
+            }
+            spans.extend(row.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// 从一行正文里拆出「旁注行号 + 标记」前缀（`   1 │ + `），返回（前缀，正文）。
+///
+/// 只认 [`crate::ui::fullscreen::rendering::tool_diff`] 的预览行：行号段以 `│ ` 收尾，
+/// 紧跟 `+ ` / `- ` / `  ` 之一。普通输出行不做拆分，由缩进兜底。
+fn split_gutter_prefix(
+    spans: &[Span<'static>],
+) -> Option<(Vec<Span<'static>>, Vec<Span<'static>>)> {
+    static GUTTER_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let number = spans.first()?;
+    let pattern = GUTTER_RE.get_or_init(|| regex::Regex::new(r"^\s*\d+ │ $").expect("旁注行号正则"));
+    if !pattern.is_match(number.content.as_ref()) {
+        return None;
     }
-    wrap_spans(&spans, width.saturating_sub(indent_width).max(1), width.max(1))
+    let marker = spans.get(1)?;
+    if !matches!(marker.content.as_ref(), "+ " | "- " | "  ") {
+        return None;
+    }
+    Some((spans[..2].to_vec(), spans[2..].to_vec()))
 }
 
 /// 按显示宽度把一行富文本拆成多行：首行预算 `first`（扣掉缩进），续行预算 `rest`。
@@ -1707,6 +1781,37 @@ mod tests {
         for line in &rendered {
             assert!(display_width(line) <= 20, "行超宽：{line:?}");
         }
+    }
+
+    #[test]
+    fn the_tool_suggestion_rides_on_the_user_label_line() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn(
+            "t1".to_string(),
+            "改一下显示\n\n当前请求建议调用tool：read、grep。".to_string(),
+            Vec::new(),
+        );
+        let rendered = plain(&display_lines(&state, 60));
+        let label = rendered
+            .iter()
+            .find(|line| line.contains("user："))
+            .unwrap_or_else(|| panic!("应当有 `user：` 标签行：{rendered:?}"));
+        assert!(
+            label.contains("当前请求建议调用tool：read、grep。"),
+            "建议行挂在标签行上：{label:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.trim_start().starts_with("改一下显示")),
+            "提问正文照旧另起一行：{rendered:?}"
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.trim_start().starts_with("当前请求建议调用tool：")),
+            "建议行不再单独占一行：{rendered:?}"
+        );
     }
 
     #[test]
@@ -2209,6 +2314,56 @@ mod tests {
             !body.iter().any(|line| line.contains('…')),
             "折行而不是截断：{body:?}"
         );
+    }
+
+    /// 带旁注行号的正文折行时，续行要留在行号右边（用户要求），不能落回行首。
+    #[test]
+    fn numbered_body_keeps_the_continuation_right_of_the_gutter() {
+        let long = "乙".repeat(80);
+        let state = state_with_named_tool(
+            "Edit_file",
+            json!({"path": "a.txt", "old_text": "旧行", "new_text": long}),
+            "替换 1 处",
+        );
+        let rendered = plain(&display_lines(&state, 40));
+        let gutter = rendered
+            .iter()
+            .find(|line| line.contains('│'))
+            .expect("应有旁注行号");
+        let gutter_column = gutter
+            .chars()
+            .position(|ch| ch == '│')
+            .expect("旁注行号带竖线");
+        // 该变更行的显示行（首行 + 续行）：内容列必须一致，且都落在行号右边。
+        let rows: Vec<&String> = rendered
+            .iter()
+            .filter(|line| line.contains('乙'))
+            .collect();
+        assert!(rows.len() > 1, "长行应当折行：{rendered:?}");
+        let columns: Vec<usize> = rows
+            .iter()
+            .map(|row| {
+                row.chars()
+                    .position(|ch| ch == '乙')
+                    .unwrap_or_else(|| panic!("应当有内容：{rendered:?}"))
+            })
+            .collect();
+        assert!(
+            columns.iter().all(|column| *column == columns[0]),
+            "折行各段的内容列应一致：{rendered:?}"
+        );
+        assert!(
+            columns[0] > gutter_column,
+            "内容应落在行号右边（行号在第 {gutter_column} 列，内容在第 {} 列）：{rendered:?}",
+            columns[0]
+        );
+        // 折行不丢字：各段内容拼起来与原行等长。
+        let content: String = rows
+            .iter()
+            .flat_map(|row| row.chars())
+            .filter(|ch| *ch == '乙')
+            .collect();
+        assert_eq!(content, long, "折行不应丢字：{rendered:?}");
     }
 
     #[test]

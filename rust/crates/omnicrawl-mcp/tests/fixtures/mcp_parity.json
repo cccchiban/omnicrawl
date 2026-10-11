@@ -4839,17 +4839,17 @@
     ],
     "hashes": {
       "advisor_design.md": "1e89adcb683577e418474462a3624baa3fc20818c7babc8da85022a5f342042a",
-      "agent_gateway_desensitization_design.md": "c75961172de4e6201e1abb4a8702086d0857817497c6f9fd9bb72e6e41190f5c",
+      "agent_gateway_desensitization_design.md": "09ec558c2d07a185f2914c56c0acc77c8ed859a3495c8565e2cd8abc8109679c",
       "API.md": "ca38c64bd7c96a40924f44914e4a8acad8b2a8eafcd7d76c1138ac7b8727a365",
-      "decision_api.md": "4ce8dc622d64b0be4fa3f7448345c8f75c9a80f649cf6ec3bb4fc74b0cd8d6ed",
+      "decision_api.md": "05a7bc86328852061192cdd7a2cbe8a9cf28d772f3fce7ea3aeb61913d0ce429",
       "FSAPP.md": "e657326f544d9d5e52762fba550eb07e3c8833af1681184fc02a601fc4faaac6",
       "MCP_USAGE.md": "7857eef62f687228e021c607c78f15a312564e448440fd054e39b4d00f7b0ecf",
       "memory_system_design.md": "477b9fdc0b5a06034dbffcfd7f0d37051f35b4f71ebb20bcd5fcba2f77af1011",
-      "session_design.md": "5666ac98b81698812800e9c5b2ee62b3fdc631b2ce34a83bf8077ee9f3686422",
-      "SKILL_INSTALLATION.md": "3f13c9daa13a7a4508b51b2cfad56d270037800fc2ce095056670db59a30a431",
+      "session_design.md": "0891ac2904094d2548e9abc8bd406c94018a1a75d4e5a92fcf4045a590510575",
+      "SKILL_INSTALLATION.md": "b376e2fe53e1d41eac793356776f29a690e7906d47b56bfbfd984ae0436a4ea0",
       "TELEGRAM.md": "b83eb675df80cde64640fccbc825523a636348dd6b6e9bfae8429f63b2f19b5a",
       "TERMINAL_UI.md": "3a99d81f1827ce22c221672fd1c9b9ae6443bd7a2a6e3c5fe0d9c770437c3264",
-      "TOOL_CALLING.md": "1d25754574368f737518827f2d1cdcc826b51876f876600eaf6bf13d8199e670",
+      "TOOL_CALLING.md": "1373738ee6a68c91834054089aa59d6fda2aa24b901eda74517e8ece45c23aa6",
       "tool_output_compression_design.md": "7852b1303feb550ce7b3a4be5c782a3004fa335d18a82cb7ab03f22eabbaa0e3",
       "TTS.md": "8e6dba5dd4439cd26a15c241e28d061ab7512827d9f1e45a54c4279277db0e5f"
     }

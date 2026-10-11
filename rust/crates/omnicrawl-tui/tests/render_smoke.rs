@@ -24,7 +24,7 @@ fn screen(state: &AppState, width: u16, height: u16) -> Vec<String> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
     terminal
-        .draw(|frame| ui::render(frame, state, None, None, None))
+        .draw(|frame| ui::render(frame, state, None, None))
         .expect("渲染不应失败");
     let buffer = terminal.backend().buffer();
     let row_width = buffer.area.width as usize;
@@ -280,7 +280,7 @@ fn block_cursor_sits_in_the_composer() {
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
     terminal
-        .draw(|frame| ui::render(frame, &state, None, None, None))
+        .draw(|frame| ui::render(frame, &state, None, None))
         .expect("渲染不应失败");
     // 光标是自绘的白色粗块（不再设终端光标）：
     // 输入卡正文第一行 + 左缩进（只剩 1 格边框）+ 三个全角字的 6 列。
@@ -474,7 +474,7 @@ fn a_read_image_card_paints_the_thumbnail_and_drops_the_json_payload() {
     let backend = TestBackend::new(80, 30);
     let mut terminal = Terminal::new(backend).expect("测试终端");
     terminal
-        .draw(|frame| ui::render(frame, &state, None, None, None))
+        .draw(|frame| ui::render(frame, &state, None, None))
         .expect("渲染不应失败");
     let buffer = terminal.backend().buffer();
     // 半块字形把图片写成字符格的前/背景色（纯色图的字符本身是空格），因此判据是

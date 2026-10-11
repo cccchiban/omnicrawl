@@ -156,14 +156,6 @@ rust/
 │   ├── tests/config_parity.rs              # 配置面逐条对照（15 组构造 + 26 组装载）
 │   ├── tests/server.rs                     # 真实回环 HTTP 上的装配层端到端测试
 │   └── README.md                           # 已搬范围、资源进度表、已知差异
-├── crates/omnicrawl-config-chat/           # 配置对话（`omnicrawl/config_chat/` 的 Rust 移植）
-│   ├── src/router.rs                       # 从句切分、BIO 解码、别名向量检索、命令列表
-│   ├── src/router_weights.rs               # 内核权重（魔数 + 头部 JSON + f32 数据块）装载与双向 GRU 前向
-│   ├── src/service.rs                      # 类型校验、TOML 写回、运行态同步（ConfigChatAgent）
-│   ├── src/assets.rs                       # labels.json / aliases.json 资源面
-│   ├── data/                               # 权重与两份 JSON 资源
-│   ├── tests/config_chat_parity.rs         # 冻结对照契约测试（5 组）
-│   └── README.md                           # 模块对映、算法差异、尚未接线
 ├── crates/omnicrawl-workspace/             # 工作区层（`omnicrawl/workspace/` 的 Rust 移植：slug + 隔离区 + 临时目录 + 进程控制 + 连接器单例锁）
 │   ├── src/slug.rs                         # 路径段安全校验（fail-closed，隔离区实例 ID / 分支名共用）
 │   ├── src/paths.rs                        # `Path.resolve()` / `expanduser()` / `home()` 的可用子集

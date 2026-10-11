@@ -604,6 +604,87 @@ fn context_prune_is_answered_instead_of_refused() {
     );
 }
 
+/// 工具建议必须跑在后台线程：它是网络请求（超时 20s），放在 UI 线程上会冻住界面；
+/// 并且结果回来前**不能**提交回合（否则建议没拼上就发出去了）。
+///
+/// 桩在建议里睡满 1.5s：`drain_frames` 必须在毫秒级返回且此时还没有 `turn.submit`；
+/// 结果回来后 `turn.submit` 到达，且 `user_text` 已带上建议行。
+#[test]
+fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
+    /// 桩建议：睡满指定时长后返回固定名单，用来模拟慢网络。
+    struct SlowSuggestClient {
+        delay: Duration,
+        names: Vec<String>,
+    }
+
+    impl omnicrawl_tui::tools::SuggestClient for SlowSuggestClient {
+        fn suggest(
+            &self,
+            _request: &omnicrawl_tui::tools::decision_suggest::SuggestRequest<'_>,
+        ) -> Result<Vec<String>, String> {
+            thread::sleep(self.delay);
+            Ok(self.names.clone())
+        }
+    }
+
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    // 开关打开 + 有渠道：建议真的会被执行（`active()` 要求两者都成立）。
+    harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_tui::tools::decision_suggest::SuggestChannel {
+            mode: "jev".to_string(),
+            model: "stub".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "stub".to_string(),
+            api_key_env: "STUB".to_string(),
+            retry_count: 1,
+        }),
+        masking: None,
+        client: Arc::new(SlowSuggestClient {
+            delay: Duration::from_millis(1500),
+            names: vec!["web_search".to_string()],
+        }),
+    });
+
+    // 提一条普通提问：建议在后台跑，UI 线程不该等它。
+    harness.app.state.composer.set_text("查一下这个库的最新版本");
+    let started = Instant::now();
+    harness.press(KeyCode::Enter);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "提交不该等网络建议，实际耗时 {elapsed:?}"
+    );
+
+    // 建议未回来前不发 turn.submit：拼好再发，避免模型收到没有建议的那一版。
+    let submitted = |harness: &Harness| -> Option<String> {
+        harness
+            .frames()
+            .into_iter()
+            .find(|frame| frame.method() == Some("turn.submit"))
+            .and_then(|frame| frame.params)
+            .and_then(|params| {
+                params
+                    .get("user_text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+    };
+    harness.app.drain_frames();
+    assert!(submitted(&harness).is_none(), "建议未回来前不该提交回合");
+
+    // 结果回来：提交到达，且 user 文本尾部带上建议行。
+    harness.expect_ready(
+        |app| app.state.turn.is_running(),
+        "建议回来后应当进入回合运行态",
+    );
+    assert_eq!(
+        submitted(&harness).expect("应当发过 turn.submit"),
+        "查一下这个库的最新版本\n\n当前请求建议调用tool：web_search。"
+    );
+}
+
 /// 淘汰裁决必须跑在后台线程：它是网络请求（超时 20s），放在 UI 线程上会冻住整个界面。
 ///
 /// 用户反馈：每次工具批次后界面都会卡住一两秒，动画停、按键无响应。根因是内核在
@@ -638,6 +719,7 @@ fn context_prune_does_not_block_the_ui_thread() {
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "stub".to_string(),
             api_key_env: "STUB".to_string(),
+            retry_count: 1,
         }),
         masking: None,
         client: Arc::new(SlowPruneClient {
@@ -1020,7 +1102,7 @@ fn slash_prefix_opens_menu_and_tab_completes() {
         .iter()
         .map(|option| option.command.as_str())
         .collect();
-    assert_eq!(names, vec!["/settings", "--chat"], "{names:?}");
+    assert_eq!(names, vec!["/settings"], "{names:?}");
 
     // 输入已是完整命令：Enter 放行提交流程，命令层直接打开设置面板。
     // 与 Python 一致，`open_settings` 分支不再追加「打开设置面板」这类纯提醒。

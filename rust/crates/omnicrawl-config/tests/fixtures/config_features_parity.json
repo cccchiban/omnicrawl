@@ -240,15 +240,15 @@
   },
   {
    "name": "bogus",
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, config_edit。"
   },
   {
    "name": "project_bogus",
-   "error": "tools 配置不支持工具：project_bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+   "error": "tools 配置不支持工具：project_bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, config_edit。"
   },
   {
    "name": "",
-   "error": "tools 配置不支持工具：。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+   "error": "tools 配置不支持工具：。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, config_edit。"
   }
  ],
  "tools_keys": [
@@ -277,7 +277,8 @@
   "memory_search",
   "memory_read",
   "memory_expand_related",
-  "memory_write"
+  "memory_write",
+  "config_edit"
  ],
  "tools_defaults": {
   "list": true,
@@ -305,7 +306,8 @@
   "memory_search": true,
   "memory_read": true,
   "memory_expand_related": true,
-  "memory_write": true
+  "memory_write": true,
+  "config_edit": true
  },
  "tools_labels": {
   "list": "列出目录内容",
@@ -333,7 +335,8 @@
   "memory_search": "搜索长期记忆（scope 选作用域）",
   "memory_read": "读取长期记忆",
   "memory_expand_related": "展开相关长期记忆",
-  "memory_write": "写入长期记忆（scope 选作用域）"
+  "memory_write": "写入长期记忆（scope 选作用域）",
+  "config_edit": "读取或修改配置"
  },
  "tools_load": [
   {
@@ -363,7 +366,9 @@
     "memory_search": true,
     "memory_read": true,
     "memory_expand_related": true,
-    "memory_write": true
+    "memory_write": true,
+     "config_edit": true,
+   "config_edit": true
    },
    "disabled": [
     "powershell"
@@ -398,7 +403,9 @@
     "memory_search": true,
     "memory_read": true,
     "memory_expand_related": true,
-    "memory_write": true
+    "memory_write": true,
+     "config_edit": true,
+   "config_edit": true
    },
    "disabled": [
     "bash",
@@ -440,7 +447,8 @@
     "memory_search": false,
     "memory_read": true,
     "memory_expand_related": true,
-    "memory_write": false
+    "memory_write": false,
+    "config_edit": true
    },
    "disabled": [
     "memory_search",
@@ -465,7 +473,7 @@
    }
   },
   {
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。",
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, config_edit。",
    "name": "非法工具名",
    "config": {
     "tools": {
@@ -506,7 +514,7 @@
    }
   },
   {
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。",
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, config_edit。",
    "text_after": "[tools]\nlist = true\n",
    "name": "非法名不写盘",
    "switches": {

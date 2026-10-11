@@ -11,15 +11,17 @@
 use std::path::{Path, PathBuf};
 
 use omnicrawl_config::core::runtime::{global_agents_path, ConfigEnvironment};
+use omnicrawl_config::features::skills::load_skills_config;
 use omnicrawl_controllers::building::{
     advisor_guidelines_block, normalize_mode_name, system_prompt_with_mode,
 };
 use omnicrawl_controllers::shared::AGENTS_INSTRUCTIONS_FILE;
 use omnicrawl_controllers::turn::context_messages::plugin_context_messages;
 use omnicrawl_controllers::turn::prompt_context::{
-    build_context_messages, build_system_prompt, ContextMessageInputs,
+    build_context_messages, build_system_prompt, format_active_skills_for_context,
+    ActiveSkill, ContextMessageInputs,
 };
-use omnicrawl_extensions::skill::{SkillManager, SkillMeta};
+use omnicrawl_extensions::skill::{Skill, SkillManager, SkillMeta};
 use serde_json::Value;
 
 use crate::plugins::PluginHost;
@@ -102,7 +104,10 @@ impl PromptRuntime {
             workspace_detection_summary: options.workspace_detection_summary,
             skill_manager: None,
             templates_dir,
-            extra_skill_paths: Vec::new(),
+            // 额外路径来自 `[skills].extra_paths`；读不到配置时按空处理（不阻断启动）。
+            extra_skill_paths: load_skills_config(env, None)
+                .map(|config| config.extra_paths)
+                .unwrap_or_default(),
             env: env.clone(),
         };
         runtime.discover_skills();
@@ -140,6 +145,41 @@ impl PromptRuntime {
             .as_ref()
             .map(|manager| manager.list_all())
             .unwrap_or_default()
+    }
+
+    /// 发现阶段的诊断（路径不存在、同名冲突、名称不合法等）。
+    pub fn skill_diagnostics(&self) -> Vec<omnicrawl_extensions::skill::SkillDiagnostic> {
+        self.skill_manager
+            .as_ref()
+            .map(|manager| manager.diagnostics())
+            .unwrap_or_default()
+    }
+
+    /// 按名称取回完整 Skill（只读查索引，不重扫）。
+    pub fn skill(&self, name: &str) -> Option<omnicrawl_extensions::skill::Skill> {
+        self.skill_manager
+            .as_ref()
+            .and_then(|manager| manager.get(name))
+    }
+
+    /// 按名称取回完整 Skill；索引未命中时按当前工作区重扫一次，
+    /// 覆盖「AI 在本会话内刚装好 Skill」的场景（对映 Python 的 `match_by_name`）。
+    pub fn load_skill(&self, name: &str) -> Option<omnicrawl_extensions::skill::Skill> {
+        if let Some(skill) = self.skill(name) {
+            return Some(skill);
+        }
+        let mut manager = SkillManager::new();
+        manager.discover(
+            Some(self.workspace_root.as_path()),
+            &self.extra_skill_paths.clone(),
+        );
+        manager.get(name)
+    }
+
+    /// 活动 Skill 的正文块（`/skill:<名>` 命中时注入本轮上下文）。
+    pub fn active_skill_context(&self, name: &str) -> Option<String> {
+        let skill = self.load_skill(name)?;
+        Some(active_skill_context_for(&skill))
     }
 
     /// 当前活动模式（未启用时为空串，与 Python 的 `active_mode` 同义）。
@@ -194,6 +234,21 @@ impl PromptRuntime {
         self.context_messages_with_plugins(has_tools, None, None, None)
     }
 
+    /// 本轮命中活动 Skill 时的上下文消息（`/skill:<名>` 手动调用用）。
+    pub fn active_skill_messages(
+        &self,
+        has_tools: bool,
+        active_skill_context: &str,
+    ) -> Result<Vec<Value>, String> {
+        self.build_context_messages_with(
+            has_tools,
+            None,
+            None,
+            None,
+            Some(active_skill_context),
+        )
+    }
+
     /// 上下文消息装配的完整路径（含插件 Hook）。
     ///
     /// 与 Python `_context_messages` 同序：先跑 `context.build.before` 取插件附加上下文，
@@ -206,6 +261,19 @@ impl PromptRuntime {
         session_id: Option<&str>,
         turn_id: Option<&str>,
     ) -> Result<Vec<Value>, String> {
+        self.build_context_messages_with(has_tools, plugins, session_id, turn_id, None)
+    }
+
+    /// 上下文消息装配的统一实现：`active_skill_context` 非空时以活动 Skill 正文
+    /// 取代 Skill 索引段（与 Python 的 `build_context_messages` 同一分支）。
+    fn build_context_messages_with(
+        &self,
+        has_tools: bool,
+        plugins: Option<&PluginHost>,
+        session_id: Option<&str>,
+        turn_id: Option<&str>,
+        active_skill_context: Option<&str>,
+    ) -> Result<Vec<Value>, String> {
         let skill_index_section = self
             .skill_manager
             .as_ref()
@@ -215,7 +283,7 @@ impl PromptRuntime {
             workspace_root: &self.workspace_root.to_string_lossy(),
             project_instructions: &project_instructions,
             skill_index_section: skill_index_section.as_deref(),
-            active_skill_context: None,
+            active_skill_context,
             has_tools,
             agent_temp_dir: &self.agent_temp_dir,
             workspace_detection_summary: &self.workspace_detection_summary,
@@ -261,6 +329,17 @@ impl PromptRuntime {
             sections.join("\n\n")
         ))
     }
+}
+
+/// 把一条已加载的 Skill 转成活动技能正文块（`/skill:<名>` 命中时注入）。
+pub fn active_skill_context_for(skill: &Skill) -> String {
+    format_active_skills_for_context(&[ActiveSkill {
+        name: &skill.meta.name,
+        scope: &skill.meta.scope,
+        description: &skill.meta.description,
+        location: &skill.meta.source_path.to_string_lossy(),
+        body: &skill.body,
+    }])
 }
 
 /// 模板目录：可执行文件祖先里的 `rust/assets/templates`（仓库检出）

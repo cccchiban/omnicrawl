@@ -101,7 +101,7 @@ async fn status() -> ExitCode {
     println!("鉴权：无（仅回环地址，本机任意程序均可调用）");
     match settings.channel.as_ref() {
         Some(channel) => println!(
-            "渠道：mode={} model={} base_url={} 凭据={}",
+            "渠道：mode={} model={} base_url={} 凭据={} 重试={}",
             channel.mode,
             channel.model,
             channel.base_url,
@@ -109,7 +109,8 @@ async fn status() -> ExitCode {
                 "未配置"
             } else {
                 "已配置"
-            }
+            },
+            channel.retry_count,
         ),
         None => println!("渠道：没有可用渠道"),
     }

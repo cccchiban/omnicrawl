@@ -24,7 +24,7 @@ pub const VALID_APPROVAL_MODES: [&str; 3] = [
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: i64 = 128_000;
 
-pub const TOOL_SWITCH_KEYS: [&str; 26] = [
+pub const TOOL_SWITCH_KEYS: [&str; 27] = [
     "list",
     "find",
     "read",
@@ -51,6 +51,7 @@ pub const TOOL_SWITCH_KEYS: [&str; 26] = [
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "config_edit",
 ];
 
 pub const SUBAGENT_ADVANCED_SETTING_KEYS: [&str; 6] = [
