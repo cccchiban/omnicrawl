@@ -49,8 +49,8 @@
       },
       {
         "name": "web_search",
-        "description": "是什么：在 Bing、DuckDuckGo 或雅虎搜索公开网页。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：用具体关键词和合适 engine/language；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
-        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|yahoo\", \"max_results\": 5, \"language\": \"zh-CN\"}",
+        "description": "是什么：在 Bing、DuckDuckGo、雅虎、Tavily 或 Exa 搜索公开网页。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily 与 Exa 走检索接口，需先在 [web_search] 段配置对应 API Key。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：用具体关键词和合适 engine/language；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
+        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|yahoo|tavily|exa\", \"max_results\": 5, \"language\": \"zh-CN\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,

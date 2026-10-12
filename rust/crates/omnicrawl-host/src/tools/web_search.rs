@@ -1,13 +1,16 @@
-//! 网页搜索工具执行体：查询 Bing、DuckDuckGo 或雅虎并返回标题、链接与摘要。
+//! 网页搜索工具执行体：查询 Bing、DuckDuckGo、雅虎、Tavily 或 Exa 并返回标题、链接与摘要。
 //!
-//! 语义基准是 `omnicrawl/net/web_search.py`：同一套端点与查询参数、同一套页面解析规则
-//! （正则而非 DOM）、同一套拦截检测与文案。只访问公开搜索页面，检测到验证码即如实报错。
+//! 抓页面型引擎（Bing / DuckDuckGo / 雅虎）的语义基准是 `omnicrawl/net/web_search.py`：同一套
+//! 端点与查询参数、同一套页面解析规则（正则而非 DOM）、同一套拦截检测与文案，只访问公开
+//! 搜索页面，检测到验证码即如实报错。接口型引擎（Tavily / Exa）走各自的 JSON 检索接口，
+//! 凭据取 `[web_search]` 段（见 [`WebSearchOptions`]）。
 
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use omnicrawl_config::features::web_search::WEB_SEARCH_ENGINES;
 use regex::Regex;
 use serde_json::{Map, Value};
 
@@ -19,7 +22,13 @@ use super::web_transport::{
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 10.0;
 pub const MAX_RESULTS_PER_ENGINE: i64 = 10;
-pub const SUPPORTED_ENGINES: [&str; 3] = ["bing", "duckduckgo", "yahoo"];
+/// 支持的全部引擎；清单的唯一来源在配置域（界面候选与校验读同一张表）。
+pub const SUPPORTED_ENGINES: [&str; 5] = WEB_SEARCH_ENGINES;
+
+/// Tavily 检索接口（`POST`，Bearer 鉴权）。
+const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
+/// Exa 检索接口（`POST`，`x-api-key` 鉴权）。
+const EXA_ENDPOINT: &str = "https://api.exa.ai/search";
 
 const CAPTCHA_MARKERS: [&str; 7] = [
     "captcha",
@@ -57,6 +66,12 @@ pub struct WebSearchOptions {
     pub request_delay_seconds: f64,
     /// `None`：自动检测 Windows 系统代理；`Some("")`：不使用代理；其他为显式地址。
     pub proxy: Option<String>,
+    /// 未显式指定 `engine` 时用的引擎（`[web_search] engine`）。
+    pub default_engine: String,
+    /// Tavily API Key（空串表示未配置）。
+    pub tavily_api_key: String,
+    /// Exa API Key（空串表示未配置）。
+    pub exa_api_key: String,
 }
 
 impl Default for WebSearchOptions {
@@ -68,7 +83,55 @@ impl Default for WebSearchOptions {
             max_retries: 1,
             request_delay_seconds: 0.0,
             proxy: None,
+            default_engine: DEFAULT_ENGINE.to_string(),
+            tavily_api_key: String::new(),
+            exa_api_key: String::new(),
         }
+    }
+}
+
+impl WebSearchOptions {
+    /// 指定引擎下生效的 API Key；抓页面型引擎没有凭据，返回空串。
+    pub fn api_key_for(&self, engine: &str) -> &str {
+        match engine {
+            "tavily" => self.tavily_api_key.as_str(),
+            "exa" => self.exa_api_key.as_str(),
+            _ => "",
+        }
+    }
+
+    /// 未显式给 `engine` 时的缺省引擎：配置值不合法（手改坏）时回落到无需凭据的默认引擎。
+    fn resolve_default_engine(&self) -> &'static str {
+        let engine = self.default_engine.trim().to_lowercase();
+        SUPPORTED_ENGINES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == engine.as_str())
+            .unwrap_or(DEFAULT_ENGINE)
+    }
+}
+
+/// 无需凭据的默认引擎（配置缺失或非法时的兜底）。
+pub const DEFAULT_ENGINE: &str = "bing";
+
+/// 按 `[web_search]` 段装配搜索运行期（TUI 与 API 共用同一口径）。
+///
+/// 读不出配置时用默认选项（默认引擎 + 未配置凭据）：接口型引擎在被调用时会如实报
+/// 「缺 API Key」，而不是让工具整组不可用。
+pub fn web_search_options_from_config(
+    environment: &omnicrawl_config::core::runtime::ConfigEnvironment,
+) -> WebSearchOptions {
+    let configuration =
+        omnicrawl_config::features::web_search::load_web_search_configuration(environment, None);
+    let configuration = match configuration {
+        Ok(configuration) => configuration,
+        Err(_) => omnicrawl_config::features::web_search::WebSearchConfiguration::default(),
+    };
+    WebSearchOptions {
+        default_engine: configuration.engine,
+        tavily_api_key: configuration.tavily_api_key,
+        exa_api_key: configuration.exa_api_key,
+        ..WebSearchOptions::default()
     }
 }
 
@@ -362,7 +425,7 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
         return Err(ToolError::new("query 不能为空。"));
     }
     let engine = match argument_text(arguments, "engine").to_lowercase() {
-        value if value.is_empty() => "bing".to_string(),
+        value if value.is_empty() => options.resolve_default_engine().to_string(),
         value => value,
     };
     if !SUPPORTED_ENGINES.contains(&engine.as_str()) {
@@ -384,6 +447,10 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
         }
         None => None,
     };
+
+    if matches!(engine.as_str(), "tavily" | "exa") {
+        return api_search(options, &engine, &query, max_results);
+    }
 
     let started = Instant::now();
     let mut last_error: Option<String> = None;
@@ -444,6 +511,175 @@ fn request_html(
     let text = response.text();
     check_captcha(&text).map_err(SearchFailure::Fatal)?;
     Ok(text)
+}
+
+/// 接口型引擎（Tavily / Exa）的检索：一次 `POST`，响应体是 JSON 结果列表。
+///
+/// 与抓页面型引擎分开：这两条通路不回 HTML，因此没有页面解析与验证码检测；凭据缺失、
+/// 鉴权失败或响应结构异常都如实报错，不静默回落到抓页面通路。
+fn api_search(
+    options: &WebSearchOptions,
+    engine: &str,
+    query: &str,
+    max_results: i64,
+) -> ToolOutcome {
+    let api_key = options.api_key_for(engine).trim().to_string();
+    if api_key.is_empty() {
+        return Err(ToolError::new(format!(
+            "缺少 {} 的 API Key：请在 config.toml 的 [web_search] 段填写 {}。",
+            engine_label(engine),
+            key_field(engine)
+        )));
+    }
+    let (url, headers, payload) = api_request(engine, query, max_results, &api_key);
+    let started = Instant::now();
+    let mut request =
+        WebRequest::post_json(url, headers, &payload, timeout(options.timeout_seconds));
+    request.proxy = resolve_proxy(&request.url, options);
+    let response = options.transport.send(&request).map_err(|error| {
+        ToolError::new(format!(
+            "搜索失败（{engine}）：{}",
+            friendly_network_error(error.kind, &error.message)
+        ))
+    })?;
+    if response.status >= 400 {
+        return Err(ToolError::new(format!(
+            "搜索失败（{engine}）：{}",
+            api_status_message(engine, response.status, &response.text())
+        )));
+    }
+    let results = parse_api_results(engine, &response.text())?;
+    if results.is_empty() {
+        return Err(ToolError::new("未找到相关搜索结果。"));
+    }
+    Ok(format_results(
+        engine,
+        query,
+        &results[..results.len().min(max_results as usize)],
+        started.elapsed().as_secs_f64(),
+    ))
+}
+
+/// 一条引擎的请求三件套：地址、请求头与 JSON 请求体。
+fn api_request(
+    engine: &str,
+    query: &str,
+    max_results: i64,
+    api_key: &str,
+) -> (String, Vec<(String, String)>, String) {
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    let payload = if engine == "exa" {
+        headers.push(("x-api-key".to_string(), api_key.to_string()));
+        serde_json::json!({
+            "query": query,
+            "numResults": max_results,
+            "contents": { "text": true },
+        })
+    } else {
+        headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+        serde_json::json!({
+            "query": query,
+            "max_results": max_results,
+        })
+    };
+    (endpoint_of(engine), headers, payload.to_string())
+}
+
+fn endpoint_of(engine: &str) -> String {
+    match engine {
+        "exa" => EXA_ENDPOINT.to_string(),
+        _ => TAVILY_ENDPOINT.to_string(),
+    }
+}
+
+fn engine_label(engine: &str) -> &'static str {
+    match engine {
+        "exa" => "Exa",
+        _ => "Tavily",
+    }
+}
+
+/// 凭据所在的配置键名（缺凭据的报错文案用）。
+fn key_field(engine: &str) -> &'static str {
+    match engine {
+        "exa" => "exa_api_key",
+        _ => "tavily_api_key",
+    }
+}
+
+/// 解析接口返回的 `results` 数组；结构异常（不是 JSON、缺 `results`）如实报错。
+fn parse_api_results(engine: &str, body: &str) -> Result<Vec<WebSearchResult>, ToolError> {
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        ToolError::new(format!("搜索失败（{engine}）：响应不是合法 JSON：{error}"))
+    })?;
+    let items = parsed
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ToolError::new(format!(
+                "搜索失败（{engine}）：响应缺少 results 数组：{}",
+                truncate(body.trim(), 200)
+            ))
+        })?;
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("url").and_then(Value::as_str)?.trim().to_string();
+            if url.is_empty() {
+                return None;
+            }
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            // Tavily 的摘要字段是 `content`；Exa 在 `contents.text` 下给正文。
+            let snippet = item
+                .get("content")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("text").and_then(Value::as_str))
+                .or_else(|| {
+                    item.get("contents")
+                        .and_then(|contents| contents.get("text"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            Some(WebSearchResult {
+                title: if title.is_empty() { url.clone() } else { title },
+                url,
+                snippet: snippet.replace('\n', " "),
+            })
+        })
+        .collect())
+}
+
+/// 接口返回的错误说明：优先取响应体里的 `detail.error` / `error` 文案。
+fn api_status_message(engine: &str, status: u16, body: &str) -> String {
+    let detail = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .get("detail")
+                .and_then(|detail| detail.get("error"))
+                .and_then(Value::as_str)
+                .or_else(|| parsed.get("error").and_then(Value::as_str))
+                .or_else(|| parsed.get("detail").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| truncate(body.trim(), 200));
+    match status {
+        401 | 403 => format!(
+            "{} 拒绝访问（HTTP {status}），请检查 [web_search] 段里的 {}。",
+            engine_label(engine),
+            key_field(engine)
+        ),
+        429 => "请求过于频繁（HTTP 429），请稍后重试。".to_string(),
+        other if detail.is_empty() => format!("{} 返回 HTTP {other}。", engine_label(engine)),
+        other => format!("{} 返回 HTTP {other}：{detail}", engine_label(engine)),
+    }
 }
 
 /// `None` 表示自动检测系统代理；`Some("")` 表示禁用；其余为显式地址。
@@ -600,7 +836,150 @@ mod tests {
             )
             .expect_err("不支持的引擎应当被拒绝")
             .message,
-            "engine 必须是 bing、duckduckgo、yahoo 之一。"
+            "engine 必须是 bing、duckduckgo、yahoo、tavily、exa 之一。"
+        );
+    }
+
+    #[test]
+    fn default_engine_comes_from_config_and_falls_back() {
+        let mut options = WebSearchOptions::default();
+        assert_eq!(options.resolve_default_engine(), "bing", "缺配置时用 bing");
+        options.default_engine = "  Tavily ".to_string();
+        assert_eq!(
+            options.resolve_default_engine(),
+            "tavily",
+            "配置值大小写与空白都归一"
+        );
+        options.default_engine = "google".to_string();
+        assert_eq!(
+            options.resolve_default_engine(),
+            "bing",
+            "配置被改坏时回落到无需凭据的默认引擎"
+        );
+    }
+
+    #[test]
+    fn api_engines_require_their_own_key_before_any_request() {
+        let options = WebSearchOptions::default();
+        assert_eq!(
+            web_search(
+                &options,
+                &arguments(json!({"query": "x", "engine": "tavily"}))
+            )
+            .expect_err("缺 Tavily 密钥应当被拒绝")
+            .message,
+            "缺少 Tavily 的 API Key：请在 config.toml 的 [web_search] 段填写 tavily_api_key。"
+        );
+        assert_eq!(
+            web_search(&options, &arguments(json!({"query": "x", "engine": "exa"})))
+                .expect_err("缺 Exa 密钥应当被拒绝")
+                .message,
+            "缺少 Exa 的 API Key：请在 config.toml 的 [web_search] 段填写 exa_api_key。"
+        );
+        // 只有 Tavily 的密钥时，Exa 仍然缺凭据（两把钥匙不互相顶替）。
+        let only_tavily = WebSearchOptions {
+            tavily_api_key: "tvly-x".to_string(),
+            ..WebSearchOptions::default()
+        };
+        assert!(web_search(
+            &only_tavily,
+            &arguments(json!({"query": "x", "engine": "exa"}))
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn api_requests_carry_engine_specific_url_headers_and_body() {
+        let (url, headers, payload) = api_request("tavily", "rust 工具", 3, "tvly-key");
+        assert_eq!(url, "https://api.tavily.com/search");
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), "Bearer tvly-key".to_string()),
+            ]
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["query"], "rust 工具");
+        assert_eq!(body["max_results"], 3);
+
+        let (url, headers, payload) = api_request("exa", "rust 工具", 4, "exa-key");
+        assert_eq!(url, "https://api.exa.ai/search");
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("x-api-key".to_string(), "exa-key".to_string()),
+            ]
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["query"], "rust 工具");
+        assert_eq!(body["numResults"], 4);
+        assert_eq!(body["contents"]["text"], true);
+    }
+
+    #[test]
+    fn api_results_cover_both_shapes_and_skip_broken_items() {
+        let tavily = r#"{"results":[
+            {"title":"甲","url":"https://a.example","content":"摘要甲"},
+            {"title":"靠 url 兜底","url":"https://b.example"},
+            {"title":"没 url","url":""},
+            {"title":"缺字段"}
+        ]}"#;
+        let results = parse_api_results("tavily", tavily).expect("Tavily 结构");
+        assert_eq!(results.len(), 2, "没有 url 的条目应当被丢弃");
+        assert_eq!(results[0].title, "甲");
+        assert_eq!(results[0].snippet, "摘要甲");
+        assert_eq!(
+            results[1].title, "靠 url 兜底",
+            "缺摘要时留下空串而不是报错"
+        );
+
+        let exa = r#"{"results":[{"title":"乙","url":"https://c.example","text":"正文乙"}]}"#;
+        let results = parse_api_results("exa", exa).expect("Exa 结构");
+        assert_eq!(results[0].snippet, "正文乙");
+
+        // Exa 也可能把正文放在嵌套的 `contents.text` 里，一并认。
+        let nested = r#"{"results":[{"url":"https://d.example","contents":{"text":"嵌套正文"}}]}"#;
+        let results = parse_api_results("exa", nested).expect("Exa 嵌套结构");
+        assert_eq!(results[0].snippet, "嵌套正文");
+        assert_eq!(results[0].title, "https://d.example", "缺标题时用 url 顶上");
+
+        let error = parse_api_results("tavily", "not json").expect_err("非 JSON 应当报错");
+        assert!(
+            error.message.contains("响应不是合法 JSON"),
+            "{}",
+            error.message
+        );
+        let error = parse_api_results("tavily", r#"{"answer":"x"}"#).expect_err("缺 results");
+        assert!(
+            error.message.contains("缺少 results 数组"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn api_status_messages_explain_auth_and_rate_limits() {
+        let unauthorized = api_status_message(
+            "tavily",
+            401,
+            r#"{"detail":{"error":"Unauthorized: missing or invalid API key."}}"#,
+        );
+        assert!(unauthorized.contains("Tavily 拒绝访问"), "{unauthorized}");
+        assert!(unauthorized.contains("tavily_api_key"), "{unauthorized}");
+
+        let exa_forbidden = api_status_message("exa", 403, r#"{"error":"forbidden"}"#);
+        assert!(exa_forbidden.contains("exa_api_key"), "{exa_forbidden}");
+
+        let limited = api_status_message("tavily", 429, "");
+        assert!(limited.contains("请求过于频繁"), "{limited}");
+
+        let bad_request =
+            api_status_message("tavily", 400, r#"{"detail":{"error":"Invalid topic."}}"#);
+        assert_eq!(
+            bad_request, "Tavily 返回 HTTP 400：Invalid topic.",
+            "带明细的错误应当原样带出"
         );
     }
 }

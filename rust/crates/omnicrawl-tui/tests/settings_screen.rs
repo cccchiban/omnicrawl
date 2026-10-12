@@ -13,7 +13,7 @@ use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
     ChannelRow, ChoiceKind, DecisionRow, DecisionSwitchRow, DropdownField, FieldValue, Focus,
     FormKind, HitAction, ModelParamRow, Pane, SettingsChange, SettingsEvent, SettingsState,
-    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
+    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef, TOOLS_WEB_SEARCH_ROW,
 };
 
 const WIDTH: u16 = 100;
@@ -946,14 +946,15 @@ fn pane_row_click_selects_first_and_activates_on_the_same_row() {
     }
     state.handle_key(KeyCode::Enter);
     draw(&state, WIDTH, HEIGHT);
-    let y = pane_row_y(&state, 1);
+    // 第 1 行是联网搜索（确认后进表单页，不产出事件），逐工具开关从第 2 行起。
+    let y = pane_row_y(&state, 2);
 
     let action = state.hit_at(40, y).expect("工具行应当可点");
     assert!(
         state.click(action).is_none(),
         "首次点击只把选中移到该行，不能顺手把开关翻掉"
     );
-    assert_eq!(state.tool_selected(), 1);
+    assert_eq!(state.tool_selected(), 2);
 
     let event = state.click(action).expect("再点当前行等同 Enter");
     assert!(
@@ -963,15 +964,38 @@ fn pane_row_click_selects_first_and_activates_on_the_same_row() {
 }
 
 #[test]
+fn web_search_row_click_opens_the_form_page_without_a_config_change() {
+    let mut state = state();
+    while state.selected_key() != "tools" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    draw(&state, WIDTH, HEIGHT);
+    let y = pane_row_y(&state, TOOLS_WEB_SEARCH_ROW);
+
+    let action = state.hit_at(40, y).expect("联网搜索行应当可点");
+    assert!(state.click(action).is_none(), "首次点击只移动选中");
+    assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
+
+    assert!(
+        state.click(action).is_none(),
+        "联网搜索行只切面板，不产出配置变更"
+    );
+    assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+}
+
+#[test]
 fn approval_row_is_the_first_clickable_row_and_cycles() {
     let mut state = state();
     while state.selected_key() != "tools" {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);
-    // 进入面板时首行（审查模式）已被选中；先往下挪一行，才能观察到「首次点击只移动」。
+    // 进入面板时首行（审查模式）已被选中；往下挪两行（审查与联网搜索之后）才能观察到
+    // 「首次点击只移动」。
     state.handle_key(KeyCode::Down);
-    assert_eq!(state.tool_selected(), 1);
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.tool_selected(), 2);
     draw(&state, WIDTH, HEIGHT);
 
     let y = pane_row_y(&state, 0);
@@ -1043,6 +1067,53 @@ fn hover_paints_the_row_under_the_cursor_yellow() {
     assert!(
         !row_is_hovered_yellow(&state, area),
         "光标移开后加亮应当消失"
+    );
+}
+
+/// 展开的候选浮层是整块盖在内容之上：被它覆盖的字段行不得从候选右侧透出来。
+///
+/// 曾经的 bug：浮层只画边框与候选文字，浮层范围内的其余格子保留着下面那几行字段的
+/// 残留（「Exa API Key：（未配置）」与高亮候选挤在同一行）。
+#[test]
+fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
+    let mut state = state();
+    while state.selected_key() != "tools" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进工具页
+    state.handle_key(KeyCode::Down); // 走到「联网搜索」
+    state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+    let collapsed = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(
+        collapsed.contains("Tavily API Key：（未配置）"),
+        "收起态能看到凭据字段：{collapsed}"
+    );
+    assert!(collapsed.contains("Exa API Key：（未配置）"), "{collapsed}");
+
+    state.handle_key(KeyCode::Enter); // 展开「默认引擎」候选
+    let buffer = draw(&state, WIDTH, HEIGHT);
+    let screen = text(&buffer);
+    assert!(screen.contains("duckduckgo"), "候选项要列出来：{screen}");
+    assert!(
+        !screen.contains("API Key"),
+        "被浮层盖住的字段行不能透出来：{screen}"
+    );
+
+    // 高亮那一行只有候选本身，没有底下的残留。
+    let row = (0..HEIGHT)
+        .find(|y| state.hit_at(40, *y) == Some(HitAction::Option(0)))
+        .expect("浮层首项应当可点");
+    let lines: Vec<String> = screen.lines().map(str::to_string).collect();
+    let line = &lines[row as usize];
+    assert!(line.contains("bing"), "高亮行是候选本身：{line}");
+    assert!(!line.contains("API Key"), "高亮行不许有残留：{line}");
+
+    // 收起后字段行原样回来（Clear 只擦浮层那一块）。
+    state.handle_key(KeyCode::Esc);
+    let collapsed = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(
+        collapsed.contains("Exa API Key：（未配置）"),
+        "收起后字段行要恢复：{collapsed}"
     );
 }
 

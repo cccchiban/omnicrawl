@@ -47,7 +47,10 @@ pub const TOOL_SWITCH_LABELS: [(&str, &str); 27] = [
     ("read", "读取文件内容"),
     ("read_image", "读取图片"),
     ("grep", "在文件中搜索文本（grep）"),
-    ("web_search", "web_search（Bing/DuckDuckGo/雅虎）"),
+    (
+        "web_search",
+        "web_search（Bing/DuckDuckGo/雅虎/Tavily/Exa）",
+    ),
     ("fetcher", "fetcher（浏览器指纹）"),
     ("image_gen", "图像生成（Image API）"),
     ("tts_synthesize", "TTS 语音合成（MOSS-TTS-Nano）"),

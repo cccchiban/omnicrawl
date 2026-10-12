@@ -1289,6 +1289,11 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
     options.registry_options.disabled_tools =
         load_disabled_tools(env, None).unwrap_or_default();
+    // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 bing +
+    // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa 与两把 API Key 全部无效，
+    // 工具会一直报「来源：bing」（与 TUI 同源，见 `web_search_options_from_config`）。
+    options.registry_options.web_search =
+        omnicrawl_host::tools::web_search_options_from_config(env);
     options.monitors = Some(monitors);
     // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
     options.plugins = Some(Arc::new(PluginHost::from_environment(

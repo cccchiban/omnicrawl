@@ -21,7 +21,7 @@ use std::cell::RefCell;
 
 use crate::state::Composer;
 
-use super::form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
+use super::form::{paste_into, FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
 use super::hit::{HitAction, HitRegion};
 use super::picker::ModelDiscovery;
 use super::{
@@ -156,6 +156,9 @@ pub const MODEL_PARAM_SECTION: &str = "模型与参数";
 
 /// 工具页首行的行号：工具调用审查模式。
 pub const TOOLS_APPROVAL_ROW: usize = 0;
+
+/// 工具页第二行的行号：联网搜索（`Enter` 进入独立的联网搜索表单页）。
+pub const TOOLS_WEB_SEARCH_ROW: usize = 1;
 
 /// 一把工具开关的可显示状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,6 +504,20 @@ struct DecisionForm {
     /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
     index: Option<usize>,
     is_new: bool,
+}
+
+impl DecisionForm {
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.dropdown = None;
+            self.input = Some(decision_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
 }
 
 /// 决策模型页的「功能开关」分区标题（开关行画在渠道列表下方）。
@@ -939,6 +956,8 @@ pub struct SettingsValues {
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
+    /// 工具页「联网搜索」行的初值（默认引擎与两把凭据是否已配置）。
+    pub web_search: WebSearchRow,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
     /// MCP 设置页的初始值（全局策略 + Server 列表）。
@@ -982,6 +1001,7 @@ impl SettingsValues {
             plugins_enabled: false,
             tools,
             approval_mode: APPROVAL_MODE_REVIEW.to_string(),
+            web_search: WebSearchRow::default(),
             subagents: Vec::new(),
             mcp: McpSettingsValues::default(),
             vision_enabled: false,
@@ -1088,6 +1108,12 @@ impl SettingsValues {
     /// 工具页首行的审查模式初值（取运行期现用的模式）。
     pub fn with_approval(mut self, mode: &str) -> Self {
         self.approval_mode = nearest_approval_mode(mode).to_string();
+        self
+    }
+
+    /// 工具页「联网搜索」行的初值（默认引擎与两把凭据是否已配置）。
+    pub fn with_web_search(mut self, row: WebSearchRow) -> Self {
+        self.web_search = row;
         self
     }
 
@@ -1639,6 +1665,20 @@ impl TtsState {
             _ => {}
         }
     }
+
+    /// 粘贴：文本行直接落到输入态（没有输入态就先按当前行进；动作行不接收）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            self.begin_input(self.focused);
+            if self.input.is_none() {
+                return false;
+            }
+        }
+        match self.input.as_mut() {
+            Some((_, composer)) => paste_into(Some(composer), text),
+            None => false,
+        }
+    }
 }
 
 /// 有一件事可做的行（渲染成按钮）。
@@ -1647,6 +1687,16 @@ fn is_tts_action_row(row: usize) -> bool {
         row,
         TTS_ROW_CLONE_BROWSE | TTS_ROW_CLONE_RUN | TTS_ROW_DOWNLOAD | TTS_ROW_SAVE
     )
+}
+
+/// 凭据字段的草稿 → 写盘取值：掩码或空串都表示「不改动」，原样交给宿主判断。
+fn secret_draft(draft: &str) -> String {
+    let trimmed = draft.trim();
+    if trimmed == MASKED_SECRET {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// 密钥在界面上的展示：只露末 4 位，其余打码；空值直接显示「（未配置）」。
@@ -1712,6 +1762,9 @@ const TTS_HINT: &str =
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
 /// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
+/// 联网搜索页的提示：凭据留空表示不改动磁盘上的原值。
+const WEB_SEARCH_HINT: &str =
+    "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回工具页（凭据留空＝不改动）";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
@@ -1770,6 +1823,22 @@ struct ChannelForm {
     is_new: bool,
 }
 
+impl ChannelForm {
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进，对映 Textual 常驻 `Input`）。
+    ///
+    /// 模型 ID 列在这里只当普通文本处理，不触发自动检测——检测归 `Enter`。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.dropdown = None;
+            self.input = Some(channel_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
+}
+
 /// 模型管理页的界面状态：渠道列表 + 可选的渠道表单 + 「模型与参数」分区。
 ///
 /// 分区里的行与渠道列表共用一套选中逻辑：前 `rows.len()` 行是渠道，之后依次是
@@ -1816,11 +1885,58 @@ struct ToolsState {
     selected: usize,
     /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
     approval: String,
+    /// 联网搜索的当前配置（默认引擎 + 两把凭据是否已配置，凭据本身不进界面）。
+    web_search: WebSearchRow,
     status: String,
+}
+
+/// 联网搜索在工具页上的只读投影：默认引擎与两把凭据的配置状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchRow {
+    pub engine: String,
+    pub tavily_configured: bool,
+    pub exa_configured: bool,
+}
+
+impl Default for WebSearchRow {
+    fn default() -> Self {
+        Self {
+            engine: "bing".to_string(),
+            tavily_configured: false,
+            exa_configured: false,
+        }
+    }
+}
+
+impl WebSearchRow {
+    /// 工具页那一行的值文案：默认引擎，接口型引擎已配凭据时附一句说明。
+    pub fn label(&self) -> String {
+        let mut text = self.engine.clone();
+        let mut configured: Vec<&str> = Vec::new();
+        if self.tavily_configured {
+            configured.push("Tavily 已配置");
+        }
+        if self.exa_configured {
+            configured.push("Exa 已配置");
+        }
+        if !configured.is_empty() {
+            text.push_str(&format!("（{}）", configured.join("、")));
+        }
+        text
+    }
 }
 
 /// 工具开关页首行的标签（工具调用审查模式）。
 pub const TOOLS_APPROVAL_LABEL: &str = "工具调用审查";
+
+/// 工具开关页第二行的标签（联网搜索设置页的入口）。
+pub const TOOLS_WEB_SEARCH_LABEL: &str = "联网搜索";
+
+/// 逐工具开关在工具页里的起始行号（前两行分别是审查模式与联网搜索）。
+pub const TOOLS_SWITCH_ROW_OFFSET: usize = 2;
+
+/// 凭据字段在界面上的掩码占位：已配置的凭据都用它显示，草稿值等于它表示「不改动」。
+pub const MASKED_SECRET: &str = "••••••••";
 
 /// 审查模式的候选顺序（对映 Python 的 `_APPROVAL_OPTIONS`）。
 pub const TOOLS_APPROVAL_OPTIONS: [&str; 3] =
@@ -1990,6 +2106,17 @@ impl McpEditor {
         let mut composer = Composer::default();
         composer.insert(&self.field_text(index));
         self.input = Some(composer);
+    }
+
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            self.begin_input();
+            if self.input.is_none() {
+                return false;
+            }
+        }
+        paste_into(self.input.as_mut(), text)
     }
 
     fn commit_input(&mut self) {
@@ -2173,6 +2300,7 @@ impl SettingsState {
                 rows: values.tools,
                 selected: 0,
                 approval: nearest_approval_mode(&values.approval_mode).to_string(),
+                web_search: values.web_search,
                 status: TOOLS_HINT.to_string(),
             },
             mcp: McpState {
@@ -2501,9 +2629,14 @@ impl SettingsState {
         approval_mode_label(&self.tools.approval)
     }
 
-    /// 工具页的可选行数：首行的审查模式 + 逐工具开关。
+    /// 工具页「联网搜索」行的显示文案（默认引擎 + 已配置的凭据）。
+    pub fn web_search_value(&self) -> String {
+        self.tools.web_search.label()
+    }
+
+    /// 工具页的可选行数：审查模式 + 联网搜索 + 逐工具开关。
     pub fn tool_row_count(&self) -> usize {
-        self.tools.rows.len() + 1
+        self.tools.rows.len() + TOOLS_SWITCH_ROW_OFFSET
     }
 
     pub fn subagent_rows(&self) -> &[SubagentRow] {
@@ -2668,6 +2801,14 @@ impl SettingsState {
                 .map(|(label, _)| (*label).to_string())
                 .unwrap_or_else(|| raw.to_string()),
             FieldKind::ModelChannel | FieldKind::ModelId => self.model_select_value(spec, raw),
+            // 凭据从不回显：已配置显示掩码，未配置显示明确文案（草稿里存的是掩码或新值）。
+            FieldKind::Secret => {
+                if raw.trim().is_empty() {
+                    "（未配置）".to_string()
+                } else {
+                    MASKED_SECRET.to_string()
+                }
+            }
             FieldKind::Int | FieldKind::Float | FieldKind::Text => raw.to_string(),
         }
     }
@@ -2755,6 +2896,7 @@ impl SettingsState {
             // Python 的单选面板只有下拉与状态行，没有提示行。
             Pane::Choice(_) => "",
             Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
+            Pane::Form(FormKind::WebSearch) => WEB_SEARCH_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::Pending => "",
@@ -2773,6 +2915,48 @@ impl SettingsState {
         match self.pane {
             Pane::Form(kind) => self.forms.get_mut(kind.index()),
             _ => None,
+        }
+    }
+
+    // ---------- 粘贴 ----------
+
+    /// 把一次粘贴落进当前面板的输入态；没有正在编辑的字段时返回 `false`。
+    ///
+    /// 终端发来 `Event::Paste`（bracketed paste）时按键路径整条不走，必须在这里接住：
+    /// 否则凭据这类长文本在设置面板里只能靠逐字符击键（多数终端也不会把整段粘贴
+    /// 拆成单个按键送来）。
+    ///
+    /// 焦点还在左侧一级列表时一律拒收：那边没有输入框，落进去只会偷偷改掉右侧
+    /// 正在预览的字段草稿。
+    pub fn paste(&mut self, text: &str) -> bool {
+        if self.focus != Focus::Pane {
+            return false;
+        }
+        match self.pane {
+            Pane::Form(_) => self
+                .form_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::ModelManagement => self
+                .model_management
+                .form
+                .as_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::DecisionModels => self
+                .decision_models
+                .form
+                .as_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::Mcp => self
+                .mcp
+                .editor
+                .as_mut()
+                .map(|editor| editor.paste(text))
+                .unwrap_or(false),
+            Pane::Tts => self.tts.paste(text),
+            _ => false,
         }
     }
 
@@ -2997,7 +3181,7 @@ impl SettingsState {
                         self.open_dropdown();
                         return event;
                     }
-                    FieldKind::Int | FieldKind::Float | FieldKind::Text => {
+                    FieldKind::Int | FieldKind::Float | FieldKind::Text | FieldKind::Secret => {
                         if let Some(form) = self.form_mut() {
                             form.begin_input(index);
                         }
@@ -3006,7 +3190,12 @@ impl SettingsState {
                 None
             }
             KeyCode::Esc | KeyCode::Left => {
-                self.back_to_list();
+                // 联网搜索页是从工具页进来的，`Esc` 回去的地方也是工具页。
+                if self.pane == Pane::Form(FormKind::WebSearch) {
+                    self.close_web_search_form();
+                } else {
+                    self.back_to_list();
+                }
                 None
             }
             _ => None,
@@ -4053,18 +4242,80 @@ impl SettingsState {
         self.tools.selected = ((self.tools.selected as isize + delta).rem_euclid(count)) as usize;
     }
 
-    /// 首行改审查模式（循环候选），其余行切换工具开关。
+    /// 首行改审查模式（循环候选），第二行进入联网搜索表单页，其余行切换工具开关。
     fn toggle_tool(&mut self, direction: isize) -> Option<SettingsEvent> {
-        if self.tools.selected == 0 {
+        if self.tools.selected == TOOLS_APPROVAL_ROW {
             let mode = cycle_approval_mode(&self.tools.approval, direction);
             return Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
                 mode: mode.to_string(),
             }));
         }
-        let row = self.tools.rows.get(self.tools.selected - 1)?;
+        if self.tools.selected == TOOLS_WEB_SEARCH_ROW {
+            return self.open_web_search_form();
+        }
+        let row = self
+            .tools
+            .rows
+            .get(self.tools.selected - TOOLS_SWITCH_ROW_OFFSET)?;
         Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
             name: row.name.clone(),
             enabled: !row.enabled,
+        }))
+    }
+
+    /// 进入联网搜索表单页：一条设置在工具页里，编辑界面借用表单页结构。
+    ///
+    /// 只切面板、不写配置：与左栏切页同义，`Esc` 回到工具页。
+    fn open_web_search_form(&mut self) -> Option<SettingsEvent> {
+        // 先取值再取可变借用：草稿来自工具页那一行的当前状态。
+        let engine = self.tools.web_search.engine.clone();
+        let tavily = if self.tools.web_search.tavily_configured {
+            MASKED_SECRET.to_string()
+        } else {
+            String::new()
+        };
+        let exa = if self.tools.web_search.exa_configured {
+            MASKED_SECRET.to_string()
+        } else {
+            String::new()
+        };
+        self.pane = Pane::Form(FormKind::WebSearch);
+        self.dropdown = None;
+        if let Some(form) = self.form_mut() {
+            // 每次进入都从当前配置重起，避免上一次未保存的草稿残留。
+            form.set_values(vec![
+                FieldValue::Text(engine),
+                FieldValue::Text(tavily),
+                FieldValue::Text(exa),
+            ]);
+            form.set_focused(0);
+            form.set_status(String::new());
+        }
+        None
+    }
+
+    /// 联网搜索表单页的 `Esc`：回到工具页（而不是左栏）。
+    fn close_web_search_form(&mut self) {
+        self.pane = Pane::Tools;
+        self.dropdown = None;
+        self.focus = Focus::Pane;
+    }
+
+    /// 联网搜索表单页的保存：把三个字段拼成一页表单变更。
+    ///
+    /// 与其余表单页同构（走 `SettingsChange::Form`），这样界面的「保存 → 回填 → 回工具页」
+    /// 与失败保留草稿的语义都复用同一条路径。
+    fn save_web_search_form(&mut self) -> Option<SettingsEvent> {
+        let form = self.form()?;
+        let values: Vec<FieldValue> = (0..form.specs().len())
+            .map(|index| {
+                let raw = form.value(index).map(|value| value.text()).unwrap_or("");
+                FieldValue::Text(secret_draft(raw))
+            })
+            .collect();
+        Some(SettingsEvent::Apply(SettingsChange::Form {
+            kind: FormKind::WebSearch,
+            values,
         }))
     }
 
@@ -4223,13 +4474,9 @@ impl SettingsState {
                     "正在检测模型列表…（Esc 可保留手动输入，稍候可重试）".to_string();
             }
             field => {
-                let mut composer = Composer::default();
                 // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
-                if field != ChannelField::ApiKey {
-                    composer.insert(&channel_field_value(&form.row, field));
-                }
                 form.dropdown = None;
-                form.input = Some(composer);
+                form.input = Some(channel_input_composer(&form.row, field));
             }
         }
         event
@@ -4824,13 +5071,9 @@ impl SettingsState {
                 });
             }
             field => {
-                let mut composer = Composer::default();
                 // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
-                if field != DecisionField::ApiKey {
-                    composer.insert(&decision_field_value(&form.row, field));
-                }
                 form.dropdown = None;
-                form.input = Some(composer);
+                form.input = Some(decision_input_composer(&form.row, field));
             }
         }
         None
@@ -4888,6 +5131,9 @@ impl SettingsState {
             },
             Pane::Form(kind) => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
+                    if kind == FormKind::WebSearch {
+                        return self.save_web_search_form();
+                    }
                     let values = self
                         .form()
                         .map(|form| form.values().to_vec())
@@ -5021,6 +5267,23 @@ impl SettingsState {
                 self.tools.approval = nearest_approval_mode(mode).to_string();
                 self.tools.status = message;
             }
+            SettingsChange::Form { kind, values } => {
+                if let Some(form) = self.forms.get_mut(kind.index()) {
+                    // 配置侧可能规范化过取值，用宿主回填的值覆盖草稿。
+                    form.set_values(values.clone());
+                    form.set_status(message.clone());
+                }
+                // 联网搜索页是从工具页进来的，保存后回到工具页；其余表单页留在原地。
+                if *kind == FormKind::WebSearch {
+                    self.tools.web_search.engine = values
+                        .first()
+                        .map(|value| value.text().trim().to_string())
+                        .unwrap_or_default();
+                    // 凭据状态不在这里猜：只有磁盘知道明文，由宿主随后的 `set_web_search` 对齐。
+                    self.tools.status = message;
+                    self.close_web_search_form();
+                }
+            }
             SettingsChange::Subagent(change) => {
                 match change {
                     SubagentChange::Enabled(enabled) => {
@@ -5074,13 +5337,6 @@ impl SettingsState {
                     ChoiceKind::Plugins
                 };
                 self.choices.status[kind.index()] = message;
-            }
-            SettingsChange::Form { kind, values } => {
-                if let Some(form) = self.forms.get_mut(kind.index()) {
-                    // 配置侧可能规范化过取值，用宿主回填的值覆盖草稿。
-                    form.set_values(values.clone());
-                    form.set_status(message.clone());
-                }
             }
             SettingsChange::Tts(change) => {
                 // 保存成功：草稿回落到新配置，模型/音色库状态由宿主另推。
@@ -5207,6 +5463,10 @@ impl SettingsState {
             | SettingsChange::Reasoning { .. } => self.model_management.status.push_str(note),
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
+            SettingsChange::Form {
+                kind: FormKind::WebSearch,
+                ..
+            } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
@@ -5334,6 +5594,11 @@ impl SettingsState {
         self.tools.selected = selected;
     }
 
+    /// 联网搜索设置保存后，用磁盘上的真实配置覆盖工具页那一行（含凭据是否已配置）。
+    pub fn set_web_search(&mut self, row: WebSearchRow) {
+        self.tools.web_search = row;
+    }
+
     /// 决策渠道列表（渲染层用）。
     pub fn decision_rows(&self) -> &[DecisionRow] {
         &self.decision_models.rows
@@ -5452,6 +5717,15 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
     }
 }
 
+/// 决策表单某字段的输入缓冲初值（与渠道表单同口径：凭据从空开始）。
+fn decision_input_composer(row: &DecisionRow, field: DecisionField) -> Composer {
+    let mut composer = Composer::default();
+    if field != DecisionField::ApiKey {
+        composer.insert(&decision_field_value(row, field));
+    }
+    composer
+}
+
 /// 把表单值写回决策渠道记录。
 fn set_decision_field(row: &mut DecisionRow, field: DecisionField, value: String) {
     match field {
@@ -5550,6 +5824,16 @@ pub fn channel_field_value(row: &ChannelRow, field: ChannelField) -> String {
             }
         }
     }
+}
+
+/// 渠道表单某字段的输入缓冲初值：API Key 从空开始（不回显明文，让「留空＝不改动」成为默认），
+/// 其余字段以当前值为起点。
+fn channel_input_composer(row: &ChannelRow, field: ChannelField) -> Composer {
+    let mut composer = Composer::default();
+    if field != ChannelField::ApiKey {
+        composer.insert(&channel_field_value(row, field));
+    }
+    composer
 }
 
 /// 把表单值写回渠道记录。
@@ -5945,7 +6229,7 @@ mod tests {
         }
         assert_eq!(state.pane(), Pane::Tools);
         state.handle_key(KeyCode::Enter); // 进入面板
-        assert_eq!(state.tool_selected(), 0);
+        assert_eq!(state.tool_selected(), TOOLS_APPROVAL_ROW);
         assert_eq!(
             state.handle_key(KeyCode::Char(' ')),
             Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
@@ -5954,7 +6238,16 @@ mod tests {
             "首行是工具调用审查，默认 review 右移一档到 auto"
         );
 
+        // 第二行是联网搜索：确认后进表单页，不产出配置事件。
         state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
+        assert_eq!(state.handle_key(KeyCode::Enter), None);
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+        state.handle_key(KeyCode::Esc);
+        assert_eq!(state.pane(), Pane::Tools, "联网搜索页的 Esc 回工具页");
+
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_SWITCH_ROW_OFFSET);
         assert_eq!(
             state.handle_key(KeyCode::Char(' ')),
             Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
@@ -6907,6 +7200,116 @@ mod tests {
         );
     }
 
+    /// 联网搜索页的初始值：默认引擎 tavily，Tavily 已配凭据、Exa 未配。
+    fn web_search_state() -> SettingsState {
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_web_search(
+            WebSearchRow {
+                engine: "tavily".to_string(),
+                tavily_configured: true,
+                exa_configured: false,
+            },
+        ))
+    }
+
+    #[test]
+    fn web_search_row_shows_engine_and_configured_keys() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(
+            state.web_search_value(),
+            "tavily（Tavily 已配置）",
+            "工具页那一行显示默认引擎与已配凭据"
+        );
+
+        // 未配任何凭据时只显示引擎。
+        let plain = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
+        assert_eq!(plain.web_search_value(), "bing");
+    }
+
+    #[test]
+    fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter); // 进工具页
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
+        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        let rows = state.form_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].value, "tavily", "引擎列显示当前值");
+        assert!(rows[0].has_menu, "引擎是候选字段");
+        assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
+        assert_eq!(rows[2].value, "（未配置）", "未配凭据显示明确文案");
+
+        // 掩码原样保存 = 不改动：两把凭据都折成空串交给宿主。
+        let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(kind, FormKind::WebSearch);
+        assert_eq!(values[0], FieldValue::Text("tavily".to_string()));
+        assert_eq!(values[1], FieldValue::Text(String::new()), "掩码不当作新值");
+        assert_eq!(values[2], FieldValue::Text(String::new()));
+    }
+
+    #[test]
+    fn web_search_page_returns_to_tools_after_save() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        state.apply_succeeded(
+            &SettingsChange::Form {
+                kind: FormKind::WebSearch,
+                values: vec![
+                    FieldValue::Text("exa".to_string()),
+                    FieldValue::Text("exa-key".to_string()),
+                    FieldValue::Text(String::new()),
+                ],
+            },
+            "联网搜索已设为 exa，已保存到 config.toml。".to_string(),
+        );
+        assert_eq!(state.pane(), Pane::Tools, "保存后回到工具页");
+        assert_eq!(state.status(), "联网搜索已设为 exa，已保存到 config.toml。");
+
+        // 凭据状态由宿主按磁盘真实配置覆盖（这里模拟那一步）。
+        state.set_web_search(WebSearchRow {
+            engine: "exa".to_string(),
+            tavily_configured: true,
+            exa_configured: true,
+        });
+        assert_eq!(state.web_search_value(), "exa（Tavily 已配置、Exa 已配置）");
+    }
+
+    #[test]
+    fn web_search_page_typing_a_new_key_reaches_the_draft() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        // 焦点停在引擎列：往下切到 Tavily 密钥，再进输入态重填。
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        for character in "tvly-new".chars() {
+            state.handle_key(KeyCode::Char(character));
+        }
+        state.handle_key(KeyCode::Enter);
+        let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(values[1], FieldValue::Text("tvly-new".to_string()));
+    }
+
     /// 子任务设置页的初始行：总开关关闭 + 两个高级参数。
     fn subagents_state() -> SettingsState {
         SettingsState::new(
@@ -7459,5 +7862,129 @@ mod tests {
         let rows = state.decision_local_rows();
         assert_eq!(rows.len(), DECISION_LOCAL_ROW_COUNT);
         assert!(state.decision_local_busy());
+    }
+
+    // ---------- 粘贴 ----------
+
+    /// 渠道表单的 API Key 行：粘贴即落值，不必先按 Enter 进输入态。
+    #[test]
+    fn channel_api_key_accepts_pasted_text_without_entering_input_first() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter); // 进面板
+        state.handle_key(KeyCode::Enter); // 编辑选中渠道
+        for _ in 0..4 {
+            state.handle_key(KeyCode::Down); // → API Key
+        }
+        assert_eq!(
+            state.channel_form().map(|form| form.field),
+            Some(ChannelField::ApiKey)
+        );
+        assert!(
+            state.channel_form().and_then(|form| form.input).is_none(),
+            "粘贴之前不在输入态"
+        );
+
+        assert!(state.paste("sk-pasted-key"), "API Key 行应接收粘贴");
+        // 落进缓冲、还没提交：界面显示的是掩码，明文只在缓冲里。
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(form.input.map(|composer| composer.text()), Some("sk-pasted-key"));
+
+        state.handle_key(KeyCode::Enter); // 提交
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(form.row.api_key, "sk-pasted-key");
+        assert!(form.input.is_none(), "提交后退出输入态");
+    }
+
+    /// 粘贴多行凭据只取首行：设置字段都是单行框，换行不能变成提交。
+    #[test]
+    fn pasted_multiline_secret_keeps_only_the_first_line() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..4 {
+            state.handle_key(KeyCode::Down); // → API Key
+        }
+
+        assert!(state.paste("sk-first\r\nsk-second\n"));
+        state.handle_key(KeyCode::Enter);
+
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(form.row.api_key, "sk-first", "只取首行，余下行不提交");
+    }
+
+    /// 开关与候选字段不接收粘贴（它们不是文本框），也就不会吞掉事件。
+    #[test]
+    fn non_text_fields_refuse_paste() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Enter); // 字段停在渠道名
+
+        state.handle_key(KeyCode::Down); // → 请求方式（候选字段）
+        assert_eq!(
+            state.channel_form().map(|form| form.field),
+            Some(ChannelField::Provider)
+        );
+        assert!(!state.paste("openai"), "候选字段不接收粘贴");
+        assert!(
+            state.channel_form().and_then(|form| form.input).is_none(),
+            "被拒的粘贴不该把字段顶进输入态"
+        );
+    }
+
+    /// 表单页（如联网搜索的两把凭据）同样接收粘贴，未进输入态时自动进入。
+    #[test]
+    fn form_page_secret_accepts_pasted_text() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        state.handle_key(KeyCode::Down); // → Tavily API Key
+        assert!(state.paste("tvly-pasted"));
+        state.handle_key(KeyCode::Enter);
+
+        let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(values[1], FieldValue::Text("tvly-pasted".to_string()));
+    }
+
+    /// 焦点还在左侧一级列表时拒收粘贴：那边没有输入框。
+    #[test]
+    fn paste_is_refused_while_the_list_column_has_focus() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        assert_eq!(state.focus(), Focus::List);
+
+        assert!(!state.paste("sk-leaked"), "左栏没有输入框，不该接收");
+        assert!(state.channel_form().is_none(), "也不该顺手打开表单");
+    }
+
+    #[test]
+    fn tts_api_key_accepts_pasted_text() {
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter); // 进面板
+        let mut guard = 0;
+        while state.tts_focused() != TTS_ROW_API_KEY {
+            state.handle_key(KeyCode::Down);
+            guard += 1;
+            assert!(guard < TTS_ROW_COUNT, "应能走到接口密钥行");
+        }
+
+        assert!(state.paste("sk-tts-pasted"));
+        state.handle_key(KeyCode::Enter);
+        let draft = match state.handle_ctrl_key(KeyCode::Char('s')) {
+            Some(SettingsEvent::Apply(SettingsChange::Tts(TtsChange::Save(draft)))) => draft,
+            other => panic!("Ctrl+S 应产出 TTS 保存事件：{other:?}"),
+        };
+        assert_eq!(draft.api_key, "sk-tts-pasted");
     }
 }

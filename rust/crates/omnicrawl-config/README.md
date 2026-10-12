@@ -103,6 +103,14 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 `tool_output_compression`（思考档位与四个正整数预算）、`tts`（线程数枚举、设备三态、
 模型目录解析）、`subagents`（独立 `subagents.toml`、`models.<角色>` 覆盖）。
 
+**`features/web_search`（Rust 专有）**：联网搜索段（`[web_search]`），默认引擎
+（`bing` / `duckduckgo` / `yahoo` / `tavily` / `exa`，清单由 `WEB_SEARCH_ENGINES` 唯一提供）
+与 Tavily / Exa 两把 API Key。与前几段分开是刻意的：`[tools]` 只管工具是否进表，本段管
+「这台机器走哪条搜索通路、接口型引擎用什么凭据」。因此不进 parity 数据集，自带
+`tests/web_search_config.rs`：默认值（默认引擎无凭据、两把 Key 为空）、引擎名大小写与空白
+归一、空串按「没填」回落默认值、非法引擎报错并列出全部候选、逐引擎的凭据解析、
+写回只动本段且非法取值不落盘。
+
 **`features/tts_api`（Rust 专有）**：语音合成接口段（`[tts_api]`），与 `tts` 分开是刻意的——
 `[tts]` 的读回值与写回文本被 parity 数据集逐字节钉住（加字段就要同步改 Python），而本段是
 Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 parity 数据集，自带

@@ -71,6 +71,9 @@ use omnicrawl_config::features::tts::{
 use omnicrawl_config::features::tts_api::{
     load_tts_api_configuration, save_tts_api_configuration, TtsApiConfiguration,
 };
+use omnicrawl_config::features::web_search::{
+    load_web_search_configuration, save_web_search_configuration,
+};
 use omnicrawl_config::models::channels::{
     default_channel, load_channel_configuration, provider_options, save_channel_configuration,
     ChannelConfig, ChannelConfiguration,
@@ -155,7 +158,7 @@ use crate::ui::settings::{
     McpServerDraft, McpServerRow,
     McpSettingsValues, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
     SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsDraft, TtsValues, VisionChange,
-    VisionModelRef, SUBAGENT_ADVANCED_SPECS,
+    VisionModelRef, WebSearchRow, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 use omnicrawl_tts::api::ApiTtsConfig;
@@ -694,6 +697,8 @@ impl App {
             )),
             subagent_types: subagent_role_names(),
             disabled_tools,
+            // 联网搜索：默认引擎与 Tavily/Exa 凭据来自 `[web_search]` 段。
+            web_search: omnicrawl_host::tools::web_search_options_from_config(&environment),
             mcp: mcp_manager(workspace),
             // 命令行只承载显式覆盖，未给的字段以 `[image_gen]` 配置为准（见 `args.rs`）。
             image_gen: image_gen_options_from(
@@ -1959,7 +1964,14 @@ impl App {
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             // 弹层开着时粘贴不落到主输入框（路径输入用键盘）。
             Event::Paste(_) if self.file_picker.is_some() => {}
-            Event::Paste(text) if self.settings.is_none() && !self.kernel_lost => {
+            // 设置面板是模态页：粘贴落进当前字段的输入态（对映 Textual `Input::_on_paste`），
+            // 没有正在编辑的字段时丢弃，不落到主输入框。
+            Event::Paste(text) if self.settings.is_some() => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.paste(&text);
+                }
+            }
+            Event::Paste(text) if !self.kernel_lost => {
                 // 整段就是一个存在的图片路径 → 转成图片附件；否则按文本折叠
                 // （多行折成 `[粘贴 #n +N 行]`，提交时还原）。
                 if !self.paste_image_path(&text) {
@@ -3187,6 +3199,7 @@ impl App {
         .with_form(FormKind::ImageGen, image_gen_form_values(&image_gen))
         .with_subagents(subagent_rows(&subagent_config))
         .with_mcp(self.mcp_settings_values(&environment))
+        .with_web_search(web_search_row(&environment))
         .with_vision(
             vision.enabled,
             vision.models.iter().map(vision_ref_from_config).collect(),
@@ -3309,7 +3322,20 @@ impl App {
                 let outcome = self.apply_settings_change(&change);
                 if let Some(settings) = self.settings.as_mut() {
                     match outcome {
-                        Ok(message) => settings.apply_succeeded(&change, message),
+                        Ok(message) => {
+                            settings.apply_succeeded(&change, message);
+                            // 联网搜索的凭据只在磁盘上有明文：保存后用真实配置覆盖工具页那一行。
+                            if matches!(
+                                change,
+                                SettingsChange::Form {
+                                    kind: FormKind::WebSearch,
+                                    ..
+                                }
+                            ) {
+                                let row = web_search_row(&ConfigEnvironment::from_process());
+                                settings.set_web_search(row);
+                            }
+                        }
                         Err(message) => settings.apply_failed(message),
                     }
                 }
@@ -4606,6 +4632,48 @@ impl App {
         ))
     }
 
+    /// 联网搜索页：写 `config.toml [web_search]`（字段顺序与 `WEB_SEARCH_FIELDS` 一致），
+    /// 再换掉宿主侧搜索运行期。
+    ///
+    /// 两把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
+    /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
+    fn apply_web_search_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration = load_web_search_configuration(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 写盘前留一份磁盘原值：重建工具表失败时要把它写回去（这份还没被覆盖）。
+        let previous = configuration.clone();
+        configuration.engine = field_text_or(values, 0, "bing");
+        if let Some(key) = keep_or_replace(&field_text(values, 1)) {
+            configuration.tavily_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 2)) {
+            configuration.exa_api_key = key;
+        }
+        let path = save_web_search_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 搜索运行期就在宿主侧：写盘后立即换掉。但执行体读的是工具表里那一份克隆
+        // （`ToolRegistry::new` 会 clone `registry_options.web_search`），只改选项不重建
+        // 的话正在跑的表还握着启动时的引擎与凭据——现象是「设置里选了 tavily，搜索仍报
+        // 来源：bing」，直到重启。重建失败时磁盘与运行期一起回滚（同 `apply_advisor_form`）。
+        let previous_options = self.registry_options.web_search.clone();
+        self.registry_options.web_search =
+            omnicrawl_host::tools::web_search_options_from_config(&environment);
+        if let Err(error) = self.rebuild_registry() {
+            if let Err(rollback) = save_web_search_configuration(&environment, &previous, None) {
+                self.state
+                    .notice(format!("联网搜索设置回滚写盘失败：{rollback}"));
+            }
+            self.registry_options.web_search = previous_options;
+            return Err(error);
+        }
+        Ok(format!(
+            "联网搜索已设为 {}，已保存到 {}（本会话即刻生效）。",
+            configuration.engine,
+            path.display()
+        ))
+    }
+
     /// 写回工具调用审查模式（`[approval] mode`），并同步本会话的审批模式。
     fn apply_tool_approval(&mut self, mode: &str) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
@@ -4717,6 +4785,7 @@ impl App {
             FormKind::RunGuard => self.apply_run_guard_form(values),
             FormKind::AgentWorkspace => self.apply_agent_workspace_form(values),
             FormKind::ImageGen => self.apply_image_gen_form(values),
+            FormKind::WebSearch => self.apply_web_search_form(values),
         }
     }
 
@@ -6339,6 +6408,17 @@ fn field_text_or(values: &[FieldValue], index: usize, fallback: &str) -> String 
     }
 }
 
+/// 凭据字段的写回取值：草稿留空表示「不改动」→ `None`；否则用新值。
+///
+/// 界面上的掩码已在状态机里折成空串，所以这里只需判空。
+fn keep_or_replace(draft: &str) -> Option<String> {
+    let trimmed = draft.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// 表单字段的分隔列表取值：切分后去掉空白与空项（对映 Python 的 `_read_keys`）。
 fn field_list(values: &[FieldValue], index: usize, separator: char) -> Vec<String> {
     field_text(values, index)
@@ -6484,6 +6564,16 @@ fn agent_workspace_form_values(config: &AgentWorkspaceConfig) -> Vec<FieldValue>
         FieldValue::Text(config.copy_dirs.join(", ")),
         FieldValue::Text(config.env_scripts.join("; ")),
     ]
+}
+
+/// 联网搜索在工具页上的投影：默认引擎 + 两把凭据是否已配置（凭据本身不进界面状态）。
+fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
+    let configuration = load_web_search_configuration(environment, None).unwrap_or_default();
+    WebSearchRow {
+        engine: configuration.engine,
+        tavily_configured: !configuration.tavily_api_key.trim().is_empty(),
+        exa_configured: !configuration.exa_api_key.trim().is_empty(),
+    }
 }
 
 /// 图像生成页的字段初值；顺序与 `FormKind::ImageGen` 的字段表一致。

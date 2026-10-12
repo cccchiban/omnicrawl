@@ -21,6 +21,9 @@ pub enum FieldKind {
     Float,
     /// 自由文本：逗号/分号分隔的列表也归这里，切分由宿主负责。
     Text,
+    /// 凭据文本：编辑方式同自由文本，但界面上只显示掩码，进输入态也从空起步
+    /// （留空表示不改动磁盘上的原值，避免误触把已存凭据抹掉）。
+    Secret,
     /// 模型渠道引用：候选是配置里的渠道列表（文案 = 渠道名，取值 = 渠道 key）。
     ModelChannel,
     /// 渠道内的模型 ID：候选按当前选中的渠道发现，取值 = 模型 ID（可为空，表示用渠道自带的模型）。
@@ -99,6 +102,14 @@ impl FieldSpec {
         Self {
             label,
             kind: FieldKind::Text,
+            flag_labels: DEFAULT_FLAG_LABELS,
+        }
+    }
+
+    const fn secret(label: &'static str) -> Self {
+        Self {
+            label,
+            kind: FieldKind::Secret,
             flag_labels: DEFAULT_FLAG_LABELS,
         }
     }
@@ -288,6 +299,24 @@ const IMAGE_GEN_FIELDS: [FieldSpec; 9] = [
     FieldSpec::enumerated("请求超时（秒）", &IMAGE_GEN_TIMEOUTS),
 ];
 
+/// 联网搜索的引擎候选（文案 = 取值，都是引擎名；清单来自配置域）。
+const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 5] = [
+    ("bing", "bing"),
+    ("duckduckgo", "duckduckgo"),
+    ("yahoo", "yahoo"),
+    ("tavily", "tavily"),
+    ("exa", "exa"),
+];
+
+/// 联网搜索页的字段；顺序与 `app.rs` 读值时的下标一一对应。
+///
+/// 两把 API Key 是凭据：界面只显示掩码、进输入态也从空起步，留空表示保留磁盘原值。
+const WEB_SEARCH_FIELDS: [FieldSpec; 3] = [
+    FieldSpec::enumerated("默认引擎", &WEB_SEARCH_ENGINE_OPTIONS),
+    FieldSpec::secret("Tavily API Key"),
+    FieldSpec::secret("Exa API Key"),
+];
+
 /// 表单类设置页。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKind {
@@ -303,16 +332,19 @@ pub enum FormKind {
     AgentWorkspace,
     /// 图像生成：开关 + 接口/凭据变量/模型 + 四个默认参数。
     ImageGen,
+    /// 联网搜索：默认引擎 + Tavily/Exa 凭据。
+    WebSearch,
 }
 
 /// 全部表单页，下标与 [`FormKind::index`] 一致。
-pub const FORM_KINDS: [FormKind; 6] = [
+pub const FORM_KINDS: [FormKind; 7] = [
     FormKind::Advisor,
     FormKind::ToolOutputCompression,
     FormKind::Desensitization,
     FormKind::RunGuard,
     FormKind::AgentWorkspace,
     FormKind::ImageGen,
+    FormKind::WebSearch,
 ];
 
 impl FormKind {
@@ -324,6 +356,7 @@ impl FormKind {
             Self::RunGuard => 3,
             Self::AgentWorkspace => 4,
             Self::ImageGen => 5,
+            Self::WebSearch => 6,
         }
     }
 
@@ -335,6 +368,7 @@ impl FormKind {
             Self::RunGuard => &RUN_GUARD_FIELDS,
             Self::AgentWorkspace => &AGENT_WORKSPACE_FIELDS,
             Self::ImageGen => &IMAGE_GEN_FIELDS,
+            Self::WebSearch => &WEB_SEARCH_FIELDS,
         }
     }
 }
@@ -358,6 +392,22 @@ impl FieldValue {
             Self::Flag(_) => "",
         }
     }
+}
+
+/// 把粘贴文本插进一个字段缓冲；没有缓冲（不在输入态）时返回 `false`。
+///
+/// 设置字段都是单行输入框（对映 Textual `Input`）：粘贴只取首行，换行不会把
+/// `Enter` 提交语义带进来——否则整段多行文本会被后面的换行拆成多次提交。
+pub(crate) fn paste_into(input: Option<&mut Composer>, text: &str) -> bool {
+    let Some(composer) = input else {
+        return false;
+    };
+    let line = text.split(['\r', '\n']).next().unwrap_or("");
+    if line.is_empty() {
+        return true;
+    }
+    composer.insert(line);
+    true
 }
 
 /// 一页表单的编辑草稿。
@@ -420,6 +470,22 @@ impl FormState {
         self.input.as_ref()
     }
 
+    /// 粘贴：把文本落进正在编辑的字段缓冲。
+    ///
+    /// 还没进输入态时按字段类型决定：可输入字段先进入输入态（对映 Textual `Input`
+    /// 一直处于焦点，粘贴直接落值），开关与候选字段不接收、返回 `false`。
+    pub fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            let Some(FieldKind::Int | FieldKind::Float | FieldKind::Text | FieldKind::Secret) =
+                self.field(self.focused).map(|spec| spec.kind)
+            else {
+                return false;
+            };
+            self.begin_input(self.focused);
+        }
+        paste_into(self.input.as_mut(), text)
+    }
+
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -466,16 +532,26 @@ impl FormState {
     }
 
     /// 进输入态：缓冲区以当前值起步（对映 Python 的 `Input` 预填当前值）。
+    ///
+    /// 凭据字段例外：从空起步，且留空提交表示「不改动」（与 TTS 页的密钥行同一口径）。
     pub fn begin_input(&mut self, index: usize) {
         if !matches!(
             self.field(index).map(|spec| spec.kind),
-            Some(FieldKind::Int) | Some(FieldKind::Float) | Some(FieldKind::Text)
+            Some(FieldKind::Int)
+                | Some(FieldKind::Float)
+                | Some(FieldKind::Text)
+                | Some(FieldKind::Secret)
         ) {
             return;
         }
         let mut composer = Composer::default();
         if let Some(value) = self.value(index) {
-            composer.insert(value.text());
+            if !matches!(
+                self.field(index).map(|spec| spec.kind),
+                Some(FieldKind::Secret)
+            ) {
+                composer.insert(value.text());
+            }
         }
         self.input = Some(composer);
     }

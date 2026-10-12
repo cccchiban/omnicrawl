@@ -1,0 +1,127 @@
+//! 联网搜索（`web_search` 工具）的配置。
+//!
+//! 与前几段分开是刻意的：`[tools]` 只管工具是否进表，`[web_search]` 管这台机器
+//! 用哪条搜索通路、以及 API 类引擎的凭据。Python 侧没有对映实现（那套实现随
+//! 移植一起下线），因此不进 parity 数据集，自带 `tests/web_search_config.rs`。
+
+use std::path::{Path, PathBuf};
+
+use crate::core::runtime::{load_config_data, save_config_data, ConfigEnvironment};
+use crate::error::ConfigError;
+use crate::toml::{Table, Value};
+use crate::value::python_str;
+
+/// 可选引擎：抓页面型（Bing/DuckDuckGo/雅虎）与接口型（Tavily/Exa）。
+///
+/// 这里是引擎清单的唯一来源：宿主用它校验工具参数，设置界面用它铺候选。
+pub const WEB_SEARCH_ENGINES: [&str; 5] = ["bing", "duckduckgo", "yahoo", "tavily", "exa"];
+
+/// 默认引擎：无需凭据即可使用。
+pub const DEFAULT_WEB_SEARCH_ENGINE: &str = "bing";
+
+/// 联网搜索的默认引擎与接口型引擎的凭据。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchConfiguration {
+    /// 工具调用未指定 `engine` 时用的引擎。
+    pub engine: String,
+    /// Tavily API Key（明文）。空串表示未配置。
+    pub tavily_api_key: String,
+    /// Exa API Key（明文）。空串表示未配置。
+    pub exa_api_key: String,
+}
+
+impl Default for WebSearchConfiguration {
+    fn default() -> Self {
+        Self {
+            engine: DEFAULT_WEB_SEARCH_ENGINE.to_string(),
+            tavily_api_key: String::new(),
+            exa_api_key: String::new(),
+        }
+    }
+}
+
+impl WebSearchConfiguration {
+    /// 取值域校验与归一化：引擎名大小写不敏感，凭据去首尾空白。
+    pub fn normalize(mut self) -> Result<Self, ConfigError> {
+        let engine = self.engine.trim().to_lowercase();
+        let engine = if engine.is_empty() {
+            DEFAULT_WEB_SEARCH_ENGINE.to_string()
+        } else {
+            engine
+        };
+        if !WEB_SEARCH_ENGINES.contains(&engine.as_str()) {
+            return Err(ConfigError::new(format!(
+                "web_search.engine 仅支持 {}。",
+                WEB_SEARCH_ENGINES.join("、")
+            )));
+        }
+        self.engine = engine;
+        self.tavily_api_key = self.tavily_api_key.trim().to_string();
+        self.exa_api_key = self.exa_api_key.trim().to_string();
+        Ok(self)
+    }
+
+    /// 指定引擎下生效的 API Key；抓页面型引擎没有凭据，返回空串。
+    pub fn api_key_for(&self, engine: &str) -> &str {
+        match engine.trim().to_lowercase().as_str() {
+            "tavily" => self.tavily_api_key.as_str(),
+            "exa" => self.exa_api_key.as_str(),
+            _ => "",
+        }
+    }
+}
+
+/// 读取联网搜索配置；缺少 `web_search` 段时返回默认配置。
+pub fn load_web_search_configuration(
+    env: &ConfigEnvironment,
+    config_path: Option<&Path>,
+) -> Result<WebSearchConfiguration, ConfigError> {
+    let data = load_config_data(env, config_path)?;
+    let section = match data.get("web_search") {
+        None => Table::new(),
+        Some(Value::String(text)) if text.is_empty() => Table::new(),
+        Some(Value::Table(section)) => section.clone(),
+        Some(_) => return Err(ConfigError::new("配置段 web_search 必须是对象。")),
+    };
+    WebSearchConfiguration {
+        engine: text_field(&section, "engine", DEFAULT_WEB_SEARCH_ENGINE),
+        tavily_api_key: text_field(&section, "tavily_api_key", ""),
+        exa_api_key: text_field(&section, "exa_api_key", ""),
+    }
+    .normalize()
+}
+
+/// 保留其他配置段，只更新整份联网搜索配置。
+pub fn save_web_search_configuration(
+    env: &ConfigEnvironment,
+    configuration: &WebSearchConfiguration,
+    config_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    let configuration = configuration.clone().normalize()?;
+    let mut data = load_config_data(env, config_path)?;
+    let mut section = Table::new();
+    section.insert(
+        "engine".to_string(),
+        Value::String(configuration.engine.clone()),
+    );
+    section.insert(
+        "tavily_api_key".to_string(),
+        Value::String(configuration.tavily_api_key.clone()),
+    );
+    section.insert(
+        "exa_api_key".to_string(),
+        Value::String(configuration.exa_api_key.clone()),
+    );
+    data.insert("web_search".to_string(), Value::Table(section));
+    save_config_data(env, &data, config_path)
+}
+
+/// Python `str(section.get(name) or fallback)`。
+fn text_field(section: &Table, name: &str, fallback: &str) -> String {
+    let text = python_str(section.get(name));
+    if text.is_empty() {
+        fallback.to_string()
+    } else {
+        text
+    }
+}

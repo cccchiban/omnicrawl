@@ -156,7 +156,7 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 | `monitor` | 已实现 | `start` / `poll` / `stop` / `list`（含 `status`/`log`/`logs`/`read` 别名）后台命令：内存环形缓冲（1000 条、单条 4000 字符切块）、游标增量轮询、最多 20 个并发任务、进程树回收；任务随宿主关闭与回合取消终止 |
 | `kb_search` / `kb_read` / `kb_write` / `kb_append` / `kb_list` | 已实现 | Markdown + frontmatter 知识库：路径安全（拒绝 `..` 与越界）、读写/覆盖/追加、关键词与字段检索、`INDEX.md` 自动维护；默认根 `~/.OmniCrawl/knowledge` |
 | `memory_search` / `memory_read` / `memory_expand_related` / `memory_write` | 已实现（按配置进出表） | 按 `scope` 路由到三处记忆目录，读写交给 `omnicrawl-session` 的 `MemoryStore`；`memory_enabled` 缺省开启（与 Python `entry.py` 的 `default=True` 一致），未启用的作用域回「X 级记忆系统未启用。」 |
-| `web_search` | 已实现 | Bing / DuckDuckGo / 雅虎三引擎：桌面浏览器请求头、端点与查询参数逐字对齐、正则解析结果页（含雅虎 `RU=` 与 DDG `uddg=` 跳转还原）、验证码/异常流量如实报错、网络错误重试 |
+| `web_search` | 已实现 | 五引擎：Bing / DuckDuckGo / 雅虎（桌面浏览器请求头、端点与查询参数逐字对齐、正则解析结果页含雅虎 `RU=` 与 DDG `uddg=` 跳转还原、验证码/异常流量如实报错、网络错误重试）与 Tavily / Exa（检索接口，Bearer 与 `x-api-key` 鉴权、缺凭据/鉴权失败如实报错）。默认引擎与两把 API Key 取 `[web_search]` 段，工具参数里的 `engine` 可逐次覆盖 |
 | `fetcher` | 已实现 | 多 URL 并行抓取、手动跟随 301/302/307/308 与 `<meta refresh>`、内网/本机目标直连、`insecure=true` 跳过证书校验、正文提取（`main` → `article` → `body`，剔除脚本样式）且 HTML5 容错解析 |
 | `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现 | 整组注册：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型 |
 | `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model` 给出、或 `[advisor]` 段配置启用时进表 |
@@ -386,6 +386,13 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 被其它进程占用、内容不是文本）时退回形状判定：两个以上换行、或换行两侧都有文字、或无换行但
 连续按键 ≥ 8 个。keyup / repeat 既不参与判定也不重放。
 
+**设置面板里的粘贴**（`SettingsState::paste`）：面板是模态页，`Event::Paste`（bracketed paste）
+必须落进正在编辑的字段，否则凭据这类长文本只能逐字符敲。语义与 Textual `Input::_on_paste` 一致：
+**只取首行**（设置字段都是单行框，换行不能变成提交），字段还没进输入态时按字段类型自动进入
+（开关与候选字段不接收、返回 `false`）。焦点还在左边一级列表时一律拒收：那边没有输入框。
+覆盖表单页（含联网搜索两把凭据）、模型渠道表单、决策渠道表单、MCP Server 编辑器与 TTS 页；
+凭据字段的缓冲仍从空起步，「留空＝不改动」的既有口径不变。
+
 **思考内容的流式回传**：内核按增量逐段发 `turn.reasoning_delta`（与 Python 同口径），
 但增量里的思考字段名不只 `reasoning_content`——有的网关用 `reasoning`、有的用 `thinking`，
 OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字段名的网关会把整段思考丢掉
@@ -566,7 +573,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
 右侧 `Esc`/`←` 先回左栏；模型管理页的参数分区行与三个开关单选页共用 Textual `Select` 的键位：
 `Enter`/`↑`/`↓`/`空格` 展开候选，展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起；
-工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，其余行切换工具开关）；
+工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，第二行「联网搜索」进联网搜索表单页，其余行切换工具开关）；
 结构化决策模型页的渠道行 `Enter`/`→` 进表单，其下方的功能开关行同样用 `←`/`→`/`Enter`/空格 就地切换。
 
 本批落地的一级项与二级面板：
@@ -577,7 +584,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
-| 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
+| 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；第二行「联网搜索」显示当前默认引擎与已配凭据（形如 `tavily（Tavily 已配置）`），`Enter` 进入联网搜索表单页：`默认引擎`（bing / duckduckgo / yahoo / tavily / exa 候选）+ `Tavily API Key` + `Exa API Key`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，`Esc` 直接回工具页；两把凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
 | 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前六项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank`（记忆搜索 / 知识库检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发（见 `omnicrawl-host/src/tools/decision_suggest.rs`），开关变更即时重建建议运行期 |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 

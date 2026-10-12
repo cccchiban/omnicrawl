@@ -49,6 +49,15 @@ default_context_window_tokens = 1000000
 [llm.profiles.gemini-main.discovery]
 enabled = true
 
+# 联网搜索（web_search 工具）：默认引擎在 TUI /settings → 工具设置 → 联网搜索 中切换，
+# 也可在此手改。bing / duckduckgo / yahoo 抓公开搜索页面、无需凭据；
+# tavily / exa 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）。
+# 工具调用时传 engine 参数可覆盖这里的默认引擎。
+[web_search]
+engine = "bing"
+tavily_api_key = ""
+exa_api_key = ""
+
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
 # 模型原生视觉在设置页「视觉」按当前模型/渠道开关（models.toml 或 [llm.profiles.<id>] 的 native_vision）。

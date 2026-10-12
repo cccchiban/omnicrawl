@@ -50,7 +50,7 @@
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [],
         "ok": false,
-        "output": "engine 必须是 bing、duckduckgo、yahoo 之一。"
+        "output": "engine 必须是 bing、duckduckgo、yahoo、tavily、exa 之一。"
       },
       {
         "arguments": {
