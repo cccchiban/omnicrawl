@@ -40,7 +40,9 @@ use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
 use crate::tools::decision_prune::{evicted_call_ids_for, PruneOptions};
-use crate::tools::decision_suggest::{insert_suggestion, suggested_tools, SuggestOptions};
+use crate::tools::decision_suggest::{
+    insert_suggestions, suggestion_lines, SuggestOptions, SuggestionInputs,
+};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
@@ -82,6 +84,10 @@ pub struct RunnerOptions {
     /// 决策模型「本次该用哪些工具」，把结果拼进 user 尾部；`None` 或不可用时原文照发
     /// （fail-open）。
     pub suggest: Option<SuggestOptions>,
+    /// 子代理建议（`decision_models.toml` 的 `subagent_suggestion` 开关）：开启后同样先问一次
+    /// 决策模型「本次该调度哪些子代理」；两者互相独立，可单开也可同时开——同时开启时由
+    /// [`SuggestionInputs`] 并发发起，总耗时取两者的较大者而不是相加。
+    pub subagent_suggest: Option<SuggestOptions>,
     /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
     ///
     /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
@@ -306,6 +312,14 @@ impl TurnRunner {
         self.options.approval = mode;
     }
 
+    /// 运行期替换审查运行期：下一次需要审查的调用即用新配置（模型 / 通道 / 脱敏旁路）。
+    ///
+    /// 与 [`TurnRunner::set_approval_mode`] 同一条路径：审查运行期不参与内核握手，因此
+    /// 这里只换宿主侧句柄，不必重起内核，也不必下发 `session.settings`。
+    pub fn set_review(&mut self, review: Option<ReviewOptions>) {
+        self.options.review = review;
+    }
+
     /// 组装稳定 prompt 前缀的身份指纹（`initialize.model.prompt_cache_identity`）。
     ///
     /// 有 `prompt` 装配结果时用**真实的**项目规范与 Skill 索引参与哈希——它们真的会进
@@ -503,8 +517,9 @@ impl TurnRunner {
         self.custody_context.question.clear();
         self.custody_context.user_prompt = user_text.clone();
         self.custody_context.advisor_replies.clear();
-        // 工具建议：把「本次该用哪些工具」拼进 user 尾部（不可用或没有建议时原文照发）。
-        let user_text = self.with_tool_suggestion(user_text);
+        // 工具建议与子代理建议：把「本次该用哪些工具／哪些子代理」拼进 user 尾部
+        // （不可用或没有建议时原文照发；两者同时开启时并发发起）。
+        let user_text = self.with_suggestions(user_text);
         let result = self.run_turn(&turn_id, &user_text, control, interactor, on_event);
         if restore_skill_context {
             self.restore_skill_context(on_event);
@@ -585,19 +600,21 @@ impl TurnRunner {
             .map(|session| session.session_id.clone())
     }
 
-    /// 在 user 尾部拼上决策模型的工具建议；开关没开、没有可用渠道或没有建议时原文照发。
+    /// 在 user 尾部拼上决策模型的工具建议与子代理建议；开关没开、没有可用渠道或没有建议时原文照发。
     ///
-    /// 候选清单直接来自**本宿主的工具表**：`disabled_tools` 关掉的与当前没有运行期的工具都
-    /// 已经被工具表挡在外面，因此送审的每个名字都是模型真能调到的。
-    fn with_tool_suggestion(&self, user_text: String) -> String {
-        let Some(suggest) = self.options.suggest.as_ref().filter(|it| it.active()) else {
-            return user_text;
-        };
+    /// 候选清单直接来自**本宿主的工具表与角色表**：`disabled_tools` 关掉的、当前没有运行期的
+    /// 工具，以及内核不能调度的子代理角色，都已经被挡在外面，因此送审的每个名字都是模型真能
+    /// 调到的。两类建议互相独立、可单开也可同时开；同时开启时并发发起，总耗时取两者较大者。
+    fn with_suggestions(&self, user_text: String) -> String {
+        let tools = self.options.suggest.clone().unwrap_or_default();
+        let subagents = self.options.subagent_suggest.clone().unwrap_or_default();
         let inventory = self.registry.tool_inventory();
-        match suggested_tools(suggest, &inventory, &user_text) {
-            Some(names) => insert_suggestion(&user_text, &names),
-            None => user_text,
-        }
+        let lines = suggestion_lines(&SuggestionInputs {
+            tools: (&tools, &inventory),
+            subagents: (&subagents, self.registry.subagent_roles()),
+            user_prompt: &user_text,
+        });
+        insert_suggestions(&user_text, &lines)
     }
 
     /// 一个回合的主体：提交 `turn.submit` 并跑到 `turn.finished`。

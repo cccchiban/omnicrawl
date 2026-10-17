@@ -3,19 +3,20 @@
 //! 三种请求方式（`decision_models.toml` 的 `mode`）共享同一套 state / questions / answers
 //! 语义，差异只在这一层：
 //! * `jev`：请求体是 `{model, state, questions}`；响应顶层的 `answers` 就是答案。
-//! * `onejev`：自部署的 OneJev 服务（`qev serve`），请求体与响应形状与 `jev` 相同，
-//!   只有路径不同（`POST {base_url}/v1/systemone`）——它是同一协议的本地部署。
+//! * `onejev`：自部署的 OneJev 服务，请求体与响应形状与 `jev` 相同，**传输走本机管道**
+//!   （命名管道 / Unix socket，见 [`crate::decision_pipe`]），不经 HTTP；只有指向非回环
+//!   地址时（云端网关也提供同一协议形状）才按 `POST {base_url}/v1/systemone` 走网络。
 //! * `chat_completions`：请求体走 OpenAI 兼容的 `messages`——state + questions 作为一条 user
 //!   消息的 JSON 文本，并带 `response_format` 要求 JSON 输出；答案从
 //!   `choices[0].message.content` 里解析出同一形状的 `answers`。该方式的 `base_url` 已含
-//!   `/v1`（与 `[image_gen]`、`[tts_api]` 的 OpenAI 兼容口径一致），因此只追加
+//!   `/v1`（与 `[image_gen]` 的 OpenAI 兼容口径一致），因此只追加
 //!   `/chat/completions`。
 //!
 //! 因此三个调用点（工具调用审查、检索重排、提问托管）只管按 mode 组装请求体与读回
 //! `answers`，其余解析逻辑两种方式共用。
 
 use omnicrawl_config::features::decision_model::{
-    DECISION_MODE_CHAT_COMPLETIONS, DECISION_MODE_ONEJEV,
+    is_loopback_url, DECISION_MODE_CHAT_COMPLETIONS, DECISION_MODE_ONEJEV,
 };
 use serde_json::{json, Map, Value};
 
@@ -25,7 +26,7 @@ const CHAT_SYSTEM_PROMPT: &str = "你是结构化决策服务：按 user 消息�
 
 /// 决策接口地址：按请求方式选路径（基地址末尾斜杠在此收口）。
 ///
-/// `chat_completions` 的基地址按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`、`[tts_api]`），
+/// `chat_completions` 的基地址按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），
 /// 因此只追加资源路径；`jev` 与 `onejev` 的基地址是站点根下的 API 前缀，各自补 `/v1/...`。
 pub fn decide_url(mode: &str, base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
@@ -42,6 +43,42 @@ pub fn decide_url(mode: &str, base_url: &str) -> String {
 /// 该请求方式是否需要凭据：自部署的本地服务（`onejev`）不鉴权，其余一律要。
 pub fn requires_api_key(mode: &str) -> bool {
     mode != DECISION_MODE_ONEJEV
+}
+
+/// 该渠道是否走本机直连（自部署的 OneJev 服务，地址落在回环上）。
+///
+/// `onejev` 是「本机判定服务」的协议形状，但云端网关（new-api 一类）也提供同一形状的
+/// 接口，因此只有回环地址才切成管道；非回环仍走 HTTP。
+pub fn uses_local_endpoint(mode: &str, base_url: &str) -> bool {
+    mode == DECISION_MODE_ONEJEV && is_loopback_url(base_url)
+}
+
+/// 发一次决策请求（唯一入口）：本机自部署走管道直连，其余走 HTTP。
+///
+/// 上层调用点因此不必区分两种传输——请求体与响应形状完全一致，只有「怎么送到」不同。
+pub fn post_decision(
+    mode: &str,
+    base_url: &str,
+    api_key: &str,
+    body_text: &str,
+    timeout_seconds: u64,
+    user_agent: &str,
+    retry_count: u64,
+) -> Result<String, String> {
+    if uses_local_endpoint(mode, base_url) {
+        // 本机端点：连接失败说明服务没跑，重试没有意义（等待窗口在连接里）。
+        let environment = omnicrawl_config::core::runtime::ConfigEnvironment::from_process();
+        let endpoint = omnicrawl_config::features::decision_model::onejev_endpoint(&environment);
+        return crate::decision_pipe::post_body(&endpoint, body_text, timeout_seconds);
+    }
+    post_body(
+        &decide_url(mode, base_url),
+        api_key,
+        body_text,
+        timeout_seconds,
+        user_agent,
+        retry_count,
+    )
 }
 
 /// 组装一次决策请求的请求体。

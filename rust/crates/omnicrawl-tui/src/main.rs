@@ -210,7 +210,6 @@ fn event_loop(
         let now = Instant::now();
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
-        app.tick_tts_tasks();
         // 自部署（OneJev）后台任务：环境安装 / 权重下载 / 本地服务启停的结果。
         app.tick_onejev_tasks();
         // 底部单行轮播：遥测 → 工作区路径 → 留言，各 10s，切换时解密扫描。
@@ -220,6 +219,8 @@ fn event_loop(
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
         app.tick_monitor_events(now);
+        // 审查相关配置的外部改动（`config.toml` / `decision_models.toml`）：无需重启即生效。
+        app.tick_review_config();
         app.drain_frames();
         // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
         app.state.tick_reasoning_reveal();
@@ -241,12 +242,7 @@ fn event_loop(
         if healed || changed {
             terminal
                 .draw(|frame| {
-                    ui::render(
-                        frame,
-                        &app.state,
-                        app.settings.as_ref(),
-                        app.file_picker.as_ref(),
-                    )
+                    ui::render(frame, &app.state, app.settings.as_ref())
                 })
                 .map_err(|error| format!("渲染失败：{error}"))?;
         }

@@ -32,8 +32,10 @@ use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
 use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
 };
+use omnicrawl_controllers::turn::compaction::format_compaction_savings_notice;
 use omnicrawl_controllers::turn::tool_prune::{
-    evicted_event_payload, prunable_tool, PruneCandidate, EVICTED_EVENT_TYPE,
+    evicted_event_payload, eviction_measure_payload, prunable_tool, PruneCandidate,
+    EVICTED_EVENT_TYPE, EVICTION_MEASURE_EVENT_TYPE,
 };
 use omnicrawl_controllers::turn::{is_continue_last_task_request, resolve_continue_request};
 use omnicrawl_core::{
@@ -587,7 +589,10 @@ struct KernelModelRuntime {
 ///
 /// `session_id` 是会话级脱敏序号映射的绑定线索（`/new`、`/resume` 换会话时不能把上一条
 /// 会话的「序号 → 原文」映射带过去），因此它也是键的一部分。
-#[derive(Clone, PartialEq, Eq)]
+///
+/// `desensitization` 是 `[desensitization]` 段的指纹：脱敏装饰器在**构建模型运行时**时包装，
+/// 因此只有把它纳入键，改配置才能在下一回合换掉装饰器（否则要等到换模型或重起内核）。
+#[derive(Clone, PartialEq)]
 struct RuntimeBuildKey {
     session_id: String,
     provider: String,
@@ -598,6 +603,26 @@ struct RuntimeBuildKey {
     api_key_env: String,
     context_window_tokens: i64,
     api_key: String,
+    desensitization: DesensitizationFingerprint,
+}
+
+/// 只用于测试断言的可读输出：凭据字段一律打码，绝不把 Key 写进日志或 panic 信息。
+impl std::fmt::Debug for RuntimeBuildKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeBuildKey")
+            .field("session_id", &self.session_id)
+            .field("provider", &self.provider)
+            .field("protocol", &self.protocol)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("user_agent", &self.user_agent)
+            .field("api_key_env", &self.api_key_env)
+            .field("context_window_tokens", &self.context_window_tokens)
+            .field("api_key", &if self.api_key.is_empty() { "" } else { "<已隐藏>" })
+            .field("desensitization", &self.desensitization)
+            .finish()
+    }
 }
 
 impl RuntimeBuildKey {
@@ -612,7 +637,36 @@ impl RuntimeBuildKey {
             api_key_env: config.api_key_env.clone(),
             context_window_tokens: config.context_window_tokens,
             api_key: api_key.to_string(),
+            desensitization: DesensitizationFingerprint::read(),
         }
+    }
+}
+
+/// `[desensitization]` 的生效值指纹：整段配置就是等价判定键。
+///
+/// 脱敏装饰器只在构建运行时包装一次，所以用「读到的整段配置」当键——任何字段变了都重建运行时，
+/// 不必逐个字段列出来。配置读不出来时退化为 `None`（与 `maybe_wrap_desensitization` 的
+/// 「按未启用处理」同义）。
+#[derive(Clone, PartialEq)]
+struct DesensitizationFingerprint(Option<DesensitizationConfig>);
+
+/// 同上：只给测试断言用，输出的是「有没有读到配置 + 启用状态」，不打印整段配置。
+impl std::fmt::Debug for DesensitizationFingerprint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_ref() {
+            Some(config) => formatter
+                .debug_struct("DesensitizationFingerprint")
+                .field("enabled", &config.enabled)
+                .finish(),
+            None => formatter.write_str("DesensitizationFingerprint(unreadable)"),
+        }
+    }
+}
+
+impl DesensitizationFingerprint {
+    fn read() -> Self {
+        let environment = ConfigEnvironment::from_process();
+        Self(load_desensitization_config(&environment, None).ok())
     }
 }
 
@@ -2838,6 +2892,20 @@ fn is_context_overflow(message: &str) -> bool {
         .any(|marker| message.contains(marker))
 }
 
+/// 压缩开始前的状态通知：把「上下文压缩中」发给宿主，让状态行在摘要请求期间有内容。
+///
+/// 阈值触发的压缩挂在回合收尾、`turn.finished` 之前，而这一刻状态行正停在「正在调用」或
+/// 已经被清空——不报这一条，用户在这几秒里看不到任何「正在压缩」的迹象。
+/// 显式 `/compact` 由宿主自己写状态行，这里同样发一条（同文案，幂等覆盖）。
+fn compaction_progress(conn: &Rc<RefCell<Conn>>) -> Option<Rc<dyn Fn()>> {
+    let conn = Rc::clone(conn);
+    Some(Rc::new(move || {
+        conn.borrow_mut().notify(HostEvent::Status(MessagePayload {
+            message: "上下文压缩中…".to_string(),
+        }));
+    }))
+}
+
 /// 上下文超限后的恢复：压缩当前未完成回合，返回可继续的历史投影。
 fn recover_context_overflow(
     conn: &Rc<RefCell<Conn>>,
@@ -2854,9 +2922,10 @@ fn recover_context_overflow(
         &api_key,
         &last_request_messages,
         previous_history,
+        compaction_progress(conn),
     ) {
         Ok(report) => {
-            if let Some(notice) = report.notice.as_deref() {
+            for notice in &report.notices {
                 // 边界提示走会话区（`turn.notice`）：画在状态行会在回合结束时消失，
                 // 留下的只有摘要本身，用户看不到「上一段已被替换」的可见边界。
                 conn.borrow_mut().notify(HostEvent::Notice(MessagePayload {
@@ -2993,10 +3062,14 @@ fn summarize_turn_after_turn(
     let post_compaction_context_tokens =
         post_compaction_context_tokens(conn, session.history.as_slice());
     // 会话区提示：与上下文压缩一样，在对话流里留一行灰色边界，标明这一轮的逐条工具调用
-    // 已被概括替换。实测计量的字符数取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行。
-    let notice = compression_logic::compaction_notice(outcome.raw_chars, outcome.summary_chars);
-    conn.borrow_mut()
-        .notify(HostEvent::Notice(MessagePayload { message: notice }));
+    // 已被概括替换。实测计量的字符数取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行；
+    // 没有净省（模型没压小）时不显示，那条边界只会在会话区里制造困惑。
+    if let Some(notice) =
+        compression_logic::saved_tokens_notice(outcome.raw_chars, outcome.summary_chars)
+    {
+        conn.borrow_mut()
+            .notify(HostEvent::Notice(MessagePayload { message: notice }));
+    }
     post_compaction_context_tokens
 }
 
@@ -3051,13 +3124,33 @@ fn run_session_tail(
     // * 工具调用概括的输入事件在 `summarize_turn_after_turn` 里同步剔除这批 ID。
     // 被淘汰的原文因此既不会被压缩摘要盖回去，也不会被概括再描述一遍。
     let evict_marks = conn.borrow().evict_marks.borrow().clone();
+    // 淘汰后的上下文大小：本轮若没有压缩/概括刷新遥测，就由它兜底（见函数末尾）。
+    let mut eviction_context_tokens: Option<i64> = None;
     if !evict_marks.is_empty() {
+        // 净省量用与遥测同源的估算器前后实测：剔除前后的运行期消息各算一次，
+        // 差值就是这次淘汰真实腾出来的上下文。会话区计量行与回放都按它重建。
+        let tokens_before = estimate_messages_tokens(working_messages);
         let removed = evict_tool_call_messages(working_messages, &evict_marks);
+        let tokens_after = estimate_messages_tokens(working_messages);
+        let saved_tokens = (tokens_before - tokens_after).max(0);
         if let Err(detail) = session.reload_history() {
             eprintln!("[kernel] 工具调用淘汰后重建运行期历史失败：{detail}");
         }
+        // 剔除已完成：算一次淘汰后的真实上下文大小，供 `turn.finished` 刷新底部遥测。
+        eviction_context_tokens = post_compaction_context_tokens(conn, session.history.as_slice());
+        // 记账事件先落盘、再发提示：`/resume`、`/undo` 据事件重建同一行（与压缩同款做法）。
+        if let Err(detail) = session.append(
+            EVICTION_MEASURE_EVENT_TYPE,
+            eviction_measure_payload(evict_marks.len(), saved_tokens),
+        ) {
+            eprintln!("[kernel] 会话写入工具调用淘汰记账失败：{detail}");
+        }
+        conn.borrow_mut()
+            .notify(HostEvent::Notice(MessagePayload {
+                message: format_compaction_savings_notice(saved_tokens),
+            }));
         eprintln!(
-            "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息（回合收尾统一处理）。",
+            "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息，省 {saved_tokens} Token（回合收尾统一处理）。",
             evict_marks.len(),
             removed
         );
@@ -3069,7 +3162,7 @@ fn run_session_tail(
         if let Err(detail) = session.reload_history() {
             eprintln!("[kernel] 重建运行期历史失败：{detail}");
         }
-        return None;
+        return eviction_context_tokens;
     };
     let api_key = read_api_key(&model).unwrap_or_default();
     let (usage, last_request_input_tokens, last_request_messages) = {
@@ -3090,6 +3183,7 @@ fn run_session_tail(
         &evicted_prefix(conn, &last_request_messages),
         working_messages.as_slice(),
         task_hint,
+        compaction_progress(conn),
     ) {
         Ok(report) => {
             if !report.compacted && !report.diagnostic.is_empty() {
@@ -3129,9 +3223,10 @@ fn run_session_tail(
                         post_compaction_context_tokens,
                     }));
             }
-            if let Some(notice) = report.notice {
+            for notice in report.notices {
                 // 阈值触发的压缩同样在会话区留边界：`turn.finished` 一到状态行就清空，
                 // 边界只能落在对话流里（与自动压缩的摘要一起构成「上一段被替换」的痕迹）。
+                // 工具段在前、非工具段在后，与链路的执行顺序一致。
                 conn.borrow_mut()
                     .notify(HostEvent::Notice(MessagePayload { message: notice }));
             }
@@ -3150,7 +3245,10 @@ fn run_session_tail(
                 // 这里不再重复携带。
                 None
             } else {
+                // 概括没落地时（没启用、没有调用或概括失败）仍要把淘汰后的上下文大小报给宿主：
+                // 淘汰真的让上下文变小了，遥测不刷新就会停在淘汰前那次的用量上。
                 summarize_turn_after_turn(conn, session, task_hint, turn_id)
+                    .or(eviction_context_tokens)
             }
         }
         Err(detail) => {
@@ -3158,7 +3256,7 @@ fn run_session_tail(
             if let Err(detail) = session.reload_history() {
                 eprintln!("[kernel] 重建运行期历史失败：{detail}");
             }
-            summarize_turn_after_turn(conn, session, task_hint, turn_id)
+            summarize_turn_after_turn(conn, session, task_hint, turn_id).or(eviction_context_tokens)
         }
     }
 }
@@ -3200,32 +3298,38 @@ fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
     };
     let last_request_messages = evicted_prefix(conn, &snapshot);
     let outcome = {
-        let connection = conn.borrow();
-        let Some(session) = connection.session.as_ref() else {
-            return;
+        let mut connection = conn.borrow_mut();
+        // 摘要在 session 的不可变借用上跑，因此先把会话搬出来；进度回调要再借
+        // 同一条连接，留在借用里会撞上 RefCell 的运行时借用检查。
+        let mut session = match connection.session.take() {
+            Some(session) => session,
+            None => return,
         };
-        compact_now(session, &model, &api_key, &last_request_messages)
+        let outcome = compact_now(
+            &session,
+            &model,
+            &api_key,
+            &last_request_messages,
+            compaction_progress(conn),
+        );
+        if let Ok(report) = outcome.as_ref() {
+            match report.history.clone() {
+                Some(history) => session.history = history,
+                None => {
+                    // `reload_history` 就地重建运行期历史；失败只记日志，压缩结论照旧回给宿主。
+                    if let Err(detail) = session.reload_history() {
+                        eprintln!("[kernel] 压缩后重建运行期历史失败：{detail}");
+                    }
+                }
+            }
+        }
+        connection.session = Some(session);
+        outcome
     };
 
     match outcome {
         Ok(report) => {
-            // 压缩后运行期历史要换成摘要 + 保留窗口，否则下一轮还会带上被压缩的原文。
-            match report.history.clone() {
-                Some(history) => {
-                    if let Some(session) = conn.borrow_mut().session.as_mut() {
-                        session.history = history;
-                    }
-                }
-                None => {
-                    // `reload_history` 就地在会话上重建运行期历史，需要可变借用。
-                    if let Some(session) = conn.borrow_mut().session.as_mut() {
-                        if let Err(detail) = session.reload_history() {
-                            eprintln!("[kernel] 压缩后重建运行期历史失败：{detail}");
-                        }
-                    }
-                }
-            }
-            if let Some(notice) = report.notice.clone() {
+            for notice in report.notices.clone() {
                 // 显式压缩的边界也走会话区：命令回执本身是另一条提示（「已压缩当前会话…」），
                 // 这条是计量边界，Python 侧两者也是各占一行。
                 conn.borrow_mut()
@@ -4598,6 +4702,79 @@ mod runtime_selection_tests {
             }
             other => panic!("应为 ReplySource，实际 {other:?}"),
         }
+    }
+
+    /// 脱敏配置是运行时构建键的一部分：改了它，下一次取运行时必然换实例。
+    ///
+    /// 这条回归的是「改了消息脱敏却要等换模型才生效」——装饰器只在构建运行时包装一次。
+    #[test]
+    fn desensitization_config_participates_in_the_runtime_build_key() {
+        let off = DesensitizationFingerprint(Some(DesensitizationConfig::default()));
+        let on = DesensitizationFingerprint(Some(DesensitizationConfig {
+            enabled: true,
+            ..DesensitizationConfig::default()
+        }));
+        assert_ne!(off, on, "开关变了必须算变了");
+        assert_eq!(
+            off,
+            DesensitizationFingerprint(Some(DesensitizationConfig::default())),
+            "同样一份配置必须相等，否则每回合都会重建运行时"
+        );
+        // 「读不出来」与「读到一份未启用」在键上必须可区分：前者是「配置暂时读不到」，
+        // 后者是明确的关闭。混同会在配置损坏时把装饰器静默换成不加脱敏的那份。
+        assert_ne!(off, DesensitizationFingerprint(None));
+
+        // 逐字段敏感：改一档匹配参数也算变了（这里取最容易漏掉的熵兜底阈值）。
+        let tweaked = DesensitizationFingerprint(Some(DesensitizationConfig {
+            entropy_min_bits: DesensitizationConfig::default().entropy_min_bits + 1.0,
+            ..DesensitizationConfig::default()
+        }));
+        assert_ne!(off, tweaked);
+    }
+
+    /// `read()` 不能带噪声：同一份进程配置连读两次必须相等。
+    #[test]
+    fn desensitization_fingerprint_read_is_stable() {
+        assert_eq!(
+            DesensitizationFingerprint::read(),
+            DesensitizationFingerprint::read()
+        );
+    }
+
+    /// 构建键相等性只由字段决定（缓存命中判据）。
+    #[test]
+    fn runtime_build_key_compares_by_fields() {
+        let key = RuntimeBuildKey {
+            session_id: "s".to_string(),
+            provider: "openai".to_string(),
+            protocol: String::new(),
+            base_url: String::new(),
+            model: "m".to_string(),
+            user_agent: String::new(),
+            api_key_env: String::new(),
+            context_window_tokens: 0,
+            api_key: "k".to_string(),
+            desensitization: DesensitizationFingerprint(None),
+        };
+        assert_eq!(key, key.clone(), "同一份键必须自等（缓存才可能命中）");
+        assert_ne!(
+            key,
+            RuntimeBuildKey {
+                api_key: "k2".to_string(),
+                ..key.clone()
+            },
+            "换凭据必须重建运行时"
+        );
+        assert_ne!(
+            key,
+            RuntimeBuildKey {
+                desensitization: DesensitizationFingerprint(Some(
+                    DesensitizationConfig::default()
+                )),
+                ..key.clone()
+            },
+            "脱敏配置变了必须重建运行时"
+        );
     }
 }
 

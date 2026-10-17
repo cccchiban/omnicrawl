@@ -70,9 +70,8 @@ impl SubAgentRuntime {
         let env = ConfigEnvironment::from_process();
         let config =
             load_subagent_config(&env, None).map_err(|error| error.message().to_string())?;
-        let builtin = builtin_directory(&env);
         let home = env.home().to_path_buf();
-        let mut registry = AgentDefinitionRegistry::new(builtin, Some(home));
+        let mut registry = AgentDefinitionRegistry::with_located_builtin(Some(home));
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         registry.discover(&workspace, &[]);
         Ok(Self { config, registry })
@@ -250,10 +249,4 @@ impl SubAgentRuntime {
             "SubAgent 功能未启用。请在配置中显式设置 subagents.enabled=true。",
         ))
     }
-}
-
-/// 定义目录：用户 Agent 目录（与 four-layer 发现里的 user 层同址，
-/// 重复扫描会被 real path 去重跳过）。
-pub fn builtin_directory(env: &ConfigEnvironment) -> PathBuf {
-    env.home().join(".OmniCrawl").join("agents")
 }

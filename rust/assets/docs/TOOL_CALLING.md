@@ -68,7 +68,7 @@ Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被
 
 ## 兼容范围
 
-- 内置文件、命令、后台任务、记忆、知识库、Windows 桌面和 SubAgent 工具保留在 Host 目录，顶层全部注册。
+- 内置文件、命令、后台任务、记忆、知识库、Skill 检索、Windows 桌面和 SubAgent 工具保留在 Host 目录，顶层全部注册。
 - MCP Tool、Resource 和 Prompt 继续由 MCP Manager 发现并写入 Host 目录，同样顶层注册。
 - AgentLoop 的批次审批、所有工具并发执行、按每个工具真实完成时刻独立计时、模型上下文有界输出摘要（头尾预览）、完整 `full_output` UI 展示、视觉图片回填、视觉模型故障转移和 Session 事件保持不变；模型观察仍按原始调用顺序回填。
 - `HostToolCatalog` 的工具搜索、声明构建与 `invoke_tool` 解析保留为内部能力，不再暴露给 Provider。

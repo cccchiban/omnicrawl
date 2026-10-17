@@ -34,6 +34,9 @@ use super::web_transport::{WebError, WebErrorKind, WebRequest, WebResponse, WebT
 /// 会落到 `chrome`。四个名字互不为前缀，因此顺序不影响结果，保留原顺序只为对照方便。
 pub const IMPERSONATE_OPTIONS: [&str; 4] = ["chrome", "firefox", "safari", "edge"];
 
+/// 未显式给 `impersonate` 时的档案：对齐 Python `_normalize_impersonate` 的兜底。
+pub const DEFAULT_IMPERSONATE: &str = "chrome";
+
 /// 归一化 `impersonate` 参数，语义对齐 Python `_normalize_impersonate`。
 ///
 /// Python 实现是 `str(value or "chrome").strip().lower()` 加前缀匹配，未知值回退
@@ -157,6 +160,32 @@ impl WebTransport for WreqWebTransport {
             .recv()
             .map_err(|_| WebError::new(WebErrorKind::Other, TRANSPORT_GONE))?
     }
+
+    /// 只补档案没带的导航头，其余一律交给设备档案。
+    ///
+    /// wreq 把档案头作为客户端默认头，而请求头会**覆盖**默认头，所以这里多写一个档案已经
+    /// 生成过的头（UA、`sec-ch-ua*`、`sec-fetch-dest/mode/site`、`accept`、`accept-language`）
+    /// 就等于把档案的真实值换成本地手写值，HTTP 层立刻与 TLS 层自相矛盾。档案缺的只有
+    /// 两个顶层导航头：`Upgrade-Insecure-Requests`（Chromium/Firefox/Safari 的 GET 导航都带）
+    /// 与 `Sec-Fetch-User`（只有 Chromium 与 Firefox 带，Safari 不发）。
+    ///
+    /// 刻意不发 `Connection` 与 `Accept-Encoding`：档案走 HTTP/2，`Connection` 是 h2 禁止的
+    /// 连接专有头；`Accept-Encoding` 一旦发出就必须能解压（wreq 侧要开 gzip/br/zstd 特性），
+    /// 当前依赖树没开，发了会拿到压缩字节流。
+    fn navigation_headers(
+        &self,
+        user_agent: &str,
+        impersonate: Option<&str>,
+    ) -> Vec<(String, String)> {
+        // 档案自带 UA；`user_agent` 只服务于没有档案的传输。
+        let _ = user_agent;
+        let family = impersonate.unwrap_or("chrome");
+        let mut headers = vec![("Upgrade-Insecure-Requests".to_string(), "1".to_string())];
+        if family != "safari" {
+            headers.push(("Sec-Fetch-User".to_string(), "?1".to_string()));
+        }
+        headers
+    }
 }
 
 const TRANSPORT_GONE: &str = "浏览器指纹传输线程不可用。";
@@ -220,8 +249,15 @@ impl ClientCache {
 }
 
 fn build_client(key: &ClientKey) -> Result<wreq::Client, WebError> {
+    // 显式绑定 Windows：宿主就是 Windows，系统代理、时区与语言环境都是 Windows，且档案里
+    // 只有**头部**随平台变化（TLS 与 HTTP/2 选项与平台无关），所以固定平台不会削弱指纹，
+    // 只让 UA / sec-ch-ua-platform 与本机真实环境一致。Safari 档案没有平台变体，绑定被忽略。
+    let emulation = wreq_util::Emulation::builder()
+        .profile(key.profile)
+        .platform(wreq_util::Platform::Windows)
+        .build();
     let mut builder = wreq::Client::builder()
-        .emulation(key.profile)
+        .emulation(emulation)
         // 跟随重定向的上限对齐 Python 的 httpx 默认（本项目常量 MAX_REDIRECTS）。
         .redirect(wreq::redirect::Policy::limited(key.max_redirects as usize))
         // insecure=true 关掉证书链校验，对齐 Python 的 verify=False。
@@ -308,6 +344,7 @@ fn classify(error: wreq::Error) -> WebError {
 mod tests {
     use super::*;
     use serde_json::json;
+    use wreq::IntoEmulation;
 
     #[test]
     fn impersonate_normalization_mirrors_python() {
@@ -339,5 +376,91 @@ mod tests {
         assert_eq!(profile_for("safari"), Profile::Safari26);
         assert_eq!(profile_for("edge"), Profile::Edge148);
         assert_eq!(profile_for("unknown"), Profile::Chrome149);
+    }
+
+    /// 锚定「档案为准」这条契约：档案自己就生成整套桌面浏览器导航头（UA 与 Client Hints
+    /// 同源于同一个版本），所以传输层不能再写一遍——写一遍就会把档案值顶掉，让 HTTP 层
+    /// 声称的版本与 TLS 层的档案版本不一致。
+    #[test]
+    fn profile_emulation_supplies_the_browser_header_set() {
+        let emulation = wreq_util::Emulation::builder()
+            .profile(Profile::Chrome149)
+            .platform(wreq_util::Platform::Windows)
+            .build()
+            .into_emulation();
+        let headers = &emulation.headers;
+        let value = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|item| item.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        // 与 TLS/HTTP2 指纹同源的 UA 与 Client Hints。
+        assert!(
+            value("user-agent").contains("Chrome/149"),
+            "{}",
+            value("user-agent")
+        );
+        assert!(value("sec-ch-ua").contains("149"), "{}", value("sec-ch-ua"));
+        assert_eq!(value("sec-ch-ua-platform"), "\"Windows\"");
+        assert_eq!(value("sec-ch-ua-mobile"), "?0");
+        // 顶层导航头。
+        assert_eq!(value("sec-fetch-dest"), "document");
+        assert_eq!(value("sec-fetch-mode"), "navigate");
+        assert_eq!(value("sec-fetch-site"), "none");
+        assert!(
+            value("accept").starts_with("text/html"),
+            "{}",
+            value("accept")
+        );
+        // h2 禁止连接专有头，档案本来也不发。
+        assert_eq!(value("connection"), "");
+        // 这两个是档案**不**提供的，正是 `navigation_headers` 要补的部分。
+        assert_eq!(value("upgrade-insecure-requests"), "");
+        assert_eq!(value("sec-fetch-user"), "");
+    }
+
+    /// 传输层只补档案缺的导航头，且不能重复写档案已经生成的头。
+    #[test]
+    fn navigation_headers_only_fill_what_profiles_omit() {
+        let transport = WreqWebTransport::new();
+        let chrome = transport.navigation_headers("ignored", Some("chrome"));
+        assert!(chrome.contains(&("Upgrade-Insecure-Requests".to_string(), "1".to_string())));
+        assert!(chrome.contains(&("Sec-Fetch-User".to_string(), "?1".to_string())));
+
+        // 手写这些头会把档案值顶掉：UA/Client Hints/部分导航头由档案提供；
+        // Connection 是 h2 违规头；Accept-Encoding 一发就必须能解压。
+        const PROFILE_OWNED: [&str; 11] = [
+            "user-agent",
+            "sec-ch-ua",
+            "sec-ch-ua-platform",
+            "sec-ch-ua-mobile",
+            "accept",
+            "accept-language",
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "sec-fetch-site",
+            "connection",
+            "accept-encoding",
+        ];
+        for (name, _) in &chrome {
+            let lowered = name.to_lowercase();
+            assert!(
+                !PROFILE_OWNED.contains(&lowered.as_str()),
+                "不该重复写档案拥有的头：{name}"
+            );
+        }
+
+        // Safari 不发 Sec-Fetch-User。
+        let safari = transport.navigation_headers("ignored", Some("safari"));
+        assert!(!safari
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("sec-fetch-user")));
+        assert!(safari.contains(&("Upgrade-Insecure-Requests".to_string(), "1".to_string())));
+
+        // 缺省族名按 chrome 处理（与 `fetch_one` 的默认值一致）。
+        let fallback = transport.navigation_headers("ignored", None);
+        assert!(fallback.contains(&("Sec-Fetch-User".to_string(), "?1".to_string())));
     }
 }

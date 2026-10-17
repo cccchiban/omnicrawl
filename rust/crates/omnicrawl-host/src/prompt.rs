@@ -266,6 +266,9 @@ impl PromptRuntime {
 
     /// 上下文消息装配的统一实现：`active_skill_context` 非空时以活动 Skill 正文
     /// 取代 Skill 索引段（与 Python 的 `build_context_messages` 同一分支）。
+    ///
+    /// Skill 索引**不再**注入上下文：目录整份进提示词会随 Skill 数量线性膨胀，且长索引
+    /// 里靠后的条目容易被模型忽略；改由 `skill_search` 工具按作用域与关键词按需检索。
     fn build_context_messages_with(
         &self,
         has_tools: bool,
@@ -274,15 +277,10 @@ impl PromptRuntime {
         turn_id: Option<&str>,
         active_skill_context: Option<&str>,
     ) -> Result<Vec<Value>, String> {
-        let skill_index_section = self
-            .skill_manager
-            .as_ref()
-            .map(|manager| SkillManager::format_skills_for_prompt(&manager.list_all()));
         let project_instructions = self.project_instructions()?;
         let mut messages = build_context_messages(&ContextMessageInputs {
             workspace_root: &self.workspace_root.to_string_lossy(),
             project_instructions: &project_instructions,
-            skill_index_section: skill_index_section.as_deref(),
             active_skill_context,
             has_tools,
             agent_temp_dir: &self.agent_temp_dir,

@@ -132,9 +132,32 @@ impl WebRequest {
 pub trait WebTransport: Send + Sync {
     /// 按 `request.method` 发送一次请求；失败只回报分类与文本。
     fn send(&self, request: &WebRequest) -> Result<WebResponse, WebError>;
+
+    /// 一次顶层文档导航（GET 页面）该带哪些浏览器头。
+    ///
+    /// 默认给整套 [`browser_headers`]：没有设备档案的传输只能靠这套手写头凑出桌面浏览器外壳。
+    /// 自带设备档案的传输**必须**覆盖本方法，只补档案没带的头——因为 wreq 的请求头是
+    /// **覆盖**客户端默认头的（`wreq::client::layer::config` 的 `ConfigServiceLayer`），
+    /// 档案生成的头（UA、`sec-ch-ua*`、`sec-fetch-dest/mode/site`、`accept`）一旦被再写一遍，
+    /// 就会把档案值顶掉，结果是指纹档案声称的版本与 HTTP 头声称的版本不一致。
+    ///
+    /// `impersonate` 是本次请求归一化后的档案族名（`chrome`/`firefox`/`safari`/`edge`）。
+    fn navigation_headers(
+        &self,
+        user_agent: &str,
+        impersonate: Option<&str>,
+    ) -> Vec<(String, String)> {
+        let _ = impersonate;
+        browser_headers(user_agent)
+    }
 }
 
 /// 桌面浏览器常规请求头（顺序与 Python 的字典一致，便于对照与排障）。
+///
+/// 只给**没有设备档案**的传输用（ureq、测试桩）。带设备档案的传输走
+/// [`WebTransport::navigation_headers`]，由档案生成同一批头——档案值才是与 TLS 指纹同源的
+/// 那一份，手写这套用在档案传输上会把版本与平台写矛盾（UA 是 Chrome/124+Windows，
+/// 而档案是 Chrome149，默认平台 macOS）。
 pub fn browser_headers(user_agent: &str) -> Vec<(String, String)> {
     let pairs = [
         ("User-Agent", user_agent),

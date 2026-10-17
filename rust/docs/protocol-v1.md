@@ -151,6 +151,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
            "system_prompt": "你是助手。…<active_mode_prompt name=\"plan\">…</active_mode_prompt>",
            "context_messages": [{"role": "user", "content": "<project_instructions>…</project_instructions>"}],
            "tools": [{"type": "function", "function": {"name": "read_file"}}],
+           "native_vision": true, "tool_call_prune": false,
            "context_window_tokens": 200000},
  "compaction": {"trigger_context_tokens": 160000, "context_window_tokens": 200000}}
 ```
@@ -174,6 +175,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - 宿主据此区分「写盘失败」与「内核拒绝即时更新」：后者配置已落盘，宿主如实提示「下次会话生效」，
   不假装即时生效。
 - 工具声明（`model.tools`）由宿主负责生成与替换：工具仍由宿主执行，内核只持有声明。
+- `model.native_vision` 与 `model.tool_call_prune` 是**宿主运行期的能力开关**，不是模型配置的
+  一部分：设置面板改完当场下发，不必等下一次握手。前者决定带图观察直送主模型还是走
+  `[vision]` 代理（换模型时一并重新下发），后者决定内核要不要发起 `context.prune`。
 
 `session.list` / `session.rename` / `session.archive` / `session.history` / `session.events` /
 `session.new` / `session.resume` 是斜杠命令（`/sessions`、`/archives`、`/rename`、`/archive`、
@@ -263,7 +267,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.delta` | `{text}` | `on_delta` |
 | `turn.reasoning_delta` | `{text}` | `on_reasoning_delta` |
 | `turn.status` | `{message}` | `on_status` |
-| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩的「---已压缩 xxk~xxk ---」与回合末工具调用压缩的「已压缩 a → b 字符」）。Python 侧这些消息也走 `on_status`、由 UI 按前缀特判落进对话区；Rust 侧直接用这条通知表达落点，免得既顶掉状态行又依赖文案前缀匹配 |
+| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩、回合末工具调用压缩与决策模型标记淘汰共用的「已压缩：省 N Token」）。Python 侧这些消息也走 `on_status`、由 UI 按前缀特判落进对话区；Rust 侧直接用这条通知表达落点，免得既顶掉状态行又依赖文案前缀匹配 |
 | `turn.retry_status` | `{message}` | `on_retry_status` |
 | `turn.protocol_wait` | `{}` | `on_protocol_wait` |
 | `turn.stream_rollback` | `{}` | `on_stream_rollback` |
@@ -317,10 +321,15 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   `turn.tool_output_compression`（`phase=started` 时不带计量，`finished` 带 `before_chars` /
   `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」/「已压缩 a → b 字符」。
 - **会话区提示**：`turn.notice` 与 `turn.status` 的差别只在宿主落点——前者是「一条已经落在
-  对话里的提示」（当前用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩的
-  「---已压缩 xxk~xxk ---」与回合末工具调用压缩的「已压缩 a → b 字符」），宿主应追加进对话流；
+  对话里的提示」（当前用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩、回合末工具调用
+  压缩与决策模型标记淘汰共用的「已压缩：省 N Token」），宿主应追加进对话流；
   后者是「正在做什么」的运行状态，宿主写状态行。压缩边界必须走前者：写状态行会在
   `turn.finished` 时被清掉，对话里只剩摘要/概括，用户看不到「上一段已被替换」的痕迹。
+- **压缩期间的运行状态**：压缩边界走 `turn.notice`，但「此刻正在压缩」走 `turn.status`
+  （`上下文压缩中…`），由内核在**确定要压缩、摘要请求发出之前**发出（三条路径都覆盖：
+  结构化摘要、显式 `/compact`、阈值触发的双段压缩）。摘要请求是压缩路径上唯一的秒级操作，
+  阈值触发的压缩又挂在回合收尾、`turn.finished` 之前——不报这一条，这几秒钟宿主界面上什么
+  也看不到。未触发压缩的回合不发。
 - 一个连接同时只跑一个回合；第二个 `turn.submit` 回 `-32002`。
 - 通知不带 `id`；响应必须带回对应请求的 `id`，`id` 允许整数或字符串。
 
@@ -397,9 +406,13 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   子回合里被允许的工具仍走同一 `tool.batch` 通道，`turn_id` 用子任务号，宿主据此把审批与生命周期分开。
   子代理的生命周期事件（`subagent.event`）也由内核发出。
 
-`subagent` 的可用角色来自内核读到的 `~/.OmniCrawl/subagents.toml` 与 `~/.OmniCrawl/agents`
-下的 Markdown 定义；未启用时工具仍在表里，调用会得到
-`SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`。
+`subagent` 的可用角色来自内核读到的 `~/.OmniCrawl/subagents.toml` 与四层定义目录——项目
+`.omnicrawl/agents`、项目兼容 `.agents/agents`、用户 `~/.OmniCrawl/agents`、
+随二进制分发的内置 `templates/subagents`（可执行文件祖先里的
+`rust/assets/templates/subagents` 或已发布载荷的 `omnicrawl/templates/subagents`）——下的
+Markdown 定义；未启用时工具仍在表里，调用会得到
+`SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`，两侧取同一份
+四层发现结果。
 
 `subagent` 的执行方式：`action=run` 按 `max_concurrency` 并发跑子任务，`action=spawn` 交给内核的
 后台线程池、父回合立刻收尾，`list` / `get` / `cancel` 用来查这些后台任务；`fail_fast` 在前序任务

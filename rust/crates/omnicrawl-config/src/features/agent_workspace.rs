@@ -98,11 +98,15 @@ pub fn load_agent_workspace_config(
 }
 
 /// 把隔离工作区配置写回 `config.toml`（保留其他段）。
+///
+/// 写盘前先归一化：读取器（[`load_agent_workspace_config`]）只接受 `worktree`/`local`
+/// 与 `auto`/`keep`/`never` 两组枚举，写出它必然拒绝的值会让整段配置在下次读取时失效。
 pub fn save_agent_workspace_config(
     env: &ConfigEnvironment,
     configuration: &AgentWorkspaceConfig,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let configuration = configuration.clone().normalize()?;
     let mut data = load_config_data(env, config_path)?;
     let mut section = Table::new();
     section.insert("enabled".to_string(), Value::Boolean(configuration.enabled));

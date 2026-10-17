@@ -265,6 +265,7 @@ fn options(approval: ApprovalMode) -> Options {
         session_root: None,
         context_window_tokens: Some(128_000),
         approval,
+        approval_from_cli: false,
         command_timeout_seconds: 360,
         tool_timeout_seconds: 120,
         native_vision: false,

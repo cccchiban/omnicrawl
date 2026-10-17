@@ -86,11 +86,15 @@ pub fn load_vision_configuration(
 }
 
 /// 保留其他配置段，只更新完整的视觉代理配置。
+///
+/// 写盘前先校验：读取器（[`load_vision_configuration`]）拒绝重复的模型引用，
+/// 写出重复项会让整段配置在下次读取时失效。
 pub fn save_vision_configuration(
     env: &ConfigEnvironment,
     configuration: &VisionConfiguration,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let configuration = configuration.clone().validate()?;
     let mut data = load_config_data(env, config_path)?;
     let mut section = Table::new();
     section.insert("enabled".to_string(), Value::Boolean(configuration.enabled));

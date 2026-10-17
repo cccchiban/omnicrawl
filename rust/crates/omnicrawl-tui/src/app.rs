@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,7 +30,7 @@ use omnicrawl_controllers::turn::skill_command::{
     skill_not_found_status,
 };
 use omnicrawl_extensions::skill::{SkillDiagnostic, SkillMeta};
-use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::runtime::{resolve_config_path, ConfigEnvironment};
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
@@ -68,8 +69,13 @@ use omnicrawl_config::features::tools::{
 use omnicrawl_config::features::tts::{
     load_tts_configuration, save_tts_configuration, TtsConfiguration,
 };
-use omnicrawl_config::features::tts_api::{
-    load_tts_api_configuration, save_tts_api_configuration, TtsApiConfiguration,
+use omnicrawl_config::features::tts_cloud::{
+    load_tts_api_configuration, load_tts_cloud_configuration, load_tts_gemini_configuration,
+    save_tts_api_configuration, save_tts_cloud_configuration, save_tts_gemini_configuration,
+    GeminiTtsConfiguration, TtsApiConfiguration, TtsCloudConfiguration,
+};
+use omnicrawl_config::features::web_search::{
+    load_web_search_configuration, save_web_search_configuration,
 };
 use omnicrawl_config::models::channels::{
     default_channel, load_channel_configuration, provider_options, save_channel_configuration,
@@ -104,7 +110,8 @@ use omnicrawl_config::features::decision_model::{
     DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
     DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
     DEFAULT_LOCAL_DECISION_CHANNEL_KEY, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
-    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DEFAULT_DECISION_RETRY_COUNT,
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
+    DEFAULT_DECISION_RETRY_COUNT,
 };
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::tools::evicted_call_ids_for;
@@ -129,7 +136,7 @@ use omnicrawl_ipc::{
     error_code, Frame, Id, PROTOCOL_VERSION,
 };
 use omnicrawl_mcp::client::McpClientManager;
-use omnicrawl_mcp::config::load_mcp_config;
+use omnicrawl_mcp::config::{load_mcp_config, valid_server_name};
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
 use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, finalize_subagent_worktrees, IsolationSession,
@@ -141,11 +148,11 @@ use crate::host::{self, BatchStep, Waiting};
 use crate::kernel::{frame_api_key_env, KernelClient};
 use crate::state::{AppState, PendingImage, Record};
 use crate::tools::{
-    AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry, TtsOptions,
+    tts_backend, AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry,
+    TtsOptions,
 };
 use crate::ui;
 use crate::ui::conversation::{self, LineHit};
-use crate::ui::file_picker::{FilePickerEvent, FilePickerState};
 use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
@@ -154,17 +161,10 @@ use crate::ui::settings::{
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, FieldValue, FormKind, McpChange,
     McpServerDraft, McpServerRow,
     McpSettingsValues, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
-    SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsDraft, TtsValues, VisionChange,
-    VisionModelRef, SUBAGENT_ADVANCED_SPECS,
+    SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues,
+    TtsDraft, TtsValues, VisionChange, VisionModelRef, WebSearchRow, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
-use omnicrawl_tts::api::ApiTtsConfig;
-use omnicrawl_tts::config::TtsConfig;
-use omnicrawl_tts::download::{download_models_into, models_ready};
-use omnicrawl_tts::engine::TtsEngine;
-use omnicrawl_tts::voices::{
-    all_voice_names, default_root, delete_custom_voice, list_custom_voice_names,
-};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -480,14 +480,32 @@ pub struct App {
     ///
     /// 与 `prune` 一样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    /// 子代理建议运行期（`[decision_models.features] subagent_suggestion`）：开启后提交前同样先
+    /// 问一次决策模型「本次该调度哪些子代理」。与工具建议互相独立，可单开也可同时开——同时开时
+    /// 两条请求并发发起，总耗时取较大者而不是相加。
+    ///
+    /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
+    pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    /// 子代理建议的候选角色清单覆盖：`None`（默认）表示取工具表里的角色清单。
+    ///
+    /// 与 `suggest` 同一用意：用例需要钉住候选清单，否则结果会随本机的 `subagents.toml`
+    /// 与 `~/.OmniCrawl/agents` 漂移。
+    pub suggest_roles: Option<Vec<(String, String)>>,
     /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复。
     custody_context: omnicrawl_host::tools::CustodyContext,
     /// 审查载荷里的两条会话事实（最近一条用户消息 + 最近一次 ask_user 问答）。
     review_context: omnicrawl_host::review::ReviewContext,
-    /// 文件选择弹层（TTS 参考音频）：`Some` 时铺在设置面板之上，键盘都归它。
-    pub file_picker: Option<FilePickerState>,
-    /// 后台 TTS 任务（模型下载 / 音色克隆）的结果通道。
-    tts_task: Option<Receiver<TtsTaskResult>>,
+    /// 审查相关配置的变更探测器：外部改 `config.toml` / `decision_models.toml` 后，
+    /// 主循环按文件修改时间发现并即时重建 [`App::review`] 与审批模式，不必重启。
+    review_watch: omnicrawl_host::review::ReviewConfigWatch,
+    /// 启动命令行的 `--approval` 是否显式给过模式。
+    ///
+    /// 给过时以命令行优先：配置里的 `[approval] mode` 只有在**它自己**被改写后才跟随，
+    /// 别的键（如 `review_model`）改动不会顺手覆盖用户的显式选择。
+    approval_from_cli: bool,
+    /// 是否正有一轮「朗读回复」在跑：合成要几秒，期间落地的下一轮直接跳过，
+    /// 免得积压一队过期的语音。
+    reply_speaking: Arc<AtomicBool>,
     /// 后台自部署任务（环境安装 / 权重下载 / 服务启停）的结果通道。
     onejev_task: Option<Receiver<OneJevTaskResult>>,
     /// 正在跑的自部署任务名与进度（界面每帧取一次快照）。
@@ -562,14 +580,6 @@ struct ChannelModelsResult {
 struct PruneTaskResult {
     id: Id,
     evicted_call_ids: Vec<String>,
-}
-
-/// 后台 TTS 任务的产出（下载 / 克隆），由 UI 线程的轮询取回。
-enum TtsTaskResult {
-    /// 模型下载：成功或失败文案。
-    Download(Result<(), String>),
-    /// 音色克隆：成功或失败文案。
-    Clone(Result<(), String>),
 }
 
 /// 后台自部署任务的产出（环境安装 / 权重下载 / 服务启停），由 UI 线程的轮询取回。
@@ -659,7 +669,7 @@ impl App {
             let slot = Arc::clone(&advisor_tools);
             Arc::new(move || slot.lock().map(|guard| guard.clone()).unwrap_or_default())
         };
-        // 启动期只读一次环境：记忆开关、以及决策模型的两处检索重排都从这里取配置。
+        // 启动期只读一次环境：记忆开关、以及决策模型的三处检索重排都从这里取配置。
         let environment = ConfigEnvironment::from_process();
         // 记忆开关与 Python 侧同源：`entry.py` 读 `load_feature_enabled("memory", default=True)`，
         // 即缺省开启。此前这里直接走 `RegistryOptions::default()`（`memory_enabled: false`），
@@ -692,8 +702,15 @@ impl App {
                 &environment,
                 DECISION_SWITCH_KB_SEARCH,
             )),
-            subagent_types: subagent_role_names(),
+            // Skill 检索重排：同样一套装配口径（无关键词时按作用域列出，不送审）。
+            skill_rerank: Arc::new(omnicrawl_host::tools::rerank_options_from_config(
+                &environment,
+                DECISION_SWITCH_SKILL_SEARCH,
+            )),
+            subagent_roles: subagent_roles(),
             disabled_tools,
+            // 联网搜索：默认引擎与 Tavily/Exa/Firecrawl 凭据来自 `[web_search]` 段。
+            web_search: omnicrawl_host::tools::web_search_options_from_config(&environment),
             mcp: mcp_manager(workspace),
             // 命令行只承载显式覆盖，未给的字段以 `[image_gen]` 配置为准（见 `args.rs`）。
             image_gen: image_gen_options_from(
@@ -776,12 +793,20 @@ impl App {
         // 审查运行期：与 Python `_review_tool_call` 同源；未配模型时为 `None`，
         // 此时 `review` 模式下需审查的调用按 fail-closed 拒绝。
         let review = build_review_options(&llm, &environment);
+        // 审查配置变更探测：以启动时这份磁盘状态的生效值为基线，之后主循环发现外部改动即热应用。
+        let mut review_watch = omnicrawl_host::review::ReviewConfigWatch::new();
+        review_watch.baseline(&environment);
+        let approval_from_cli = options.approval_from_cli;
         // 提问托管：与审查、检索重排同源（`[decision_models.features] ask_user_custody`）。
         let custody = Some(omnicrawl_host::tools::custody_options_from_config(&environment));
         // 工具调用淘汰：与审查、检索重排同源（`[decision_models.features] tool_call_prune`）。
         let prune = Some(omnicrawl_host::tools::prune_options_from_config(&environment));
-        // 工具建议：与审查、检索重排同源（`[decision_models.features] tool_suggestion`）。
+        // 建议运行期：与审查、检索重排同源（`[decision_models.features] tool_suggestion` 与
+        // `subagent_suggestion`；两者独立，可同时开启）。
         let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(&environment));
+        let subagent_suggest = Some(
+            omnicrawl_host::tools::subagent_suggest_options_from_config(&environment),
+        );
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
         state
@@ -818,10 +843,13 @@ impl App {
             custody,
             prune,
             suggest,
+            subagent_suggest,
+            suggest_roles: None,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),
-            file_picker: None,
-            tts_task: None,
+            review_watch,
+            approval_from_cli,
+            reply_speaking: Arc::new(AtomicBool::new(false)),
             onejev_task: None,
             onejev_progress: None,
             onejev_server: OneJevServer::new(),
@@ -916,10 +944,10 @@ impl App {
     ///
     /// 全都没变时返回 `false`，事件循环就整帧跳过 `terminal.draw`——空闲时 TUI
     /// 不再以 20fps 空转（三块的内容也不会被无谓地重建）。
-    /// 模态弹层（设置 / 文件选择）自己铺满整屏，仍按老规矩每帧重画。
+    /// 模态页（设置面板）自己铺满整屏，仍按老规矩每帧重画。
     pub fn needs_redraw(&mut self) -> bool {
         let current = (self.state.refresh_versions(), self.viewport);
-        if self.settings.is_some() || self.file_picker.is_some() {
+        if self.settings.is_some() {
             self.drawn = Some(current);
             return true;
         }
@@ -1189,7 +1217,6 @@ impl App {
     pub fn poll_budget(&self, now: Instant) -> Duration {
         let active = self.state.turn.is_running()
             || self.slow_task.is_some()
-            || self.tts_task.is_some()
             || self.onejev_task.is_some()
             || self.channel_models_task.is_some()
             // 淘汰裁决还在后台跑：结果一到就要应答内核（内核正等这条响应）。
@@ -1236,8 +1263,7 @@ impl App {
             // 「回工具批次失败」「工具超时」这类二次噪音。
             self.tool_deadline = None;
             self.state.cancel_batch();
-            // 模态页先收起来：设置/文件选择都要靠内核落地，留着只会盖住报错。
-            self.file_picker = None;
+            // 模态页先收起来：设置页要靠内核落地，留着只会盖住报错。
             self.settings = None;
             self.state.fail_turn(KERNEL_LOST_MESSAGE.to_string());
             self.plugins
@@ -1412,6 +1438,9 @@ impl App {
                         // `/skill:` 的上下文消息只覆盖本轮：落地后换回常规装配。
                         self.restore_skill_context();
                         self.plugins.turn_end(None, turn_id.as_deref());
+                        if let HostEvent::TurnFinished(payload) = &event {
+                            self.speak_reply(&payload.final_text);
+                        }
                         self.drain_pending_inputs();
                     }
                 }
@@ -1937,11 +1966,6 @@ impl App {
         }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                // 文件选择弹层是最上层模态：它开着时按键都归它。
-                if self.file_picker.is_some() {
-                    self.handle_file_picker_key(key);
-                    return;
-                }
                 // 设置面板是模态页：它开着时按键都归它（与 Python 的 `SettingsScreen` 一致）；
                 // 鼠标同理——面板铺满整屏，落点只能按面板自己的命中区判。
                 if self.settings.is_some() {
@@ -1954,12 +1978,16 @@ impl App {
             // 只有抬起透传；图片粘贴挂在这里才对（详见 `handle_ctrl_v_release`）。
             // 抬起也可能来自文本粘贴，此时 `paste_clipboard_image` 自己返回 `false`，不干扰正文。
             Event::Key(key) if is_ctrl_v_release(key) => self.handle_ctrl_v_release(),
-            Event::Mouse(_) if self.file_picker.is_some() => {}
             Event::Mouse(mouse) if self.settings.is_some() => self.handle_settings_mouse(mouse),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
-            // 弹层开着时粘贴不落到主输入框（路径输入用键盘）。
-            Event::Paste(_) if self.file_picker.is_some() => {}
-            Event::Paste(text) if self.settings.is_none() && !self.kernel_lost => {
+            // 设置面板是模态页：粘贴落进当前字段的输入态（对映 Textual `Input::_on_paste`），
+            // 没有正在编辑的字段时丢弃，不落到主输入框。
+            Event::Paste(text) if self.settings.is_some() => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.paste(&text);
+                }
+            }
+            Event::Paste(text) if !self.kernel_lost => {
                 // 整段就是一个存在的图片路径 → 转成图片附件；否则按文本折叠
                 // （多行折成 `[粘贴 #n +N 行]`，提交时还原）。
                 if !self.paste_image_path(&text) {
@@ -2530,12 +2558,12 @@ impl App {
 
     /// 把剪贴板里的位图粘进输入框；返回是否真的插入了一张图片。
     ///
-    /// 三个前提缺一不可：剪贴板里是位图、当前没有弹层挡住输入框、原生视觉开着。
+    /// 三个前提缺一不可：剪贴板里是位图、设置面板没开着、原生视觉开着。
     /// 没开原生视觉时不插入占位符，只在提示行说明原因（用户要求）——图片插进去也送不出去，
     /// 不如当场说清为什么没插进去。剪贴板里是文本时返回 `false`，让终端自己送来的
     /// 文本粘贴照常处理。
     fn paste_clipboard_image(&mut self) -> bool {
-        if self.settings.is_some() || self.file_picker.is_some() {
+        if self.settings.is_some() {
             return false;
         }
         let Some(png) = crate::clipboard::read_image_png() else {
@@ -2560,7 +2588,7 @@ impl App {
     /// 避免粘贴代码时把路径片段误当图片。没有视觉通路时保持文本原样、不插入也不提示——
     /// 路径对模型照样可读，正是「不转换」最合理的结果。
     fn paste_image_path(&mut self, text: &str) -> bool {
-        if self.settings.is_some() || self.file_picker.is_some() {
+        if self.settings.is_some() {
             return false;
         }
         if !self.vision_route_available() {
@@ -2652,36 +2680,49 @@ impl App {
             self.state.queue_pending(text, images);
             return;
         }
-        // 工具建议：先问一次决策模型「本次该用哪些工具」（网络请求，超时 20s，不能占 UI
-        // 线程），结果回来再提交；不可用或没有建议时立即提交，原文照发（fail-open）。
-        if let Some((text, images)) = self.start_tool_suggestion(text, images) {
+        // 建议：先问一次决策模型「本次该用哪些工具／哪些子代理」（网络请求，超时 20s，不能占
+        // UI 线程），结果回来再提交；不可用或没有建议时立即提交，原文照发（fail-open）。
+        // 两类同时开启时由后台线程并发发起，总耗时取较大者而不是相加。
+        if let Some((text, images)) = self.start_suggestion(text, images) {
             self.submit_to_kernel(text, images);
         }
     }
 
-    /// 起一次工具建议：需要建议时把提问交给后台线程并返回 `None`；不需要时原样返回提问。
-    fn start_tool_suggestion(
+    /// 起一次建议：需要建议时把提问交给后台线程并返回 `None`；不需要时原样返回提问。
+    fn start_suggestion(
         &mut self,
         text: String,
         images: Vec<PendingImage>,
     ) -> Option<(String, Vec<PendingImage>)> {
-        let Some(suggest) = self.suggest.clone().filter(|it| it.active()) else {
-            // 开关没开或没有可用渠道：立即提交，原文照发。
+        let suggest = self.suggest.clone().unwrap_or_default();
+        let subagent_suggest = self.subagent_suggest.clone().unwrap_or_default();
+        // 两个开关都关着或都没有可用渠道：立即提交，原文照发，连候选清单都不必收集。
+        if !suggest.active() && !subagent_suggest.active() {
             return Some((text, images));
-        };
-        // 工具表里一个工具都没有：没有可送审的候选，不必白跑一次网络。
+        }
         let inventory = self.registry.tool_inventory();
-        if inventory.is_empty() {
+        let subagent_roles = self
+            .suggest_roles
+            .clone()
+            .unwrap_or_else(|| self.registry.subagent_roles().to_vec());
+        // 两侧都没有可送审的候选：不必白跑一次网络。
+        if !(suggest.active() && !inventory.is_empty())
+            && !(subagent_suggest.active() && !subagent_roles.is_empty())
+        {
             return Some((text, images));
         }
         let sender = self.suggest_sender.clone();
         let prompt = text.clone();
         self.suggest_in_flight += 1;
         thread::spawn(move || {
-            let text = match omnicrawl_host::tools::suggested_tools(&suggest, &inventory, &prompt) {
-                Some(names) => omnicrawl_host::tools::insert_suggestion(&prompt, &names),
-                None => prompt,
-            };
+            let lines = omnicrawl_host::tools::suggestion_lines(
+                &omnicrawl_host::tools::SuggestionInputs {
+                    tools: (&suggest, &inventory),
+                    subagents: (&subagent_suggest, &subagent_roles),
+                    user_prompt: &prompt,
+                },
+            );
+            let text = omnicrawl_host::tools::insert_suggestions(&prompt, &lines);
             let _ = sender.send(SuggestTaskResult { text, images });
         });
         None
@@ -2887,6 +2928,9 @@ impl App {
         if result.stream_subagent_conversation {
             self.state.subagent_stream = false;
         }
+        // `/approval:*` 一类的命令会把改动写到 config.toml 并当场生效：重取基线，
+        // 免得下一帧的热应用把它当外部改动再报一次。
+        self.review_watch.baseline(&ConfigEnvironment::from_process());
         if let Some(status) = result.working_status.take() {
             self.state.set_status(Some(status));
         }
@@ -3119,37 +3163,8 @@ impl App {
             resolve_native_vision(&environment, &llm.catalog_key, &llm.profile_id, None, None)
                 .map(|setting| setting.value)
                 .unwrap_or(None);
-        // TTS 页：配置 + 音色库（内置 manifest 优先）+ 模型状态行 + 接口后端。
-        let tts_config = load_tts_configuration(&environment, None).unwrap_or_default();
-        let tts_model_dir = tts_config.resolved_model_dir(&environment);
-        let tts_root = default_root();
-        let tts_api = load_tts_api_configuration(&environment, None).unwrap_or_default();
-        let tts_api_ready = tts_api.resolve_api_key(&environment).trim().to_string();
-        let tts_values = TtsValues {
-            enabled: tts_config.enabled,
-            auto_play: tts_config.auto_play,
-            voice: tts_config.voice.clone(),
-            model_dir: tts_config.model_dir.clone(),
-            device: tts_config.device.clone(),
-            thread_count: tts_config.thread_count,
-            voices: all_voice_names(Some(&tts_model_dir), &tts_root),
-            custom_voices: list_custom_voice_names(&tts_root),
-            model_status: if models_ready(Some(&tts_model_dir)) {
-                "模型已就绪。".to_string()
-            } else {
-                "模型未下载，请先点「下载 ONNX 模型（约 763MB）」。".to_string()
-            },
-            api_enabled: tts_api.enabled,
-            api_base_url: tts_api.base_url.clone(),
-            api_model: tts_api.model.clone(),
-            api_voice: tts_api.voice.clone(),
-            // 界面上只展示是否已配密钥，不回显明文。
-            api_key: String::new(),
-            api_key_env: tts_api.api_key_env.clone(),
-            api_speed: format_speed(tts_api.speed),
-            local_engine_available: omnicrawl_tts::local_engine_available(),
-            api_ready: !tts_api_ready.is_empty(),
-        };
+        // TTS 页：通用键 + 两条云通道的配置（界面按 `[tts_cloud].provider` 显示其中一家）。
+        let tts_values = tts_settings_values(&environment);
         let form_channel_rows = channel_rows.clone();
         Ok(SettingsValues::new(
             context_window_tokens,
@@ -3187,6 +3202,7 @@ impl App {
         .with_form(FormKind::ImageGen, image_gen_form_values(&image_gen))
         .with_subagents(subagent_rows(&subagent_config))
         .with_mcp(self.mcp_settings_values(&environment))
+        .with_web_search(web_search_row(&environment))
         .with_vision(
             vision.enabled,
             vision.models.iter().map(vision_ref_from_config).collect(),
@@ -3309,10 +3325,44 @@ impl App {
                 let outcome = self.apply_settings_change(&change);
                 if let Some(settings) = self.settings.as_mut() {
                     match outcome {
-                        Ok(message) => settings.apply_succeeded(&change, message),
+                        Ok(message) => {
+                            settings.apply_succeeded(&change, message);
+                            // 联网搜索的凭据只在磁盘上有明文：保存后用真实配置覆盖工具页那一行。
+                            if matches!(
+                                change,
+                                SettingsChange::Form {
+                                    kind: FormKind::WebSearch,
+                                    ..
+                                }
+                            ) {
+                                let row = web_search_row(&ConfigEnvironment::from_process());
+                                settings.set_web_search(row);
+                            }
+                            // 图像生成的归一化可能折算端点与模型（切到 Gemini 却仍是 OpenAI
+                            // 默认值时）：草稿也要跟着对齐，否则界面与磁盘各显示一份。
+                            if matches!(
+                                change,
+                                SettingsChange::Form {
+                                    kind: FormKind::ImageGen,
+                                    ..
+                                }
+                            ) {
+                                let configuration =
+                                    load_image_gen_configuration(&ConfigEnvironment::from_process(), None)
+                                        .unwrap_or_default();
+                                settings.set_image_gen_provider_defaults(
+                                    &configuration.provider,
+                                    &configuration.base_url,
+                                    &configuration.model,
+                                );
+                            }
+                        }
                         Err(message) => settings.apply_failed(message),
                     }
                 }
+                // 面板保存已经把新值应用到运行期，这里重取基线：否则下一帧的热应用会把它
+                // 当成「外部改动」再报一次，并在 --approval 优先时给出误导性提示。
+                self.review_watch.baseline(&ConfigEnvironment::from_process());
             }
             Some(SettingsEvent::DiscoverChannelModels {
                 profile_id,
@@ -3446,17 +3496,75 @@ impl App {
         self.review = build_review_options(&self.llm, environment);
     }
 
+    /// 审查配置的热应用：外部改 `config.toml` / `decision_models.toml` 后无需重启。
+    ///
+    /// 主循环每帧调一次；探测器自己按文件修改时间与最小间隔节流。命中变更时重建审查运行期
+    /// （审查模型 / 决策通道 / 脱敏旁路），并按需跟随配置里的审批模式——命令行 `--approval`
+    /// 显式给过模式时，只有 `[approval] mode` 这一项本身被改写才跟随。
+    ///
+    /// 与设置面板保存不同，这里只提示一行，不碰设置面板状态：用户没打开面板时也没有可同步的视图。
+    pub fn tick_review_config(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        let Some(change) = self.review_watch.poll(&environment) else {
+            return;
+        };
+        let mut notes: Vec<String> = Vec::new();
+        if change.rebuild_runtime {
+            self.rebuild_review(&environment);
+            let decision = self.review.as_ref().is_some_and(|review| {
+                matches!(
+                    &review.channel,
+                    omnicrawl_host::review::ReviewChannel::Decision(_)
+                )
+            });
+            // `active()` 只表示「已配对话模型」；决策通道不需要它，别据此误报不可用。
+            let usable =
+                self.review.as_ref().is_some_and(|review| review.active()) || decision;
+            if usable {
+                notes.push("审查配置已重新加载".to_string());
+            } else {
+                // 与启动路径同一语义：审查运行期不可用时，需审查的调用一律 fail-closed 拒绝。
+                notes.push("审查配置已重新加载，但审查模型不可用，需审查的调用将被拒绝".to_string());
+            }
+        }
+        if let Some(mode) = change.approval_mode.as_deref() {
+            match ApprovalMode::parse(mode) {
+                // 配置里的模式与本会话当前模式一致（例如 `--approval` 给的就是这一档）：不提示、不改。
+                Ok(parsed) if parsed == self.options.approval => {}
+                Ok(parsed) if self.approval_from_cli => {
+                    notes.push(format!(
+                        "配置文件里的审批模式已改为 {}，但本会话以 --approval 为优先，未跟随",
+                        parsed.label()
+                    ));
+                }
+                Ok(parsed) => {
+                    self.state.approval = parsed;
+                    self.options.approval = parsed;
+                    notes.push(format!("审批模式已跟随配置切换为 {}", parsed.label()));
+                }
+                Err(error) => notes.push(format!("配置里的审批模式无法解析：{error}")),
+            }
+        }
+        self.review_watch.accept();
+        if !notes.is_empty() {
+            self.state.notice(notes.join("；"));
+        }
+    }
+
     /// 按最新配置重建提问托管运行期（决策渠道或开关变更后调用）。
     fn rebuild_custody(&mut self, environment: &ConfigEnvironment) {
         self.custody = Some(omnicrawl_host::tools::custody_options_from_config(environment));
     }
 
-    /// 按最新配置重建工具建议运行期（决策渠道或开关变更后调用）。
+    /// 按最新配置重建建议运行期（决策渠道或开关变更后调用）。
     ///
     /// 建议由宿主在提交前发起（它是唯一握得住「用户这一条原文」的一方），因此只需
-    /// 换掉运行期，没有要下发给内核的能力声明。
+    /// 换掉运行期，没有要下发给内核的能力声明。两类建议各有一个开关，一并重建。
     fn rebuild_suggest(&mut self, environment: &ConfigEnvironment) {
         self.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(environment));
+        self.subagent_suggest = Some(
+            omnicrawl_host::tools::subagent_suggest_options_from_config(environment),
+        );
     }
 
     /// 按最新配置重建工具调用淘汰运行期（决策渠道或开关变更后调用）。
@@ -3556,7 +3664,7 @@ impl App {
         ))
     }
 
-    /// 重建两处检索重排运行期（记忆搜索与知识库检索各一份）。
+    /// 重建三处检索重排运行期（记忆搜索、知识库检索与 Skill 检索各一份）。
     fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
         self.registry_options.memory.rerank = Arc::new(
             omnicrawl_host::tools::rerank_options_from_config(
@@ -3568,6 +3676,12 @@ impl App {
             omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_KB_SEARCH,
+            ),
+        );
+        self.registry_options.skill_rerank = Arc::new(
+            omnicrawl_host::tools::rerank_options_from_config(
+                environment,
+                DECISION_SWITCH_SKILL_SEARCH,
             ),
         );
         self.rebuild_registry()
@@ -3606,11 +3720,10 @@ impl App {
         // 规格变了才动服务：一份服务只能跑一个尺寸，换尺寸必须换进程（停的是本机共享的那份）。
         // 规格没变时什么都不做——服务可能正被别的实例用着，静默重启只会打断它们。
         let running = self.onejev_server.state() != &OneJevServerState::Stopped
-            || omnicrawl_onejev::healthy(
-                omnicrawl_onejev::LOCAL_HOST,
-                omnicrawl_onejev::LOCAL_PORT,
-                1,
-            );
+            || omnicrawl_onejev::service_ready(&resolve_onejev_root(
+                &environment,
+                &configuration.model_dir,
+            ));
         if spec_changed && running {
             match self.restart_onejev_service(&configuration) {
                 Ok(message) => note = format!(" {message}"),
@@ -3647,14 +3760,11 @@ impl App {
             .collect();
         let env_ready =
             onejev_environment_state(&root) == omnicrawl_onejev::EnvironmentState::Ready;
-        // 服务状态以「端口上到底有没有服务」为准：它可能由别的 OmniCrawl 实例启动，
+        // 服务状态以 PID 文件与服务日志为准：它可能由别的 OmniCrawl 实例启动，
         // 界面必须如实说明「已就绪但属于其他实例」，否则用户会以为可以在这里随便停。
+        // 这里刻意不发起网络探测——探测在服务未跑时会阻塞到超时，而这正是打开设置面板的路径。
         let owned = self.onejev_server.state() == &OneJevServerState::Ready;
-        let listening = omnicrawl_onejev::healthy(
-            omnicrawl_onejev::LOCAL_HOST,
-            omnicrawl_onejev::LOCAL_PORT,
-            1,
-        );
+        let listening = omnicrawl_onejev::service_ready(&root);
         let service_status = if listening {
             let name = omnicrawl_onejev::running_model(&root)
                 .or_else(|| self.onejev_server.model_name().map(str::to_string))
@@ -3666,7 +3776,7 @@ impl App {
             }
         } else {
             match self.onejev_server.state() {
-                OneJevServerState::Ready => "已就绪（本实例记录的服务未见监听）".to_string(),
+                OneJevServerState::Ready => "已就绪（本实例记录的服务未再见就绪标记）".to_string(),
                 other => other.label(),
             }
         };
@@ -3783,7 +3893,7 @@ impl App {
 
     /// 把决策渠道切到自部署：建/改一条 `onejev` 渠道并设为默认。
     ///
-    /// 尺寸决定模型名（`qev serve --name`），地址是本地固定端口；服务没跑就顺手拉起。
+    /// 尺寸决定模型名（worker 的 `--name`），传输走本机管道；服务没跑就顺手拉起。
     fn use_onejev_channel(&mut self, size: &str) -> Result<String, String> {
         let Some(target) = find_onejev_size(size) else {
             return Err(format!("未知的自部署尺寸：{size}。"));
@@ -3846,9 +3956,8 @@ impl App {
             note = " [local] auto_start = false，未自动启动本地服务。".to_string();
         }
         Ok(format!(
-            "决策渠道已切到自部署（{}，{}），已保存到 {}{}。",
+            "决策渠道已切到自部署（{}，走本机管道），已保存到 {}{}。",
             target.key,
-            DEFAULT_LOCAL_DECISION_BASE_URL,
             path.display(),
             note
         ))
@@ -4063,8 +4172,8 @@ impl App {
             return;
         };
         // 默认渠道不是本机自部署：本实例不用本地服务，不动任何进程。
-        // 注意：云端网关也走 `onejev` 协议形状，因此必须同时确认地址落在回环上。
-        if channel.mode != DECISION_MODE_ONEJEV || !channel.is_local_service() {
+        // 云端网关也走 `onejev` 协议形状，因此 `is_local_service` 会同时确认地址落在回环上。
+        if !channel.is_local_service() {
             return;
         }
         let local = load_local_deployment(&environment, None);
@@ -4081,13 +4190,9 @@ impl App {
         let root = resolve_onejev_root(&environment, &local.model_dir);
         let spec = OneJevLaunchSpec::new(&root, &target, &local.device);
 
-        // 端口上已经有服务：复用即可，这是多实例共用的正常路径。
+        // 本机已经有就绪的服务：复用即可，这是多实例共用的正常路径。
         // 这里同步复用（不拉起进程、也不占后台任务），只记一行启动日志。
-        if omnicrawl_onejev::healthy(
-            omnicrawl_onejev::LOCAL_HOST,
-            omnicrawl_onejev::LOCAL_PORT,
-            1,
-        ) {
+        if omnicrawl_onejev::service_ready(&root) {
             let outcome = self
                 .onejev_server
                 .start_with_progress(spec, false, 1, &mut |_| {});
@@ -4120,179 +4225,98 @@ impl App {
         }
     }
 
-    // ---------- TTS 页与音频选择弹层 ----------
+    // ---------- TTS 页 ----------
 
-    /// TTS 页的一次动作：保存 / 下载模型 / 克隆音色 / 删除音色 / 打开音频选择弹层。
+    /// 回合结束后朗读助手回复（`[tts].speak_replies`）。
+    ///
+    /// 合成要几秒，放后台线程；同一时刻只留一轮，上一轮还在合成时直接跳过本轮的
+    /// 朗读——积压的语音放出来只会与界面上的当前对话错位。
+    fn speak_reply(&mut self, final_text: &str) {
+        if final_text.trim().is_empty() {
+            return;
+        }
+        let options = match self.registry_options.tts.as_ref() {
+            Some(options) if options.configuration.speak_replies => Arc::clone(options),
+            _ => return,
+        };
+        if self.reply_speaking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let text = final_text.to_string();
+        let speaking = Arc::clone(&self.reply_speaking);
+        thread::spawn(move || {
+            if let Err(error) = options.speak_text(&text) {
+                diagnostics::warn(format!("[tui] 朗读回复失败：{error}"));
+            }
+            speaking.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// TTS 页的一次动作：保存整页草稿。
     fn apply_tts(&mut self, change: &TtsChange) -> Result<String, String> {
         match change {
             TtsChange::Save(draft) => self.apply_tts_save(draft),
-            TtsChange::Download => self.start_tts_download(),
-            TtsChange::CloneVoice { voice, audio } => self.start_tts_clone(voice, audio),
-            TtsChange::DeleteVoice { voice } => self.apply_tts_delete(voice),
-            TtsChange::BrowseAudio => {
-                self.open_tts_file_picker();
-                Ok(String::new())
-            }
         }
     }
 
-    /// 保存 `[tts]` 段并重建工具表：启用状态决定 `tts_synthesize` 是否注册。
+    /// 保存 `[tts]` / `[tts_cloud]` 与当前服务商段，并重建工具表。
+    ///
+    /// 启用状态决定 `tts_synthesize` 是否注册；未改动的另一家那一段保持磁盘原值。
     fn apply_tts_save(&mut self, draft: &TtsDraft) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
-        let previous = load_tts_configuration(&environment, None)
+        let previous_tts = load_tts_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 界面上不编辑的两项（流式、输出目录）按磁盘上的原值保留。
-        let configuration = TtsConfiguration {
-            enabled: draft.enabled,
-            model_dir: draft.model_dir.clone(),
-            voice: draft.voice.clone(),
-            auto_play: draft.auto_play,
-            thread_count: draft.thread_count,
-            device: draft.device.clone(),
-            streaming: previous.streaming,
-            output_dir: previous.output_dir.clone(),
-        }
-        .normalize()
-        .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        let path = save_tts_configuration(&environment, &configuration, None)
+        let previous_cloud = load_tts_cloud_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 接口后端：面板上不编辑的 response_format / timeout_seconds 按磁盘值保留。
         let previous_api = load_tts_api_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        let speed = draft.api_speed.trim().parse::<f64>().map_err(|_| {
-            format!(
-                "设置未完成：接口语速必须是数值，当前为「{}」。",
-                draft.api_speed
-            )
-        })?;
-        let api_configuration = TtsApiConfiguration {
-            enabled: draft.api_enabled,
-            base_url: draft.api_base_url.clone(),
-            // 密钥空字符串 = 保留磁盘上的旧值（界面上不回显明文）。
-            api_key: if draft.api_key.trim().is_empty() {
-                previous_api.api_key.clone()
-            } else {
-                draft.api_key.trim().to_string()
-            },
-            api_key_env: draft.api_key_env.clone(),
-            model: draft.api_model.clone(),
-            voice: draft.api_voice.clone(),
-            response_format: previous_api.response_format.clone(),
-            speed,
-            timeout_seconds: previous_api.timeout_seconds,
-        }
-        .normalize()
-        .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        save_tts_api_configuration(&environment, &api_configuration, None)
+        let previous_gemini = load_tts_gemini_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        self.registry_options.tts = tts_options_from(configuration.clone(), &self.workspace);
-        self.rebuild_registry()?;
+
+        // 输出目录界面上不编辑，按磁盘上的原值保留。
+        let configuration = TtsConfiguration {
+            enabled: draft.enabled,
+            auto_play: draft.auto_play,
+            speak_replies: draft.speak_replies,
+            output_dir: previous_tts.output_dir.clone(),
+        };
+        let cloud = TtsCloudConfiguration {
+            provider: draft.provider.clone(),
+        };
+        let (api, gemini) = tts_channel_configurations(draft, &previous_api, &previous_gemini)?;
+
+        let path = save_tts_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        save_tts_cloud_configuration(&environment, &cloud, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 两家都写回：界面把草稿里的另一家原样带出来，因此不会覆盖用户改过的值。
+        save_tts_api_configuration(&environment, &api, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        save_tts_gemini_configuration(&environment, &gemini, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+
+        let previous_options = self.registry_options.tts.clone();
+        self.registry_options.tts = tts_options_from(&environment, &configuration, &self.workspace);
+        if let Err(error) = self.rebuild_registry() {
+            // 磁盘与运行期一起回滚（同 `apply_image_gen_form`）。
+            if let Err(rollback) = save_tts_configuration(&environment, &previous_tts, None) {
+                self.state.notice(format!("TTS 设置回滚写盘失败：{rollback}"));
+            }
+            let _ = save_tts_cloud_configuration(&environment, &previous_cloud, None);
+            let _ = save_tts_api_configuration(&environment, &previous_api, None);
+            let _ = save_tts_gemini_configuration(&environment, &previous_gemini, None);
+            self.registry_options.tts = previous_options;
+            return Err(error);
+        }
         Ok(format!(
             "TTS 设置已保存到 {}（{}）。",
             path.display(),
             if !configuration.enabled {
                 "语音合成已停用"
-            } else if api_configuration.enabled {
-                "本会话即刻生效，后端：接口合成"
             } else {
-                "本会话即刻生效，后端：本地推理"
+                "本会话即刻生效"
             }
         ))
-    }
-
-    /// 后台下载 ONNX 模型到配置的模型目录（大文件，不阻塞 UI）。
-    fn start_tts_download(&mut self) -> Result<String, String> {
-        if self.tts_task.is_some() {
-            return Err("已有 TTS 后台任务在跑，请稍候。".to_string());
-        }
-        let environment = ConfigEnvironment::from_process();
-        let configuration = load_tts_configuration(&environment, None)
-            .map_err(|error| format!("读取 TTS 配置失败：{}", error.message()))?;
-        let model_dir = configuration.resolved_model_dir(&environment);
-        let status = format!("正在下载模型到 {}…", model_dir.display());
-        let (sender, receiver) = mpsc::channel();
-        self.tts_task = Some(receiver);
-        if let Some(settings) = self.settings.as_mut() {
-            settings.set_tts_busy(true, status.clone());
-        }
-        thread::spawn(move || {
-            let result = download_models_into(&model_dir, None).map(|_| ());
-            let _ = sender.send(TtsTaskResult::Download(result));
-        });
-        Ok(status)
-    }
-
-    /// 后台把参考音频克隆为一条自定义音色（首次会加载 ONNX 模型）。
-    fn start_tts_clone(&mut self, voice: &str, audio: &str) -> Result<String, String> {
-        if self.tts_task.is_some() {
-            return Err("已有 TTS 后台任务在跑，请稍候。".to_string());
-        }
-        let environment = ConfigEnvironment::from_process();
-        let configuration = load_tts_configuration(&environment, None)
-            .map_err(|error| format!("读取 TTS 配置失败：{}", error.message()))?;
-        let model_dir = configuration.resolved_model_dir(&environment);
-        let voice = voice.to_string();
-        let audio = PathBuf::from(audio);
-        let status = format!("正在克隆音色 {voice}…");
-        let (sender, receiver) = mpsc::channel();
-        self.tts_task = Some(receiver);
-        if let Some(settings) = self.settings.as_mut() {
-            settings.set_tts_busy(true, status.clone());
-        }
-        thread::spawn(move || {
-            let result = clone_tts_voice(&configuration, &model_dir, &voice, &audio);
-            let _ = sender.send(TtsTaskResult::Clone(result));
-        });
-        Ok(status)
-    }
-
-    /// 从自定义音色库删除一条音色（同步、无网络）。
-    fn apply_tts_delete(&mut self, voice: &str) -> Result<String, String> {
-        let removed = delete_custom_voice(&default_root(), voice)
-            .map_err(|error| format!("删除音色失败：{error}"))?;
-        if !removed {
-            return Err(format!("自定义音色库里没有 {voice}。"));
-        }
-        self.refresh_tts_voices();
-        Ok(format!("已删除自定义音色 {voice}。"))
-    }
-
-    /// 重读音色库（内置 manifest 优先，模型缺失时留空由界面回落到兜底表）。
-    fn refresh_tts_voices(&mut self) {
-        let environment = ConfigEnvironment::from_process();
-        let configuration = load_tts_configuration(&environment, None).unwrap_or_default();
-        let model_dir = configuration.resolved_model_dir(&environment);
-        let root = default_root();
-        let voices = all_voice_names(Some(&model_dir), &root);
-        let custom = list_custom_voice_names(&root);
-        if let Some(settings) = self.settings.as_mut() {
-            settings.refresh_tts_voices(voices, custom);
-        }
-    }
-
-    /// 打开参考音频选择弹层（从工作区起步）。
-    fn open_tts_file_picker(&mut self) {
-        let start = self.workspace.clone();
-        self.file_picker = Some(FilePickerState::new(&start, "选择参考音频"));
-    }
-
-    /// 弹层按键：取消 / 选中都关闭弹层，选中时回填参考音频路径。
-    fn handle_file_picker_key(&mut self, key: KeyEvent) {
-        let event = self
-            .file_picker
-            .as_mut()
-            .and_then(|picker| picker.handle_key(key.code));
-        match event {
-            None => {}
-            Some(FilePickerEvent::Cancel) => self.file_picker = None,
-            Some(FilePickerEvent::Chosen(path)) => {
-                self.file_picker = None;
-                if let Some(settings) = self.settings.as_mut() {
-                    settings.set_tts_clone_audio(&path.to_string_lossy());
-                    settings.set_tts_busy(false, format!("已选择参考音频：{}", path.display()));
-                }
-            }
-        }
     }
 
     /// 按 `MONITOR_POLL_INTERVAL` 节流轮询后台任务日志，把增量归并进工具卡。
@@ -4310,44 +4334,6 @@ impl App {
             let text = crate::monitor::format_monitor_display_batch(&batch);
             self.state
                 .push_monitor_batch(&batch.monitor_id, &batch.status, text);
-        }
-    }
-
-    /// 每帧轮询后台 TTS 任务（下载 / 克隆）：取回结果后回填状态并按需重建工具表。
-    pub fn tick_tts_tasks(&mut self) {
-        let received = match self.tts_task.as_ref() {
-            Some(receiver) => receiver.try_recv(),
-            None => return,
-        };
-        let outcome = match received {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.tts_task = None;
-                return;
-            }
-        };
-        self.tts_task = None;
-        let (message, ok) = match outcome {
-            TtsTaskResult::Download(Ok(())) => {
-                ("模型下载完成，可以开始语音合成。".to_string(), true)
-            }
-            TtsTaskResult::Download(Err(error)) => (format!("模型下载失败：{error}"), false),
-            TtsTaskResult::Clone(Ok(())) => {
-                ("音色克隆完成，已加入自定义音色库。".to_string(), true)
-            }
-            TtsTaskResult::Clone(Err(error)) => (format!("音色克隆失败：{error}"), false),
-        };
-        if ok {
-            self.refresh_tts_voices();
-            self.registry_options.tts = tts_options(&self.workspace);
-            if let Err(error) = self.rebuild_registry() {
-                self.state
-                    .notice(format!("TTS 任务后重建工具表失败：{error}"));
-            }
-        }
-        if let Some(settings) = self.settings.as_mut() {
-            settings.set_tts_busy(false, message);
         }
     }
 
@@ -4514,10 +4500,10 @@ impl App {
                     path.display()
                 ))
             }
-            _ => Ok(format!(
-                "{label}已{}，已保存到 {}；重启后生效。",
-                if enabled { "开启" } else { "关闭" },
-                path.display()
+            // 面板上只有「记忆」与「插件」两个功能开关，两支都已即时重建运行期；
+            // 走到这里说明面板加了新的开关行却没有配套的重建逻辑，如实报告而不是假装已生效。
+            other => Err(format!(
+                "设置未完成：功能开关 {other} 已写盘，但本进程没有配套的重建逻辑，需要补齐后再试。"
             )),
         }
     }
@@ -4606,6 +4592,51 @@ impl App {
         ))
     }
 
+    /// 联网搜索页：写 `config.toml [web_search]`（字段顺序与 `WEB_SEARCH_FIELDS` 一致），
+    /// 再换掉宿主侧搜索运行期。
+    ///
+    /// 三把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
+    /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
+    fn apply_web_search_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration = load_web_search_configuration(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 写盘前留一份磁盘原值：重建工具表失败时要把它写回去（这份还没被覆盖）。
+        let previous = configuration.clone();
+        configuration.engine = field_text_or(values, 0, "bing");
+        if let Some(key) = keep_or_replace(&field_text(values, 1)) {
+            configuration.tavily_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 2)) {
+            configuration.exa_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 3)) {
+            configuration.firecrawl_api_key = key;
+        }
+        let path = save_web_search_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 搜索运行期就在宿主侧：写盘后立即换掉。但执行体读的是工具表里那一份克隆
+        // （`ToolRegistry::new` 会 clone `registry_options.web_search`），只改选项不重建
+        // 的话正在跑的表还握着启动时的引擎与凭据——现象是「设置里选了 tavily，搜索仍报
+        // 来源：bing」，直到重启。重建失败时磁盘与运行期一起回滚（同 `apply_advisor_form`）。
+        let previous_options = self.registry_options.web_search.clone();
+        self.registry_options.web_search =
+            omnicrawl_host::tools::web_search_options_from_config(&environment);
+        if let Err(error) = self.rebuild_registry() {
+            if let Err(rollback) = save_web_search_configuration(&environment, &previous, None) {
+                self.state
+                    .notice(format!("联网搜索设置回滚写盘失败：{rollback}"));
+            }
+            self.registry_options.web_search = previous_options;
+            return Err(error);
+        }
+        Ok(format!(
+            "联网搜索已设为 {}，已保存到 {}（本会话即刻生效）。",
+            configuration.engine,
+            path.display()
+        ))
+    }
+
     /// 写回工具调用审查模式（`[approval] mode`），并同步本会话的审批模式。
     fn apply_tool_approval(&mut self, mode: &str) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
@@ -4640,6 +4671,10 @@ impl App {
     ///
     /// MCP 能力注册进工具表，所以保存后必须重建注册表；旧管理器先 `close()`，
     /// 不给系统留下孤儿子进程（与退出路径同一处理）。
+    ///
+    /// 写盘前后各有一次把关：写前用读取器的名称规则预检（字符集、重名），写后把整份配置
+    /// 回读一遍——传输、地址、超时边界只有读取器全覆盖，它才是合法性的唯一真相。
+    /// 回读失败即按字节还原写前快照，磁盘不会停在读取器拒绝的内容上。
     fn apply_mcp(&mut self, change: &McpChange) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let config = load_mcp_config(&environment, None)
@@ -4667,6 +4702,12 @@ impl App {
                 let name = draft.name.trim().to_string();
                 if name.is_empty() {
                     return Err("设置未完成：Server 名称不能为空。".to_string());
+                }
+                // 名称字符集由读取器定义，预检一次让错误当面就说清楚，而不是等到下次读取。
+                if !valid_server_name(&name) {
+                    return Err(format!(
+                        "设置未完成：Server 名称只能包含小写字母、数字、下划线和连字符：{name}。"
+                    ));
                 }
                 let original = draft.original_name.as_deref();
                 let duplicate = data.servers.iter().any(|(key, _)| key == &name)
@@ -4697,8 +4738,19 @@ impl App {
                 data.servers.retain(|(key, _)| key != name);
             }
         }
+        // 写前把配置文件原样快照一份：回读校验失败时按字节还原，被拒的保存不留下任何痕迹
+        // （与 `PUT /settings/mcp` 同一处理，也不能靠重写 `[mcp]` 段「回滚」——那会把用户
+        // 文件里的其他写法一起规范化掉）。
+        let config_file = resolve_config_path(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let snapshot = std::fs::read(&config_file).ok();
         let path = save_mcp_config(&environment, &data, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 回读校验：传输、地址与超时边界只有读取器全覆盖，它才是「配置合法」的唯一真相。
+        if let Err(error) = load_mcp_config(&environment, None) {
+            restore_config_file(&config_file, snapshot.as_deref());
+            return Err(format!("设置未完成：{}", error.message()));
+        }
         // 旧连接先关，再按新配置重新发现并重建工具表。
         if let Some(manager) = self.registry.mcp() {
             manager.close();
@@ -4717,6 +4769,7 @@ impl App {
             FormKind::RunGuard => self.apply_run_guard_form(values),
             FormKind::AgentWorkspace => self.apply_agent_workspace_form(values),
             FormKind::ImageGen => self.apply_image_gen_form(values),
+            FormKind::WebSearch => self.apply_web_search_form(values),
         }
     }
 
@@ -4863,8 +4916,8 @@ impl App {
 
     /// 消息脱敏：写 `config.toml` 的 `[desensitization]` 段。
     ///
-    /// 该段在构建模型运行时读取，切换模型或重启 TUI 才生效，所以这里只写盘
-    /// （与 Python 面板的提示一致）。
+    /// 该段在内核构建模型运行时读取，而构建键里带了这段配置的指纹（见内核侧
+    /// `RuntimeBuildKey`），因此改完只要下一回合取运行时就按新配置重建，本会话即刻生效。
     fn apply_desensitization_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_desensitization_config(&environment, None)
@@ -4901,7 +4954,7 @@ impl App {
         let path = save_desensitization_config(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         Ok(format!(
-            "消息脱敏设置已保存到 {}（切换模型或重启 TUI 后生效）。",
+            "消息脱敏设置已保存到 {}（本会话下一回合起生效）。",
             path.display()
         ))
     }
@@ -4930,14 +4983,15 @@ impl App {
         let path = save_run_guard_config(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         Ok(format!(
-            "持续运转设置已保存到 {}（从下一个回合起生效）。",
+            "持续运转设置已保存到 {}（本会话下一个回合起生效）。",
             path.display()
         ))
     }
 
     /// 隔离工作区：写 `config.toml` 的 `[agent_workspace]` 段。
     ///
-    /// 与 Python 一致：保存后从下一次启动生效，正在运行的进程不受影响。
+    /// 隔离区在启动时创建一次，运行中的进程不换区：这里的改动对**下一个**隔离会话生效。
+    /// 收尾策略（`apply_on_exit` / `cleanup_on_exit`）在退出时才读，所以它当场就生效。
     /// 「基线分支」不在界面里，保留磁盘原值。
     fn apply_agent_workspace_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
@@ -4961,7 +5015,7 @@ impl App {
         let path = save_agent_workspace_config(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         Ok(format!(
-            "隔离工作区设置已保存到 {}（从下一次启动生效）。",
+            "隔离工作区设置已保存到 {}（收尾策略即刻生效；建区参数对下一个隔离会话生效）。",
             path.display()
         ))
     }
@@ -4979,18 +5033,27 @@ impl App {
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         // 下标与 `form.rs` 的 `IMAGE_GEN_FIELDS` 一一对应。
         configuration.enabled = field_flag(values, 0);
-        configuration.base_url = field_text_or(values, 1, "https://api.openai.com/v1");
-        configuration.api_key_env = field_text_or(values, 2, "OPENAI_API_KEY");
-        configuration.model = field_text_or(values, 3, "gpt-image-2");
-        configuration.size = field_text(values, 4);
-        configuration.quality = field_text(values, 5);
-        configuration.output_format = field_text(values, 6);
-        configuration.n = non_negative_int(values, 7, "默认张数")?;
-        configuration.timeout_seconds = non_negative_int(values, 8, "请求超时")?;
-        let path = save_image_gen_configuration(&environment, &configuration, None)
+        configuration.provider = field_text_or(values, 1, "openai");
+        configuration.base_url = field_text_or(values, 2, "https://api.openai.com/v1");
+        configuration.api_key_env = field_text_or(values, 3, "OPENAI_API_KEY");
+        configuration.model = field_text_or(values, 4, "gpt-image-2");
+        configuration.size = field_text(values, 5);
+        configuration.quality = field_text(values, 6);
+        configuration.output_format = field_text(values, 7);
+        configuration.aspect_ratio = field_text(values, 8);
+        configuration.image_size = field_text(values, 9);
+        configuration.n = non_negative_int(values, 10, "默认张数")?;
+        configuration.timeout_seconds = non_negative_int(values, 11, "请求超时")?;
+        // 归一化会把「切到 Gemini 但仍是 OpenAI 默认端点/模型」折算成 Gemini 的默认值，
+        // 折算结果要同时进磁盘、运行期与界面草稿，三者不能各执一份。
+        let saved = configuration
+            .clone()
+            .normalize()
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let path = save_image_gen_configuration(&environment, &saved, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         let previous_options = self.registry_options.image_gen.clone();
-        self.sync_image_gen_options(&configuration);
+        self.sync_image_gen_options(&saved);
         if let Err(error) = self.rebuild_registry() {
             if let Err(rollback) = save_image_gen_configuration(&environment, &previous, None) {
                 self.state
@@ -5009,23 +5072,40 @@ impl App {
     fn sync_image_gen_options(&mut self, config: &ImageGenConfiguration) {
         let mut image_gen = self.registry_options.image_gen.clone();
         image_gen.enabled = config.enabled;
+        image_gen.provider = config.provider.clone();
         image_gen.base_url = config.base_url.clone();
         image_gen.model = config.model.clone();
+        image_gen.api_key = config.api_key.clone();
         image_gen.api_key_env = config.api_key_env.clone();
+        image_gen.size = config.size.clone();
+        image_gen.quality = config.quality.clone();
+        image_gen.output_format = config.output_format.clone();
+        image_gen.aspect_ratio = config.aspect_ratio.clone();
+        image_gen.image_size = config.image_size.clone();
+        image_gen.n = config.n;
+        image_gen.timeout_seconds = config.timeout_seconds as f64;
         self.registry_options.image_gen = image_gen;
     }
 
     /// 子任务设置：总开关走功能开关，高级参数写 `subagents.toml`。
     ///
-    /// 子任务的运行期在内核，宿主这边没有句柄，所以只写盘并说明生效时机。
+    /// 开关写盘后重建宿主工具表（决定 `subagent` 是否进表），高级参数写盘后立即生效
+    /// （内核侧每次调用现读 `subagents.toml`）。
     fn apply_subagent(&mut self, change: &SubagentChange) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         match change {
             SubagentChange::Enabled(enabled) => {
                 let path = save_feature_enabled(&environment, "subagents", *enabled, None, None)
                     .map_err(|error| format!("设置未完成：{}", error.message()))?;
+                // 开关决定 `subagent` 是否进表（宿主按角色清单声明它），所以要重建工具表；
+                // 内核侧的子任务运行期本来就按每次调用现读 `subagents.toml`，不必重起。
+                self.registry_options.subagent_roles = subagent_roles();
+                self.rebuild_registry()?;
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.refresh_tools(tool_switch_rows(&self.registry));
+                }
                 Ok(format!(
-                    "子任务功能已{}，已保存到 {}；子任务运行期在内核，重新开会话后生效。",
+                    "子任务功能已{}，已保存到 {}（本会话即刻生效）。",
                     if *enabled { "开启" } else { "关闭" },
                     path.display()
                 ))
@@ -5093,11 +5173,30 @@ impl App {
         };
         let path = save_vision_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 代理是否可用、模型原生视觉是什么，都是按当前配置现算的，本会话即刻生效；
+        // 重新解析模型视图让 `native_vision_enabled` 立刻读到新值，随后的
+        // `push_session_settings` 会把新开关下发给内核。
+        self.refresh_llm_view();
         Ok(format!(
-            "视觉设置已保存到 {}（{} 个故障转移模型）。",
+            "视觉设置已保存到 {}（{} 个故障转移模型，本会话即刻生效）。",
             path.display(),
             change.models.len()
         ))
+    }
+
+    /// 重新解析整条模型视图（渠道、原生视觉与生成选项都跟着配置走）。
+    ///
+    /// 读不出来时保留当前视图：调用点多在「设置刚写盘」之后，此时磁盘是合法的，
+    /// 真读不出来也只该沿用旧值，不该把设置面板的保存结果回滚掉。
+    fn refresh_llm_view(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        match load_llm_config(&environment) {
+            Ok(refreshed) => self.llm = refreshed,
+            Err(error) => {
+                self.state
+                    .notice(format!("重新解析模型配置失败，沿用当前视图：{error}"));
+            }
+        }
     }
 
     /// 按当前 `registry_options` 重建工具表。
@@ -5591,6 +5690,12 @@ impl App {
             }),
             SettingsChange::Reasoning { effort } => Some(SessionModelSettings {
                 reasoning_effort: Some(effort.clone()),
+                ..SessionModelSettings::default()
+            }),
+            // 视觉：原生视觉开关在握手时随模型配置交给内核一次，改完要重新下发，
+            // 否则带图观察仍按握手那一刻的判定走（开了原生视觉图片还是被摄掉）。
+            SettingsChange::Vision(_) => Some(SessionModelSettings {
+                native_vision: Some(self.native_vision_enabled()),
                 ..SessionModelSettings::default()
             }),
             _ => None,
@@ -6214,7 +6319,7 @@ impl KernelCommand {
     fn working_status(&self) -> &'static str {
         match self {
             Self::Undo => "正在撤销上一轮…",
-            Self::Compact => "正在压缩上下文",
+            Self::Compact => "上下文压缩中…",
             Self::Review { .. } => "正在评审",
             Self::ReviewInject => "正在注入评审报告",
             Self::Replay { .. } => "正在重放会话…",
@@ -6337,6 +6442,17 @@ fn field_text_or(values: &[FieldValue], index: usize, fallback: &str) -> String 
     } else {
         text
     }
+}
+
+/// 凭据字段的写回取值：草稿留空表示「不改动」→ `None`；否则用新值。
+///
+/// 界面上的掩码已在状态机里折成空串，所以这里只需判空。
+fn keep_or_replace(draft: &str) -> Option<String> {
+    let trimmed = draft.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// 表单字段的分隔列表取值：切分后去掉空白与空项（对映 Python 的 `_read_keys`）。
@@ -6486,18 +6602,32 @@ fn agent_workspace_form_values(config: &AgentWorkspaceConfig) -> Vec<FieldValue>
     ]
 }
 
+/// 联网搜索在工具页上的投影：默认引擎 + 三把凭据是否已配置（凭据本身不进界面状态）。
+fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
+    let configuration = load_web_search_configuration(environment, None).unwrap_or_default();
+    WebSearchRow {
+        engine: configuration.engine,
+        tavily_configured: !configuration.tavily_api_key.trim().is_empty(),
+        exa_configured: !configuration.exa_api_key.trim().is_empty(),
+        firecrawl_configured: !configuration.firecrawl_api_key.trim().is_empty(),
+    }
+}
+
 /// 图像生成页的字段初值；顺序与 `FormKind::ImageGen` 的字段表一致。
 ///
 /// `api_key` 不进界面：编辑期间按磁盘原值保留，界面只显示凭据的环境变量名。
 fn image_gen_form_values(config: &ImageGenConfiguration) -> Vec<FieldValue> {
     vec![
         FieldValue::Flag(config.enabled),
+        FieldValue::Text(config.provider.clone()),
         FieldValue::Text(config.base_url.clone()),
         FieldValue::Text(config.api_key_env.clone()),
         FieldValue::Text(config.model.clone()),
         FieldValue::Text(config.size.clone()),
         FieldValue::Text(config.quality.clone()),
         FieldValue::Text(config.output_format.clone()),
+        FieldValue::Text(config.aspect_ratio.clone()),
+        FieldValue::Text(config.image_size.clone()),
         FieldValue::Text(config.n.to_string()),
         FieldValue::Text(config.timeout_seconds.to_string()),
     ]
@@ -6592,23 +6722,34 @@ fn feature_label(key: &str) -> String {
     }
 }
 
-/// 配置里的渠道视图 → 界面行。
 /// 图像生成运行期选项：命令行只承载显式覆盖，未给的字段回落 `[image_gen]` 配置。
+///
+/// 凭据只认配置里的明文 `api_key`（执行体不看 `api_key_env`），因此这里必须一并带上，
+/// 否则工具每次都会以「缺少 API Key」失败。
 fn image_gen_options_from(
     config: &ImageGenConfiguration,
     cli: &crate::args::ImageGenArgs,
 ) -> ImageGenOptions {
     ImageGenOptions {
         enabled: cli.enabled.unwrap_or(config.enabled),
+        provider: config.provider.clone(),
         base_url: cli
             .base_url
             .clone()
             .unwrap_or_else(|| config.base_url.clone()),
         model: cli.model.clone().unwrap_or_else(|| config.model.clone()),
+        api_key: config.api_key.clone(),
         api_key_env: cli
             .api_key_env
             .clone()
             .unwrap_or_else(|| config.api_key_env.clone()),
+        size: config.size.clone(),
+        quality: config.quality.clone(),
+        output_format: config.output_format.clone(),
+        aspect_ratio: config.aspect_ratio.clone(),
+        image_size: config.image_size.clone(),
+        n: config.n,
+        timeout_seconds: config.timeout_seconds as f64,
         ..ImageGenOptions::default()
     }
 }
@@ -6859,6 +7000,23 @@ fn mcp_config_data(config: &omnicrawl_mcp::config::McpConfig) -> McpConfigData {
     }
 }
 
+/// 按写前快照还原配置文件；`None` 表示写之前文件不存在，那就把它删掉。
+///
+/// 还原失败只告警：调用方已经把「配置非法」这个真正的原因报给用户了，这里再抛错只会
+/// 把它盖掉，而且磁盘上留着的也只是读取器拒绝的内容（加载时仍会报同一句错）。
+fn restore_config_file(path: &Path, snapshot: Option<&[u8]>) {
+    let result = match snapshot {
+        Some(bytes) => std::fs::write(path, bytes),
+        None => std::fs::remove_file(path),
+    };
+    if let Err(error) = result {
+        diagnostics::warn(format!(
+            "[tui] MCP 配置回滚失败（{}）：{error}",
+            path.display()
+        ));
+    }
+}
+
 /// 编辑草稿 → 可写回的 Server 数据。
 ///
 /// 环境变量与请求头在界面上是 `KEY=VALUE;…`：留空表示保持原值（凭据不在界面回显，
@@ -7019,8 +7177,12 @@ fn undo_message(result: &Value) -> String {
     message
 }
 
-/// 可用角色名：只有内核侧 SubAgent 启用时才有；宿主据此把 `subagent` 声明给模型。
-fn subagent_role_names() -> Vec<String> {
+/// 可用角色（名称 + 定义里的一句话描述）：只有内核侧 SubAgent 启用时才有；宿主据此把
+/// `subagent` 声明给模型，子代理建议也直接拿这份清单当候选。
+///
+/// 内置层按 [`AgentDefinitionRegistry::with_located_builtin`] 自行定位（与内核侧同一口径），
+/// 否则内置角色一个都扫不到，`subagent` 的参数枚举与子代理建议的候选都会是空的。
+fn subagent_roles() -> Vec<(String, String)> {
     let env = ConfigEnvironment::from_process();
     let Ok(config) = load_subagent_config(&env, None) else {
         return Vec::new();
@@ -7028,21 +7190,19 @@ fn subagent_role_names() -> Vec<String> {
     if !config.enabled {
         return Vec::new();
     }
-    let builtin = match env.get("OMNICRAWL_SUBAGENTS_DIR") {
-        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
-        _ => env.home().join(".OmniCrawl").join("agents"),
-    };
-    let mut registry = AgentDefinitionRegistry::new(builtin, Some(env.home().to_path_buf()));
+    let mut registry =
+        AgentDefinitionRegistry::with_located_builtin(Some(env.home().to_path_buf()));
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     registry.discover(&workspace, &[]);
     registry
         .list_all()
         .iter()
-        .map(|item| item.name.clone())
+        .map(|item| (item.name.clone(), item.description.clone()))
         .collect()
 }
 
-/// TTS 工具配置：读 config.toml 的 `[tts]` 段，未启用时不给这个工具（与 Python 一致）。
+/// TTS 工具配置：读 config.toml 的 `[tts]` 与 `[tts_cloud]`，未启用时不给这个工具
+/// （与 Python 一致）。
 fn tts_options(workspace: &Path) -> Option<Arc<TtsOptions>> {
     let environment = ConfigEnvironment::from_process();
     let configuration = match load_tts_configuration(&environment, None) {
@@ -7055,80 +7215,127 @@ fn tts_options(workspace: &Path) -> Option<Arc<TtsOptions>> {
             return None;
         }
     };
-    tts_options_from(configuration, workspace)
+    tts_options_from(&environment, &configuration, workspace)
 }
 
-/// 把 `[tts_api]` 段映射成接口后端配置（密钥在这里解析）；未启用时返回 `None`（走本地推理）。
-fn tts_api_backend(environment: &ConfigEnvironment) -> Option<ApiTtsConfig> {
-    let configuration = match load_tts_api_configuration(environment, None) {
-        Ok(configuration) => configuration,
+/// 用一份已读出的通用配置构造 TTS 工具选项；未启用时不给工具。
+///
+/// 通道参数在这里现读：切服务商只改 `[tts_cloud]`，重建工具表就会拿到新的一家。
+fn tts_options_from(
+    environment: &ConfigEnvironment,
+    configuration: &TtsConfiguration,
+    workspace: &Path,
+) -> Option<Arc<TtsOptions>> {
+    if !configuration.enabled {
+        return None;
+    }
+    let cloud = match load_tts_cloud_configuration(environment, None) {
+        Ok(cloud) => cloud,
         Err(error) => {
-            // 读不出来时按「接口未启用」处理：后面会落到本地推理，用户在日志里能看到真正原因。
             report_startup_log(
                 LogLevel::Warning,
-                &format!("TTS 接口配置读取失败，已改按本地推理处理：{error}"),
+                &format!("TTS 服务商配置读取失败，已跳过语音合成：{error}"),
             );
             return None;
         }
     };
-    if !configuration.enabled {
-        return None;
-    }
-    // 先解析密钥再搬字段：`resolve_api_key` 要借整份配置。
-    let api_key = configuration.resolve_api_key(environment);
-    Some(ApiTtsConfig {
-        base_url: configuration.base_url,
-        api_key,
-        model: configuration.model,
-        voice: configuration.voice,
-        response_format: configuration.response_format,
-        speed: configuration.speed,
-        timeout_seconds: configuration.timeout_seconds.max(1) as u64,
-    })
+    let openai = load_tts_api_configuration(environment, None).unwrap_or_default();
+    let gemini = load_tts_gemini_configuration(environment, None).unwrap_or_default();
+    Some(Arc::new(TtsOptions::new(
+        configuration.clone(),
+        tts_backend(&cloud, openai, gemini),
+        workspace.to_path_buf(),
+    )))
 }
 
-/// 语速的界面显示：整数去掉小数点（`1.0` → `1`），其余保留原样（`1.25`）。
+/// TTS 设置页的初值：通用键 + 两条通道（界面按 `provider` 显示其中一家）。
+fn tts_settings_values(environment: &ConfigEnvironment) -> TtsValues {
+    let general = load_tts_configuration(environment, None).unwrap_or_default();
+    let cloud = load_tts_cloud_configuration(environment, None).unwrap_or_default();
+    let openai = load_tts_api_configuration(environment, None).unwrap_or_default();
+    let gemini = load_tts_gemini_configuration(environment, None).unwrap_or_default();
+    TtsValues {
+        enabled: general.enabled,
+        auto_play: general.auto_play,
+        speak_replies: general.speak_replies,
+        provider: cloud.provider,
+        openai: TtsChannelValues {
+            base_url: openai.base_url,
+            model: openai.model,
+            voice: openai.voice,
+            instructions: openai.instructions,
+            speed: format_speed(openai.speed),
+            api_key: openai.api_key,
+        },
+        gemini: TtsChannelValues {
+            base_url: gemini.base_url,
+            model: gemini.model,
+            voice: gemini.voice,
+            instructions: gemini.instructions,
+            speed: String::new(),
+            api_key: gemini.api_key,
+        },
+    }
+}
+
+/// 语速的显示文本：整数不带小数点（`1` 而不是 `1.0`），便于界面里来回编辑。
 fn format_speed(speed: f64) -> String {
-    if speed.fract().abs() < f64::EPSILON {
-        format!("{}", speed as i64)
+    if (speed - speed.round()).abs() < f64::EPSILON {
+        format!("{}", speed.round() as i64)
     } else {
         format!("{speed}")
     }
 }
 
-/// 用一份已读出的配置构造 TTS 工具选项；未启用时不给工具。
-fn tts_options_from(configuration: TtsConfiguration, workspace: &Path) -> Option<Arc<TtsOptions>> {
-    if !configuration.enabled {
-        return None;
+/// 草稿里的当前服务商字段 → 两家的完整配置。
+///
+/// 只有被编辑的那一家用草稿覆盖，另一家保持磁盘原值：界面上看不到的段不该被顺手改写。
+/// 草稿里的密钥为空串时表示「不改动」——保留磁盘原值（对映渠道表单的 API Key 行）。
+fn tts_channel_configurations(
+    draft: &TtsDraft,
+    previous_api: &TtsApiConfiguration,
+    previous_gemini: &GeminiTtsConfiguration,
+) -> Result<(TtsApiConfiguration, GeminiTtsConfiguration), String> {
+    let mut api = previous_api.clone();
+    let mut gemini = previous_gemini.clone();
+    match &draft.channel {
+        TtsChannelDraft::OpenAi {
+            base_url,
+            model,
+            voice,
+            instructions,
+            speed,
+            api_key,
+        } => {
+            api.base_url = base_url.trim().to_string();
+            api.model = model.trim().to_string();
+            api.voice = voice.trim().to_string();
+            api.instructions = instructions.trim().to_string();
+            api.speed = speed
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("语速无法解析为数值：{}", speed.trim()))?;
+            if let Some(key) = keep_or_replace(api_key) {
+                api.api_key = key;
+            }
+        }
+        TtsChannelDraft::Gemini {
+            base_url,
+            model,
+            voice,
+            instructions,
+            api_key,
+        } => {
+            gemini.base_url = base_url.trim().to_string();
+            gemini.model = model.trim().to_string();
+            gemini.voice = voice.trim().to_string();
+            gemini.instructions = instructions.trim().to_string();
+            if let Some(key) = keep_or_replace(api_key) {
+                gemini.api_key = key;
+            }
+        }
     }
-    let environment = ConfigEnvironment::from_process();
-    let model_dir = configuration.resolved_model_dir(&environment);
-    let api = tts_api_backend(&environment);
-    Some(Arc::new(TtsOptions::new(
-        configuration,
-        api,
-        model_dir,
-        workspace.to_path_buf(),
-    )))
-}
-
-/// 克隆一条音色：用参考音频编码出 prompt audio codes 并写入自定义音色库。
-fn clone_tts_voice(
-    configuration: &TtsConfiguration,
-    model_dir: &Path,
-    voice: &str,
-    audio: &Path,
-) -> Result<(), String> {
-    let config = TtsConfig {
-        model_dir: Some(model_dir.to_path_buf()),
-        thread_count: configuration.thread_count,
-        device: Some(configuration.device.clone()),
-        ..TtsConfig::default()
-    };
-    let mut engine = TtsEngine::new(config)?;
-    let result = engine.clone_voice(voice, audio, "");
-    engine.close();
-    result.map(|_| ())
+    Ok((api, gemini))
 }
 
 /// 装配 MCP 管理器：读配置、发现能力，失败只警告不阻断启动。

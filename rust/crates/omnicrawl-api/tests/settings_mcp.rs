@@ -234,6 +234,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         custody: None,
         prune: None,
         suggest: None,
+        subagent_suggest: None,
         prompt: None,
     }
 }

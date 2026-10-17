@@ -104,6 +104,8 @@ SubAgent 控制面不提供 `POST /api/v1/subagents`：远程客户端不能经 
 
 服务全局同时只允许一个生成任务。生成期间，会话、项目、模型、推理强度、审批模式和记忆清理等修改接口返回 409。
 
+审查相关配置支持热应用：直接改 `~/.OmniCrawl/config.toml` 的 `[approval]`（模式与 `review_model`）或 `decision_models.toml` 的 `[features] tool_call_review` 与默认决策渠道后，服务的回合外事件泵会在下一次轮询（约 1 秒）发现文件改动并即时重建审查运行期，无需重启服务；文件被写过但生效值没变时不重建、不记日志。
+
 ### 会话
 
 | 方法 | 路径 | 说明 |
@@ -133,7 +135,7 @@ SubAgent 控制面不提供 `POST /api/v1/subagents`：远程客户端不能经 
 | POST | `/api/v1/models/refresh` | 强制刷新自动发现缓存 |
 | PUT | `/api/v1/models/current` | 原子切换并保存当前模型；持久化失败时运行时保持旧模型 |
 | PUT | `/api/v1/reasoning` | 切换并保存推理强度 |
-| PUT | `/api/v1/approval` | 切换并保存审批模式 |
+| PUT | `/api/v1/approval` | 切换并保存审批模式；`review` 与启动时一致地走自动审查 |
 | GET | `/api/v1/history` | 查询 Prompt 历史 |
 | GET | `/api/v1/skills` | Skill 列表 |
 | GET | `/api/v1/mcp` | MCP 状态 |

@@ -6,7 +6,8 @@
 //! `omnicrawl/agent/toolkit/image_tools.py`（本机图片读取）、`omnicrawl/net/`（搜索与抓取）与
 //! `omnicrawl/agent/controllers/tools/implementations.py`（工具包装）。已搬入 `read` /
 //! `read_image` / `write_file` / `Edit_file` / `bash` / `powershell` / `list` / `find` / `grep` /
-//! `git` / `monitor`、五个 `kb_*`、四个 `memory_*`、`web_search` / `fetcher` 与 `config_edit` 执行体；
+//! `skill_search` / `git` / `monitor`、五个 `kb_*`、四个 `memory_*`、`web_search` / `fetcher` 与
+//! `config_edit` 执行体；
 //! 工具表、参数归一化、Schema 校验与压缩复用内核已搬好的 `omnicrawl-controllers`。
 
 pub mod advisor;
@@ -35,6 +36,7 @@ pub mod read_image;
 pub mod registry;
 pub mod sample;
 pub mod search_common;
+pub mod skills;
 pub mod tts;
 pub mod web_search;
 pub mod web_transport;
@@ -51,18 +53,19 @@ pub use decision_prune::{
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
 pub use decision_suggest::{
-    insert_suggestion, split_suggestion, suggest_options_from_config, suggested_tools,
-    SuggestClient, SuggestOptions,
+    insert_suggestions, split_suggestion, subagent_suggest_options_from_config,
+    suggest_options_from_config, suggestion_lines, SuggestClient, SuggestKind, SuggestOptions,
+    SuggestionInputs,
 };
 pub use error::{ToolError, ToolOutcome};
 pub use fetcher::FetcherOptions;
-pub use image_gen::ImageGenOptions;
+pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;
 pub use memory::MemoryOptions;
 pub use monitor::MonitorManager;
 pub use paths::WorkspacePaths;
 pub use registry::{RegistryOptions, ToolRegistry, IMPLEMENTED_TOOLS};
-pub use tts::TtsOptions;
-pub use web_search::WebSearchOptions;
+pub use tts::{tts_backend, TtsOptions};
+pub use web_search::{web_search_options_from_config, WebSearchOptions};
 pub use web_transport::{WebError, WebErrorKind, WebRequest, WebResponse, WebTransport};
 pub use wreq_transport::WreqWebTransport;

@@ -359,7 +359,9 @@ fn load_server_config(
 }
 
 /// Server 名只允许小写字母、数字、下划线与连字符（Python 侧同一正则）。
-fn valid_server_name(name: &str) -> bool {
+///
+/// 公开供写盘侧预检：这条规则是读取器（[`load_mcp_config`]）的一部分，写入方不应另存一套。
+pub fn valid_server_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()

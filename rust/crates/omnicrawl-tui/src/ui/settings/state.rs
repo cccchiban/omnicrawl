@@ -21,7 +21,7 @@ use std::cell::RefCell;
 
 use crate::state::Composer;
 
-use super::form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
+use super::form::{paste_into, FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
 use super::hit::{HitAction, HitRegion};
 use super::picker::ModelDiscovery;
 use super::{
@@ -59,7 +59,7 @@ pub enum Pane {
     Choice(ChoiceKind),
     /// 表单页：若干字段 + `Ctrl+S` 保存。
     Form(FormKind),
-    /// TTS 设置页：开关 / 音色 / 模型目录 / 设备与线程 + 模型下载与音色克隆。
+    /// TTS 设置页：开关 / 服务商 / 播放行为 + 当前服务商的接口参数。
     Tts,
     /// 未知一级项（一级表与面板表不同步时的兜底）。
     Pending,
@@ -156,6 +156,9 @@ pub const MODEL_PARAM_SECTION: &str = "模型与参数";
 
 /// 工具页首行的行号：工具调用审查模式。
 pub const TOOLS_APPROVAL_ROW: usize = 0;
+
+/// 工具页第二行的行号：联网搜索（`Enter` 进入独立的联网搜索表单页）。
+pub const TOOLS_WEB_SEARCH_ROW: usize = 1;
 
 /// 一把工具开关的可显示状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,6 +506,20 @@ struct DecisionForm {
     is_new: bool,
 }
 
+impl DecisionForm {
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.dropdown = None;
+            self.input = Some(decision_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
+}
+
 /// 决策模型页的「功能开关」分区标题（开关行画在渠道列表下方）。
 pub const DECISION_SWITCH_SECTION: &str = "功能开关";
 
@@ -816,7 +833,11 @@ impl DecisionLocalState {
             action: false,
             // 任务在跑就画进度条：比例已知画实心条，未知画循环滑块（等服务绑端口）。
             bar: self.busy,
-            progress: if self.busy { self.progress.ratio() } else { None },
+            progress: if self.busy {
+                self.progress.ratio()
+            } else {
+                None
+            },
             progress_detail: if self.busy {
                 self.progress.detail()
             } else {
@@ -939,6 +960,8 @@ pub struct SettingsValues {
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
+    /// 工具页「联网搜索」行的初值（默认引擎与三把凭据是否已配置）。
+    pub web_search: WebSearchRow,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
     /// MCP 设置页的初始值（全局策略 + Server 列表）。
@@ -949,7 +972,7 @@ pub struct SettingsValues {
     pub vision_native: Option<bool>,
     /// 表单页的初始字段值（由宿主从配置读出后传入）。
     pub form_values: Vec<(FormKind, Vec<FieldValue>)>,
-    /// TTS 页的初始值（配置 + 音色库 + 模型状态）。
+    /// TTS 页的初始值（通用键 + 两条通道的配置）。
     pub tts: TtsValues,
 }
 
@@ -982,6 +1005,7 @@ impl SettingsValues {
             plugins_enabled: false,
             tools,
             approval_mode: APPROVAL_MODE_REVIEW.to_string(),
+            web_search: WebSearchRow::default(),
             subagents: Vec::new(),
             mcp: McpSettingsValues::default(),
             vision_enabled: false,
@@ -1079,7 +1103,7 @@ impl SettingsValues {
         self
     }
 
-    /// TTS 页的初值（配置 + 音色库 + 模型状态）。
+    /// TTS 页的初值（通用键 + 两条通道的配置）。
     pub fn with_tts(mut self, values: TtsValues) -> Self {
         self.tts = values;
         self
@@ -1088,6 +1112,12 @@ impl SettingsValues {
     /// 工具页首行的审查模式初值（取运行期现用的模式）。
     pub fn with_approval(mut self, mode: &str) -> Self {
         self.approval_mode = nearest_approval_mode(mode).to_string();
+        self
+    }
+
+    /// 工具页「联网搜索」行的初值（默认引擎与三把凭据是否已配置）。
+    pub fn with_web_search(mut self, row: WebSearchRow) -> Self {
+        self.web_search = row;
         self
     }
 
@@ -1221,243 +1251,304 @@ pub enum SettingsChange {
         kind: FormKind,
         values: Vec<FieldValue>,
     },
-    /// TTS 页：保存草稿、下载模型、克隆 / 删除音色与打开音频选择弹层。
+    /// TTS 页：保存草稿。
     Tts(TtsChange),
 }
 
-// ---------- TTS 页（对映 Python 的 `TTSSettingsPane`） ----------
+// ---------- TTS 页（云服务通道） ----------
 
-/// TTS 页的行号（前 13 行对映 Python `TTSSettingsPane` 的控件顺序；
-/// 末尾几行是 Rust 侧新增的接口合成配置，Python 面板没有对映控件）。
+/// TTS 页的行号。前 4 行与通道无关，随后 6 行属于当前服务商。
 pub const TTS_ROW_ENABLED: usize = 0;
-pub const TTS_ROW_AUTO_PLAY: usize = 1;
-pub const TTS_ROW_VOICE: usize = 2;
-pub const TTS_ROW_CLONE_NAME: usize = 3;
-pub const TTS_ROW_CLONE_AUDIO: usize = 4;
-pub const TTS_ROW_CLONE_BROWSE: usize = 5;
-pub const TTS_ROW_CLONE_RUN: usize = 6;
-pub const TTS_ROW_DELETE: usize = 7;
-pub const TTS_ROW_MODEL_DIR: usize = 8;
-pub const TTS_ROW_DEVICE: usize = 9;
-pub const TTS_ROW_THREADS: usize = 10;
-pub const TTS_ROW_DOWNLOAD: usize = 11;
-/// 合成后端：接口合成（`[tts_api]`）或本地 ONNX 推理（`[tts]`）。
-pub const TTS_ROW_BACKEND: usize = 12;
-pub const TTS_ROW_API_BASE_URL: usize = 13;
-pub const TTS_ROW_API_MODEL: usize = 14;
-pub const TTS_ROW_API_VOICE: usize = 15;
-pub const TTS_ROW_API_KEY: usize = 16;
-pub const TTS_ROW_API_KEY_ENV: usize = 17;
-pub const TTS_ROW_API_SPEED: usize = 18;
-pub const TTS_ROW_SAVE: usize = 19;
-/// TTS 页的行数。
-pub const TTS_ROW_COUNT: usize = 20;
+pub const TTS_ROW_PROVIDER: usize = 1;
+pub const TTS_ROW_AUTO_PLAY: usize = 2;
+/// 回合结束后朗读助手回复（不经工具面，因此不触发审批）。
+pub const TTS_ROW_SPEAK_REPLIES: usize = 3;
 
-/// TTS 页的行标签（渲染与测试都读它）。
+/// 通道字段区起点：以下行按当前服务商取值，含义随 `provider` 变。
+pub const TTS_ROW_BASE_URL: usize = 4;
+pub const TTS_ROW_MODEL: usize = 5;
+pub const TTS_ROW_VOICE: usize = 6;
+/// OpenAI 的 `instructions` / Gemini 的语气指令（作为正文前缀）。
+pub const TTS_ROW_INSTRUCTIONS: usize = 7;
+/// OpenAI 的 `speed`；Gemini 没有该参数，该行在 Gemini 下不显示。
+pub const TTS_ROW_SPEED: usize = 8;
+/// 当前服务商的 API Key：直接填明文，保存时写进对应段的 `api_key`。
+pub const TTS_ROW_API_KEY: usize = 9;
+pub const TTS_ROW_SAVE: usize = 10;
+/// TTS 页的行数。
+pub const TTS_ROW_COUNT: usize = 11;
+
+/// 与通道无关的行标签（顺序与行号一致）。
 pub const TTS_ROW_LABELS: [&str; TTS_ROW_COUNT] = [
     "启用 TTS",
+    "服务商 provider",
     "合成完成后自动播放",
-    "内置音色 voice",
-    "克隆：新音色名称",
-    "克隆：参考音频",
-    "浏览…",
-    "克隆并保存为音色",
-    "删除自定义音色",
-    "模型目录 model_dir",
-    "推理设备 device",
-    "CPU 推理线程数 thread_count",
-    "下载 ONNX 模型（约 763MB）",
-    "合成后端（接口 / 本地）",
-    "接口地址 tts_api.base_url",
-    "接口模型 tts_api.model",
-    "接口音色 tts_api.voice",
-    "接口密钥 tts_api.api_key（留空读环境变量）",
-    "密钥环境变量 tts_api.api_key_env",
-    "接口语速 tts_api.speed",
+    "自动朗读回复",
+    "接口地址 base_url",
+    "模型 model",
+    "音色 voice",
+    "语气指令 instructions",
+    "语速 speed",
+    "API Key",
     "保存",
 ];
 
-/// 接口语速候选：取 OpenAI `speed` 的常用档位（其它 0.25~4.0 的值可在配置里手改）。
-/// 文案写成 `1` 而不是 `1.0`：界面上的值要与候选表逐字相等，否则第一次按方向键会从首项重开。
-pub const TTS_API_SPEEDS: [&str; 6] = ["0.5", "0.75", "1", "1.25", "1.5", "2"];
+/// 服务商候选（取值即配置值，与 `[tts_cloud].provider` 一一对应）。
+pub const TTS_PROVIDER_OPTIONS: [&str; 2] = ["openai", "gemini"];
 
-/// 推理设备候选（对映 Python 的 `_DEVICE_OPTIONS`）。
-///
-/// Rust 引擎当前只实现 CPU 执行器：选 `cuda` 会在合成时给出明确报错（不静默降级），
-/// 因此这里保留三档以便与磁盘上的配置值一一往返。
-pub const TTS_DEVICE_OPTIONS: [&str; 3] = ["auto", "cpu", "cuda"];
+/// 语速候选（OpenAI 的取值域是 0.25~4.0，常用的几档够用）。
+pub const TTS_SPEED_OPTIONS: [&str; 5] = ["0.75", "1", "1.25", "1.5", "2"];
 
-/// CPU 线程数候选（对映 Python 的 `_THREAD_COUNTS`）。
-pub const TTS_THREAD_COUNTS: [i64; 4] = [1, 2, 4, 8];
+/// OpenAI 内置音色（13 个，逐项取自官方 TTS 文档的 voice 列表）。
+pub const TTS_OPENAI_VOICES: [&str; 13] = [
+    "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse",
+    "marin", "cedar",
+];
 
-/// 模型未下载时音色下拉的兜底候选（对映 Python 的 `_FALLBACK_VOICES`，与模型 manifest 内置音色一致）。
-pub const TTS_FALLBACK_VOICES: [&str; 18] = [
-    "Junhao", "Zhiming", "Weiguo", "Xiaoyu", "Yuewen", "Lingyu", "Trump", "Ava", "Bella", "Adam",
-    "Nathan", "Soyo", "Saki", "Mortis", "Umiri", "Mei", "Anon", "Arisa",
+/// Gemini TTS 预置音色（官方语音列表，取自 Gemini-TTS 文档）。
+pub const TTS_GEMINI_VOICES: [&str; 30] = [
+    "Zephyr",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Leda",
+    "Orus",
+    "Aoede",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
 ];
 
 /// TTS 页要宿主做的一件事。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TtsChange {
-    /// 保存整页草稿（写 `[tts]` 段并让工具表跟着变）。
+    /// 保存整页草稿（写 `[tts]` / `[tts_cloud]` 与当前服务商段，并让工具表跟着变）。
     Save(TtsDraft),
-    /// 后台下载 ONNX 模型（进度由宿主回填状态行）。
-    Download,
-    /// 把参考音频克隆为新音色（后台执行）。
-    CloneVoice { voice: String, audio: String },
-    /// 从自定义音色库删除一条音色。
-    DeleteVoice { voice: String },
-    /// 打开音频文件选择弹层（宿主弹层，选中后回填参考音频路径）。
-    BrowseAudio,
 }
 
-/// TTS 页保存时的草稿。
+/// TTS 页保存时的草稿：通用键 + 当前服务商那一段的字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TtsDraft {
     pub enabled: bool,
     pub auto_play: bool,
-    pub voice: String,
-    pub model_dir: String,
-    pub device: String,
-    pub thread_count: i64,
-    /// `true` = 走 `[tts_api]` 接口合成；`false` = 本地 ONNX 推理。
-    pub api_enabled: bool,
-    pub api_base_url: String,
-    pub api_model: String,
-    pub api_voice: String,
-    pub api_key: String,
-    pub api_key_env: String,
-    /// 接口语速。写成字符串：`TtsDraft` 要能 `Eq`（f64 不行），保存时再解析。
-    pub api_speed: String,
+    pub speak_replies: bool,
+    pub provider: String,
+    /// 当前服务商的字段：`[tts_api]` 或 `[tts_gemini]` 其一。
+    pub channel: TtsChannelDraft,
 }
 
-/// TTS 页的初值（宿主在打开面板时读配置与音色库给出）。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// 当前服务商的通道字段（两家的字段集不同，因此分开表达）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TtsChannelDraft {
+    OpenAi {
+        base_url: String,
+        model: String,
+        voice: String,
+        instructions: String,
+        speed: String,
+        /// 明文密钥；空串表示「不改动磁盘原值」。
+        api_key: String,
+    },
+    Gemini {
+        base_url: String,
+        model: String,
+        voice: String,
+        instructions: String,
+        /// 明文密钥；空串表示「不改动磁盘原值」。
+        api_key: String,
+    },
+}
+
+/// TTS 页的初值（宿主在打开面板时读配置给出）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TtsValues {
     pub enabled: bool,
     pub auto_play: bool,
+    pub speak_replies: bool,
+    pub provider: String,
+    /// 两家的配置都带上：切换服务商行时界面立刻显示另一家的值。
+    pub openai: TtsChannelValues,
+    pub gemini: TtsChannelValues,
+}
+
+impl Default for TtsValues {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_play: true,
+            speak_replies: false,
+            provider: "openai".to_string(),
+            openai: TtsChannelValues::openai_default(),
+            gemini: TtsChannelValues::gemini_default(),
+        }
+    }
+}
+
+/// 一家的通道初值（字段并集：按服务商取用其中一部分）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TtsChannelValues {
+    pub base_url: String,
+    pub model: String,
     pub voice: String,
-    pub model_dir: String,
-    pub device: String,
-    pub thread_count: i64,
-    /// 可选音色（内置 manifest 优先，模型缺失时用兜底表，再接自定义库）。
-    pub voices: Vec<String>,
-    /// 自定义（克隆）音色：删除下拉的候选。
-    pub custom_voices: Vec<String>,
-    /// 模型状态行文案（对映 Python 的 `_model_status_text`）。
-    pub model_status: String,
-    /// 接口后端（`[tts_api]`）的初值。
-    pub api_enabled: bool,
-    pub api_base_url: String,
-    pub api_model: String,
-    pub api_voice: String,
+    pub instructions: String,
+    /// OpenAI 的语速（文本形式，便于编辑往返）。
+    pub speed: String,
+    /// 已配置的密钥在界面上只显示掩码占位；输入态从空起步。
     pub api_key: String,
-    pub api_key_env: String,
-    pub api_speed: String,
-    /// 本构建是否带本地 ONNX 推理（`false` 时后端行给出提示，不允许选本地）。
-    pub local_engine_available: bool,
-    /// 接口地址与密钥是否已就绪（后端行的提示文案用）。
-    pub api_ready: bool,
+}
+
+impl TtsChannelValues {
+    fn openai_default() -> Self {
+        Self {
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o-mini-tts".to_string(),
+            voice: "alloy".to_string(),
+            speed: "1".to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn gemini_default() -> Self {
+        Self {
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            model: "gemini-2.5-flash-preview-tts".to_string(),
+            voice: "Kore".to_string(),
+            ..Self::default()
+        }
+    }
 }
 
 /// TTS 页一行在渲染层的视图。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TtsRowView {
     pub label: &'static str,
     pub value: String,
     /// 该行是可执行的动作用（渲染成按钮样式）。
     pub action: bool,
+    /// 该行在**当前可见行**里的下标（屏幕行号）；选中判据与它比，不与配置行号比。
+    pub index: usize,
+    /// 该行是否是当前选中行。
+    pub focused: bool,
 }
 
 /// TTS 页的编辑草稿。
 struct TtsState {
     enabled: bool,
     auto_play: bool,
-    voice: String,
-    model_dir: String,
-    device: String,
-    thread_count: i64,
-    voices: Vec<String>,
-    custom_voices: Vec<String>,
-    /// 接口后端草稿（`[tts_api]`）。
-    api_enabled: bool,
-    api_base_url: String,
-    api_model: String,
-    api_voice: String,
-    api_key: String,
-    api_key_env: String,
-    api_speed: String,
-    /// 本构建是否带本地 ONNX 推理（后端行提示用）。
-    local_engine_available: bool,
-    /// 接口地址与密钥是否已就绪（后端行提示用）。
-    api_ready: bool,
-    /// 删除行的选中下标（在 `custom_voices` 内循环）。
-    delete_index: usize,
-    clone_name: String,
-    clone_audio: String,
+    speak_replies: bool,
+    provider: String,
+    openai: TtsChannelValues,
+    gemini: TtsChannelValues,
     focused: usize,
     /// 文本输入态：`(行号, 缓冲)`，对映 Python 的 `Input` 获得焦点。
     input: Option<(usize, Composer)>,
     status: String,
-    /// 后台任务进行中（宿主回填）：界面据此守卫保存、克隆与退出。
-    busy: bool,
 }
 
 impl TtsState {
     fn new(values: TtsValues) -> Self {
-        let voices = if values.voices.is_empty() {
-            TTS_FALLBACK_VOICES
+        Self {
+            enabled: values.enabled,
+            auto_play: values.auto_play,
+            speak_replies: values.speak_replies,
+            provider: values.provider,
+            openai: values.openai,
+            gemini: values.gemini,
+            focused: TTS_ROW_ENABLED,
+            input: None,
+            status: String::new(),
+        }
+    }
+
+    /// 当前服务商的那一份通道草稿。
+    fn channel(&self) -> &TtsChannelValues {
+        if self.is_gemini() {
+            &self.gemini
+        } else {
+            &self.openai
+        }
+    }
+
+    /// 当前服务商那一份通道草稿的可变引用。
+    fn channel_mut(&mut self) -> &mut TtsChannelValues {
+        if self.is_gemini() {
+            &mut self.gemini
+        } else {
+            &mut self.openai
+        }
+    }
+
+    fn is_gemini(&self) -> bool {
+        self.provider == "gemini"
+    }
+
+    /// 当前服务商可见的行（Gemini 没有语速）。
+    fn visible_rows(&self) -> Vec<usize> {
+        (0..TTS_ROW_COUNT)
+            .filter(|row| *row != TTS_ROW_SPEED || !self.is_gemini())
+            .collect()
+    }
+
+    fn current_voices(&self) -> Vec<String> {
+        if self.is_gemini() {
+            TTS_GEMINI_VOICES
                 .iter()
                 .map(|name| name.to_string())
                 .collect()
         } else {
-            values.voices
-        };
-        // 本地推理没编译时，界面不能把后端定在「本地」，否则用户会以为能用。
-        let api_enabled = values.api_enabled || !values.local_engine_available;
-        Self {
-            enabled: values.enabled,
-            auto_play: values.auto_play,
-            voice: values.voice,
-            model_dir: values.model_dir,
-            device: values.device,
-            thread_count: values.thread_count,
-            voices,
-            custom_voices: values.custom_voices,
-            api_enabled,
-            api_base_url: values.api_base_url,
-            api_model: values.api_model,
-            api_voice: values.api_voice,
-            api_key: values.api_key,
-            api_key_env: values.api_key_env,
-            api_speed: values.api_speed,
-            local_engine_available: values.local_engine_available,
-            api_ready: values.api_ready,
-            delete_index: 0,
-            clone_name: String::new(),
-            clone_audio: String::new(),
-            focused: TTS_ROW_ENABLED,
-            input: None,
-            status: values.model_status,
-            busy: false,
+            TTS_OPENAI_VOICES
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
         }
     }
 
     fn draft(&self) -> TtsDraft {
+        let channel = self.channel();
+        let channel = if self.is_gemini() {
+            TtsChannelDraft::Gemini {
+                base_url: channel.base_url.clone(),
+                model: channel.model.clone(),
+                voice: channel.voice.clone(),
+                instructions: channel.instructions.clone(),
+                api_key: secret_draft(&channel.api_key),
+            }
+        } else {
+            TtsChannelDraft::OpenAi {
+                base_url: channel.base_url.clone(),
+                model: channel.model.clone(),
+                voice: channel.voice.clone(),
+                instructions: channel.instructions.clone(),
+                speed: channel.speed.clone(),
+                api_key: secret_draft(&channel.api_key),
+            }
+        };
         TtsDraft {
             enabled: self.enabled,
             auto_play: self.auto_play,
-            voice: self.voice.clone(),
-            model_dir: self.model_dir.clone(),
-            device: self.device.clone(),
-            thread_count: self.thread_count,
-            api_enabled: self.api_enabled,
-            api_base_url: self.api_base_url.clone(),
-            api_model: self.api_model.clone(),
-            api_voice: self.api_voice.clone(),
-            api_key: self.api_key.clone(),
-            api_key_env: self.api_key_env.clone(),
-            api_speed: self.api_speed.clone(),
+            speak_replies: self.speak_replies,
+            provider: self.provider.clone(),
+            channel,
         }
     }
 
@@ -1468,100 +1559,84 @@ impl TtsState {
                 return format!("{}▌", composer.text());
             }
         }
+        let channel = self.channel();
         match row {
             TTS_ROW_ENABLED => if self.enabled { "启用" } else { "停用" }.to_string(),
+            TTS_ROW_PROVIDER => self.provider.clone(),
             TTS_ROW_AUTO_PLAY => if self.auto_play { "开启" } else { "关闭" }.to_string(),
-            TTS_ROW_VOICE => self.voice.clone(),
-            TTS_ROW_CLONE_NAME => self.clone_name.clone(),
-            TTS_ROW_CLONE_AUDIO => self.clone_audio.clone(),
-            TTS_ROW_DELETE => self
-                .custom_voices
-                .get(self.delete_index)
-                .cloned()
-                .unwrap_or_else(|| "（无自定义音色）".to_string()),
-            TTS_ROW_MODEL_DIR => self.model_dir.clone(),
-            TTS_ROW_DEVICE => self.device.clone(),
-            TTS_ROW_THREADS => self.thread_count.to_string(),
-            TTS_ROW_BACKEND => self.backend_text(),
-            TTS_ROW_API_BASE_URL => self.api_base_url.clone(),
-            TTS_ROW_API_MODEL => self.api_model.clone(),
-            TTS_ROW_API_VOICE => self.api_voice.clone(),
-            TTS_ROW_API_KEY => mask_api_key(&self.api_key),
-            TTS_ROW_API_KEY_ENV => self.api_key_env.clone(),
-            TTS_ROW_API_SPEED => self.api_speed.clone(),
+            TTS_ROW_SPEAK_REPLIES => if self.speak_replies {
+                "开启"
+            } else {
+                "关闭"
+            }
+            .to_string(),
+            TTS_ROW_BASE_URL => channel.base_url.clone(),
+            TTS_ROW_MODEL => channel.model.clone(),
+            TTS_ROW_VOICE => channel.voice.clone(),
+            TTS_ROW_INSTRUCTIONS => channel.instructions.clone(),
+            TTS_ROW_SPEED => channel.speed.clone(),
+            // 明文永不回显：已配置的密钥只显示掩码占位。
+            TTS_ROW_API_KEY => match channel.api_key.trim() {
+                "" => "（未配置）".to_string(),
+                _ => MASKED_SECRET.to_string(),
+            },
             _ => String::new(),
         }
     }
 
-    /// 后端行的显示文案：把当前后端与「少了什么」说清楚。
-    fn backend_text(&self) -> String {
-        if self.api_enabled {
-            if self.api_ready {
-                "接口合成".to_string()
-            } else {
-                "接口合成（未配密钥）".to_string()
-            }
-        } else if self.local_engine_available {
-            "本地推理".to_string()
-        } else {
-            "本地推理（本构建未编译）".to_string()
-        }
-    }
-
     fn rows(&self) -> Vec<TtsRowView> {
-        TTS_ROW_LABELS
-            .iter()
+        self.visible_rows()
+            .into_iter()
             .enumerate()
-            .map(|(row, label)| TtsRowView {
-                label,
+            .map(|(index, row)| TtsRowView {
+                label: TTS_ROW_LABELS[row],
                 value: self.row_text(row),
-                action: is_tts_action_row(row),
+                action: row == TTS_ROW_SAVE || row == TTS_ROW_PROVIDER,
+                index,
+                focused: row == self.focused,
             })
             .collect()
     }
 
+    /// 把选中行挪到相邻的可见行（隐藏行的位置会被跳过）。
+    fn move_focus(&mut self, delta: isize) {
+        let rows = self.visible_rows();
+        let Some(index) = rows.iter().position(|row| *row == self.focused) else {
+            self.focused = rows.first().copied().unwrap_or(TTS_ROW_ENABLED);
+            return;
+        };
+        let next = (index as isize + delta).rem_euclid(rows.len() as isize) as usize;
+        self.focused = rows[next];
+    }
+
     fn cycle(&mut self, row: usize, direction: isize) {
+        // 切换服务商后原来选中的行可能不再可见，落回第一行。
+        let gemini = self.is_gemini();
         match row {
             TTS_ROW_ENABLED => self.enabled = !self.enabled,
             TTS_ROW_AUTO_PLAY => self.auto_play = !self.auto_play,
-            TTS_ROW_VOICE => {
-                self.voice = cycle_text(&self.voices, &self.voice, direction);
-            }
-            TTS_ROW_DELETE => {
-                if !self.custom_voices.is_empty() {
-                    let count = self.custom_voices.len() as isize;
-                    self.delete_index =
-                        ((self.delete_index as isize + direction).rem_euclid(count)) as usize;
-                }
-            }
-            TTS_ROW_DEVICE => {
-                self.device = cycle_text(
-                    &TTS_DEVICE_OPTIONS
-                        .iter()
-                        .map(|v| v.to_string())
-                        .collect::<Vec<String>>(),
-                    &self.device,
-                    direction,
-                );
-            }
-            TTS_ROW_THREADS => {
-                let options: Vec<String> = TTS_THREAD_COUNTS.iter().map(i64::to_string).collect();
-                let current = self.thread_count.to_string();
-                let next = cycle_text(&options, &current, direction);
-                self.thread_count = next.parse().unwrap_or(self.thread_count);
-            }
-            TTS_ROW_BACKEND => {
-                // 本地推理没编译时只能停在接口后端（否则用户会配出一个跑不通的组合）。
-                if self.local_engine_available {
-                    self.api_enabled = !self.api_enabled;
-                } else {
-                    self.api_enabled = true;
-                }
-            }
-            TTS_ROW_API_SPEED => {
+            TTS_ROW_SPEAK_REPLIES => self.speak_replies = !self.speak_replies,
+            TTS_ROW_PROVIDER => {
                 let options: Vec<String> =
-                    TTS_API_SPEEDS.iter().map(|item| (*item).to_string()).collect();
-                self.api_speed = cycle_text(&options, &self.api_speed, direction);
+                    TTS_PROVIDER_OPTIONS.iter().map(|v| v.to_string()).collect();
+                self.provider = cycle_text(&options, &self.provider, direction);
+                if !self.visible_rows().contains(&self.focused) {
+                    self.focused = TTS_ROW_ENABLED;
+                }
+            }
+            TTS_ROW_VOICE => {
+                let voices = self.current_voices();
+                let channel = if gemini {
+                    &mut self.gemini
+                } else {
+                    &mut self.openai
+                };
+                channel.voice = cycle_text(&voices, &channel.voice, direction);
+            }
+            TTS_ROW_SPEED => {
+                let options: Vec<String> =
+                    TTS_SPEED_OPTIONS.iter().map(|v| v.to_string()).collect();
+                self.openai.speed = cycle_text(&options, &self.openai.speed, direction);
             }
             _ => {}
         }
@@ -1571,49 +1646,63 @@ impl TtsState {
     fn apply_saved(&mut self, draft: &TtsDraft) {
         self.enabled = draft.enabled;
         self.auto_play = draft.auto_play;
-        self.voice = draft.voice.clone();
-        self.model_dir = draft.model_dir.clone();
-        self.device = draft.device.clone();
-        self.thread_count = draft.thread_count;
-        self.api_enabled = draft.api_enabled;
-        self.api_base_url = draft.api_base_url.clone();
-        self.api_model = draft.api_model.clone();
-        self.api_voice = draft.api_voice.clone();
-        self.api_key = draft.api_key.clone();
-        self.api_key_env = draft.api_key_env.clone();
-        self.api_speed = draft.api_speed.clone();
-    }
-
-    /// 宿主回填：自定义音色库变化（克隆完成 / 删除后重载）。
-    fn set_custom_voices(&mut self, voices: Vec<String>) {
-        self.custom_voices = voices;
-        if self.delete_index >= self.custom_voices.len() {
-            self.delete_index = 0;
+        self.speak_replies = draft.speak_replies;
+        self.provider = draft.provider.clone();
+        match &draft.channel {
+            TtsChannelDraft::OpenAi {
+                base_url,
+                model,
+                voice,
+                instructions,
+                speed,
+                api_key,
+            } => {
+                self.openai = TtsChannelValues {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    voice: voice.clone(),
+                    instructions: instructions.clone(),
+                    speed: speed.clone(),
+                    // 草稿里的密钥就是刚写盘的明文；界面仍只显示掩码。
+                    api_key: api_key.clone(),
+                };
+            }
+            TtsChannelDraft::Gemini {
+                base_url,
+                model,
+                voice,
+                instructions,
+                api_key,
+            } => {
+                self.gemini = TtsChannelValues {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    voice: voice.clone(),
+                    instructions: instructions.clone(),
+                    speed: self.gemini.speed.clone(),
+                    api_key: api_key.clone(),
+                };
+            }
         }
     }
 
-    /// 宿主回填：模型下载 / 克隆任务状态行。
-    fn set_busy(&mut self, busy: bool, message: String) {
-        self.busy = busy;
-        self.status = message;
+    /// 该行是否有输入态（只有文本行才有；开关候选类行就地切档）。
+    fn editable(&self, row: usize) -> bool {
+        matches!(
+            row,
+            TTS_ROW_BASE_URL | TTS_ROW_MODEL | TTS_ROW_INSTRUCTIONS | TTS_ROW_API_KEY
+        )
     }
 
     fn begin_input(&mut self, row: usize) {
-        let current = match row {
-            TTS_ROW_CLONE_NAME => self.clone_name.clone(),
-            TTS_ROW_CLONE_AUDIO => self.clone_audio.clone(),
-            TTS_ROW_MODEL_DIR => self.model_dir.clone(),
-            TTS_ROW_API_BASE_URL => self.api_base_url.clone(),
-            TTS_ROW_API_MODEL => self.api_model.clone(),
-            TTS_ROW_API_VOICE => self.api_voice.clone(),
-            // 密钥按「当前值」编辑（不预先填明文，避免在界面上完整暴露）；
-            // 想改环境变量名走下一行，想清空则整行删完再确认。
-            TTS_ROW_API_KEY => String::new(),
-            TTS_ROW_API_KEY_ENV => self.api_key_env.clone(),
-            _ => return,
-        };
+        if !self.editable(row) {
+            return;
+        }
         let mut composer = Composer::default();
-        composer.set_text(&current);
+        // 密钥不回显：进输入态也从空起步，留空即保持磁盘原值。
+        if row != TTS_ROW_API_KEY {
+            composer.set_text(&self.row_text(row));
+        }
         self.input = Some((row, composer));
     }
 
@@ -1622,31 +1711,54 @@ impl TtsState {
             return;
         };
         let text = composer.text().to_string();
+        let channel = self.channel_mut();
         match row {
-            TTS_ROW_CLONE_NAME => self.clone_name = text,
-            TTS_ROW_CLONE_AUDIO => self.clone_audio = text,
-            TTS_ROW_MODEL_DIR => self.model_dir = text,
+            TTS_ROW_BASE_URL => channel.base_url = text,
+            TTS_ROW_MODEL => channel.model = text,
+            TTS_ROW_INSTRUCTIONS => channel.instructions = text,
+            // 留空不改动磁盘原值（对映渠道表单的 API Key 行）。
             TTS_ROW_API_KEY => {
-                // 空输入 = 不修改（避免误触把已存密钥抹掉）；要清空请在配置里手改。
-                if !text.trim().is_empty() {
-                    self.api_key = text.trim().to_string();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    channel.api_key = trimmed.to_string();
                 }
             }
-            TTS_ROW_API_BASE_URL => self.api_base_url = text,
-            TTS_ROW_API_MODEL => self.api_model = text,
-            TTS_ROW_API_VOICE => self.api_voice = text,
-            TTS_ROW_API_KEY_ENV => self.api_key_env = text,
             _ => {}
+        }
+    }
+
+    /// 粘贴：文本行直接落到输入态（没有输入态就先按当前行进；动作行不接收）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            self.begin_input(self.focused);
+            if self.input.is_none() {
+                return false;
+            }
+        }
+        match self.input.as_mut() {
+            Some((_, composer)) => paste_into(Some(composer), text),
+            None => false,
         }
     }
 }
 
-/// 有一件事可做的行（渲染成按钮）。
-fn is_tts_action_row(row: usize) -> bool {
-    matches!(
-        row,
-        TTS_ROW_CLONE_BROWSE | TTS_ROW_CLONE_RUN | TTS_ROW_DOWNLOAD | TTS_ROW_SAVE
-    )
+/// 凭据字段的草稿 → 写盘取值：掩码或空串都表示「不改动」，原样交给宿主判断。
+fn secret_draft(draft: &str) -> String {
+    let trimmed = draft.trim();
+    if trimmed == MASKED_SECRET {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 已配置的凭据以掩码进草稿；未配置的留空。
+fn secret_draft_for(configured: bool) -> String {
+    if configured {
+        MASKED_SECRET.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// 密钥在界面上的展示：只露末 4 位，其余打码；空值直接显示「（未配置）」。
@@ -1707,16 +1819,27 @@ const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
 const MODEL_LIST_HINT: &str = "↑↓ 选择渠道或参数  Enter 编辑或选择  N 新建  D 删除  Esc 返回";
 const MODEL_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
-const TTS_HINT: &str =
-    "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
+const TTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Enter 执行  Ctrl+S 保存  Esc 返回";
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
 /// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
+/// 联网搜索页的提示：凭据留空表示不改动磁盘上的原值。
+const WEB_SEARCH_HINT: &str =
+    "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回工具页（凭据留空＝不改动）";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
 
+/// 图像生成页 `provider` 字段的下标（隐藏字段的判定依据，与 `form.rs` 的字段表对齐）。
+const IMAGE_GEN_PROVIDER_INDEX: usize = 1;
+/// 图像生成页 `base_url` 字段的下标。
+const IMAGE_GEN_BASE_URL_INDEX: usize = 2;
+/// 图像生成页 `model` 字段的下标。
+const IMAGE_GEN_MODEL_INDEX: usize = 4;
+
 /// 按 [`FORM_KINDS`] 的顺序建好每页表单；宿主没给初值的页用空草稿。
+///
+/// 图像生成页的可见字段取决于服务商草稿，因此建好后再同步一次隐藏状态。
 fn form_states(values: Vec<(FormKind, Vec<FieldValue>)>) -> Vec<FormState> {
     let mut forms: Vec<FormState> = FORM_KINDS
         .iter()
@@ -1727,7 +1850,19 @@ fn form_states(values: Vec<(FormKind, Vec<FieldValue>)>) -> Vec<FormState> {
             *slot = FormState::new(kind, fields);
         }
     }
+    if let Some(form) = forms.get_mut(FormKind::ImageGen.index()) {
+        let gemini = form_provider_is_gemini(form);
+        form.set_gemini(gemini);
+    }
     forms
+}
+
+/// 图像生成页草稿里的 `provider` 是否为 `gemini`。
+fn form_provider_is_gemini(form: &FormState) -> bool {
+    form.values()
+        .get(IMAGE_GEN_PROVIDER_INDEX)
+        .map(|value| value.text().trim().eq_ignore_ascii_case("gemini"))
+        .unwrap_or(false)
 }
 
 /// 表单页一行的只读视图（渲染层用）。
@@ -1768,6 +1903,22 @@ struct ChannelForm {
     index: Option<usize>,
     /// 是否新建出来的渠道。
     is_new: bool,
+}
+
+impl ChannelForm {
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进，对映 Textual 常驻 `Input`）。
+    ///
+    /// 模型 ID 列在这里只当普通文本处理，不触发自动检测——检测归 `Enter`。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.dropdown = None;
+            self.input = Some(channel_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
 }
 
 /// 模型管理页的界面状态：渠道列表 + 可选的渠道表单 + 「模型与参数」分区。
@@ -1816,15 +1967,70 @@ struct ToolsState {
     selected: usize,
     /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
     approval: String,
+    /// 联网搜索的当前配置（默认引擎 + 三把凭据是否已配置，凭据本身不进界面）。
+    web_search: WebSearchRow,
     status: String,
+}
+
+/// 联网搜索在工具页上的只读投影：默认引擎与三把凭据的配置状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchRow {
+    pub engine: String,
+    pub tavily_configured: bool,
+    pub exa_configured: bool,
+    pub firecrawl_configured: bool,
+}
+
+impl Default for WebSearchRow {
+    fn default() -> Self {
+        Self {
+            engine: "bing".to_string(),
+            tavily_configured: false,
+            exa_configured: false,
+            firecrawl_configured: false,
+        }
+    }
+}
+
+impl WebSearchRow {
+    /// 工具页那一行的值文案：默认引擎，接口型引擎已配凭据时附一句说明。
+    pub fn label(&self) -> String {
+        let mut text = self.engine.clone();
+        let mut configured: Vec<&str> = Vec::new();
+        if self.tavily_configured {
+            configured.push("Tavily 已配置");
+        }
+        if self.exa_configured {
+            configured.push("Exa 已配置");
+        }
+        if self.firecrawl_configured {
+            configured.push("Firecrawl 已配置");
+        }
+        if !configured.is_empty() {
+            text.push_str(&format!("（{}）", configured.join("、")));
+        }
+        text
+    }
 }
 
 /// 工具开关页首行的标签（工具调用审查模式）。
 pub const TOOLS_APPROVAL_LABEL: &str = "工具调用审查";
 
+/// 工具开关页第二行的标签（联网搜索设置页的入口）。
+pub const TOOLS_WEB_SEARCH_LABEL: &str = "联网搜索";
+
+/// 逐工具开关在工具页里的起始行号（前两行分别是审查模式与联网搜索）。
+pub const TOOLS_SWITCH_ROW_OFFSET: usize = 2;
+
+/// 凭据字段在界面上的掩码占位：已配置的凭据都用它显示，草稿值等于它表示「不改动」。
+pub const MASKED_SECRET: &str = "••••••••";
+
 /// 审查模式的候选顺序（对映 Python 的 `_APPROVAL_OPTIONS`）。
-pub const TOOLS_APPROVAL_OPTIONS: [&str; 3] =
-    [APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW, APPROVAL_MODE_AUTO];
+pub const TOOLS_APPROVAL_OPTIONS: [&str; 3] = [
+    APPROVAL_MODE_MANUAL,
+    APPROVAL_MODE_REVIEW,
+    APPROVAL_MODE_AUTO,
+];
 
 /// 把任意审批模式折算到候选档位（不认得的值落到默认的「自动审查」）。
 pub fn nearest_approval_mode(mode: &str) -> &'static str {
@@ -1990,6 +2196,17 @@ impl McpEditor {
         let mut composer = Composer::default();
         composer.insert(&self.field_text(index));
         self.input = Some(composer);
+    }
+
+    /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进）。
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            self.begin_input();
+            if self.input.is_none() {
+                return false;
+            }
+        }
+        paste_into(self.input.as_mut(), text)
     }
 
     fn commit_input(&mut self) {
@@ -2173,6 +2390,7 @@ impl SettingsState {
                 rows: values.tools,
                 selected: 0,
                 approval: nearest_approval_mode(&values.approval_mode).to_string(),
+                web_search: values.web_search,
                 status: TOOLS_HINT.to_string(),
             },
             mcp: McpState {
@@ -2377,7 +2595,11 @@ impl SettingsState {
                 already
             }
             Pane::Tts => {
-                let target = index.min(TTS_ROW_COUNT - 1);
+                // 点击给的是屏幕行号，按当前可见行换算成配置行号（Gemini 下没有语速行）。
+                let rows = self.tts.visible_rows();
+                let Some(target) = rows.get(index).copied() else {
+                    return false;
+                };
                 let already = self.tts.focused == target;
                 self.tts.focused = target;
                 already
@@ -2440,8 +2662,12 @@ impl SettingsState {
                 let Some(form) = self.form_mut() else {
                     return false;
                 };
-                let already = form.focused() == index;
-                form.set_focused(index);
+                // 渲染给的是可见行号（隐藏字段不占行），要映射回字段下标；隐藏行不可聚焦。
+                let Some(target) = form.visible_indices().get(index).copied() else {
+                    return false;
+                };
+                let already = form.focused() == target;
+                form.set_focused(target);
                 already
             }
             Pane::Pending => false,
@@ -2501,9 +2727,14 @@ impl SettingsState {
         approval_mode_label(&self.tools.approval)
     }
 
-    /// 工具页的可选行数：首行的审查模式 + 逐工具开关。
+    /// 工具页「联网搜索」行的显示文案（默认引擎 + 已配置的凭据）。
+    pub fn web_search_value(&self) -> String {
+        self.tools.web_search.label()
+    }
+
+    /// 工具页的可选行数：审查模式 + 联网搜索 + 逐工具开关。
     pub fn tool_row_count(&self) -> usize {
-        self.tools.rows.len() + 1
+        self.tools.rows.len() + TOOLS_SWITCH_ROW_OFFSET
     }
 
     pub fn subagent_rows(&self) -> &[SubagentRow] {
@@ -2599,14 +2830,28 @@ impl SettingsState {
             .collect()
     }
 
-    /// 表单页当前聚焦的字段序号。
+    /// 表单页当前聚焦字段序号。
     pub fn form_focused(&self) -> usize {
         self.form().map(|form| form.focused()).unwrap_or(0)
     }
 
-    /// 表单页的字段个数。
+    /// 聚焦字段在**可见行**里的序号（渲染层按它滚动窗口）。
+    pub fn form_focus_position(&self) -> usize {
+        self.form()
+            .map(|form| {
+                form.visible_indices()
+                    .iter()
+                    .position(|index| *index == form.focused())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
+    /// 表单页当前显示的字段个数（隐藏字段不计入滚动窗口）。
     pub fn form_field_count(&self) -> usize {
-        self.form().map(|form| form.specs().len()).unwrap_or(0)
+        self.form()
+            .map(|form| form.visible_indices().len())
+            .unwrap_or(0)
     }
 
     /// 表单页当前页签（渲染层按它取状态与字段表）；不在表单页时为 `None`。
@@ -2617,7 +2862,7 @@ impl SettingsState {
         }
     }
 
-    /// 表单页的字段行（渲染层用）；不在表单页时为空。
+    /// 表单页的字段行（渲染层用）；不在表单页时为空。隐藏字段不出现在这份清单里。
     pub fn form_rows(&self) -> Vec<FormFieldView> {
         let Pane::Form(_) = self.pane else {
             return Vec::new();
@@ -2625,18 +2870,20 @@ impl SettingsState {
         let Some(form) = self.form() else {
             return Vec::new();
         };
-        form.specs()
-            .iter()
-            .enumerate()
-            .map(|(index, spec)| FormFieldView {
-                label: spec.label,
-                value: self.form_field_value(form, index, *spec),
-                has_menu: matches!(
-                    spec.kind,
-                    FieldKind::Enum(_) | FieldKind::ModelChannel | FieldKind::ModelId
-                ),
-                editing: index == form.focused() && form.input().is_some(),
-                focused: index == form.focused(),
+        form.visible_indices()
+            .into_iter()
+            .filter_map(|index| {
+                let spec = form.field(index)?;
+                Some(FormFieldView {
+                    label: spec.label,
+                    value: self.form_field_value(form, index, spec),
+                    has_menu: matches!(
+                        spec.kind,
+                        FieldKind::Enum(_) | FieldKind::ModelChannel | FieldKind::ModelId
+                    ),
+                    editing: index == form.focused() && form.input().is_some(),
+                    focused: index == form.focused(),
+                })
             })
             .collect()
     }
@@ -2668,6 +2915,14 @@ impl SettingsState {
                 .map(|(label, _)| (*label).to_string())
                 .unwrap_or_else(|| raw.to_string()),
             FieldKind::ModelChannel | FieldKind::ModelId => self.model_select_value(spec, raw),
+            // 凭据从不回显：已配置显示掩码，未配置显示明确文案（草稿里存的是掩码或新值）。
+            FieldKind::Secret => {
+                if raw.trim().is_empty() {
+                    "（未配置）".to_string()
+                } else {
+                    MASKED_SECRET.to_string()
+                }
+            }
             FieldKind::Int | FieldKind::Float | FieldKind::Text => raw.to_string(),
         }
     }
@@ -2755,6 +3010,7 @@ impl SettingsState {
             // Python 的单选面板只有下拉与状态行，没有提示行。
             Pane::Choice(_) => "",
             Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
+            Pane::Form(FormKind::WebSearch) => WEB_SEARCH_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::Pending => "",
@@ -2773,6 +3029,48 @@ impl SettingsState {
         match self.pane {
             Pane::Form(kind) => self.forms.get_mut(kind.index()),
             _ => None,
+        }
+    }
+
+    // ---------- 粘贴 ----------
+
+    /// 把一次粘贴落进当前面板的输入态；没有正在编辑的字段时返回 `false`。
+    ///
+    /// 终端发来 `Event::Paste`（bracketed paste）时按键路径整条不走，必须在这里接住：
+    /// 否则凭据这类长文本在设置面板里只能靠逐字符击键（多数终端也不会把整段粘贴
+    /// 拆成单个按键送来）。
+    ///
+    /// 焦点还在左侧一级列表时一律拒收：那边没有输入框，落进去只会偷偷改掉右侧
+    /// 正在预览的字段草稿。
+    pub fn paste(&mut self, text: &str) -> bool {
+        if self.focus != Focus::Pane {
+            return false;
+        }
+        match self.pane {
+            Pane::Form(_) => self
+                .form_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::ModelManagement => self
+                .model_management
+                .form
+                .as_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::DecisionModels => self
+                .decision_models
+                .form
+                .as_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
+            Pane::Mcp => self
+                .mcp
+                .editor
+                .as_mut()
+                .map(|editor| editor.paste(text))
+                .unwrap_or(false),
+            Pane::Tts => self.tts.paste(text),
+            _ => false,
         }
     }
 
@@ -2997,7 +3295,7 @@ impl SettingsState {
                         self.open_dropdown();
                         return event;
                     }
-                    FieldKind::Int | FieldKind::Float | FieldKind::Text => {
+                    FieldKind::Int | FieldKind::Float | FieldKind::Text | FieldKind::Secret => {
                         if let Some(form) = self.form_mut() {
                             form.begin_input(index);
                         }
@@ -3006,7 +3304,12 @@ impl SettingsState {
                 None
             }
             KeyCode::Esc | KeyCode::Left => {
-                self.back_to_list();
+                // 联网搜索页是从工具页进来的，`Esc` 回去的地方也是工具页。
+                if self.pane == Pane::Form(FormKind::WebSearch) {
+                    self.close_web_search_form();
+                } else {
+                    self.back_to_list();
+                }
                 None
             }
             _ => None,
@@ -3126,9 +3429,7 @@ impl SettingsState {
             }
         }
         if let Some(discovery) = self.model_discoveries.get_mut(kind.index()) {
-            discovery.set_status(format!(
-                "已切换到渠道 {channel}；按 Enter 展开模型候选。"
-            ));
+            discovery.set_status(format!("已切换到渠道 {channel}；按 Enter 展开模型候选。"));
         }
     }
 
@@ -3179,11 +3480,11 @@ impl SettingsState {
         }
         match key {
             KeyCode::Up => {
-                self.tts.focused = self.tts.focused.saturating_sub(1);
+                self.tts.move_focus(-1);
                 None
             }
             KeyCode::Down => {
-                self.tts.focused = (self.tts.focused + 1).min(TTS_ROW_COUNT - 1);
+                self.tts.move_focus(1);
                 None
             }
             KeyCode::Left => {
@@ -3203,60 +3504,27 @@ impl SettingsState {
         }
     }
 
-    /// `Enter` 触发选中行动作；切换类行就地翻，动作用产出事件。
+    /// `Enter` 触发选中行动作；切换类行就地翻，文本行进输入态，动作用产出事件。
     fn activate_tts_row(&mut self) -> Option<SettingsEvent> {
-        if self.tts.busy {
-            self.tts.status = "后台任务进行中，请稍候。".to_string();
-            return None;
-        }
         let row = self.tts.focused;
         match row {
-            TTS_ROW_ENABLED | TTS_ROW_AUTO_PLAY | TTS_ROW_VOICE | TTS_ROW_DEVICE
-            | TTS_ROW_THREADS | TTS_ROW_BACKEND | TTS_ROW_API_SPEED => {
+            TTS_ROW_ENABLED
+            | TTS_ROW_PROVIDER
+            | TTS_ROW_AUTO_PLAY
+            | TTS_ROW_SPEAK_REPLIES
+            | TTS_ROW_VOICE
+            | TTS_ROW_SPEED => {
                 self.tts.cycle(row, 1);
                 None
             }
-            TTS_ROW_CLONE_NAME
-            | TTS_ROW_CLONE_AUDIO
-            | TTS_ROW_MODEL_DIR
-            | TTS_ROW_API_BASE_URL
-            | TTS_ROW_API_MODEL
-            | TTS_ROW_API_VOICE
-            | TTS_ROW_API_KEY
-            | TTS_ROW_API_KEY_ENV => {
-                self.tts.begin_input(row);
-                None
-            }
-            TTS_ROW_CLONE_BROWSE => Some(SettingsEvent::Apply(SettingsChange::Tts(
-                TtsChange::BrowseAudio,
-            ))),
-            TTS_ROW_CLONE_RUN => {
-                let voice = self.tts.clone_name.trim().to_string();
-                let audio = self.tts.clone_audio.trim().to_string();
-                if voice.is_empty() || audio.is_empty() {
-                    self.tts.status = "克隆需要填写音色名称与参考音频。".to_string();
-                    return None;
-                }
-                Some(SettingsEvent::Apply(SettingsChange::Tts(
-                    TtsChange::CloneVoice { voice, audio },
-                )))
-            }
-            TTS_ROW_DELETE => {
-                let Some(voice) = self.tts.custom_voices.get(self.tts.delete_index).cloned() else {
-                    self.tts.status = "没有可删除的自定义音色。".to_string();
-                    return None;
-                };
-                Some(SettingsEvent::Apply(SettingsChange::Tts(
-                    TtsChange::DeleteVoice { voice },
-                )))
-            }
-            TTS_ROW_DOWNLOAD => Some(SettingsEvent::Apply(SettingsChange::Tts(
-                TtsChange::Download,
-            ))),
             TTS_ROW_SAVE => Some(SettingsEvent::Apply(SettingsChange::Tts(TtsChange::Save(
                 self.tts.draft(),
             )))),
-            _ => None,
+            // 其余可见行（地址/模型/指令/API Key）是文本行：进输入态编辑。
+            _ => {
+                self.tts.begin_input(row);
+                None
+            }
         }
     }
 
@@ -3717,31 +3985,27 @@ impl SettingsState {
         self.vision.selected
     }
 
-    /// TTS 页的行视图（渲染层用）。
+    /// TTS 页的行视图（渲染层用；顺序即当前可见行，索引即屏幕行号）。
     pub fn tts_rows(&self) -> Vec<TtsRowView> {
         self.tts.rows()
+    }
+
+    /// TTS 页某一行号在可见行里的下标（不可见时返回 `None`）。
+    pub fn tts_row_index(&self, row: usize) -> Option<usize> {
+        self.tts.visible_rows().iter().position(|item| *item == row)
     }
 
     pub fn tts_focused(&self) -> usize {
         self.tts.focused
     }
 
-    /// 宿主回填：音频选择弹层选中的参考音频路径。
-    pub fn set_tts_clone_audio(&mut self, path: &str) {
-        self.tts.clone_audio = path.to_string();
-    }
-
-    /// 宿主回填：音色库（内置 + 自定义）。
-    pub fn refresh_tts_voices(&mut self, voices: Vec<String>, custom_voices: Vec<String>) {
-        if !voices.is_empty() {
-            self.tts.voices = voices;
-        }
-        self.tts.set_custom_voices(custom_voices);
-    }
-
-    /// 宿主回填：后台任务状态（下载 / 克隆）。
-    pub fn set_tts_busy(&mut self, busy: bool, message: String) {
-        self.tts.set_busy(busy, message);
+    /// TTS 页选中行在可见行里的下标（渲染层用它比屏幕行号）。
+    pub fn tts_focused_index(&self) -> usize {
+        self.tts
+            .visible_rows()
+            .iter()
+            .position(|row| *row == self.tts.focused)
+            .unwrap_or(0)
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -4022,12 +4286,21 @@ impl SettingsState {
                 };
                 let kind = self.form().map(|form| form.kind())?;
                 let is_channel = matches!(
-                    self.form().and_then(|form| form.field(index)).map(|spec| spec.kind),
+                    self.form()
+                        .and_then(|form| form.field(index))
+                        .map(|spec| spec.kind),
                     Some(FieldKind::ModelChannel)
                 );
                 if let Some(form) = self.forms.get_mut(kind.index()) {
                     form.set_value(index, FieldValue::Text(text.clone()));
                     form.set_status(format!("已选择：{text}；按 Ctrl+S 保存。"));
+                }
+                // 图像生成页换服务商：另一条通道的行藏起来（取值留在草稿里）。
+                if kind == FormKind::ImageGen && index == IMAGE_GEN_PROVIDER_INDEX {
+                    if let Some(form) = self.forms.get_mut(kind.index()) {
+                        let gemini = text.trim().eq_ignore_ascii_case("gemini");
+                        form.set_gemini(gemini);
+                    }
                 }
                 // 换渠道后模型列清空，并让下一次进模型列重新发现。
                 if is_channel {
@@ -4053,18 +4326,74 @@ impl SettingsState {
         self.tools.selected = ((self.tools.selected as isize + delta).rem_euclid(count)) as usize;
     }
 
-    /// 首行改审查模式（循环候选），其余行切换工具开关。
+    /// 首行改审查模式（循环候选），第二行进入联网搜索表单页，其余行切换工具开关。
     fn toggle_tool(&mut self, direction: isize) -> Option<SettingsEvent> {
-        if self.tools.selected == 0 {
+        if self.tools.selected == TOOLS_APPROVAL_ROW {
             let mode = cycle_approval_mode(&self.tools.approval, direction);
             return Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
                 mode: mode.to_string(),
             }));
         }
-        let row = self.tools.rows.get(self.tools.selected - 1)?;
+        if self.tools.selected == TOOLS_WEB_SEARCH_ROW {
+            return self.open_web_search_form();
+        }
+        let row = self
+            .tools
+            .rows
+            .get(self.tools.selected - TOOLS_SWITCH_ROW_OFFSET)?;
         Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
             name: row.name.clone(),
             enabled: !row.enabled,
+        }))
+    }
+
+    /// 进入联网搜索表单页：一条设置在工具页里，编辑界面借用表单页结构。
+    ///
+    /// 只切面板、不写配置：与左栏切页同义，`Esc` 回到工具页。
+    fn open_web_search_form(&mut self) -> Option<SettingsEvent> {
+        // 先取值再取可变借用：草稿来自工具页那一行的当前状态。
+        let engine = self.tools.web_search.engine.clone();
+        let tavily = secret_draft_for(self.tools.web_search.tavily_configured);
+        let exa = secret_draft_for(self.tools.web_search.exa_configured);
+        let firecrawl = secret_draft_for(self.tools.web_search.firecrawl_configured);
+        self.pane = Pane::Form(FormKind::WebSearch);
+        self.dropdown = None;
+        if let Some(form) = self.form_mut() {
+            // 每次进入都从当前配置重起，避免上一次未保存的草稿残留。
+            form.set_values(vec![
+                FieldValue::Text(engine),
+                FieldValue::Text(tavily),
+                FieldValue::Text(exa),
+                FieldValue::Text(firecrawl),
+            ]);
+            form.set_focused(0);
+            form.set_status(String::new());
+        }
+        None
+    }
+
+    /// 联网搜索表单页的 `Esc`：回到工具页（而不是左栏）。
+    fn close_web_search_form(&mut self) {
+        self.pane = Pane::Tools;
+        self.dropdown = None;
+        self.focus = Focus::Pane;
+    }
+
+    /// 联网搜索表单页的保存：把三个字段拼成一页表单变更。
+    ///
+    /// 与其余表单页同构（走 `SettingsChange::Form`），这样界面的「保存 → 回填 → 回工具页」
+    /// 与失败保留草稿的语义都复用同一条路径。
+    fn save_web_search_form(&mut self) -> Option<SettingsEvent> {
+        let form = self.form()?;
+        let values: Vec<FieldValue> = (0..form.specs().len())
+            .map(|index| {
+                let raw = form.value(index).map(|value| value.text()).unwrap_or("");
+                FieldValue::Text(secret_draft(raw))
+            })
+            .collect();
+        Some(SettingsEvent::Apply(SettingsChange::Form {
+            kind: FormKind::WebSearch,
+            values,
         }))
     }
 
@@ -4223,13 +4552,9 @@ impl SettingsState {
                     "正在检测模型列表…（Esc 可保留手动输入，稍候可重试）".to_string();
             }
             field => {
-                let mut composer = Composer::default();
                 // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
-                if field != ChannelField::ApiKey {
-                    composer.insert(&channel_field_value(&form.row, field));
-                }
                 form.dropdown = None;
-                form.input = Some(composer);
+                form.input = Some(channel_input_composer(&form.row, field));
             }
         }
         event
@@ -4523,14 +4848,16 @@ impl SettingsState {
             KeyCode::Up => {
                 let count = dropdown.options.len() as isize;
                 if count > 0 {
-                    dropdown.selected = ((dropdown.selected as isize - 1).rem_euclid(count)) as usize;
+                    dropdown.selected =
+                        ((dropdown.selected as isize - 1).rem_euclid(count)) as usize;
                 }
                 None
             }
             KeyCode::Down => {
                 let count = dropdown.options.len() as isize;
                 if count > 0 {
-                    dropdown.selected = ((dropdown.selected as isize + 1).rem_euclid(count)) as usize;
+                    dropdown.selected =
+                        ((dropdown.selected as isize + 1).rem_euclid(count)) as usize;
                 }
                 None
             }
@@ -4610,11 +4937,9 @@ impl SettingsState {
                 self.decision_models.local.cycle(row, 1);
                 self.save_decision_local()
             }
-            DECISION_LOCAL_ROW_PREPARE => {
-                Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
-                    DecisionLocalChange::PrepareEnvironment,
-                )))
-            }
+            DECISION_LOCAL_ROW_PREPARE => Some(SettingsEvent::Apply(
+                SettingsChange::DecisionLocal(DecisionLocalChange::PrepareEnvironment),
+            )),
             DECISION_LOCAL_ROW_DOWNLOAD => {
                 let size = self.decision_models.local.size.clone();
                 Some(SettingsEvent::Apply(SettingsChange::DecisionLocal(
@@ -4824,13 +5149,9 @@ impl SettingsState {
                 });
             }
             field => {
-                let mut composer = Composer::default();
                 // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
-                if field != DecisionField::ApiKey {
-                    composer.insert(&decision_field_value(&form.row, field));
-                }
                 form.dropdown = None;
-                form.input = Some(composer);
+                form.input = Some(decision_input_composer(&form.row, field));
             }
         }
         None
@@ -4888,6 +5209,9 @@ impl SettingsState {
             },
             Pane::Form(kind) => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
+                    if kind == FormKind::WebSearch {
+                        return self.save_web_search_form();
+                    }
                     let values = self
                         .form()
                         .map(|form| form.values().to_vec())
@@ -4901,9 +5225,6 @@ impl SettingsState {
                 _ => None,
             },
             Pane::Tts => match key {
-                KeyCode::Char('b') | KeyCode::Char('B') => Some(SettingsEvent::Apply(
-                    SettingsChange::Tts(TtsChange::BrowseAudio),
-                )),
                 KeyCode::Char('s') | KeyCode::Char('S') => Some(SettingsEvent::Apply(
                     SettingsChange::Tts(TtsChange::Save(self.tts.draft())),
                 )),
@@ -5021,6 +5342,23 @@ impl SettingsState {
                 self.tools.approval = nearest_approval_mode(mode).to_string();
                 self.tools.status = message;
             }
+            SettingsChange::Form { kind, values } => {
+                if let Some(form) = self.forms.get_mut(kind.index()) {
+                    // 配置侧可能规范化过取值，用宿主回填的值覆盖草稿。
+                    form.set_values(values.clone());
+                    form.set_status(message.clone());
+                }
+                // 联网搜索页是从工具页进来的，保存后回到工具页；其余表单页留在原地。
+                if *kind == FormKind::WebSearch {
+                    self.tools.web_search.engine = values
+                        .first()
+                        .map(|value| value.text().trim().to_string())
+                        .unwrap_or_default();
+                    // 凭据状态不在这里猜：只有磁盘知道明文，由宿主随后的 `set_web_search` 对齐。
+                    self.tools.status = message;
+                    self.close_web_search_form();
+                }
+            }
             SettingsChange::Subagent(change) => {
                 match change {
                     SubagentChange::Enabled(enabled) => {
@@ -5075,18 +5413,9 @@ impl SettingsState {
                 };
                 self.choices.status[kind.index()] = message;
             }
-            SettingsChange::Form { kind, values } => {
-                if let Some(form) = self.forms.get_mut(kind.index()) {
-                    // 配置侧可能规范化过取值，用宿主回填的值覆盖草稿。
-                    form.set_values(values.clone());
-                    form.set_status(message.clone());
-                }
-            }
-            SettingsChange::Tts(change) => {
-                // 保存成功：草稿回落到新配置，模型/音色库状态由宿主另推。
-                if let TtsChange::Save(draft) = change {
-                    self.tts.apply_saved(draft);
-                }
+            SettingsChange::Tts(TtsChange::Save(draft)) => {
+                // 保存成功：把草稿的明文换成刚写盘的生效值（另一家的配置由宿主另行推回）。
+                self.tts.apply_saved(draft);
                 self.tts.status = message;
             }
             SettingsChange::Mcp(change) => self.apply_mcp_succeeded(change, message),
@@ -5207,6 +5536,10 @@ impl SettingsState {
             | SettingsChange::Reasoning { .. } => self.model_management.status.push_str(note),
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
+            SettingsChange::Form {
+                kind: FormKind::WebSearch,
+                ..
+            } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
@@ -5334,6 +5667,32 @@ impl SettingsState {
         self.tools.selected = selected;
     }
 
+    /// 联网搜索设置保存后，用磁盘上的真实配置覆盖工具页那一行（含凭据是否已配置）。
+    pub fn set_web_search(&mut self, row: WebSearchRow) {
+        self.tools.web_search = row;
+    }
+
+    /// 宿主回填：图像生成草稿按磁盘的生效值重排（归一化可能折算过端点与模型）。
+    ///
+    /// 只覆盖服务商与之相关的两行（`base_url` / `model`），其余字段以草稿为准——
+    /// 保存刚写盘的就是草稿，重排只是把配置侧的规范化结果同步回界面。
+    pub fn set_image_gen_provider_defaults(&mut self, provider: &str, base_url: &str, model: &str) {
+        let Some(form) = self.forms.get_mut(FormKind::ImageGen.index()) else {
+            return;
+        };
+        form.set_value(
+            IMAGE_GEN_PROVIDER_INDEX,
+            FieldValue::Text(provider.to_string()),
+        );
+        form.set_value(
+            IMAGE_GEN_BASE_URL_INDEX,
+            FieldValue::Text(base_url.to_string()),
+        );
+        form.set_value(IMAGE_GEN_MODEL_INDEX, FieldValue::Text(model.to_string()));
+        let gemini = provider.trim().eq_ignore_ascii_case("gemini");
+        form.set_gemini(gemini);
+    }
+
     /// 决策渠道列表（渲染层用）。
     pub fn decision_rows(&self) -> &[DecisionRow] {
         &self.decision_models.rows
@@ -5452,6 +5811,15 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
     }
 }
 
+/// 决策表单某字段的输入缓冲初值（与渠道表单同口径：凭据从空开始）。
+fn decision_input_composer(row: &DecisionRow, field: DecisionField) -> Composer {
+    let mut composer = Composer::default();
+    if field != DecisionField::ApiKey {
+        composer.insert(&decision_field_value(row, field));
+    }
+    composer
+}
+
 /// 把表单值写回决策渠道记录。
 fn set_decision_field(row: &mut DecisionRow, field: DecisionField, value: String) {
     match field {
@@ -5550,6 +5918,16 @@ pub fn channel_field_value(row: &ChannelRow, field: ChannelField) -> String {
             }
         }
     }
+}
+
+/// 渠道表单某字段的输入缓冲初值：API Key 从空开始（不回显明文，让「留空＝不改动」成为默认），
+/// 其余字段以当前值为起点。
+fn channel_input_composer(row: &ChannelRow, field: ChannelField) -> Composer {
+    let mut composer = Composer::default();
+    if field != ChannelField::ApiKey {
+        composer.insert(&channel_field_value(row, field));
+    }
+    composer
 }
 
 /// 把表单值写回渠道记录。
@@ -5797,7 +6175,10 @@ mod tests {
         // 展开候选：游标停在当前渠道（第 1 项）。
         assert_eq!(state.handle_key(KeyCode::Enter), None);
         let dropdown = state.dropdown().expect("应展开渠道候选");
-        assert_eq!(dropdown.field, DropdownField::ModelParam(ModelParamRow::Channel));
+        assert_eq!(
+            dropdown.field,
+            DropdownField::ModelParam(ModelParamRow::Channel)
+        );
         assert_eq!(dropdown.selected, 0);
         assert_eq!(state.dropdown_options().len(), 2);
 
@@ -5817,7 +6198,10 @@ mod tests {
             "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。".to_string(),
         );
         assert_eq!(state.model_key(), "gpt-backup");
-        assert_eq!(state.status(), "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。");
+        assert_eq!(
+            state.status(),
+            "模型已切到 备用渠道（gpt-4o），已保存到 config.toml。"
+        );
     }
 
     #[test]
@@ -5833,7 +6217,10 @@ mod tests {
         // 折叠态按 Enter 展开候选，游标停在当前值（128K 是第 3 个候选）。
         state.handle_key(KeyCode::Enter);
         let dropdown = state.dropdown().expect("应展开候选");
-        assert_eq!(dropdown.field, DropdownField::ModelParam(ModelParamRow::Window));
+        assert_eq!(
+            dropdown.field,
+            DropdownField::ModelParam(ModelParamRow::Window)
+        );
         assert_eq!(dropdown.selected, 2, "128K 是第 3 个候选");
 
         state.handle_key(KeyCode::Up);
@@ -5945,7 +6332,7 @@ mod tests {
         }
         assert_eq!(state.pane(), Pane::Tools);
         state.handle_key(KeyCode::Enter); // 进入面板
-        assert_eq!(state.tool_selected(), 0);
+        assert_eq!(state.tool_selected(), TOOLS_APPROVAL_ROW);
         assert_eq!(
             state.handle_key(KeyCode::Char(' ')),
             Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
@@ -5954,7 +6341,16 @@ mod tests {
             "首行是工具调用审查，默认 review 右移一档到 auto"
         );
 
+        // 第二行是联网搜索：确认后进表单页，不产出配置事件。
         state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
+        assert_eq!(state.handle_key(KeyCode::Enter), None);
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+        state.handle_key(KeyCode::Esc);
+        assert_eq!(state.pane(), Pane::Tools, "联网搜索页的 Esc 回工具页");
+
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_SWITCH_ROW_OFFSET);
         assert_eq!(
             state.handle_key(KeyCode::Char(' ')),
             Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
@@ -6050,7 +6446,11 @@ mod tests {
         assert_eq!(cycle_approval_mode("review", -1), "manual");
         assert_eq!(cycle_approval_mode("auto", 1), "manual", "到顶回第一档");
         assert_eq!(cycle_approval_mode("manual", -1), "auto", "到底回最后一档");
-        assert_eq!(nearest_approval_mode("去死"), "review", "不认得的值回落默认档");
+        assert_eq!(
+            nearest_approval_mode("去死"),
+            "review",
+            "不认得的值回落默认档"
+        );
         assert_eq!(nearest_approval_mode("always"), "auto", "别名照常折算");
     }
 
@@ -6421,11 +6821,7 @@ mod tests {
                 .with_choices("", true, false, false),
         );
         goto(&mut state, "model_management");
-        assert_eq!(
-            state.model_param_rows()[3].1,
-            "关闭",
-            "空串折算到 none"
-        );
+        assert_eq!(state.model_param_rows()[3].1, "关闭", "空串折算到 none");
 
         state.handle_key(KeyCode::Enter);
         for _ in 0..5 {
@@ -6555,7 +6951,10 @@ mod tests {
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Down);
-        assert!(state.form_rows()[2].value.contains("主渠道"), "渠道列显示渠道名");
+        assert!(
+            state.form_rows()[2].value.contains("主渠道"),
+            "渠道列显示渠道名"
+        );
         assert!(
             state.form_rows()[3].value.contains("渠道默认"),
             "模型列未选时标注「渠道默认」：{}",
@@ -6862,12 +7261,15 @@ mod tests {
                 FormKind::ImageGen,
                 vec![
                     FieldValue::Flag(true),
+                    FieldValue::Text("openai".to_string()),
                     FieldValue::Text("https://api.example.com/v1".to_string()),
                     FieldValue::Text("EXAMPLE_API_KEY".to_string()),
                     FieldValue::Text("gpt-image-2".to_string()),
                     FieldValue::Text("1024x1024".to_string()),
                     FieldValue::Text("high".to_string()),
                     FieldValue::Text("webp".to_string()),
+                    FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
                     FieldValue::Text("2".to_string()),
                     FieldValue::Text("120".to_string()),
                 ],
@@ -6876,13 +7278,14 @@ mod tests {
         assert_eq!(state.pane(), Pane::Form(FormKind::ImageGen));
         state.handle_key(KeyCode::Enter);
         let rows = state.form_rows();
-        assert_eq!(rows.len(), 9);
-        assert_eq!(rows[4].value, "1024x1024", "枚举字段显示候选文案");
-        assert!(rows[4].has_menu, "枚举字段带下拉标记");
-        assert!(!rows[1].has_menu, "文本字段没有下拉标记");
+        // OpenAI 通道：Gemini 的两行（画面比例/分辨率档位）不显示。
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[5].value, "1024x1024", "枚举字段显示候选文案");
+        assert!(rows[5].has_menu, "枚举字段带下拉标记");
+        assert!(!rows[2].has_menu, "文本字段没有下拉标记");
 
-        // 第 5 行是「默认尺寸」：展开候选（8 个）后往后挪到 4K。
-        for _ in 0..4 {
+        // 第 6 行是「默认尺寸」：展开候选（8 个）后往后挪到 4K。
+        for _ in 0..5 {
             state.handle_key(KeyCode::Down);
         }
         state.handle_key(KeyCode::Enter);
@@ -6891,7 +7294,7 @@ mod tests {
             state.handle_key(KeyCode::Down);
         }
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.form_rows()[4].value, "3840x2160");
+        assert_eq!(state.form_rows()[5].value, "3840x2160");
 
         let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
             state.handle_ctrl_key(KeyCode::Char('s'))
@@ -6899,12 +7302,220 @@ mod tests {
             panic!("Ctrl+S 应产出保存事件");
         };
         assert_eq!(kind, FormKind::ImageGen);
-        assert_eq!(values[4], FieldValue::Text("3840x2160".to_string()));
+        assert_eq!(values[5], FieldValue::Text("3840x2160".to_string()));
         assert_eq!(
-            values[2],
+            values[3],
             FieldValue::Text("EXAMPLE_API_KEY".to_string()),
             "只带环境变量名，界面里没有凭据本身"
         );
+    }
+
+    /// 图像生成页两条通道的字段集互斥：换 provider 后行数与候选都跟着变。
+    #[test]
+    fn image_gen_page_switches_fields_with_provider() {
+        let mut state =
+            SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_form(
+                FormKind::ImageGen,
+                vec![
+                    FieldValue::Flag(true),
+                    FieldValue::Text("openai".to_string()),
+                    FieldValue::Text("https://api.example.com/v1".to_string()),
+                    FieldValue::Text("EXAMPLE_API_KEY".to_string()),
+                    FieldValue::Text("gpt-image-2".to_string()),
+                    FieldValue::Text("1024x1024".to_string()),
+                    FieldValue::Text("high".to_string()),
+                    FieldValue::Text("webp".to_string()),
+                    FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
+                    FieldValue::Text("2".to_string()),
+                    FieldValue::Text("120".to_string()),
+                ],
+            ));
+        goto(&mut state, "image_gen");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.form_field_count(), 10);
+
+        // 走「服务商」行（第 2 行）展开候选并切到 gemini。
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.dropdown_options().len(), 2);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+
+        let rows = state.form_rows();
+        assert_eq!(
+            rows.len(),
+            9,
+            "Gemini 通道少一行（三选一的目标格式与两项 OpenAI 参数互换）"
+        );
+        assert_eq!(rows[1].value, "gemini");
+        // 行序：启用/provider/地址/凭据变量/模型/画面比例/分辨率档位/张数/超时。
+        assert_eq!(rows[5].label, "画面比例");
+        assert_eq!(rows[6].label, "分辨率档位");
+        // 隐藏行的取值仍留在草稿里（切回 OpenAI 不会丢）。
+        let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(
+            values[5],
+            FieldValue::Text("1024x1024".to_string()),
+            "隐藏的尺寸仍在草稿"
+        );
+        assert_eq!(
+            values[7],
+            FieldValue::Text("webp".to_string()),
+            "隐藏的输出格式仍在草稿"
+        );
+    }
+
+    /// 联网搜索页的初始值：默认引擎 tavily，Tavily 已配凭据、Exa 与 Firecrawl 未配。
+    fn web_search_state() -> SettingsState {
+        SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_web_search(WebSearchRow {
+                engine: "tavily".to_string(),
+                tavily_configured: true,
+                exa_configured: false,
+                firecrawl_configured: false,
+            }),
+        )
+    }
+
+    #[test]
+    fn web_search_row_shows_engine_and_configured_keys() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(
+            state.web_search_value(),
+            "tavily（Tavily 已配置）",
+            "工具页那一行显示默认引擎与已配凭据"
+        );
+
+        // 未配任何凭据时只显示引擎。
+        let plain = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
+        assert_eq!(plain.web_search_value(), "bing");
+    }
+
+    #[test]
+    fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter); // 进工具页
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
+        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        let rows = state.form_rows();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].value, "tavily", "引擎列显示当前值");
+        assert!(rows[0].has_menu, "引擎是候选字段");
+        assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
+        assert_eq!(rows[2].value, "（未配置）", "未配凭据显示明确文案");
+        assert_eq!(rows[3].value, "（未配置）", "Firecrawl 也是未配");
+
+        // 掩码原样保存 = 不改动：三把凭据都折成空串交给宿主。
+        let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(kind, FormKind::WebSearch);
+        assert_eq!(values[0], FieldValue::Text("tavily".to_string()));
+        assert_eq!(values[1], FieldValue::Text(String::new()), "掩码不当作新值");
+        assert_eq!(values[2], FieldValue::Text(String::new()));
+        assert_eq!(values[3], FieldValue::Text(String::new()));
+    }
+
+    #[test]
+    fn web_search_page_offers_firecrawl_and_mixed_but_not_yahoo() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.handle_key(KeyCode::Enter), None); // 展开「默认引擎」候选
+        let options: Vec<String> = state
+            .dropdown_options()
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(
+            options,
+            vec![
+                "bing",
+                "duckduckgo",
+                "github",
+                "arxiv",
+                "huggingface",
+                "tavily",
+                "exa",
+                "firecrawl",
+                "mixed"
+            ],
+            "候选来自 WEB_SEARCH_ENGINES：雅虎已下线"
+        );
+    }
+
+    #[test]
+    fn web_search_page_returns_to_tools_after_save() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        state.apply_succeeded(
+            &SettingsChange::Form {
+                kind: FormKind::WebSearch,
+                values: vec![
+                    FieldValue::Text("exa".to_string()),
+                    FieldValue::Text("exa-key".to_string()),
+                    FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
+                ],
+            },
+            "联网搜索已设为 exa，已保存到 config.toml。".to_string(),
+        );
+        assert_eq!(state.pane(), Pane::Tools, "保存后回到工具页");
+        assert_eq!(state.status(), "联网搜索已设为 exa，已保存到 config.toml。");
+
+        // 凭据状态由宿主按磁盘真实配置覆盖（这里模拟那一步）。
+        state.set_web_search(WebSearchRow {
+            engine: "exa".to_string(),
+            tavily_configured: true,
+            exa_configured: true,
+            firecrawl_configured: true,
+        });
+        assert_eq!(
+            state.web_search_value(),
+            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置）"
+        );
+    }
+
+    #[test]
+    fn web_search_page_typing_a_new_key_reaches_the_draft() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        // 焦点停在引擎列：往下切到 Tavily 密钥，再进输入态重填。
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter);
+        for character in "tvly-new".chars() {
+            state.handle_key(KeyCode::Char(character));
+        }
+        state.handle_key(KeyCode::Enter);
+        let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(values[1], FieldValue::Text("tvly-new".to_string()));
     }
 
     /// 子任务设置页的初始行：总开关关闭 + 两个高级参数。
@@ -7181,145 +7792,151 @@ mod tests {
         assert_eq!(state.mcp_server_rows()[0].name, "net");
     }
 
-    /// TTS 后端行：按「接口开关 + 本构建是否带本地推理」给出可读文案。
+    /// 行号表与行数必须与标签表对齐；可执行行只有服务商与保存。
     #[test]
-    fn tts_backend_row_reports_backend_and_capability() {
-        let mut values = TtsValues {
-            api_enabled: false,
-            local_engine_available: true,
-            ..TtsValues::default()
-        };
-        values.api_ready = false;
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
-        goto(&mut state, "tts");
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(
-            state.tts_rows()[TTS_ROW_BACKEND].value,
-            "本地推理",
-            "带本地推理的构建里，接口关闭时后端是本地"
+    fn tts_rows_line_up_with_their_labels() {
+        assert_eq!(TTS_ROW_LABELS.len(), TTS_ROW_COUNT);
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
         );
-
-        // 没编译本地推理：后端强制停在接口，并提示缺密钥。
-        let values = TtsValues {
-            api_enabled: false,
-            local_engine_available: false,
-            ..TtsValues::default()
-        };
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
         goto(&mut state, "tts");
         state.handle_key(KeyCode::Enter);
-        assert_eq!(
-            state.tts_rows()[TTS_ROW_BACKEND].value,
-            "接口合成（未配密钥）"
-        );
-        // 尝试切换也停在接口：不允许配出跑不通的组合。
-        state.handle_key(KeyCode::Down); // 聚焦到后端行（第 0 行起步）
-        for _ in 0..(TTS_ROW_BACKEND) {
-            state.handle_key(KeyCode::Down);
-        }
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(state.tts_rows()[TTS_ROW_BACKEND].value, "接口合成（未配密钥）");
-
-        // 密钥就绪时只显示后端名。
-        let values = TtsValues {
-            api_enabled: true,
-            api_ready: true,
-            local_engine_available: false,
-            ..TtsValues::default()
+        let rows = state.tts_rows();
+        let index = |row: usize| {
+            state
+                .tts_row_index(row)
+                .expect("该行在当前服务商下应当可见")
         };
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
-        goto(&mut state, "tts");
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(state.tts_rows()[TTS_ROW_BACKEND].value, "接口合成");
+        assert_eq!(rows[index(TTS_ROW_ENABLED)].label, "启用 TTS");
+        assert_eq!(rows[index(TTS_ROW_PROVIDER)].label, "服务商 provider");
+        assert_eq!(rows[index(TTS_ROW_SAVE)].label, "保存");
+        assert!(rows[index(TTS_ROW_SAVE)].action && rows[index(TTS_ROW_PROVIDER)].action);
+        assert!(!rows[index(TTS_ROW_MODEL)].action);
+        // 两家共用的字段区里不再有朗读语言行。
+        let labels: Vec<&str> = rows.iter().map(|row| row.label).collect();
+        assert!(!labels.iter().any(|label| label.contains("language_code")));
     }
 
-    /// 接口字段可在面板里编辑，并随保存草稿一起送出去。
+    /// 切换服务商：可见行随之变化（Gemini 没有语速行）。
     #[test]
-    fn tts_api_rows_edit_into_save_draft() {
-        let values = TtsValues {
-            api_enabled: true,
-            api_base_url: "https://tts.example.com/v1".to_string(),
-            api_model: String::new(),
-            api_voice: "alloy".to_string(),
-            api_speed: "1".to_string(),
-            local_engine_available: false,
-            ..TtsValues::default()
-        };
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+    fn switching_provider_swaps_the_channel_rows() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
         goto(&mut state, "tts");
-        state.handle_key(KeyCode::Enter);
-        for _ in 0..TTS_ROW_API_MODEL {
-            state.handle_key(KeyCode::Down);
-        }
-        state.handle_key(KeyCode::Enter); // 进入输入态
-        for ch in "cosyvoice-2".chars() {
-            state.handle_key(KeyCode::Char(ch));
-        }
-        state.handle_key(KeyCode::Enter); // 提交输入
-        assert_eq!(state.tts_rows()[TTS_ROW_API_MODEL].value, "cosyvoice-2");
-
-        for _ in 0..(TTS_ROW_SAVE - TTS_ROW_API_MODEL) {
-            state.handle_key(KeyCode::Down);
-        }
-        let event = state.handle_key(KeyCode::Enter);
-        let Some(SettingsEvent::Apply(SettingsChange::Tts(TtsChange::Save(draft)))) = event else {
-            panic!("保存行应当产出 Save 事件，实际 {event:?}");
-        };
-        assert!(draft.api_enabled);
-        assert_eq!(draft.api_base_url, "https://tts.example.com/v1");
-        assert_eq!(draft.api_model, "cosyvoice-2");
-        assert_eq!(draft.api_voice, "alloy");
-        assert_eq!(draft.api_speed, "1");
-    }
-
-    /// 密钥行：界面只露末 4 位；空白输入不改动已存密钥（避免误抹）。
-    #[test]
-    fn tts_api_key_is_masked_and_blank_input_keeps_previous() {
-        assert_eq!(mask_api_key(""), "（未配置）");
-        assert_eq!(mask_api_key("   "), "（未配置）");
-        assert_eq!(mask_api_key("sk-abcdef1234"), "****…1234");
-        assert_eq!(mask_api_key("key1"), "****");
-
-        let values = TtsValues {
-            api_enabled: true,
-            api_key: "sk-existing".to_string(),
-            local_engine_available: false,
-            ..TtsValues::default()
-        };
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
-        goto(&mut state, "tts");
-        state.handle_key(KeyCode::Enter);
-        for _ in 0..TTS_ROW_API_KEY {
-            state.handle_key(KeyCode::Down);
-        }
-        assert_eq!(state.tts_rows()[TTS_ROW_API_KEY].value, "****…ting");
-        state.handle_key(KeyCode::Enter); // 进入输入态（缓冲为空）
-        state.handle_key(KeyCode::Enter); // 直接提交
+        state.handle_key(KeyCode::Enter); // 进入面板
         assert_eq!(
-            state.tts_rows()[TTS_ROW_API_KEY].value, "****…ting",
-            "空输入不得抹掉已存密钥"
+            state.tts_rows().len(),
+            TTS_ROW_COUNT,
+            "OpenAI 下所有行都可见"
+        );
+        let labels: Vec<&str> = state.tts_rows().iter().map(|row| row.label).collect();
+        assert!(labels.contains(&"语速 speed"));
+
+        // 选中服务商行后右切换档，字段区换成 Gemini 的（少一行语速）。
+        for _ in 0..TTS_ROW_PROVIDER {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.tts_focused(), TTS_ROW_PROVIDER);
+        state.handle_key(KeyCode::Right);
+        let labels: Vec<&str> = state.tts_rows().iter().map(|row| row.label).collect();
+        assert!(!labels.contains(&"语速 speed"));
+        assert_eq!(
+            state.tts_rows().len(),
+            TTS_ROW_COUNT - 1,
+            "Gemini 没有语速行"
+        );
+        let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行应当可见");
+        assert_eq!(
+            state.tts_rows()[voice].value,
+            "Kore",
+            "音色跟着换成 Gemini 的候选"
         );
     }
 
-    /// 语速行按候选档位循环。
+    /// 选中标记必须落在光标那一行：Gemini 下可见行少一行，与配置行号比会错位。
     #[test]
-    fn tts_api_speed_row_cycles_candidates() {
-        let values = TtsValues {
-            api_enabled: true,
-            api_speed: "1".to_string(),
-            local_engine_available: false,
-            ..TtsValues::default()
-        };
-        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+    fn tts_selection_marker_follows_the_visible_rows() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
         goto(&mut state, "tts");
         state.handle_key(KeyCode::Enter);
-        for _ in 0..TTS_ROW_API_SPEED {
+        // 切到 Gemini：语速行消失，其后的行在屏幕上前移一位。
+        for _ in 0..TTS_ROW_PROVIDER {
             state.handle_key(KeyCode::Down);
         }
         state.handle_key(KeyCode::Right);
-        assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1.25");
-        state.handle_key(KeyCode::Left);
-        assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1");
+        while state.tts_focused() != TTS_ROW_API_KEY {
+            state.handle_key(KeyCode::Down);
+        }
+        let rows = state.tts_rows();
+        // 语速行被跳过，因此屏幕行号比配置行号小 1。
+        assert_eq!(state.tts_focused_index(), TTS_ROW_API_KEY - 1);
+        assert_eq!(rows[state.tts_focused_index()].label, "API Key");
+        // 每行自报屏幕下标，且只有选中行带焦点：渲染层直接照它画标记。
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.index, index);
+            assert_eq!(row.focused, index == state.tts_focused_index());
+        }
+    }
+
+    /// 通道文本行可编辑：回车进输入态，提交后落回该服务商的草稿。
+    #[test]
+    fn channel_text_rows_are_editable() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        // 从上往下按到「模型 model」行（它是文本行）。
+        let steps = state.tts_row_index(TTS_ROW_MODEL).expect("模型行应当可见");
+        for _ in 0..steps {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.tts_focused(), TTS_ROW_MODEL);
+        state.handle_key(KeyCode::Enter);
+        assert!(state.tts.input.is_some(), "文本行进输入态");
+        state.tts.input = None;
+    }
+
+    /// 保存行产出草稿事件，草稿带着当前服务商的字段。
+    #[test]
+    fn save_row_emits_a_draft_with_the_active_channel() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        let steps = state.tts_row_index(TTS_ROW_SAVE).expect("保存行应当可见");
+        for _ in 0..steps {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.tts_focused(), TTS_ROW_SAVE);
+        let Some(SettingsEvent::Apply(SettingsChange::Tts(TtsChange::Save(draft)))) =
+            state.handle_key(KeyCode::Enter)
+        else {
+            panic!("保存行应当产出 Save(Save(draft))");
+        };
+        assert_eq!(draft.provider, "openai");
+        assert!(matches!(draft.channel, TtsChannelDraft::OpenAi { .. }));
+    }
+
+    /// 音色候选按服务商切换，且都能循环（说明表不是空的）。
+    #[test]
+    fn voice_candidates_follow_the_provider() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行应当可见");
+        for _ in 0..voice {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.tts_rows()[voice].value, "alloy");
+        state.handle_key(KeyCode::Right);
+        assert_eq!(state.tts_rows()[voice].value, "ash");
     }
 
     #[test]
@@ -7328,7 +7945,10 @@ mod tests {
         // 掩码显示：明文永不进界面（只给末 4 位）。
         assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "****…-key");
         row.api_key = String::new();
-        assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "（未配置）");
+        assert_eq!(
+            channel_field_value(&row, ChannelField::ApiKey),
+            "（未配置）"
+        );
         // 留空 = 不改动：误触回车不会把磁盘上的密钥抹掉。
         row.api_key = "sk-keep-me".to_string();
         set_channel_field(&mut row, ChannelField::ApiKey, "   ".to_string());
@@ -7337,6 +7957,62 @@ mod tests {
         set_channel_field(&mut row, ChannelField::ApiKey, " sk-new-key ".to_string());
         assert_eq!(row.api_key, "sk-new-key");
         assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "****…-key");
+    }
+
+    /// TTS 页的 API Key 行与渠道表单同款：只露掩码、输入态从空起步、留空不改动。
+    #[test]
+    fn tts_api_key_row_masks_and_blank_input_keeps_previous_value() {
+        let mut values = TtsValues::default();
+        values.openai.api_key = "sk-tts-secret".to_string();
+        let mut state =
+            SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        let row = state
+            .tts_row_index(TTS_ROW_API_KEY)
+            .expect("API Key 行应当可见");
+        assert_eq!(state.tts_rows()[row].value, MASKED_SECRET);
+
+        // 进输入态：缓冲从空起步，避免明文被顺手回写。
+        while state.tts_focused() != TTS_ROW_API_KEY {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Enter);
+        let buffer = state
+            .tts
+            .input
+            .as_ref()
+            .map(|(_, composer)| composer.text().to_string())
+            .expect("应当进了输入态");
+        assert!(buffer.is_empty(), "密钥输入态从空起步：{buffer:?}");
+        // 直接提交空缓冲 = 不改动磁盘原值。
+        state.tts.commit_input();
+        assert_eq!(state.tts.openai.api_key, "sk-tts-secret");
+
+        // 填了新值就替换，并立刻在草稿里以明文交给宿主写盘。
+        state.tts.begin_input(TTS_ROW_API_KEY);
+        if let Some((_, composer)) = state.tts.input.as_mut() {
+            composer.insert("sk-brand-new");
+        }
+        state.tts.commit_input();
+        match state.tts.draft().channel {
+            TtsChannelDraft::OpenAi { api_key, .. } => assert_eq!(api_key, "sk-brand-new"),
+            other => panic!("当前服务商应当是 OpenAI：{other:?}"),
+        }
+    }
+
+    /// 未配置密钥时显示明确文案，而不是掩码或空白。
+    #[test]
+    fn tts_api_key_row_reports_missing_credential() {
+        let mut state = SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+        );
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        let row = state
+            .tts_row_index(TTS_ROW_API_KEY)
+            .expect("API Key 行应当可见");
+        assert_eq!(state.tts_rows()[row].value, "（未配置）");
     }
 
     #[test]
@@ -7459,5 +8135,111 @@ mod tests {
         let rows = state.decision_local_rows();
         assert_eq!(rows.len(), DECISION_LOCAL_ROW_COUNT);
         assert!(state.decision_local_busy());
+    }
+
+    // ---------- 粘贴 ----------
+
+    /// 渠道表单的 API Key 行：粘贴即落值，不必先按 Enter 进输入态。
+    #[test]
+    fn channel_api_key_accepts_pasted_text_without_entering_input_first() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter); // 进面板
+        state.handle_key(KeyCode::Enter); // 编辑选中渠道
+        for _ in 0..4 {
+            state.handle_key(KeyCode::Down); // → API Key
+        }
+        assert_eq!(
+            state.channel_form().map(|form| form.field),
+            Some(ChannelField::ApiKey)
+        );
+        assert!(
+            state.channel_form().and_then(|form| form.input).is_none(),
+            "粘贴之前不在输入态"
+        );
+
+        assert!(state.paste("sk-pasted-key"), "API Key 行应接收粘贴");
+        // 落进缓冲、还没提交：界面显示的是掩码，明文只在缓冲里。
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(
+            form.input.map(|composer| composer.text()),
+            Some("sk-pasted-key")
+        );
+
+        state.handle_key(KeyCode::Enter); // 提交
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(form.row.api_key, "sk-pasted-key");
+        assert!(form.input.is_none(), "提交后退出输入态");
+    }
+
+    /// 粘贴多行凭据只取首行：设置字段都是单行框，换行不能变成提交。
+    #[test]
+    fn pasted_multiline_secret_keeps_only_the_first_line() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..4 {
+            state.handle_key(KeyCode::Down); // → API Key
+        }
+
+        assert!(state.paste("sk-first\r\nsk-second\n"));
+        state.handle_key(KeyCode::Enter);
+
+        let form = state.channel_form().expect("仍在表单");
+        assert_eq!(form.row.api_key, "sk-first", "只取首行，余下行不提交");
+    }
+
+    /// 开关与候选字段不接收粘贴（它们不是文本框），也就不会吞掉事件。
+    #[test]
+    fn non_text_fields_refuse_paste() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Enter); // 字段停在渠道名
+
+        state.handle_key(KeyCode::Down); // → 请求方式（候选字段）
+        assert_eq!(
+            state.channel_form().map(|form| form.field),
+            Some(ChannelField::Provider)
+        );
+        assert!(!state.paste("openai"), "候选字段不接收粘贴");
+        assert!(
+            state.channel_form().and_then(|form| form.input).is_none(),
+            "被拒的粘贴不该把字段顶进输入态"
+        );
+    }
+
+    /// 表单页（如联网搜索的三把凭据）同样接收粘贴，未进输入态时自动进入。
+    #[test]
+    fn form_page_secret_accepts_pasted_text() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter);
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+
+        state.handle_key(KeyCode::Down); // → Tavily API Key
+        assert!(state.paste("tvly-pasted"));
+        state.handle_key(KeyCode::Enter);
+
+        let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+            state.handle_ctrl_key(KeyCode::Char('s'))
+        else {
+            panic!("Ctrl+S 应产出保存事件");
+        };
+        assert_eq!(values[1], FieldValue::Text("tvly-pasted".to_string()));
+    }
+
+    /// 焦点还在左侧一级列表时拒收粘贴：那边没有输入框。
+    #[test]
+    fn paste_is_refused_while_the_list_column_has_focus() {
+        let mut state = model_management_state();
+        goto(&mut state, "model_management");
+        assert_eq!(state.focus(), Focus::List);
+
+        assert!(!state.paste("sk-leaked"), "左栏没有输入框，不该接收");
+        assert!(state.channel_form().is_none(), "也不该顺手打开表单");
     }
 }

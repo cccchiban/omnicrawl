@@ -2025,6 +2025,11 @@
     },
     "configs": {
       "default": {},
+      "gated": {
+        "enable_verify_agent": false,
+        "allow_standard_agent": false,
+        "allow_worktree": false
+      },
       "verify": {
         "enable_verify_agent": true
       },
@@ -2473,13 +2478,13 @@
         },
         "result": [
           "AGENT_TYPE_NOT_FOUND",
-          "未找到 Agent 定义：nope。当前可用：review, review-full。"
+          "未找到 Agent 定义：nope。当前可用：general-purpose, review, review-full, verify-agent, worktree-readonly。"
         ],
         "error": null
       },
       {
         "label": "未启用 verify",
-        "config": "default",
+        "config": "gated",
         "arguments": {
           "action": "run",
           "tasks": [
@@ -2514,7 +2519,7 @@
       },
       {
         "label": "未启用 standard",
-        "config": "default",
+        "config": "gated",
         "arguments": {
           "action": "run",
           "tasks": [
@@ -2641,7 +2646,7 @@
       },
       {
         "label": "worktree 只读未开启",
-        "config": "default",
+        "config": "gated",
         "arguments": {
           "action": "run",
           "tasks": [

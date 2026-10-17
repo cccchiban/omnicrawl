@@ -60,9 +60,9 @@ cargo build --release -p omnicrawl-cli --target i686-pc-windows-msvc
 ```
 
 本机实测版本：`zig 0.16.0`、`cargo-zigbuild`（`cargo-zigbuild --help` 自报版本）、
-`rustc 1.96.1`。宿主载荷（`omnicrawl-tui` / `omnicrawl-api`）要 BoringSSL，
-它本身能交叉编译；原先卡住整份 musl 载荷的 `ort-sys` 已经通过把本地推理改成可选 feature 解决
-（详见第 7 节）。
+`rustc 1.96.1`。宿主载荷（`omnicrawl-tui` / `omnicrawl-api`）要 BoringSSL，它本身能交叉编译；
+TTS 改为云服务后 `omnicrawl-tts` 只剩 HTTP 与音频 I/O（`ort` / `espeakng-sys` 都已移出依赖树），
+musl 宿主载荷不再有原生运行时的阻碍（详见第 7 节）。
 
 ## 3. Windows 专属：必须设 `CMAKE_TOOLCHAIN_FILE`
 
@@ -212,24 +212,26 @@ Windows x64 宿主载荷五项合计约 104 MiB（`.text` + `.rdata` 各占一�
   `target/<三元组>/release/`）；**Linux 侧不带 `--target`**，按构建机原生 gnu 目标构建，
   因此发布包依赖 runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。
 
-Linux 宿主载荷为什么不跟着走 musl：`omnicrawl-tts` 原本硬依赖 `ort`（ONNX Runtime 绑定），
-而 `ort-sys` 只提供部分目标的预编译库，musl 不在其中：
+Linux 宿主载荷为什么不跟着走 musl（历史）：本地 TTS 时期 `omnicrawl-tts` 依赖 `ort`
+（ONNX Runtime 绑定），而 `ort-sys` 只提供部分目标的预编译库，musl 不在其中：
 
 ```text
 error: ort-sys@2.0.0-rc.13: no prebuilt binaries available for target x86_64-unknown-linux-musl
 ```
 
 （BoringSSL 那一段能过——`libcrypto.a` / `libssl.a` 都正常链接出来——所以这不是 BoringSSL
-的交叉编译能力问题。）现在 TTS 改成以**接口合成为主、本地 ONNX 为可选 feature**
-（`omnicrawl-tts` 的 `onnx`，默认关闭），`ort` 因此退出了默认依赖树，musl 宿主载荷可以构建。
-如果将来要让某个平台带本地推理，可选的下一步是换 `ort` 的 `load-dynamic` 模式
-（运行期找 `libonnxruntime.so`，代价：目标机器要自己装）或自建 ORT 的 musl 静态库
-（官方不保证支持 musl）。
+的交叉编译能力问题。）当时宿主（`omnicrawl-host` / `omnicrawl-tui`）固定开启
+`omnicrawl-tts/onnx`，`ort` 与 `espeakng-sys` 始终在宿主依赖树里，musl 宿主载荷因此不能
+直接用本节的交叉构建产出，Linux 载荷改走原生 gnu。
+
+**现状**：TTS 已整体改为云服务（OpenAI `audio/speech` 与 Gemini TTS），`omnicrawl-tts`
+只剩 `ureq` + `serde_json` + `base64`，`ort` 与 `espeakng-sys` 都已从依赖树移除，
+上述 musl 阻碍不再存在。Linux 侧目前仍按 runner 原生 gnu 目标构建，是否切回 musl
+待实测（发布链路的选择见 `.github/workflows/publish-npm.yml`）。
 
 `build-host.mjs` 已经支持 `--target <三元组>` 与 `--zigbuild`（后者换成 `cargo zigbuild`，
-并且必须与 `--target` 同时出现）。**现在 Linux 那两个 job 可以直接用
-`--target ${{ matrix.target }} --zigbuild` 发 musl 宿主载荷**（本机已实测，见下表）；
-在此之前 CI 只能用原生 gnu。
+并且必须与 `--target` 同时出现）。**在当前依赖形态下，Linux 那两个 job 用原生 gnu 目标构建**
+（下表是旧形态下的实测记录，仅供参考）。
 
 ### 本机实测（Windows 主机交叉到 x86_64-unknown-linux-musl）
 
@@ -256,8 +258,9 @@ LIBCLANG_PATH=<libclang 目录> cargo zigbuild --release \
 | `omnicrawl-mcp-server`（aarch64 musl） | 788,448 | 同上 |
 | `omnicrawl`（armv7 musl） | 5,944,384 | ELF armv7 静态链接 |
 
-同一批代码在 Windows MSVC 上的对照（本轮实测，比早期记录小得多——`omnicrawl-tts` 的
-ONNX 运行时已随「接口合成默认」变成可选 feature，不再静态链进 TUI/API）：
+同一批代码在 Windows MSVC 上的对照（早期实测；当时 `omnicrawl-tts` 的 ONNX 运行时
+随「接口合成默认」为可选 feature，未静态链进 TUI/API。带 `ort` 的那一版宿主明显更大，
+TTS 改云服务后这些数字回落）：
 `omnicrawl.exe` 6,924,800；`omnicrawl-host.exe` 2,905,088；`omnicrawl-tui.exe` 33,595,392；
 `omnicrawl-api.exe` 16,719,872；`omnicrawl-mcp-server.exe` 605,184（合计约 58 MB，
 早期带 ort 的同一批是 104 MB）。32 位 Windows 内核 5,789,696。

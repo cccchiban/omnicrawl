@@ -3,7 +3,7 @@
 # 不再回退读取 config.toml 的 [subagents] 段。
 version = 1
 
-# SubAgent 全局边界：默认关闭；普通角色仅只读，verify 还需单独显式启用。
+# SubAgent 全局边界：默认关闭；开启后三种角色的能力开关默认放开（verify / standard / worktree）。
 [subagents]
 enabled = false
 max_depth = 1
@@ -15,9 +15,9 @@ allow_background = false
 # 仅开放已脱敏父公开上下文的 read_only/verify Fork；默认关闭。
 allow_fork = false
 allow_shared_workspace_writes = false
-allow_worktree = false
-allow_standard_agent = false
-enable_verify_agent = false
+allow_worktree = true
+allow_standard_agent = true
+enable_verify_agent = true
 verify_command_timeout_seconds = 120
 task_retention_minutes = 60
 result_summary_chars = 6000

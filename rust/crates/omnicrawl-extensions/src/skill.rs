@@ -25,6 +25,9 @@ pub const SKILL_SCOPES: [(&str, &str); 3] = [
     ("project", ".omnicrawl/skills"),
 ];
 
+/// 检索可用的作用域取值；`all` 表示不按作用域过滤。
+pub const SEARCH_SCOPES: [&str; 5] = ["all", "project", "user", "enterprise", "path"];
+
 /// 企业级 skills 目录的环境变量名（由管理员显式指定，不自动创建）。
 pub const ENTERPRISE_SKILL_DIR_ENV: &str = "OMNICRAWL_ENTERPRISE_DIR";
 
@@ -118,6 +121,14 @@ impl Skill {
         data.insert("body".to_string(), Value::from(self.body.clone()));
         data
     }
+}
+
+/// 一次只读检索的命中项：索引元数据与关键词得分（不加载正文）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillSearchHit {
+    pub meta: SkillMeta,
+    pub score: f64,
+    pub reason: String,
 }
 
 /// 匹配结果。
@@ -527,36 +538,57 @@ impl SkillManager {
         self.discover_with_enterprise(cwd.as_deref(), &extra, enterprise.as_deref());
     }
 
-    /// 将所有 Skill 的元数据以 XML 格式输出，供上下文消息使用。
-    pub fn format_skills_for_prompt(skills: &[SkillMeta]) -> String {
-        let visible: Vec<&SkillMeta> = skills
+    /// 只读检索索引元数据：按作用域过滤后按关键词打分，命中门槛与 `match_skills` 同源。
+    ///
+    /// `scope` 取 [`SEARCH_SCOPES`] 中的取值（`all` 表示不过滤）；`user_input` 为空时
+    /// 退化为「按作用域列出全部」，此时不设门槛，便于模型先浏览再决定读哪个正文。
+    pub fn search_meta(
+        &self,
+        user_input: &str,
+        scope: &str,
+        max_results: usize,
+        threshold: f64,
+    ) -> Vec<SkillSearchHit> {
+        let input_lower = user_input.to_lowercase();
+        let scoped: Vec<&SkillMeta> = self
+            .index
             .iter()
-            .filter(|item| !item.disable_model_invocation)
+            .map(|(_, meta)| meta)
+            .filter(|meta| scope == "all" || meta.scope == scope)
             .collect();
-        if visible.is_empty() {
-            return String::new();
+        if input_lower.trim().is_empty() {
+            let mut listed: Vec<SkillSearchHit> = scoped
+                .into_iter()
+                .map(|meta| SkillSearchHit {
+                    meta: meta.clone(),
+                    score: 0.0,
+                    reason: "未给关键词，按作用域列出".to_string(),
+                })
+                .collect();
+            listed.sort_by(|left, right| left.meta.name.cmp(&right.meta.name));
+            listed.truncate(max_results);
+            return listed;
         }
-        let mut lines: Vec<String> = vec![
-            String::new(),
-            "以下 Skill 提供了针对特定任务的专用指令。当你判断当前任务匹配某个 Skill 的描述时，请使用 read 工具加载对应的 SKILL.md 文件，然后严格遵循其中的指令执行。Skill 文件中引用的相对路径应相对于 SKILL.md 所在目录解析。".to_string(),
-            String::new(),
-            "<available_skills>".to_string(),
-        ];
-        for skill in visible {
-            lines.push("  <skill>".to_string());
-            lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-            lines.push(format!(
-                "    <description>{}</description>",
-                escape_xml(&skill.description)
-            ));
-            lines.push(format!(
-                "    <location>{}</location>",
-                escape_xml(&skill.source_path.to_string_lossy())
-            ));
-            lines.push("  </skill>".to_string());
-        }
-        lines.push("</available_skills>".to_string());
-        lines.join("\n")
+        let mut hits: Vec<SkillSearchHit> = scoped
+            .into_iter()
+            .filter_map(|meta| {
+                let (score, reason) = score_match(&input_lower, meta);
+                (score >= threshold).then(|| SkillSearchHit {
+                    meta: meta.clone(),
+                    score,
+                    reason,
+                })
+            })
+            .collect();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.meta.name.cmp(&right.meta.name))
+        });
+        hits.truncate(max_results);
+        hits
     }
 
     /// 兼容旧调用：Skill 指令不再注入 system prompt，原样返回。
@@ -974,12 +1006,4 @@ fn extract_keywords(text: &str) -> HashSet<String> {
 /// `[一-鿿]`：CJK 统一表意文字基本区。
 fn is_cjk(ch: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&ch)
-}
-
-fn escape_xml(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }

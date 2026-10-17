@@ -36,10 +36,10 @@ use super::paths::WorkspacePaths;
 use super::tts::TtsOptions;
 use super::web_search::{self, WebSearchOptions};
 use super::windows;
-use super::{edit, finding, git, grep, listing, read, read_image, write};
+use super::{edit, finding, git, grep, listing, read, read_image, skills, write};
 
 /// 本宿主已实现执行体的工具。
-pub const IMPLEMENTED_TOOLS: [&str; 31] = [
+pub const IMPLEMENTED_TOOLS: [&str; 32] = [
     "read",
     "read_image",
     "write_file",
@@ -49,6 +49,7 @@ pub const IMPLEMENTED_TOOLS: [&str; 31] = [
     "list",
     "find",
     "grep",
+    "skill_search",
     "git",
     "monitor",
     "kb_search",
@@ -88,6 +89,8 @@ pub const MEMORY_RUNNERS: [&str; 4] = [
 ];
 /// 联网工具：runner 名即工具名，整组不依赖开关。
 pub const NET_RUNNERS: [&str; 2] = ["web_search", "fetcher"];
+/// Skill 检索：runner 名即工具名；索引不再注入上下文，检索入口必须始终在表里。
+pub const SKILL_RUNNERS: [&str; 1] = ["skill_search"];
 /// 视觉工具：`read_image` 除文本结果外还要把图片作为视觉附件交给循环。
 pub const VISION_RUNNERS: [&str; 1] = ["read_image"];
 /// 图像生成：与 Python 一致，工具始终进表；未启用时调用会给出明确错误。
@@ -135,8 +138,8 @@ pub struct RegistryOptions {
     pub memory_enabled: bool,
     /// 记忆工具的运行期配置（三处作用域与当前会话）。
     pub memory: MemoryOptions,
-    /// SubAgent 角色枚举（未启用时不给这个工具）。
-    pub subagent_types: Vec<String>,
+    /// SubAgent 角色清单（名称 + 定义里的一句话描述）；未启用时不给这个工具。
+    pub subagent_roles: Vec<(String, String)>,
     /// 会话由内核自持时，`recall_session_evidence` 由内核本地作答。
     pub session_held_by_kernel: bool,
     /// 被关闭的内置工具（`tools` 配置段里的开关）：这些工具不进表，
@@ -148,6 +151,8 @@ pub struct RegistryOptions {
     pub config_env: Option<ConfigEnvironment>,
     /// 知识库检索重排（`decision_models.toml` 的 `kb_search_rerank` 开关）。
     pub knowledge_rerank: Arc<RerankOptions>,
+    /// Skill 检索重排（`decision_models.toml` 的 `skill_search_rerank` 开关）。
+    pub skill_rerank: Arc<RerankOptions>,
     /// 联网工具的运行期配置（传输可注入，测试用桩替换）。
     pub web_search: WebSearchOptions,
     pub fetcher: FetcherOptions,
@@ -177,6 +182,7 @@ pub struct ToolRegistry {
     monitors: MonitorManager,
     knowledge: KnowledgeBase,
     knowledge_rerank: Arc<RerankOptions>,
+    skill_rerank: Arc<RerankOptions>,
     memory: MemoryOptions,
     web_search: WebSearchOptions,
     fetcher: FetcherOptions,
@@ -190,6 +196,9 @@ pub struct ToolRegistry {
     mcp_tool_names: BTreeSet<String>,
     mcp_resource_names: Vec<(String, String)>,
     mcp_prompt_names: Vec<(String, String)>,
+    /// SubAgent 角色清单（名称 + 定义里的一句话描述）：与 `subagent` 工具的角色枚举同源，
+    /// 子代理建议的候选直接取这里，不需要第二处发现逻辑。
+    subagent_roles: Vec<(String, String)>,
     specs: Vec<ToolSpec>,
     cancel: CancelToken,
 }
@@ -207,6 +216,7 @@ impl ToolRegistry {
             .chain(KNOWLEDGE_RUNNERS.iter())
             .chain(MEMORY_RUNNERS.iter())
             .chain(NET_RUNNERS.iter())
+            .chain(SKILL_RUNNERS.iter())
             .chain(IMAGE_RUNNERS.iter())
             .chain(WINDOWS_RUNNERS.iter())
             .map(|name| (*name).to_string())
@@ -225,7 +235,7 @@ impl ToolRegistry {
         }
         // `subagent` 由内核自持执行（子回合需要模型运行时），宿主只把它声明给模型；
         // 角色为空时不进表，避免模型看到一个必然失败的入口。
-        if !options.subagent_types.is_empty() {
+        if !options.subagent_roles.is_empty() {
             available.push("subagent".to_string());
         }
         let available_refs: Vec<&str> = available.iter().map(String::as_str).collect();
@@ -299,10 +309,15 @@ impl ToolRegistry {
                 )
             })
             .collect();
+        let subagent_types: Vec<String> = options
+            .subagent_roles
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
         let catalog_options = ToolCatalogOptions {
             available: &available_refs,
             memory_enabled: options.memory_enabled,
-            subagent_types: &options.subagent_types,
+            subagent_types: &subagent_types,
             mcp_tools: &mcp_tools,
             mcp_resources: &mcp_resources,
             mcp_prompts: &mcp_prompts,
@@ -346,6 +361,7 @@ impl ToolRegistry {
             monitors,
             knowledge,
             knowledge_rerank: options.knowledge_rerank.clone(),
+            skill_rerank: options.skill_rerank.clone(),
             memory,
             web_search: options.web_search.clone(),
             fetcher: options.fetcher.clone(),
@@ -360,6 +376,7 @@ impl ToolRegistry {
             mcp_tool_names,
             mcp_resource_names,
             mcp_prompt_names,
+            subagent_roles: options.subagent_roles.clone(),
             specs,
             cancel: options.cancel.clone().unwrap_or_default(),
         })
@@ -433,6 +450,11 @@ impl ToolRegistry {
             .iter()
             .map(|spec| (spec.name.clone(), spec.description.clone()))
             .collect()
+    }
+
+    /// SubAgent 角色清单（名称 + 描述）：与 `subagent` 工具的角色枚举同源。
+    pub fn subagent_roles(&self) -> &[(String, String)] {
+        &self.subagent_roles
     }
 
     pub fn is_implemented(&self, name: &str) -> bool {
@@ -539,6 +561,12 @@ impl ToolRegistry {
             "list" => outcome_result(listing::list_files(&self.paths, &arguments)),
             "find" => outcome_result(finding::find_files(&self.paths, &arguments)),
             "grep" => outcome_result(grep::grep(&self.paths, &arguments)),
+            "skill_search" => outcome_result(skills::skill_search(
+                self.paths.root(),
+                &self.config_env,
+                &self.skill_rerank,
+                &arguments,
+            )),
             "git" => git::git_tool(&self.paths, &arguments),
             "monitor" => self.run_monitor(&arguments),
             "kb_search" => outcome_result(knowledge::kb_search(
@@ -752,6 +780,7 @@ mod tests {
             "list",
             "find",
             "grep",
+            "skill_search",
             "git",
             "monitor",
             "kb_search",
@@ -995,9 +1024,11 @@ mode = \"review\"
                     auto_play: false,
                     ..Default::default()
                 },
-                // 这个用例只看工具是否进表与空文本的 JSON 信封，走本地分支。
-                None,
-                root.join("models"),
+                crate::tools::tts::tts_backend(
+                    &omnicrawl_config::features::tts_cloud::TtsCloudConfiguration::default(),
+                    omnicrawl_config::features::tts_cloud::TtsApiConfiguration::default(),
+                    omnicrawl_config::features::tts_cloud::GeminiTtsConfiguration::default(),
+                ),
                 root.clone(),
             ))),
             ..RegistryOptions::default()
@@ -1059,6 +1090,33 @@ mode = \"review\"
             searched.output.contains("\"score\":"),
             "{}",
             searched.output
+        );
+    }
+
+    /// `skill_search` 经工具表可取到工作区内的 Skill（默认不开重排）。
+    #[test]
+    fn skill_search_runs_through_the_registry() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-skill");
+        let _ = std::fs::remove_dir_all(&root);
+        let skill_dir = root.join(".omnicrawl").join("skills").join("demo");
+        std::fs::create_dir_all(&skill_dir).expect("建 skill 目录");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: 演示用 Skill\n---\n\n正文\n",
+        )
+        .expect("写 SKILL.md");
+
+        let registry =
+            ToolRegistry::new(&root, &RegistryOptions::default(), 360).expect("工具表应当构建成功");
+        let found = registry
+            .execute(&call("skill_search", json!({"scope": "project", "query": "demo"})))
+            .expect("skill_search 应当被本宿主处理");
+        assert!(found.ok, "{}", found.output);
+        assert!(found.output.contains("\"name\": \"demo\""), "{}", found.output);
+        assert!(
+            found.output.contains("\"scope\": \"project\""),
+            "{}",
+            found.output
         );
     }
 

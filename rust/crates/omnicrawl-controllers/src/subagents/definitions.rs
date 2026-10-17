@@ -106,7 +106,8 @@ impl AgentDefinitionDiagnostic {
 /// 按「离项目越近优先级越高」规则构建不可变定义索引。
 #[derive(Debug, Clone)]
 pub struct AgentDefinitionRegistry {
-    builtin_directory: PathBuf,
+    /// 内置角色目录；`None` 表示这份二进制旁没有随包分发的模板（内置层为空）。
+    builtin_directory: Option<PathBuf>,
     home_directory: PathBuf,
     index: BTreeMap<String, AgentDefinition>,
     diagnostics: Vec<AgentDefinitionDiagnostic>,
@@ -117,8 +118,17 @@ impl AgentDefinitionRegistry {
     /// `builtin_directory` 对应 Python 侧的包内 `templates/subagents`；
     /// `home_directory` 省略时取 `USERPROFILE` / `HOME`。
     pub fn new(builtin_directory: impl Into<PathBuf>, home_directory: Option<PathBuf>) -> Self {
+        Self::from_builtin(Some(builtin_directory.into()), home_directory)
+    }
+
+    /// 内置目录按 [`locate_builtin_directory`] 自行定位；定位不到时只剩项目层与用户层。
+    pub fn with_located_builtin(home_directory: Option<PathBuf>) -> Self {
+        Self::from_builtin(locate_builtin_directory(), home_directory)
+    }
+
+    fn from_builtin(builtin_directory: Option<PathBuf>, home_directory: Option<PathBuf>) -> Self {
         Self {
-            builtin_directory: resolve_path(&builtin_directory.into()),
+            builtin_directory: builtin_directory.map(|path| resolve_path(&path)),
             home_directory: resolve_path(&home_directory.unwrap_or_else(default_home_directory)),
             index: BTreeMap::new(),
             diagnostics: Vec::new(),
@@ -137,15 +147,18 @@ impl AgentDefinitionRegistry {
         self.diagnostics.clear();
         self.real_paths.clear();
 
-        let directories = [
+        let mut directories: Vec<(&str, PathBuf)> = vec![
             ("project", workspace.join(".omnicrawl").join("agents")),
             ("project-compat", workspace.join(".agents").join("agents")),
             (
                 "user",
                 self.home_directory.join(".OmniCrawl").join("agents"),
             ),
-            ("builtin", self.builtin_directory.clone()),
         ];
+        // 内置层是随二进制分发的模板目录：这份二进制旁没有它就只剩项目层与用户层。
+        if let Some(builtin) = self.builtin_directory.as_ref() {
+            directories.push(("builtin", builtin.clone()));
+        }
         for (source, directory) in directories {
             self.scan_directory(&directory, source);
         }
@@ -583,6 +596,40 @@ fn default_home_directory() -> PathBuf {
         return PathBuf::from(home);
     }
     PathBuf::from(".")
+}
+
+/// 内置角色目录：可执行文件祖先里的 `rust/assets/templates/subagents`（仓库检出）
+/// 与 `omnicrawl/templates/subagents`（已发布载荷），与提示词模板同一套定位口径。
+///
+/// 定位不到时返回 `None`：内置角色是随二进制分发的模板，缺失只该让内置层为空，
+/// 不该把它退化成用户目录（那样会与 user 层同址，内置角色一个都扫不到）。
+pub fn locate_builtin_directory() -> Option<PathBuf> {
+    locate_builtin_directory_from(&std::env::current_exe().ok()?)
+}
+
+/// [`locate_builtin_directory`] 的定位本体：从 `executable` 逐级向上找模板目录。
+pub fn locate_builtin_directory_from(executable: &Path) -> Option<PathBuf> {
+    let mut base = Some(executable.to_path_buf());
+    while let Some(path) = base {
+        base = path.parent().map(PathBuf::from);
+        let Some(directory) = base.as_ref() else {
+            break;
+        };
+        // 仓库检出里的新家优先，再落到已发布载荷的旧布局。
+        let candidate = directory
+            .join("rust")
+            .join("assets")
+            .join("templates")
+            .join("subagents");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        let candidate = directory.join("omnicrawl").join("templates").join("subagents");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn expand_user(path: &Path) -> PathBuf {

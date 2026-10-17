@@ -99,16 +99,23 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 
 **`features/` 其余模块**：`advisor`（默认关闭、推理档位校验、执行者黑名单归一化）、
 `agent_workspace`（worktree/local 与退出策略枚举校验）、`desensitization`（27 个字段的开关、
-熵参数与 NER 取值域校验）、`image_gen`（Base URL、`auto|宽x高` 尺寸、质量与格式枚举）、
-`tool_output_compression`（思考档位与四个正整数预算）、`tts`（线程数枚举、设备三态、
-模型目录解析）、`subagents`（独立 `subagents.toml`、`models.<角色>` 覆盖）。
+熵参数与 NER 取值域校验）、`image_gen`（Base URL、`auto|宽x高` 尺寸、质量与格式枚举；
+另带 `provider` 服务商路由与 Gemini 侧的 `aspect_ratio`/`image_size` 取值域，切到
+`gemini` 且沿用 OpenAI 默认端点/模型时折算成 Gemini 的默认值）、
+`tool_output_compression`（思考档位与四个正整数预算）、`tts`（总开关、播放行为与输出目录三个
+通用键）、`tts_cloud`（服务商路由与 OpenAI / Gemini 两家的接口参数，凭据只认段内明文 `api_key`，
+没有环境变量通道）、`subagents`（独立 `subagents.toml`、
+`models.<角色>` 覆盖）。
 
-**`features/tts_api`（Rust 专有）**：语音合成接口段（`[tts_api]`），与 `tts` 分开是刻意的——
-`[tts]` 的读回值与写回文本被 parity 数据集逐字节钉住（加字段就要同步改 Python），而本段是
-Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 parity 数据集，自带
-`tests/tts_api_config.rs`：默认值（`enabled` 默认 `true`，地址/模型/音色/密钥变量名都有默认）、
-`base_url` 去尾斜杠、`response_format` 只允许 `wav`、`speed` 限 0.25~4.0、
-`resolve_api_key`（明文优先，否则读 `api_key_env`）与只改本段的写回。
+**`features/web_search`（Rust 专有）**：联网搜索段（`[web_search]`），默认引擎
+（`bing` / `duckduckgo` / `github` / `arxiv` / `huggingface` /
+`tavily` / `exa` / `firecrawl` / `mixed`，清单由 `WEB_SEARCH_ENGINES` 唯一提供）与
+Tavily / Exa / Firecrawl 三把 API Key。`mixed` 是混合搜索
+（并发查询多个渠道并去重合并，执行体在宿主侧）。与前几段分开是刻意的：`[tools]` 只管工具
+是否进表，本段管「这台机器走哪条搜索通路、接口型引擎用什么凭据」。因此不进 parity 数据集，
+自带 `tests/web_search_config.rs`：默认值（默认引擎无凭据、三把 Key 为空）、引擎名大小写与
+空白归一、空串按「没填」回落默认值、非法引擎报错并列出全部候选、逐引擎的凭据解析、
+写回只动本段且非法取值不落盘。
 
 **`features/decision_model`（Rust 专有）**：结构化决策模型配置（独立 `decision_models.toml`），
 面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。两种请求方式（`mode`）：
@@ -116,7 +123,7 @@ Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 par
 * `jev`（默认）——Jev 原生接口：`POST {base_url}/v1/decide`、Bearer 鉴权，`state` + `questions`
   直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
 * `chat_completions`——OpenAI 兼容接口：`POST {base_url}/chat/completions`（`base_url` 按
-  OpenAI 兼容口径填到 `/v1`，同 `[image_gen]` / `[tts_api]`），同一份
+  OpenAI 兼容口径填到 `/v1`，同 `[image_gen]`），同一份
   `state` + `questions` 作为一条 user 消息的 JSON 文本发出并要求 JSON 输出，答案从
   `choices[0].message.content` 里解析出同一形状的 `answers`（负载组装与解析在
   `omnicrawl-host::decision_wire`）。
@@ -130,12 +137,14 @@ Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 par
 不重试）交由出站落点 `omnicrawl-host::decision_wire::post_body` 消费。
 
 同一文件里的 `[features]` 段是决策模型的功能开关（`DECISION_SWITCHES` 是唯一来源：读盘、
-写盘、界面与测试都读它；新增开关只需往表里加一项）。当前六项：
+写盘、界面与测试都读它；新增开关只需往表里加一项）。当前八项：
 `tool_call_review`（工具调用审查使用决策模型）、`memory_search_rerank`（记忆搜索使用决策模型
-排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`ask_user_custody`（提问由决策模型
-自动作答）、`tool_call_prune`（旧一轮工具调用按需淘汰）与 `tool_suggestion`（新提问自动建议
-工具），均默认关闭；读写走 `load_decision_switches` / `save_decision_switch`——前者读不出来时
-按默认值回落，后者保留同段其他键与 `channels` 段。
+排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`skill_search_rerank`（Skill 检索使用
+决策模型排序）、`ask_user_custody`（提问由决策模型自动作答）、`tool_call_prune`（旧一轮工具调用
+按需淘汰）、`tool_suggestion`（新提问自动建议工具）与 `subagent_suggestion`（新提问自动建议
+子代理），均默认关闭；读写走 `load_decision_switches` / `save_decision_switch`——前者读不出来时
+按默认值回落，后者保留同段其他键与 `channels` 段。`tool_suggestion` 与 `subagent_suggestion`
+互相独立、可同时开启，同时开启时两条请求并发发起（总耗时取较大者而不是相加）。
 
 **`core/settings`**：`load_feature_enabled`（`subagents` 段走独立文件）、
 `save_context_window_tokens`（legacy 段 / 多模型 `defaults` / `models.toml` 条目三路）、
@@ -194,8 +203,6 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
   tts 读取 10 例 + 写回 1 例、agent_workspace 读取 8 例 + 写回 1 例、
   image_gen 读取 14 例 + 写回 1 例、tool_output_compression 读取 9 例 + 写回 2 例、
   desensitization 读取 15 例 + 写回 1 例。
-- `tests/tts_api_config.rs`（非 parity）：`[tts_api]` 的默认值、归一化、密钥解析、非法取值
-  与写回隔离，共 5 例。
 - `src/features/decision_model.rs` 模块内测试（非 parity）：结构化决策模型的默认渠道、
   读写往返、默认 key 折算、取值域与重复 key 校验，以及功能开关的默认值回落、写回与
   渠道段隔离、未知开关拒绝，共 8 例。

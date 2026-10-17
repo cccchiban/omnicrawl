@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use serde_json::{json, Map, Value};
 
 use omnicrawl_config::features::approval::{
-    normalize_approval_mode, save_approval_mode, APPROVAL_MODE_AUTO,
+    normalize_approval_mode, save_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW,
 };
 use omnicrawl_config::models::llm::{
     load_llm_config, normalize_reasoning_effort, save_active_model_ref, save_reasoning_effort,
@@ -131,11 +131,11 @@ async fn set_approval(
     let normalized = normalize_approval_mode(&mode).map_err(invalid_setting)?;
     let service = state.service()?;
     save_approval_mode(service.environment(), normalized, None).map_err(invalid_setting)?;
-    // 宿主只区分「自动」与「人工」；`review`（自动审查）按人工处理，与启动时同一套映射。
-    let runtime = if normalized == APPROVAL_MODE_AUTO {
-        ApprovalMode::Auto
-    } else {
-        ApprovalMode::Manual
+    // 与启动路径同一套映射：`review` 也是真跑审查模型，不再按「人工」处理。
+    let runtime = match normalized {
+        APPROVAL_MODE_AUTO => ApprovalMode::Auto,
+        APPROVAL_MODE_REVIEW => ApprovalMode::Review,
+        _ => ApprovalMode::Manual,
     };
     service.set_runtime_approval_mode(runtime)?;
     Ok(data(json!({"approval_mode": normalized})))

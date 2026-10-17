@@ -37,6 +37,9 @@ use omnicrawl_config::features::run_guard::{load_run_guard_config, save_run_guar
 use omnicrawl_config::features::subagents::load_subagent_config;
 use omnicrawl_config::features::tools::{load_tool_switches, save_tool_switches};
 use omnicrawl_config::features::tts::{load_tts_configuration, save_tts_configuration};
+use omnicrawl_config::features::tts_cloud::{
+    self, GeminiTtsConfiguration, TtsApiConfiguration, TtsCloudConfiguration,
+};
 use omnicrawl_config::models::channels::load_channel_configuration;
 use omnicrawl_config::models::llm::{load_llm_config, ActiveModelRef};
 use omnicrawl_config::models::vision::{
@@ -65,8 +68,10 @@ const MAX_CONTEXT_WINDOW_TOKENS: i64 = 1_000_000_000;
 const IMAGE_GEN_N_RANGE: (i64, i64) = (1, 10);
 /// `ImageGenSetting.timeout_seconds` 的取值范围。
 const IMAGE_GEN_TIMEOUT_RANGE: (i64, i64) = (1, 600);
-/// `TtsSetting.thread_count` 的取值范围。
-const TTS_THREAD_RANGE: (i64, i64) = (1, 32);
+/// `TtsSetting.speed` 的取值范围（与 OpenAI 的取值域一致）。
+const TTS_SPEED_RANGE: (f64, f64) = (0.25, 4.0);
+/// `TtsSetting.timeout_seconds` 的取值范围。
+const TTS_TIMEOUT_RANGE: (i64, i64) = (1, 600);
 /// 设置里的自由文本上限（Python 侧这些字段没有长度约束，这里只防住异常大包）。
 const MAX_SETTING_TEXT_CHARS: usize = 32_768;
 
@@ -99,6 +104,9 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
     let vision = load_vision_configuration(env, None).map_err(invalid_setting)?;
     let image_gen = load_image_gen_configuration(env, None).map_err(invalid_setting)?;
     let tts = load_tts_configuration(env, None).map_err(invalid_setting)?;
+    let tts_cloud_config = tts_cloud::load_tts_cloud_configuration(env, None).map_err(invalid_setting)?;
+    let tts_api = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
+    let tts_gemini = tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
     let subagents = load_subagent_config(env, None).map_err(invalid_setting)?;
     let tool_switches = load_tool_switches(env, None).map_err(invalid_setting)?;
     // 与 Python 一致：这三项读不出来时给空载荷，而不是让整个快照失败。
@@ -164,7 +172,7 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
         "agent_workspace": serialize_agent_workspace(&workspace),
         "vision": serialize_vision(&vision),
         "image_gen": serialize_image_gen(&image_gen),
-        "tts": serialize_tts(&tts),
+        "tts": serialize_tts(&tts, &tts_cloud_config, &tts_api, &tts_gemini),
         "advisor": {
             "enabled": advisor.enabled,
             "model_key": advisor.model_key,
@@ -285,6 +293,12 @@ async fn put_features(
         // 不必重启服务（与 Python 设置面板的事务式重建同一语义）。
         if key == "plugins" {
             diagnostics = service.set_plugins_enabled(value)?;
+        }
+        // 记忆是一整组工具（四个 `memory_*`），开关直接决定它们进不进表：写盘后
+        // 同样要重建工具表，否则要等下次启动才从模型可见面里消失。
+        // `subagents` 的运行期在内核侧、按每次调用现读 `subagents.toml`，这里无需动手。
+        if key == "memory" {
+            service.reload_memory_switch(value)?;
         }
     }
     Ok(data(json!({
@@ -452,12 +466,15 @@ async fn put_image_gen(
         next.timeout_seconds = value;
     }
     for (field, target) in [
+        ("provider", &mut next.provider),
         ("base_url", &mut next.base_url),
         ("api_key_env", &mut next.api_key_env),
         ("model", &mut next.model),
         ("size", &mut next.size),
         ("quality", &mut next.quality),
         ("output_format", &mut next.output_format),
+        ("aspect_ratio", &mut next.aspect_ratio),
+        ("image_size", &mut next.image_size),
     ] {
         if let Some(text) = body_string_field(&body, field)? {
             if text.chars().count() > MAX_SETTING_TEXT_CHARS {
@@ -483,29 +500,64 @@ async fn put_tts(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let env = state.service()?.environment();
-    let mut next = load_tts_configuration(env, None).map_err(invalid_setting)?;
+    let mut general = load_tts_configuration(env, None).map_err(invalid_setting)?;
+    let mut cloud = tts_cloud::load_tts_cloud_configuration(env, None).map_err(invalid_setting)?;
+    let mut openai = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
+    let mut gemini = tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
+
     if let Some(raw) = provided(&body, "enabled") {
-        next.enabled = body_required_bool("enabled", Some(raw))?;
+        general.enabled = body_required_bool("enabled", Some(raw))?;
     }
     if let Some(raw) = provided(&body, "auto_play") {
-        next.auto_play = body_required_bool("auto_play", Some(raw))?;
+        general.auto_play = body_required_bool("auto_play", Some(raw))?;
     }
-    if let Some(raw) = provided(&body, "streaming") {
-        next.streaming = body_required_bool("streaming", Some(raw))?;
+    if let Some(raw) = provided(&body, "speak_replies") {
+        general.speak_replies = body_required_bool("speak_replies", Some(raw))?;
+    }
+    for (field, target) in [("output_dir", &mut general.output_dir)] {
+        if let Some(text) = body_string_field(&body, field)? {
+            if text.chars().count() > MAX_SETTING_TEXT_CHARS {
+                return Err(invalid_setting(ConfigError::new(format!(
+                    "tts.{field} 过长。"
+                ))));
+            }
+            *target = text;
+        }
+    }
+    if let Some(text) = body_string_field(&body, "provider")? {
+        cloud.provider = text;
+    }
+    if let Some(raw) = provided(&body, "speed") {
+        let Some(number) = raw.as_f64() else {
+            return Err(ApiError::bad_request(
+                "INVALID_SETTING",
+                "tts.speed 必须是数值。",
+            ));
+        };
+        if !(TTS_SPEED_RANGE.0..=TTS_SPEED_RANGE.1).contains(&number) {
+            return Err(ApiError::bad_request(
+                "INVALID_SETTING",
+                format!(
+                    "tts.speed 必须在 {}~{} 之间。",
+                    TTS_SPEED_RANGE.0, TTS_SPEED_RANGE.1
+                ),
+            ));
+        }
+        openai.speed = number;
     }
     if let Some(value) = body_int(
-        "thread_count",
-        body.get("thread_count"),
-        TTS_THREAD_RANGE.0,
-        TTS_THREAD_RANGE.1,
+        "timeout_seconds",
+        body.get("timeout_seconds"),
+        TTS_TIMEOUT_RANGE.0,
+        TTS_TIMEOUT_RANGE.1,
     )? {
-        next.thread_count = value;
+        openai.timeout_seconds = value;
+        gemini.timeout_seconds = value;
     }
+    // 凭据按服务商分别接收明文（与设置面板同一口径）；缺省或 null 表示保持原值。
     for (field, target) in [
-        ("model_dir", &mut next.model_dir),
-        ("voice", &mut next.voice),
-        ("device", &mut next.device),
-        ("output_dir", &mut next.output_dir),
+        ("api_key", &mut openai.api_key),
+        ("gemini_api_key", &mut gemini.api_key),
     ] {
         if let Some(text) = body_string_field(&body, field)? {
             if text.chars().count() > MAX_SETTING_TEXT_CHARS {
@@ -516,10 +568,48 @@ async fn put_tts(
             *target = text;
         }
     }
-    let next = next.normalize().map_err(invalid_setting)?;
-    let path = save_tts_configuration(env, &next, None).map_err(invalid_setting)?;
+    for (field, target) in [
+        ("base_url", &mut openai.base_url),
+        ("model", &mut openai.model),
+        ("voice", &mut openai.voice),
+        ("instructions", &mut openai.instructions),
+    ] {
+        if let Some(text) = body_string_field(&body, field)? {
+            if text.chars().count() > MAX_SETTING_TEXT_CHARS {
+                return Err(invalid_setting(ConfigError::new(format!(
+                    "tts_api.{field} 过长。"
+                ))));
+            }
+            *target = text;
+        }
+    }
+    for (field, target) in [
+        ("gemini_base_url", &mut gemini.base_url),
+        ("gemini_model", &mut gemini.model),
+        ("gemini_voice", &mut gemini.voice),
+        ("gemini_instructions", &mut gemini.instructions),
+    ] {
+        if let Some(text) = body_string_field(&body, field)? {
+            if text.chars().count() > MAX_SETTING_TEXT_CHARS {
+                return Err(invalid_setting(ConfigError::new(format!(
+                    "tts_gemini.{field} 过长。"
+                ))));
+            }
+            *target = text;
+        }
+    }
+
+    let general = general.normalize().map_err(invalid_setting)?;
+    let cloud = cloud.normalize().map_err(invalid_setting)?;
+    let openai = openai.normalize().map_err(invalid_setting)?;
+    let gemini = gemini.normalize().map_err(invalid_setting)?;
+
+    let path = save_tts_configuration(env, &general, None).map_err(invalid_setting)?;
+    tts_cloud::save_tts_cloud_configuration(env, &cloud, None).map_err(invalid_setting)?;
+    tts_cloud::save_tts_api_configuration(env, &openai, None).map_err(invalid_setting)?;
+    tts_cloud::save_tts_gemini_configuration(env, &gemini, None).map_err(invalid_setting)?;
     Ok(data(with_saved_path(
-        serialize_tts(&next),
+        serialize_tts(&general, &cloud, &openai, &gemini),
         &path.to_string_lossy(),
     )))
 }
@@ -1018,13 +1108,12 @@ fn shell_split_args(text: &str) -> Vec<String> {
 }
 
 /// Server 名归一化：只允许小写字母、数字、下划线与连字符（与配置读取器同一规则）。
+///
+/// 规则本体在读取器里（`omnicrawl_mcp::config::valid_server_name`），这里只做取值面包装，
+/// 避免写侧另存一份正则而两边漂移。
 fn normalized_server_name(name: &str) -> Result<String, ApiError> {
     let trimmed = name.trim();
-    let valid = !trimmed.is_empty()
-        && trimmed
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-');
-    if !valid {
+    if !omnicrawl_mcp::config::valid_server_name(trimmed) {
         return Err(ApiError::bad_request(
             "INVALID_SETTING",
             format!("Server 名只能包含小写字母、数字、下划线和连字符：{trimmed}"),
@@ -1095,6 +1184,7 @@ fn serialize_image_gen(
 ) -> Value {
     json!({
         "enabled": config.enabled,
+        "provider": config.provider,
         "base_url": config.base_url,
         "api_key_env": config.api_key_env,
         "has_api_key": !config.api_key.is_empty(),
@@ -1102,21 +1192,37 @@ fn serialize_image_gen(
         "size": config.size,
         "quality": config.quality,
         "output_format": config.output_format,
+        "aspect_ratio": config.aspect_ratio,
+        "image_size": config.image_size,
         "n": config.n,
         "timeout_seconds": config.timeout_seconds,
     })
 }
 
-fn serialize_tts(config: &omnicrawl_config::features::tts::TtsConfiguration) -> Value {
+fn serialize_tts(
+    general: &omnicrawl_config::features::tts::TtsConfiguration,
+    cloud: &TtsCloudConfiguration,
+    openai: &TtsApiConfiguration,
+    gemini: &GeminiTtsConfiguration,
+) -> Value {
     json!({
-        "enabled": config.enabled,
-        "model_dir": config.model_dir,
-        "voice": config.voice,
-        "auto_play": config.auto_play,
-        "thread_count": config.thread_count,
-        "device": config.device,
-        "streaming": config.streaming,
-        "output_dir": config.output_dir,
+        "enabled": general.enabled,
+        "auto_play": general.auto_play,
+        "speak_replies": general.speak_replies,
+        "output_dir": general.output_dir,
+        "provider": cloud.provider,
+        "api_key": openai.api_key,
+        "base_url": openai.base_url,
+        "model": openai.model,
+        "voice": openai.voice,
+        "instructions": openai.instructions,
+        "speed": openai.speed,
+        "timeout_seconds": openai.timeout_seconds,
+        "gemini_api_key": gemini.api_key,
+        "gemini_base_url": gemini.base_url,
+        "gemini_model": gemini.model,
+        "gemini_voice": gemini.voice,
+        "gemini_instructions": gemini.instructions,
     })
 }
 

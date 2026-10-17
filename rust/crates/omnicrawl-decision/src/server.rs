@@ -1,16 +1,17 @@
-//! 决策 REST 服务的进程生命周期：常驻监听、按端口复用、显式停止。
+//! 决策 REST 服务的进程生命周期：常驻监听、按记录复用、显式停止。
 //!
 //! 与 OneJev 的本地服务同一套约定：
 //!
-//! * 服务是**本机共用**的常驻进程，按端口认定——端口上已有服务就直接复用（本实例或别的
-//!   OmniCrawl 实例起的都算），不重复拉起第二个进程；
+//! * 服务是**本机共用**的常驻进程，按 PID 文件与服务日志认定——端口上有没有人在听不靠连接去猜：
+//!   那种探测在服务未跑时会把调用方卡满超时（TCP 连接在回环上也可能被静默丢弃），
+//!   而它恰好位于设置面板与启动路径上；
 //! * 进程以「脱离宿主」的方式创建（`spawn_shared_service`），本实例退出（含崩溃）都不回收它；
 //! * 停止只能显式做（[`stop`]），按 PID 文件回收整棵进程树。
 //!
-//! 复用判据是**端口是否在监听**，而不是「本进程起没起过」：CLI / Skill 随时可能来调用，
+//! 复用判据是**服务是否已就绪**，而不是「本进程起没起过」：CLI / Skill 随时可能来调用，
 //! 它既不该自己拉一份服务，也不该因为宿主没起而失败。
 
-use std::net::TcpStream;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,8 +23,6 @@ use omnicrawl_host::process_control::{
 
 use crate::config::DecisionSettings;
 
-/// 健康检查连接超时（秒）。
-const HEALTH_TIMEOUT_SECONDS: u64 = 1;
 /// 等待服务就绪的轮询间隔。
 pub const READY_POLL_MILLIS: u64 = 200;
 /// 等待服务就绪的默认上限（秒）：服务只做转发，启动是毫秒级。
@@ -39,9 +38,9 @@ pub const LOG_FILENAME: &str = "decision_api.log";
 pub enum ServiceState {
     /// 没有在跑的服务。
     Stopped,
-    /// 正在启动（端口还没监听）。
+    /// 正在启动（还没打出就绪标记）。
     Starting,
-    /// 已在监听。
+    /// 已就绪（进程在跑且日志里已有监听标记）。
     Ready,
     /// 启动失败。
     Failed(String),
@@ -75,20 +74,50 @@ impl EnsureOutcome {
     }
 }
 
-/// 服务监听地址是否可用（连得上端口即视为已监听）。
-pub fn health(host: &str, port: u16) -> bool {
-    let address = format!("{host}:{port}");
-    match address.parse() {
-        Ok(socket) => TcpStream::connect_timeout(
-            &socket,
-            Duration::from_secs(HEALTH_TIMEOUT_SECONDS.max(1)),
-        )
-        .is_ok(),
-        Err(_) => false,
+/// `serve` 打出这行才算真正接管端口（绑定监听之后才打印）。
+const READY_LINE: &str = "[decision] 决策接口监听";
+
+/// 服务是否已就绪：PID 记录里的进程还活着，且日志里已出现监听标记。
+///
+/// 只读 PID 文件与日志，**不发起任何网络探测**：探测在服务未跑时会阻塞到超时，
+/// 而 [`ensure_running`] 位于设置面板与启动路径上。
+pub fn service_ready(environment: &ConfigEnvironment) -> bool {
+    if !pid_file_alive(environment) {
+        return false;
+    }
+    log_has_ready_line(&log_path(environment))
+}
+
+/// 只读判定：PID 文件里的服务进程是否还活着（不清理过期记录，见 [`live_pid`]）。
+fn pid_file_alive(environment: &ConfigEnvironment) -> bool {
+    read_pid(environment).is_some_and(pid_is_running)
+}
+
+/// 服务日志里是否已经出现监听标记（逐行扫描：标记会被后续请求日志淹没）。
+fn log_has_ready_line(path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut line = Vec::new();
+    let mut reader = std::io::BufReader::new(file);
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return false,
+            Ok(_) => {
+                if line
+                    .windows(READY_LINE.len())
+                    .any(|window| window == READY_LINE.as_bytes())
+                {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
     }
 }
 
-/// 保证本机有一份可用的决策服务：端口已监听就复用，否则拉起常驻进程并等它就绪。
+/// 保证本机有一份可用的决策服务：已就绪就复用，否则拉起常驻进程并等它就绪。
 ///
 /// `wait` 为 `false` 时只把进程拉起来（不阻塞等健康检查）；为 `true` 时等到就绪或超时。
 pub fn ensure_running(
@@ -104,15 +133,15 @@ pub fn ensure_running(
             address,
         };
     }
-    if health(&settings.api.host, settings.api.port as u16) {
+    if service_ready(environment) {
         return EnsureOutcome {
             state: ServiceState::Ready,
-            message: format!("决策接口已在监听 {address}，本实例直接复用。"),
+            message: format!("决策接口已就绪 {address}，本实例直接复用。"),
             address,
         };
     }
 
-    // 别的实例正在拉起（PID 文件里有活进程但端口还没监听）：等它就绪，不再起第二个进程。
+    // 别的实例正在拉起（PID 记录里进程还活着但还没打就绪标记）：等它就绪，不再起第二个进程。
     if let Some(pid) = live_pid(environment) {
         if !wait {
             return EnsureOutcome {
@@ -121,7 +150,7 @@ pub fn ensure_running(
                 address,
             };
         }
-        let state = wait_ready(&settings.api.host, settings.api.port as u16, pid, DEFAULT_READY_TIMEOUT_SECONDS);
+        let state = wait_ready(environment, pid, DEFAULT_READY_TIMEOUT_SECONDS);
         return EnsureOutcome {
             message: match &state {
                 ServiceState::Ready => format!("已复用其他实例启动的决策接口（{address}）。"),
@@ -141,12 +170,7 @@ pub fn ensure_running(
                     address,
                 };
             }
-            let state = wait_ready(
-                &settings.api.host,
-                settings.api.port as u16,
-                pid,
-                DEFAULT_READY_TIMEOUT_SECONDS,
-            );
+            let state = wait_ready(environment, pid, DEFAULT_READY_TIMEOUT_SECONDS);
             let message = match &state {
                 ServiceState::Ready => format!("决策接口已就绪（{address}）。"),
                 ServiceState::Failed(reason) => format!("决策接口启动失败：{reason}"),
@@ -249,11 +273,11 @@ fn open_log(environment: &ConfigEnvironment) -> Option<(std::fs::File, std::fs::
     Some((file, clone))
 }
 
-/// 等端口监听；进程提前退出即算失败。
-fn wait_ready(host: &str, port: u16, pid: u32, timeout_seconds: u64) -> ServiceState {
+/// 等服务就绪（日志里出现监听标记）；进程提前退出即算失败。
+fn wait_ready(environment: &ConfigEnvironment, pid: u32, timeout_seconds: u64) -> ServiceState {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds.max(1));
     while Instant::now() < deadline {
-        if health(host, port) {
+        if service_ready(environment) {
             return ServiceState::Ready;
         }
         if !pid_is_running(pid) {
@@ -367,15 +391,10 @@ mod tests {
     }
 
     #[test]
-    fn a_listening_port_is_reused_instead_of_starting_a_second_process() {
+    fn a_ready_service_is_reused_instead_of_starting_a_second_process() {
         let environment = environment("reuse");
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 18_767));
-        let Ok(_listener) = listener else {
-            eprintln!("跳过：测试端口被占用");
-            return;
-        };
         let mut settings = settings(true);
-        // 端口上已有服务：即使没有决策渠道也必须复用，而不是起进程或报不可用。
+        // 记录与就绪标记都在：即使没有决策渠道也必须复用，而不是起进程或报不可用。
         settings.channel = Some(omnicrawl_host::review::DecisionReviewOptions {
             mode: "jev".to_string(),
             model: "jev-latest".to_string(),
@@ -384,9 +403,22 @@ mod tests {
             api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         });
+        // 只有 PID 记录、还没有就绪标记：此时不算就绪。
+        write_pid(&environment, std::process::id());
+        assert!(!service_ready(&environment), "只有 PID 记录时不该算就绪");
+        std::fs::write(
+            log_path(&environment),
+            "[decision] 决策接口监听 http://127.0.0.1:18767\n",
+        )
+        .expect("写服务日志");
+
         let outcome = ensure_running(&environment, &settings, false);
         assert!(outcome.ready(), "{}", outcome.message);
         assert!(outcome.message.contains("复用"), "{}", outcome.message);
-        assert!(read_pid(&environment).is_none(), "复用不该写自己的 PID");
+        assert_eq!(
+            read_pid(&environment),
+            Some(std::process::id()),
+            "复用不该覆盖已有记录"
+        );
     }
 }

@@ -1,3 +1,6 @@
+// `schemas()` 用一个大 `json!` 描述全部请求体：TtsSetting 变宽后默认 128 的宏展开深度不够。
+#![recursion_limit = "512"]
+
 //! OmniCrawl 本地 HTTP/SSE API 服务端（`omnicrawl/api/` 的 Rust 移植）。
 //!
 //! 边界：本 crate 只负责 HTTP 面——配置装载与校验、Bearer 鉴权、统一响应信封、

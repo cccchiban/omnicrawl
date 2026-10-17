@@ -16,11 +16,11 @@ use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::load_feature_enabled;
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
 use omnicrawl_config::features::approval::{
-    load_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW,
+    load_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW,
 };
 use omnicrawl_config::features::context_compaction::load_context_compaction_config;
 use omnicrawl_config::features::decision_model::{
-    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH,
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
 };
 use omnicrawl_config::features::tools::load_disabled_tools;
 use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
@@ -141,6 +141,9 @@ pub struct ServiceOptions {
     /// 工具建议运行期（`[decision_models.features] tool_suggestion`）；`None` 表示不建议，
     /// user 原文照发。
     pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    /// 子代理建议运行期（`[decision_models.features] subagent_suggestion`）；与工具建议互相独立，
+    /// 两者同时开启时并发发起，总耗时取较大者而不是相加。
+    pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
     /// 模型发现缓存：跨请求存活，`POST /models/refresh` 清空它。
     pub discovery_cache: Arc<DiscoveryCache>,
     /// 内核可执行文件：运行期重起内核（切换会话 / 工作区）需要它；嵌入模式可以不给。
@@ -176,6 +179,7 @@ impl ServiceOptions {
             custody: None,
             prune: None,
             suggest: None,
+            subagent_suggest: None,
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
@@ -199,6 +203,8 @@ pub struct AgentService {
     spawner: Mutex<Option<KernelSpawn>>,
     /// 当前会话的后台任务事件流：回合内由 sink 喂、回合外由事件泵喂。
     subagent_feed: SubagentFeed,
+    /// 审查相关配置的变更探测器：事件泵按文件修改时间发现外部改动后即时热应用。
+    review_watch: Mutex<omnicrawl_host::review::ReviewConfigWatch>,
     /// 服务是否已关闭（事件泵据此退出）。
     closed: AtomicBool,
     /// MCP 管理器句柄：`PUT /settings/mcp` 会整体换掉它，`/mcp` 状态与工具表共用同一份。
@@ -353,6 +359,10 @@ impl AgentService {
         let service = Self::with_runner(options, runner)
             .with_session_id(session_id.clone())
             .with_spawner(spawner);
+        // 审查配置热应用的基线：以启动时读到的生效值为准，之后的改动才算「外部变更」。
+        if let Ok(mut watch) = service.review_watch.lock() {
+            watch.baseline(&service.options.env);
+        }
         // 插件在服务装配完成后启动：Worker 起来之后才能接住第一个回合的 Hook。
         service.start_plugins(&session_id);
         Ok(service)
@@ -376,6 +386,7 @@ impl AgentService {
             workspace: Mutex::new(workspace),
             spawner: Mutex::new(None),
             subagent_feed: SubagentFeed::new(),
+            review_watch: Mutex::new(omnicrawl_host::review::ReviewConfigWatch::new()),
             closed: AtomicBool::new(false),
             mcp: Mutex::new(mcp),
             options,
@@ -629,7 +640,72 @@ impl AgentService {
                     service.record_subagent_event(&payload);
                 }
             }
+            // 审查配置的外部改动：与回合无关，泵顺手在持锁时应用，不必等下一次请求或重启。
+            service.apply_review_config(runner);
         });
+    }
+
+    /// 审查配置的热应用：外部改 `config.toml` / `decision_models.toml` 后即时换掉运行期。
+    ///
+    /// 覆盖 `[approval] mode`、`review_model` 与 `[decision_models.features] tool_call_review`
+    /// 及默认决策渠道；与设置端点写盘后的效果同源，区别只是配置来自文件而不是请求。
+    /// 读取失败时保留现有运行期并留待下一次轮询重试（不 accept），避免一次瞬时读失败把审查降级。
+    fn apply_review_config(&self, runner: &mut TurnRunner) {
+        let env = &self.options.env;
+        let Ok(mut watch) = self.review_watch.lock() else {
+            return;
+        };
+        let Some(change) = watch.poll(env) else {
+            return;
+        };
+        let review = if change.rebuild_runtime {
+            match load_llm_config(env) {
+                Ok(llm) => Some(build_review_options(&llm, env)),
+                Err(error) => {
+                    eprintln!("[api] 审查配置读取失败，沿用当前审查运行期：{error}");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let approval = change
+            .approval_mode
+            .as_deref()
+            .and_then(runtime_approval_mode);
+        let rebuild_runtime = change.rebuild_runtime;
+        let approval_from_file = change.approval_mode.is_some();
+        if let Some(options) = review.as_ref() {
+            runner.set_review(options.clone());
+        }
+        if let Some(mode) = approval {
+            runner.set_approval_mode(mode);
+        }
+        watch.accept();
+        // 先放掉探测器锁再同步重起模板：锁顺序与 `set_runtime_approval_mode` 保持一致
+        // （那个入口的顺序是 runner → spawner → watch）。
+        drop(watch);
+        // 重起内核（切换会话 / 工作区）会按 `spawner.runner` 重建运行器：不同步就会退回旧配置。
+        if let Ok(mut spawner) = self.spawner.lock() {
+            if let Some(spawner) = spawner.as_mut() {
+                if let Some(options) = review {
+                    spawner.runner.review = options;
+                }
+                if let Some(mode) = approval {
+                    spawner.runner.approval = mode;
+                }
+            }
+        }
+        let mut applied: Vec<&str> = Vec::new();
+        if rebuild_runtime {
+            applied.push("审查运行期");
+        }
+        if approval_from_file {
+            applied.push("审批模式");
+        }
+        if !applied.is_empty() {
+            eprintln!("[api] 审查配置已热应用：{}。", applied.join("、"));
+        }
     }
 
     /// 把一条回合外的子代理通知投影到会话级事件流。
@@ -1137,6 +1213,18 @@ fn todo_snapshots(raw: &Value) -> Vec<TodoSnapshot> {
         .collect()
 }
 
+/// 配置值 → 宿主运行期的审批模式（启动与热应用共用同一套映射）。
+///
+/// `review`（自动审查）在这里保持 `Review`：宿主执行层的审查闸按它判定哪些调用要交给审查模型。
+fn runtime_approval_mode(mode: &str) -> Option<ApprovalMode> {
+    match mode {
+        APPROVAL_MODE_AUTO => Some(ApprovalMode::Auto),
+        APPROVAL_MODE_REVIEW => Some(ApprovalMode::Review),
+        APPROVAL_MODE_MANUAL => Some(ApprovalMode::Manual),
+        _ => None,
+    }
+}
+
 /// 从内核 stderr 抓「会话已就绪」行里的会话 ID。
 pub fn parse_session_ready(line: &str) -> Option<String> {
     let marker = "会话已就绪：";
@@ -1196,16 +1284,12 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     );
     // 启动清扫（后台）：回收上次崩溃 / 被强杀遗留的过期隔离区。
     start_background_isolation_sweep(None);
-    let approval = match load_approval_mode(env, None)
-        .map_err(|error| error.to_string())?
-        .as_str()
-    {
-        APPROVAL_MODE_AUTO => ApprovalMode::Auto,
-        // `review`（自动审查）在 API 与 TUI 同源：审查运行期装配好就真跑模型，
-        // 没装配好（未配模型/凭据）时需审查的调用按 fail-closed 拒绝。
-        APPROVAL_MODE_REVIEW => ApprovalMode::Review,
-        _ => ApprovalMode::Manual,
-    };
+    let approval = load_approval_mode(env, None)
+        .map_err(|error| error.to_string())
+        .and_then(|mode| {
+            runtime_approval_mode(&mode)
+                .ok_or_else(|| format!("approval.mode 取值非法：{mode}"))
+        })?;
     let system_prompt = if llm.system_prompt.trim().is_empty() {
         DEFAULT_SYSTEM_PROMPT.to_string()
     } else {
@@ -1285,10 +1369,23 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     options.registry_options.knowledge_rerank = Arc::new(
         omnicrawl_host::tools::rerank_options_from_config(env, DECISION_SWITCH_KB_SEARCH),
     );
+    // Skill 检索重排：同一装配口径（`[decision_models.features] skill_search_rerank`）。
+    options.registry_options.skill_rerank = Arc::new(
+        omnicrawl_host::tools::rerank_options_from_config(env, DECISION_SWITCH_SKILL_SEARCH),
+    );
     // 工具开关（`[tools]` 段）同样在启动期装载：若这里不装，`config.toml` 里关掉的
     // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
     options.registry_options.disabled_tools =
         load_disabled_tools(env, None).unwrap_or_default();
+    // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 bing +
+    // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl 与三把 API Key 全部
+    // 失效，工具会一直报「来源：bing」（与 TUI 同源，见 `web_search_options_from_config`）。
+    options.registry_options.web_search =
+        omnicrawl_host::tools::web_search_options_from_config(env);
+    // 图像生成同理：默认选项是「未启用 + 无凭据」，不装的话 `[image_gen]` 里配好的服务商、
+    // 接口地址、模型与明文 api_key 全部失效（与 TUI 同源，见 `image_gen_options_from_config`）。
+    options.registry_options.image_gen =
+        omnicrawl_host::tools::image_gen_options_from_config(env);
     options.monitors = Some(monitors);
     // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
     options.plugins = Some(Arc::new(PluginHost::from_environment(
@@ -1302,8 +1399,9 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     options.custody = Some(omnicrawl_host::tools::custody_options_from_config(env));
     // 工具调用淘汰：与 TUI 同源（`[decision_models.features] tool_call_prune`）。
     options.prune = Some(omnicrawl_host::tools::prune_options_from_config(env));
-    // 工具建议：与 TUI 同源（`[decision_models.features] tool_suggestion`）。
+    // 建议：与 TUI 同源（`[decision_models.features] tool_suggestion` 与 `subagent_suggestion`）。
     options.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(env));
+    options.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(env));
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
@@ -1369,8 +1467,9 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         custody: options.custody.clone(),
         // 工具调用淘汰同源：与审查一样走决策渠道，失败一律保留原文。
         prune: options.prune.clone(),
-        // 工具建议同源：提交前问一次决策模型该用哪些工具，失败一律原文照发。
+        // 建议同源：提交前问一次决策模型该用哪些工具／哪些子代理，失败一律原文照发。
         suggest: options.suggest.clone(),
+        subagent_suggest: options.subagent_suggest.clone(),
         // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。
         prompt: options.prompt.clone(),
     }
@@ -1507,7 +1606,8 @@ impl AgentService {
             Ok(mode) => mode,
             Err(_) => match self.options.approval {
                 ApprovalMode::Auto => "auto".to_string(),
-                ApprovalMode::Manual | ApprovalMode::Review => "manual".to_string(),
+                ApprovalMode::Review => "review".to_string(),
+                ApprovalMode::Manual => "manual".to_string(),
             },
         }
     }
@@ -2043,6 +2143,9 @@ impl AgentService {
             protocol: non_empty(&llm.protocol),
             base_url: non_empty(&llm.base_url),
             api_key_env: non_empty(&llm.api_key_env),
+            // 原生视觉随模型走：换模型后带图观察是该直送主模型还是交给 `[vision]` 代理，
+            // 取决于新模型的声明，所以每次切换都要重新下发。
+            native_vision: Some(self.options.native_vision),
             // 淘汰能力不是模型配置的一部分：它是宿主运行期的开关，由 `rebuild_prune` 单独下发。
             ..SessionModelSettings::default()
         };
@@ -2079,10 +2182,20 @@ impl AgentService {
         match guard.as_mut() {
             Some(runner) => {
                 runner.set_approval_mode(mode);
-                Ok(())
             }
-            None => Err(ApiError::service_unavailable()),
+            None => return Err(ApiError::service_unavailable()),
         }
+        // 重起内核会按 `spawner.runner` 重建运行器；不同步就会退回旧模式。
+        if let Ok(mut spawner) = self.spawner.lock() {
+            if let Some(spawner) = spawner.as_mut() {
+                spawner.runner.approval = mode;
+            }
+        }
+        // 值已由请求写入磁盘：重取基线，免得下一次轮询把这次改动当成外部变更再应用一遍。
+        if let Ok(mut watch) = self.review_watch.lock() {
+            watch.baseline(&self.options.env);
+        }
+        Ok(())
     }
 
     pub fn list_projects(&self) -> Result<Vec<ProjectEntry>, ApiError> {
@@ -2267,6 +2380,95 @@ impl AgentService {
         })
     }
 
+    /// 记忆开关的运行期一半：`PUT /settings/features` 写盘后调用。
+    ///
+    /// 记忆是一整组工具（四个 `memory_*`），开关直接决定它们进不进表；不重建的话
+    /// 「设置里关了记忆」要等下次启动才从模型可见面消失。
+    pub fn reload_memory_switch(&self, enabled: bool) -> Result<McpReload, ApiError> {
+        let mut registry_options = self.current_registry_options();
+        registry_options.memory_enabled = enabled;
+        self.reload_registry_options(&registry_options, "记忆开关")
+    }
+
+    /// 当前最新的工具选项：以内核重起点上那份为准，没有时回落启动输入。
+    ///
+    /// 不能直接用 `self.options.registry_options`（那是启动时的快照）：设置端点在运行期改过
+    /// 的字段（如 MCP 句柄）会因此被打回启动值，下一次内核重起就带上过期配置。
+    ///
+    /// 加锁顺序固定为 runner → spawner（与 [`Self::reload_registry_options`] 一致），
+    /// 因此持 runner 锁时调用它安全，不会与另一条路径构成死锁对。
+    fn current_registry_options(&self) -> RegistryOptions {
+        let from_spawner = self
+            .spawner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|spawner| spawner.registry_options.clone()));
+        from_spawner.unwrap_or_else(|| self.options.registry_options.clone())
+    }
+
+    /// 按最新配置重建工具表并把新声明下发给内核。
+    ///
+    /// 设置端点写盘之后让运行期跟上的通用入口：`tools` 里的开关决定了哪些工具对模型可见，
+    /// 而「模型可见即不可调用」，所以改完必须当场重建，不能等到下次启动。
+    ///
+    /// 回合在途时按 `try_lock` 快速失败（调用方如实回报，不假装已生效）；嵌入模式
+    /// （`with_runner`）没有可重建的运行器，此时只更新下一次内核重起要用的选项。
+    pub fn reload_registry_options(
+        &self,
+        registry_options: &RegistryOptions,
+        label: &str,
+    ) -> Result<McpReload, ApiError> {
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，设置要等回合结束后才能生效。"))?;
+        let mut requires_restart = true;
+        if let Some(runner) = guard.as_mut() {
+            runner
+                .rebuild_registry(registry_options)
+                .map_err(|message| {
+                    ApiError::new(
+                        "SETTINGS_RUNTIME_FAILED",
+                        format!("{label}重建工具表失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            let declarations = runner.registry().declarations();
+            let params = SessionSettingsParams {
+                model: Some(Box::new(SessionModelSettings {
+                    tools: Some(declarations),
+                    ..SessionModelSettings::default()
+                })),
+                compaction: None,
+            };
+            runner
+                .apply_session_settings(params, &mut |_| {})
+                .map_err(|message| {
+                    ApiError::new(
+                        "SETTINGS_RUNTIME_FAILED",
+                        format!("{label}下发工具声明失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            requires_restart = false;
+        }
+        drop(guard);
+
+        // 下一次内核重起（切会话 / 切工作区）也要用新选项，否则会被启动时的旧值覆盖回去。
+        if let Ok(mut spawner) = self.spawner.lock() {
+            if let Some(spawner) = spawner.as_mut() {
+                spawner.registry_options = registry_options.clone();
+            }
+        }
+        Ok(McpReload {
+            diagnostics: Vec::new(),
+            tool_count: 0,
+            requires_restart,
+        })
+    }
+
     /// 插件运行态摘要：设置页与诊断用的展示来源（无运行期时全为默认值）。
     pub fn plugins_status(&self) -> Value {
         match self.options.plugins.as_ref() {
@@ -2326,7 +2528,7 @@ impl AgentService {
             .map_err(|_| kernel_busy("生成任务进行中，MCP 设置要等回合结束后才能生效。"))?;
         let mut requires_restart = true;
         if let Some(runner) = guard.as_mut() {
-            let mut registry_options = self.options.registry_options.clone();
+            let mut registry_options = self.current_registry_options();
             registry_options.mcp = Some(Arc::clone(&manager));
             runner
                 .rebuild_registry(&registry_options)
@@ -2391,58 +2593,9 @@ impl AgentService {
     /// 回合在途时按 `try_lock` 快速失败；嵌入模式（`with_runner`）没有可重建的运行器，
     /// 此时只更新下一次内核重起要用的选项并回报「需重启生效」。
     pub fn reload_tool_switches(&self, disabled_tools: Vec<String>) -> Result<McpReload, ApiError> {
-        let mut guard = self
-            .runner
-            .try_lock()
-            .map_err(|_| kernel_busy("生成任务进行中，工具开关要等回合结束后才能生效。"))?;
-        let mut requires_restart = true;
-        if let Some(runner) = guard.as_mut() {
-            let mut registry_options = self.options.registry_options.clone();
-            registry_options.disabled_tools = disabled_tools.clone();
-            runner
-                .rebuild_registry(&registry_options)
-                .map_err(|message| {
-                    ApiError::new(
-                        "TOOLS_RUNTIME_FAILED",
-                        format!("重建工具表失败：{message}"),
-                        StatusCode::BAD_GATEWAY,
-                        None,
-                    )
-                })?;
-            // 新声明整体替换内核侧的工具表：模型下一轮才看得到被关掉的能力。
-            let declarations = runner.registry().declarations();
-            let params = SessionSettingsParams {
-                model: Some(Box::new(SessionModelSettings {
-                    tools: Some(declarations),
-                    ..SessionModelSettings::default()
-                })),
-                compaction: None,
-            };
-            runner
-                .apply_session_settings(params, &mut |_| {})
-                .map_err(|message| {
-                    ApiError::new(
-                        "TOOLS_RUNTIME_FAILED",
-                        format!("下发工具声明失败：{message}"),
-                        StatusCode::BAD_GATEWAY,
-                        None,
-                    )
-                })?;
-            requires_restart = false;
-        }
-        drop(guard);
-
-        // 下一次内核重起（切会话 / 切工作区）也要用新开关，否则会被启动时的旧值覆盖回去。
-        if let Ok(mut spawner) = self.spawner.lock() {
-            if let Some(spawner) = spawner.as_mut() {
-                spawner.registry_options.disabled_tools = disabled_tools;
-            }
-        }
-        Ok(McpReload {
-            diagnostics: Vec::new(),
-            tool_count: 0,
-            requires_restart,
-        })
+        let mut registry_options = self.current_registry_options();
+        registry_options.disabled_tools = disabled_tools;
+        self.reload_registry_options(&registry_options, "工具开关")
     }
 
     /// `POST /memory/clean`：清理项目级、当前会话级与用户级的过期记忆。

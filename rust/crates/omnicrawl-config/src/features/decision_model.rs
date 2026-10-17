@@ -9,8 +9,8 @@
 //! * `chat_completions`：`POST {base_url}/chat/completions`（OpenAI 兼容），把同一份
 //!   `state` + `questions` 当作 user 消息的 JSON 文本发出，并要求结构化 JSON 输出；
 //!   答案从 `choices[0].message.content` 里解析出同一形状的 `answers`，因此上层读答案的
-//!   代码两种方式共用。该方式的 `base_url` 按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`
-//!   与 `[tts_api]`），因此只追加资源路径。
+//!   代码两种方式共用。该方式的 `base_url` 按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），
+//!   因此只追加资源路径。
 //!
 //! 与 `models.toml` 分开成独立文件是刻意的：决策渠道与对话渠道是两套互不相干的服务地址
 //! 与模型命名空间，混进 `models.toml` 会被对话侧的目录与能力解析当成候选模型。
@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::runtime::{
-    atomic_write_text, dump_toml_text, get_section, load_config_data, resolve_decision_models_path,
-    resolve_decision_models_write_path, ConfigEnvironment,
+    absolute_path, atomic_write_text, dump_toml_text, expand_user, get_section, load_config_data,
+    resolve_decision_models_path, resolve_decision_models_write_path, ConfigEnvironment,
 };
 use crate::error::ConfigError;
 use crate::toml::{Table, Value};
@@ -42,7 +42,7 @@ pub const DECISION_MODE_CHAT_COMPLETIONS: &str = "chat_completions";
 ///
 /// 与云端 `jev` 是同一个协议的两种部署：`/v1/systemone` 的请求/响应形状与
 /// `/v1/decide` 一致（`state` + `questions` 进请求体，顶层 `answers` 出答案），
-/// 只是由本机 `qev serve` 提供，因此这里单列一种方式：路径不同，且可指向本地服务。
+/// 只是由本机判定服务提供（走命名管道 / Unix socket），因此这里单列一种方式。
 pub const DECISION_MODE_ONEJEV: &str = "onejev";
 
 /// 可选的服务类型（界面「请求方式」字段的候选）。
@@ -52,7 +52,11 @@ pub const DECISION_MODES: [&str; 3] = [
     DECISION_MODE_ONEJEV,
 ];
 
-/// 自部署（`onejev`）的默认基地址：本机 `qev serve` 的监听地址。
+/// 自部署（`onejev`）渠道的默认基地址：只作为「本机服务」的标识保留。
+///
+/// 传输已经不走 HTTP（走命名管道 / Unix socket，见 `omnicrawl_host::decision_pipe`），
+/// 但 `base_url` 仍要落在回环地址上——`is_local_service` / `is_loopback_url` 按它判定
+/// 「这条渠道是不是本机自部署」，进而决定要不要拉起、以及要不要走管道。
 pub const DEFAULT_LOCAL_DECISION_BASE_URL: &str = "http://127.0.0.1:8766";
 /// 自部署渠道的默认凭据环境变量名（本地服务不校验凭据，但仍需要一个非空占位）。
 pub const DEFAULT_LOCAL_DECISION_API_KEY_ENV: &str = "ONEJEV_API_KEY";
@@ -167,9 +171,9 @@ impl DecisionChannelConfig {
 
     /// 决策接口的完整地址：按 `mode` 选路径（基地址末尾斜杠已在归一化时去掉）。
     ///
-    /// 上层只认这一个入口，因此三种请求方式对调用方是同一件事。`chat_completions` 的基地址
-    /// 已含 `/v1`（OpenAI 兼容口径），只追加资源路径；`jev` / `onejev` 的基地址是站点根下的
-    /// API 前缀，各自补 `/v1/...`。
+    /// 这个地址只在非本机服务上真正用于出站：自部署渠道（`onejev` + 回环地址）走本机管道，
+    /// 不经过它（见 `omnicrawl_host::decision_wire::post_decision`）。保留它是为了
+    /// 云端网关那种「同一协议、不同部署」的情形仍能按 HTTP 访问。
     pub fn decide_url(&self) -> String {
         match self.mode.as_str() {
             DECISION_MODE_CHAT_COMPLETIONS => {
@@ -182,25 +186,10 @@ impl DecisionChannelConfig {
 
     /// 渠道是否指向本机回环地址（自部署的 OneJev 服务）。
     ///
-    /// `onejev` 是「本机 qev 服务」的协议形状，但云端网关（new-api 一类）也提供同一形状的
+    /// `onejev` 是「本机判定服务」的协议形状，但云端网关（new-api 一类）也提供同一形状的
     /// 接口，因此判断「要不要拉起本机服务」不能只看 `mode`，还要看地址确实落在回环上。
     pub fn is_local_service(&self) -> bool {
-        let Some((_, rest)) = self.base_url.split_once("://") else {
-            return false;
-        };
-        // 去掉路径/查询/片段，只剩 authority（可能带 userinfo 与端口）。
-        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-        let authority = authority
-            .rsplit_once('@')
-            .map(|(_, host)| host)
-            .unwrap_or(authority);
-        let host = if let Some(rest) = authority.strip_prefix('[') {
-            // IPv6 字面量：取方括号内的部分。
-            rest.split(']').next().unwrap_or("")
-        } else {
-            authority.split(':').next().unwrap_or("")
-        };
-        DECISION_API_LOOPBACK_HOSTS.contains(&host.to_lowercase().as_str())
+        self.mode == DECISION_MODE_ONEJEV && is_loopback_url(&self.base_url)
     }
 
     /// 生效的内联凭据：只认配置里的明文 `api_key`。
@@ -220,11 +209,78 @@ pub const DECISION_API_SECTION: &str = "api";
 
 /// 决策 REST 服务的默认监听端口。
 ///
-/// 与本地 API（8765）和 OneJev 的 `qev serve`（8766）都错开：三者常常同时在本机跑。
+/// 与本地 API（8765）错开：两者常常同时在本机跑。
 pub const DEFAULT_DECISION_API_PORT: i64 = 8767;
 
 /// 决策 REST 服务只接受回环地址（它持有决策渠道凭据，是本地代理）。
 pub const DECISION_API_LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
+
+/// `base_url` 的主机是否落在回环地址上。
+///
+/// 自部署的 OneJev 服务现在走本机管道，但配置里的 `base_url` 仍是它原来的 HTTP 形状
+/// （历史上与云端网关共用这一字段），因此「是不是本机服务」只能按主机名判。
+pub fn is_loopback_url(base_url: &str) -> bool {
+    let Some((_, rest)) = base_url.split_once("://") else {
+        return false;
+    };
+    // 去掉路径/查询/片段，只剩 authority（可能带 userinfo 与端口）。
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 字面量：取方括号内的部分。
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    DECISION_API_LOOPBACK_HOSTS.contains(&host.to_lowercase().as_str())
+}
+
+/// OneJev 自部署数据根目录的默认位置（`<home>/.omnicrawl/onejev`）。
+pub const ONEJEV_DEFAULT_DIRNAME: &str = "onejev";
+
+/// OneJev 服务的端点在数据根目录下的文件名。
+///
+/// Windows 上是命名管道名（`\\.\pipe\<这个名字>`），其余平台是数据根目录下的 socket 文件。
+/// 两端（拉起服务的 `omnicrawl-onejev` 与连它的宿主）都按这个函数取名，名字因此不可能走偏。
+pub const ONEJEV_ENDPOINT_FILENAME: &str = "onejev.sock";
+
+/// 解析 OneJev 数据根目录：`configured` 为空时用默认目录，支持 `~` 前缀。
+pub fn resolve_onejev_root(env: &ConfigEnvironment, configured: &str) -> PathBuf {
+    let text = configured.trim();
+    if text.is_empty() {
+        return env.home().join(".omnicrawl").join(ONEJEV_DEFAULT_DIRNAME);
+    }
+    absolute_path(&expand_user(env, text))
+}
+
+/// OneJev 本地服务的端点：Windows 命名管道名，其余平台的数据根目录下 socket 路径。
+///
+/// 名字里带数据根目录的哈希：同一台机器上不同数据根（不同用户、不同磁盘）各跑各的服务，
+/// 名字撞在一起会让两个实例互相抢连接。
+pub fn onejev_endpoint_for_root(root: &Path) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    root.to_string_lossy().to_lowercase().hash(&mut hasher);
+    let name = format!(
+        "omnicrawl-onejev-{:016x}-{}",
+        hasher.finish(),
+        ONEJEV_ENDPOINT_FILENAME
+    );
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{name}")
+    } else {
+        root.join(name).display().to_string()
+    }
+}
+
+/// 按配置解析出的数据根目录给出端点（拉起服务与连接服务共用这一个名字）。
+pub fn onejev_endpoint(env: &ConfigEnvironment) -> String {
+    let root = resolve_onejev_root(env, &load_local_deployment(env, None).model_dir);
+    onejev_endpoint_for_root(&root)
+}
 
 /// 决策 REST 接口的运行期配置。
 ///
@@ -349,7 +405,7 @@ pub const DEFAULT_LOCAL_HEALTH_TIMEOUT_SECONDS: i64 = 600;
 /// 自部署（OneJev）的运行期配置：尺寸、设备、权重目录与服务参数。
 ///
 /// 与对话模型、决策渠道都无关：这是一份「本机跑哪一档 OneJev、跑在哪个设备」的设置，
-/// 由 `mode = "onejev"` 的决策渠道消费（本地 `qev serve` 的地址由渠道的 `base_url` 给）。
+/// 由 `mode = "onejev"` 的决策渠道消费（本地服务经管道直连，渠道的 `base_url` 只作标识）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalDeploymentConfig {
     /// 当前部署的尺寸键，取 [`ONEJEV_SIZE_KEYS`] 之一。
@@ -492,6 +548,9 @@ pub const DECISION_SWITCH_MEMORY_SEARCH: &str = "memory_search_rerank";
 /// 「知识库检索走决策模型排序」开关的配置键。
 pub const DECISION_SWITCH_KB_SEARCH: &str = "kb_search_rerank";
 
+/// 「Skill 检索走决策模型排序」开关的配置键。
+pub const DECISION_SWITCH_SKILL_SEARCH: &str = "skill_search_rerank";
+
 /// 「提问自动托管」开关的配置键。
 pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
 
@@ -500,6 +559,9 @@ pub const DECISION_SWITCH_TOOL_PRUNE: &str = "tool_call_prune";
 
 /// 「新提问自动建议工具」开关的配置键。
 pub const DECISION_SWITCH_TOOL_SUGGEST: &str = "tool_suggestion";
+
+/// 「新提问自动建议子代理」开关的配置键。
+pub const DECISION_SWITCH_SUBAGENT_SUGGEST: &str = "subagent_suggestion";
 
 /// 一个决策模型功能开关：配置键、界面文案、默认值。
 ///
@@ -512,7 +574,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 6] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 8] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -529,6 +591,11 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 6] = [
         default: false,
     },
     DecisionSwitchSpec {
+        key: DECISION_SWITCH_SKILL_SEARCH,
+        label: "Skill 检索使用决策模型排序",
+        default: false,
+    },
+    DecisionSwitchSpec {
         key: DECISION_SWITCH_ASK_USER_CUSTODY,
         label: "提问由决策模型自动作答",
         default: false,
@@ -541,6 +608,11 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 6] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_SUGGEST,
         label: "新提问自动建议工具",
+        default: false,
+    },
+    DecisionSwitchSpec {
+        key: DECISION_SWITCH_SUBAGENT_SUGGEST,
+        label: "新提问自动建议子代理",
         default: false,
     },
 ];
@@ -896,7 +968,7 @@ mod tests {
 
         let chat = DecisionChannelConfig {
             mode: DECISION_MODE_CHAT_COMPLETIONS.to_string(),
-            // 对话补全的基地址按 OpenAI 兼容口径填到 /v1（同 image_gen / tts_api）。
+            // 对话补全的基地址按 OpenAI 兼容口径填到 /v1（同 image_gen）。
             base_url: "https://api.openlux.ai/v1".to_string(),
             ..DecisionChannelConfig::default()
         };
@@ -1204,12 +1276,17 @@ mod tests {
             Some(false)
         );
         assert!(!decision_switch_default(DECISION_SWITCH_TOOL_REVIEW));
-        // 两个检索重排开关同样默认关闭。
+        // 三个检索重排开关同样默认关闭。
         assert_eq!(
             switches.get(DECISION_SWITCH_MEMORY_SEARCH).copied(),
             Some(false)
         );
         assert_eq!(switches.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(false));
+        assert_eq!(
+            switches.get(DECISION_SWITCH_SKILL_SEARCH).copied(),
+            Some(false)
+        );
+        assert!(!decision_switch_default(DECISION_SWITCH_SKILL_SEARCH));
         // 提问托管开关同样默认关闭。
         assert_eq!(
             switches.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
@@ -1222,6 +1299,12 @@ mod tests {
             Some(false)
         );
         assert!(!decision_switch_default(DECISION_SWITCH_TOOL_SUGGEST));
+        // 子代理建议开关同样默认关闭。
+        assert_eq!(
+            switches.get(DECISION_SWITCH_SUBAGENT_SUGGEST).copied(),
+            Some(false)
+        );
+        assert!(!decision_switch_default(DECISION_SWITCH_SUBAGENT_SUGGEST));
 
         let path = save_decision_switch(&env, DECISION_SWITCH_TOOL_REVIEW, true, None)
             .expect("写开关");
@@ -1244,17 +1327,28 @@ mod tests {
 
         // 新开关各自独立写回，互不影响。
         save_decision_switch(&env, DECISION_SWITCH_KB_SEARCH, true, None).expect("写知识库开关");
+        save_decision_switch(&env, DECISION_SWITCH_SKILL_SEARCH, true, None).expect("写 Skill 开关");
         save_decision_switch(&env, DECISION_SWITCH_ASK_USER_CUSTODY, true, None)
             .expect("写提问托管开关");
         save_decision_switch(&env, DECISION_SWITCH_TOOL_SUGGEST, true, None).expect("写工具建议开关");
+        save_decision_switch(&env, DECISION_SWITCH_SUBAGENT_SUGGEST, true, None)
+            .expect("写子代理建议开关");
         let reloaded = load_decision_switches(&env, None);
         assert_eq!(reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(true));
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_SKILL_SEARCH).copied(),
+            Some(true)
+        );
         assert_eq!(
             reloaded.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
             Some(true)
         );
         assert_eq!(
             reloaded.get(DECISION_SWITCH_TOOL_SUGGEST).copied(),
+            Some(true)
+        );
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_SUBAGENT_SUGGEST).copied(),
             Some(true)
         );
         assert_eq!(

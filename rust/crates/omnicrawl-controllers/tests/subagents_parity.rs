@@ -16,7 +16,8 @@ use omnicrawl_controllers::subagents::coordinator::{
     validate_arguments, worktree_control_request, FailureFacts, PreparedTaskView,
 };
 use omnicrawl_controllers::subagents::definitions::{
-    parse_agent_definition, AgentDefinition, AgentDefinitionRegistry,
+    locate_builtin_directory_from, parse_agent_definition, AgentDefinition,
+    AgentDefinitionRegistry,
 };
 use omnicrawl_controllers::subagents::execution::{SubAgentExecutionContext, FORK_BOILERPLATE};
 use omnicrawl_controllers::subagents::recovery::{
@@ -261,6 +262,71 @@ fn templates_match_python() {
             .unwrap_or_else(|error| panic!("{label}：{}", error.message()));
         assert_definition(&paths, &definition, &case["definition"], label);
     }
+    std::fs::remove_dir_all(&paths.root).ok();
+}
+
+#[test]
+fn builtin_directory_locates_the_shipped_templates() {
+    // 定位口径只看可执行文件的祖先目录，因此可以用仓库布局伪造一个二进制路径。
+    let executable = repo_root()
+        .join("rust")
+        .join("target")
+        .join("debug")
+        .join("omnicrawl.exe");
+    let located =
+        locate_builtin_directory_from(&executable).expect("仓库检出里应能找到内置角色目录");
+    assert_eq!(
+        located,
+        repo_root().join("rust").join("assets").join("templates").join("subagents"),
+        "应命中仓库检出里的随包模板目录"
+    );
+    assert!(located.join("explore.md").is_file(), "内置角色定义应齐全");
+
+    // 定位不到时返回 `None`：内置层为空，而不是退化成用户目录。
+    let orphan = Paths::new("orphan-builtin");
+    assert!(
+        locate_builtin_directory_from(&orphan.child("bin").join("omnicrawl.exe")).is_none(),
+        "没有随包模板时不该给出任何目录"
+    );
+    std::fs::remove_dir_all(&orphan.root).ok();
+}
+
+#[test]
+fn builtin_roles_are_discovered_without_any_user_definition() {
+    let paths = Paths::new("builtin-roles");
+    let base = paths.child("builtin-roles");
+    let builtin = locate_builtin_directory_from(
+        &repo_root()
+            .join("rust")
+            .join("target")
+            .join("debug")
+            .join("omnicrawl.exe"),
+    )
+    .expect("内置角色目录");
+    // 隔离 home 下不放任何用户定义：角色清单只能来自内置层。
+    let mut registry = AgentDefinitionRegistry::new(builtin, Some(base.join("home")));
+    registry.discover(&base.join("ws"), &[]);
+    let mut names: Vec<String> = registry
+        .list_all()
+        .iter()
+        .map(|item| item.name.clone())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "explore".to_string(),
+            "general-purpose".to_string(),
+            "plan".to_string(),
+            "review".to_string(),
+            "verify".to_string(),
+        ],
+        "内置角色应全部被发现"
+    );
+    assert!(
+        registry.list_all().iter().all(|item| item.source == "builtin"),
+        "来源应记成内置层"
+    );
     std::fs::remove_dir_all(&paths.root).ok();
 }
 

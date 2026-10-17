@@ -1,7 +1,7 @@
-//! 音频 I/O：`omnicrawl/tts/audio.py` 的等价实现（不依赖 numpy）。
+//! 音频 I/O：PCM WAV 读写（不依赖 numpy）。
 //!
-//! 波形统一用「声道优先」的 `Vec<Vec<f32>>`（外层声道、内层采样）表示，与 Python 的
-//! `[channels, samples]` 布局一致；取值域 [-1, 1]。
+//! 波形统一用「声道优先」的 `Vec<Vec<f32>>`（外层声道、内层采样）表示，
+//! 与 Python 的 `[channels, samples]` 布局一致；取值域 [-1, 1]。
 
 use std::path::{Path, PathBuf};
 
@@ -54,8 +54,8 @@ pub fn read_wav(path: &Path) -> Result<(AudioBuffer, u32), String> {
 
 /// 从内存里的 WAV 字节解码出（声道优先波形, 采样率）。
 ///
-/// 与 [`read_wav`] 同一套解码逻辑，供不需要落盘临时文件的调用方使用
-/// （例如接口合成直接拿到响应体就地解析）。支持 8/16/24/32 位 PCM。
+/// 与 [`read_wav`] 同一套解码逻辑，供不需要落盘临时文件的调用方使用。
+/// 支持 8/16/24/32 位 PCM。
 pub fn read_wav_bytes(bytes: &[u8]) -> Result<(AudioBuffer, u32), String> {
     let (channels, sample_width, sample_rate, raw) = parse_wav(bytes)?;
     if channels == 0 {
@@ -162,67 +162,6 @@ fn decode_samples(sample_width: usize, raw: &[u8]) -> Result<Vec<f32>, String> {
     }
 }
 
-/// 线性插值重采样；采样率相同或非正时原样返回。
-pub fn resample_linear(waveform: &AudioBuffer, source_rate: u32, target_rate: u32) -> AudioBuffer {
-    if source_rate == target_rate || source_rate == 0 || target_rate == 0 {
-        return waveform.clone();
-    }
-    let source_length = waveform.first().map(Vec::len).unwrap_or(0);
-    if source_length == 0 {
-        return waveform.clone();
-    }
-    let target_length = (python_round(
-        source_length as f64 * target_rate as f64 / source_rate as f64,
-    ) as i64)
-        .max(1) as usize;
-    let step = source_rate as f64 / target_rate as f64;
-    let mut result: AudioBuffer = Vec::with_capacity(waveform.len());
-    for lane in waveform {
-        let mut channel = Vec::with_capacity(target_length);
-        for index in 0..target_length {
-            let position = (index as f64 * step).clamp(0.0, (source_length - 1) as f64);
-            let left = position.floor() as usize;
-            let right = (left + 1).min(source_length - 1);
-            let fraction = (position - left as f64) as f32;
-            let sample = lane[left] * (1.0 - fraction) + lane[right] * fraction;
-            channel.push(sample);
-        }
-        result.push(channel);
-    }
-    result
-}
-
-/// 加载语音克隆参考音频：重采样 + 声道转换（单声道复制、多声道取均值）。
-pub fn load_reference_audio(
-    path: &Path,
-    target_sample_rate: u32,
-    target_channels: usize,
-) -> Result<AudioBuffer, String> {
-    let (mut waveform, sample_rate) = read_wav(path)?;
-    if sample_rate != target_sample_rate {
-        waveform = resample_linear(&waveform, sample_rate, target_sample_rate);
-    }
-    let current_channels = waveform.len();
-    if current_channels == target_channels {
-        return Ok(waveform);
-    }
-    if current_channels == 1 && target_channels > 1 {
-        return Ok(vec![waveform[0].clone(); target_channels]);
-    }
-    if current_channels > 1 && target_channels == 1 {
-        let frames = waveform[0].len();
-        let mut mixed = Vec::with_capacity(frames);
-        for frame in 0..frames {
-            let total: f32 = waveform.iter().map(|lane| lane[frame]).sum();
-            mixed.push(total / current_channels as f32);
-        }
-        return Ok(vec![mixed]);
-    }
-    Err(format!(
-        "不支持的参考音频声道转换：{current_channels} -> {target_channels}"
-    ))
-}
-
 /// 把波形写成 16 位 PCM WAV；波形为声道优先布局。
 pub fn write_wav(path: &Path, waveform: &AudioBuffer, sample_rate: u32) -> Result<PathBuf, String> {
     let output_path = resolve_path(path);
@@ -292,15 +231,6 @@ mod tests {
         for (actual, expected) in read_back[0].iter().zip(&waveform[0]) {
             assert!((actual - expected).abs() < 1e-4, "{actual} vs {expected}");
         }
-    }
-
-    #[test]
-    fn resampling_changes_length_and_keeps_shape() {
-        let waveform: AudioBuffer = vec![vec![0.0, 1.0, 0.0, -1.0]];
-        let upsampled = resample_linear(&waveform, 8_000, 16_000);
-        assert_eq!(upsampled[0].len(), 8);
-        let same = resample_linear(&waveform, 8_000, 8_000);
-        assert_eq!(same, waveform);
     }
 
     #[test]

@@ -4,10 +4,12 @@
 //! 正则（ripgrep 的 RE2 系语义，这里用同一族 `regex` crate，按字节匹配以贴近 rg 对
 //! 非 UTF-8 行的处理）、`use_regex=false` 时按精确子串；枚举读 `.gitignore`/`.ignore`
 //! 并剪枝受保护路径；支持上下文行、`count`、`files_with_matches` 与 include/exclude
-//! 文件名 glob；结果超限时落盘完整结果并给出恢复路径。
+//! 文件名 glob；结果超限时落盘完整结果并给出恢复路径。此外
+//! `omnicrawl://docs/` 内置文档 URI 走 `omnicrawl-mcp` 的编译期内嵌文档表（与 `read` 一致）。
 
 use std::path::{Path, PathBuf};
 
+use omnicrawl_mcp::bundled::{read_bundled_doc, BUNDLED_DOC_URI_PREFIX};
 use regex::bytes::RegexBuilder;
 use serde_json::{Map, Value};
 
@@ -31,6 +33,16 @@ pub fn grep(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> ToolOutco
     let case_sensitive = optional_bool(arguments, "case_sensitive", false);
 
     let raw_path = optional_text(arguments, "path");
+    if raw_path.starts_with(BUNDLED_DOC_URI_PREFIX) {
+        return grep_bundled(
+            paths,
+            &raw_path,
+            arguments,
+            &pattern,
+            use_regex,
+            case_sensitive,
+        );
+    }
     let raw_path = if raw_path.is_empty() { "." } else { &raw_path };
     let roots = resolve_grep_roots(paths, raw_path)?;
     for root in &roots {
@@ -149,6 +161,130 @@ pub fn grep(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> ToolOutco
             ));
     }
     Ok(format_matches(paths, &matches, context_lines))
+}
+
+/// `omnicrawl://docs/<name>.md`：内置文档不进工作区，直接在编译期内嵌文本上匹配。
+///
+/// 与读普通文件同形：`path` 位置换成文档 URI，`count` / `files_with_matches` /
+/// 上下文行 / 超限落盘沿用同一套渲染与 footer。
+fn grep_bundled(
+    paths: &WorkspacePaths,
+    uri: &str,
+    arguments: &Map<String, Value>,
+    pattern: &str,
+    use_regex: bool,
+    case_sensitive: bool,
+) -> ToolOutcome {
+    let text = read_bundled_doc(uri).map_err(|error| ToolError::new(error.message()))?;
+    let matcher = build_matcher(pattern, use_regex, case_sensitive)?;
+    let max_results = limited_int(arguments, "max_results", 50, 1, MAX_SEARCH_RESULTS);
+    let context_lines = limited_int(arguments, "context_lines", 0, 0, 50);
+    let count_only = optional_bool(arguments, "count", false);
+    let files_only = optional_bool(arguments, "files_with_matches", false);
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut matched: Vec<usize> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if matcher.is_match(line.as_bytes()) {
+            matched.push(index + 1);
+        }
+    }
+
+    if matched.is_empty() {
+        return Ok("未找到匹配结果。".to_string());
+    }
+
+    if count_only {
+        return Ok(render_search_result(
+            paths.root(),
+            &[format!("{uri}: {}", matched.len())],
+            max_results,
+            "grep_counts",
+            "未找到匹配结果。",
+            "个文件",
+            false,
+        ));
+    }
+    if files_only {
+        return Ok(render_search_result(
+            paths.root(),
+            &[uri.to_string()],
+            max_results,
+            "grep_files",
+            "未找到匹配结果。",
+            "个文件",
+            false,
+        ));
+    }
+
+    if matched.len() as i64 > max_results {
+        let inline = format_bundled_matches(
+            uri,
+            &lines,
+            &matched[..max_results as usize],
+            context_lines,
+        );
+        let spill: Vec<String> = matched
+            .iter()
+            .map(|line_no| format!("{uri}:{line_no}: {}", cap_match_line(lines[line_no - 1])))
+            .collect();
+        return Ok(inline
+            + &truncation_footer(
+                paths.root(),
+                &spill,
+                max_results,
+                "grep_matches",
+                "条匹配",
+                false,
+            ));
+    }
+    Ok(format_bundled_matches(uri, &lines, &matched, context_lines))
+}
+
+/// 内置文档的匹配行渲染：命中行与上下文行的标记与读文件一致，数据源是内存行。
+fn format_bundled_matches(
+    uri: &str,
+    lines: &[&str],
+    matched: &[usize],
+    context_lines: i64,
+) -> String {
+    if context_lines <= 0 {
+        return matched
+            .iter()
+            .map(|line_no| format!("{uri}:{line_no}: {}", cap_match_line(lines[line_no - 1])))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    render_context_matches(uri, lines, matched, context_lines)
+}
+
+/// 上下文行渲染：命中行 `display:line: text`，上下文行 `display-line- text`（区间去重）。
+fn render_context_matches(
+    display: &str,
+    lines: &[&str],
+    matched: &[usize],
+    context_lines: i64,
+) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut covered: Vec<usize> = Vec::new();
+    for line_no in matched {
+        let start = line_no.saturating_sub(1 + context_lines as usize);
+        let end = (line_no + context_lines as usize).min(lines.len());
+        for (offset, text) in lines[start..end].iter().enumerate() {
+            let current = start + offset + 1;
+            if covered.contains(&current) {
+                continue;
+            }
+            covered.push(current);
+            let line_text = cap_match_line(text);
+            if current == *line_no {
+                out.push(format!("{display}:{current}: {line_text}"));
+            } else {
+                out.push(format!("{display}-{current}- {line_text}"));
+            }
+        }
+    }
+    out.join("\n")
 }
 
 struct Filters {
@@ -319,23 +455,9 @@ fn format_matches(
             continue;
         };
         let lines: Vec<&str> = text.lines().collect();
-        let mut covered: Vec<usize> = Vec::new();
-        for line_no in line_numbers {
-            let start = line_no.saturating_sub(1 + context_lines as usize);
-            let end = (line_no + context_lines as usize).min(lines.len());
-            for (offset, text) in lines[start..end].iter().enumerate() {
-                let current = start + offset + 1;
-                if covered.contains(&current) {
-                    continue;
-                }
-                covered.push(current);
-                let line_text = cap_match_line(text);
-                if current == *line_no {
-                    out.push(format!("{relative}:{current}: {line_text}"));
-                } else {
-                    out.push(format!("{relative}-{current}- {line_text}"));
-                }
-            }
+        let block = render_context_matches(&relative, &lines, line_numbers, context_lines);
+        if !block.is_empty() {
+            out.push(block);
         }
     }
     out.join("\n")
@@ -695,6 +817,105 @@ mod tests {
         std::fs::write(root.join("blob.bin"), b"Agent\x00hidden").expect("写二进制文件");
         let text = grep(&paths, &args(json!({"pattern": "hidden"}))).expect("搜索");
         assert_eq!(text, "未找到匹配结果。");
+    }
+
+    #[test]
+    fn bundled_doc_uri_searches_embedded_text() {
+        let (paths, _root) = workspace("bundled");
+        let text = grep(
+            &paths,
+            &args(json!({"pattern": "启动", "path": "omnicrawl://docs/API.md"})),
+        )
+        .expect("搜索内置文档");
+        assert!(
+            text.lines()
+                .all(|line| line.starts_with("omnicrawl://docs/API.md:")),
+            "{text}"
+        );
+        assert!(text.contains("## 1. 启动与配置"), "{text}");
+
+        let counts = grep(
+            &paths,
+            &args(json!({
+                "pattern": "启动",
+                "path": "omnicrawl://docs/API.md",
+                "count": true
+            })),
+        )
+        .expect("计数");
+        let count: usize = counts
+            .strip_prefix("omnicrawl://docs/API.md: ")
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or_else(|| panic!("计数格式不符：{counts}"));
+        assert_eq!(count, text.lines().count(), "{counts}");
+
+        let files = grep(
+            &paths,
+            &args(json!({
+                "pattern": "启动",
+                "path": "omnicrawl://docs/API.md",
+                "files_with_matches": true
+            })),
+        )
+        .expect("只列文件");
+        assert_eq!(files, "omnicrawl://docs/API.md");
+    }
+
+    #[test]
+    fn bundled_doc_context_lines_use_dash_markers() {
+        let (paths, _root) = workspace("bundled-context");
+        let text = grep(
+            &paths,
+            &args(json!({
+                "pattern": "## 1. 启动与配置",
+                "path": "omnicrawl://docs/API.md",
+                "context_lines": 1
+            })),
+        )
+        .expect("上下文搜索");
+        assert!(
+            text.contains("omnicrawl://docs/API.md:3: ## 1. 启动与配置"),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("omnicrawl://docs/API.md-")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn bundled_doc_errors_keep_read_texts() {
+        let (paths, _root) = workspace("bundled-errors");
+        let missing = grep(
+            &paths,
+            &args(json!({"pattern": "x", "path": "omnicrawl://docs/NOPE.md"})),
+        )
+        .unwrap_err();
+        assert_eq!(missing.message, "内置文档不存在：omnicrawl://docs/NOPE.md");
+
+        let traversal = grep(
+            &paths,
+            &args(json!({"pattern": "x", "path": "omnicrawl://docs/../config.toml"})),
+        )
+        .unwrap_err();
+        assert!(
+            traversal
+                .message
+                .starts_with("内置文档 URI 仅允许单个 Markdown 文件名："),
+            "{}",
+            traversal.message
+        );
+
+        let no_match = grep(
+            &paths,
+            &args(json!({
+                "pattern": "不可能出现的字符串zzz",
+                "path": "omnicrawl://docs/API.md"
+            })),
+        )
+        .expect("搜索");
+        assert_eq!(no_match, "未找到匹配结果。");
     }
 
     #[test]

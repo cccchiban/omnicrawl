@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use omnicrawl_session::{MemorySearchResult, MemoryWriteRequest};
 
-use crate::shared::{python_round_to_int, python_split_lines, python_str, python_truthy};
+use crate::shared::{python_split_lines, python_str, python_truthy};
 
 /// 压缩记忆的来源标记与两个固定落点目录。
 pub const COMPACTION_MEMORY_SOURCE_EVENT: &str = "context_compaction";
@@ -20,9 +20,11 @@ pub const RECALL_QUERY_CHARS: usize = 200;
 pub const RECALL_MAX_RESULTS: usize = 3;
 pub const RECALL_TEXT_LIMIT: usize = 1_200;
 
-/// 生成「---已压缩 xxk~xxk ---」的分隔提示文本；数据缺失时返回 None。
+/// 生成「已压缩：省 N Token」的分隔提示文本；数据缺失时返回 None。
 ///
 /// 文本由 TUI 以灰色单独成行渲染，作为「上下文已被摘要替换」的可见边界。
+/// 只报净省下来的 Token：压缩前后的大小本身在底部遥测里另有显示，这里要回答的是
+/// 「这一次压缩省了多少」。三条链路（上下文压缩、工具调用压缩、工具调用淘汰）共用同一口径。
 pub fn format_compaction_notice(
     before_tokens: Option<i64>,
     after_tokens: Option<i64>,
@@ -32,9 +34,38 @@ pub fn format_compaction_notice(
     if before <= 0 || after <= 0 {
         return None;
     }
-    let before_k = std::cmp::max(1, python_round_to_int(before as f64 / 1000.0));
-    let after_k = std::cmp::max(1, python_round_to_int(after as f64 / 1000.0));
-    Some(format!("---已压缩 {before_k}k~{after_k}k ---"))
+    Some(format_compaction_savings_notice(before - after))
+}
+
+/// 三条压缩链路共用的会话区计量文案：`已压缩：省 8,900 Token`。
+///
+/// 净省量为负（压缩反而变大）时报 0：那种情况下「省下」是负值，读起来只会让人困惑。
+pub fn format_compaction_savings_notice(saved_tokens: i64) -> String {
+    format!("已压缩：省 {} Token", group_digits(saved_tokens.max(0)))
+}
+
+/// 同 [`format_compaction_savings_notice`]，但净省量不为正时返回 `None`。
+///
+/// 会话区里「省 0 Token」是一行只带来困惑的噪声：它既可能来自「模型没压小」，
+/// 也可能来自「这批内容早就被上一次压缩替换掉了」。没有净省就不该留边界。
+pub fn format_compaction_savings_option(saved_tokens: i64) -> Option<String> {
+    if saved_tokens <= 0 {
+        return None;
+    }
+    Some(format_compaction_savings_notice(saved_tokens))
+}
+
+/// 千分位分组（`12345` → `12,345`）：Token 数动辄五六位，分隔开才好读。
+fn group_digits(value: i64) -> String {
+    let digits = value.max(0).to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// 压缩结果要写入的会话级记忆：项目上下文与任务状态各一条，没有内容的条目不产生。

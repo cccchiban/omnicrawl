@@ -60,8 +60,8 @@ struct StubServer {
     requests: Arc<Mutex<Vec<Value>>>,
     /// 每次请求的 `Authorization` 头，用来验证凭据确实换了渠道。
     auths: Arc<Mutex<Vec<String>>>,
-    /// 压缩请求的**到达**时刻（按到达顺序）。
-    compression_arrivals: Arc<Mutex<Vec<std::time::Instant>>>,
+    /// 压缩请求的**到达**时刻（按到达顺序）与它是不是工具段。
+    compression_arrivals: Arc<Mutex<Vec<(std::time::Instant, bool)>>>,
     /// 压缩响应的**写出**时刻（按写出顺序）。
     compression_responses: Arc<Mutex<Vec<std::time::Instant>>>,
 }
@@ -82,7 +82,8 @@ impl StubServer {
         let addr = listener.local_addr().expect("无法取本地地址");
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let auths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let arrivals: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let arrivals: Arc<Mutex<Vec<(std::time::Instant, bool)>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let responses: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
         let main_requests: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
@@ -106,17 +107,18 @@ impl StubServer {
                     recorded_auths.lock().expect("记录锁").push(auth);
                     let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
                     recorded.lock().expect("记录锁").push(body.clone());
-                    // 压缩旁路的两段请求：工具调用概括与模型回复压缩（两者都走主渠道）。
+                    // 压缩旁路的两段请求：工具段概括与上下文压缩摘要（都走主渠道）。
                     let text_body = body.to_string();
                     let is_compression = text_body.contains("<<<TOOL_CALLS_START>>>")
-                        || text_body.contains("<<<MODEL_REPLIES_START>>>");
+                        || text_body.contains("你是会话状态压缩器");
+                    let is_tool_segment = text_body.contains("<<<TOOL_CALLS_START>>>");
                     let payload = if is_compression {
                         let index = {
                             let mut list = recorded_arrivals.lock().expect("记录锁");
-                            list.push(std::time::Instant::now());
+                            list.push((std::time::Instant::now(), is_tool_segment));
                             list.len()
                         };
-                        // 只拖住第一条：如果内核是排队压缩，第二条请求只会在它之后才到。
+                        // 只拖住第一条：它必须先是工具段，摘要段才可能在它之后到达。
                         if index == 1 && !delay.is_zero() {
                             thread::sleep(delay);
                         }
@@ -168,7 +170,7 @@ impl StubServer {
         self.auths.lock().expect("记录锁").clone()
     }
 
-    fn compression_arrivals(&self) -> Vec<std::time::Instant> {
+    fn compression_arrivals(&self) -> Vec<(std::time::Instant, bool)> {
         self.compression_arrivals.lock().expect("记录锁").clone()
     }
 
@@ -433,12 +435,12 @@ fn write_config(name: &str, base_url: &str, min_chars: usize) -> PathBuf {
     path
 }
 
-/// 用户要求：多个工具调用**同时**发多个压缩请求，而不是一个压完才开始下一个。
+/// 压缩链的顺序（用户指定）：工具段先发、非工具段（摘要）后发，两段各出计量行。
+///
+/// 这里用「第一条压缩响应被拖住 900ms」的服务端：若内核仍是旧的并发形态，
+/// 第二条请求会在第一条响应之前到达；改成顺序执行后，工具段请求先到、摘要请求后到。
 #[test]
-fn both_compactions_run_at_the_same_time() {
-    // 回合末的两段压缩必须并发：工具调用压缩的响应被拖住时，
-    // 模型回复压缩的请求仍应先到达（否则就是排队执行）。
-    // 阈值必然触发：两段压缩（工具调用 + 模型回复）在回合末并发发起。
+fn tool_segment_runs_before_the_context_compaction() {
     let server = StubServer::spawn_parallel_compressions(Duration::from_millis(900));
     let config = write_config("parallel", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
@@ -490,8 +492,16 @@ fn both_compactions_run_at_the_same_time() {
         "两段压缩各发一次请求：到达 {arrivals:?} 写出 {responses:?}"
     );
     assert!(
-        arrivals[1] < responses[0],
-        "两次压缩必须并发：到达 {arrivals:?} 写出 {responses:?}"
+        arrivals[0].1,
+        "第一条压缩请求是工具段：到达 {arrivals:?}"
+    );
+    assert!(
+        !arrivals[1].1,
+        "第二条压缩请求是上下文压缩摘要：到达 {arrivals:?}"
+    );
+    assert!(
+        responses[0] < arrivals[1].0,
+        "工具段先跑完、摘要段才发出：到达 {arrivals:?} 写出 {responses:?}"
     );
 }
 
@@ -541,22 +551,25 @@ fn tool_calls_are_summarized_once_after_the_turn() {
         "概括应当确实压小：{raw_chars} → {summary_chars}"
     );
 
-    // 会话区提示与上下文压缩同款：一行「已压缩 a → b 字符」，不是状态行。
+    // 会话区提示与上下文压缩同款：一行「已压缩：省 N Token」，不是状态行。
+    // 折算口径在断言侧独立算一遍（4 字符 1 token，取净省的下界），不复用实现的函数。
+    let saved = chars_token_floor(raw_chars as usize) - chars_token_floor(summary_chars as usize);
     let notice = frames
         .iter()
         .find(|frame| frame["method"] == "turn.notice")
         .unwrap_or_else(|| panic!("应当发一条会话区提示：{frames:?}"));
     assert_eq!(
         notice["params"]["message"],
-        json!(format!(
-            "已压缩 {} → {} 字符",
-            group_digits(raw_chars),
-            group_digits(summary_chars)
-        )),
+        json!(format!("已压缩：省 {} Token", group_digits(saved.max(0)))),
         "提示文案要与事件载荷的计量一致"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+/// 字符数的 Token 下界折算（4 字符 1 token）：与内核侧 `chars_token_floor` 同一口径。
+fn chars_token_floor(chars: usize) -> u64 {
+    ((chars + 3) / 4) as u64
 }
 
 #[test]

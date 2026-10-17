@@ -162,7 +162,7 @@ jobs:
 
       # Linux 侧刻意不带 `--target`：宿主载荷按构建机的原生 gnu 目标构建，因此发布包依赖
       # runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。
-      # 曾经的拦路石 `omnicrawl-tts → ort-sys`（musl 无预编译二进制）已随 TTS 改接口后端而消失，
+      # 曾经的拦路石 `omnicrawl-tts → ort-sys`（musl 无预编译二进制）已随 TTS 改云服务而消失，
       # x86_64 musl 的宿主载荷本机已整包构建通过；arm64 runner 上还没实测，所以这一步先保持原生目标，
       # 详见 rust/docs/python-free-build.md「发布产物的目标选择」。
       - name: 构建宿主载荷（Linux：原生目标）

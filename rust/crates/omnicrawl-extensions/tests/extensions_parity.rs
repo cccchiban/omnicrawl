@@ -6,9 +6,9 @@
 use omnicrawl_extensions::install;
 use omnicrawl_extensions::models::*;
 use omnicrawl_extensions::registry::{self, ManifestEntry};
-use omnicrawl_extensions::skill::{self, SkillManager, SkillMeta};
+use omnicrawl_extensions::skill;
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn fixture() -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -796,62 +796,6 @@ fn infer_description_matches_python() {
             skill::infer_description(raw, body),
             expected,
             "描述推断不一致：{entry}"
-        );
-    }
-}
-
-#[test]
-fn skill_prompt_matches_python() {
-    let data = fixture();
-    for entry in cases(&data, "skill_prompt") {
-        let metas: Vec<SkillMeta> = entry
-            .get("skills")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| SkillMeta {
-                        name: item
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        description: item
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        source_path: PathBuf::from(
-                            item.get("source_path")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default(),
-                        ),
-                        base_dir: PathBuf::from(
-                            item.get("base_dir")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default(),
-                        ),
-                        scope: item
-                            .get("scope")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        disable_model_invocation: item
-                            .get("disable_model_invocation")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let expected = entry
-            .get("expect")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert_eq!(
-            SkillManager::format_skills_for_prompt(&metas),
-            expected,
-            "渐进式披露输出不一致：{entry}"
         );
     }
 }

@@ -123,12 +123,38 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 
 **压缩边界同样走这条通知**（以前发 `turn.status`，回合结束就被清掉，对话里什么也留不下）：
 
-- 上下文压缩：`format_compaction_notice` 生成的 `---已压缩 xxk~xxk ---`，三条路径共用——
-  阈值触发、上下文超限恢复（尾部再拼一句「检测到上下文超限…」）、显式 `/compact`。
-- 回合末工具调用压缩：`omnicrawl_controllers::compression::compaction_notice` 生成的
-  `已压缩 {原始} → {概括} 字符`（千分位）。计量取自 `tool_call_summary` 事件的
-  `raw_chars` / `summary_chars`，其中 `summary_chars` 只数概括正文本身、不含末尾那段给模型
-  回读用的落盘说明，因此 TUI 回放（`/resume`、`/undo`）能重建逐字相同的一行，不必重算。
+三条链路（上下文压缩、回合末工具调用压缩、决策模型标记淘汰）共用同一句计量文案
+`已压缩：省 N Token`（`format_compaction_savings_notice`）：会话区只需要回答「这一次省了多少」，
+压缩前后的大小本身由底部遥测展示。**没有净省的段不出这一行**（`saved_tokens_notice` 与
+`format_compaction_savings_option` 在净省 ≤ 0 时返回 `None`）：模型没压小的时候报一行
+「省 0 Token」只会让人以为压缩失败却看到了成功提示。
+
+- 上下文压缩：`format_compaction_notice` 生成，三条路径共用——阈值触发、上下文超限恢复
+  （尾部再拼一句「检测到上下文超限…」）、显式 `/compact`。净省量按压缩前后的 Token 实测值相减；
+  与工具段同批出现时，这一行只报**扣除工具段原文之后**的净省，两行相加才等于整链净省。
+- 回合末工具调用压缩：`omnicrawl_controllers::compression::saved_tokens_notice` 生成。事件只落字符数
+  （`raw_chars` / `summary_chars`，其中 `summary_chars` 只数概括正文本身、不含末尾那段给模型回读用的
+  落盘说明），Token 数在展示时按 4 字符 1 token 的**下界**折算重算——两处口径来自同一份事实，
+  所以 TUI 回放（`/resume`、`/undo`）能重建逐字相同的一行，不必重算。
+- 决策模型标记淘汰：回合收尾整组剔除后按剔除前后实测的 `estimate_messages_tokens` 差值报数，
+  随 `tool_call_eviction` 事件落盘（与裁决当刻的标注事件 `tool_call_evicted` 分开）。
+
+**压缩链的顺序**（用户指定）：决策模型淘汰（回合收尾先做，见 `session::run_session_tail`）→
+工具调用压缩（`KernelToolCompaction`，整轮工具调用压成一段并落盘原文）→ 非工具部分交给上下文压缩
+（结构化摘要，输入窗口不变）→ 两段拼成**一条** assistant 消息注入历史（工具段在前、摘要段在后，
+`join_tool_and_summary_sections`），压缩触发前最后一段模型输出仍原样保留。工具段由服务层的
+「决策之后、摘要请求之前」钩子（`after_complete_turn_with_pre_compaction`）发出，因此它先于摘要请求；
+未触发压缩的回合不发这一段，一次模型请求都不会多。
+
+**压缩期间的状态行**：摘要请求是压缩路径上唯一的秒级操作，而阈值触发的压缩挂在回合收尾
+（`turn.finished` 之前），那一刻状态行已经没什么可显示——不报进度的话，这几秒钟界面上
+看不出正在压缩。内核因此在**确定要压缩、请求发出之前**发一条 `turn.status`
+（`上下文压缩中…`），三条路径都覆盖：结构化摘要与显式 `/compact` 由
+`ContextCompactionService::with_progress` 触发；工具段绕过服务层，由
+`CompactionDriver::with_progress` 在 `tool_segment` 里直接触发（双段端口保留但当前不接，
+其 `dual_compaction_history` 同样自带一次进度）。
+未触发压缩的回合不发（状态行不该在什么都没干时写「压缩中」），TUI 侧显式 `/compact` 用同一份
+文案，因此状态行不会在两种说法之间跳。
 
 ## 工具输出压缩旁路
 

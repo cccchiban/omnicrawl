@@ -17,5 +17,7 @@ pub mod subagents;
 pub mod tool_output_compression;
 pub mod tools;
 pub mod tts;
-// Rust 侧新增的合成后端（Python 无对映），与 `tts` 分开成段以免动到 parity 数据集。
-pub mod tts_api;
+// 云端 TTS 的服务商路由与两家接口参数（Rust 侧新增，Python 无对映）。
+pub mod tts_cloud;
+// 联网搜索的通路与凭据（Rust 侧新增，Python 无对映）。
+pub mod web_search;

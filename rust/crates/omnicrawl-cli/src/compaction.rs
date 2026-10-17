@@ -3,6 +3,7 @@
 //! 摘要提示词模板在编译期嵌入：内核二进制自带这份文本，不依赖运行时的目录布局。
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use omnicrawl_compaction::{
@@ -255,11 +256,16 @@ pub fn overlay_compaction_config(
 }
 
 /// 构造压缩驱动：摘要请求走与主请求同一个内核模型配置。
+///
+/// `on_start` 在摘要模型请求发出前触发一次：调用方据此把「上下文压缩中」发给宿主，
+/// 否则阈值触发的压缩在界面上是几秒钟的静默。端口只在本函数内被调用（并发请求仍在
+/// 各工作线程里跑），因此回调不必是 `Send` 之外的额外约束。
 fn build_driver(
     session: &KernelSession,
     model: &KernelModelConfig,
     api_key: &str,
     last_request_messages: &[Value],
+    on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<CompactionDriver, String> {
     let runtime = match crate::session::build_model_runtime_with_key(model, api_key.to_string()) {
         Ok(runtime) => runtime,
@@ -290,12 +296,20 @@ fn build_driver(
         // 模型摘要失败或校验不通过时改用抽取式摘要，避免「摘要失败 = 本回合完全不压缩」。
         // 服务层默认关闭，对照数据集按「失败即降级上报」的旧行为断言。
         .with_deterministic_fallback(true);
+    let progress = on_start.clone();
+    let service = match progress {
+        Some(callback) => service.with_progress(callback),
+        None => service,
+    };
     let mut driver =
         CompactionDriver::new(Arc::clone(&session.store), service, session.config.clone());
+    if let Some(callback) = on_start {
+        driver = driver.with_progress(callback);
+    }
     if let Some(compressor) = crate::compression::KernelCompressor::load(model) {
-        // 阈值触发的两段压缩用 Low 思考深度（用户要求），与逐条路径的配置无关。
-        driver = driver.with_dual_compaction(Box::new(
-            crate::dual_compaction::KernelDualCompaction::new(compressor.with_low_reasoning()),
+        // 工具段压缩用 Low 思考深度（用户要求），与逐条路径的配置无关。
+        driver = driver.with_tool_compaction(Box::new(
+            crate::dual_compaction::KernelToolCompaction::new(compressor.with_low_reasoning()),
         ));
     }
     if let Some(root) = session.memory_root.as_ref() {
@@ -307,7 +321,8 @@ fn build_driver(
 }
 
 /// 回合结束后跑一次压缩：摘要请求复用主请求前缀与工具面。
-#[allow(clippy::too_many_arguments)]
+///
+/// `on_start` 在摘要模型请求发出前触发一次（见 [`build_driver`]）。
 pub fn compact_after_turn(
     session: &KernelSession,
     model: &KernelModelConfig,
@@ -317,8 +332,9 @@ pub fn compact_after_turn(
     last_request_messages: &[Value],
     history_messages: &[Value],
     task_hint: &str,
+    on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
-    let driver = build_driver(session, model, api_key, last_request_messages)?;
+    let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     let boundary = TurnBoundary {
         session_id: &session.session_id,
         system_prompt: model.system_prompt.as_str(),
@@ -341,8 +357,9 @@ pub fn compact_now(
     model: &KernelModelConfig,
     api_key: &str,
     last_request_messages: &[Value],
+    on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
-    let driver = build_driver(session, model, api_key, last_request_messages)?;
+    let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     driver.manual_compact(&session.session_id)
 }
 
@@ -353,8 +370,9 @@ pub fn recover_after_overflow(
     api_key: &str,
     last_request_messages: &[Value],
     previous_history: &[Value],
+    on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
-    let driver = build_driver(session, model, api_key, last_request_messages)?;
+    let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     driver.recover_after_overflow(&session.session_id, previous_history)
 }
 

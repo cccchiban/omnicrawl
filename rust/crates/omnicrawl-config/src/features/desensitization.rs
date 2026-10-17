@@ -190,11 +190,16 @@ fn parse_desensitization_section(section: &Table) -> Result<DesensitizationConfi
 }
 
 /// 把脱敏配置写回 `config.toml` 的 `[desensitization]` 段（保留其他段）。
+///
+/// 写盘前先校验：读取器（[`load_desensitization_config`]）对熵区间、NER 设备与实体类型
+/// 都有硬约束，写出它必然拒绝的值会让整段配置在下次读取时失效。
+/// 归一化结果同时进磁盘（键名去空、实体类型大写）。
 pub fn save_desensitization_config(
     env: &ConfigEnvironment,
     config: &DesensitizationConfig,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let config = config.clone().validate()?;
     let mut data = load_config_data(env, config_path)?;
     let mut section = Table::new();
     put_bool(&mut section, "enabled", config.enabled);

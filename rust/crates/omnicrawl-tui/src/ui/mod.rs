@@ -11,7 +11,6 @@
 
 pub mod composer;
 pub mod conversation;
-pub mod file_picker;
 pub mod fullscreen;
 pub mod hud;
 pub mod image_preview;
@@ -139,20 +138,13 @@ pub(crate) fn notice_line_height(state: &AppState) -> u16 {
 }
 
 /// 渲染一帧：设置面板打开时铺满整屏（对映 Python 的 `SettingsScreen` 模态页）。
-///
-/// 文件选择弹层盖在设置面板之上（TTS 页选参考音频时用它）；弹层自己在中间画对话框，
-/// 底下的界面照旧渲染，退出弹层时不需要重排布局。
 pub fn render(
     frame: &mut Frame,
     state: &AppState,
     settings: Option<&settings::SettingsState>,
-    picker: Option<&file_picker::FilePickerState>,
 ) {
     if let Some(settings) = settings {
         settings::render::render(frame, frame.area(), settings);
-        if let Some(picker) = picker {
-            file_picker::render(frame, frame.area(), picker);
-        }
         return;
     }
     let area = frame.area();

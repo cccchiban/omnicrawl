@@ -11,13 +11,15 @@ use omnicrawl_controllers::context_compaction::{
     estimate_json_tokens, ContextCompactionService, MeasureInput, SourceEvent, TokenUsageSample,
 };
 use omnicrawl_controllers::compression::{
-    collect_assistant_replies, collect_tool_calls, DualCompactionInput, DualCompactionPort,
+    collect_assistant_replies, collect_tool_calls, join_tool_and_summary_sections,
+    saved_tokens_notice, DualCompactionInput, DualCompactionPort, ToolCompactionInput,
+    ToolCompactionPort,
 };
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_RECOVERY_PROMPT;
 use omnicrawl_controllers::turn::compaction::{
     archive_compacted_event_ids, compaction_memory_requests, compaction_recall_event_payload,
     compaction_recall_hits, compaction_recall_query, compaction_recall_text,
-    format_compaction_notice, RECALL_MAX_RESULTS,
+    format_compaction_notice, format_compaction_savings_option, RECALL_MAX_RESULTS,
 };
 use omnicrawl_controllers::context_compaction::{
     event_to_model_message, latest_final_reply_event,
@@ -76,12 +78,38 @@ pub struct TurnBoundary<'a> {
 pub struct AfterTurnReport {
     pub measurement_payload: Value,
     pub compacted: bool,
-    pub notice: Option<String>,
+    /// 会话区计量行（按链路顺序）：工具段一行、非工具段一行，没有净省的段不出现。
+    pub notices: Vec<String>,
     /// 压缩发生时的运行期历史（摘要 + 召回注入 + 保留窗口）。
     pub history: Option<Vec<Value>>,
     pub diagnostic: String,
     /// 摘要正文（`compact_summary` 载荷的 `content`）：显式压缩要回给客户端。
     pub summary: String,
+}
+
+/// 工具段压缩的产出与计量事实。
+struct ToolSegment {
+    /// 概括正文（含末尾的落盘说明）。
+    text: String,
+    /// 工具段净省量的会话区计量；没有净省时为 `None`。
+    notice: Option<String>,
+    /// 被概括原文的 Token 估算：非工具段计量要从压缩前上下文里扣掉它。
+    raw_tokens: i64,
+}
+
+/// 被概括工具事件在上下文里的 Token 估算：与「压缩前上下文」同一套折算。
+fn tool_events_tokens(events: &[SourceEvent]) -> i64 {
+    let messages: Vec<Value> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "tool_call_requested" | "tool_result" | "tool_call_denied"
+            )
+        })
+        .filter_map(event_to_model_message)
+        .collect();
+    omnicrawl_controllers::context_compaction::estimate_messages_tokens(&messages)
 }
 
 /// 上下文压缩驱动：测量、压缩、归档、记忆回写、自动召回与历史重建。
@@ -90,8 +118,12 @@ pub struct CompactionDriver {
     service: ContextCompactionService,
     config: CompactionConfig,
     memory: Option<MemoryStore>,
-    /// 阈值触发的双段压缩端口：接上时替代结构化摘要，两段文本拼接后注入上下文。
+    /// 阈值触发的工具段压缩端口：接上时先压工具调用，再交给上下文压缩压非工具部分。
+    tools: Option<Box<dyn ToolCompactionPort>>,
+    /// 保留的双段压缩端口（工具段 + 模型回复段并发）：当前压缩链不接它，实现保留备用。
     dual: Option<Box<dyn DualCompactionPort>>,
+    /// 压缩开始前的回调：工具段在请求发出前触发（非工具段那条由服务自己触发）。
+    progress: Option<std::rc::Rc<dyn Fn()>>,
 }
 
 impl CompactionDriver {
@@ -105,7 +137,22 @@ impl CompactionDriver {
             service,
             config,
             memory: None,
+            tools: None,
             dual: None,
+            progress: None,
+        }
+    }
+
+    /// 压缩开始前的回调：接上后工具段压缩也会在请求发出前报一次进度。
+    pub fn with_progress(mut self, progress: std::rc::Rc<dyn Fn()>) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// 通报一次「即将开始压缩」。
+    fn notify_progress(&self) {
+        if let Some(progress) = self.progress.as_ref() {
+            progress();
         }
     }
 
@@ -115,10 +162,50 @@ impl CompactionDriver {
         self
     }
 
-    /// 双段压缩端口：接上后阈值触发改走「工具调用压缩 + 模型回复压缩」，不再请求结构化摘要。
+    /// 工具段压缩端口：接上后阈值触发先压工具调用，非工具部分仍走上下文压缩。
+    pub fn with_tool_compaction(mut self, tools: Box<dyn ToolCompactionPort>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// 保留的双段压缩端口（工具段 + 模型回复段并发）：当前压缩链不接它。
     pub fn with_dual_compaction(mut self, dual: Box<dyn DualCompactionPort>) -> Self {
         self.dual = Some(dual);
         self
+    }
+
+    /// 阈值触发的工具段压缩：整轮工具调用压成一段，供与摘要段拼接。
+    ///
+    /// 失败（端口不可用、没有可压调用、请求失败）返回 `None`：拼装退回「只有摘要段」，
+    /// 压缩不会因为少了一段而整体失败。
+    fn tool_segment(&self, boundary: &TurnBoundary<'_>, events: &[SourceEvent]) -> Option<ToolSegment> {
+        let tools = self.tools.as_ref()?;
+        let calls = collect_tool_calls(events);
+        if calls.is_empty() {
+            return None;
+        }
+        // 工具段请求是这条链路里的秒级操作：发出去之前先报一次进度。
+        self.notify_progress();
+        let input = ToolCompactionInput {
+            tool_calls: calls,
+            task_hint: boundary.task_hint.to_string(),
+            workspace_root: boundary.workspace_root.to_string(),
+            session_id: boundary.session_id.to_string(),
+        };
+        match tools.compact(&input) {
+            Ok(output) if !output.text.trim().is_empty() => Some(ToolSegment {
+                notice: saved_tokens_notice(output.raw_chars, output.summary_chars),
+                // 工具段参与「非工具段净省」的扣减：它的原文已不再由摘要承担。
+                // 口径与压缩前后一致（同一个估算器），否则两行相加不等于整链净省。
+                raw_tokens: tool_events_tokens(events),
+                text: output.text,
+            }),
+            Ok(_) => None,
+            Err(detail) => {
+                eprintln!("[kernel] 工具段压缩失败，本回合只注入摘要段：{detail}");
+                None
+            }
+        }
     }
 
     /// 阈值触发的双段压缩：两段正文拼接后作为一条 assistant 消息注入历史。
@@ -134,6 +221,8 @@ impl CompactionDriver {
         let Some(dual) = self.dual.as_ref() else {
             return Ok(false);
         };
+        // 两段摘要请求是这条路径上的秒级操作：发出去之前先报一次进度。
+        self.notify_progress();
         let input = DualCompactionInput {
             tool_calls: collect_tool_calls(events),
             replies: collect_assistant_replies(events),
@@ -158,11 +247,13 @@ impl CompactionDriver {
         report.compacted = true;
         report.history = Some(history);
         report.summary = String::new();
-        report.notice = None;
         Ok(true)
     }
 
     /// 回合结束边界：实际上下文达到阈值时压缩，并返回可见提示与重建后的历史。
+    ///
+    /// 链路顺序（用户指定）：决策模型淘汰（已在回合收尾先做过）→ 工具调用压缩 →
+    /// 非工具部分交给上下文压缩 → 两段拼接成一条 assistant 消息注入历史。
     pub fn after_turn(&self, boundary: &TurnBoundary<'_>) -> Result<AfterTurnReport, String> {
         let events = self.source_events(boundary.session_id)?;
         let measure = MeasureInput {
@@ -179,22 +270,28 @@ impl CompactionDriver {
             provider_input_tokens: std::cmp::max(0, boundary.last_request_input_tokens),
             emergency_context_ratio: self.config.emergency_context_ratio,
         };
+        // 工具段必须赶在摘要请求之前发出（用户指定的顺序），因此用一次性槽把它接进
+        // 服务层的「决策之后、摘要请求之前」钩子，而不是在 `after_complete_turn` 返回后才压。
+        let segment_slot: std::cell::RefCell<Option<ToolSegment>> =
+            std::cell::RefCell::new(None);
         let outcome = self
             .service
-            .after_complete_turn(
+            .after_complete_turn_with_pre_compaction(
                 &events,
                 measure,
                 self.config.reasoning_effort.as_str(),
                 self.config.preserve_exact_evidence,
+                &|| {
+                    *segment_slot.borrow_mut() = self.tool_segment(boundary, &events);
+                },
             )
             .map_err(|error| error.message().to_string())?;
-
         let mut report = AfterTurnReport {
             measurement_payload: outcome.measurement_payload.clone(),
             diagnostic: outcome.diagnostic.clone(),
             ..AfterTurnReport::default()
         };
-        // 接上双段端口后阈值触发只走双段路径：测量与判定仍用同一套预算口径，只是产出口径不同。
+        // 接上双段端口后阈值触发走的是另一条产出口径（工具段 + 回复段并发，不请求结构化摘要）。
         if self.dual.is_some() {
             let triggered = report
                 .measurement_payload
@@ -211,6 +308,8 @@ impl CompactionDriver {
             )?;
             return Ok(report);
         }
+        let segment = segment_slot.into_inner();
+
         let Some(compact_payload) = outcome.compact_payload.clone() else {
             // 未触发压缩的回合同样写入测量事件：转录与投影依赖逐回合的上下文计量。
             self.append_event(
@@ -226,6 +325,8 @@ impl CompactionDriver {
                     &json!({"mode": "automatic_model", "reason": outcome.diagnostic}),
                 )?;
             }
+            // 工具段已经压好、摘要段却失败：整条链按未压缩处理。只把工具段写进会话区、
+            // 却不动模型上下文，会出现「报了省 N Token 但上下文没变」的矛盾。
             return Ok(report);
         };
 
@@ -234,6 +335,7 @@ impl CompactionDriver {
             &compact_payload,
             boundary.history_messages,
             &mut report,
+            segment,
         )?;
         Ok(report)
     }
@@ -273,7 +375,7 @@ impl CompactionDriver {
             )?;
             return Err(reason);
         };
-        self.apply_compaction(session_id, &compact_payload, &[], &mut report)?;
+        self.apply_compaction(session_id, &compact_payload, &[], &mut report, None)?;
         Ok(report)
     }
 
@@ -281,12 +383,16 @@ impl CompactionDriver {
     ///
     /// `history_messages` 只在测量载荷缺少 `estimated_next_input_tokens` 时用于估算压缩前的
     /// Token 数（回合结束边界传当轮历史；显式压缩没有当轮历史，传空）。
+    ///
+    /// `segment` 是本轮先压好的工具段：它与摘要段拼成一条 assistant 消息进历史，
+    /// 并各自记一行会话区计量（没有净省的段不记）。
     fn apply_compaction(
         &self,
         session_id: &str,
         compact_payload: &Value,
         history_messages: &[Value],
         report: &mut AfterTurnReport,
+        segment: Option<ToolSegment>,
     ) -> Result<(), String> {
         let mut payload = compact_payload.as_object().cloned().unwrap_or_default();
         // 归档被压缩窗口的原始事件（二级存储），并把 archive_id 回写事件。
@@ -317,19 +423,53 @@ impl CompactionDriver {
         self.write_memories(&payload);
         let recall_text = self.remember_recall(&payload, session_id);
         let history = self.rebuild_history(&payload, session_id, recall_text.as_deref())?;
-        // after 一律用替换后的真实历史计算：无预算上限模式下模拟值会误导显示。
+        let summary_text = payload
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let before_tokens = report
             .measurement_payload
             .get("estimated_next_input_tokens")
             .and_then(Value::as_i64)
             .unwrap_or_else(|| estimate_json_tokens(&Value::Array(history_messages.to_vec())));
+
+        // 两段拼接：摘要边界的第一条消息就是摘要本身，把它的正文换成「工具段 + 摘要段」，
+        // 保留窗口与召回注入照旧接在后面（用户要求两段拼成一条 assistant 消息）。
+        //
+        // 只在工具段**确实压小**时才拼进去：否则这一步会把上下文变长，而「压缩」不该让
+        // 上下文变大——这也是它的计量行不出现的那种情形。
+        let segment = segment.filter(|segment| segment.notice.is_some());
+        let tool_notice = segment.as_ref().and_then(|segment| segment.notice.clone());
+        let tool_raw_tokens = segment.as_ref().map(|segment| segment.raw_tokens).unwrap_or(0);
+        let history = match segment {
+            Some(segment) => match join_tool_and_summary_sections(&segment.text, &summary_text) {
+                Some(joined) => {
+                    let mut combined: Vec<Value> = history;
+                    if let Some(first) = combined.first_mut() {
+                        if let Some(object) = first.as_object_mut() {
+                            object.insert("content".to_string(), Value::from(joined));
+                        }
+                    }
+                    combined
+                }
+                // 摘要为空：没有可拼接的第二段，历史保持摘要边界原样。
+                None => history,
+            },
+            None => history,
+        };
+        // 非工具段只报自己省下的那一份：从压缩前扣掉工具段原文，两行相加才等于整链净省。
         let after_tokens = estimate_json_tokens(&Value::Array(history.clone()));
-        report.notice = format_compaction_notice(Some(before_tokens), Some(after_tokens));
-        report.summary = payload
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let summary_saved = (before_tokens - tool_raw_tokens) - after_tokens;
+        let mut notices: Vec<String> = Vec::new();
+        if let Some(text) = tool_notice {
+            notices.push(text);
+        }
+        if let Some(text) = format_compaction_savings_option(summary_saved) {
+            notices.push(text);
+        }
+        report.notices = notices;
+        report.summary = summary_text;
         report.history = Some(history);
         report.compacted = true;
         Ok(())
@@ -368,7 +508,7 @@ impl CompactionDriver {
             return Ok(AfterTurnReport {
                 measurement_payload: Value::Null,
                 compacted: false,
-                notice: None,
+                notices: Vec::new(),
                 history: None,
                 diagnostic,
                 summary: String::new(),
@@ -414,7 +554,9 @@ impl CompactionDriver {
         Ok(AfterTurnReport {
             measurement_payload: Value::Null,
             compacted: true,
-            notice: format_compaction_notice(Some(before_tokens), Some(after_tokens)),
+            notices: format_compaction_notice(Some(before_tokens), Some(after_tokens))
+                .into_iter()
+                .collect(),
             history: Some(history),
             diagnostic: String::new(),
             summary: String::new(),

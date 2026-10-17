@@ -124,11 +124,15 @@ impl RunGuardConfig {
 }
 
 /// 保留其他配置段，只写回完整的 `run_guard` 配置。
+///
+/// 写盘前先校验取值域：读取器是配置合法性的唯一真相，写出它必然拒绝的值会让整段
+/// 配置在下次读取时失效（与 `save_web_search_configuration` 同一约定）。
 pub fn save_run_guard_config(
     env: &ConfigEnvironment,
     config: &RunGuardConfig,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let config = config.clone().validate()?;
     let mut data = load_config_data(env, config_path)?;
     let mut guard = Table::new();
     guard.insert("enabled".to_string(), Value::Boolean(config.guard.enabled));

@@ -10,5 +10,7 @@ publish = false
 [dependencies]
 omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-host = { path = "../omnicrawl-host" }
+# worker 脚本按插件 Worker 的同一套目录约定定位（`extensions/` 搜索链只有那一份实现）。
+omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 serde_json = { workspace = true }
 ureq = { workspace = true }

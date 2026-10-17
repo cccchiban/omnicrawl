@@ -23,7 +23,7 @@ pub mod upstream;
 pub use app::{build_app, build_router, AppState};
 pub use config::{load_settings, DecisionSettings};
 pub use routes::runtime_from_config;
-pub use server::{ensure_running, health, stop, EnsureOutcome, ServiceState};
+pub use server::{ensure_running, service_ready, stop, EnsureOutcome, ServiceState};
 pub use upstream::{
     decide, decide_choice, decide_rank, decide_review, ChoiceOutcome, DecideOutcome,
     DecisionContext, UpstreamError, DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,

@@ -40,7 +40,7 @@
       },
       {
         "name": "grep",
-        "description": "是什么：在工作区文本中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 不要指向用户目录或文件系统根。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。",
+        "description": "是什么：在工作区文本或内置文档（`omnicrawl://docs/<文件名>`）中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 不要指向用户目录或文件系统根。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。",
         "argument_schema": "{\"pattern\": \"class Agent\", \"path\": \".\", \"use_regex\": true, \"case_sensitive\": false, \"context_lines\": 0, \"count\": false, \"files_with_matches\": false, \"include\": \"*.py\", \"exclude\": \"*.min.js\", \"max_results\": 50}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -48,9 +48,18 @@
         "runner": null
       },
       {
+        "name": "skill_search",
+        "description": "是什么：检索 Skill 索引（名称、描述、作用域与位置），可按作用域过滤。怎么做：需要判断当前任务该用哪个 Skill 时使用；已知道 Skill 名要读正文时直接用 read 打开它的 SKILL.md。怎样做：query 是关键词，省略时按 scope 列出全部；scope 取 all、project、user、enterprise、path，缺省 all；成功返回 JSON 数组，每项含 name、description、scope、location、score、reason，空结果为 []，失败返回文本错误。建议：先检索再按命中项的 location 读正文；Skill 目录不在工作区内，不要用 find、grep 去找它。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"scope\": {\"type\": \"string\", \"enum\": [\"all\", \"project\", \"user\", \"enterprise\", \"path\"]}, \"max_results\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 50}}, \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "skill_search"
+      },
+      {
         "name": "web_search",
-        "description": "是什么：在 Bing、DuckDuckGo 或雅虎搜索公开网页。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：用具体关键词和合适 engine/language；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
-        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|yahoo\", \"max_results\": 5, \"language\": \"zh-CN\"}",
+        "description": "是什么：在 Bing、DuckDuckGo、GitHub、arXiv、Hugging Face、Tavily、Exa 或 Firecrawl 搜索公开资料，engine=mixed 时并发查询多个渠道并去重合并。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily、Exa 与 Firecrawl 走检索接口，需先在 [web_search] 段配置对应 API Key；其余引擎抓各自站点的公开搜索页，统一走浏览器指纹环境。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：找代码用 github、找论文用 arxiv、找模型用 huggingface、通用检索用 bing/duckduckgo；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
+        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|github|arxiv|huggingface|tavily|exa|firecrawl|mixed\", \"max_results\": 20, \"language\": \"zh-CN\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -58,7 +67,7 @@
       },
       {
         "name": "fetcher",
-        "description": "是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，并提取正文或返回 HTML。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；不执行 JS、不绕过验证码。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。",
+        "description": "是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，并提取正文或返回 HTML。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；不执行 JS、不绕过验证码。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：多个网址可用逗号、换行分隔或 JSON 数组一次传入；默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。",
         "argument_schema": "{\"urls\": \"https://a.example,https://b.example\", \"insecure\": false, \"parallel\": true, \"timeout\": 15, \"max_chars\": 8000, \"max_html\": false, \"impersonate\": \"chrome\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -67,7 +76,7 @@
       },
       {
         "name": "image_gen",
-        "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置，参数会影响耗时、成本和画质。",
+        "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片，走 OpenAI 兼容 Image API 或 Gemini 出图。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置（Gemini 通道只认 n 与 path，尺寸由设置里的画面比例与分辨率档位决定）。",
         "argument_schema": "{\"prompt\": \"图像描述\", \"image\": \"编辑时传入的本地图片路径\", \"n\": 1, \"size\": \"auto\", \"quality\": \"auto\", \"output_format\": \"png\", \"path\": \"可选保存路径\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -76,8 +85,8 @@
       },
       {
         "name": "tts_synthesize",
-        "description": "是什么：把文本合成为 WAV 语音，支持设置中的内置音色或参考音频克隆。怎么做：需要生成语音文件时使用；只需文字分析或朗读建议时不用；先在 /settings → TTS 启用并准备模型。怎样做：成功返回 JSON：ok、audio_path、sample_rate、duration_seconds、voice、text_chunks；失败返回 JSON：ok=false、error。建议：text 传最终朗读稿，长文本可自动分块；prompt_audio 会改变音色来源，path 决定文件位置，配置可控制自动播放。",
-        "argument_schema": "{\"text\": \"要朗读的文本\", \"prompt_audio\": \"参考音频路径（可选，语音克隆）\", \"path\": \"输出 wav 路径（可选）\"}",
+        "description": "是什么：把文本合成为 WAV 语音，走 OpenAI 或 Gemini 的云 TTS 接口，音色取设置里的通道配置。怎么做：需要生成语音文件时使用；只需文字分析或朗读建议时不用；先在 /settings → TTS 选好服务商并配置接口与密钥。怎样做：成功返回 JSON：ok、audio_path、sample_rate、duration_seconds、provider、voice、text_chunks；失败返回 JSON：ok=false、error。建议：text 传最终朗读稿，长文本可自动分块；path 决定文件位置，配置可控制自动播放。",
+        "argument_schema": "{\"text\": \"要朗读的文本\", \"path\": \"输出 wav 路径（可选）\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,

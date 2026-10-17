@@ -213,6 +213,21 @@ pub fn evicted_event_payload(call_ids: &[String], groups: &[PruneCandidate]) -> 
 /// 淘汰落盘的事件类型。
 pub const EVICTED_EVENT_TYPE: &str = "tool_call_evicted";
 
+/// 淘汰记账落盘的事件类型：回合收尾真正剔除后，记下这次淘汰省下的 Token。
+///
+/// 与 [`EVICTED_EVENT_TYPE`]（标注）分开：标注发生在裁决当刻、还不知道确切省量；
+/// 记账发生在回合收尾的整组剔除之后，是**实测**的净省量。会话区的计量行由它重建，
+/// 因此 `/resume`、`/undo` 后那一行的数字与当时看到的一致。
+pub const EVICTION_MEASURE_EVENT_TYPE: &str = "tool_call_eviction";
+
+/// 淘汰记账事件的载荷：剔除的调用组数与本次净省下的 Token。
+pub fn eviction_measure_payload(evicted_count: usize, saved_tokens: i64) -> Value {
+    serde_json::json!({
+        "evicted_count": evicted_count,
+        "saved_tokens": saved_tokens.max(0),
+    })
+}
+
 /// 按字符截断到 `limit`，超出时以省略号收尾。
 fn bound_chars(text: &str, limit: usize) -> String {
     let text = text.trim();

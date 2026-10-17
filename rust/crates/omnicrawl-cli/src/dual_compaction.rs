@@ -12,10 +12,51 @@ use std::thread;
 use omnicrawl_compaction::dual::{write_raw_archive, RawToolCall};
 use omnicrawl_controllers::compression::{
     archived_notice, join_compaction_sections, DualCompactionInput, DualCompactionOutput,
-    DualCompactionPort, TurnCallRecord,
+    DualCompactionPort, ToolCompactionInput, ToolCompactionOutput, ToolCompactionPort,
+    TurnCallRecord,
 };
 
 use crate::compression::KernelCompressor;
+
+/// 工具段压缩的宿主实现：整轮工具调用压成一段，与摘要段拼接。
+///
+/// 与 [`KernelDualCompaction`] 的差别只有范围：这里不发模型回复压缩请求，
+/// 非工具部分由上下文压缩（结构化摘要）承担。
+pub struct KernelToolCompaction {
+    compressor: KernelCompressor,
+}
+
+impl KernelToolCompaction {
+    pub fn new(compressor: KernelCompressor) -> Self {
+        Self { compressor }
+    }
+}
+
+impl ToolCompactionPort for KernelToolCompaction {
+    /// 落盘原文 → 概括；概括失败返回 `Err`（调用方退回只注入摘要段）。
+    fn compact(&self, input: &ToolCompactionInput) -> Result<ToolCompactionOutput, String> {
+        let raw = raw_records(&input.tool_calls);
+        let raw_chars = raw_chars(&raw);
+        let archive_path = write_raw_archive(&input.workspace_root, &input.session_id, &raw)
+            .unwrap_or_else(|detail| {
+                eprintln!("[kernel] 工具调用落盘失败：{detail}");
+                String::new()
+            });
+        let mut text = self
+            .compressor
+            .summarize_turn(&input.tool_calls, &input.task_hint)?;
+        // 计量取概括正文本身的字符数：末尾的落盘说明是给模型回读用的，不算进压缩产出。
+        let summary_chars = text.chars().count();
+        if !archive_path.is_empty() {
+            text.push_str(&archived_notice(&archive_path, raw_chars));
+        }
+        Ok(ToolCompactionOutput {
+            text,
+            raw_chars,
+            summary_chars,
+        })
+    }
+}
 
 /// 双段压缩的宿主实现。
 pub struct KernelDualCompaction {

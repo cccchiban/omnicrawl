@@ -80,28 +80,13 @@ pub fn format_active_skills_for_context(skills: &[ActiveSkill<'_>]) -> String {
     lines.join("\n")
 }
 
-/// Skill 上下文消息：命中活动 Skill 时给正文，否则给索引；两者都没有则没有消息。
-pub fn skill_context_message(
-    active_skill_context: Option<&str>,
-    skill_index_section: Option<&str>,
-) -> Option<Value> {
+/// Skill 上下文消息：命中活动 Skill 时给正文；没有活动 Skill 时不再注入索引。
+pub fn skill_context_message(active_skill_context: Option<&str>) -> Option<Value> {
     let active = active_skill_context.unwrap_or("").trim();
-    if !active.is_empty() {
-        return Some(json!({"role": "user", "content": active}));
-    }
-    let section = skill_index_section.unwrap_or("").trim();
-    if section.is_empty() {
+    if active.is_empty() {
         return None;
     }
-    Some(json!({
-        "role": "user",
-        "content": format!(
-            "<skill_index source=\"skill-registry\" trust=\"mixed\">\n\
-             <authority_boundary>{SKILL_CONTEXT_BOUNDARY}</authority_boundary>\n\
-             {section}\n\
-             </skill_index>"
-        ),
-    }))
+    Some(json!({"role": "user", "content": active}))
 }
 
 /// 工具能力说明消息：没有工具面时没有消息。
@@ -153,7 +138,6 @@ pub fn runtime_context_message(
 pub struct ContextMessageInputs<'a> {
     pub workspace_root: &'a str,
     pub project_instructions: &'a str,
-    pub skill_index_section: Option<&'a str>,
     pub active_skill_context: Option<&'a str>,
     /// 工具面是否非空（决定是否注入工具能力说明）。
     pub has_tools: bool,
@@ -164,9 +148,7 @@ pub struct ContextMessageInputs<'a> {
 /// 按稳定到动态的顺序构造 system 之外的上下文消息。
 pub fn build_context_messages(input: &ContextMessageInputs<'_>) -> Vec<Value> {
     let mut messages = project_instructions_messages(input.project_instructions);
-    if let Some(message) =
-        skill_context_message(input.active_skill_context, input.skill_index_section)
-    {
+    if let Some(message) = skill_context_message(input.active_skill_context) {
         messages.push(message);
     }
     if let Some(message) = tool_capabilities_message(input.has_tools) {
@@ -217,7 +199,6 @@ mod tests {
         let messages = build_context_messages(&ContextMessageInputs {
             workspace_root: "/w",
             project_instructions: "项目规范",
-            skill_index_section: Some("索引"),
             active_skill_context: None,
             has_tools: true,
             agent_temp_dir: ".omnicrawl/.agent_tmp",
@@ -227,19 +208,20 @@ mod tests {
             .iter()
             .map(|message| message["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, vec!["user", "user", "user", "user"]);
+        assert_eq!(roles, vec!["user", "user", "user"]);
         let contents: Vec<String> = messages
             .iter()
             .map(|message| message["content"].as_str().unwrap().to_string())
             .collect();
         assert!(contents[0].starts_with("<project_instructions"));
-        assert!(contents[1].starts_with("<skill_index"));
-        assert!(contents[2].starts_with("<tool_capabilities"));
-        assert!(contents[3].starts_with("<runtime_context"));
+        assert!(contents[1].starts_with("<tool_capabilities"));
+        assert!(contents[2].starts_with("<runtime_context"));
+        // Skill 索引不进上下文：没有活动 Skill 时这一层不产生消息。
+        assert!(skill_context_message(None).is_none());
     }
 
     #[test]
-    fn active_skills_replace_the_index_and_keep_bodies() {
+    fn active_skill_body_is_injected_while_the_index_is_not() {
         let text = format_active_skills_for_context(&[ActiveSkill {
             name: "a&b",
             scope: "user",
@@ -252,7 +234,7 @@ mod tests {
         assert!(text.contains("<scope>user</scope>"));
         assert!(text.ends_with("</active_skill_instructions>"));
         assert!(text.contains("<skill_body name=\"a&amp;b\" scope=\"user\" source=\"C:\\skills\\a\">\n正文\n</skill_body>"));
-        let message = skill_context_message(Some(&text), Some("索引")).expect("活动 Skill 消息");
+        let message = skill_context_message(Some(&text)).expect("活动 Skill 消息");
         assert_eq!(message["content"].as_str(), Some(text.as_str()));
     }
 }

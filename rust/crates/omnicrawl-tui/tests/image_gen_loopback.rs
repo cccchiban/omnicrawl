@@ -12,6 +12,9 @@ use omnicrawl_tui::tools::image_gen::{self, ImageGenOptions};
 use omnicrawl_tui::tools::web_transport::UreqWebTransport;
 
 const IMAGE_JSON: &str = r#"{"data":[{"b64_json":"aGVsbG8=","output_format":"png"}]}"#;
+/// Gemini 的回包形状：图片内联在 `candidates[].content.parts[].inlineData.data`。
+const GEMINI_IMAGE_JSON: &str =
+    r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aGVsbG8="}}]}}]}"#;
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -32,6 +35,14 @@ impl CapturedRequest {
 }
 
 fn serve(requests: usize) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
+    serve_with(requests, IMAGE_JSON)
+}
+
+/// 起本地回环服务，按给定的响应体回包（两种通道的回包形状不同）。
+fn serve_with(
+    requests: usize,
+    response_body: &'static str,
+) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
     let port = listener.local_addr().expect("本地地址").port();
     let seen: Arc<Mutex<Vec<CapturedRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -82,8 +93,8 @@ fn serve(requests: usize) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
             });
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{IMAGE_JSON}",
-                IMAGE_JSON.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
             );
             let mut stream = stream;
             let _ = stream.write_all(response.as_bytes());
@@ -189,6 +200,86 @@ fn image_gen_posts_json_and_multipart_to_a_local_server() {
         .collect();
     assert_eq!(entries.len(), 2, "生成与编辑各落盘一张");
     for entry in entries {
+        assert_eq!(std::fs::read(entry.path()).expect("读图片"), b"hello");
+    }
+}
+
+/// Gemini 通道：向本机回环发 `generateContent`，校验端点、鉴权头、请求体与内联图片落盘。
+#[test]
+fn gemini_channel_posts_generate_content_to_a_local_server() {
+    let (base, seen) = serve_with(4, GEMINI_IMAGE_JSON);
+    let root = workspace("gemini");
+    std::fs::write(root.join("ref.jpg"), b"\xff\xd8\xffreference").expect("写参考图");
+    let options = ImageGenOptions {
+        provider: "gemini".to_string(),
+        model: "gemini-2.5-flash-image".to_string(),
+        aspect_ratio: "16:9".to_string(),
+        image_size: "2K".to_string(),
+        n: 2,
+        ..options(&root, &base)
+    };
+
+    let generated = image_gen::image_gen(&options, &arguments(json!({"prompt": "一只猫"})))
+        .expect("Gemini 生成应当成功");
+    assert!(
+        generated.starts_with("已生成 2 张图片（模型 gemini-2.5-flash-image）："),
+        "{generated}"
+    );
+
+    let edited = image_gen::image_gen(
+        &options,
+        &arguments(json!({"prompt": "改成夜景", "image": "ref.jpg"})),
+    )
+    .expect("Gemini 图生图应当成功");
+    assert!(
+        edited.starts_with("已生成 2 张图片（模型 gemini-2.5-flash-image）："),
+        "{edited}"
+    );
+
+    let captured = seen.lock().expect("请求锁").clone();
+    assert_eq!(captured.len(), 4, "两次调用各按 n=2 逐张请求");
+    let request = &captured[0];
+    assert_eq!(request.method, "POST");
+    assert!(
+        request.path.contains(":generateContent"),
+        "{}",
+        request.path
+    );
+    assert!(
+        !request.path.contains("/images/generations"),
+        "不该走 OpenAI 端点：{}",
+        request.path
+    );
+    // 鉴权走 x-goog-api-key，而不是 Bearer。
+    assert_eq!(request.header("x-goog-api-key"), "test-key");
+    assert!(request.header("authorization").is_empty());
+
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("\"responseModalities\":[\"IMAGE\"]"), "{body}");
+    assert!(body.contains("16:9"), "{body}");
+    assert!(body.contains("\"imageSize\":\"2K\""), "{body}");
+    assert!(body.contains("一只猫"), "{body}");
+
+    // 参考图内联进 parts（不是 multipart）。
+    let with_image = String::from_utf8_lossy(&captured[2].body).to_string();
+    assert!(with_image.contains("inlineData"), "{with_image}");
+    assert!(with_image.contains("image/jpeg"), "{with_image}");
+    assert!(with_image.contains("改成夜景"), "{with_image}");
+    assert!(!with_image.contains("multipart"), "{with_image}");
+
+    // 两张图分次请求，各落盘一张 PNG（Gemini 只出 PNG）。
+    let images_dir = root.join(".omnicrawl").join(".agent_tmp").join("images");
+    let entries: Vec<_> = std::fs::read_dir(&images_dir)
+        .expect("默认图片目录应当存在")
+        .flatten()
+        .collect();
+    assert_eq!(entries.len(), 4, "两次调用各落盘两张");
+    for entry in entries {
+        assert!(
+            entry.path().to_string_lossy().ends_with(".png"),
+            "{:?}",
+            entry.path()
+        );
         assert_eq!(std::fs::read(entry.path()).expect("读图片"), b"hello");
     }
 }

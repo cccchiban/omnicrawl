@@ -48,30 +48,23 @@ pub fn compacted_display(
     format!("（已压缩：{raw_chars} → {compressed_chars} 字符，模型 {model}）\n{compressed}")
 }
 
-/// 回合末整轮工具调用压缩的会话区计量：`已压缩 12,345 → 1,234 字符`。
+/// 回合末整轮工具调用压缩的会话区计量：折算成「省下多少 Token」。
 ///
-/// 口径与 [`compacted_display`] 同源（字符数、箭头），但只报计量、不带正文：会话区只需要
-/// 一行边界，说明这一轮的逐条工具调用已被概括替换。与上下文压缩的
-/// [`crate::turn::compaction::format_compaction_notice`] 刻意不同——那条按 Token 报整段历史。
-pub fn compaction_notice(raw_chars: usize, summary_chars: usize) -> String {
-    format!(
-        "已压缩 {} → {} 字符",
-        group_digits(raw_chars),
-        group_digits(summary_chars)
-    )
+/// 计量必须**可回放**：这条提示的实时值与 `/resume`、`/undo` 重放时重建的值必须逐字相同，
+/// 所以事件载荷落的是字符数（原始与概括），Token 数在展示时用同一套折算重算，
+/// 不在事件里另存一份（否则两处口径迟早漂移）。
+///
+/// 折算按 CJK 以外的保守比率（4 字符 1 token）：原文与概括的字符数是唯一留存的事实，
+/// 拿不到原文时这是**下界**，不会把压缩效果说得比实际更好。文案本体与上下文压缩共用
+/// [`crate::turn::compaction::format_compaction_savings_notice`]；没有净省时返回 `None`。
+pub fn saved_tokens_notice(raw_chars: usize, summary_chars: usize) -> Option<String> {
+    let saved = chars_token_floor(raw_chars) - chars_token_floor(summary_chars);
+    crate::turn::compaction::format_compaction_savings_option(saved)
 }
 
-/// 千分位分组（`12345` → `12,345`）：压缩前后的字符数动辄五六位，分隔开才好读。
-fn group_digits(value: usize) -> String {
-    let digits = value.to_string();
-    let mut out = String::new();
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
+/// 纯字符数的 Token 下界折算（4 字符 1 token）。
+pub fn chars_token_floor(chars: usize) -> i64 {
+    ((chars + 3) / 4) as i64
 }
 
 /// 工具参数摘要：超长（如 `write_file` 正文）截断，供压缩模型判断调用意图。
@@ -285,9 +278,33 @@ pub fn archived_notice(path: &str, chars: usize) -> String {
     )
 }
 
+/// 把「工具调用压缩」与「会话压缩摘要」两段拼成一条上下文文本。
+///
+/// 顺序固定：工具段在前、摘要段在后。这是压缩链的执行顺序决定的——先淘汰无用的工具调用，
+/// 再把剩下的工具调用压成一段，最后把非工具部分交给上下文压缩；两段合成一条 assistant
+/// 消息注入历史。
+pub fn join_tool_and_summary_sections(tools: &str, summary: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let tools = tools.trim();
+    if !tools.is_empty() {
+        parts.push(format!("## 工具调用压缩\n{tools}"));
+    }
+    let summary = summary.trim();
+    if !summary.is_empty() {
+        parts.push(summary.to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n\n"))
+}
+
 /// 把两次压缩结果拼成一段接在系统提示词后的上下文文本。
 ///
 /// 顺序固定：先工具调用压缩，再模型回复压缩；空段跳过，两段都空返回 `None`。
+///
+/// 模型回复压缩已不在压缩链上（非工具部分改由结构化摘要承担），保留本函数与其调用方
+/// 供需要时回接。
 pub fn join_compaction_sections(tools: &str, replies: &str) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     let tools = tools.trim();
@@ -372,14 +389,78 @@ pub struct DualCompactionOutput {
 }
 
 /// 双段压缩端口：宿主实现（两次请求并发发起），失败返回可读错误。
+///
+/// 压缩链当前的顺序是「淘汰 → 工具段 → 非工具段 → 拼接」，工具段由宿主侧的整轮概括
+/// （`turn_summary`）承担、非工具段由结构化摘要承担，因此本端口暂时没有调用方；
+/// 连同模型回复压缩（`compact_replies`）一起保留实现，以便需要时回接。
 pub trait DualCompactionPort {
     fn compact(&self, input: &DualCompactionInput) -> Result<DualCompactionOutput, String>;
+}
+
+// ── 阈值触发的工具段压缩 ──────────────────────────────────────────────────
+
+/// 一次工具段压缩的输入：被压缩的工具调用与落盘位置。
+///
+/// 工具段只处理工具调用——非工具部分（用户消息、助手回复、更早的工具索引）由上下文压缩
+/// 承担，两段在驱动侧拼成一条助手消息。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCompactionInput {
+    pub tool_calls: Vec<TurnCallRecord>,
+    pub task_hint: String,
+    /// 工作区根：原始工具调用落盘到它下的临时目录。
+    pub workspace_root: String,
+    pub session_id: String,
+}
+
+/// 一次工具段压缩的结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCompactionOutput {
+    /// 工具段正文（概括 + 可选的落盘说明）。
+    pub text: String,
+    /// 被概括的原始调用（参数 + 输出）字符数。
+    pub raw_chars: usize,
+    /// 概括正文本身的字符数（不含末尾的落盘说明）：会话区计量要与原始字符数对照。
+    pub summary_chars: usize,
+}
+
+/// 工具段压缩端口：宿主实现（一次请求），失败返回可读错误。
+pub trait ToolCompactionPort {
+    fn compact(&self, input: &ToolCompactionInput) -> Result<ToolCompactionOutput, String>;
+}
+
+/// 窗口里被 `tool_call_evicted` 标注淘汰的调用 ID（去重、按发生顺序）。
+///
+/// 工具段压缩必须与历史投影同一口径：淘汰的语义是「这次调用的原文已离开模型上下文」，
+/// 若照旧送进概括，原文会顺着概括文本回流。
+pub fn evicted_call_ids(events: &[SourceEvent]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for event in events {
+        if event.event_type != "tool_call_evicted" {
+            continue;
+        }
+        for call_id in event
+            .payload
+            .get("evicted_call_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let call_id = call_id.trim();
+            if !call_id.is_empty() && !seen.iter().any(|item| item == call_id) {
+                seen.push(call_id.to_string());
+            }
+        }
+    }
+    seen
 }
 
 /// 从事件窗口里挑出工具调用：`tool_call_requested` 与配对的 `tool_result` 合成一条。
 ///
 /// 配不上结果的调用也保留（状态为失败、输出留空），否则模型看不到「调用过但没有结果」。
+/// 已被淘汰标注的调用不进结果：它们的原文已经不在上下文里，再概括一遍等于让它回流。
 pub fn collect_tool_calls(events: &[SourceEvent]) -> Vec<TurnCallRecord> {
+    let evicted = evicted_call_ids(events);
     let mut records: Vec<TurnCallRecord> = Vec::new();
     for event in events {
         if event.event_type != "tool_call_requested" {
@@ -390,6 +471,9 @@ pub fn collect_tool_calls(events: &[SourceEvent]) -> Vec<TurnCallRecord> {
             continue;
         }
         let call_id = payload_text(&event.payload, "tool_call_id");
+        if !call_id.is_empty() && evicted.iter().any(|item| *item == call_id) {
+            continue;
+        }
         let paired = events
             .iter()
             .find(|candidate| {
@@ -572,11 +656,19 @@ mod dual_compaction_tests {
         assert!(notice.contains("1234"));
     }
 
-    /// 会话区计量：与工具卡上的「已压缩 a → b 字符」同款，数字带千分位。
+    /// 会话区计量：把字符数折算成「省下多少 Token」，数字带千分位。
+    ///
+    /// 折算率与 `estimate_text_tokens` 的非 CJK 档同源（4 字符 1 token），取的是下界：
+    /// 拿不到原文时宁可少报，也不把压缩效果说得比实际更好。
     #[test]
-    fn compaction_notice_reports_both_char_counts() {
-        assert_eq!(compaction_notice(12_345, 1_234), "已压缩 12,345 → 1,234 字符");
-        assert_eq!(compaction_notice(0, 0), "已压缩 0 → 0 字符");
-        assert_eq!(compaction_notice(999, 12_345_678), "已压缩 999 → 12,345,678 字符");
+    fn saved_tokens_notice_converts_char_counts_to_net_savings() {
+        assert_eq!(
+            saved_tokens_notice(12_345, 1_234).as_deref(),
+            Some("已压缩：省 2,778 Token")
+        );
+        // 没有净省（原文与概括同长、或概括更长）就不出计量行：报一行「省 0 Token」
+        // 只会让人以为压缩失败却看到了成功提示。
+        assert_eq!(saved_tokens_notice(0, 0), None);
+        assert_eq!(saved_tokens_notice(999, 12_345_678), None);
     }
 }

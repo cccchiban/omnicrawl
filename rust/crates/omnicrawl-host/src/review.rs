@@ -23,9 +23,13 @@
 //! 后审查请求同样会被屏蔽，未注入时按「脱敏未启用」处理（与 Python 的 `masker is None` 同义）。
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
-use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::runtime::{
+    default_decision_models_path, default_toml_config_path, ConfigEnvironment,
+};
 use omnicrawl_config::features::desensitization::load_desensitization_config;
 use omnicrawl_controllers::approval::{
     decide, parse_tool_review_response, review_ask_user_qa, review_instruction,
@@ -122,6 +126,178 @@ pub fn decision_channel_from_config(
             api_key_env: channel.api_key_env,
             retry_count: channel.retry_count.max(0) as u64,
         })
+}
+
+/// 审查运行期的生效值指纹：审查模型、决策审查开关、默认决策渠道与脱敏旁路。
+///
+/// 只有它变了才需要重建审查运行期；审批模式单独由 [`ReviewConfigWatch`] 比较，因为
+/// 它影响的是「要不要审」而不是审查运行期本身。凭据只参与比较，不会被打印或外发。
+fn review_runtime_identity(environment: &ConfigEnvironment) -> String {
+    use omnicrawl_config::features::approval::load_approval_review_model;
+    use omnicrawl_config::features::decision_model::{
+        load_decision_switches, DECISION_SWITCH_TOOL_REVIEW,
+    };
+    let review_model = load_approval_review_model(environment, None).unwrap_or_default();
+    let tool_review = load_decision_switches(environment, None)
+        .get(DECISION_SWITCH_TOOL_REVIEW)
+        .copied()
+        .unwrap_or(false);
+    let channel = decision_channel_from_config(environment)
+        .map(|channel| {
+            format!(
+                "{}|{}|{}|{}|{}|{}",
+                channel.mode,
+                channel.model,
+                channel.base_url,
+                channel.api_key,
+                channel.api_key_env,
+                channel.retry_count
+            )
+        })
+        .unwrap_or_default();
+    // 脱敏旁路（`build_review_masking`）按 `[desensitization]` 构造，是审查运行期的一部分：
+    // 不纳入指纹的话，改完脱敏设置审查请求仍用旧旁路（原文会被外发）。
+    // 只取「是否启用 + 规则开关」这类非敏感字段：`[desensitization]` 的匹配参数全是布尔与
+    // 数值，没有明文，但仍按最小暴露原则不给整段配置做 Debug。
+    let desensitization = load_desensitization_config(environment, None)
+        .map(|config| {
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}",
+                config.enabled,
+                config.fail_closed,
+                config.strict_restore,
+                config.entropy_enabled,
+                config.gitleaks_enabled,
+                config.ner_enabled,
+                config.extra_sensitive_keys.len(),
+                config.exempt_keys.len(),
+            )
+        })
+        .unwrap_or_else(|_| "unreadable".to_string());
+    format!("{review_model}\u{1}{tool_review}\u{1}{channel}\u{1}{desensitization}")
+}
+
+/// 一次待应用的审查配置变更。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewConfigChange {
+    /// 配置文件里 `[approval] mode` 的生效值（已规范化）；`None` 表示这一项没变。
+    ///
+    /// 单独拎出来是因为它由调用方决定要不要采用：命令行 `--approval` 显式给过模式时，
+    /// 只有这一个键本身被改写才跟随，别的键（如 `review_model`）改动不会顺手覆盖它。
+    pub approval_mode: Option<String>,
+    /// 审查运行期（审查模型 / 决策通道 / 脱敏旁路）需要按最新配置重建。
+    pub rebuild_runtime: bool,
+}
+
+/// 审查配置变更的探测器：按配置文件修改时间做闸门，只在文件真被写过时才重算生效值。
+///
+/// 宿主主循环 / 事件泵每轮调一次 [`ReviewConfigWatch::poll`]，因此这里不能每轮都解析
+/// 两份 TOML——先比 `mtime`（不满足最小间隔时连 `mtime` 都不查），变了才读配置；再比生效值，
+/// 只有生效值真变了才报变更。变更在调用方**成功应用**后经 [`ReviewConfigWatch::accept`] 清掉：
+/// 回合在途时拿不到回合锁，那一轮不应用，下一轮 `poll` 仍会报同一份变更。
+pub struct ReviewConfigWatch {
+    config_stamp: Option<SystemTime>,
+    decision_stamp: Option<SystemTime>,
+    identity: String,
+    approval_mode: String,
+    pending: Option<ReviewConfigChange>,
+    last_checked: Option<Instant>,
+}
+
+/// 两次真实检查之间的最小间隔：配置改动是人工操作，没必要每帧都问文件系统。
+const REVIEW_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+impl Default for ReviewConfigWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReviewConfigWatch {
+    /// 空基线：首次 [`ReviewConfigWatch::poll`] 只做对齐，不报「刚变了」。
+    pub fn new() -> Self {
+        Self {
+            config_stamp: None,
+            decision_stamp: None,
+            identity: String::new(),
+            approval_mode: String::new(),
+            pending: None,
+            last_checked: None,
+        }
+    }
+
+    /// 以当前磁盘状态为基线（装配完审查运行期后调用）。
+    pub fn baseline(&mut self, environment: &ConfigEnvironment) {
+        self.config_stamp = file_stamp(&default_toml_config_path(environment));
+        self.decision_stamp = file_stamp(&default_decision_models_path(environment));
+        self.identity = review_runtime_identity(environment);
+        self.approval_mode = configured_approval_mode(environment);
+        self.pending = None;
+    }
+
+    /// 取尚未应用的变更；`None` 表示磁盘上的生效值与运行期一致。
+    pub fn poll(&mut self, environment: &ConfigEnvironment) -> Option<ReviewConfigChange> {
+        self.poll_at(environment, Instant::now())
+    }
+
+    /// [`ReviewConfigWatch::poll`] 的显式时刻版本（最小间隔用它判断，测试才好覆盖）。
+    pub fn poll_at(
+        &mut self,
+        environment: &ConfigEnvironment,
+        now: Instant,
+    ) -> Option<ReviewConfigChange> {
+        if let Some(last) = self.last_checked {
+            if now.duration_since(last) < REVIEW_WATCH_INTERVAL {
+                return self.pending.clone();
+            }
+        }
+        self.last_checked = Some(now);
+
+        let config_stamp = file_stamp(&default_toml_config_path(environment));
+        let decision_stamp = file_stamp(&default_decision_models_path(environment));
+        if config_stamp != self.config_stamp || decision_stamp != self.decision_stamp {
+            self.config_stamp = config_stamp;
+            self.decision_stamp = decision_stamp;
+            let identity = review_runtime_identity(environment);
+            let approval_mode = configured_approval_mode(environment);
+            let approval_changed = approval_mode != self.approval_mode;
+            let runtime_changed = identity != self.identity;
+            self.identity = identity;
+            self.approval_mode = approval_mode.clone();
+            if approval_changed || runtime_changed {
+                let pending = self.pending.take().unwrap_or(ReviewConfigChange {
+                    approval_mode: None,
+                    rebuild_runtime: false,
+                });
+                self.pending = Some(ReviewConfigChange {
+                    approval_mode: if approval_changed {
+                        Some(approval_mode)
+                    } else {
+                        pending.approval_mode
+                    },
+                    rebuild_runtime: runtime_changed || pending.rebuild_runtime,
+                });
+            }
+        }
+        self.pending.clone()
+    }
+
+    /// 标记待应用变更已生效。
+    pub fn accept(&mut self) {
+        self.pending = None;
+    }
+}
+
+/// 配置文件里的审批模式（读不出来时按缺省值「自动审查」，与 `load_approval_mode` 同口径）。
+fn configured_approval_mode(environment: &ConfigEnvironment) -> String {
+    omnicrawl_config::features::approval::load_approval_mode(environment, None).unwrap_or_default()
+}
+
+/// 配置文件的修改时间；文件不存在或读不到时返回 `None`（创建文件同样算一次变化）。
+fn file_stamp(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
 }
 
 /// 审查请求超时上限；与 Python 的 `min(config.request_timeout_seconds, 60)` 一致。
@@ -293,11 +469,6 @@ impl DecisionReviewOptions {
     /// 生效的内联凭据：只认配置里的明文密钥（与决策渠道同一处理）。
     pub fn resolve_api_key(&self) -> String {
         self.api_key.trim().to_string()
-    }
-
-    /// 决策接口地址（对应 `DecisionChannelConfig::decide_url`）。
-    pub fn decide_url(&self) -> String {
-        crate::decision_wire::decide_url(&self.mode, &self.base_url)
     }
 }
 
@@ -598,8 +769,9 @@ pub fn decision_post_masked(
         Some(masker) => masker.mask(body_text),
         None => body_text.to_string(),
     };
-    let result = crate::decision_wire::post_body(
-        &channel.decide_url(),
+    let result = crate::decision_wire::post_decision(
+        &channel.mode,
+        &channel.base_url,
         &api_key,
         &masked,
         timeout_seconds,
@@ -644,8 +816,9 @@ fn decision_review_masked(
 
     let body_text = serde_json::to_string(&body)
         .map_err(|error| review_request_failed_reason(&error.to_string()))?;
-    let text = crate::decision_wire::post_body(
-        &channel.decide_url(),
+    let text = crate::decision_wire::post_decision(
+        &channel.mode,
+        &channel.base_url,
         &api_key,
         &body_text,
         timeout_seconds,
@@ -864,6 +1037,49 @@ mod tests {
 
     fn arguments(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn watch_reports_only_effective_value_changes() {
+        let home = std::env::temp_dir().join(format!("oc-review-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("建立临时 home");
+        let environment = ConfigEnvironment::new(home, "linux");
+        use omnicrawl_config::features::approval::save_approval_mode;
+
+        let mut watch = ReviewConfigWatch::new();
+        watch.baseline(&environment);
+        let now = Instant::now();
+        assert_eq!(watch.poll_at(&environment, now), None, "刚对齐基线不应报变更");
+
+        save_approval_mode(&environment, "auto", None).expect("写入审批模式");
+        let changed = watch
+            .poll_at(&environment, now + REVIEW_WATCH_INTERVAL)
+            .expect("生效值变了应报变更");
+        assert_eq!(changed.approval_mode.as_deref(), Some("auto"));
+        assert!(!changed.rebuild_runtime, "只改模式不必重建审查运行期");
+        // 未应用前继续报同一份变更。
+        assert_eq!(
+            watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 2),
+            Some(changed.clone())
+        );
+        watch.accept();
+        assert_eq!(
+            watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 3),
+            None,
+            "应用后不再重复报"
+        );
+
+        // 最小间隔内不重复问文件系统：刚查过就直接按上一份结果回。
+        assert_eq!(watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 3), None);
+
+        // 文件被写过但生效值没变（同一个模式再存一遍），不算变更。
+        save_approval_mode(&environment, "auto", None).expect("重复写入同一模式");
+        assert_eq!(
+            watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 4),
+            None,
+            "生效值未变不应报变更"
+        );
     }
 
     #[test]

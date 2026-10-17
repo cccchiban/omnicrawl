@@ -2,9 +2,9 @@
 //!
 //! 子命令：
 //! * `serve`（默认）：前台常驻监听，直到 Ctrl-C。由 `ensure` 以脱离宿主的方式拉起。
-//! * `ensure`：确保本机有一份可用的决策接口（已在监听则复用，否则拉起并等就绪）。
+//! * `ensure`：确保本机有一份可用的决策接口（已就绪则复用，否则拉起并等它就绪）。
 //! * `stop`：停止本机共用的决策接口。
-//! * `status`：打印配置与监听状态，并做一次上游连通性检查。
+//! * `status`：打印配置与运行状态，并做一次上游连通性检查。
 //!
 //! 配置来自 `decision_models.toml` 的 `[api]` 段与默认决策渠道；未启用或没有可用渠道时
 //! `serve` 拒绝启动（详见 `omnicrawl://docs/decision_api.md`）。
@@ -114,7 +114,7 @@ async fn status() -> ExitCode {
         ),
         None => println!("渠道：没有可用渠道"),
     }
-    let listening = server::health(&settings.api.host, settings.api.port as u16);
+    let listening = server::service_ready(&environment);
     println!("监听中：{}", if listening { "是" } else { "否" });
     if let Some(reason) = settings.unavailable_reason() {
         println!("不可用原因：{reason}");

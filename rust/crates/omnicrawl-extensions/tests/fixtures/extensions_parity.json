@@ -2601,29 +2601,6 @@
       "expect": "加粗**"
     }
   ],
-  "skill_prompt": [
-    {
-      "skills": [
-        {
-          "name": "alpha",
-          "description": "含 <特殊> & 字符",
-          "source_path": "\\skills\\alpha\\SKILL.md",
-          "base_dir": "\\skills\\alpha",
-          "scope": "user",
-          "disable_model_invocation": false
-        },
-        {
-          "name": "hidden",
-          "description": "不展示",
-          "source_path": "\\skills\\hidden\\SKILL.md",
-          "base_dir": "\\skills\\hidden",
-          "scope": "user",
-          "disable_model_invocation": true
-        }
-      ],
-      "expect": "\n以下 Skill 提供了针对特定任务的专用指令。当你判断当前任务匹配某个 Skill 的描述时，请使用 read 工具加载对应的 SKILL.md 文件，然后严格遵循其中的指令执行。Skill 文件中引用的相对路径应相对于 SKILL.md 所在目录解析。\n\n<available_skills>\n  <skill>\n    <name>alpha</name>\n    <description>含 &lt;特殊&gt; &amp; 字符</description>\n    <location>\\skills\\alpha\\SKILL.md</location>\n  </skill>\n</available_skills>"
-    }
-  ],
   "dispatch_context": [
     {
       "handlers": [],

@@ -29,13 +29,15 @@ pub use state::{
     McpEditorRowView, McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, ModelParamRow,
     OptionValue,
     Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow,
-    ToolSwitchRow, TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef,
+    ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues,
+    VisionChange, VisionModelRef,
+    WebSearchRow,
     DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION, DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION,
     MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT,
     MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
     TOOLS_APPROVAL_OPTIONS,
-    TOOLS_APPROVAL_ROW, TTS_DEVICE_OPTIONS, TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS,
-    TTS_THREAD_COUNTS,
+    TOOLS_APPROVAL_ROW, TOOLS_WEB_SEARCH_LABEL, TOOLS_WEB_SEARCH_ROW, TTS_GEMINI_VOICES,
+    TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_SPEED_OPTIONS,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。

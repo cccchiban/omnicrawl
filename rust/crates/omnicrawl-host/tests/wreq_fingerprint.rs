@@ -13,21 +13,23 @@
 
 use std::time::Duration;
 
-use omnicrawl_host::tools::web_transport::{browser_headers, WebRequest, WebTransport};
+use omnicrawl_host::tools::web_transport::{WebRequest, WebTransport};
 use omnicrawl_host::tools::wreq_transport::WreqWebTransport;
 
 /// 回显本次 TLS/HTTP 指纹的公开端点。
 const ECHO_URL: &str = "https://tls.browserleaks.com/json";
 
-/// 与本项目 `web_transport::DEFAULT_USER_AGENT` 一致，避免引入额外变量。
+/// `navigation_headers` 的 `user_agent` 形参只服务于没有设备档案的传输，这里的档案传输
+/// 会忽略它，所以取值不影响结果；仍与 `web_transport::DEFAULT_USER_AGENT` 保持一致。
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 fn fetch_echo(impersonate: &str) -> serde_json::Value {
     let transport = WreqWebTransport::new();
+    // 用传输层给的导航头，而不是手写整套：手写会覆盖档案头，让 HTTP 层与 TLS 层打架。
     let mut request = WebRequest::new(
         ECHO_URL,
-        browser_headers(USER_AGENT),
+        transport.navigation_headers(USER_AGENT, Some(impersonate)),
         Duration::from_secs(25),
     );
     request.impersonate = Some(impersonate.to_string());

@@ -117,11 +117,15 @@ fn parse_advisor_section(section: &Table) -> Result<AdvisorConfig, ConfigError> 
 }
 
 /// 把 advisor 配置写回 `config.toml` 的 `[advisor]` 段（保留其他段）。
+///
+/// 写盘前先归一化：读取器（[`load_advisor_config`]）只接受六个已知 effort 档位，
+/// 写出它必然拒绝的值会让整段配置在下次读取时失效；黑名单也在这里去空。
 pub fn save_advisor_config(
     env: &ConfigEnvironment,
     config: &AdvisorConfig,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let config = config.clone().normalize()?;
     let mut data = load_config_data(env, config_path)?;
     let mut section = Table::new();
     section.insert("enabled".to_string(), Value::Boolean(config.enabled));

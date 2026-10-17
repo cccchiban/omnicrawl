@@ -30,7 +30,6 @@ use crate::review::{masking_from_config, ReviewMasking};
 
 /// 一次裁决请求的超时（决策服务是 70–500ms 量级，余量留给网络）。
 const PRUNE_TIMEOUT_SECONDS: u64 = 20;
-const USER_AGENT: &str = "omnicrawl-tool-prune/0.0.1";
 
 /// 淘汰用的决策渠道：与审查、检索重排、提问托管同源（`decision_models.toml` 的默认决策渠道）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,11 +54,6 @@ impl PruneChannel {
             api_key_env: channel.api_key_env.clone(),
             retry_count: channel.retry_count.max(0) as u64,
         }
-    }
-
-    /// 决策接口地址（对应 `DecisionChannelConfig::decide_url`）。
-    pub fn decide_url(&self) -> String {
-        crate::decision_wire::decide_url(&self.mode, &self.base_url)
     }
 
     /// 生效的内联凭据：只认配置里的明文密钥。

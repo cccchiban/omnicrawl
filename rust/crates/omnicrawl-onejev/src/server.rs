@@ -1,17 +1,20 @@
-//! 本地 `qev serve` 进程的生命周期：拉起 / 健康检查 / 停止 / 切尺寸。
+//! 本地判定服务进程的生命周期：拉起 / 就绪判定 / 停止 / 切尺寸。
 //!
-//! 服务是「一个尺寸一份进程」：切尺寸 = 停掉旧的、按新权重拉起、等健康检查通过，
+//! 服务是「一个尺寸一份进程」：切尺寸 = 停掉旧的、按新权重拉起、等它打出就绪标记，
 //! 期间决策请求会失败（审查通道 fail-closed、重排 fail-open），因此切换动作本身要
 //! 串行化，且界面要能看到「正在启动」这一状态。
 //!
-//! 服务地址固定为 `http://127.0.0.1:8766`——决策请求打到 `{base}/v1/systemone`，
-//! 由 [`omnicrawl_host::decision_wire`] 按 `onejev` 请求方式拼路径。
+//! 进程本体是我们自己的 worker（`rust/assets/extensions/onejev_worker.py`）：它直接驱动
+//! `qev` 的引擎对象，在**命名管道（Windows）/ Unix socket** 上收发 NDJSON——不经 TCP，
+//! 也就没有 uvicorn/FastAPI 那一层对本机调用是纯开销的中转。端点名由
+//! `omnicrawl-config` 的 `onejev_endpoint_for_root` 按数据根目录算出，拉起方与连接方共用它。
 //!
-//! **本机所有 OmniCrawl 实例共用这一份服务**：它按端口与 PID 文件认定，而不是按
-//! 「本进程起没起过」。因此：
+//! **本机所有 OmniCrawl 实例共用这一份服务**：它按 PID 文件与服务日志认定，而不是按
+//! 「本进程起没起过」，也**不去连一次端点**（端点在权重加载完成前还没建好，连接会卡到超时；
+//! 设置面板打开时的卡顿就是这么来的）。因此：
 //!
-//! * 启动前先探端口，已在监听就直接复用（不重复拉起、不重复占显存）；
-//! * 正在被别的实例拉起（端口还没监听）时等待其就绪，而不是再起第二个进程；
+//! * 启动前先看 PID 文件与服务日志（见 [`service_ready`]），已就绪就直接复用（不重复拉起、不重复占显存）；
+//! * 正在被别的实例拉起（PID 活着但还没打就绪标记）时等待其就绪，而不是再起第二个进程；
 //! * 进程以「脱离宿主」的方式创建，本实例退出（含崩溃）都不回收它——停它只能在
 //!   界面里显式点「停止服务」，或用 PID 文件里的 PID。
 //!
@@ -19,7 +22,6 @@
 //! kill-on-close 的 Job Object（那会让宿主退出时带走别人的服务）；显式停止走
 //! [`stop_shared`]，按 PID 回收整棵进程树。
 
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -32,12 +34,10 @@ use crate::env::{environment_state, EnvironmentState};
 use crate::paths;
 use crate::sizes::OneJevSize;
 
-/// 本地服务监听地址与端口（`qev serve` 默认 8000，这里避开常见占用）。
-pub const LOCAL_HOST: &str = "127.0.0.1";
-pub const LOCAL_PORT: u16 = 8766;
-/// 本地决策服务基地址（决策渠道的 `base_url` 写这个值）。
-pub const LOCAL_BASE_URL: &str = "http://127.0.0.1:8766";
-/// 健康检查等待上限（首次加载权重 + 捕获 CUDA 图，大尺寸会久一些）。
+/// 本地判定服务的数据根目录常量与默认端点（由 `omnicrawl-config` 统一给出）。
+///
+/// 服务不再监听 TCP：Windows 用命名管道、其余平台用 Unix socket，端点名由
+/// `onejev_endpoint_for_root` 按数据根目录算，拉起方与连接方共用同一份实现。
 pub const DEFAULT_HEALTH_TIMEOUT_SECONDS: u64 = 600;
 /// 认定「服务正在被谁拉起」的等待轮询间隔。
 pub const READY_POLL_MILLIS: u64 = 500;
@@ -47,9 +47,9 @@ pub const READY_POLL_MILLIS: u64 = 500;
 pub enum ServerState {
     /// 没有在跑的服务。
     Stopped,
-    /// 正在启动（等地一个健康响应）。
+    /// 正在启动（等第一条就绪标记）。
     Starting,
-    /// 已在监听。
+    /// 已就绪（进程在跑且日志里已有监听标记）。
     Ready,
     /// 启动失败。
     Failed(String),
@@ -74,16 +74,20 @@ pub struct ServerOutcome {
     pub message: String,
 }
 
-/// 启动参数：权重目录、设备、显存相关开关。
+/// 启动参数：权重目录、设备、端点。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchSpec {
     pub root: PathBuf,
     /// 本地模型目录（含 config.json 与权重分片）。
     pub model_dir: PathBuf,
-    /// `qev serve --name`：服务对外报出的模型名（决策渠道的 `model` 用它）。
+    /// 服务对外报出的模型名（决策渠道的 `model` 用它）。
     pub model_name: String,
     /// `cuda` / `cpu`。
     pub device: String,
+    /// 服务端点：命名管道名（Windows）或 socket 路径。
+    pub endpoint: String,
+    /// worker 脚本路径（随宿主载荷分发，见 `rust/assets/extensions/onejev_worker.py`）。
+    pub worker_path: PathBuf,
     /// 服务日志文件路径。
     pub log_path: PathBuf,
 }
@@ -92,23 +96,25 @@ impl LaunchSpec {
     /// 按尺寸与设备组装启动参数。
     ///
     /// 设备在这里就落地成 `cpu` / `cuda`：`auto` 需要探测 venv 里 torch 的实际
-    /// 能力（见 [`resolve_device`]），不能拖到 `qev` 里赌它会自己回退。
+    /// 能力（见 [`resolve_device`]），不能拖到引擎里赌它会自己回退。
     pub fn new(root: &Path, size: &OneJevSize, device: &str) -> Self {
         Self {
             root: root.to_path_buf(),
             model_dir: paths::model_dir(root, size.repo_id),
             model_name: size.repo_id.rsplit('/').next().unwrap_or(size.key).to_string(),
             device: resolve_device(device, root),
+            endpoint: omnicrawl_config::features::decision_model::onejev_endpoint_for_root(root),
+            worker_path: paths::worker_script_path(),
             log_path: paths::server_log_path(root),
         }
     }
 
-    /// `qev serve --model` 的参数值：优先本地目录，服务因此可离线启动。
+    /// 传给 worker 的 `--model` 参数值：优先本地目录，服务因此可离线启动。
     pub fn model_argument(&self) -> String {
         if self.model_dir.is_dir() {
             self.model_dir.display().to_string()
         } else {
-            // 权重不在本机时让 qev 自己按仓库 id 取（走 HF 缓存），至少不会静默用错模型。
+            // 权重不在本机时让引擎自己按仓库 id 取（走 HF 缓存），至少不会静默用错模型。
             self.model_name.clone()
         }
     }
@@ -132,7 +138,7 @@ pub fn normalize_device(device: &str) -> String {
     }
 }
 
-/// 决定传给 `qev serve --device` 的值。
+/// 决定传给 worker `--device` 的值。
 ///
 /// `auto` 必须按 venv 里 torch 的**实际能力**落地：装了 CPU-only 轮子时传 `cuda`
 /// 会让服务在加载权重时崩掉（`Torch not compiled with CUDA enabled`），而不是回退 CPU。
@@ -151,14 +157,14 @@ pub fn resolve_device(configured: &str, root: &Path) -> String {
 
 /// 服务启动过程中的阶段回调（界面据此显示「正在加载权重」这类进度）。
 ///
-/// 服务启动没有可量化的字节数：`qev serve` 加载权重后才绑定端口，
+/// 服务启动没有可量化的字节数：worker 加载权重后才建端点，
 /// 因此这里只报阶段与已等待秒数。
 pub type LaunchProgress<'a> = &'a mut dyn FnMut(&str);
 
-/// 本地 `qev serve` 共享服务的句柄。
+/// 本地判定服务（本机共用）的句柄。
 ///
 /// 服务不属于某个 OmniCrawl 实例：本结构只记录「本实例起过的那份进程」，用于在切尺寸
-/// 时能停掉旧进程；端口上已就绪的服务（无论是本实例还是别的实例起的）一律直接复用。
+/// 时能停掉旧进程；按 PID 文件与日志判定已就绪的服务（无论本实例还是别的实例起的）一律直接复用。
 pub struct OneJevServer {
     /// 本实例拉起的进程；进程以脱离宿主的方式创建，`Drop` 不会回收它。
     child: Option<Child>,
@@ -195,9 +201,9 @@ impl OneJevServer {
         self.spec.as_ref().map(|spec| spec.model_dir.as_path())
     }
 
-    /// 启动或切尺寸：端口上已有服务就直接复用，本实例起过的同规格进程则等它就绪。
+    /// 启动或切尺寸：本机已有就绪服务就直接复用，本实例起过的同规格进程则等它就绪。
     ///
-    /// `wait` 为 `true` 时阻塞等健康检查（调用方在后台线程里跑）；为 `false` 时
+    /// `wait` 为 `true` 时阻塞等就绪（调用方在后台线程里跑）；为 `false` 时
     /// 只把进程拉起来并把状态置为 [`ServerState::Starting`]。
     ///
     /// 环境（venv + qev）不由这里安装：装机是显式动作，由下载流程保证；
@@ -214,9 +220,9 @@ impl OneJevServer {
         timeout_seconds: u64,
         progress: LaunchProgress<'_>,
     ) -> ServerOutcome {
-        // 端口已就绪：本机（很可能是别的 OmniCrawl 实例）已经跑着一份可用服务。
+        // 已就绪：本机（很可能是别的 OmniCrawl 实例）已经跑着一份可用服务。
         // 多实例共用同一份权重与服务，这里直接复用，不再拉起第二份进程。
-        if healthy(LOCAL_HOST, LOCAL_PORT, 1) {
+        if service_ready(&spec.root) {
             let running = running_model(&spec.root).unwrap_or_else(|| spec.model_name.clone());
             // 先算文案再移动 `spec`：它要连实际模型名一起记下来（界面显示真实在跑的那一档）。
             let message = if running == spec.model_name {
@@ -238,7 +244,7 @@ impl OneJevServer {
         if self.child.is_some() && self.spec.as_ref() == Some(&spec) {
             let state = if wait {
                 let pid = self.child.as_ref().map(|child| child.id());
-                self.wait_ready(pid, timeout_seconds, progress)
+                self.wait_ready(&spec.root, pid, timeout_seconds, progress)
             } else {
                 self.state = ServerState::Starting;
                 self.state.clone()
@@ -271,7 +277,7 @@ impl OneJevServer {
                     ),
                 };
             }
-            let state = self.wait_ready(Some(pid), timeout_seconds, progress);
+            let state = self.wait_ready(&spec.root, Some(pid), timeout_seconds, progress);
             if state == ServerState::Ready {
                 let running = running_model(&spec.root).unwrap_or(spec.model_name.clone());
                 self.adopt_ready(spec.with_model_name(&running));
@@ -286,7 +292,7 @@ impl OneJevServer {
             };
         }
 
-        // 走到这里说明端口上没有服务：本实例若还记着旧进程（换模型、或它已退出），
+        // 走到这里说明本机没有可用的服务：本实例若还记着旧进程（换模型、或它已退出），
         // 先收掉再按新规格拉起——避免两份权重同时占显存。
         self.stop_own();
 
@@ -301,13 +307,13 @@ impl OneJevServer {
         self.spawn(spec, wait, timeout_seconds, progress)
     }
 
-    /// 记下「本实例正在用某份已在监听的服务」：句柄不持有该进程，只用于界面展示与切尺寸判定。
+    /// 记下「本实例正在用某份已就绪的服务」：句柄不持有该进程，只用于界面展示与切尺寸判定。
     fn adopt_ready(&mut self, spec: LaunchSpec) {
         self.spec = Some(spec);
         self.state = ServerState::Ready;
     }
 
-    /// 拉起 `qev serve` 进程。
+    /// 拉起判定 worker 进程。
     fn spawn(
         &mut self,
         spec: LaunchSpec,
@@ -326,21 +332,28 @@ impl OneJevServer {
             };
         }
         let python = paths::venv_python(&spec.root);
+        if !spec.worker_path.is_file() {
+            let reason = format!(
+                "未找到本地判定服务脚本 {}：它随宿主一起分发，请确认安装完整。",
+                spec.worker_path.display()
+            );
+            self.state = ServerState::Failed(reason.clone());
+            return ServerOutcome {
+                state: self.state.clone(),
+                message: reason,
+            };
+        }
         let mut command = Command::new(&python);
         command
-            .arg("-m")
-            .arg("qev.cli")
-            .arg("serve")
+            .arg(&spec.worker_path)
             .arg("--model")
             .arg(spec.model_argument())
             .arg("--name")
             .arg(&spec.model_name)
             .arg("--device")
             .arg(&spec.device)
-            .arg("--host")
-            .arg(LOCAL_HOST)
-            .arg("--port")
-            .arg(LOCAL_PORT.to_string());
+            .arg("--endpoint")
+            .arg(&spec.endpoint);
         // 权重已在本机目录：关掉联网探测，避免服务启动时再去问一次 HF。
         command
             .env("HF_HOME", paths::hf_cache_dir(&spec.root))
@@ -380,7 +393,7 @@ impl OneJevServer {
             };
         }
         let pid = self.child.as_ref().map(|child| child.id());
-        let state = self.wait_ready(pid, timeout_seconds, progress);
+        let state = self.wait_ready(&spec.root, pid, timeout_seconds, progress);
         let message = match &state {
             ServerState::Ready => format!(
                 "本地决策服务已就绪（{}，{}）。",
@@ -400,6 +413,7 @@ impl OneJevServer {
     /// （`qev` 的报错都在那里）。
     fn wait_ready(
         &mut self,
+        root: &Path,
         pid: Option<u32>,
         timeout_seconds: u64,
         progress: LaunchProgress<'_>,
@@ -432,7 +446,7 @@ impl OneJevServer {
                     return self.state.clone();
                 }
             }
-            if healthy(LOCAL_HOST, LOCAL_PORT, 1) {
+            if service_ready(root) {
                 self.state = ServerState::Ready;
                 return self.state.clone();
             }
@@ -448,7 +462,7 @@ impl OneJevServer {
             }
             std::thread::sleep(Duration::from_millis(READY_POLL_MILLIS));
         }
-        self.state = ServerState::Failed(format!("等待健康检查超时（{timeout_seconds} 秒）"));
+        self.state = ServerState::Failed(format!("等待服务就绪超时（{timeout_seconds} 秒）"));
         self.state.clone()
     }
 
@@ -468,14 +482,9 @@ impl OneJevServer {
             };
         }
         let Some(pid) = pid else {
-            let message = if healthy(LOCAL_HOST, LOCAL_PORT, 1) {
-                "端口上仍有服务在监听，但没有可用的 PID 记录：请手工确认后再处理。".to_string()
-            } else {
-                "本地决策服务当前未运行。".to_string()
-            };
             return ServerOutcome {
                 state: self.state.clone(),
-                message,
+                message: "本地决策服务当前未运行（没有 PID 记录）。".to_string(),
             };
         };
         if !pid_is_running(pid) {
@@ -487,33 +496,25 @@ impl OneJevServer {
         }
         kill_process_tree_by_pid(pid);
         clear_pid(root);
-        // 端口释放是异步的：给一点时间让进程退出，界面状态才不会立刻又读到「在跑」。
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if !healthy(LOCAL_HOST, LOCAL_PORT, 1) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(READY_POLL_MILLIS));
-        }
-        let released = !healthy(LOCAL_HOST, LOCAL_PORT, 1);
+        // 进程退出是异步的：等它真的消失，界面状态才不会立刻又读到「在跑」。
+        let released = wait_pid_gone(pid, Duration::from_secs(5));
         ServerOutcome {
             state: if released {
                 ServerState::Stopped
             } else {
-                ServerState::Failed("停止请求已发出，但端口仍在监听".to_string())
+                ServerState::Failed("停止请求已发出，但进程仍在退出".to_string())
             },
             message: if released {
                 format!("已停止本地决策服务（pid {pid}），显存已释放。")
             } else {
-                format!("已向 pid {pid} 发出停止请求，但端口仍在监听，可能还在退出。")
+                format!("已向 pid {pid} 发出停止请求，但进程仍在退出。")
             },
         }
     }
 
     /// 收掉本实例拉起的进程并把状态复位；不影响其他实例的服务。
     ///
-    /// 等端口真正释放再返回：紧接着按新规格拉起时，端口还占着会让「端口已就绪」
-    /// 判定误认为是旧服务。
+    /// 等进程真的消失再返回：紧接着按新规格拉起时，旧进程还活着会让「已就绪」判定误认。
     fn stop_own(&mut self) {
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
@@ -530,10 +531,8 @@ impl OneJevServer {
                     clear_pid(&spec.root);
                 }
             }
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline && healthy(LOCAL_HOST, LOCAL_PORT, 1) {
-                std::thread::sleep(Duration::from_millis(READY_POLL_MILLIS));
-            }
+            // `child.wait()` 已回收子进程；再确认一次它真的消失，避免紧接着拉新规格时误判。
+            wait_pid_gone(pid, Duration::from_secs(5));
         }
         self.spec = None;
         self.state = ServerState::Stopped;
@@ -617,30 +616,64 @@ fn read_log_tail(path: &Path, limit: usize) -> Option<String> {
 // 可能正在用它。收掉进程只发生在两个显式场合——切尺寸前（[`OneJevServer::stop_own`]）
 // 与「停止服务」（[`OneJevServer::stop_shared`]）。
 
-/// 健康检查：连得上端口即视为已监听（`qev` 在加载权重前就绑定端口？否——uvicorn
-/// 绑定端口在加载之后，因此「连得上」等于「模型已加载、可以接请求」）。
-pub fn healthy(host: &str, port: u16, timeout_seconds: u64) -> bool {
-    let address = format!("{host}:{port}");
-    match address.parse() {
-        Ok(socket) => TcpStream::connect_timeout(
-            &socket,
-            Duration::from_secs(timeout_seconds.max(1)),
-        )
-        .is_ok(),
-        Err(_) => false,
+/// worker 打出这行才算真的能接请求（它在引擎加载完成、端点建好之后才打）。
+const READY_LINE: &str = "[onejev] 服务就绪";
+
+/// 服务是否已就绪：只读 PID 文件与服务日志，**不发起任何连接**。
+///
+/// 判据是「PID 文件里的进程还活着」且「服务日志里已出现就绪标记」。不去连一次端点，
+/// 是因为这个函数位于设置面板的打开路径上：端点没建好时连接会阻塞到超时，打开设置就会卡。
+pub fn service_ready(root: &Path) -> bool {
+    pid_file_alive(root) && log_has_ready_line(&paths::server_log_path(root))
+}
+
+/// 只读判定：PID 文件里的服务进程是否还活着（不清理过期记录，见 [`live_pid`]）。
+fn pid_file_alive(root: &Path) -> bool {
+    read_pid(root).is_some_and(pid_is_running)
+}
+
+/// 等某个进程真正退出；超时未退出返回 `false`。
+fn wait_pid_gone(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !pid_is_running(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(READY_POLL_MILLIS));
+    }
+    !pid_is_running(pid)
+}
+
+/// 服务日志里是否已经出现监听标记。
+///
+/// 逐行流式扫描而不是只看尾部：日志会持续追加每次请求，启动时的就绪行会被挤出尾部窗口，
+/// 只看尾部会把「正在跑的老服务」误判成未就绪。
+fn log_has_ready_line(path: &Path) -> bool {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return false,
+            Ok(_) => {
+                if line
+                    .windows(READY_LINE.len())
+                    .any(|window| window == READY_LINE.as_bytes())
+                {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-
-    /// 串行化所有会占用 `LOCAL_PORT` 的用例：它们默认并发执行，会互相干扰。
-    fn port_guard() -> &'static Mutex<()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD.get_or_init(|| Mutex::new(()))
-    }
-
     use super::*;
     use crate::sizes::ONEJEV_SIZES;
 
@@ -685,7 +718,6 @@ mod tests {
 
     #[test]
     fn stopped_server_reports_stopped_and_has_no_model() {
-        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("oc-onejev-stopped-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建临时根目录");
@@ -696,22 +728,16 @@ mod tests {
         let outcome = server.stop_shared(&root);
         assert_eq!(outcome.state, ServerState::Stopped);
         assert!(outcome.message.contains("未运行"));
-        // 没有监听服务时健康检查必须为假（端口选一个高位空闲口）。
-        assert!(!healthy(LOCAL_HOST, 1, 1));
+        // 没有任何记录与日志时服务不算就绪。
+        assert!(!service_ready(&root));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn start_without_weights_fails_with_a_readable_reason() {
-        // 与占用 `LOCAL_PORT` 的其它用例串行化，否则「无服务」前提会被并发用例破坏。
-        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("oc-onejev-start-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        // 端口上真跑着服务时这条用例的前提（无服务）不成立：跳过而不是误判。
-        if healthy(LOCAL_HOST, LOCAL_PORT, 1) {
-            eprintln!("跳过：{LOCAL_PORT} 端口已有服务在跑");
-            return;
-        }
+        std::fs::create_dir_all(&root).expect("建临时根目录");
         let mut server = OneJevServer::new();
         let spec = LaunchSpec::new(&root, &ONEJEV_SIZES[0], "cpu");
         // 环境未就绪 + 权重缺失：必须给出可操作提示，且不起进程。
@@ -746,22 +772,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 多实例共用的核心约定：端口上已有服务时启动只复用、不再拉起第二个进程。
+    /// 多实例共用的核心约定：本机已有就绪服务时启动只复用、不再拉起第二个进程。
     ///
-    /// 与 `stopped_server_reports_stopped_and_has_no_model` 共用 `LOCAL_PORT`，而测试默认
-    /// 并发执行：本用例保持监听期间，那条用例的 `healthy()` 会看到端口被占、走进「端口上
-    /// 仍有服务」分支。加锁串行化，避免两条用例互相干扰。
+    /// 就绪判据是 PID 记录 + 服务日志的就绪标记，因此这里用「本进程 PID + 一条含标记的日志」
+    /// 构造场景——判定过程不连端点，因此也不会卡在超时上。
     #[test]
-    fn start_reuses_a_service_that_is_already_listening() {
-        let _guard = port_guard().lock().unwrap_or_else(|error| error.into_inner());
+    fn start_reuses_a_service_that_is_already_ready() {
         let root = std::env::temp_dir().join(format!("oc-onejev-reuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建临时根目录");
-        let listener = std::net::TcpListener::bind((LOCAL_HOST, LOCAL_PORT));
-        let Ok(listener) = listener else {
-            eprintln!("跳过：{LOCAL_PORT} 端口被占用，无法构造「已有服务」场景");
-            return;
-        };
+        // 只写 PID 还没打就绪标记：此时不算就绪。
+        write_pid(&root, std::process::id(), "OneJev-0.8B");
+        assert!(!service_ready(&root), "只有 PID 记录时不该算就绪");
+        std::fs::write(
+            crate::paths::server_log_path(&root),
+            "INFO: onejev.worker 服务就绪 endpoint=omnicrawl-onejev-abc\n",
+        )
+        .expect("写服务日志");
+        assert!(service_ready(&root), "PID 活着 + 日志有就绪标记即为就绪");
 
         let mut server = OneJevServer::new();
         // 环境与权重都不在：若实现改为「先起进程」，这里会以失败收场。
@@ -771,7 +799,26 @@ mod tests {
         assert!(outcome.message.contains("复用"), "{}", outcome.message);
         assert!(!outcome.message.contains("正在启动"), "{}", outcome.message);
 
-        drop(listener);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 就绪标记必须能在请求日志之后读到：日志会持续追加，标记会被挤出尾部窗口。
+    #[test]
+    fn ready_marker_survives_trailing_request_logs() {
+        let root = std::env::temp_dir().join(format!("oc-onejev-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建临时根目录");
+        write_pid(&root, std::process::id(), "OneJev-0.8B");
+        let path = crate::paths::server_log_path(&root);
+        let mut text = String::from("INFO: onejev.worker 服务就绪 endpoint=omnicrawl-onejev-abc\n");
+        for index in 0..5_000 {
+            text.push_str(&format!(
+                "INFO: onejev.worker 判定完成 inference_ms={}\n",
+                10_000 + index
+            ));
+        }
+        std::fs::write(&path, text).expect("写服务日志");
+        assert!(service_ready(&root), "标记在日志前部时仍应判为就绪");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

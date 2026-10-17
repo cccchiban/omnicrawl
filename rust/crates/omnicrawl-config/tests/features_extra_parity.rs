@@ -135,12 +135,8 @@ fn tts_load_matches_python() {
             .map(|config| {
                 json!({
                     "enabled": config.enabled,
-                    "model_dir": config.model_dir,
-                    "voice": config.voice,
                     "auto_play": config.auto_play,
-                    "thread_count": config.thread_count,
-                    "device": config.device,
-                    "streaming": config.streaming,
+                    "speak_replies": config.speak_replies,
                     "output_dir": config.output_dir,
                 })
             })
@@ -153,8 +149,7 @@ fn tts_save_matches_python() {
     check_save("tts_save", |env| {
         let config = tts::TtsConfiguration {
             enabled: true,
-            voice: "Junhao".to_string(),
-            thread_count: 4,
+            auto_play: true,
             ..tts::TtsConfiguration::default()
         };
         tts::save_tts_configuration(env, &config, None).expect("写回 tts");
@@ -203,6 +198,7 @@ fn image_gen_load_matches_python() {
             .map(|config| {
                 json!({
                     "enabled": config.enabled,
+                    "provider": config.provider,
                     "base_url": config.base_url,
                     "api_key": config.api_key,
                     "api_key_env": config.api_key_env,
@@ -210,6 +206,8 @@ fn image_gen_load_matches_python() {
                     "size": config.size,
                     "quality": config.quality,
                     "output_format": config.output_format,
+                    "aspect_ratio": config.aspect_ratio,
+                    "image_size": config.image_size,
                     "n": config.n,
                     "timeout_seconds": config.timeout_seconds,
                 })

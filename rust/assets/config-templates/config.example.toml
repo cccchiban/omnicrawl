@@ -49,6 +49,18 @@ default_context_window_tokens = 1000000
 [llm.profiles.gemini-main.discovery]
 enabled = true
 
+# 联网搜索（web_search 工具）：默认引擎在 TUI /settings → 工具设置 → 联网搜索 中切换，
+# 也可在此手改。bing / duckduckgo / github / arxiv / huggingface
+# 抓各自站点的公开搜索页，无需凭据，统一走浏览器指纹环境；
+# tavily / exa / firecrawl 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）；
+# mixed 是混合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与。
+# 工具调用时传 engine 参数可覆盖这里的默认引擎。
+[web_search]
+engine = "bing"
+tavily_api_key = ""
+exa_api_key = ""
+firecrawl_api_key = ""
+
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
 # 模型原生视觉在设置页「视觉」按当前模型/渠道开关（models.toml 或 [llm.profiles.<id>] 的 native_vision）。
@@ -56,49 +68,70 @@ enabled = true
 enabled = false
 models = []
 
-# 图像生成（OpenAI 兼容 Image API）：接口地址、Key、模型与默认参数在
-# TUI /settings → 图像生成 中配置；api_key 写入本地 config.toml（不提交仓库），
-# 留空时回退环境变量 OPENAI_API_KEY。
+# 图像生成：两条通道按 provider 二选一——OpenAI 兼容 Image API 与 Gemini 的
+# generateContent。接口地址、Key、模型与默认参数在 TUI /settings → 图像生成 中配置；
+# api_key 写入本地 config.toml（不提交仓库）。size/quality 是 OpenAI 通道的口径，
+# aspect_ratio/image_size 是 Gemini 通道的口径，切换服务商不会丢掉另一家的取值。
 [image_gen]
 enabled = false
+# 服务商：openai / gemini。
+provider = "openai"
+# OpenAI 通道：https://api.openai.com/v1；Gemini 通道：
+# https://generativelanguage.googleapis.com/v1beta。
 base_url = "https://api.openai.com/v1"
 api_key = ""
 api_key_env = "OPENAI_API_KEY"
+# OpenAI 通道默认 gpt-image-2；Gemini 通道默认 gemini-2.5-flash-image。
 model = "gpt-image-2"
+# 仅 OpenAI 通道使用：auto 或 宽x高。
 size = "auto"
+# 仅 OpenAI 通道使用：auto / low / medium / high。
 quality = "auto"
+# 仅 OpenAI 通道使用：png / jpeg / webp（Gemini 恒为 png）。
 output_format = "png"
+# 仅 Gemini 通道使用：画面比例，14 种之一（留空由模型取默认）。
+aspect_ratio = ""
+# 仅 Gemini 通道使用：分辨率档位 1K / 2K / 4K（留空由模型取默认）。
+image_size = ""
 n = 1
 timeout_seconds = 120
 
-# TTS 语音合成，两条后端：
-#   1) 接口合成（默认）：走 [tts_api] 的 OpenAI 兼容 audio/speech 接口，任何平台可用；
-#   2) 本地推理（可选，需构建时带 omnicrawl-tts/onnx feature）：MOSS-TTS-Nano ONNX，
-#      首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
+# TTS 语音合成（云服务）：两条通道按 tts_cloud.provider 二选一，本机不需要模型文件
+# 或 espeak-ng 一类原生依赖，只要 HTTP 与密钥。在 TUI /settings → TTS 中配置。
 [tts]
 enabled = false
-model_dir = ""
-voice = "Junhao"
 auto_play = true
-thread_count = 4
-# 推理设备：auto 优先 CUDA，不可用时回退 CPU；cuda 不可用时直接报错。
-device = "auto"
-# codec 流式解码（低首字节延迟；默认开启，显存占用低，避免全量解码 OOM）。
-streaming = true
+# 回合结束后朗读助手回复（直接在宿主里合成播放，不经 tts_synthesize 工具、也不走审批）。
+speak_replies = false
 output_dir = ".omnicrawl/.agent_tmp/tts"
 
-# TTS 接口合成（OpenAI 兼容 POST {base_url}/audio/speech）；enabled = false 时回落到本地推理。
+# 服务商路由：openai / gemini。
+[tts_cloud]
+provider = "openai"
+
+# OpenAI 通道（provider = "openai" 时生效）：POST {base_url}/audio/speech。
+# api_key 写入本地 config.toml（不提交仓库），也可在设置面板直接填写。
 [tts_api]
-enabled = true
 base_url = "https://api.openai.com/v1"
 api_key = ""
-api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o-mini-tts"
+# 音色：alloy/ash/ballad/coral/echo/fable/nova/onyx/sage/shimmer/verse/marin/cedar。
 voice = "alloy"
-# 只支持 wav（Windows 播放走 winmm，且要按 WAV 解析时长）。
-response_format = "wav"
-# 语速 0.25~4.0；1.0 时不发给服务端。
-speed = 1.0
+# 语气指令；只对 gpt-4o-mini-tts 一类模型生效，留空则不下发。
+instructions = ""
+# 语速（0.25~4.0）；1 时不下发该字段。
+speed = 1
+timeout_seconds = 120
+
+# Gemini 通道（provider = "gemini" 时生效）：POST {base_url}/models/{model}:generateContent。
+[tts_gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key = ""
+model = "gemini-2.5-flash-preview-tts"
+# 预置音色名（如 Kore、Puck、Zephyr）。
+voice = "Kore"
+# 语气指令：Gemini 没有独立的指令字段，这段文本作为正文前缀下发。
+instructions = ""
 timeout_seconds = 120
 
 [approval]
@@ -254,10 +287,10 @@ enabled = false
 # model_request_concurrency = 2
 # allow_background = false
 # allow_fork = false
-# allow_worktree = false
-# allow_standard_agent = false
+# allow_worktree = true
+# allow_standard_agent = true
 # allow_shared_workspace_writes = false
-# enable_verify_agent = false
+# enable_verify_agent = true
 # verify_command_timeout_seconds = 120
 # task_retention_minutes = 60
 # result_summary_chars = 6000

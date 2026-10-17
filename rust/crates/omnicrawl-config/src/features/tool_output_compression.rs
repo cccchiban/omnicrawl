@@ -109,11 +109,15 @@ fn parse_section(section: &Table) -> Result<ToolOutputCompressionConfig, ConfigE
 }
 
 /// 把工具输出压缩配置写回 `config.toml`（保留其他段）。
+///
+/// 写盘前先校验：读取器要求思考档位在白名单内、四个预算为正整数，写出它必然拒绝的值
+/// 会让整段配置在下次读取时失效。
 pub fn save_tool_output_compression_config(
     env: &ConfigEnvironment,
     config: &ToolOutputCompressionConfig,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
+    let config = config.clone().validate()?;
     let mut data = load_config_data(env, config_path)?;
     let mut section = Table::new();
     section.insert("enabled".to_string(), Value::Boolean(config.enabled));

@@ -12,11 +12,11 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；另提供**凭据注入**（`model_credentials_env` / `kernel_credentials_env` / `frame_api_key_env`）——协议帧只带变量名，内核只从环境读密钥，所以 `config.toml` 里的字面 `api_key` 必须由宿主在起内核时补进子进程环境 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`（两条后端：接口合成默认、本地 ONNX 需 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`（抓页面与 Tavily/Exa 两条通路，默认引擎与凭据取 `[web_search]`）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
-| `src/prompt.rs` | 启动期提示词装配：模板 → system prompt、AGENTS.md 合并、Skill 目录扫描、模式切换与 `context_messages`（对映 `agent/controllers/tools/building.py` 与 `agent/core.py` 的启动准备） |
+| `src/prompt.rs` | 启动期提示词装配：模板 → system prompt、AGENTS.md 合并、Skill 目录扫描、模式切换与 `context_messages`（对映 `agent/controllers/tools/building.py` 与 `agent/core.py` 的启动准备）。Skill 索引不进上下文，改由 `skill_search` 工具按需检索 |
 | `src/prompt_cache.rs` | 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的七字段组装（对映 `agent/context/prompt_context.py::build_prompt_cache_identity`），与 Python 逐字节对齐；TUI 与无头运行器都在握手时调用 |
 
 ## 提示词装配
@@ -30,8 +30,9 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - **项目规范**：用户级 `~/.OmniCrawl/AGENTS.md` 与项目级 `<工作区>/AGENTS.md` 合并，
   项目级排在后面并优先；**读不到文件不算错误**，没有规范时不注入该消息。
 - **Skill**：`SkillManager.discover(工作区, 额外路径)` 扫描企业 / 个人 / 项目 / 额外路径
-  （企业级取 `OMNICRAWL_ENTERPRISE_DIR`，额外路径取 `[skills].extra_paths`），
-  `format_skills_for_prompt` 产出索引段（不注入正文；命中时才走 `read` 读 SKILL.md）。
+  （企业级取 `OMNICRAWL_ENTERPRISE_DIR`，额外路径取 `[skills].extra_paths`）。**索引不注入
+  上下文**：目录整份进提示词会随 Skill 数量膨胀、长索引里靠后的条目还容易被模型忽略，改由
+  `skill_search` 工具（`tools/skills.rs`）按作用域与关键词按需检索，正文仍走 `read` 读 `SKILL.md`。
   `/skill:<名> [任务]` 在 `TurnRunner::submit` 里处理：命中时先用 `session.settings`
   把活动技能正文当本轮上下文下发，回合收尾再换回常规装配；未命中时把带可用列表的说明
   当本轮文本。两条路径都不改持久化历史。
@@ -100,10 +101,11 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 
 ## 检索重排（可选，默认关闭）
 
-`tools/decision_search.rs` 把 `memory_search` 与 `kb_search` 的候选交给结构化决策模型按相关度
-排序。两个开关各自独立（`decision_models.toml` 的 `[features]` 里的 `memory_search_rerank` /
-`kb_search_rerank`），装配入口 `rerank_options_from_config(env, switch_key)` 由 TUI 与本地 API
-共用（`RegistryOptions.knowledge_rerank` 与 `MemoryOptions.rerank`）。
+`tools/decision_search.rs` 把 `memory_search`、`kb_search` 与 `skill_search` 的候选交给结构化决策
+模型按相关度排序。三个开关各自独立（`decision_models.toml` 的 `[features]` 里的
+`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank`），装配入口
+`rerank_options_from_config(env, switch_key)` 由 TUI 与本地 API 共用
+（`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank` 与 `MemoryOptions.rerank`）。
 
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
@@ -126,31 +128,38 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （默认 3）对连接失败、超时与 5xx 做 `0.2s → 0.4s → 0.8s`（封顶 2s）退避重试，4xx 立即回错
 （请求本身的问题），响应读不出可用答案不重试（不猜、不编）。
 
-## 工具建议（可选，默认关闭）
+## 新提问建议（可选，默认关闭，两类可同时开启）
 
-`tools/decision_suggest.rs` 在你每发一条新提问时先问一次决策模型「本次该用哪些工具」
-（`decision_models.toml` 的 `[features] tool_suggestion`，`suggest_options_from_config(env)`
-由 TUI 与本地 API 共用）。
+`tools/decision_suggest.rs` 在你每发一条新提问时先问一次决策模型「本次该用哪些工具／哪些
+子代理」，把结果拼进 user 尾部。两类建议各有一个开关、各是一条独立出站请求：
 
-- 送审只有**当前这条提问的正文**（`state.user_prompt`，不带任何历史）与**本宿主工具表的全部
-  已启用工具**（`state.tools`，每项是名字 + 描述首句截断到 `TOOL_SUMMARY_MAX_CHARS` 字）。
-  候选不做人工取舍：`disabled_tools` 关掉的、当前没有运行期的（语音合成、顾问、Windows 组）
-  都已被工具表挡在外面，进表的即送审，工具表增删后清单自动跟着变。
-- 该用专用工具还是顺手用泛化工具，交给决策模型按 `SUGGEST_REQUIREMENTS` 判断：专用工具
-  （子代理、生图、语音、桌面操作等）贴合任务特殊性；读文件、写文件、搜代码、执行命令、
-  记待办、向用户提问这类通用工具几乎每轮都能顺手用一下，除非本次任务明确围绕它展开，
-  否则判为用不到。
-- 判定是每个工具一个 `noul` 提问，外加一个兜底提问 `no_tool`（本条是否属于普通对话、
-  寒暄或无从判断的异常任务）。阈值 `SUGGEST_THRESHOLD`（0.5）是唯一判定面：概率 ≥0.5 进建议
-  名单、<0.5 排除；兜底提问过阈值时整份建议作废。
-- 名单非空时在 user 尾部追加一行（`insert_suggestion`）：`当前请求建议调用tool：a、b。`；
-  名单为空时原文照发，不插入任何内容。展示层用 `split_suggestion` 把这一行拆出来挂在
-  `user：` 标签之后，正文照旧另起行铺开。
+| 建议 | 开关（`[features]`） | 送审候选（`state` 字段） | 建议行 |
+| --- | --- | --- | --- |
+| 工具 | `tool_suggestion` | `tools`：工具表全部已启用工具 | `当前请求建议调用tool：a、b。` |
+| 子代理 | `subagent_suggestion` | `subagents`：可调度的子代理角色 | `当前请求建议使用子代理：explore、plan。` |
+
+- 装配入口 `suggest_options_from_config(env)` / `subagent_suggest_options_from_config(env)`
+  由 TUI 与本地 API 共用。
+- 送审只有**当前这条提问的正文**（`state.user_prompt`，不带任何历史）与候选清单（每项是名字 +
+  说明取首句截断到 `CANDIDATE_SUMMARY_MAX_CHARS` 字）。候选不做人工取舍：`disabled_tools`
+  关掉的、当前没有运行期的（语音合成、顾问、Windows 组）都已被工具表挡在外面；子代理角色取
+  与 `subagent` 工具参数枚举同源的那份清单，内核不能调度的角色不会进审。
+- 选择要求由 `SuggestKind::requirements` 给出：工具建议分专用工具与泛化工具（后者除非本次
+  任务明确围绕它展开，否则判为用不到）；子代理建议强调每个角色都是一次开销明显更高的独立
+  子回合，只有能拆成相互独立、可并行推进的子任务，或需要隔离视角核查与隔离改动时才算用得到。
+- 判定是每个候选一个 `noul` 提问，外加一个兜底提问（工具 `no_tool`、子代理 `no_subagent`：
+  本条是否属于普通对话、寒暄或无从判断的异常任务）。阈值 `SUGGEST_THRESHOLD`（0.5）是唯一
+  判定面：概率 ≥0.5 进建议名单、<0.5 排除；兜底提问过阈值时该份建议作废。
+- 名单非空时在 user 尾部追加一行（`insert_suggestions`），两类同时命中就各占一行（工具在前、
+  子代理在后）；都没有建议时原文照发。展示层用 `split_suggestion` 把尾部连续的建议行一并拆出来
+  挂在 `user：` 标签之后，正文照旧另起行铺开。
+- **两类可同时开启，且无先后顺序**：`suggestion_lines` 并发发起两条请求，总耗时取两者的较大者
+  而不是相加（只开一类时不起线程）；任一条失败或没有建议都只是少一行，互不影响。
 - **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都按
   「本次无建议」处理（与检索重排、提问托管、工具淘汰同一语义）。
 - 出网脱敏复用审查通道的 `[desensitization]` 旁路；脱敏构造失败按「建议不可用」处理，绝不外发原文。
 - 两个接入点都在提交前：无头宿主的 `TurnRunner::submit` 里就地拼接；TUI 因为不能阻塞 UI 线程，
-  把建议放到后台线程（`start_tool_suggestion` / `drain_suggest_results`），结果回来才提交回合。
+  把两条建议一起放到后台线程（`start_suggestion` / `drain_suggest_results`），结果回来才提交回合。
 
 ## 提问托管（可选，默认关闭）
 

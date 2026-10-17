@@ -523,6 +523,12 @@ pub struct SessionModelSettings {
     /// 内核据此决定要不要发起 `context.prune`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_prune: Option<bool>,
+    /// 主模型是否用原生视觉：为真时带图观察直送主模型，不再走 `[vision]` 代理。
+    ///
+    /// 与 `tool_call_prune` 一样是宿主运行期的能力开关（设置面板改视觉配置后即时下发）：
+    /// 模型配置里那份只在握手时给一次，改配置要能当场生效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_vision: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<i64>,
     // ---- 渠道字段：切换模型渠道时一并下发，空串视作不改 ----

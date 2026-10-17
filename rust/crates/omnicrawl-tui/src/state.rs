@@ -1214,13 +1214,17 @@ impl AppState {
         self.refresh.bump_conversation();
     }
 
-    /// 清空会话视图（`Ctrl+L` 一类命令）：记录与图片预览一起丢掉。
+    /// 清空会话视图（`Ctrl+L` 一类命令）：记录、图片预览与计划清单一起丢掉。
     ///
     /// 预览必须同步清掉：记录没了以后没有任｛Desensitized:684｝引用那些锚点，留着只占内存。
+    /// 计划清单同理：它画在输入框上方、属于这一屏的会话现场，视图空了还留着上一段的步骤
+    /// 就是自相矛盾（`/new` 之后仍显示旧计划即此）。
     pub fn clear_conversation(&mut self) {
         self.records.clear();
         self.image_previews.get_mut().clear();
+        self.todos.clear();
         self.touch_conversation();
+        self.touch_composer();
     }
 
     /// 会话区尾部追加了一条记录：显示行只需补算新记录，但界面要重画。
@@ -1972,7 +1976,7 @@ impl AppState {
                 }
             }
             // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
-            // 压缩的可见边界由内核另发的 `turn.notice`（「---已压缩 xxk~xxk ---」）落到会话流。
+            // 压缩的可见边界由内核另发的 `turn.notice`（「已压缩：省 N Token」）落到会话流。
             HostEvent::ModelResponseAfter(_) | HostEvent::ModelRequestError(_) => {}
         }
     }
@@ -2090,10 +2094,16 @@ impl AppState {
         self.records.clear();
         // 回放重建的是「已发生的事实」的投影，工具卡本身不会回来，图片预览也跟着作废。
         self.image_previews.get_mut().clear();
+        // 计划清单同属这一屏的会话现场：整视图重建时不先清掉，上一条会话（或上一段任务）
+        // 的步骤会留在输入框上方（`/new` 之后的旧计划即此）。事件流里真有 `update_todos`
+        // 时，下面重放会重新写回它。
+        self.todos.clear();
         // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
         self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
         self.touch_conversation();
+        // 计划清单画在输入块里，清空同样要重算那块的高度。
+        self.touch_composer();
         for message in history {
             let role = message
                 .get("role")
@@ -2125,10 +2135,15 @@ impl AppState {
         self.records.clear();
         // 同上：事件流重放出来的卡片没有附件原文，旧预览若留着会挂到不存在（或别的）卡片上。
         self.image_previews.get_mut().clear();
+        // 计划清单同理：整视图重建从空清单开始，事件流里的 `update_todos` 再把它写回来
+        // （Python 侧是 `_clear_conversation_view()` 里的 `_clear_todo_plan()` 同一口径）。
+        self.todos.clear();
         // 回放是「已发生的事实」，直接显示全文，不从半句开始铺。
         self.settle_reasoning_reveal();
         // 整块视图被重建：显示行缓存整体失效（后续都是追加，只算一次）。
         self.touch_conversation();
+        // 计划清单画在输入块里，清空同样要重算那块的高度。
+        self.touch_composer();
         // 未收口的工具卡：`(call_id, tool, 记录下标, 请求时间)`。没有 call id 的旧事件按
         // 工具名延后匹配（与 Python 的 `pending_by_id` / `pending_by_tool` 同口径）。
         let mut pending: Vec<(String, String, usize, Option<DateTime<Utc>>)> = Vec::new();
@@ -2287,6 +2302,12 @@ impl AppState {
                         // 回合末的整轮工具调用压缩：被概括的逐条工具事件已被投影剔除，
                         // 这里补一行与实时通知同款的计量边界（用户要求「和上下文压缩一样」）。
                         if let Some(note) = replay_compaction_notice(&payload) {
+                            self.records.push(Record::Notice(note));
+                        }
+                    } else if other == "tool_call_eviction" {
+                        // 决策模型标记淘汰的记账：实时那一行由内核发 `turn.notice`，
+                        // 回放这里按同一份载荷重建（数字与当时看到的一致）。
+                        if let Some(note) = replay_eviction_notice(&payload) {
                             self.records.push(Record::Notice(note));
                         }
                     }
@@ -3044,10 +3065,21 @@ fn replay_compaction_notice(payload: &serde_json::Value) -> Option<String> {
     let summary = payload
         .get("summary_chars")
         .and_then(serde_json::Value::as_u64)?;
-    Some(omnicrawl_controllers::compression::compaction_notice(
-        raw as usize,
-        summary as usize,
-    ))
+    // 没有净省就不显示：实时那条也不显示，回放必须与它逐字一致。
+    omnicrawl_controllers::compression::saved_tokens_notice(raw as usize, summary as usize)
+}
+
+/// `tool_call_eviction` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 淘汰的净省量是剔除前后实测出来的（不是按字符数折算），事件里直接记着最终值，
+/// 回放照原样显示即可——旧事件没有该字段时宁可不显示，也不显示一个假的 0。
+fn replay_eviction_notice(payload: &serde_json::Value) -> Option<String> {
+    let saved = payload
+        .get("saved_tokens")
+        .and_then(serde_json::Value::as_i64)?;
+    Some(
+        omnicrawl_controllers::turn::compaction::format_compaction_savings_notice(saved),
+    )
 }
 
 fn body_lines(output: &str) -> Vec<String> {
@@ -4302,7 +4334,6 @@ mod tests {
         assert_eq!(composer.text, "好a世b\n第二行");
     }
 
-    #[test]
     /// 鼠标坐标 → 字符下标：宽字符按显示列算，行尾之后算行尾，整个文本之后算末尾。
     #[test]
     fn click_maps_to_the_character_under_the_cursor() {
@@ -4685,6 +4716,53 @@ mod replay_tests {
         assert!(state.records.is_empty());
     }
 
+    /// 用户报的场景：`/new` 之后输入框上方仍挂着上一条会话的计划清单。
+    ///
+    /// 计划清单是这一屏的会话现场，整视图重建（清空 / 回放）必须一并复位；
+    /// 事件流里真有 `update_todos` 时由重放再写回来。
+    #[test]
+    fn replaying_the_view_resets_the_todo_plan() {
+        let mut state = state();
+        state.todos.push(crate::host::TodoItem {
+            id: "1".to_string(),
+            step: "旧计划".to_string(),
+            completed: false,
+        });
+        let composer_before = state.refresh_versions().composer;
+
+        state.replay_events(&[]);
+        assert!(state.todos.is_empty(), "回放后不该留着旧计划");
+        assert!(
+            state.refresh_versions().composer > composer_before,
+            "计划清单画在输入块里，清空必须一并置脏（否则高度与内容都停在旧值）"
+        );
+
+        state.todos.push(crate::host::TodoItem {
+            id: "2".to_string(),
+            step: "又一条旧计划".to_string(),
+            completed: false,
+        });
+        state.replay_history(&[]);
+        assert!(state.todos.is_empty(), "消息投影回放同样要复位计划");
+
+        state.todos.push(crate::host::TodoItem {
+            id: "3".to_string(),
+            step: "清空视图前的计划".to_string(),
+            completed: false,
+        });
+        state.clear_conversation();
+        assert!(state.todos.is_empty(), "清空会话视图同样要复位计划");
+
+        // 事件流里带着清单时仍要重建出来（复位不是「一律丢掉」）。
+        state.replay_events(&[event(
+            "tool_call_requested",
+            json!({"tool": "update_todos", "tool_call_id": "c1",
+                   "arguments": {"todos": [{"id": "9", "step": "写骨架", "completed": false}]}}),
+        )]);
+        assert_eq!(state.todos.len(), 1);
+        assert_eq!(state.todos[0].step, "写骨架");
+    }
+
     /// 回合末的工具调用压缩在会话区留一行计量（用户要求「和上下文压缩一样」）：
     /// 与 `compact_summary` 的回放同口径——原事件照旧画出来，边界提示追加在流里。
     #[test]
@@ -4713,14 +4791,40 @@ mod replay_tests {
 
         assert!(
             state.records.iter().any(|record| matches!(record, Record::Notice(text)
-                if text == "已压缩 12,345 → 1,234 字符")),
+                if text == "已压缩：省 2,778 Token")),
             "会话区应当出现压缩计量：{:?}",
             state.records
         );
         assert!(
             matches!(state.records.last(), Some(Record::Notice(text))
-                if text == "已压缩 12,345 → 1,234 字符"),
+                if text == "已压缩：省 2,778 Token"),
             "计量画在工具调用之后（压缩本来就发生在整轮调用之后）：{:?}",
+            state.records
+        );
+    }
+
+    /// 决策模型标记淘汰的记账同样在会话区留一行计量，且回放按载荷重建同一行。
+    ///
+    /// 淘汰的净省量是事件里记着的实测值（不是按字符数折算），回放照原样显示。
+    #[test]
+    fn replay_events_shows_the_tool_eviction_notice() {
+        let mut state = state();
+        state.replay_events(&[
+            event("user_message", json!({"content": "看一下日志"})),
+            event(
+                "tool_call_evicted",
+                json!({"evicted_call_ids": ["c0"], "evicted_tool_names": ["grep"]}),
+            ),
+            event(
+                "tool_call_eviction",
+                json!({"evicted_count": 1, "saved_tokens": 8_900}),
+            ),
+        ]);
+
+        assert!(
+            matches!(state.records.last(), Some(Record::Notice(text))
+                if text == "已压缩：省 8,900 Token"),
+            "淘汰记账应当落成一行计量：{:?}",
             state.records
         );
     }

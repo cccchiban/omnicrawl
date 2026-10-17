@@ -60,8 +60,8 @@ node packages/cli/scripts/install-smoke.mjs   # 安装冒烟：干净前缀里�
 npm test -w omnicrawl-cli                     # e2e：真二进制 + 协议 v1
 ```
 
-宿主载荷是纯 Rust 产物，按构建机的目标构建即可（`omnicrawl-tts` 的 ONNX 运行时已改成可选
-feature，所以 musl 静态宿主载荷在 Windows 上交叉编译也能过，本机实测见
+宿主载荷是纯 Rust 产物，按构建机的目标构建即可（TTS 已改为云服务，`omnicrawl-tts` 只剩
+HTTP 与音频 I/O，原先挡住 musl 的 `ort` / `espeak-ng` 已移出依赖树，本机实测见
 `rust/docs/python-free-build.md` 第 7 节）：Windows 侧用 `--target` 指到与内核相同的三元组目录，
 Linux 侧目前仍按 runner 原生 gnu 目标构建（aarch64 musl 宿主在 arm runner 上还没验证过）。
 若目标无法在构建机上构建（或宿主没接线），启动器会退回协议直连内核——内核可以单独交叉编译成

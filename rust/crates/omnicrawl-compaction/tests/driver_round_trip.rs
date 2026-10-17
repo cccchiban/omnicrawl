@@ -141,7 +141,11 @@ fn after_turn_compacts_archives_and_rebuilds_history() {
     let history = report.history.expect("压缩后给出历史");
     assert!(history.len() >= 2, "历史含摘要与最终回复：{history:?}");
     assert_eq!(history[0]["role"].as_str(), Some("assistant"));
-    assert!(report.notice.is_some(), "给出压缩边界提示");
+    assert!(
+        !report.notices.is_empty(),
+        "给出压缩边界提示：{:?}",
+        report.notices
+    );
 
     let events = store.read_events(&session_id).expect("读事件");
     let types: Vec<&str> = events

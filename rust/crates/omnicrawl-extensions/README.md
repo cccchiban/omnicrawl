@@ -12,7 +12,7 @@ Hook 分发与 Worker 生命周期、Skill 发现与匹配、npm 安装器。
 | --- | --- | --- |
 | `plugin_models.py` | `src/models.rs` | Hook 表与策略、四种 Handler 模式、超时与阈值常量、manifest / handler / 自定义事件解析、载荷 schema 校验、JSON Patch 校验与应用、Handler 排序、`HookResult` 归一化、稳定哈希 |
 | `plugin_registry.py` | `src/registry.rs` | 路径解析、注册表读写（BOM / 损坏 JSON / 结构非法的三段文案）、原子写、user/project 合并、执行计划构建、`replaces` 冲突与环检测、启停 / 卸载 / tombstone |
-| `skill.py` | `src/skill.rs` | 名称与描述校验、frontmatter 解析、`SKILL.md` 与根级 `.md` 扫描、符号链接去重、同名冲突诊断、匹配打分、渐进式披露 XML 输出 |
+| `skill.py` | `src/skill.rs` | 名称与描述校验、frontmatter 解析、`SKILL.md` 与根级 `.md` 扫描、符号链接去重、同名冲突诊断、匹配打分、按作用域与关键词的索引检索 |
 | `plugin_protocol.py` | `src/protocol.rs` | Worker 环境白名单、NDJSON JSON-RPC 客户端（请求配对、超时、取消、stdout 协议校验、stderr 收集、Worker → Host 请求应答） |
 | `plugin_manager.py` | `src/manager.rs` | `HookDispatcher`（分模式阶段执行、observe/notify 同插件串行 + 跨插件并行、熔断、审计）、`PluginManager`（bootstrap、握手校验、自定义事件投递、状态表、关闭）、`PluginRuntime`（事务式启停与工作区切换） |
 | `plugin_install.py` | `src/install.rs` | 包规格解析、node/npm 探测、registry 交互、tarball 下载与解压、integrity / 内容树 / lockfile 校验、本地包安装、开发模式注册、启停、卸载与清理、回滚、列表与 doctor |
@@ -24,11 +24,11 @@ Hook 分发与 Worker 生命周期、Skill 发现与匹配、npm 安装器。
 cd rust && cargo test -p omnicrawl-extensions
 ```
 
-`tests/fixtures/extensions_parity.json` 覆盖 23 组用例：SemVer 与包名判定、命名空间归一化、
+`tests/fixtures/extensions_parity.json` 覆盖 22 组用例：SemVer 与包名判定、命名空间归一化、
 plugins 配置解析与区间校验、Handler 声明校验、自定义事件声明、manifest 全量解析、
 载荷 schema 校验、JSON Patch 校验与应用、Handler 排序、`HookResult` 归一化、稳定哈希、
 模式默认超时、注册表合并、执行计划、`replaces` 冲突与环、Skill 名称 / 描述校验、
-frontmatter 解析、描述推断、渐进式披露输出，以及安装器的包规格与 URL 编码。
+frontmatter 解析、描述推断，以及安装器的包规格与 URL 编码。
 
 改了实现要让冻结数据集同步更新。
 

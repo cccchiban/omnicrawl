@@ -17,8 +17,8 @@ use serde_json::{Map, Value};
 use super::error::{ToolError, ToolOutcome};
 use super::web_search::{clamp_float, clamp_int, strip_tags, truncate};
 use super::web_transport::{
-    browser_headers, detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind,
-    WebRequest, WebTransport, MAX_REDIRECTS,
+    detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind, WebRequest,
+    WebTransport, MAX_REDIRECTS,
 };
 // 浏览器指纹传输：wreq（BoringSSL）+ wreq-util 设备档案，只给 fetcher 用。
 use super::wreq_transport::{normalize_impersonate, WreqWebTransport};
@@ -110,7 +110,7 @@ pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> Tool
     let urls = parse_urls(arguments.get("urls"));
     if urls.is_empty() {
         return Err(ToolError::new(
-            "urls 不能为空：请提供至少一个要抓取的 URL（逗号分隔或 JSON 数组）。",
+            "urls 不能为空：请提供至少一个要抓取的 URL（逗号、换行分隔或 JSON 数组）。",
         ));
     }
     let plan = FetchPlan {
@@ -202,7 +202,9 @@ fn fetch_one_inner(
     for _ in 0..=MAX_META_REDIRECTS {
         let mut request = WebRequest::new(
             current.clone(),
-            browser_headers(&options.user_agent),
+            options
+                .transport
+                .navigation_headers(&options.user_agent, Some(plan.impersonate.as_str())),
             plan.timeout,
         );
         request.proxy = resolve_proxy(&current, options);
@@ -271,7 +273,10 @@ pub fn as_bool(value: Option<&Value>, default: bool) -> bool {
     }
 }
 
-/// 解析 `urls` 参数：逗号分隔字符串、JSON 数组字符串或 JSON 数组。
+/// 解析 `urls` 参数：逗号或换行分隔字符串、JSON 数组字符串或 JSON 数组。
+///
+/// 换行分隔与逗号等价：模型常把多条网址一行一条地写进同一个字符串，按整串当单个 URL
+/// 会拼出必然失败的地址。
 pub fn parse_urls(value: Option<&Value>) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     match value {
@@ -283,7 +288,12 @@ pub fn parse_urls(value: Option<&Value>) -> Vec<String> {
             match serde_json::from_str::<Value>(raw) {
                 Ok(Value::Array(items)) => parts = items.iter().map(scalar_text).collect(),
                 Ok(_) => {}
-                Err(_) => parts = raw.split(',').map(|part| part.trim().to_string()).collect(),
+                Err(_) => {
+                    parts = raw
+                        .split([',', '\n', '\r'])
+                        .map(|part| part.trim().to_string())
+                        .collect()
+                }
             }
         }
         Some(Value::Array(items)) => parts = items.iter().map(scalar_text).collect(),
@@ -427,6 +437,28 @@ mod tests {
         assert!(parse_urls(Some(&json!(""))).is_empty());
         // JSON 合法但不是数组：Python 也不做逗号回退。
         assert!(parse_urls(Some(&json!("{\"a\": 1}"))).is_empty());
+    }
+
+    #[test]
+    fn urls_split_on_newlines_too() {
+        assert_eq!(
+            parse_urls(Some(&json!("https://a\nhttps://b\n"))),
+            vec!["https://a".to_string(), "https://b".to_string()]
+        );
+        assert_eq!(
+            parse_urls(Some(&json!("https://a\r\n  https://b  \nhttps://c"))),
+            vec![
+                "https://a".to_string(),
+                "https://b".to_string(),
+                "https://c".to_string()
+            ]
+        );
+        // 逗号与换行混用：两种分隔符等价，空段被丢弃。
+        assert_eq!(
+            parse_urls(Some(&json!("https://a,\n\nhttps://b\n\n"))),
+            vec!["https://a".to_string(), "https://b".to_string()]
+        );
+        assert!(parse_urls(Some(&json!("\n \n"))).is_empty());
     }
 
     #[test]

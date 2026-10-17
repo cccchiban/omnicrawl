@@ -463,6 +463,28 @@ fn annotated_calls_stay_in_turn_and_leave_the_context_at_turn_end() {
         json!(["call-b"]),
         "淘汰事件记下被淘汰的调用 ID：{evicted}"
     );
+    // 记账事件与标注分开：实时那一行「已压缩：省 N Token」由它回放重建。
+    let measure = transcript_event(&root, "tool_call_eviction");
+    assert_eq!(
+        measure["payload"]["evicted_count"],
+        json!(1),
+        "记账事件记下剔除的组数：{measure}"
+    );
+    assert!(
+        measure["payload"]["saved_tokens"].as_i64().unwrap_or(-1) > 0,
+        "剔除确实让上下文变小，净省量应当是正数：{measure}"
+    );
+    let notice = traffic
+        .frames
+        .iter()
+        .filter(|frame| frame["method"] == "turn.notice")
+        .filter_map(|frame| frame["params"]["message"].as_str())
+        .find(|text| text.contains("已压缩：省"))
+        .unwrap_or_else(|| panic!("应当发一条淘汰计量提示：{:?}", traffic.frames));
+    assert!(
+        notice.contains("Token"),
+        "淘汰计量按 Token 报，不按字符数：{notice}"
+    );
 
     // 回合内：标注只是标注，当回合的请求体里 call-b 的调用项与结果都还在。
     let bodies = server.bodies();

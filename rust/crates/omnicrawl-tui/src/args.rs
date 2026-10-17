@@ -23,6 +23,11 @@ pub struct Options {
     pub session_root: Option<PathBuf>,
     pub context_window_tokens: Option<u64>,
     pub approval: ApprovalMode,
+    /// 审批模式是否来自命令行显式指定（`--approval`）。
+    ///
+    /// 为真时命令行优先：配置文件里 `[approval] mode` 被改写也不会在运行期覆盖它
+    /// （与启动时「命令行 → 配置文件」的同一套优先级）。
+    pub approval_from_cli: bool,
     /// 命令类工具的默认超时（秒），与 Python 侧 `command_timeout_seconds` 同义。
     pub command_timeout_seconds: i64,
     /// 单个工具执行的最长等待（秒），与 Python 侧 `tool_timeout_seconds` 同义；
@@ -250,6 +255,7 @@ fn parse_with(
                 )
             })?,
         },
+        approval_from_cli: approval.is_some(),
         command_timeout_seconds: command_timeout.unwrap_or(360),
         tool_timeout_seconds: tool_timeout.unwrap_or(600),
         native_vision,

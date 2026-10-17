@@ -5,6 +5,9 @@
 //! 逐字对照；`fetcher` 的抓取链路依赖 `curl_cffi` 会话，无从注入，对照的是它的纯函数
 //! （URL 解析、内网判定、meta refresh、标题与正文提取、截断、格式化）。
 //!
+//! 数据集里另有 Rust 专有的 `firecrawl` 与 `mixed`（混合搜索）用例：这两条通路没有
+//! Python 对映实现，用例固定的是本实现自己的契约（端点、请求体字段、去重与合并口径）。
+//!
 //! 两侧的耗时字段都会规范化成 `{ELAPSED}`：它是真实时钟读数，不构成可对照的语义。
 
 use std::sync::{Arc, Mutex};
@@ -15,7 +18,7 @@ use serde_json::{Map, Value};
 use omnicrawl_tui::tools::fetcher::{self, FetchEntry};
 use omnicrawl_tui::tools::web_search::{self, WebSearchOptions};
 use omnicrawl_tui::tools::web_transport::{
-    is_private_host, WebError, WebRequest, WebResponse, WebTransport,
+    is_private_host, WebError, WebErrorKind, WebRequest, WebResponse, WebTransport,
 };
 
 const FIXTURE: &str = include_str!("fixtures/net_tools_parity.json");
@@ -45,8 +48,12 @@ fn normalize(text: &str) -> String {
 }
 
 /// 记录型传输：返回测试给定的页面，并记下每次请求的完整 URL。
+///
+/// 用例给 `body` 时所有请求都回同一份（单引擎用例）；给 `routes`（URL 片段 → 响应体）时按
+/// 片段分发（混合搜索这类多路用例），命中不了任何片段就报连接失败。
 struct CaseTransport {
     body: Mutex<String>,
+    routes: Mutex<Vec<(String, String)>>,
     requests: Mutex<Vec<String>>,
 }
 
@@ -54,12 +61,17 @@ impl CaseTransport {
     fn new() -> Self {
         Self {
             body: Mutex::new(String::new()),
+            routes: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
         }
     }
 
     fn set_body(&self, body: &str) {
         *self.body.lock().expect("页面锁") = body.to_string();
+    }
+
+    fn set_routes(&self, routes: &[(String, String)]) {
+        *self.routes.lock().expect("路由锁") = routes.to_vec();
     }
 
     fn take_requests(&self) -> Vec<String> {
@@ -73,6 +85,22 @@ impl WebTransport for CaseTransport {
             .lock()
             .expect("请求锁")
             .push(request.url.clone());
+        let routes = self.routes.lock().expect("路由锁");
+        if !routes.is_empty() {
+            for (marker, body) in routes.iter() {
+                if request.url.contains(marker.as_str()) {
+                    return Ok(WebResponse {
+                        status: 200,
+                        final_url: request.url.clone(),
+                        body: body.clone().into_bytes(),
+                    });
+                }
+            }
+            return Err(WebError::new(
+                WebErrorKind::Connect,
+                "没有匹配的路由".to_string(),
+            ));
+        }
         Ok(WebResponse {
             status: 200,
             final_url: request.url.clone(),
@@ -94,16 +122,47 @@ fn web_search_cases_match_python() {
         max_retries: section["options"]["max_retries"].as_u64().unwrap_or(0) as usize,
         // 显式禁用代理：对照不读系统代理、不起网络。
         proxy: Some(String::new()),
+        // 接口型渠道的凭据由数据集给出（值只为对照，不是真凭据）。
+        tavily_api_key: section["options"]["tavily_api_key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        firecrawl_api_key: section["options"]["firecrawl_api_key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        // 串行下发：请求集合可比，不比线程调度。
+        mixed_parallelism: 1,
         ..WebSearchOptions::default()
     };
 
     for case in section["cases"].as_array().expect("搜索用例") {
         transport.set_body(case["html"].as_str().unwrap_or_default());
+        transport.set_routes(
+            &case["routes"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            (
+                                item["match"].as_str().unwrap_or_default().to_string(),
+                                item["html"].as_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>()
+                })
+                .unwrap_or_default(),
+        );
         let _ = transport.take_requests();
         let outcome = web_search::web_search(&options, &arguments(&case["arguments"]));
+        let mut requests = transport.take_requests();
+        requests.sort();
+        let mut expected_requests = strings(&case["requests"]);
+        expected_requests.sort();
         assert_eq!(
-            transport.take_requests(),
-            strings(&case["requests"]),
+            requests,
+            expected_requests,
             "请求 URL 不一致：{:?}",
             case["arguments"]
         );

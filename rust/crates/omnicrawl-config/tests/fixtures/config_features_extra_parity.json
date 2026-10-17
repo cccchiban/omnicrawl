@@ -153,12 +153,8 @@
    "config": {},
    "result": {
     "enabled": false,
-    "model_dir": "",
-    "voice": "Junhao",
     "auto_play": true,
-    "thread_count": 4,
-    "device": "auto",
-    "streaming": true,
+    "speak_replies": false,
     "output_dir": ".omnicrawl/.agent_tmp/tts"
    }
   },
@@ -167,97 +163,26 @@
    "config": {
     "tts": {
      "enabled": true,
-     "model_dir": " D:\\tts\\models ",
-     "voice": " Xiaoyu ",
      "auto_play": false,
-     "thread_count": 8,
-     "device": " CUDA ",
-     "streaming": false,
+     "speak_replies": true,
      "output_dir": " out\\tts "
     }
    },
    "result": {
     "enabled": true,
-    "model_dir": "D:\\tts\\models",
-    "voice": "Xiaoyu",
     "auto_play": false,
-    "thread_count": 8,
-    "device": "cuda",
-    "streaming": false,
+    "speak_replies": true,
     "output_dir": "out\\tts"
    }
-  },
-  {
-   "name": "线程数非法",
-   "config": {
-    "tts": {
-     "thread_count": 3
-    }
-   },
-   "error": "tts.thread_count 必须是 1/2/4/8。"
-  },
-  {
-   "name": "线程数是字符串",
-   "config": {
-    "tts": {
-     "thread_count": "4"
-    }
-   },
-   "result": {
-    "enabled": false,
-    "model_dir": "",
-    "voice": "Junhao",
-    "auto_play": true,
-    "thread_count": 4,
-    "device": "auto",
-    "streaming": true,
-    "output_dir": ".omnicrawl/.agent_tmp/tts"
-   }
-  },
-  {
-   "name": "线程数不可解析",
-   "config": {
-    "tts": {
-     "thread_count": "abc"
-    }
-   },
-   "error": "配置段 tts 数值字段无效：invalid literal for int() with base 10: 'abc'"
-  },
-  {
-   "name": "设备非法",
-   "config": {
-    "tts": {
-     "device": "tpu"
-    }
-   },
-   "error": "tts.device 必须是 auto/cpu/cuda 之一。"
-  },
-  {
-   "name": "音色为空",
-   "config": {
-    "tts": {
-     "voice": "   "
-    }
-   },
-   "error": "tts.voice 不能为空。"
   },
   {
    "name": "输出目录为空",
    "config": {
     "tts": {
-     "output_dir": ""
+     "output_dir": "   "
     }
    },
-   "result": {
-    "enabled": false,
-    "model_dir": "",
-    "voice": "Junhao",
-    "auto_play": true,
-    "thread_count": 4,
-    "device": "auto",
-    "streaming": true,
-    "output_dir": ".omnicrawl/.agent_tmp/tts"
-   }
+   "error": "tts.output_dir 不能为空。"
   },
   {
    "name": "段不是对象",
@@ -273,19 +198,15 @@
    },
    "result": {
     "enabled": false,
-    "model_dir": "",
-    "voice": "Junhao",
     "auto_play": true,
-    "thread_count": 4,
-    "device": "auto",
-    "streaming": true,
+    "speak_replies": false,
     "output_dir": ".omnicrawl/.agent_tmp/tts"
    }
   }
  ],
  "tts_save": [
   {
-   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nenabled = true\nmodel_dir = \"\"\nvoice = \"Junhao\"\nauto_play = true\nthread_count = 4\ndevice = \"auto\"\nstreaming = true\noutput_dir = \".omnicrawl/.agent_tmp/tts\"\n"
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nenabled = true\nauto_play = true\nspeak_replies = false\noutput_dir = \".omnicrawl/.agent_tmp/tts\"\n"
   }
  ],
  "agent_workspace_load": [
@@ -411,6 +332,7 @@
    "config": {},
    "result": {
     "enabled": false,
+    "provider": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "",
     "api_key_env": "OPENAI_API_KEY",
@@ -418,6 +340,8 @@
     "size": "auto",
     "quality": "auto",
     "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
     "n": 1,
     "timeout_seconds": 120
    }
@@ -435,11 +359,15 @@
      "quality": "high",
      "output_format": "webp",
      "n": 4,
-     "timeout_seconds": 300
+     "timeout_seconds": 300,
+     "provider": " Gemini ",
+     "aspect_ratio": " 16:9 ",
+     "image_size": " 2k "
     }
    },
    "result": {
     "enabled": true,
+    "provider": "gemini",
     "base_url": "https://api.example.com/v1",
     "api_key": "sk-test",
     "api_key_env": "MY_KEY",
@@ -447,8 +375,33 @@
     "size": "1536x1024",
     "quality": "high",
     "output_format": "webp",
+    "aspect_ratio": "16:9",
+    "image_size": "2K",
     "n": 4,
     "timeout_seconds": 300
+   }
+  },
+  {
+   "name": "Gemini 折算默认端点与模型",
+   "config": {
+    "image_gen": {
+     "provider": "gemini"
+    }
+   },
+   "result": {
+    "enabled": false,
+    "provider": "gemini",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gemini-2.5-flash-image",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
+    "n": 1,
+    "timeout_seconds": 120
    }
   },
   {
@@ -460,6 +413,7 @@
    },
    "result": {
     "enabled": false,
+    "provider": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "",
     "api_key_env": "OPENAI_API_KEY",
@@ -467,6 +421,8 @@
     "size": "auto",
     "quality": "auto",
     "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
     "n": 1,
     "timeout_seconds": 120
    }
@@ -507,6 +463,7 @@
    },
    "result": {
     "enabled": false,
+    "provider": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "",
     "api_key_env": "OPENAI_API_KEY",
@@ -514,6 +471,8 @@
     "size": "auto",
     "quality": "auto",
     "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
     "n": 1,
     "timeout_seconds": 120
    }
@@ -545,6 +504,7 @@
    },
    "result": {
     "enabled": false,
+    "provider": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "",
     "api_key_env": "OPENAI_API_KEY",
@@ -552,6 +512,8 @@
     "size": "auto",
     "quality": "auto",
     "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
     "n": 1,
     "timeout_seconds": 120
    }
@@ -583,6 +545,7 @@
    },
    "result": {
     "enabled": false,
+    "provider": "openai",
     "base_url": "https://api.openai.com/v1",
     "api_key": "",
     "api_key_env": "OPENAI_API_KEY",
@@ -590,6 +553,8 @@
     "size": "auto",
     "quality": "auto",
     "output_format": "png",
+    "aspect_ratio": "",
+    "image_size": "",
     "n": 1,
     "timeout_seconds": 120
    }

@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -177,8 +178,9 @@ fn runner_with_custody(
         custody,
         // 不做工具调用淘汰：测试只关心提问托管的分支。
         prune: None,
-        // 不做工具建议：user 原文照发。
+        // 不做建议：user 原文照发。
         suggest: None,
+        subagent_suggest: None,
         prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
@@ -245,6 +247,7 @@ impl omnicrawl_host::tools::SuggestClient for FixedSuggest {
         &self,
         request: &omnicrawl_host::tools::decision_suggest::SuggestRequest<'_>,
     ) -> Result<Vec<String>, String> {
+        // 建议行与送审字段名都按种类取：`state.tools` / `state.subagents`，兜底名同理。
         *self.seen.lock().expect("记录未被毒化") = Some((
             request.user_prompt.to_string(),
             request
@@ -257,10 +260,42 @@ impl omnicrawl_host::tools::SuggestClient for FixedSuggest {
     }
 }
 
+/// 会睡一段时间的桩：记录并发发起时的进入顺序与峰值在飞数。
+struct SlowFixedSuggest {
+    delay: Duration,
+    names: Vec<String>,
+    in_flight: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+impl omnicrawl_host::tools::SuggestClient for SlowFixedSuggest {
+    fn suggest(
+        &self,
+        _request: &omnicrawl_host::tools::decision_suggest::SuggestRequest<'_>,
+    ) -> Result<Vec<String>, String> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        thread::sleep(self.delay);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(self.names.clone())
+    }
+}
+
 fn runner_with_suggest(
     client: KernelClient,
     root: &Path,
     suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+) -> TurnRunner {
+    runner_with_both_suggestions(client, root, suggest, None, None)
+}
+
+/// 带上两类建议的版本；`roles` 钉住子代理候选，否则会随本机 subagents 配置漂移。
+fn runner_with_both_suggestions(
+    client: KernelClient,
+    root: &Path,
+    suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    roles: Option<Vec<(String, String)>>,
 ) -> TurnRunner {
     let mut options = RunnerOptions {
         workspace_root: root.to_path_buf(),
@@ -276,10 +311,16 @@ fn runner_with_suggest(
         custody: None,
         prune: None,
         suggest: None,
+        subagent_suggest: None,
         prompt: None,
     };
     options.suggest = suggest;
-    TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
+    options.subagent_suggest = subagent_suggest;
+    let registry = RegistryOptions {
+        subagent_roles: roles.unwrap_or_default(),
+        ..RegistryOptions::default()
+    };
+    TurnRunner::new(client, options, &registry).expect("工具表应当建成")
 }
 
 #[test]
@@ -641,6 +682,169 @@ fn an_empty_shortlist_sends_the_prompt_untouched() {
     pipe.close();
 }
 
+/// 两类建议同时开启：两条请求并发在飞，且都拼进 user 尾部（工具行在前，子代理行在后）。
+#[test]
+fn both_suggestion_kinds_run_concurrently_and_both_land_in_the_user_text() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("suggest-both");
+    let delay = Duration::from_millis(400);
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let channel = || omnicrawl_host::tools::decision_suggest::SuggestChannel {
+        mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+        model: "jev-latest".to_string(),
+        base_url: "http://127.0.0.1:1".to_string(),
+        api_key: "jv_test".to_string(),
+        api_key_env: "JEV_API_KEY".to_string(),
+        retry_count: 0,
+    };
+    let options = |names: Vec<String>| omnicrawl_host::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(channel()),
+        masking: None,
+        client: Arc::new(SlowFixedSuggest {
+            delay,
+            names,
+            in_flight: Arc::clone(&in_flight),
+            peak: Arc::clone(&peak),
+        }),
+    };
+    let roles = vec![
+        ("explore".to_string(), "快速只读探索代码".to_string()),
+        ("plan".to_string(), "制定只读实施计划".to_string()),
+    ];
+    let mut subject = runner_with_both_suggestions(
+        client,
+        &root,
+        Some(options(vec!["web_search".to_string()])),
+        Some(options(vec!["explore".to_string()])),
+        Some(roles),
+    );
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    let started = std::time::Instant::now();
+    subject
+        .submit(
+            "先探索代码再定计划",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
+        .expect("回合应当跑完");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < delay * 2,
+        "两条请求应当并发：耗时 {elapsed:?} 不该接近两倍延迟"
+    );
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        2,
+        "两条建议请求必须同时在飞"
+    );
+
+    let submitted = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "先探索代码再定计划
+
+当前请求建议调用tool：web_search。
+当前请求建议使用子代理：explore。"
+    );
+    pipe.close();
+}
+
+/// 只有子代理建议开着时，工具建议的开关不影响它；插入行只有子代理那一行。
+#[test]
+fn subagent_suggestion_works_without_tool_suggestion() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("suggest-subagents-only");
+    let subagent_suggest = omnicrawl_host::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
+        }),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["explore".to_string(), "plan".to_string()],
+            seen: Arc::new(Mutex::new(None)),
+        }),
+    };
+    let mut subject = runner_with_both_suggestions(
+        client,
+        &root,
+        None,
+        Some(subagent_suggest),
+        Some(vec![
+            ("explore".to_string(), "快速只读探索代码".to_string()),
+            ("plan".to_string(), "制定只读实施计划".to_string()),
+        ]),
+    );
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit("先探索再计划", &TurnControl::new(), &mut interactor, &mut |_| {})
+        .expect("回合应当跑完");
+
+    let submitted = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "先探索再计划
+
+当前请求建议使用子代理：explore、plan。"
+    );
+    pipe.close();
+}
+
 #[test]
 fn cancel_sends_turn_cancel_and_reports_cancelled() {
     let (client, recorder, pipe) = kernel();
@@ -924,6 +1128,7 @@ fn skill_runner_options(
         custody: None,
         prune: None,
         suggest: None,
+        subagent_suggest: None,
         prompt: Some(Arc::new(prompt)),
     }
 }

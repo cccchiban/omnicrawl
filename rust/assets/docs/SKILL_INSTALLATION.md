@@ -15,7 +15,7 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 
 - `/skills`：查看当前已加载的 Skill；发现阶段的问题（路径不存在、同名冲突、名称不合法）会附在列表后面。
 - `/skill:<skill-name>`：手动指定本轮使用某个 Skill（命中后正文注入本轮，未命中会列出可用名称）。
-- 普通输入：Agent 会根据已索引的 `name` 和 `description` 判断是否加载匹配的 Skill。
+- 普通输入：Agent 用 `skill_search` 检索已索引的 `name` 和 `description`，命中后读取对应正文。
 
 ## 2. 安装到哪里
 
@@ -77,8 +77,8 @@ disable-model-invocation: false
 | 字段 | 必填 | 规则 |
 |------|------|------|
 | `name` | 是 | 1-64 字符；仅 `a-z`、`0-9`、`-`；不能首尾为 `-`；不能连续 `--` |
-| `description` | 是 | 不为空，最长 1024 字符；用于自动匹配 |
-| `disable-model-invocation` | 否 | `true` 时不会自动匹配，只能 `/skill:name` 手动调用 |
+| `description` | 是 | 不为空，最长 1024 字符；用于 `skill_search` 的关键词匹配 |
+| `disable-model-invocation` | 否 | `true` 时不会被 `read` 主动加载，只能 `/skill:name` 手动调用 |
 
 `description` 支持 YAML 块标量：`>-`（折叠成一行）或 `|`（保留换行），长描述可跨多行书写。
 
@@ -89,12 +89,34 @@ Agent 对 Skill 的读取分三层：
 | 层级 | 何时发生 | 读取内容 | 目的 |
 |------|----------|----------|------|
 | L1 索引 | 程序启动或重新发现时 | `name`、`description`、位置、开关 | 低成本知道有哪些 Skill |
-| L2 匹配 | 用户输入一轮任务时 | 已索引元数据 | 判断是否需要某个 Skill |
-| L3 加载 | 手动 `/skill:name` 时 | 完整 `SKILL.md` 正文 | 注入专用流程和约束 |
+| L2 匹配 | 用户输入一轮任务时 | 用 `skill_search` 按需检索的索引元数据 | 判断是否需要某个 Skill |
+| L3 加载 | 自动命中或 `/skill:name` 时 | 完整 `SKILL.md` 正文 | 注入专用流程和约束 |
 
-L2 的匹配由 Agent 自己完成：索引（`name` + `description` + `location`）进上下文，Agent 判断命中后用 `read` 打开对应 `SKILL.md`。宿主侧的关键词打分（`SkillManager::match_skills`）只作为可复用的判定函数保留，不参与自动注入，避免同一件事有两套判定。
+L1 的索引**不再**拼进模型上下文：Skill 目录整份注入会随数量线性膨胀，长索引里靠后的
+条目也容易被模型忽略。L2 的匹配改由 `skill_search` 工具承担：
 
-L3 目前只有 `/skill:<name>` 这一条入口：命中后正文以活动 Skill 块注入**本轮**，回合结束即换回索引。
+```text
+skill_search(query="提取 B 站视频笔记", scope="project")
+```
+
+- `query`：关键词，与索引的 `name`/`description` 走同一套打分（CJK 按 2–4 字切块、英文按
+  ≥3 字符单词）；省略时按作用域列出全部，用于先浏览再决定。
+- `scope`：`all`（缺省）、`project`、`user`、`enterprise`、`path`（由
+  `[skills].extra_paths` 引入），用于精确限定检索范围。
+- `max_results`：1–50，缺省 10。
+
+带关键词检索时可选交给结构化决策模型重排（`decision_models.toml` 的
+`[features] skill_search_rerank`，默认关闭）：先取更宽的候选池（最多 20 条）送审，按决策模型
+给出的置信度排序，条数仍按 `max_results`；决策服务不可用时回退本地打分顺序。按作用域列出
+全部时不送审——那一次没有「相关度」可判。
+
+返回项只有索引元数据（`name`、`description`、`scope`、`location`、`score`、`reason`），
+不含正文。`score` 是本地打分的值；走重排时顺序由决策模型给出，可能与 `score` 的高低不一致。
+判断命中后用 `read` 打开 `location` 指向的 `SKILL.md` 读正文——这就是 L3。
+`location` 可能落在工作区之外（个人级、企业级目录），因此不要用 `find`/`grep` 去找 Skill，
+它们只看工作区。
+
+L3 的另一条入口仍是 `/skill:<name>`：命中后正文以活动 Skill 块注入**本轮**，回合结束即换回常规上下文。
 
 编写 Skill 时也要遵循这个思想：
 
@@ -169,7 +191,7 @@ L3 目前只有 `/skill:<name>` 这一条入口：命中后正文以活动 Skill
 |--------|----------|
 | `/skills` 可见 | 列表中出现 Skill 名称、作用域和描述 |
 | 手动调用 | `/skill:<name> 测试任务` 能加载该 Skill（状态行提示「已加载 Skill：<name>」） |
-| 自动匹配 | 普通任务命中 description 关键词时能按 Skill 流程回答 |
+| 检索命中 | `skill_search(query="<任务关键词>")` 能在结果里看到该 Skill 的 `name` 与 `description`（`disable-model-invocation: true` 的技能仍会被检索出来，仅表示不自动加载） |
 | 资源路径 | 正文中引用的 `references/`、`scripts/` 路径相对 `SKILL.md` 所在目录可解析 |
 | 安全边界 | Skill 没有要求跳过用户确认或绕过工具安全限制 |
 
@@ -177,7 +199,7 @@ L3 目前只有 `/skill:<name>` 这一条入口：命中后正文以活动 Skill
 
 - `/skills` 看不到：检查目录层级是否是 `<skill-name>/SKILL.md`，或是否放错作用域；`/skills` 末尾的发现诊断会说明路径不存在、同名冲突或名称不合法。
 - 名称不合法：改成 kebab-case，例如 `python-code-review`。
-- 自动不触发：优化 `description`，写清楚任务关键词和适用场景。
+- 检索不到：优化 `description`，写清楚任务关键词和适用场景；必要时用 `scope` 收窄到实际安装的作用域。
 - 只想手动触发：设置 `disable-model-invocation: true`。
 - description 写多行：用 `description: >-` 块标量，不要写成一堆单行键。
 

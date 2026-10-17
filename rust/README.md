@@ -129,12 +129,14 @@ rust/
 │   ├── src/install.rs                      # npm 安装、本地包、启停、卸载、回滚、doctor
 │   ├── tests/extensions_parity.rs          # 冻结对照契约测试（23 组）
 │   └── README.md                           # 模块分工、已知差异、尚未纳入对照的面
-├── crates/omnicrawl-tts/                   # 语音合成：接口合成（默认）+ 可选 MOSS-TTS-Nano ONNX 本地推理
-│   ├── src/api.rs                          # OpenAI 兼容 audio/speech、长文本分块与波形拼接
-│   ├── src/runtime.rs                      # 8 个 ONNX session、prefill/decode、local 采样分支、codec 全量/流式解码（onnx）
-│   ├── src/engine.rs                       # 文本分块、音色解析、参考音频编码、逐块合成与 WAV 写出（onnx）
-│   ├── src/sampler.rs                      # PCG64 随机数与 top-k/top-p 采样
-│   ├── tests/tts_runtime_parity.rs         # greedy 生成帧的冻结对照（需要模型与 --features onnx）
+├── crates/omnicrawl-tts/                   # 语音合成：云服务（OpenAI audio/speech 与 Gemini TTS）
+│   ├── src/openai.rs                       # OpenAI audio/speech 的请求与响应
+│   ├── src/gemini.rs                       # Gemini TTS 的 generateContent 与 base64 音频解码
+│   ├── src/synthesis.rs                    # 选路、分块、波形拼接与落盘（TtsBackend）
+│   ├── src/text.rs                         # 长文本按句切块
+│   ├── src/codec.rs                        # 响应音频解码（WAV 容器 / 裸 PCM 16 位）
+│   ├── src/audio.rs                        # 8/16/24/32 位 PCM WAV 读写（含内存字节解码）
+│   ├── src/player.rs                       # Windows PlaySoundW、macOS/Linux 系统播放器回退
 │   └── README.md                           # 模块对映、关键决策、验证与已知差异
 ├── crates/omnicrawl-mcp/                   # MCP 子系统（配置、传输、管理器、本地 Server）
 │   ├── src/config.rs                       # [mcp] 配置段、环境变量覆盖、Server/传输/风险等级校验
@@ -298,9 +300,9 @@ npm 平台包的宿主载荷也换成 Rust 产物：`packages/cli/scripts/build-
 `--target <三元组>` 指到交叉目标并让产物目录跟三元组走（Windows 侧 CI 会传它，产物与内核同处）。
 旧的 `--legacy-python` PyInstaller 冻结路径已随「彻底脱离 Python 宿主」删除
 （`packaging/pyinstaller/` 一并移除）：构建期不再需要 Python。Linux 侧宿主载荷原先只能构建原生 gnu 目标
-（`omnicrawl-tts → ort-sys` 没有 musl 预编译库）；TTS 改成「接口合成为主、本地 ONNX 为可选 feature」后
-`ort` 退出了默认依赖树，musl 宿主载荷已可在本机交叉编出（五个产物全静态链接，
-详见 `docs/python-free-build.md` 第 7 节）。
+（`omnicrawl-tts → ort-sys` 没有 musl 预编译库）。TTS 改成云服务后该阻碍已消失：
+`omnicrawl-tts` 只剩 HTTP 与音频 I/O（`ureq` + `serde_json` + `base64`），`ort` 与
+`espeakng-sys` 都已移出依赖树，musl 宿主载荷不再受阻（详见 `docs/python-free-build.md` 第 7 节）。
 
 `omnicrawl-llm` 与内核接线都已落地：宿主在 `initialize` 里给出可选的 `model` 块，内核就自己发模型请求，
 增量经 `turn.delta` / `turn.reasoning_delta` / `turn.token_usage` 外发，重试与文案按 `request_retry_count`

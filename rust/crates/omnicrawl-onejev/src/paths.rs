@@ -8,43 +8,24 @@
 //!   venv/                 专用虚拟环境（torch CUDA + qev）
 //!   cache/huggingface/    HF 下载缓存（下载复用、离线启动都靠它）
 //! ```
-//!
-//! 路径归一化与 TTS 侧同一套语义（目标不存在时也要给出绝对路径，Windows 去掉 `\\?\` 前缀）。
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 
 /// 默认数据根目录（`<home>/.omnicrawl/onejev`）。
 pub fn default_root(env: &ConfigEnvironment) -> PathBuf {
-    env.home().join(".omnicrawl").join("onejev")
+    env.home()
+        .join(".omnicrawl")
+        .join(omnicrawl_config::features::decision_model::ONEJEV_DEFAULT_DIRNAME)
 }
 
 /// 解析数据根目录：配置为空时用默认目录。
+///
+/// 转发到 `omnicrawl-config` 的同一实现：端点名是按这个根目录算哈希得来的，
+/// 两边各写一份解析就会在 `~` 之类的写法上算出不同的根，最终连不上服务。
 pub fn resolve_root(env: &ConfigEnvironment, configured: &str) -> PathBuf {
-    let text = configured.trim();
-    if text.is_empty() {
-        return default_root(env);
-    }
-    resolve_lenient(&expand_user(env, text))
-}
-
-/// 展开配置里的 `~`（与 `omnicrawl-config` 内部同名实现同语义，那边不对外导出）。
-fn expand_user(env: &ConfigEnvironment, raw: &str) -> PathBuf {
-    if raw == "~" {
-        return env.home().to_path_buf();
-    }
-    for prefix in ["~/", "~\\"] {
-        if let Some(rest) = raw.strip_prefix(prefix) {
-            let rest = rest.trim_start_matches(['/', '\\']);
-            if rest == "." || rest.is_empty() {
-                return env.home().to_path_buf();
-            }
-            return env.home().join(rest);
-        }
-    }
-    PathBuf::from(raw)
+    omnicrawl_config::features::decision_model::resolve_onejev_root(env, configured)
 }
 
 /// 某尺寸的权重目录（根目录下的 `models/<仓库名>`）。
@@ -70,7 +51,7 @@ pub fn venv_python(root: &Path) -> PathBuf {
     }
 }
 
-/// 虚拟环境里 `qev` 可执行文件（服务优先用它，避免依赖 PATH）。
+/// 虚拟环境里 `qev` 可执行文件（判定环境是否装好时用它判断）。
 pub fn venv_qev(root: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -82,12 +63,27 @@ pub fn venv_qev(root: &Path) -> PathBuf {
     }
 }
 
+/// 本地判定 worker 的文件名（与插件 Worker 同放 `extensions/`，随宿主载荷分发）。
+pub const WORKER_FILENAME: &str = "onejev_worker.py";
+
+/// worker 脚本路径：按插件 Worker 同一套目录约定找 `extensions/onejev_worker.py`。
+///
+/// 本机服务不再用官方 `qev serve`，而是由这个脚本直接驱动引擎并在管道上服务，
+/// 所以它必须与二进制一起分发；找不到时返回候选路径，由调用方给出可读报错。
+pub fn worker_script_path() -> PathBuf {
+    omnicrawl_extensions::protocol::runner_search_dirs()
+        .into_iter()
+        .map(|directory| directory.join(WORKER_FILENAME))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from(WORKER_FILENAME))
+}
+
 /// Hugging Face 下载缓存目录（下载与离线启动共用）。
 pub fn hf_cache_dir(root: &Path) -> PathBuf {
     root.join("cache").join("huggingface")
 }
 
-/// 服务日志文件（`qev serve` 的 stdout/stderr 落这里，便于排障）。
+/// 服务日志文件（worker 的 stdout/stderr 落这里，便于排障）。
 pub fn server_log_path(root: &Path) -> PathBuf {
     root.join("qev-server.log")
 }
@@ -103,45 +99,6 @@ pub fn server_pid_path(root: &Path) -> PathBuf {
 /// 完整输出必须落盘，用户才能自己翻到根因。
 pub fn install_log_dir(root: &Path) -> PathBuf {
     root.join("logs")
-}
-
-/// 近似 Python `Path.resolve()`：目标不存在时也要给出归一化路径。
-pub fn resolve_lenient(path: &Path) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return strip_verbatim(canonical);
-    }
-    let mut tail: Vec<OsString> = Vec::new();
-    let mut current = path.to_path_buf();
-    while let Some(parent) = current.parent() {
-        match current.file_name() {
-            Some(name) => tail.push(name.to_os_string()),
-            None => return path.to_path_buf(),
-        }
-        if parent.as_os_str().is_empty() {
-            break;
-        }
-        if let Ok(canonical) = parent.canonicalize() {
-            let mut resolved = strip_verbatim(canonical);
-            for name in tail.iter().rev() {
-                resolved.push(name);
-            }
-            return resolved;
-        }
-        current = parent.to_path_buf();
-    }
-    path.to_path_buf()
-}
-
-/// 去掉 Windows 规范化路径的 `\\?\` 前缀（保留 UNC 形式）。
-fn strip_verbatim(path: PathBuf) -> PathBuf {
-    let text = path.to_string_lossy().to_string();
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
-        let bytes = rest.as_bytes();
-        if bytes.len() >= 2 && bytes[1] == b':' {
-            return PathBuf::from(rest.to_string());
-        }
-    }
-    path
 }
 
 #[cfg(test)]

@@ -452,6 +452,17 @@ fn kernel_owns_the_session_and_compacts_after_turn() {
         notices.iter().any(|notice| notice.contains("已压缩")),
         "回合内应出现压缩提示：{notices:?}"
     );
+    // 阈值触发的压缩挂在回合收尾、`turn.finished` 之前：状态行走 `turn.status` 报一条
+    // 「上下文压缩中」，否则这几秒钟界面上看不出正在压缩。
+    let statuses: Vec<&str> = frames
+        .iter()
+        .filter(|frame| frame["method"] == "turn.status")
+        .filter_map(|frame| frame["params"]["message"].as_str())
+        .collect();
+    assert!(
+        statuses.iter().any(|status| status.contains("压缩中")),
+        "压缩期间应有状态提示：{statuses:?}"
+    );
     // 触发压缩的回合把计量发给宿主（宿主据此分发 `context.compaction.after_turn`）。
     let compaction = frames
         .iter()

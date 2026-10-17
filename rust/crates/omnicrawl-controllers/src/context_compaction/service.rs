@@ -85,6 +85,11 @@ pub struct ContextCompactionService {
     /// 模型摘要不可用或校验不通过时是否改用确定性摘要兜底
     /// （配置 `failure_fallback = "deterministic"`）。
     deterministic_fallback: bool,
+    /// 压缩进度回调：确定要压缩、即将请求摘要模型（唯一的秒级操作）之前触发一次。
+    ///
+    /// 判定与批量选择在此之前完成且都很快，所以只有真正压缩的那一次才会触发；
+    /// 宿主据此把「上下文压缩中」画到状态行上。
+    progress: Option<std::rc::Rc<dyn Fn()>>,
 }
 
 impl ContextCompactionService {
@@ -94,6 +99,12 @@ impl ContextCompactionService {
 
     pub fn with_compactor(mut self, compactor: Box<dyn SummaryCompactorPort>) -> Self {
         self.compactor = Some(compactor);
+        self
+    }
+
+    /// 压缩开始前的回调（见 [`Self::progress`] 字段）。
+    pub fn with_progress(mut self, progress: std::rc::Rc<dyn Fn()>) -> Self {
+        self.progress = Some(progress);
         self
     }
 
@@ -127,6 +138,27 @@ impl ContextCompactionService {
         reasoning_effort: &str,
         preserve_exact_evidence: bool,
     ) -> Result<ContextCompactionOutcome, AgentError> {
+        self.after_complete_turn_with_pre_compaction(
+            source_events,
+            measure,
+            reasoning_effort,
+            preserve_exact_evidence,
+            &|| {},
+        )
+    }
+
+    /// 同 [`Self::after_complete_turn`]，但在**决策之后、摘要请求之前**先跑一次
+    /// `pre_compaction`：压缩链的顺序是「淘汰 → 工具调用压缩 → 非工具部分交给上下文压缩」，
+    /// 工具段必须赶在摘要请求之前发出（用户指定）。未触发压缩时不会调用它——
+    /// 那时候一次模型请求都不该发。
+    pub fn after_complete_turn_with_pre_compaction(
+        &self,
+        source_events: &[SourceEvent],
+        measure: MeasureInput,
+        reasoning_effort: &str,
+        preserve_exact_evidence: bool,
+        pre_compaction: &dyn Fn(),
+    ) -> Result<ContextCompactionOutcome, AgentError> {
         let measured = self.measure_after_complete_turn(measure)?;
         // 「压缩即丢弃」：整个窗口（含最近回合）都交给摘要模型，投影只保留
         // 摘要与最终回复锚点，因此批量选择不再接收保留窗口参数。
@@ -155,6 +187,8 @@ impl ContextCompactionService {
             measured.snapshot.potential_retired_tokens,
             prompt_events_tokens(&batch.events),
         );
+        // 决策已定为「要压缩」：工具段赶在摘要请求之前发出（顺序见方法文档）。
+        pre_compaction();
         self.compact_batch(
             &batch,
             source_events,
@@ -247,6 +281,9 @@ impl ContextCompactionService {
                 ..ContextCompactionOutcome::default()
             });
         };
+        if let Some(progress) = self.progress.as_ref() {
+            progress();
+        }
 
         let mut feedback: Vec<String> = Vec::new();
         let mut generation: Option<ModelSummaryResult> = None;

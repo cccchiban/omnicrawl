@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use super::hit::HitAction;
@@ -19,7 +19,7 @@ use super::state::{
     ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, Focus,
     ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
     DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
-    TOOLS_APPROVAL_ROW,
+    TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET, TOOLS_WEB_SEARCH_LABEL, TOOLS_WEB_SEARCH_ROW,
 };
 use super::{channel_field_value, decision_field_value, row_label};
 use crate::ui::fullscreen::terminal::theme;
@@ -929,11 +929,11 @@ fn form_rows_area(area: Rect, picker_height: u16) -> Rect {
     }
 }
 
-/// 表单页字段表的窗口起点：聚焦字段始终可见。
+/// 表单页字段表的窗口起点（可见行号）：聚焦字段始终可见。
 fn form_window_offset(state: &SettingsState, area: Rect) -> usize {
     let rows = form_rows_area(area, 0);
     window_offset(
-        state.form_focused(),
+        state.form_focus_position(),
         state.form_field_count(),
         rows.height.max(1) as usize,
     )
@@ -976,7 +976,7 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, _focused: b
     let rows_area = form_rows_area(area, 0);
     let rows = state.form_rows();
     let visible = rows_area.height.max(1) as usize;
-    let offset = window_offset(state.form_focused(), state.form_field_count(), visible);
+    let offset = window_offset(state.form_focus_position(), state.form_field_count(), visible);
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
@@ -1068,7 +1068,22 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             },
         )]));
     }
-    let skip = offset.saturating_sub(1);
+    // 第二行是联网搜索：`Enter` 进入独立的联网搜索表单页。
+    if offset <= 1 && lines.len() < list_height {
+        state.record_hit(
+            row_hit(list_area, TOOLS_WEB_SEARCH_ROW - offset),
+            HitAction::PaneRow(TOOLS_WEB_SEARCH_ROW),
+        );
+        lines.push(Line::from(vec![Span::styled(
+            web_search_row_text(state, state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused),
+            if state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            },
+        )]));
+    }
+    let skip = offset.saturating_sub(TOOLS_SWITCH_ROW_OFFSET);
     lines.extend(
         rows.iter()
             .enumerate()
@@ -1076,12 +1091,12 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             .take(list_height.saturating_sub(lines.len()))
             .map(|(index, row)| {
                 state.record_hit(
-                    row_hit(list_area, index + 1 - offset),
-                    HitAction::PaneRow(index + 1),
+                    row_hit(list_area, index + TOOLS_SWITCH_ROW_OFFSET - offset),
+                    HitAction::PaneRow(index + TOOLS_SWITCH_ROW_OFFSET),
                 );
                 Line::from(tool_row_spans(
                     row,
-                    index + 1 == state.tool_selected() && focused,
+                    index + TOOLS_SWITCH_ROW_OFFSET == state.tool_selected() && focused,
                 ))
             }),
     );
@@ -1393,6 +1408,16 @@ fn approval_row_text(state: &SettingsState, selected: bool) -> String {
     )
 }
 
+/// 联网搜索行的文本：`› 联网搜索：bing（Tavily 已配置）`。
+fn web_search_row_text(state: &SettingsState, selected: bool) -> String {
+    format!(
+        "{} {}：{}",
+        if selected { "›" } else { " " },
+        TOOLS_WEB_SEARCH_LABEL,
+        state.web_search_value()
+    )
+}
+
 /// 工具开关行的文本：`› 名称：已启用（未注册）`。
 fn tool_row_spans(row: &ToolSwitchRow, selected: bool) -> Vec<Span<'static>> {
     let state_text = if row.enabled {
@@ -1418,16 +1443,14 @@ fn tool_row_spans(row: &ToolSwitchRow, selected: bool) -> Vec<Span<'static>> {
     vec![Span::styled(text, style)]
 }
 
-/// TTS 页：行（`› 标签：值`）；动作用行以琥珀强调。
+/// TTS 页：行（`› 标签：值`）；可执行行以琥珀强调。
 fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     let rows = state.tts_rows();
     let reserved = 4u16.min(area.height);
     let list_height = area.height.saturating_sub(reserved) as usize;
-    let offset = window_offset(state.tts_focused(), rows.len(), list_height);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
-        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
-        let selected = index == state.tts_focused();
+    let mut entries: Vec<(Line<'static>, usize)> = Vec::new();
+    for row in rows.iter() {
+        let selected = row.focused;
         let marker = if selected { "›" } else { " " };
         let style = if selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
@@ -1441,7 +1464,14 @@ fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: boo
         } else {
             format!("{marker} {}：{}", row.label, row.value)
         };
-        lines.push(Line::styled(fit(&text, area.width as usize), style));
+        entries.push((Line::styled(fit(&text, area.width as usize), style), row.index));
+    }
+    let owners: Vec<Option<usize>> = entries.iter().map(|(_, owner)| Some(*owner)).collect();
+    let offset = decision_window_start_owners(&owners, state.tts_focused_index(), list_height);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (line, owner) in entries.into_iter().skip(offset).take(list_height) {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(owner));
+        lines.push(line);
     }
     Paragraph::new(lines).render(
         Rect {
@@ -1531,6 +1561,9 @@ fn render_dropdown_overlay(frame: &mut Frame, area: Rect, state: &SettingsState,
     };
     let block = Block::bordered().border_style(theme::rich_style(theme::ACCENT_WHITE));
     let inner = block.inner(overlay);
+    // 浮层浮在面板内容之上：先擦掉自己覆盖的区域，否则被盖住的那几行会从候选项右侧
+    // 透出来（「Exa API Key：（未配置）」与候选挤在同一行）。
+    frame.render_widget(Clear, overlay);
     frame.render_widget(block, overlay);
     if inner.width == 0 || inner.height == 0 {
         return;

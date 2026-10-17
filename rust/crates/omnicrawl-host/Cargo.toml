@@ -21,6 +21,7 @@ omnicrawl-llm = { path = "../omnicrawl-llm" }
 omnicrawl-mcp = { path = "../omnicrawl-mcp" }
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 omnicrawl-session = { path = "../omnicrawl-session" }
+# TTS 云服务通道（OpenAI audio/speech 与 Gemini TTS），纯 HTTP，无原生依赖。
 omnicrawl-tts = { path = "../omnicrawl-tts" }
 chrono = { workspace = true }
 ignore = { workspace = true }
@@ -40,8 +41,11 @@ tokio = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
-    # CreateJobObjectW 的签名带 SECURITY_ATTRIBUTES，必须一并开启。
+    # CreateJobObjectW 的签名带 SECURITY_ATTRIBUTES，必须一并开启；
+    # CreateFileW（连接 OneJev 命名管道）同样要求它。
     "Win32_Security",
+    # CreateFileW 与 FILE_ATTRIBUTE_NORMAL / OPEN_EXISTING / FILE_SHARE_* 都在这里。
+    "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

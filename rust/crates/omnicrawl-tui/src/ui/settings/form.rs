@@ -21,10 +21,24 @@ pub enum FieldKind {
     Float,
     /// 自由文本：逗号/分号分隔的列表也归这里，切分由宿主负责。
     Text,
+    /// 凭据文本：编辑方式同自由文本，但界面上只显示掩码，进输入态也从空起步
+    /// （留空表示不改动磁盘上的原值，避免误触把已存凭据抹掉）。
+    Secret,
     /// 模型渠道引用：候选是配置里的渠道列表（文案 = 渠道名，取值 = 渠道 key）。
     ModelChannel,
     /// 渠道内的模型 ID：候选按当前选中的渠道发现，取值 = 模型 ID（可为空，表示用渠道自带的模型）。
     ModelId,
+}
+
+/// 字段属于哪条通道：只服务某一条的字段在另一条下不显示（值仍进草稿，切换不丢）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldScope {
+    /// 与通道无关，始终显示。
+    Always,
+    /// 只属于 OpenAI 兼容 Image API。
+    OpenAi,
+    /// 只属于 Gemini。
+    Gemini,
 }
 
 /// 开关字段的两态文案（关, 开）。
@@ -39,6 +53,8 @@ pub struct FieldSpec {
     pub kind: FieldKind,
     /// 只有开关字段用得到（其余字段忽略）。
     pub flag_labels: FlagLabels,
+    /// 该字段属于哪条通道（见 [`FieldScope`]）。
+    pub scope: FieldScope,
 }
 
 impl FieldSpec {
@@ -47,6 +63,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::Flag,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -55,6 +72,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::Flag,
             flag_labels: (off, on),
+            scope: FieldScope::Always,
         }
     }
 
@@ -76,6 +94,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::Enum(options),
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -84,6 +103,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::Int,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -92,6 +112,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::Float,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -100,6 +121,16 @@ impl FieldSpec {
             label,
             kind: FieldKind::Text,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
+        }
+    }
+
+    const fn secret(label: &'static str) -> Self {
+        Self {
+            label,
+            kind: FieldKind::Secret,
+            flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -108,6 +139,7 @@ impl FieldSpec {
             label,
             kind: FieldKind::ModelChannel,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
         }
     }
 
@@ -116,6 +148,22 @@ impl FieldSpec {
             label,
             kind: FieldKind::ModelId,
             flag_labels: DEFAULT_FLAG_LABELS,
+            scope: FieldScope::Always,
+        }
+    }
+
+    /// 把字段限定到某条通道（另一条下不显示）。
+    const fn scoped(mut self, scope: FieldScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// 该字段在当前服务商下是否显示。
+    pub fn visible_for(&self, gemini: bool) -> bool {
+        match self.scope {
+            FieldScope::Always => true,
+            FieldScope::OpenAi => !gemini,
+            FieldScope::Gemini => gemini,
         }
     }
 }
@@ -194,6 +242,32 @@ const IMAGE_GEN_QUALITIES: [(&str, &str); 4] = [
 
 /// 图像生成输出格式候选（对映 Python 的 `_FORMATS`）。
 const IMAGE_GEN_FORMATS: [(&str, &str); 3] = [("png", "png"), ("jpeg", "jpeg"), ("webp", "webp")];
+
+/// 图像生成服务商候选（取值即配置值，与 `[image_gen].provider` 一一对应）。
+const IMAGE_GEN_PROVIDERS: [(&str, &str); 2] = [("openai", "openai"), ("gemini", "gemini")];
+
+/// Gemini 画面比例候选（官方 14 种）；首项是「不下发」。
+const IMAGE_GEN_ASPECT_RATIOS: [(&str, &str); 15] = [
+    ("（默认）", ""),
+    ("1:1", "1:1"),
+    ("2:3", "2:3"),
+    ("3:2", "3:2"),
+    ("3:4", "3:4"),
+    ("4:3", "4:3"),
+    ("4:5", "4:5"),
+    ("5:4", "5:4"),
+    ("9:16", "9:16"),
+    ("16:9", "16:9"),
+    ("21:9", "21:9"),
+    ("1:4", "1:4"),
+    ("4:1", "4:1"),
+    ("1:8", "1:8"),
+    ("8:1", "8:1"),
+];
+
+/// Gemini 分辨率档位候选；首项是「不下发」。
+const IMAGE_GEN_IMAGE_SIZES: [(&str, &str); 4] =
+    [("（默认）", ""), ("1K", "1K"), ("2K", "2K"), ("4K", "4K")];
 
 /// 图像生成默认张数候选（对映 Python 的 `_COUNTS`）。
 const IMAGE_GEN_COUNTS: [(&str, &str); 4] = [("1", "1"), ("2", "2"), ("3", "3"), ("4", "4")];
@@ -276,16 +350,45 @@ const AGENT_WORKSPACE_FIELDS: [FieldSpec; 9] = [
 ///
 /// `api_key` 不在界面上（凭据不进界面状态）：保存时按磁盘原值继承，
 /// 界面只编辑凭据的环境变量名。
-const IMAGE_GEN_FIELDS: [FieldSpec; 9] = [
+///
+/// 一个段承载两条通道：`provider` 决定这次出图走哪家，带 `scoped` 的行只在对应通道下显示
+/// （值仍在草稿里，切换服务商不会丢掉另一家的取值）。隐藏行不参与导航与焦点。
+const IMAGE_GEN_FIELDS: [FieldSpec; 12] = [
     FieldSpec::flag("启用"),
+    FieldSpec::enumerated("服务商 provider", &IMAGE_GEN_PROVIDERS),
     FieldSpec::text("接口地址"),
     FieldSpec::text("API Key 环境变量"),
     FieldSpec::text("模型"),
-    FieldSpec::enumerated("默认尺寸", &IMAGE_GEN_SIZES),
-    FieldSpec::enumerated("默认质量", &IMAGE_GEN_QUALITIES),
-    FieldSpec::enumerated("输出格式", &IMAGE_GEN_FORMATS),
+    FieldSpec::enumerated("默认尺寸", &IMAGE_GEN_SIZES).scoped(FieldScope::OpenAi),
+    FieldSpec::enumerated("默认质量", &IMAGE_GEN_QUALITIES).scoped(FieldScope::OpenAi),
+    FieldSpec::enumerated("输出格式", &IMAGE_GEN_FORMATS).scoped(FieldScope::OpenAi),
+    FieldSpec::enumerated("画面比例", &IMAGE_GEN_ASPECT_RATIOS).scoped(FieldScope::Gemini),
+    FieldSpec::enumerated("分辨率档位", &IMAGE_GEN_IMAGE_SIZES).scoped(FieldScope::Gemini),
     FieldSpec::enumerated("默认张数", &IMAGE_GEN_COUNTS),
     FieldSpec::enumerated("请求超时（秒）", &IMAGE_GEN_TIMEOUTS),
+];
+
+/// 联网搜索的引擎候选（文案 = 取值，都是引擎名；清单来自配置域）。
+const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 9] = [
+    ("bing", "bing"),
+    ("duckduckgo", "duckduckgo"),
+    ("github", "github"),
+    ("arxiv", "arxiv"),
+    ("huggingface", "huggingface"),
+    ("tavily", "tavily"),
+    ("exa", "exa"),
+    ("firecrawl", "firecrawl"),
+    ("mixed", "mixed"),
+];
+
+/// 联网搜索页的字段；顺序与 `app.rs` 读值时的下标一一对应。
+///
+/// 三把 API Key 是凭据：界面只显示掩码、进输入态也从空起步，留空表示保留磁盘原值。
+const WEB_SEARCH_FIELDS: [FieldSpec; 4] = [
+    FieldSpec::enumerated("默认引擎", &WEB_SEARCH_ENGINE_OPTIONS),
+    FieldSpec::secret("Tavily API Key"),
+    FieldSpec::secret("Exa API Key"),
+    FieldSpec::secret("Firecrawl API Key"),
 ];
 
 /// 表单类设置页。
@@ -303,16 +406,19 @@ pub enum FormKind {
     AgentWorkspace,
     /// 图像生成：开关 + 接口/凭据变量/模型 + 四个默认参数。
     ImageGen,
+    /// 联网搜索：默认引擎 + Tavily/Exa/Firecrawl 凭据。
+    WebSearch,
 }
 
 /// 全部表单页，下标与 [`FormKind::index`] 一致。
-pub const FORM_KINDS: [FormKind; 6] = [
+pub const FORM_KINDS: [FormKind; 7] = [
     FormKind::Advisor,
     FormKind::ToolOutputCompression,
     FormKind::Desensitization,
     FormKind::RunGuard,
     FormKind::AgentWorkspace,
     FormKind::ImageGen,
+    FormKind::WebSearch,
 ];
 
 impl FormKind {
@@ -324,6 +430,7 @@ impl FormKind {
             Self::RunGuard => 3,
             Self::AgentWorkspace => 4,
             Self::ImageGen => 5,
+            Self::WebSearch => 6,
         }
     }
 
@@ -335,6 +442,7 @@ impl FormKind {
             Self::RunGuard => &RUN_GUARD_FIELDS,
             Self::AgentWorkspace => &AGENT_WORKSPACE_FIELDS,
             Self::ImageGen => &IMAGE_GEN_FIELDS,
+            Self::WebSearch => &WEB_SEARCH_FIELDS,
         }
     }
 }
@@ -360,6 +468,22 @@ impl FieldValue {
     }
 }
 
+/// 把粘贴文本插进一个字段缓冲；没有缓冲（不在输入态）时返回 `false`。
+///
+/// 设置字段都是单行输入框（对映 Textual `Input`）：粘贴只取首行，换行不会把
+/// `Enter` 提交语义带进来——否则整段多行文本会被后面的换行拆成多次提交。
+pub(crate) fn paste_into(input: Option<&mut Composer>, text: &str) -> bool {
+    let Some(composer) = input else {
+        return false;
+    };
+    let line = text.split(['\r', '\n']).next().unwrap_or("");
+    if line.is_empty() {
+        return true;
+    }
+    composer.insert(line);
+    true
+}
+
 /// 一页表单的编辑草稿。
 #[derive(Debug, Clone)]
 pub struct FormState {
@@ -369,6 +493,8 @@ pub struct FormState {
     /// 正整数字段的输入缓冲；`None` 表示不在编辑态。
     input: Option<Composer>,
     status: String,
+    /// 隐藏字段的判定依据（图像生成页：是否走 Gemini）。其余页恒为 `false`。
+    gemini: bool,
 }
 
 impl FormState {
@@ -384,13 +510,17 @@ impl FormState {
                 _ => FieldValue::Text(String::new()),
             });
         }
-        Self {
+        let mut state = Self {
             kind,
             values,
             focused: 0,
             input: None,
             status: String::new(),
-        }
+            gemini: false,
+        };
+        let focused = state.first_visible(0);
+        state.focused = focused;
+        state
     }
 
     pub fn kind(&self) -> FormKind {
@@ -409,15 +539,68 @@ impl FormState {
         self.focused
     }
 
-    /// 直接把焦点移到第 N 个字段（鼠标点击用）；越界时不动。
+    /// 第 N 个字段在当前服务商下是否显示。
+    pub fn field_visible(&self, index: usize) -> bool {
+        match self.specs().get(index) {
+            Some(spec) => spec.visible_for(self.gemini),
+            None => false,
+        }
+    }
+
+    /// 当前显示的字段下标（渲染、导航与命中都按这份清单走）。
+    pub fn visible_indices(&self) -> Vec<usize> {
+        (0..self.specs().len())
+            .filter(|index| self.field_visible(*index))
+            .collect()
+    }
+
+    /// 从 `index` 起向后找到第一个显示的字段（含自身）；全隐藏时返回原下标。
+    fn first_visible(&self, index: usize) -> usize {
+        let count = self.specs().len();
+        if count == 0 {
+            return index;
+        }
+        for offset in 0..count {
+            let candidate = (index + offset) % count;
+            if self.field_visible(candidate) {
+                return candidate;
+            }
+        }
+        index
+    }
+
+    /// 设置服务商（图像生成页）；焦点落到当前仍显示的字段上。
+    pub fn set_gemini(&mut self, gemini: bool) {
+        self.gemini = gemini;
+        let focused = self.first_visible(self.focused);
+        self.focused = focused;
+    }
+
+    /// 直接把焦点移到第 N 个字段（鼠标点击用）；越界或该字段隐藏时不动。
     pub fn set_focused(&mut self, index: usize) {
-        if index < self.specs().len() {
+        if index < self.specs().len() && self.field_visible(index) {
             self.focused = index;
         }
     }
 
     pub fn input(&self) -> Option<&Composer> {
         self.input.as_ref()
+    }
+
+    /// 粘贴：把文本落进正在编辑的字段缓冲。
+    ///
+    /// 还没进输入态时按字段类型决定：可输入字段先进入输入态（对映 Textual `Input`
+    /// 一直处于焦点，粘贴直接落值），开关与候选字段不接收、返回 `false`。
+    pub fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            let Some(FieldKind::Int | FieldKind::Float | FieldKind::Text | FieldKind::Secret) =
+                self.field(self.focused).map(|spec| spec.kind)
+            else {
+                return false;
+            };
+            self.begin_input(self.focused);
+        }
+        paste_into(self.input.as_mut(), text)
     }
 
     pub fn status(&self) -> &str {
@@ -449,14 +632,20 @@ impl FormState {
         }
     }
 
-    /// 字段之间循环移动；一移动就退出编辑态。
+    /// 字段之间循环移动；一移动就退出编辑态。跳过当前服务商下隐藏的字段。
     pub fn move_focus(&mut self, delta: isize) {
         self.input = None;
-        let count = self.specs().len() as isize;
+        let visible = self.visible_indices();
+        let count = visible.len();
         if count == 0 {
             return;
         }
-        self.focused = ((self.focused as isize + delta).rem_euclid(count)) as usize;
+        let position = visible
+            .iter()
+            .position(|index| *index == self.focused)
+            .unwrap_or(0) as isize;
+        let next = (position + delta).rem_euclid(count as isize) as usize;
+        self.focused = visible[next];
     }
 
     pub fn toggle_flag(&mut self, index: usize) {
@@ -466,16 +655,26 @@ impl FormState {
     }
 
     /// 进输入态：缓冲区以当前值起步（对映 Python 的 `Input` 预填当前值）。
+    ///
+    /// 凭据字段例外：从空起步，且留空提交表示「不改动」（与 TTS 页的密钥行同一口径）。
     pub fn begin_input(&mut self, index: usize) {
         if !matches!(
             self.field(index).map(|spec| spec.kind),
-            Some(FieldKind::Int) | Some(FieldKind::Float) | Some(FieldKind::Text)
+            Some(FieldKind::Int)
+                | Some(FieldKind::Float)
+                | Some(FieldKind::Text)
+                | Some(FieldKind::Secret)
         ) {
             return;
         }
         let mut composer = Composer::default();
         if let Some(value) = self.value(index) {
-            composer.insert(value.text());
+            if !matches!(
+                self.field(index).map(|spec| spec.kind),
+                Some(FieldKind::Secret)
+            ) {
+                composer.insert(value.text());
+            }
         }
         self.input = Some(composer);
     }

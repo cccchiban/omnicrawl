@@ -56,11 +56,6 @@ impl ChoiceChannel {
         }
     }
 
-    /// 决策接口地址（对应 `DecisionChannelConfig::decide_url`）。
-    pub fn decide_url(&self) -> String {
-        crate::decision_wire::decide_url(&self.mode, &self.base_url)
-    }
-
     /// 生效的内联凭据：只认配置里的明文密钥。
     pub fn resolve_api_key(&self) -> String {
         self.api_key.trim().to_string()
@@ -287,8 +282,9 @@ impl ChoiceClient for DecisionChoiceClient {
         };
 
         let timeout = CUSTODY_TIMEOUT_SECONDS;
-        let text = crate::decision_wire::post_body(
-            &channel.decide_url(),
+        let text = crate::decision_wire::post_decision(
+            &channel.mode,
+            &channel.base_url,
             &api_key,
             &body_text,
             timeout,
