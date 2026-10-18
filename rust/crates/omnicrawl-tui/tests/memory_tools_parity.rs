@@ -201,6 +201,16 @@ fn memory_tools_match_python() {
                     }
                     continue;
                 }
+                // 数组型输出（`memory_expand_related` 等）按内容排序后比顺序无关的集合；
+                // 同分项（时间戳相同）的先后由排序实现决定，跨平台可能相反。
+                if tool == "memory_expand_related" {
+                    let mut actual_items = parse_array_items(&normalize(&output));
+                    let mut wanted_items = parse_array_items(expected);
+                    actual_items.sort();
+                    wanted_items.sort();
+                    assert_eq!(actual_items, wanted_items, "用例 {tool} {:?}", case["arguments"]);
+                    continue;
+                }
                 assert_eq!(
                     normalize(&output),
                     expected,

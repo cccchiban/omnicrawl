@@ -211,10 +211,26 @@ fn read_audit_lines(root: &Path) -> Vec<String> {
     match std::fs::read_to_string(&path) {
         Ok(text) => common::normalize_ids(&text)
             .lines()
-            .map(str::to_string)
+            .map(normalize_duration)
             .collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// 把审计行里的 `duration_ms` 值折成固定占位：它记录的是真实耗时，
+/// 同一用例在慢机器（或 CI 冷缓存）上会从 0 变成几毫秒，与产品行为无关。
+fn normalize_duration(line: &str) -> String {
+    const KEY: &str = "\"duration_ms\": ";
+    let Some(start) = line.find(KEY) else {
+        return line.to_string();
+    };
+    let value_start = start + KEY.len();
+    let rest = &line[value_start..];
+    let digits = rest.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits == 0 {
+        return line.to_string();
+    }
+    format!("{}\"duration_ms\": 0{}", &line[..start], &rest[digits..])
 }
 
 fn config_from(value: &Value) -> McpConfig {

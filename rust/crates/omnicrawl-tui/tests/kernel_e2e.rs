@@ -191,6 +191,18 @@ fn real_kernel_streams_a_turn_into_the_ui() {
         thread::sleep(Duration::from_millis(20));
     };
 
+    let deadline = Instant::now() + WAIT;
+    let settled = loop {
+        app.drain_frames();
+        if !app.state.turn.is_running() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
     app.request_shutdown();
     app.kernel.wait_or_kill(Duration::from_secs(5));
 
@@ -200,8 +212,10 @@ fn real_kernel_streams_a_turn_into_the_ui() {
         app.state.records
     );
     assert!(!app.quit, "正常结束时不该被判成内核异常退出");
+    // 回合结束通知与助手正文是两条独立事件：正文可能先到，复位事件还在队列里。
+    // 这里等它落地，而不是要求两者在同一批 drain_frames 里出现。
     assert!(
-        !app.state.turn.is_running(),
+        settled,
         "回合结束通知应把界面复位：{:?}",
         app.state.turn
     );
