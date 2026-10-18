@@ -786,7 +786,7 @@ mod tests {
         assert!(!service_ready(&root), "只有 PID 记录时不该算就绪");
         std::fs::write(
             crate::paths::server_log_path(&root),
-            "INFO: onejev.worker 服务就绪 endpoint=omnicrawl-onejev-abc\n",
+            format!("{READY_LINE} endpoint=omnicrawl-onejev-abc\n"),
         )
         .expect("写服务日志");
         assert!(service_ready(&root), "PID 活着 + 日志有就绪标记即为就绪");
@@ -810,7 +810,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("建临时根目录");
         write_pid(&root, std::process::id(), "OneJev-0.8B");
         let path = crate::paths::server_log_path(&root);
-        let mut text = String::from("INFO: onejev.worker 服务就绪 endpoint=omnicrawl-onejev-abc\n");
+        let mut text = format!("{READY_LINE} endpoint=omnicrawl-onejev-abc\n");
         for index in 0..5_000 {
             text.push_str(&format!(
                 "INFO: onejev.worker 判定完成 inference_ms={}\n",

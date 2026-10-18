@@ -1414,8 +1414,13 @@ fn format_results(engine: &str, query: &str, results: &[WebSearchResult], elapse
     )];
     for (index, result) in results.iter().enumerate() {
         let title = result.title.trim().replace('\n', " ");
-        lines.push(format!("{}. {}", index + 1, truncate(&title, 150)));
-        lines.push(format!("   {}", result.url));
+        // 接口型引擎缺标题时用 url 顶上（见 parse_api_results），此时不要再重复一行 url。
+        if title.is_empty() || title == result.url {
+            lines.push(format!("{}. {}", index + 1, result.url));
+        } else {
+            lines.push(format!("{}. {}", index + 1, truncate(&title, 150)));
+            lines.push(format!("   {}", result.url));
+        }
         let snippet = result.snippet.trim().replace('\n', " ");
         if !snippet.is_empty() {
             lines.push(format!("   {}", truncate(&snippet, 300)));
@@ -1443,8 +1448,12 @@ fn format_mixed_results(
     }
     for (index, merged) in results.iter().enumerate() {
         let title = merged.result.title.trim().replace('\n', " ");
-        lines.push(format!("{}. {}", index + 1, truncate(&title, 150)));
-        lines.push(format!("   {}", merged.result.url));
+        if title.is_empty() || title == merged.result.url {
+            lines.push(format!("{}. {}", index + 1, merged.result.url));
+        } else {
+            lines.push(format!("{}. {}", index + 1, truncate(&title, 150)));
+            lines.push(format!("   {}", merged.result.url));
+        }
         let snippet = merged.result.snippet.trim().replace('\n', " ");
         if !snippet.is_empty() {
             lines.push(format!("   {}", truncate(&snippet, 300)));

@@ -79,7 +79,7 @@ fn substitute(value: &Value, workspace: &str) -> Value {
 
 /// 把运行时的文件名时间戳与工作区路径都换成占位符，便于两侧对照。
 fn normalize(text: &str, workspace: &str) -> String {
-    let stamp = Regex::new(r"image_\d{8}_\d{6}_").expect("时间戳正则");
+    let stamp = Regex::new(r"image_\d{8}_\d{6}(?:_\d{3})?_").expect("时间戳正则");
     let with_stamp = stamp.replace_all(text, format!("image_{STAMP_PLACEHOLDER}_"));
     let escaped = regex::escape(workspace);
     Regex::new(&format!("(?i){}", escaped))

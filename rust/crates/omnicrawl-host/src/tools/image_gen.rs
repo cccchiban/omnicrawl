@@ -710,8 +710,14 @@ fn unique_suffix() -> u128 {
         .unwrap_or(0)
 }
 
+/// 文件名里的时间戳：精确到毫秒。
+///
+/// 只到秒会撞名：连续两次生成（同一轮对话里文生图接图生图）常落在同一秒，
+/// 后一次直接覆盖前一次的图片。
 fn timestamp() -> String {
-    chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()
+    chrono::Local::now()
+        .format("%Y%m%d_%H%M%S_%3f")
+        .to_string()
 }
 
 fn timeout(seconds: f64) -> Duration {
