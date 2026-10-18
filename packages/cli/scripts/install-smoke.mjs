@@ -111,7 +111,8 @@ try {
   // 文件权限归一化成 0644，而宿主用 Command::new 直接拉起同目录的 tui/api/内核（不看 .bin），
   // 于是安装后必然 Permission denied——0.2.6 的 linux 包就是这样，开发者板实测过。
   if (!isWindows) {
-    const hostDir = join(app, 'node_modules', platformPackage, 'host')
+    // 平台包是 scope 包：实际落到 node_modules/@omnicrawl/<name>，漏掉 scope 会找不到目录。
+    const hostDir = join(app, 'node_modules', '@omnicrawl', platformPackage, 'host')
     for (const name of HOST_EXECUTABLES) {
       const file = join(hostDir, name)
       if (!existsSync(file)) fail(`宿主载荷缺少可执行文件：${file}`)

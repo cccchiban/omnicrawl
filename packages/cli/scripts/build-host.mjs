@@ -40,6 +40,7 @@
 // `--zigbuild` 换成 `cargo zigbuild`：musl 目标的 BoringSSL 需要能编 C++ 的交叉工具链，
 // 而 `musl-tools` 只给 `musl-gcc`（C），所以这类目标要传它并先在 PATH 上装好 zig。
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -142,6 +143,12 @@ function buildRust() {
       process.exit(1)
     }
     copyFileSync(candidate, join(payloadDir, `${name}${suffix}`))
+  }
+  // 交叉/远程构建机上 `copyFileSync` 不保留 Unix 可执行位（Windows 宿主上更是没有这个概念），
+  // 而 npm 只给 package.json 的 bin 声明的文件恢复权限、其余一律 0644，宿主用
+  // Command::new 直接拉起同目录的 tui/api/内核，安装后会 Permission denied。这里显式补位。
+  if (suffix === '') {
+    for (const name of HOST_FILES) chmodSync(join(payloadDir, name), 0o755)
   }
   // 资源源在 rust/assets/*（脱离 Python 包树后的单一来源），载荷里放到运行期搜索的
   // 第一候选 `<可执行文件祖先>/rust/assets/*`；读不到时运行期还有编译期内嵌副本。
