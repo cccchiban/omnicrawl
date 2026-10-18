@@ -1,379 +1,93 @@
 # 纯 Rust 构建环境要求
 
 本文件记录「从 cargo 构建整个 Rust 工作区」需要机器上具备什么，以及那些**不在**
-`Cargo.toml` 里、只能由环境提供的约束。定位与冻结基准的关系见
-[`frozen-reference.md`](./frozen-reference.md)。
+`Cargo.toml` 里、只能由环境提供的约束。
 
-## 1. 为什么会有 C/C++ 工具链要求
+## 1. 现状：整条链路都是纯 Rust
 
-工作区的 HTTP 传输有两条链路：
+工作区的 HTTP 传输有两层实现：
 
 | 链路 | 实现 | 用途 |
 | --- | --- | --- |
-| 主力 | `ureq` + `rustls`（纯 Rust，阻塞式） | llm、mcp、connectors、tts、web_search |
-| 指纹 | `wreq` + `btls` + BoringSSL（C/C++，异步） | 仅 `fetcher` 工具的 `impersonate` |
+| 主力 | `ureq` + `rustls`（纯 Rust，阻塞式） | llm、mcp、connectors、tts、image_gen |
+| 指纹 | `omnicrawl-tls`（本仓库自研，纯 Rust，阻塞式） | `fetcher` 与 `web_search` 的浏览器档案 |
 
-第二条链路为了做**真实的浏览器 TLS 指纹（JA3/JA4）与 HTTP/2 指纹匹配**，静态链接
-BoringSSL，因此构建期需要 C/C++、汇编器与 CMake。这是唯一引入 C 工具链依赖的地方，
-无法用纯 Rust 替代（`rustls` 写死了扩展顺序，改密码套件列表也只能覆盖 JA3 的一个字段）。
+第二条链路要的是**真实浏览器的 TLS 指纹（JA3/JA4）与 HTTP/2 连接指纹**。它曾经用过
+`wreq` + `btls` + BoringSSL，代价是整条依赖树要求 C/C++ 工具链、CMake、NASM 与 libclang，
+交叉编译处处受限，而且指纹数值不透明（换个库版本线上指纹就变了）。
 
-因此：**只构建与 llm/mcp 等链路相关的 crate 时不需要 C 工具链；一旦构建
-`omnicrawl-host`（及其上层 `omnicrawl-tui` / `omnicrawl-api` / `omnicrawl-cli`），就必须要。**
+现在这条链路由 `crates/omnicrawl-tls` 提供：ClientHello 的扩展顺序与密码套件排列自己
+构造，记录层与握手编排自己写，密码学原语交 `ring`，X.509 路径判定交 `rustls-webpki`。
+档案数值来自对真实浏览器的抓包校准（见该 crate 的 `profile` 文档）。
+
+**因此构建本工作区只需要 `cargo`。** 不需要 MSVC C++ 工具链、CMake、NASM、perl 或
+libclang。
 
 ## 2. 各平台必需项
 
-Linux（BoringSSL 官方列出的前置，也是 CI 安装的集合）：
-
-```bash
-sudo apt-get install -y build-essential cmake perl pkg-config libclang-dev git musl-tools
-```
-
-Windows：
-
-| 需求 | 说明 |
+| 平台 | 需求 |
 | --- | --- |
-| MSVC 工具链 | Visual Studio 2022（含 C++ 桌面开发） |
-| CMake | 随 VS 提供，无需单独装 |
-| NASM | BoringSSL 生成 x86-64 汇编；可在 VS 组件里勾选，或单独装 |
-| libclang / LLVM | `btls-sys` 用 bindgen 生成 Rust 绑定，需要 `libclang.dll` |
-| `LIBCLANG_PATH` | 指向 `libclang.dll` 所在目录，例如 `C:/Program Files/LLVM/bin` |
-| `CMAKE_TOOLCHAIN_FILE` | 指向 `rust/tools/btls-msvc-runtime.cmake`（见下节） |
+| Linux | Rust 工具链；交叉到 musl 时外加对应 target 与链接器 |
+| Windows | Rust（MSVC 或 GNU 均可）；链接用系统自带的链接器 |
+| macOS | Rust 与 Xcode Command Line Tools（链接器） |
 
-macOS：`cmake`、`perl` 与 Xcode Command Line Tools；libclang 走 `LIBCLANG_PATH`。
+`ring` 自带预生成汇编，通过 `cc` 编译，不需要 NASM。
 
-### 从一台机器交叉编译全部平台（本机验证用）
+## 3. 交叉编译
 
-内核（`omnicrawl-cli`）不依赖 `btls`，因此它的交叉编译不需要 C/C++/CMake/BoringSSL，只需要目标与链接器：
+全部目标都不再受 C 工具链牵制。Linux musl 目标用 zig 提供的链接器即可：
 
 ```bash
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
                    armv7-unknown-linux-musleabihf i686-pc-windows-msvc
 
-# Windows 上没有 Linux 工具链时，用 zig 自带的交叉 C 编译器与链接器：
-#   zig 走 winget / 官网；cargo-zigbuild 走 cargo install
+# zig 走 winget / 官网；cargo-zigbuild 走 cargo install
 cargo zigbuild --release -p omnicrawl-cli --target x86_64-unknown-linux-musl
 cargo zigbuild --release -p omnicrawl-cli --target aarch64-unknown-linux-musl
 cargo zigbuild --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
 
-# i686 不需要 btls，也不需要目标 C 编译器（用本机 32 位 MSVC 工具集链接）：
 cargo build --release -p omnicrawl-cli --target i686-pc-windows-msvc
 ```
 
-本机实测版本：`zig 0.16.0`、`cargo-zigbuild`（`cargo-zigbuild --help` 自报版本）、
-`rustc 1.96.1`。宿主载荷（`omnicrawl-tui` / `omnicrawl-api`）要 BoringSSL，它本身能交叉编译；
-TTS 改为云服务后 `omnicrawl-tts` 只剩 HTTP 与音频 I/O（`ort` / `espeakng-sys` 都已移出依赖树），
-musl 宿主载荷不再有原生运行时的阻碍（详见第 7 节）。
-
-## 3. Windows 专属：必须设 `CMAKE_TOOLCHAIN_FILE`
+宿主载荷同样可以交叉，五个平台都有：x64 与 arm64 在各自的原生 runner 上构建，
+ARMv7 在 x64 上直接 zig 交叉（`build-host.mjs` 自己就带 `omnicrawl-cli`，无需单独预编内核）：
 
 ```bash
-export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"
+node packages/cli/scripts/build-host.mjs \
+  --target armv7-unknown-linux-musleabihf --platform linux-arm --zigbuild
 ```
 
-不设它时构建会在 CMake 的 generate 阶段失败：
+## 4. 路径含非 ASCII 字符
 
-```text
-MSVC_RUNTIME_LIBRARY value 'MultiThreadedDLL' not known for this ASM_NASM compiler
-```
-
-原因是 BoringSSL 要求 CMake ≥ 3.22，使 CMP0091 处于 NEW 状态，而 Visual Studio
-生成器把 `ASM_NASM` 归入 MSVC 家族语言、该语言的运行时库支持表为空。这与 CMake
-版本新旧无关（3.29.6 复现同样错误），也不是缺 MSVC 工具链。
-
-`rust/tools/btls-msvc-runtime.cmake` 里把 `CMAKE_MSVC_RUNTIME_LIBRARY` 设为空字符串
-（含义是「不设置该属性」）即可绕过。**该文件只用于 Windows/MSVC**：它会让 `btls-sys`
-跳过自己全部的 CMake 参数装配（含交叉编译设置），在 Linux 上设置会破坏 musl 交叉编译。
-
-dev（`cargo check` / `cargo test`）构建建议**再导出一次目标专用变量名**：
-
-```bash
-export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"
-export CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
-```
-
-`btls-sys` 判断「有没有外部 toolchain 文件」时先读目标专用名（`CMAKE_TOOLCHAIN_FILE_<target>`，
-连字符转下划线）再读通用名；只导出通用名时，实测 dev 配置下它仍会把
-`-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL` 传给 CMake，又在 ASM_NASM 上撞回上面那个报错
-（同一命令加上目标专用名就通过，构建目录里的 `CMakeCache.txt` 会多出 `CMAKE_MSVC_RUNTIME_LIBRARY`
-条目）。release 构建不受影响，所以 CI 只给通用名也能过。
-
-## 4. 本机开发：构建目录必须是纯 ASCII 路径
-
-BoringSSL 的 x86-64 汇编由 `nasm` 处理，MSBuild 调用它时会带 `-gcv8`。该选项会对
-源文件路径做哈希，遇到非 ASCII 路径（例如中文目录名）直接失败：
-
-```text
-error: unable to hash file D:\...\Python?????\...
-```
-
-因此**在本机（仓库路径含中文时）构建时把目标目录指到纯 ASCII 路径**，例如：
+仓库路径里有中文时，Cargo 的构建产物目录会带上这些字符。部分链接器与工具对此敏感，
+遇到难以解释的链接失败时把目标目录指到纯 ASCII 路径：
 
 ```bash
 export CARGO_TARGET_DIR=C:/ocl-target
 ```
 
-CI 的检出路径（`D:\a\...` / `/home/runner/work/...`）是纯 ASCII，不受影响。
-也可以用 `rust/.cargo/config.toml` 的 `[build] target-dir` 固定，但那会影响所有人，
-所以本项目选择用环境变量而非提交配置文件。
+## 5. 需要外网的验证
 
-## 5. 一次完整验证
+以下几组用例默认 `#[ignore]`，因为它们依赖外网可用性。发布前手动跑一遍：
 
 ```bash
-export CARGO_TARGET_DIR=C:/ocl-target                                  # 仅 Windows 本机需要
-export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"  # 仅 Windows 需要
-export LIBCLANG_PATH="C:/Program Files/LLVM/bin"                       # 仅 Windows 需要
+# TLS 协议栈：真实站点连通性
+cargo test -p omnicrawl-tls --test live_sites -- --ignored --test-threads=1
 
-cd rust
-cargo test -p omnicrawl-host
+# 指纹传输：JA4 分族、HTTP 头与 TLS 档案同源、真实站点抓取
+cargo test -p omnicrawl-host --test tls_fingerprint -- --ignored --test-threads=1
 ```
 
-（若 `cargo check` / `cargo test` 在 `btls-sys` 上报 ASM_NASM 那个错，再导出一次目标专用名，
-见第 3 节。）
+## 6. 历史：曾经的 BoringSSL 约束
 
-外网指纹冒烟（默认被 `#[ignore]`，需要外网）：
+删掉的那条链路留下的经验，记在这里避免重复踩：
 
-```bash
-cargo test -p omnicrawl-host --test wreq_fingerprint -- --ignored --nocapture
-```
+- `btls-sys` 的 bindgen 需要 `LIBCLANG_PATH` 指向 `libclang.dll`；该路径被系统清理后
+  `cargo check` 会在构建脚本阶段失败，错误信息看起来与代码无关。
+- Windows/MSVC 下 BoringSSL 要求 CMake ≥ 3.22，使 `CMP0091` 处于 NEW 状态，而 Visual
+  Studio 的 `ASM_NASM` 语言不认识 `MSVC_RUNTIME_LIBRARY`，需要在 toolchain file 里把它
+  设为空串绕过。
+- `cargo zigbuild` 会注入自己的 `CMAKE_TOOLCHAIN_FILE`，与上面那份互相覆盖，交叉编译
+  时只能二选一。
 
-预期输出两族不同的 JA4 指纹，且协议段为 `h2`（浏览器档案）而非 `h1`（库指纹）。
-
-**使用 `CARGO_TARGET_DIR` 会让三个用例受环境影响**：它们通过
-`std::env::current_exe()` 向上回溯仓库结构（例如 `prompt::tests::templates_dir_prefers_rust_assets`
-找 `rust/assets/templates`）。目标目录一旦移出仓库，这些用例会失败——这是环境副作用，
-不是回归，判断时要先确认。
-
-## 6. 验证状态
-
-本地（Windows）已实测的面：
-
-| 面 | 结果 |
-| --- | --- |
-| 内核交叉编译 `x86_64-unknown-linux-musl` | ✅ `cargo zigbuild --release -p omnicrawl-cli` 通过；静态链接 ELF x86-64 |
-| 内核交叉编译 `aarch64-unknown-linux-musl` | ✅ 同上；静态链接 ELF ARM aarch64 |
-| 内核交叉编译 `armv7-unknown-linux-musleabihf` | ✅ 同上；静态链接 ELF ARM EABI5（与 CI 同一条 zig 路径） |
-| 内核编译 `i686-pc-windows-msvc` | ✅ `cargo build --release` 通过；PE32 i386（用本机 VS2022 BuildTools 的 32 位工具集） |
-| Windows x64 宿主载荷（含 BoringSSL） | ✅ 五个包 `--release` 一起构建通过（`btls` / `tokio-btls` / `wreq` / `omnicrawl-host` 全部重编），5 分 58 秒 |
-
-发布体积（`--release`，`lto="thin"` + `codegen-units=1` + `panic="abort"`）：
-
-| 产物 | 目标 | 大小 |
-| --- | --- | --- |
-| `omnicrawl` 内核 | `x86_64-unknown-linux-musl` | 7.0 MiB（7,298,712 B） |
-| `omnicrawl` 内核 | `aarch64-unknown-linux-musl` | 5.8 MiB（6,116,808 B） |
-| `omnicrawl` 内核 | `armv7-unknown-linux-musleabihf` | 5.7 MiB（5,933,008 B） |
-| `omnicrawl` 内核 | `i686-pc-windows-msvc` | 5.5 MiB（5,774,336 B） |
-| `omnicrawl` 内核 | `x86_64-pc-windows-msvc` | 6.6 MiB（6,908,928 B） |
-| `omnicrawl-tui` | `x86_64-pc-windows-msvc` | 52.6 MiB（55,159,808 B） |
-| `omnicrawl-api` | `x86_64-pc-windows-msvc` | 36.6 MiB（38,398,976 B） |
-| `omnicrawl-host` | `x86_64-pc-windows-msvc` | 2.8 MiB（2,900,992 B） |
-| `omnicrawl-mcp-server` | `x86_64-pc-windows-msvc` | 0.6 MiB（607,744 B） |
-
-Windows x64 宿主载荷五项合计约 104 MiB（`.text` + `.rdata` 各占一半，exe 里没有 debug 段；
-调试信息在伴随的 `.pdb` 里，不在上传清单内）。内核单发约 6–7 MiB，跨平台差异不大。
-冷编译时间：单个 musl 内核约 1 分 15 秒（依赖从零编，含 `ring` 的 C 代码），Windows 全套宿主载荷约 6 分钟。
-
-仍未验证的面：
-
-| 面 | 状态 |
-| --- | --- |
-| Linux musl **完整宿主载荷** | 卡在依赖上，不是卡在工具链：见下一节「发布产物的目标选择」 |
-| 运行期性能 | 未测。仓内没有基准套件，也没有可比对的 Python 基线口径；只说体积，不谈吞吐 |
-| Linux 上的 `cargo test --workspace` | 未验证（本机只能跑 Windows 目标；WSL2 因缺 Hyper-V/虚拟机平台不可用） |
-
-交叉编译的坑（已写进 CI，记下来避免重踩）：
-
-- **musl 目标的 C 编译器要看 cc-rs 的候选表**：`x86_64-unknown-linux-musl` 在 cc-rs 里走
-  `find_working_gnu_prefix(["x86_64-linux-musl", "musl"])`，会在 PATH 里先找
-  `x86_64-linux-musl-gcc`、再找 `musl-gcc`，所以 `musl-tools` 的 `musl-gcc` 对它是够的；
-  但 `aarch64-unknown-linux-musl` 是硬编码前缀，要的是 `aarch64-linux-musl-gcc`，
-  `musl-tools` 不提供。两者都改用 `cargo zigbuild` 以后差异消失。
-- **`ring` 的构建脚本要真实的 C/汇编编译器**：本机（Windows，无 Linux 工具链）直接
-  `cargo build --target x86_64-unknown-linux-musl` 会报 `failed to find tool "x86_64-linux-musl-gcc"`，
-  `cargo zigbuild` 等价路径则通过（zig 自带 clang 与链接器驱动）。
-- **`btls-msvc-runtime.cmake` 只在 MSVC 构建需要**：Linux 目标千万不要设 `CMAKE_TOOLCHAIN_FILE`，
-  它会让 `btls-sys` 跳过自己的交叉编译装配。反向也成立：从 Windows 交叉到 musl 时不能设它，
-  否则会盖掉 cargo-zigbuild 自己生成的 CMake toolchain；但 `LIBCLANG_PATH` 仍要设，
-  因为 bindgen 在**宿主**上跑。
-- 已顺带修掉一个非 Windows 目标的 `unused_imports` 警告（`omnicrawl-controllers` 的
-  `turn::environment` 里进程链缓存只在 `cfg(windows)` 分支使用），否则 CI 在 Linux/musl 上会带警告构建。
-- 本机 Node 22.22.1 的 `fs.cpSync(…, {recursive:true})` 会**静默硬退（退出码 127）**，
-  而工作流钉的 22.14.0 正常（用 `npx node@22.14.0` 对比确认）。`build-host.mjs` / `prepare.mjs`
-  大量用 `cpSync`，本地复现发布流程要挑对 Node 版本。
-
-## 7. 发布产物的目标选择
-
-内核（`omnicrawl-cli`）与宿主载荷（`omnicrawl-tui` / `omnicrawl-api` / `omnicrawl-host` / `omnicrawl-mcp-server`）
-在 CI 里是**两个不同的目标选择**：
-
-- **内核**：一律按矩阵里的三元组交叉（Linux 侧三个都是 musl，静态链接）。上游依赖只有 `ring`
-  这类 C 代码，zig 能完整处理；本机已逐个实测通过。
-- **宿主载荷**：Windows 用 `--target x86_64-pc-windows-msvc`（与内核同一个
-  `target/<三元组>/release/`）；**Linux 侧不带 `--target`**，按构建机原生 gnu 目标构建，
-  因此发布包依赖 runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。
-
-Linux 宿主载荷为什么不跟着走 musl（历史）：本地 TTS 时期 `omnicrawl-tts` 依赖 `ort`
-（ONNX Runtime 绑定），而 `ort-sys` 只提供部分目标的预编译库，musl 不在其中：
-
-```text
-error: ort-sys@2.0.0-rc.13: no prebuilt binaries available for target x86_64-unknown-linux-musl
-```
-
-（BoringSSL 那一段能过——`libcrypto.a` / `libssl.a` 都正常链接出来——所以这不是 BoringSSL
-的交叉编译能力问题。）当时宿主（`omnicrawl-host` / `omnicrawl-tui`）固定开启
-`omnicrawl-tts/onnx`，`ort` 与 `espeakng-sys` 始终在宿主依赖树里，musl 宿主载荷因此不能
-直接用本节的交叉构建产出，Linux 载荷改走原生 gnu。
-
-**现状**：TTS 已整体改为云服务（OpenAI `audio/speech` 与 Gemini TTS），`omnicrawl-tts`
-只剩 `ureq` + `serde_json` + `base64`，`ort` 与 `espeakng-sys` 都已从依赖树移除，
-上述 musl 阻碍不再存在。Linux 侧目前仍按 runner 原生 gnu 目标构建，是否切回 musl
-待实测（发布链路的选择见 `.github/workflows/publish-npm.yml`）。
-
-`build-host.mjs` 已经支持 `--target <三元组>` 与 `--zigbuild`（后者换成 `cargo zigbuild`，
-并且必须与 `--target` 同时出现）。**在当前依赖形态下，Linux 那两个 job 用原生 gnu 目标构建**
-（下表是旧形态下的实测记录，仅供参考）。
-
-### 本机实测（Windows 主机交叉到 x86_64-unknown-linux-musl）
-
-```bash
-cd rust   # 注意：CARGO_TARGET_DIR 不要设，产物要落到 target/<三元组>/release/
-LIBCLANG_PATH=<libclang 目录> cargo zigbuild --release \
-  -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp \
-  --target x86_64-unknown-linux-musl
-```
-
-全部静态链接，均无警告：
-
-| 产物 | 字节 | 类型 |
-| --- | --- | --- |
-| `omnicrawl`（内核） | 7,508,400 | ELF x86-64 静态链接 |
-| `omnicrawl-host` | 3,247,072 | 同上 |
-| `omnicrawl-tui` | 32,665,936 | 同上 |
-| `omnicrawl-api` | 15,844,680 | 同上 |
-| `omnicrawl-mcp-server` | 844,400 | 同上 |
-| `omnicrawl`（aarch64 musl） | 6,308,944 | ELF aarch64 静态链接 |
-| `omnicrawl-tui`（aarch64 musl） | 30,523,232 | 同上 |
-| `omnicrawl-api`（aarch64 musl） | 13,578,744 | 同上 |
-| `omnicrawl-host`（aarch64 musl） | 2,783,576 | 同上 |
-| `omnicrawl-mcp-server`（aarch64 musl） | 788,448 | 同上 |
-| `omnicrawl`（armv7 musl） | 5,944,384 | ELF armv7 静态链接 |
-
-同一批代码在 Windows MSVC 上的对照（早期实测；当时 `omnicrawl-tts` 的 ONNX 运行时
-随「接口合成默认」为可选 feature，未静态链进 TUI/API。带 `ort` 的那一版宿主明显更大，
-TTS 改云服务后这些数字回落）：
-`omnicrawl.exe` 6,924,800；`omnicrawl-host.exe` 2,905,088；`omnicrawl-tui.exe` 33,595,392；
-`omnicrawl-api.exe` 16,719,872；`omnicrawl-mcp-server.exe` 605,184（合计约 58 MB，
-早期带 ort 的同一批是 104 MB）。32 位 Windows 内核 5,789,696。
-
-耗时：首次（含 BoringSSL 全量交叉编译）3 分 08 秒，增量 1 分 35 秒。
-对照：Windows x64 宿主载荷是 104 MiB，musl 反而更小（32.6 MiB 的 TUI vs 55 MiB）——
-ELF 不带 PDB，且 `strip` 后不保留符号表。
-
-两个只有在非 Windows 目标上才会暴露的编译问题（已修，走 musl 载荷必须过这两关）：
-
-- `crates/omnicrawl-host/src/tools/windows/mod.rs` 的 `#[cfg(not(windows))]` 占位函数把返回类型
-  写成了 `super::screenshot::ScreenshotOutcome`，在非 Windows 上没有任何 `tools::screenshot` 模块，
-  直接 E0433；现在该目标下自己定义一个同形状的 `ScreenshotOutcome`。
-- `crates/omnicrawl-host/src/tools/web_transport.rs` 无条件 `use std::process::Command`，
-  而它只被 Windows 的注册表读代理用到，非 Windows 上是未使用导入警告。
-
-历史上还有一个真实缺陷（已修）：`build-host.mjs` 用了 `readFileSync` 却没从 `node:fs` 引入，
-任何平台都会在载荷拷完、写 `host-meta.json` 之前以
-`ReferenceError: readFileSync is not defined` 退出，`prepare.mjs` 会因此认为缺宿主载荷。
-
-发布工作流（`.github/workflows/publish-npm.yml`）的磁盘约束（实测踩过）：平台任务里的
-`cargo test --workspace` 会为 20 个 crate 编带调试信息的测试二进制，GitHub 的 ubuntu runner
-因此写满根分区，链接阶段以 `rust-lld` SIGBUS（`ld terminated with signal 7 [Bus error]`）+
-`running out of disk space` 警告收场。现在这一步先删掉镜像自带、与本构建无关的大件
-（`/usr/share/dotnet`、`/usr/local/lib/android`、`/opt/ghc`、`/usr/local/share/boost`、
-`/opt/hostedtoolcache/CodeQL`，不碰 `$AGENT_TOOLSDIRECTORY`），并用
-`CARGO_PROFILE_DEV_DEBUG=0` / `CARGO_PROFILE_TEST_DEBUG=0` 关掉 debuginfo（只影响体积，
-断言失败的行号来自源码位置元数据，不依赖 DWARF）。
-
-### 载荷内的资源布局（跨平台必须一致）
-
-宿主载荷里，资源放在 `payload/rust/assets/{extensions,templates,config-templates}`：
-
-- 这一层是运行期搜索的**第一候选**——`omnicrawl-extensions` 的 `runner_search_dirs`、
-  `omnicrawl-host` 的模板搜索、`omnicrawl-entry` 的 `locate_templates_dir` 都按
-  「可执行文件目录 → 各级祖先」逐级找 `rust/assets/<资源>`；
-- 读不到时二进制里还有编译期内嵌副本，所以最坏情况是「少一份可编辑副本」而不是起不来；
-- **不要**再往 `payload/omnicrawl/<资源>` 放（旧 Python 载荷布局）：非 Windows 目标的内核文件名
-  就叫 `omnicrawl`（没有 `.exe`），跟这个目录**同名冲突**，装配阶段直接
-  `ENOENT: mkdir .../payload/omnicrawl/extensions`。Windows 上因为内核叫 `omnicrawl.exe`
-  不冲突，`build-host.mjs` 才额外保留一份旧布局。
-
-### 本机手动发版（不跑 CI 时用）
-
-一条链路把五个平台包与启动器都装出来（本机实测全通，耗时约 15 分钟构建 + 1 分钟装配）：
-
-```bash
-# 1) Windows x64 + x86 宿主载荷 + 两个内核：构建目录必须是纯 ASCII（见第 4 节），
-#    产物先落在自定义 target 目录，再拷回 rust/target/<三元组>/release（打包脚本按它找）。
-#    该 toolchain file 对 i686 不是必需的：不设它时 btls-sys 会走自己的 Windows 分支
-#    （OPENSSL_NO_ASM=YES，不编汇编）。设了则两侧都编 NASM 汇编，体积与性能都更好，
-#    但 nasm 的 -gcv8 会对路径做哈希，构建目录含非 ASCII 字符时直接失败。
-export CARGO_TARGET_DIR=C:/ocl-target LIBCLANG_PATH=<libclang 目录>
-export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"
-export CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
-export CMAKE_TOOLCHAIN_FILE_i686_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
-cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target x86_64-pc-windows-msvc
-cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target i686-pc-windows-msvc
-
-# 2) 三个 musl 内核 + 两个 musl 宿主载荷：不要设 CARGO_TARGET_DIR / CMAKE_TOOLCHAIN_FILE，
-#    产物要落到 rust/target/<三元组>/release。
-unset CARGO_TARGET_DIR CMAKE_TOOLCHAIN_FILE CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc CMAKE_TOOLCHAIN_FILE_i686_pc_windows_msvc
-export LIBCLANG_PATH=<libclang 目录>
-cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target x86_64-unknown-linux-musl
-cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-decision -p omnicrawl-mcp --target aarch64-unknown-linux-musl
-cargo zigbuild --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
-
-# 3) 装配载荷 → 暂存 npm 包 → 干净前缀真装一遍
-node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc --platform win32-x64   --skip-build
-node packages/cli/scripts/build-host.mjs --target i686-pc-windows-msvc   --platform win32-ia32  --skip-build
-node packages/cli/scripts/build-host.mjs --target x86_64-unknown-linux-musl  --platform linux-x64   --skip-build
-node packages/cli/scripts/build-host.mjs --target aarch64-unknown-linux-musl --platform linux-arm64 --skip-build
-node packages/cli/scripts/prepare.mjs --require-all --require-host
-node packages/cli/scripts/install-smoke.mjs
-```
-
-要点：`--platform` 是交叉装配必需的（默认取构建机平台，会把 Linux 载荷写到 `win32-x64` 键下）；
-`--skip-build` 用于产物已就位、不想再跑一遍 cargo；**打包脚本要用 Node 22.14.0**
-（`.github` 里钉的就是它）——本机 22.22.1 的目录 `cpSync` 会静默崩掉整个 node 进程（退出码 127），
-所以 `prepare.mjs` 的 `bin/` 拷贝改用逐文件 `copyFileSync`，不再依赖 `cpSync`。
-
-### 两个发布阻断缺陷（本轮实测发现并已修）
-
-（另有第三个属于既有缺陷、本轮一并修掉，见本节末。）
-
-- `build-host.mjs` 把资源写到 `payload/omnicrawl/...`，非 Windows 目标因此与内核文件名撞名，
-  Linux/ARM 载荷根本装不出来（详见上面的资源布局）。
-- `prepare.mjs` 只把 `bin/omnicrawl.mjs` 拷进启动器包，而当前启动器静态 `import './update.mjs'`，
-  这样发出去装完就在加载阶段 `ERR_MODULE_NOT_FOUND`。线上 0.2.1 的启动器包里同样只有
-  `bin/omnicrawl.mjs`（下载 tarball 核对过），但 0.2.1 的启动器不 import 自更新模块，所以它还跑得起来
-  ——真正的风险是**带自更新入口的 0.2.2**。现在整目录逐个文件拷贝，`install-smoke.mjs` 会把这条挡住。
-
-另外注意 `install-smoke.mjs` 的拓扑与真实安装不同：它把平台包与启动器**都**当顶级依赖装进同一个前缀，
-而真实安装里只有启动器是顶级包、平台包是它的可选依赖。两个包都作顶级包时，平台包 `package.json` 里
-同样叫 `omnicrawl` 的 `bin` 会抢走全局 shim，`omnicrawl` 于是直接跑内核（版本只打印 `omnicrawl 0.0.1`）。
-真机实测过 registry 路径（`npm i -g omnicrawl-cli@0.2.1`）：shim 正确指向
-`node_modules/omnicrawl-cli/bin/omnicrawl.mjs`，所以这条只影响“自己手装平台包”的用法。
-
-### 第三个发布缺陷：平台包与启动器的 `bin` 撞名
-
-平台包里的内核二进制原先也声明成 `bin: { omnicrawl: bin/omnicrawl }`，而启动器同样声明
-`omnicrawl`。两者在安装树里都会生成 `node_modules/.bin` 条目，撞名时**平台包赢**：
-
-- `npm i -g omnicrawl-cli@0.2.2`（官方用法）→ `.bin/omnicrawl` 指向启动器，正常；
-- 本地前缀安装 / `npx omnicrawl-cli` → `.bin/omnicrawl` 指向内核 exe，`omnicrawl` 变成
-  直连内核（只打印 `omnicrawl 0.0.1`，然后等 `initialize`），功能看起来「坏了」。
-
-0.2.1 的平台包就是这样声明的，属于早于 0.2.2 的既有缺陷。修法：平台包的 bin 改名
-`omnicrawl-kernel`（`.bin/omnicrawl` 只归启动器，内核仍有一个显式入口），并在
-`install-smoke.mjs` 里断言 `.bin/omnicrawl` 指向 `omnicrawl-cli/bin/omnicrawl.mjs`、
-`.bin/omnicrawl-kernel` 存在——该脚本原来直接用 `node <launcher>.mjs` 跑，绕过了 `.bin`
-这一层，所以一直没有暴露。
-
-若将来 BoringSSL 在某个目标上真的编不出来，回退方案仍是把 `impersonate` 降级为
-「显式报错说明该平台不支持」（对齐 Python 未安装 `curl_cffi` 时的行为），
-而不是静默退回库指纹。
+这些约束随 `wreq`/`btls` 一起移除了。若将来要重新引入原生 TLS 库，需要重新评估。

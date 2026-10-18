@@ -179,9 +179,7 @@ rust/
 │   ├── tests/plugin_cli_parity.rs          # 冻结对照契约测试（参数面 44 例 + 作用域 10 例 + 退出码）
 │   └── README.md                           # 已迁移 / 尚未迁移、参数面差异、验证边界
 ├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
-├── docs/python-free-build.md               # 纯 Rust 构建环境要求（C/C++ 工具链、交叉编译）
-└── tools/
-    └── btls-msvc-runtime.cmake             # MSVC 下 BoringSSL 的 CMake toolchain file
+└── docs/python-free-build.md               # 纯 Rust 构建环境要求（交叉编译）
 ```
 
 ## 构建与验证
@@ -193,11 +191,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-构建 `omnicrawl-host` 及其上层（`omnicrawl-tui` / `omnicrawl-api` / `omnicrawl-cli`）会
-编译 BoringSSL（`fetcher` 的浏览器指纹传输用 wreq + btls），因此还要求 C/C++、CMake、
-perl、libclang 与 NASM；Windows 上必须设 `CMAKE_TOOLCHAIN_FILE`，仓库路径含非 ASCII
-字符时还要把 `CARGO_TARGET_DIR` 指到纯 ASCII 目录。完整清单与排障见
-[`docs/python-free-build.md`](docs/python-free-build.md)。
+整条依赖树都是纯 Rust：`fetcher` / `web_search` 的浏览器指纹走本仓库的
+`omnicrawl-tls`（自研 TLS 1.3 + HTTP/2 + HTTP/1.1），不再需要 BoringSSL、CMake、
+NASM 或 libclang。因此只要有 `cargo` 就能构建，交叉编译也不受 C 工具链牵制。
+细节见 [`docs/python-free-build.md`](docs/python-free-build.md)。
 
 嵌入式 Linux 交叉编译（产物静态链接，便于塞进镜像）：
 

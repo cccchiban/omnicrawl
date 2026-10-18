@@ -15,7 +15,7 @@
         },
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust+%E5%B7%A5%E5%85%B7&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust+%E5%B7%A5%E5%85%B7&count=50&setlang=zh-CN"
         ],
         "ok": true,
         "output": "来源：bing｜查询：rust 工具｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
@@ -27,7 +27,7 @@
         },
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": true,
         "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一"
@@ -39,7 +39,7 @@
         },
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": true,
         "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
@@ -70,7 +70,7 @@
         },
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": true,
         "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
@@ -82,7 +82,7 @@
         },
         "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": true,
         "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
@@ -187,7 +187,7 @@
           }
         ],
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN",
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN",
           "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh",
           "https://github.com/search?q=rust&type=repositories",
           "https://arxiv.org/search/?searchtype=all&query=rust",
@@ -204,7 +204,7 @@
         },
         "html": "<html><body>Please verify you're human before continuing.</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": false,
         "output": "搜索引擎要求人机验证、JS 挑战或检测到异常流量，已停止请求（不会绕过验证）。可稍后重试或换用其他引擎。"
@@ -215,7 +215,7 @@
         },
         "html": "<html><body><p>没有任何结果块。</p></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=20&setlang=zh-CN"
+          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
         ],
         "ok": false,
         "output": "未找到相关搜索结果（或页面结构无法解析）。"

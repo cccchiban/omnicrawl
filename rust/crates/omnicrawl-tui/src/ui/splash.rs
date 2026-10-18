@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar;
 
+use omnicrawl_core::diagnostics;
+
 // ANSI 转义序列
 const CLEAR: &str = "\x1b[2J";
 const HOME: &str = "\x1b[H";
@@ -176,11 +178,13 @@ pub fn attach_startup_log_handler(sink: Arc<StartupLogSink>) -> StartupLogBridge
     StartupLogBridge
 }
 
-/// 上报一条启动期诊断：有桥进日志框，无桥落 stderr。
+/// 上报一条启动期诊断：有桥进日志框，无桥交给诊断汇。
 ///
 /// 启动画面期间不能直接写 stderr——转义序列与日志行互相插入会把画面打乱，
-/// 因此有桥时只写日志框；非交互环境（没有桥）下仍保持与原来相同的 stderr 输出，
-/// 诊断不会被吞掉。
+/// 因此有桥时只写日志框。无桥不直接 `eprintln!`：这个函数在**运行期**也会被调用
+/// （保存 MCP/TTS 设置、切换工作区都会重读配置并报错），那时画布已经接管终端，
+/// stderr 会盖在上面。改走 `omnicrawl_core::diagnostics`：装了接收端的进程进会话流
+/// 与 `logs/tui.log`，没装的（管道、测试）仍回落 stderr，诊断不会被吞掉。
 pub fn report_startup_log(level: LogLevel, message: &str) {
     let attached = BRIDGE
         .get_or_init(|| Mutex::new(None))
@@ -189,7 +193,14 @@ pub fn report_startup_log(level: LogLevel, message: &str) {
         .and_then(|slot| slot.clone());
     match attached {
         Some(sink) => sink.write_line(message, level),
-        None => eprintln!("[tui] {message}"),
+        None => diagnostics::report(
+            match level {
+                LogLevel::Info => diagnostics::Level::Info,
+                LogLevel::Warning => diagnostics::Level::Warning,
+                LogLevel::Error => diagnostics::Level::Error,
+            },
+            format!("[tui] {message}"),
+        ),
     }
 }
 

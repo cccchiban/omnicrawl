@@ -45,6 +45,11 @@ pub struct WebSearchConfiguration {
     pub exa_api_key: String,
     /// Firecrawl API Key（明文）。空串表示未配置。
     pub firecrawl_api_key: String,
+    /// GitHub Token（明文，`repo` 之外无需任何权限）。空串表示未配置。
+    ///
+    /// 只影响 GitHub 引擎：带 Token 请求会走 REST 检索接口（认证后 30 次/分钟），
+    /// 不带 Token 仍抓公开搜索页并共享未认证的 10 次/分钟额度。
+    pub github_token: String,
 }
 
 impl Default for WebSearchConfiguration {
@@ -54,6 +59,7 @@ impl Default for WebSearchConfiguration {
             tavily_api_key: String::new(),
             exa_api_key: String::new(),
             firecrawl_api_key: String::new(),
+            github_token: String::new(),
         }
     }
 }
@@ -77,10 +83,14 @@ impl WebSearchConfiguration {
         self.tavily_api_key = self.tavily_api_key.trim().to_string();
         self.exa_api_key = self.exa_api_key.trim().to_string();
         self.firecrawl_api_key = self.firecrawl_api_key.trim().to_string();
+        self.github_token = self.github_token.trim().to_string();
         Ok(self)
     }
 
     /// 指定引擎下生效的 API Key；抓页面型引擎没有凭据，返回空串。
+    ///
+    /// GitHub 不在其列：它的 Token 是可选的提速项，没有 Token 也照常可用，
+    /// 因此由 [`Self::github_token`] 单独读取，不参与「缺凭据即报错」的判定。
     pub fn api_key_for(&self, engine: &str) -> &str {
         match engine.trim().to_lowercase().as_str() {
             "tavily" => self.tavily_api_key.as_str(),
@@ -108,6 +118,7 @@ pub fn load_web_search_configuration(
         tavily_api_key: text_field(&section, "tavily_api_key", ""),
         exa_api_key: text_field(&section, "exa_api_key", ""),
         firecrawl_api_key: text_field(&section, "firecrawl_api_key", ""),
+        github_token: text_field(&section, "github_token", ""),
     }
     .normalize()
 }
@@ -136,6 +147,10 @@ pub fn save_web_search_configuration(
     section.insert(
         "firecrawl_api_key".to_string(),
         Value::String(configuration.firecrawl_api_key.clone()),
+    );
+    section.insert(
+        "github_token".to_string(),
+        Value::String(configuration.github_token.clone()),
     );
     data.insert("web_search".to_string(), Value::Table(section));
     save_config_data(env, &data, config_path)

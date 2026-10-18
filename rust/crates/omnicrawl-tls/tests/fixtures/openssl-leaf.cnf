@@ -1,0 +1,12 @@
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = example.com
+[v3_leaf]
+subjectAltName = DNS:example.com,DNS:*.example.com
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid

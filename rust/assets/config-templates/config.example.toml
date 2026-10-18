@@ -50,8 +50,9 @@ default_context_window_tokens = 1000000
 enabled = true
 
 # 联网搜索（web_search 工具）：默认引擎在 TUI /settings → 工具设置 → 联网搜索 中切换，
-# 也可在此手改。bing / duckduckgo / github / arxiv / huggingface
+# 也可在此手改。bing / duckduckgo / arxiv / huggingface
 # 抓各自站点的公开搜索页，无需凭据，统一走浏览器指纹环境；
+# github 配了 github_token 时走 REST 检索接口，未配时仍抓公开搜索页；
 # tavily / exa / firecrawl 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）；
 # mixed 是混合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与。
 # 工具调用时传 engine 参数可覆盖这里的默认引擎。
@@ -60,6 +61,9 @@ engine = "bing"
 tavily_api_key = ""
 exa_api_key = ""
 firecrawl_api_key = ""
+# GitHub Token 可选：配置后 GitHub 引擎改走 REST 检索接口（30 次/分钟），
+# 留空则抓公开搜索页（10 次/分钟）。token 只影响额度，无需勾选任何仓库权限。
+github_token = ""
 
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。

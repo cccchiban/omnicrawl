@@ -121,6 +121,7 @@ fn api_key_resolution_is_per_engine() {
         tavily_api_key: "tvly-1".to_string(),
         exa_api_key: "exa-1".to_string(),
         firecrawl_api_key: "fc-1".to_string(),
+        github_token: "ghp-1".to_string(),
     };
     assert_eq!(config.api_key_for("tavily"), "tvly-1");
     assert_eq!(config.api_key_for("Exa"), "exa-1", "大小写不敏感");
@@ -128,6 +129,8 @@ fn api_key_resolution_is_per_engine() {
     assert_eq!(config.api_key_for("bing"), "");
     assert_eq!(config.api_key_for("duckduckgo"), "");
     assert_eq!(config.api_key_for("mixed"), "", "混合搜索本身没有凭据");
+    // GitHub Token 不参与「缺凭据即报错」的判定：没有它引擎也照常可用。
+    assert_eq!(config.api_key_for("github"), "");
 }
 
 /// 写回只动 `web_search` 段，其他段保持原样。
@@ -146,6 +149,7 @@ fn save_keeps_other_sections_and_round_trips() {
         tavily_api_key: "tvly-key".to_string(),
         exa_api_key: String::new(),
         firecrawl_api_key: "fc-key".to_string(),
+        github_token: "ghp-key".to_string(),
     };
     save_web_search_configuration(&env, &configuration, None).expect("写回联网搜索配置");
 

@@ -22,8 +22,7 @@ use omnicrawl_config::features::desensitization::{
 };
 use omnicrawl_controllers::context_compaction::TokenUsageSample;
 use omnicrawl_controllers::context_compaction::{
-    estimate_json_tokens, estimate_messages_tokens, estimate_text_tokens,
-    RECALL_SESSION_EVIDENCE_TOOL_NAME,
+    estimate_messages_tokens, RECALL_SESSION_EVIDENCE_TOOL_NAME,
 };
 use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
@@ -108,18 +107,22 @@ use crate::compaction::{
 
 /// 压缩后的上下文 Token 估算：稳定上下文 + 运行期历史。
 ///
-/// 稳定上下文 = 系统提示词 + 宿主给的上下文消息（项目规范、Skill、运行环境）+ 工具声明，
-/// 口径与压缩驱动自己的测量完全同源（`estimate_text_tokens` / `estimate_messages_tokens` /
-/// `estimate_json_tokens`），因此宿主显示的「压缩后大小」与实际进入下一次请求的内容一致。
+/// 稳定上下文 = 系统提示词 + 宿主给的上下文消息（项目规范、Skill、运行环境）+ 工具声明。
+/// 拼装与计价都在 `omnicrawl_controllers::context_compaction::meter::conversation_tokens`，
+/// 与压缩驱动自己的预算测量共用同一份实现，因此宿主显示的「压缩后大小」与实际进入下一次
+/// 请求的内容一致；多模态消息里的图片按句柄计价，不会把 Base64 算进来。
 ///
 /// 取不到模型配置时返回 `None`：没有系统提示词与工具面就算不出可比的整体大小，此时宁可
 /// 不报，也不给一个只含历史的偏小数。
 fn post_compaction_context_tokens(conn: &Rc<RefCell<Conn>>, history: &[Value]) -> Option<i64> {
     let model = conn.borrow().model.clone()?;
-    let mut tokens = estimate_text_tokens(&model.system_prompt);
-    tokens += estimate_messages_tokens(&model.context_messages);
-    tokens += estimate_json_tokens(&Value::Array(model.tools.clone()));
-    tokens += estimate_messages_tokens(history);
+    let tokens = omnicrawl_controllers::context_compaction::meter::conversation_tokens(
+        &model.system_prompt,
+        &model.context_messages,
+        &model.tools,
+        history,
+        &omnicrawl_controllers::context_compaction::meter::text_tokens,
+    );
     Some(tokens.max(0))
 }
 

@@ -163,9 +163,7 @@ impl DecisionChannelConfig {
             api_key_env
         };
         // 负值与越界值收口而不是报错：它是一个纯退避参数，不该让整条渠道失效。
-        self.retry_count = self
-            .retry_count
-            .clamp(0, MAX_DECISION_RETRY_COUNT);
+        self.retry_count = self.retry_count.clamp(0, MAX_DECISION_RETRY_COUNT);
         Ok(self)
     }
 
@@ -379,10 +377,7 @@ pub fn save_decision_api_configuration(
         data.insert("version".to_string(), Value::Integer(1));
     }
     let mut section = Table::new();
-    section.insert(
-        "enabled".to_string(),
-        Value::Boolean(normalized.enabled),
-    );
+    section.insert("enabled".to_string(), Value::Boolean(normalized.enabled));
     section.insert("host".to_string(), Value::String(normalized.host.clone()));
     section.insert("port".to_string(), Value::Integer(normalized.port));
     data.insert(DECISION_API_SECTION.to_string(), Value::Table(section));
@@ -551,6 +546,9 @@ pub const DECISION_SWITCH_KB_SEARCH: &str = "kb_search_rerank";
 /// 「Skill 检索走决策模型排序」开关的配置键。
 pub const DECISION_SWITCH_SKILL_SEARCH: &str = "skill_search_rerank";
 
+/// 「联网搜索走决策模型排序」开关的配置键。
+pub const DECISION_SWITCH_WEB_SEARCH: &str = "web_search_rerank";
+
 /// 「提问自动托管」开关的配置键。
 pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
 
@@ -574,7 +572,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 8] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 9] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -593,6 +591,11 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 8] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_SKILL_SEARCH,
         label: "Skill 检索使用决策模型排序",
+        default: false,
+    },
+    DecisionSwitchSpec {
+        key: DECISION_SWITCH_WEB_SEARCH,
+        label: "联网搜索使用决策模型排序",
         default: false,
     },
     DecisionSwitchSpec {
@@ -671,9 +674,7 @@ pub fn save_decision_switch(
     decision_models_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
     if !DECISION_SWITCHES.iter().any(|spec| spec.key == key) {
-        return Err(ConfigError::new(format!(
-            "未知的决策模型开关：{key}。"
-        )));
+        return Err(ConfigError::new(format!("未知的决策模型开关：{key}。")));
     }
     let source = resolve_decision_models_path(env, decision_models_path)?;
     let target = resolve_decision_models_write_path(env, decision_models_path)?;
@@ -698,10 +699,7 @@ pub fn save_decision_switch(
         };
         section.insert(spec.key.to_string(), Value::Boolean(value));
     }
-    data.insert(
-        DECISION_FEATURES_SECTION.to_string(),
-        Value::Table(section),
-    );
+    data.insert(DECISION_FEATURES_SECTION.to_string(), Value::Table(section));
     atomic_write_text(&target, &dump_toml_text(&data))?;
     Ok(target)
 }
@@ -861,7 +859,10 @@ pub fn save_decision_model_configuration(
             "base_url".to_string(),
             Value::String(channel.base_url.clone()),
         );
-        entry.insert("api_key".to_string(), Value::String(channel.api_key.clone()));
+        entry.insert(
+            "api_key".to_string(),
+            Value::String(channel.api_key.clone()),
+        );
         entry.insert(
             "api_key_env".to_string(),
             Value::String(channel.api_key_env.clone()),
@@ -1027,7 +1028,11 @@ mod tests {
                 base_url: base_url.to_string(),
                 ..DecisionChannelConfig::default()
             };
-            assert_eq!(channel.is_local_service(), expected, "base_url = {base_url}");
+            assert_eq!(
+                channel.is_local_service(),
+                expected,
+                "base_url = {base_url}"
+            );
         }
     }
 
@@ -1141,15 +1146,24 @@ mod tests {
         let reloaded = load_decision_model_configuration(&env, None).expect("读回");
         assert_eq!(reloaded.default_key, "self-hosted");
         assert_eq!(reloaded.channels.len(), 2);
-        assert_eq!(reloaded.channels[0].base_url, "https://jevtypesafeai.com/api");
+        assert_eq!(
+            reloaded.channels[0].base_url,
+            "https://jevtypesafeai.com/api"
+        );
         assert_eq!(reloaded.channels[0].model, "jev-1.13.0");
         assert_eq!(
             reloaded.channels[0].retry_count, DEFAULT_DECISION_RETRY_COUNT,
             "缺省重试次数是 3"
         );
-        assert_eq!(reloaded.channels[1].retry_count, 0, "0 表示不重试，要原样往返");
+        assert_eq!(
+            reloaded.channels[1].retry_count, 0,
+            "0 表示不重试，要原样往返"
+        );
         // 空的环境变量名回落到默认名。
-        assert_eq!(reloaded.channels[1].api_key_env, DEFAULT_DECISION_API_KEY_ENV);
+        assert_eq!(
+            reloaded.channels[1].api_key_env,
+            DEFAULT_DECISION_API_KEY_ENV
+        );
         assert_eq!(
             reloaded.active_channel().map(|item| item.key.as_str()),
             Some("self-hosted"),
@@ -1229,7 +1243,9 @@ mod tests {
             mode: "openai".to_string(),
             ..DecisionChannelConfig::default()
         };
-        let error = unsupported_mode.normalize().expect_err("未知服务类型应被拒绝");
+        let error = unsupported_mode
+            .normalize()
+            .expect_err("未知服务类型应被拒绝");
         assert!(error.message().contains("请求方式"), "{}", error.message());
     }
 
@@ -1281,12 +1297,21 @@ mod tests {
             switches.get(DECISION_SWITCH_MEMORY_SEARCH).copied(),
             Some(false)
         );
-        assert_eq!(switches.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(false));
+        assert_eq!(
+            switches.get(DECISION_SWITCH_KB_SEARCH).copied(),
+            Some(false)
+        );
         assert_eq!(
             switches.get(DECISION_SWITCH_SKILL_SEARCH).copied(),
             Some(false)
         );
         assert!(!decision_switch_default(DECISION_SWITCH_SKILL_SEARCH));
+        // 联网搜索重排同样默认关闭。
+        assert_eq!(
+            switches.get(DECISION_SWITCH_WEB_SEARCH).copied(),
+            Some(false)
+        );
+        assert!(!decision_switch_default(DECISION_SWITCH_WEB_SEARCH));
         // 提问托管开关同样默认关闭。
         assert_eq!(
             switches.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
@@ -1306,8 +1331,8 @@ mod tests {
         );
         assert!(!decision_switch_default(DECISION_SWITCH_SUBAGENT_SUGGEST));
 
-        let path = save_decision_switch(&env, DECISION_SWITCH_TOOL_REVIEW, true, None)
-            .expect("写开关");
+        let path =
+            save_decision_switch(&env, DECISION_SWITCH_TOOL_REVIEW, true, None).expect("写开关");
         assert!(path.exists(), "开关写到默认位置：{path:?}");
         let reloaded = load_decision_switches(&env, None);
         assert_eq!(
@@ -1319,24 +1344,38 @@ mod tests {
             reloaded.get(DECISION_SWITCH_MEMORY_SEARCH).copied(),
             Some(false)
         );
-        assert_eq!(reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(false));
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(),
+            Some(false)
+        );
         assert_eq!(
             reloaded.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
+            Some(false)
+        );
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_WEB_SEARCH).copied(),
             Some(false)
         );
 
         // 新开关各自独立写回，互不影响。
         save_decision_switch(&env, DECISION_SWITCH_KB_SEARCH, true, None).expect("写知识库开关");
-        save_decision_switch(&env, DECISION_SWITCH_SKILL_SEARCH, true, None).expect("写 Skill 开关");
+        save_decision_switch(&env, DECISION_SWITCH_SKILL_SEARCH, true, None)
+            .expect("写 Skill 开关");
+        save_decision_switch(&env, DECISION_SWITCH_WEB_SEARCH, true, None).expect("写联网搜索开关");
         save_decision_switch(&env, DECISION_SWITCH_ASK_USER_CUSTODY, true, None)
             .expect("写提问托管开关");
-        save_decision_switch(&env, DECISION_SWITCH_TOOL_SUGGEST, true, None).expect("写工具建议开关");
+        save_decision_switch(&env, DECISION_SWITCH_TOOL_SUGGEST, true, None)
+            .expect("写工具建议开关");
         save_decision_switch(&env, DECISION_SWITCH_SUBAGENT_SUGGEST, true, None)
             .expect("写子代理建议开关");
         let reloaded = load_decision_switches(&env, None);
         assert_eq!(reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(true));
         assert_eq!(
             reloaded.get(DECISION_SWITCH_SKILL_SEARCH).copied(),
+            Some(true)
+        );
+        assert_eq!(
+            reloaded.get(DECISION_SWITCH_WEB_SEARCH).copied(),
             Some(true)
         );
         assert_eq!(
@@ -1364,8 +1403,7 @@ mod tests {
         let reloaded_channels = load_decision_model_configuration(&env, None).expect("读回渠道");
         assert_eq!(reloaded_channels.channels.len(), 1);
         assert_eq!(
-            reloaded_channels.default_key,
-            DEFAULT_DECISION_CHANNEL_KEY,
+            reloaded_channels.default_key, DEFAULT_DECISION_CHANNEL_KEY,
             "写开关不应改默认渠道"
         );
         assert_eq!(
@@ -1381,9 +1419,13 @@ mod tests {
     fn unknown_decision_switch_is_rejected() {
         let root = temp_root("unknown-switch");
         let env = env_for(&root);
-        let error = save_decision_switch(&env, "not_a_switch", true, None)
-            .expect_err("未知开关应被拒绝");
-        assert!(error.message().contains("not_a_switch"), "{}", error.message());
+        let error =
+            save_decision_switch(&env, "not_a_switch", true, None).expect_err("未知开关应被拒绝");
+        assert!(
+            error.message().contains("not_a_switch"),
+            "{}",
+            error.message()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

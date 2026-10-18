@@ -59,6 +59,8 @@ pub struct ContextCompactionOutcome {
     pub history_projection: Option<Vec<Value>>,
     pub fallback_required: bool,
     pub diagnostic: String,
+    /// 本次测量的完整快照：载荷与 Python 对齐，计量细节（锚点、增量、逐事件账）留在这里。
+    pub snapshot: ContextBudgetSnapshot,
 }
 
 impl Default for ContextCompactionOutcome {
@@ -69,6 +71,7 @@ impl Default for ContextCompactionOutcome {
             history_projection: None,
             fallback_required: false,
             diagnostic: String::new(),
+            snapshot: ContextBudgetSnapshot::default(),
         }
     }
 }
@@ -179,6 +182,7 @@ impl ContextCompactionService {
             _ => {
                 return Ok(ContextCompactionOutcome {
                     measurement_payload,
+                    snapshot: measured.snapshot,
                     ..ContextCompactionOutcome::default()
                 })
             }
@@ -189,7 +193,7 @@ impl ContextCompactionService {
         );
         // 决策已定为「要压缩」：工具段赶在摘要请求之前发出（顺序见方法文档）。
         pre_compaction();
-        self.compact_batch(
+        let mut outcome = self.compact_batch(
             &batch,
             source_events,
             target_summary_tokens,
@@ -199,7 +203,9 @@ impl ContextCompactionService {
             false,
             decision.reason,
             measurement_payload,
-        )
+        )?;
+        outcome.snapshot = measured.snapshot;
+        Ok(outcome)
     }
 
     /// 压缩当前未完成回合，并返回可用于同回合重试的上下文投影。
@@ -509,6 +515,7 @@ impl ContextCompactionService {
             history_projection: Some(projection),
             fallback_required: false,
             diagnostic: String::new(),
+            ..ContextCompactionOutcome::default()
         })
     }
 }

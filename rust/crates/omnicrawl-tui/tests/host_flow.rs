@@ -2011,6 +2011,55 @@ fn pasted_image_path_becomes_an_image_attachment() {
         .is_empty());
 }
 
+/// 剪贴板位图在发送时落盘，并把相对路径写进提问正文（用户要求：方便后续读取）。
+///
+/// `Ctrl+V` 的图只在内存里，磁盘上原本没有副本；这里钉住「发送那一刻补一份」。
+#[test]
+fn clipboard_pasted_image_is_archived_when_the_turn_is_sent() {
+    let mut harness = Harness::start_with_native_vision(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    // 直接走输入框入口：`Ctrl+V` 的真实位图读的是系统剪贴板，测试里不依赖它。
+    harness
+        .app
+        .state
+        .composer
+        .insert_clipboard_image("image/png", PNG_BYTES.to_vec());
+
+    harness.press(KeyCode::Enter);
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .expect("应发出 turn.submit");
+    let params = submitted.params.clone().unwrap_or(Value::Null);
+    let user_text = params["user_text"]
+        .as_str()
+        .expect("user_text 应当是字符串");
+    assert!(user_text.starts_with("[ #1 Image ]"), "{user_text}");
+    assert!(user_text.contains("粘贴的图片已保存："), "{user_text}");
+    assert!(
+        user_text.contains(".omnicrawl/.agent_tmp/images/pasted_"),
+        "正文里要给相对工作区的路径：{user_text}"
+    );
+
+    let directory = harness
+        .workspace
+        .join(".omnicrawl")
+        .join(".agent_tmp")
+        .join("images");
+    let entries: Vec<PathBuf> = std::fs::read_dir(&directory)
+        .expect("归档目录应当存在")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(entries.len(), 1, "一张图落一份");
+    assert_eq!(
+        std::fs::read(&entries[0]).expect("应当读到副本"),
+        PNG_BYTES,
+        "落盘的必须是原字节"
+    );
+}
+
 /// 混有其它内容的粘贴仍是文本：不能因为里面出现了一个图片路径就转成图片块。
 #[test]
 fn pasted_text_mentioning_an_image_path_stays_text() {

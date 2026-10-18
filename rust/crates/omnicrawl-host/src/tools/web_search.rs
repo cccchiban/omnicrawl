@@ -8,9 +8,9 @@
 //!
 //! `mixed` 是混合搜索：并发查询全部可用渠道，按 URL 去重后合并成一份结果。
 //!
-//! 请求走 [`super::wreq_transport::WreqWebTransport`]（wreq + wreq-util 设备档案），与
-//! `fetcher` 同一个「模拟有头浏览器」环境：TLS/HTTP2 指纹与 UA、Client Hints 同源，
-//! 不做手写头拼接——手写会把档案值顶掉，反而暴露成非浏览器流量。
+//! 请求走 [`super::tls_transport::TlsWebTransport`]（omnicrawl-tls 自研栈的浏览器档案），
+//! 与 `fetcher` 同一个「模拟有头浏览器」环境：TLS/HTTP2 指纹与 UA、Client Hints 同源，
+//! 不做手写头拼接——两者对不上反而暴露成非浏览器流量。
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -19,22 +19,41 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use omnicrawl_config::features::web_search::WEB_SEARCH_ENGINES;
+use omnicrawl_core::diagnostics;
 use regex::Regex;
 use scraper::Html;
 use serde_json::{Map, Value};
 
+use super::decision_search::{apply_order, keyword_coverage_order, RerankOptions, RerankRequest};
 use super::error::{ToolError, ToolOutcome};
 use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, WebErrorKind, WebRequest, WebTransport,
     MAX_REDIRECTS,
 };
-use super::wreq_transport::{normalize_impersonate, WreqWebTransport};
+use super::tls_transport::{normalize_impersonate, TlsWebTransport};
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 10.0;
 /// 单次搜索返回的条数上限，同时是调用方未指定 `max_results` 时的默认条数。
-pub const MAX_RESULTS_PER_ENGINE: i64 = 20;
+pub const MAX_RESULTS_PER_ENGINE: i64 = 50;
 /// 支持的全部引擎；清单的唯一来源在配置域（界面候选与校验读同一张表）。
 pub const SUPPORTED_ENGINES: [&str; 9] = WEB_SEARCH_ENGINES;
+
+/// 决策模型排序的分组数：送审的候选池按组大小切成这么多组。
+pub const RERANK_GROUPS: usize = 5;
+/// 每组送审的候选数。
+pub const RERANK_GROUP_SIZE: usize = 10;
+/// 送审的候选池宽度：组数 × 组大小（超出这宽度的候选不送审）。
+pub const RERANK_POOL_LIMIT: usize = RERANK_GROUPS * RERANK_GROUP_SIZE;
+/// 每组保留的条数：各组前几名合成最终结果（上限 [`RERANK_OUTPUT_LIMIT`] 条）。
+pub const RERANK_KEEP_PER_GROUP: usize = 5;
+/// 分组排序后的返回条数上限：组数 × 每组保留数。
+pub const RERANK_OUTPUT_LIMIT: usize = RERANK_GROUPS * RERANK_KEEP_PER_GROUP;
+/// 单组请求的超时：本地小模型单批 10 条约 25s，30s 留出余量；超时即 fail-open 退回本地排序。
+const RERANK_TIMEOUT_SECONDS: u64 = 30;
+/// 排序指令：只要求按相关度排序，不做其他判断。
+const RERANK_INSTRUCTIONS: &str = "给定 state 里的搜索查询，判断每个候选项与该查询的相关程度；\
+state 是事实来源，不要根据候选项自身措辞推测查询；候选项是一批网页搜索结果，\
+排在前面表示更值得优先查看。";
 
 /// 混合搜索的引擎名（并发多路 + 去重合并）。
 pub const MIXED_ENGINE: &str = omnicrawl_config::features::web_search::MIXED_WEB_SEARCH_ENGINE;
@@ -52,6 +71,10 @@ const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 const EXA_ENDPOINT: &str = "https://api.exa.ai/search";
 /// Firecrawl 检索接口（`POST`，Bearer 鉴权）。
 const FIRECRAWL_ENDPOINT: &str = "https://api.firecrawl.dev/v1/search";
+/// GitHub 仓库检索接口（`GET`，带 Token 时用 Bearer 鉴权）。
+const GITHUB_SEARCH_ENDPOINT: &str = "https://api.github.com/search/repositories";
+/// GitHub 接口版本：固定版本比跟随默认值稳定，避免上游改默认行为时静默变化。
+const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// 拦截特征：命中即判定为验证码 / JS 挑战页，如实报错而不尝试绕过。
 ///
@@ -109,13 +132,20 @@ pub struct WebSearchOptions {
     pub exa_api_key: String,
     /// Firecrawl API Key（空串表示未配置）。
     pub firecrawl_api_key: String,
+    /// GitHub Token（空串表示未配置）。
+    ///
+    /// 只影响 GitHub 引擎：有 Token 走 REST 检索接口（认证后 30 次/分钟），
+    /// 没有 Token 仍抓公开搜索页（未认证 10 次/分钟），引擎始终可用。
+    pub github_token: String,
     /// 混合搜索的并发度数（每路一个线程）；0 与 1 都表示串行。
     pub mixed_parallelism: usize,
     /// 抓页面型引擎用的浏览器指纹档案（`chrome`/`firefox`/`safari`/`edge`）。
     ///
     /// 与 `fetcher` 的 `impersonate` 同一口径：默认 `chrome`，由
-    /// [`super::wreq_transport::normalize_impersonate`] 归一化后交给指纹传输挑设备档案。
+    /// [`super::tls_transport::normalize_impersonate`] 归一化后交给指纹传输挑 TLS 档案。
     pub impersonate: String,
+    /// 联网搜索的决策模型排序（`decision_models.toml` 的 `web_search_rerank` 开关）。
+    pub rerank: Arc<RerankOptions>,
 }
 
 impl Default for WebSearchOptions {
@@ -123,7 +153,7 @@ impl Default for WebSearchOptions {
         Self {
             // 默认就走浏览器指纹传输：抓页面型引擎所在站点会按 TLS 指纹与 HTTP2 特征
             // 判别客户端，ureq+rustls 的库指纹会被直接拦下。
-            transport: Arc::new(WreqWebTransport::new()),
+            transport: Arc::new(TlsWebTransport::new()),
             user_agent: super::web_transport::DEFAULT_USER_AGENT.to_string(),
             timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_retries: 1,
@@ -133,8 +163,11 @@ impl Default for WebSearchOptions {
             tavily_api_key: String::new(),
             exa_api_key: String::new(),
             firecrawl_api_key: String::new(),
+            github_token: String::new(),
             mixed_parallelism: 4,
-            impersonate: super::wreq_transport::DEFAULT_IMPERSONATE.to_string(),
+            impersonate: super::tls_transport::DEFAULT_IMPERSONATE.to_string(),
+            // 缺省即不排序：重排是纯加速项，开关关着时连配置都不读。
+            rerank: Arc::new(RerankOptions::default()),
         }
     }
 }
@@ -182,6 +215,11 @@ pub fn web_search_options_from_config(
         tavily_api_key: configuration.tavily_api_key,
         exa_api_key: configuration.exa_api_key,
         firecrawl_api_key: configuration.firecrawl_api_key,
+        github_token: configuration.github_token,
+        rerank: Arc::new(super::rerank_options_from_config(
+            environment,
+            omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH,
+        )),
         ..WebSearchOptions::default()
     }
 }
@@ -575,6 +613,143 @@ fn status_message(status: u16) -> String {
     }
 }
 
+/// 分组并发排序：把候选池切成 [`RERANK_GROUPS`] 组并发送审，各组取前 [`RERANK_KEEP_PER_GROUP`] 名拼接。
+///
+/// 分组由本地关键词覆盖度决定（前 10 条一组、次 10 条一组…），因此组间顺序即本地覆盖度顺序；
+/// 组内顺序由决策模型给出。返回**池内下标**的最终顺序，`None` 表示本次排序不可用（开关没开、
+/// 候选太少或全部组都失败），调用方保留本地顺序。单组失败只影响该组：它按本地顺序取前几名。
+pub fn grouped_rerank_order(
+    options: &WebSearchOptions,
+    state: Value,
+    query: &str,
+    candidates: &[String],
+) -> Option<Vec<usize>> {
+    let rerank = options.rerank.as_ref();
+    if !rerank.active() || candidates.len() <= RERANK_KEEP_PER_GROUP {
+        return None;
+    }
+    let channel = rerank.channel.as_ref()?;
+
+    // 送审池：本地关键词覆盖度降序取 RERANK_POOL_LIMIT 条，再按组大小连续切片成组。
+    let pool: Vec<usize> = keyword_coverage_order(query, candidates)
+        .into_iter()
+        .take(RERANK_POOL_LIMIT)
+        .collect();
+    let groups: Vec<Vec<usize>> = pool
+        .chunks(RERANK_GROUP_SIZE)
+        .map(<[usize]>::to_vec)
+        .collect();
+
+    // 各组并发送审：组内候选数固定（10 条），耗时相近，因此并发不会把单组挤出超时预算。
+    // `state` 先取引用：`move` 闭包否则会把这份上下文移进第一组，后续组就拿不到了。
+    let state = &state;
+    let ranked: Vec<Option<Vec<usize>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = groups
+            .iter()
+            .map(|group| {
+                scope.spawn(move || -> Option<Vec<usize>> {
+                    let texts: Vec<String> = group
+                        .iter()
+                        .map(|index| candidates[*index].clone())
+                        .collect();
+                    let request = RerankRequest {
+                        channel,
+                        masking: rerank.masking.as_deref(),
+                        state,
+                        instructions: RERANK_INSTRUCTIONS,
+                        candidates: &texts,
+                        timeout_seconds: RERANK_TIMEOUT_SECONDS,
+                    };
+                    match rerank.client.rank(&request) {
+                        Ok(order) => Some(order),
+                        Err(error) => {
+                            diagnostics::warn(format!(
+                                "[host] 联网搜索重排不可用，该组改用本地排序：{error}"
+                            ));
+                            None
+                        }
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(None))
+            .collect()
+    });
+    if ranked.iter().all(Option::is_none) {
+        return None;
+    }
+
+    // 合并：按组顺序拼接，每组取前 RERANK_KEEP_PER_GROUP 名（组内下标 → 池内下标）。
+    let mut merged: Vec<usize> = Vec::with_capacity(RERANK_OUTPUT_LIMIT);
+    for (group, order) in groups.iter().zip(ranked) {
+        let picked: Vec<usize> = match order {
+            Some(order) => order
+                .into_iter()
+                .filter_map(|rank| group.get(rank).copied())
+                .collect(),
+            // 该组失败：按本地顺序（组的原始切片顺序）取前几名顶上，不改变组间位置。
+            None => group.clone(),
+        };
+        for index in picked.into_iter().take(RERANK_KEEP_PER_GROUP) {
+            if !merged.contains(&index) {
+                merged.push(index);
+            }
+        }
+    }
+    Some(merged)
+}
+
+/// 联网搜索的排序收口：开关打开时对整份结果分组并发送审，并给出本次生效的条数上限。
+///
+/// 返回 `(结果, 条数上限)`：排序不可用时原样返回本地顺序与调用方的 `max_results`；排序生效时
+/// 上限压到 [`RERANK_OUTPUT_LIMIT`]（调用方给的更小时按调用方的），因此「未传 max_results」自然
+/// 落到 25 条。
+fn reranked_items<T>(
+    options: &WebSearchOptions,
+    query: &str,
+    language: Option<&str>,
+    items: Vec<T>,
+    text_of: impl Fn(&T) -> String,
+    max_results: i64,
+) -> (Vec<T>, i64) {
+    if !options.rerank.active() || items.len() <= RERANK_KEEP_PER_GROUP {
+        return (items, max_results);
+    }
+    let texts: Vec<String> = items.iter().map(text_of).collect();
+    let state = serde_json::json!({
+        "query": query,
+        "language": language,
+        "result_count": items.len(),
+    });
+    match grouped_rerank_order(options, state, query, &texts) {
+        Some(order) => {
+            let reordered = apply_order(items, &order);
+            (reordered, max_results.min(RERANK_OUTPUT_LIMIT as i64))
+        }
+        None => (items, max_results),
+    }
+}
+
+/// 一条结果的排序候选描述：标题、链接与摘要足以判断相关度。
+fn candidate_text(result: &WebSearchResult) -> String {
+    let mut lines = vec![
+        result.title.trim().to_string(),
+        result.url.trim().to_string(),
+    ];
+    let snippet = result.snippet.trim();
+    if !snippet.is_empty() {
+        lines.push(snippet.to_string());
+    }
+    lines.join("\n")
+}
+
+/// 混合搜索的排序候选描述：与单路同源（合并后的标题、链接与摘要）。
+fn merged_candidate_text(merged: &MergedResult) -> String {
+    candidate_text(&merged.result)
+}
+
 pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) -> ToolOutcome {
     let query = argument_text(arguments, "query");
     if query.is_empty() {
@@ -614,19 +789,28 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
     }
 
     if matches!(engine.as_str(), "tavily" | "exa" | "firecrawl") {
-        return api_search(options, &engine, &query, max_results);
+        return api_search(options, &engine, &query, max_results, language.as_deref());
     }
 
     let started = Instant::now();
-    let results = page_results(options, &engine, &query, language.as_deref())?;
+    let results = page_or_github_results(options, &engine, &query, language.as_deref())?;
     if results.is_empty() {
         return Err(ToolError::new("未找到相关搜索结果（或页面结构无法解析）。"));
     }
+    // 排序开启时对整份结果分组送审；返回条数上限随之压到 25（调用方给的更小时按调用方的）。
+    let (results, limit) = reranked_items(
+        options,
+        &query,
+        language.as_deref(),
+        results,
+        candidate_text,
+        max_results,
+    );
     let elapsed = started.elapsed().as_secs_f64();
     Ok(format_results(
         &engine,
         &query,
-        &results[..results.len().min(max_results as usize)],
+        &results[..results.len().min(limit as usize)],
         elapsed,
     ))
 }
@@ -662,6 +846,23 @@ fn page_results(
     )))
 }
 
+/// 抓页面通路的入口：GitHub 配了 Token 时改走 REST 接口，其余一律抓公开搜索页。
+///
+/// GitHub 是唯一「同一引擎两条通路」的：有 Token 走 REST（额度 30 次/分钟），没有 Token
+/// 仍抓搜索页（10 次/分钟），引擎始终可用。两条通路返回同一形状的结果，调用方无需区分。
+fn page_or_github_results(
+    options: &WebSearchOptions,
+    engine: &str,
+    query: &str,
+    language: Option<&str>,
+) -> Result<Vec<WebSearchResult>, ToolError> {
+    if engine == "github" && !options.github_token.trim().is_empty() {
+        // 与页面通路一致地对待空结果：由调用方判定「未找到」。
+        return github_api_results(options, query, MAX_RESULTS_PER_ENGINE);
+    }
+    page_results(options, engine, query, language)
+}
+
 /// 单路检索：抓页面型与接口型统一入口（混合搜索按路并发调用它）。
 fn channel_results(
     options: &WebSearchOptions,
@@ -671,10 +872,9 @@ fn channel_results(
     language: Option<&str>,
 ) -> Result<Vec<WebSearchResult>, ToolError> {
     if API_ENGINES.contains(&engine) {
-        api_results(options, engine, query, max_results)
-    } else {
-        page_results(options, engine, query, language)
+        return api_results(options, engine, query, max_results);
     }
+    page_or_github_results(options, engine, query, language)
 }
 
 /// 混合搜索：并发查询全部可用渠道，按 URL 去重后合并，最终条数截断到 `max_results`。
@@ -694,6 +894,12 @@ fn mixed_search(
     let mut served: Vec<&str> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
     let mut duplicates = 0usize;
+    // 排序开启时每路都要更宽的一池（合并去重后才够分组送审）。
+    let pool = if options.rerank.active() {
+        max_results.max(RERANK_POOL_LIMIT as i64)
+    } else {
+        max_results
+    };
 
     for batch in engines.chunks(options.mixed_parallelism.max(1)) {
         let collected: Vec<Result<Vec<WebSearchResult>, ToolError>> = std::thread::scope(|scope| {
@@ -701,9 +907,7 @@ fn mixed_search(
                 .iter()
                 .copied()
                 .map(|engine| {
-                    scope.spawn(move || {
-                        channel_results(options, engine, query, max_results, language)
-                    })
+                    scope.spawn(move || channel_results(options, engine, query, pool, language))
                 })
                 .collect();
             handles
@@ -752,12 +956,20 @@ fn mixed_search(
             served.join("、")
         )));
     }
+    let (merged, limit) = reranked_items(
+        options,
+        query,
+        language,
+        merged,
+        merged_candidate_text,
+        max_results,
+    );
     let elapsed = started.elapsed().as_secs_f64();
     Ok(format_mixed_results(
         &served,
         &failures,
         query,
-        &merged[..merged.len().min(max_results as usize)],
+        &merged[..merged.len().min(limit as usize)],
         duplicates,
         elapsed,
     ))
@@ -859,18 +1071,144 @@ fn api_search(
     engine: &str,
     query: &str,
     max_results: i64,
+    language: Option<&str>,
 ) -> ToolOutcome {
     let started = Instant::now();
-    let results = api_results(options, engine, query, max_results)?;
+    // 排序开启时向接口型引擎要更宽的一池候选：本地只负责挑池子，条数由分组排序与 max_results 定。
+    let pool = if options.rerank.active() {
+        max_results.max(RERANK_POOL_LIMIT as i64)
+    } else {
+        max_results
+    };
+    let results = api_results(options, engine, query, pool)?;
     if results.is_empty() {
         return Err(ToolError::new("未找到相关搜索结果。"));
     }
+    let (results, limit) = reranked_items(
+        options,
+        query,
+        language,
+        results,
+        candidate_text,
+        max_results,
+    );
     Ok(format_results(
         engine,
         query,
-        &results[..results.len().min(max_results as usize)],
+        &results[..results.len().min(limit as usize)],
         started.elapsed().as_secs_f64(),
     ))
+}
+
+/// GitHub 的 REST 检索：带 Token 时走这条，额度从 10 次/分钟提到 30 次/分钟。
+///
+/// 不用网页搜索页的另一个原因：搜索页的交互式结果由浏览器脚本渲染，服务端 HTML 只给出
+/// 前若干条；REST 接口一次可到位地返回 `owner/repo`、描述与语言。Token 只影响额度与鉴权，
+/// 不改变结果语义——因此没配 Token 时仍走原来的抓页面通路，引擎保持可用。
+fn github_api_results(
+    options: &WebSearchOptions,
+    query: &str,
+    max_results: i64,
+) -> Result<Vec<WebSearchResult>, ToolError> {
+    let token = options.github_token.trim();
+    if token.is_empty() {
+        return Ok(Vec::new());
+    }
+    let url = build_url(
+        GITHUB_SEARCH_ENDPOINT,
+        &[
+            ("q".to_string(), query.to_string()),
+            (
+                "per_page".to_string(),
+                max_results.clamp(1, 100).to_string(),
+            ),
+        ],
+    );
+    // 指纹档案会补齐它自己那套导航头；Authorization 单独追加，避免被档案覆盖。
+    let mut headers = options
+        .transport
+        .navigation_headers(&options.user_agent, None);
+    headers.push((
+        "Authorization".to_string(),
+        format!("Bearer {token}"),
+    ));
+    headers.push((
+        "Accept".to_string(),
+        "application/vnd.github+json".to_string(),
+    ));
+    headers.push((
+        "X-GitHub-Api-Version".to_string(),
+        GITHUB_API_VERSION.to_string(),
+    ));
+    let mut request = WebRequest::new(url, headers, timeout(options.timeout_seconds));
+    request.proxy = resolve_proxy(&request.url, options);
+    let response = options.transport.send(&request).map_err(|error| {
+        ToolError::new(format!(
+            "搜索失败（github）：{}",
+            friendly_network_error(error.kind, &error.message)
+        ))
+    })?;
+    if response.status >= 400 {
+        return Err(ToolError::new(format!(
+            "搜索失败（github）：{}",
+            github_status_message(response.status)
+        )));
+    }
+    parse_github_api_results(&response.text())
+}
+
+/// GitHub 检索接口的状态码文案：401/403 多与 Token 失效或额度耗尽有关，如实指路配置项。
+fn github_status_message(status: u16) -> String {
+    match status {
+        401 => "GitHub Token 无效或已过期，请更新 config.toml 的 [web_search] github_token。".to_string(),
+        403 | 429 => "GitHub 接口额度已用尽或拒绝了本次请求（HTTP 403/429），\
+可稍后重试，或确认 github_token 是否有效。"
+            .to_string(),
+        other => format!("GitHub 返回 HTTP {other}。"),
+    }
+}
+
+/// 解析 GitHub 检索接口的响应：`items[]` 里每项是一个仓库。
+fn parse_github_api_results(body: &str) -> Result<Vec<WebSearchResult>, ToolError> {
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        ToolError::new(format!("搜索失败（github）：响应不是合法 JSON：{error}"))
+    })?;
+    let items = parsed
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ToolError::new(format!(
+                "搜索失败（github）：响应缺少 items 数组：{}",
+                truncate(body, 200)
+            ))
+        })?;
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("html_url").and_then(Value::as_str)?;
+            let title = item
+                .get("full_name")
+                .and_then(Value::as_str)
+                .unwrap_or(url)
+                .to_string();
+            let mut snippet = item
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(language) = item.get("language").and_then(Value::as_str) {
+                snippet = format!("{snippet} · {language}").trim_start_matches(" · ").to_string();
+            }
+            if let Some(stars) = item.get("stargazers_count").and_then(Value::as_i64) {
+                snippet = format!("{snippet} · ★{stars}");
+            }
+            Some(WebSearchResult {
+                title,
+                url: url.to_string(),
+                snippet: snippet.trim_matches(' ').to_string(),
+            })
+        })
+        .collect())
 }
 
 /// 接口型引擎的单路检索：返回结果（可能为空，截断与空结果判定交给调用方）。
@@ -1240,6 +1578,11 @@ mod tests {
     /// 混合搜索里「该渠道参与、但一条结果都没解析出来」用的页面。
     const EMPTY_PAGE: &str = "<html><body>没有结果</body></html>";
 
+    /// GitHub 搜索页的一份样例：一条 `owner/repo` 结果，另带话题链接（不得被当成结果）。
+    const GITHUB_PAGE: &str = r#"<div class="resultRow__x"><h3 class="header__y"><div class="search-title title__z">
+<a class="prc-Link" href="/rwf2/Rocket"><span>rwf2/Rocket</span></a></div></h3>
+<div class="Content__a"><span>A <em>web</em> <em>framework</em> for Rust.</span></div>
+<ul class="footer__b"><li><a href="/topics/rust">rust</a></li></ul></div>"#;
     /// 把输出里的耗时字段抹平（真实时钟读数不参与断言）。
     fn normalize(text: &str) -> String {
         Regex::new(r"用时：[\d.]+s")
@@ -1318,13 +1661,13 @@ tavily、exa、firecrawl、mixed 之一。"
 
     #[test]
     fn max_results_defaults_to_the_cap_and_is_clamped() {
-        assert_eq!(MAX_RESULTS_PER_ENGINE, 20);
-        // 没给 max_results：默认就是上限（20）。
+        assert_eq!(MAX_RESULTS_PER_ENGINE, 50);
+        // 没给 max_results：默认就是上限（50）。
         assert_eq!(
             clamp_int(None, MAX_RESULTS_PER_ENGINE, 1, MAX_RESULTS_PER_ENGINE),
-            20
+            50
         );
-        // 超出上限夹到 20，下限夹到 1。
+        // 超出上限夹到 50，下限夹到 1。
         assert_eq!(
             clamp_int(
                 Some(&json!(99)),
@@ -1332,7 +1675,7 @@ tavily、exa、firecrawl、mixed 之一。"
                 1,
                 MAX_RESULTS_PER_ENGINE
             ),
-            20
+            50
         );
         assert_eq!(
             clamp_int(
@@ -1350,7 +1693,7 @@ tavily、exa、firecrawl、mixed 之一。"
         let (url, params) = endpoint("bing", "rust", None);
         assert_eq!(url, "https://www.bing.com/search");
         assert!(
-            params.contains(&("count".to_string(), "20".to_string())),
+            params.contains(&("count".to_string(), "50".to_string())),
             "{params:?}"
         );
     }
@@ -1374,10 +1717,7 @@ tavily、exa、firecrawl、mixed 之一。"
 
     #[test]
     fn github_search_rows_become_owner_repo_results() {
-        let html = r#"<div class="resultRow__x"><h3 class="header__y"><div class="search-title title__z">
-<a class="prc-Link" href="/rwf2/Rocket"><span>rwf2/Rocket</span></a></div></h3>
-<div class="Content__a"><span>A <em>web</em> <em>framework</em> for Rust.</span></div>
-<ul class="footer__b"><li><a href="/topics/rust">rust</a></li></ul></div>"#;
+        let html = GITHUB_PAGE;
         let results = parse_results("github", html);
         assert_eq!(results.len(), 1);
         // 高亮标签直接删掉而不是换成空格：`rust-web-framework` 不能被切成 `rust - web`。
@@ -1588,6 +1928,81 @@ tavily、exa、firecrawl、mixed 之一。"
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn github_api_results_keep_token_rate_limit_but_optional() {
+        // 没有 Token：不请求接口，交由抓页面通路处理（返回空，由调用方决定跳过）。
+        let transport = Arc::new(RouteTransport::new(&[(
+            "api.github.com",
+            r#"{"items":[{"full_name":"rwf2/Rocket","html_url":"https://github.com/rwf2/Rocket"}]}"#,
+        )]));
+        let options = route_options(Arc::clone(&transport));
+        let results =
+            github_api_results(&options, "rocket", 10).expect("无 Token 不该报错");
+        assert!(results.is_empty(), "无 Token 时不走 REST 通路");
+        assert!(
+            transport.take_requests().is_empty(),
+            "无 Token 时不应发起接口请求"
+        );
+    }
+
+    #[test]
+    fn github_token_routes_through_the_rest_interface() {
+        let body = r#"{"total_count":1,"incomplete_results":false,"items":[
+            {"full_name":"rwf2/Rocket","html_url":"https://github.com/rwf2/Rocket",
+             "description":"异步 Web 框架","language":"Rust","stargazers_count":12345}
+        ]}"#;
+        let transport = Arc::new(RouteTransport::new(&[("api.github.com", body)]));
+        let options = WebSearchOptions {
+            github_token: "ghp_fixture".to_string(),
+            ..route_options(Arc::clone(&transport))
+        };
+        let results = github_api_results(&options, "rocket", 10).expect("REST 通路应当成功");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "rwf2/Rocket");
+        assert_eq!(results[0].url, "https://github.com/rwf2/Rocket");
+        assert!(results[0].snippet.contains("异步 Web 框架"));
+        assert!(results[0].snippet.contains("Rust"));
+        assert!(results[0].snippet.contains("★12345"));
+    }
+
+    #[test]
+    fn github_search_uses_the_rest_interface_only_when_a_token_exists() {
+        // 同一份桩：带 Token 命中 api.github.com，不带 Token 命中网页搜索页。
+        let transport = Arc::new(RouteTransport::new(&[
+            (
+                "api.github.com",
+                r#"{"items":[{"full_name":"api/repo","html_url":"https://github.com/api/repo"}]}"#,
+            ),
+            ("github.com/search", GITHUB_PAGE),
+        ]));
+        let with_token = WebSearchOptions {
+            github_token: "ghp_fixture".to_string(),
+            ..route_options(Arc::clone(&transport))
+        };
+        let results = channel_results(&with_token, "github", "repo", 10, None).expect("带 Token");
+        assert_eq!(results[0].url, "https://github.com/api/repo");
+
+        let without_token = route_options(Arc::clone(&transport));
+        let results =
+            channel_results(&without_token, "github", "repo", 10, None).expect("无 Token");
+        assert_eq!(
+            results[0].url, "https://github.com/rwf2/Rocket",
+            "无 Token 时仍走页面通路"
+        );
+    }
+
+    #[test]
+    fn github_api_errors_point_at_the_token_field() {
+        let unauthorized = github_status_message(401);
+        assert!(unauthorized.contains("github_token"), "{unauthorized}");
+        let limited = github_status_message(429);
+        assert!(limited.contains("额度"), "{limited}");
+        let error = parse_github_api_results("not json").expect_err("非 JSON 应当报错");
+        assert!(error.message.contains("响应不是合法 JSON"), "{}", error.message);
+        let error = parse_github_api_results(r#"{"total_count":0}"#).expect_err("缺 items");
+        assert!(error.message.contains("缺少 items 数组"), "{}", error.message);
     }
 
     #[test]
@@ -1849,6 +2264,213 @@ tavily、exa、firecrawl、mixed 之一。"
         let requests = transport.take_requests();
         assert_eq!(requests.len(), 5, "只请求五个抓页面渠道：{requests:?}");
         assert!(!requests.iter().any(|url| url.contains("api.")));
+    }
+
+    /// 分组排序的桩：把批内下标倒序返回，并可按候选内容指定某一组失败。
+    ///
+    /// 组间是并发的，因此桩按**候选内容**（首个候选的 URL 序号）认组，而不是按调用顺序——
+    /// 否则「第 2 组失败」在并发下会落到随机一组，测试结论不稳定。
+    struct StubRerank {
+        /// 首个候选的 URL 序号落在这些值里时返回 `Err`（模拟该组不可用）。
+        failing_first: Vec<usize>,
+        seen_batches: Mutex<Vec<usize>>,
+    }
+
+    impl StubRerank {
+        fn new(failing_first: Vec<usize>) -> Arc<Self> {
+            Arc::new(Self {
+                failing_first,
+                seen_batches: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn batches(&self) -> Vec<usize> {
+            let mut batches = self.seen_batches.lock().expect("记录未被毒化").clone();
+            batches.sort_unstable();
+            batches
+        }
+    }
+
+    /// 从候选文本里取 URL 序号（`candidate_text` 的第二行是链接）。
+    fn candidate_index(text: &str) -> usize {
+        text.split("example.com/")
+            .nth(1)
+            .and_then(|rest| {
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(usize::MAX)
+    }
+
+    impl super::super::decision_search::RerankClient for StubRerank {
+        fn rank(
+            &self,
+            request: &super::super::decision_search::RerankRequest<'_>,
+        ) -> Result<Vec<usize>, String> {
+            self.seen_batches
+                .lock()
+                .expect("记录未被毒化")
+                .push(request.candidates.len());
+            let first = request
+                .candidates
+                .first()
+                .map(|text| candidate_index(text))
+                .unwrap_or(usize::MAX);
+            if self.failing_first.contains(&first) {
+                return Err("该组决策服务不可用".to_string());
+            }
+            Ok((0..request.candidates.len()).rev().collect())
+        }
+    }
+
+    /// 排序运行期：给一个桩执行器，开关与渠道齐备。
+    fn rerank_options(client: Arc<StubRerank>) -> Arc<RerankOptions> {
+        Arc::new(RerankOptions {
+            enabled: true,
+            channel: Some(super::super::decision_search::RerankChannel {
+                mode: "jev".to_string(),
+                model: "jev-latest".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                api_key: "jv_test".to_string(),
+                api_key_env: "JEV_API_KEY".to_string(),
+                retry_count: 0,
+            }),
+            masking: None,
+            client,
+        })
+    }
+
+    /// 造 n 条结果：标题带序号，摘要里带上查询词（本地覆盖度打平时按原顺序）。
+    fn results(count: usize) -> Vec<WebSearchResult> {
+        (0..count)
+            .map(|index| WebSearchResult {
+                title: format!("结果{index}"),
+                url: format!("https://example.com/{index}"),
+                snippet: format!("rust 摘要 {index}"),
+            })
+            .collect()
+    }
+
+    fn bing_page(count: usize) -> String {
+        let blocks: String = (0..count)
+            .map(|index| {
+                format!(
+                    r#"<li class="b_algo"><h2><a href="https://example.com/{index}">结果{index}</a></h2><p>rust 摘要 {index}</p></li>"#
+                )
+            })
+            .collect();
+        format!("<html><body><ol id=\"b_results\">{blocks}</ol></body></html>")
+    }
+
+    #[test]
+    fn grouped_rerank_takes_five_per_group_after_reordering() {
+        // 五组都倒序：各组头名分别是池内第 9、19、29、39、49 条。
+        let client = StubRerank::new(Vec::new());
+        let options = WebSearchOptions {
+            rerank: rerank_options(client.clone()),
+            ..WebSearchOptions::default()
+        };
+        let texts: Vec<String> = results(RERANK_POOL_LIMIT)
+            .iter()
+            .map(candidate_text)
+            .collect();
+        let order = grouped_rerank_order(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("排序应当生效");
+        // 每组倒序取前五：9,8,7,6,5 / 19,18,17,16,15 / …
+        assert_eq!(
+            order,
+            vec![
+                9, 8, 7, 6, 5, 19, 18, 17, 16, 15, 29, 28, 27, 26, 25, 39, 38, 37, 36, 35, 49, 48,
+                47, 46, 45
+            ]
+        );
+        assert_eq!(order.len(), RERANK_OUTPUT_LIMIT);
+        // 五组并发送审，每组 10 条。
+        assert_eq!(client.batches(), vec![10; RERANK_GROUPS]);
+    }
+
+    #[test]
+    fn grouped_rerank_keeps_group_slots_when_one_group_fails() {
+        // 第二组（首个候选是池内第 10 条）失败：该组按本地顺序顶上，不影响其余组的顺序。
+        let client = StubRerank::new(vec![10]);
+        let options = WebSearchOptions {
+            rerank: rerank_options(client),
+            ..WebSearchOptions::default()
+        };
+        let texts: Vec<String> = results(RERANK_POOL_LIMIT)
+            .iter()
+            .map(candidate_text)
+            .collect();
+        let order = grouped_rerank_order(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("有一组成功就仍然生效");
+        assert_eq!(order.len(), RERANK_OUTPUT_LIMIT);
+        // 第 1 组倒序前五。
+        assert_eq!(&order[..5], &[9, 8, 7, 6, 5]);
+        // 第 2 组失败 → 池内第 10..15 条的原顺序。
+        assert_eq!(&order[5..10], &[10, 11, 12, 13, 14]);
+        // 第 3 组起照旧倒序。
+        assert_eq!(&order[10..15], &[29, 28, 27, 26, 25]);
+    }
+
+    #[test]
+    fn grouped_rerank_skips_when_too_few_candidates_or_switch_off() {
+        let client = StubRerank::new(Vec::new());
+        let options = WebSearchOptions {
+            rerank: rerank_options(client.clone()),
+            ..WebSearchOptions::default()
+        };
+        // 候选不比每组保留数多时不送审（没有可筛选的余地）。
+        let few: Vec<String> = results(RERANK_KEEP_PER_GROUP)
+            .iter()
+            .map(candidate_text)
+            .collect();
+        assert!(grouped_rerank_order(&options, json!({"query": "rust"}), "rust", &few).is_none());
+        // 开关关着时同样不送审。
+        let off = WebSearchOptions::default();
+        let many: Vec<String> = results(RERANK_POOL_LIMIT)
+            .iter()
+            .map(candidate_text)
+            .collect();
+        assert!(grouped_rerank_order(&off, json!({"query": "rust"}), "rust", &many).is_none());
+        // 全部组都失败时退回本地顺序。
+        let all_failed =
+            StubRerank::new((0..RERANK_POOL_LIMIT).step_by(RERANK_GROUP_SIZE).collect());
+        let failing = WebSearchOptions {
+            rerank: rerank_options(all_failed),
+            ..WebSearchOptions::default()
+        };
+        assert!(grouped_rerank_order(&failing, json!({"query": "rust"}), "rust", &many).is_none());
+    }
+
+    #[test]
+    fn reranked_search_caps_to_25_and_respects_a_smaller_max_results() {
+        let transport = Arc::new(RouteTransport::new(&[("bing.com", &bing_page(50))]));
+        let client = StubRerank::new(Vec::new());
+        let options = WebSearchOptions {
+            rerank: rerank_options(client),
+            ..route_options(transport)
+        };
+
+        // 没传 max_results：上限落到 25。
+        let output = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect("排序后的搜索应当成功");
+        let normalized = normalize(&output);
+        assert!(normalized.contains("共 25 条"), "{normalized}");
+        assert!(normalized.contains("1. 结果9"), "{normalized}");
+        assert!(normalized.contains("25. 结果45"), "{normalized}");
+
+        // 调用方给的更小时按调用方的截断。
+        let output = web_search(
+            &options,
+            &arguments(json!({"query": "rust", "max_results": 3})),
+        )
+        .expect("排序后的搜索应当成功");
+        let normalized = normalize(&output);
+        assert!(normalized.contains("共 3 条"), "{normalized}");
+        assert!(normalized.contains("1. 结果9"), "{normalized}");
     }
 
     #[test]

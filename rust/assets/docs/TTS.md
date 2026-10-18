@@ -78,7 +78,8 @@ timeout_seconds = 120
 - **长文本自动分块**：按句末标点切块（OpenAI 单块 ≤2000 字符，Gemini 按字节预算），
   逐块请求后沿时间轴拼接，最后只写一次 WAV。采样率不一致时明确报错，不静默重采样。
 - **自动播放**：合成完成后默认本地播放（Windows `winmm` 的 `PlaySoundW`，macOS/Linux 回退
-  `afplay`/`aplay`/`paplay`），可用配置关闭。
+  `afplay`/`aplay`/`paplay`），可用配置关闭。播放本身不往终端写任何提示——播放失败只上报
+  一条诊断（TUI 里进会话流并落 `logs/tui.log`），不会盖住画布。
 - **失败也是 JSON**：`ok=false` 加 `error`，错误文案带服务端响应原文（模型名不对、音色不存在、
   密钥无效、内容被安全策略拦下都能直接看出来）。
 
@@ -116,7 +117,7 @@ timeout_seconds = 120
 - **报「未配置密钥」？** 在设置面板 TTS 页的 `API Key` 行填写，或直接在 config.toml 对应段的
   `api_key` 里写明文（`[tts_api]` 或 `[tts_gemini]`）。
 - **为什么合成没有声音？** 检查 `tts.auto_play` 是否开启；Windows 播放走 `winmm`（只认 WAV），
-  macOS/Linux 回退 `afplay`/`aplay`/`paplay`（未找到播放器时只记录一行提示，不影响合成结果）。
+  macOS/Linux 回退 `afplay`/`aplay`/`paplay`（未找到播放器时只上报一条诊断，不影响合成结果）。
 - **为什么开了自动播放，AI 回答还是不出声？** `auto_play` 不是「自动朗读回复」——它只在
   `tts_synthesize` 工具被调用后生效。要让每轮回复都被读出来，改用 `tts.speak_replies`
   （设置面板 TTS 页的「自动朗读回复」行）。

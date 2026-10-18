@@ -3,9 +3,9 @@
 //! 语义基准是 `omnicrawl/net/fetcher.py`：只抓取用户明确给出的 URL、不执行 JavaScript、
 //! 不绕过验证码；内网/本机目标直连而不走系统代理；`insecure=true` 跳过 TLS 校验。
 //! 正文提取用 HTML5 容错解析（`lxml` 的 `main > article > body` + `text_content` 等价）。
-//! Python 侧的 `impersonate` 浏览器指纹参数在此同样生效：默认传输换成了
-//! [`super::wreq_transport::WreqWebTransport`]（wreq + wreq-util 设备档案），不再是
-//! 「接受但不生效」——因为 Python 的默认值就是 `chrome`，它属于默认路径而非可选增强。
+//! Python 侧的 `impersonate` 浏览器指纹参数在此同样生效：默认传输是
+//! [`super::tls_transport::TlsWebTransport`]（omnicrawl-tls 自研栈的浏览器档案），
+//! 不再是「接受但不生效」——因为 Python 的默认值就是 `chrome`，它属于默认路径而非可选增强。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,8 +20,8 @@ use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind, WebRequest,
     WebTransport, MAX_REDIRECTS,
 };
-// 浏览器指纹传输：wreq（BoringSSL）+ wreq-util 设备档案，只给 fetcher 用。
-use super::wreq_transport::{normalize_impersonate, WreqWebTransport};
+// 浏览器指纹传输：omnicrawl-tls 自研栈（TLS 档案 + HTTP/2 + HTTP/1.1），只给联网工具用。
+use super::tls_transport::{normalize_impersonate, TlsWebTransport};
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 15.0;
 pub const DEFAULT_MAX_CHARS: i64 = 8000;
@@ -47,7 +47,7 @@ impl Default for FetcherOptions {
         Self {
             // 默认就走浏览器指纹传输：Python 的 `impersonate` 默认值是 chrome，
             // 用 ureq+rustls 的库指纹会在做 TLS 指纹校验的站点上直接失败。
-            transport: Arc::new(WreqWebTransport::new()),
+            transport: Arc::new(TlsWebTransport::new()),
             user_agent: super::web_transport::DEFAULT_USER_AGENT.to_string(),
             request_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_workers: MAX_WORKERS,

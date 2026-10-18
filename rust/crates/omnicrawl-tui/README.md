@@ -15,6 +15,7 @@
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载、鼠标拖选选区 |
 | `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
+| `src/image_archive.rs` | 粘贴图片的落盘：发送时把 `Ctrl+V` 的剪贴板位图写进 `.omnicrawl/.agent_tmp/images/`，路径追加进提问正文 |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：本地 Kokoro-82M ONNX 推理（`onnx` feature，宿主固定开启，需系统 espeak-ng 做音素化）、音频 I/O、音色库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
 | `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`form.rs` 表单页字段表、`picker.rs` 模型发现状态与 token 折算） |
@@ -96,6 +97,11 @@
   没开原生视觉也没配 `[vision]` 时**不插入占位符**，只在输入框上方提示「当前未开启原生视觉，
   粘贴的图片不会被发送」——插进去也送不出去，不如当场说清为什么（用户选定）。
 - **剪贴板里是文本时不消费按键**：`Ctrl+V` 照旧走终端自己的粘贴（bracketed paste）或粘贴识别状态机。
+- **发送时落盘一份**（`src/image_archive.rs`）。位图原本只在内存与 `turn.submit` 的 Base64 里，
+  磁盘上没有副本；`turn.start` 通过后写进 `.omnicrawl/.agent_tmp/images/pasted_<时间戳>_<随机>.png`
+  （与 `image_gen`、截图同一落点），相对路径追加进提问正文——模型想再核对原图可以直接读文件。
+  复制失败不阻断发送，正文里只列真正落盘成功的那几张。粘贴进来的**图片路径**不复制
+  （原文件本来就在磁盘上），因此 `PendingImage::archive` 只对剪贴板位图为真。
 
 位图解析与 PNG 编码复用宿主已有的 Win32 实现（`omnicrawl_host::tools::windows::clipboard::
 try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 crate 只做「读出来 → 入框」。
@@ -157,7 +163,7 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 | `monitor` | 已实现 | `start` / `poll` / `stop` / `list`（含 `status`/`log`/`logs`/`read` 别名）后台命令：内存环形缓冲（1000 条、单条 4000 字符切块）、游标增量轮询、最多 20 个并发任务、进程树回收；任务随宿主关闭与回合取消终止 |
 | `kb_search` / `kb_read` / `kb_write` / `kb_append` / `kb_list` | 已实现 | Markdown + frontmatter 知识库：路径安全（拒绝 `..` 与越界）、读写/覆盖/追加、关键词与字段检索、`INDEX.md` 自动维护；默认根 `~/.OmniCrawl/knowledge` |
 | `memory_search` / `memory_read` / `memory_expand_related` / `memory_write` | 已实现（按配置进出表） | 按 `scope` 路由到三处记忆目录，读写交给 `omnicrawl-session` 的 `MemoryStore`；`memory_enabled` 缺省开启（与 Python `entry.py` 的 `default=True` 一致），未启用的作用域回「X 级记忆系统未启用。」 |
-| `web_search` | 已实现 | 九引擎：Bing / DuckDuckGo / GitHub / arXiv / Hugging Face（抓各自站点的公开搜索页，统一走与 `fetcher` 同款的有头浏览器环境——wreq 设备档案的 TLS/HTTP2 指纹与 UA、Client Hints 同源；端点与查询参数逐字对齐、正则解析结果页含 DDG `uddg=` 跳转还原、验证码与 JS 挑战如实报错、网络错误重试）、Tavily / Exa / Firecrawl（检索接口，Bearer 与 `x-api-key` 鉴权、缺凭据/鉴权失败如实报错）与 `mixed`（混合搜索：并发查询全部可用渠道并按 URL 去重合并，接口型渠道只在配了凭据时参与，单路失败如实回报但不影响其余渠道）。默认引擎与三把 API Key 取 `[web_search]` 段，工具参数里的 `engine` 可逐次覆盖 |
+| `web_search` | 已实现 | 九引擎：Bing / DuckDuckGo / GitHub / arXiv / Hugging Face（抓各自站点的公开搜索页，统一走与 `fetcher` 同款的有头浏览器环境——`omnicrawl-tls` 自研栈的 TLS/HTTP2 指纹与 UA、Client Hints 同源；端点与查询参数逐字对齐、正则解析结果页含 DDG `uddg=` 跳转还原、验证码与 JS 挑战如实报错、网络错误重试）、Tavily / Exa / Firecrawl（检索接口，Bearer 与 `x-api-key` 鉴权、缺凭据/鉴权失败如实报错）与 `mixed`（混合搜索：并发查询全部可用渠道并按 URL 去重合并，接口型渠道只在配了凭据时参与，单路失败如实回报但不影响其余渠道）。默认引擎与三把 API Key 取 `[web_search]` 段，工具参数里的 `engine` 可逐次覆盖 |
 | `fetcher` | 已实现 | 多 URL 并行抓取、手动跟随 301/302/307/308 与 `<meta refresh>`、内网/本机目标直连、`insecure=true` 跳过证书校验、正文提取（`main` → `article` → `body`，剔除脚本样式）且 HTML5 容错解析 |
 | `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现 | 整组注册：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型 |
 | `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model` 给出、或 `[advisor]` 段配置启用时进表 |
@@ -602,7 +608,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现 | 写回 `plugins.enabled`，随即走 `PluginHost::set_enabled` 事务式重建 Worker 与执行计划（与 API 的 `PUT /settings/features` 同一入口），本会话即刻生效；重建诊断显示在状态行 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；第二行「联网搜索」显示当前默认引擎与已配凭据（形如 `tavily（Tavily 已配置）`），`Enter` 进入联网搜索表单页：`默认引擎`（bing / duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，`Esc` 直接回工具页；三把凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
-| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前八项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前九项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按 `max_results`，决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索是分组例外**：结果切成 5 组（每组 10 条）并发送审，各组取前 5 条拼接后最多回 25 条（调用方 `max_results` 更小时按它截断，见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 
 TTS 页的行按服务商变：前四行（开关 / 服务商 / 自动播放 / 自动朗读回复）固定，
@@ -729,13 +735,15 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    `图像生成请求失败：HTTP <码>：<响应体摘要>`（Python 直出 SDK 异常文本）；默认输出目录以工作区为基准
    （Python 是相对进程 cwd，正常启动下两者一致）；
    联网工具的已知差异：`fetcher` 的 `impersonate`（浏览器 TLS 指纹）已**生效**——默认传输是
-   wreq + wreq-util 设备档案，不再退回库指纹；族名到具体档案版本的映射取各族最新档案
-   （与 curl_cffi 同名别名指向的版本可能不同），构建环境要求见 `rust/docs/python-free-build.md`；
-   HTTP 头同样以设备档案为准：UA、`sec-ch-ua*`（Client Hints）、`sec-fetch-dest/mode/site`、
-   `accept`、`accept-language` 全由档案生成（与 TLS 层同版本同平台），传输层只补档案没有的
-   `Upgrade-Insecure-Requests` 与 `Sec-Fetch-User`（Safari 不发后者）。因此本实现**不**发
-   `Connection`（HTTP/2 禁止的连接专有头）与 `Accept-Encoding`（未启用解压特性，发了会拿到
-   压缩字节流），与 Python 手写头版本的逐字节差异属预期；响应体按 UTF-8 宽容解码（非 UTF-8 页面可能替换字符），
+   `omnicrawl-tls` 自研栈（ClientHello 扩展顺序、密码套件排列、GREASE、HTTP/2 SETTINGS 全在
+   本仓库内，档案数值取自真实浏览器抓包）；Chromium 档案对真实 Edge 145 校准，
+   Firefox / Safari 仍标注「未校准」；只支持 h2 与 http/1.1 两种 ALPN（服务端选别的会如实报错），
+   `http://` 明文目标退到 ureq（没有 TLS 可模拟）。构建不再需要 C/C++ 工具链，见
+   `rust/docs/python-free-build.md`；
+   HTTP 头与 TLS 档案同源：UA、`sec-ch-ua*`（Client Hints）、`sec-fetch-dest/mode/site/user`、
+   `accept`、`accept-language` 由档案族一次性给出（同版本同平台）。因此本实现**不**发
+   `Connection`（HTTP/2 禁止的连接专有头；http/1.1 通路由驱动层自动补 `Connection: close`）
+   与 `Accept-Encoding`（不做解压，发了会拿到压缩字节流），与 Python 手写头版本的逐字节差异属预期；响应体按 UTF-8 宽容解码（非 UTF-8 页面可能替换字符），
    传输层错误文案按「超时 / 连接 / 证书」三类归纳（Python 直出底层异常类名）；
    搜索侧已知差异：Windows 下 glob 展开按大小写敏感匹配（Python 的 `glob` 走 `normcase`），
    目录条目的排序在两侧可能不同（Rust 侧无法设置目录 mtime，对照数据集对这类用例只比对条目集合）；

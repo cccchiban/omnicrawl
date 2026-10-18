@@ -97,6 +97,34 @@ struct ToolSegment {
     raw_tokens: i64,
 }
 
+/// 逐事件价格账：按模型可见投影计价，供预算测量与范围选择共用。
+///
+/// 顺序即模型可见顺序；非模型上下文事件（淘汰标注、压缩记账等）不入账。
+fn metered_nodes(events: &[SourceEvent]) -> Vec<omnicrawl_controllers::context_compaction::TokenNode> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "user_message"
+                    | "assistant_message"
+                    | "tool_call_requested"
+                    | "tool_call_denied"
+                    | "tool_result"
+                    | "compact_summary"
+            )
+        })
+        .map(|event| omnicrawl_controllers::context_compaction::TokenNode {
+            event_id: event.event_id.clone(),
+            event_type: event.event_type.clone(),
+            tokens: omnicrawl_controllers::context_compaction::event_tokens(
+                event,
+                &omnicrawl_controllers::context_compaction::text_tokens,
+            ),
+        })
+        .collect()
+}
+
 /// 被概括工具事件在上下文里的 Token 估算：与「压缩前上下文」同一套折算。
 fn tool_events_tokens(events: &[SourceEvent]) -> i64 {
     let messages: Vec<Value> = events
@@ -269,6 +297,7 @@ impl CompactionDriver {
             usage: boundary.usage,
             provider_input_tokens: std::cmp::max(0, boundary.last_request_input_tokens),
             emergency_context_ratio: self.config.emergency_context_ratio,
+            nodes: metered_nodes(&events),
         };
         // 工具段必须赶在摘要请求之前发出（用户指定的顺序），因此用一次性槽把它接进
         // 服务层的「决策之后、摘要请求之前」钩子，而不是在 `after_complete_turn` 返回后才压。

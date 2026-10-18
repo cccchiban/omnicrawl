@@ -99,6 +99,9 @@ fn snapshot_from(value: &Value) -> ContextBudgetSnapshot {
             .unwrap_or_default(),
         cache_hit_ratio: value["cache_hit_ratio"].as_f64().unwrap_or_default(),
         provider_input_tokens: field("provider_input_tokens"),
+        baseline: None,
+        surface_delta_tokens: 0,
+        nodes: Vec::new(),
     }
 }
 
@@ -132,6 +135,7 @@ fn measure_input_from(value: &Value) -> MeasureInput {
         emergency_context_ratio: value["emergency_context_ratio"]
             .as_f64()
             .unwrap_or_default(),
+        nodes: Vec::new(),
     }
 }
 

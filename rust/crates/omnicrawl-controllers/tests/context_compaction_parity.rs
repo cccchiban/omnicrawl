@@ -195,6 +195,7 @@ fn compaction_measure_from_counts_matches_python() {
             usage: usage_from(&case["usage"]),
             emergency_context_ratio: input["emergency_context_ratio"].as_f64().expect("ratio"),
             provider_input_tokens: input["provider_input_tokens"].as_i64().expect("provider"),
+            nodes: Vec::new(),
         };
         let result = Manager.measure_from_token_counts(&counts);
         match result {
@@ -243,6 +244,7 @@ fn compaction_measure_matches_python() {
             usage: usage_from(&case["usage"]),
             provider_input_tokens: input["provider_input_tokens"].as_i64().expect("provider"),
             emergency_context_ratio: input["emergency_context_ratio"].as_f64().expect("ratio"),
+            nodes: Vec::new(),
         };
         let result = Manager.measure(&measure);
         match result {

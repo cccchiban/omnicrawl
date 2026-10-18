@@ -88,6 +88,8 @@ pub struct RerankRequest<'a> {
     pub instructions: &'a str,
     /// 候选描述；下标即返回顺序里的候选下标。
     pub candidates: &'a [String],
+    /// 本次请求的超时（候选越多给得越宽；各调用方的单批规模不同）。
+    pub timeout_seconds: u64,
 }
 
 /// 排序执行器：真实实现走决策服务；测试注入桩以便不起网络。
@@ -205,6 +207,7 @@ pub fn reranked_order(
             state: &state,
             instructions,
             candidates: &texts,
+            timeout_seconds: RERANK_TIMEOUT_SECONDS,
         };
         match options.client.rank(&request) {
             Ok(order) => {
@@ -383,7 +386,7 @@ impl RerankClient for DecisionRerankClient {
             &channel.base_url,
             &api_key,
             &body_text,
-            RERANK_TIMEOUT_SECONDS,
+            request.timeout_seconds,
             USER_AGENT,
             channel.retry_count,
         )?;

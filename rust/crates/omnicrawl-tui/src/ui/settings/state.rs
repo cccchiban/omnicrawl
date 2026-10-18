@@ -1972,13 +1972,15 @@ struct ToolsState {
     status: String,
 }
 
-/// 联网搜索在工具页上的只读投影：默认引擎与三把凭据的配置状态。
+/// 联网搜索在工具页上的只读投影：默认引擎与各凭据的配置状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchRow {
     pub engine: String,
     pub tavily_configured: bool,
     pub exa_configured: bool,
     pub firecrawl_configured: bool,
+    /// GitHub Token 是否已配置。它不影响引擎可用性，只影响额度。
+    pub github_configured: bool,
 }
 
 impl Default for WebSearchRow {
@@ -1988,6 +1990,7 @@ impl Default for WebSearchRow {
             tavily_configured: false,
             exa_configured: false,
             firecrawl_configured: false,
+            github_configured: false,
         }
     }
 }
@@ -2005,6 +2008,9 @@ impl WebSearchRow {
         }
         if self.firecrawl_configured {
             configured.push("Firecrawl 已配置");
+        }
+        if self.github_configured {
+            configured.push("GitHub 已配置");
         }
         if !configured.is_empty() {
             text.push_str(&format!("（{}）", configured.join("、")));
@@ -4356,6 +4362,7 @@ impl SettingsState {
         let tavily = secret_draft_for(self.tools.web_search.tavily_configured);
         let exa = secret_draft_for(self.tools.web_search.exa_configured);
         let firecrawl = secret_draft_for(self.tools.web_search.firecrawl_configured);
+        let github = secret_draft_for(self.tools.web_search.github_configured);
         self.pane = Pane::Form(FormKind::WebSearch);
         self.dropdown = None;
         if let Some(form) = self.form_mut() {
@@ -4365,6 +4372,7 @@ impl SettingsState {
                 FieldValue::Text(tavily),
                 FieldValue::Text(exa),
                 FieldValue::Text(firecrawl),
+                FieldValue::Text(github),
             ]);
             form.set_focused(0);
             form.set_status(String::new());
@@ -7378,6 +7386,7 @@ mod tests {
                 tavily_configured: true,
                 exa_configured: false,
                 firecrawl_configured: false,
+                github_configured: false,
             }),
         )
     }
@@ -7409,12 +7418,13 @@ mod tests {
         assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
         let rows = state.form_rows();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5, "默认引擎 + 三把 API Key + GitHub Token");
         assert_eq!(rows[0].value, "tavily", "引擎列显示当前值");
         assert!(rows[0].has_menu, "引擎是候选字段");
         assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
         assert_eq!(rows[2].value, "（未配置）", "未配凭据显示明确文案");
         assert_eq!(rows[3].value, "（未配置）", "Firecrawl 也是未配");
+        assert_eq!(rows[4].value, "（未配置）", "GitHub Token 未配");
 
         // 掩码原样保存 = 不改动：三把凭据都折成空串交给宿主。
         let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
@@ -7427,6 +7437,7 @@ mod tests {
         assert_eq!(values[1], FieldValue::Text(String::new()), "掩码不当作新值");
         assert_eq!(values[2], FieldValue::Text(String::new()));
         assert_eq!(values[3], FieldValue::Text(String::new()));
+        assert_eq!(values[4], FieldValue::Text(String::new()), "GitHub Token 未配时也为空");
     }
 
     #[test]
@@ -7476,6 +7487,7 @@ mod tests {
                     FieldValue::Text("exa-key".to_string()),
                     FieldValue::Text(String::new()),
                     FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
                 ],
             },
             "联网搜索已设为 exa，已保存到 config.toml。".to_string(),
@@ -7489,10 +7501,27 @@ mod tests {
             tavily_configured: true,
             exa_configured: true,
             firecrawl_configured: true,
+            github_configured: true,
         });
         assert_eq!(
             state.web_search_value(),
-            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置）"
+            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置、GitHub 已配置）"
+        );
+    }
+
+    #[test]
+    fn web_search_form_carries_the_github_token_field() {
+        let mut state = web_search_state();
+        goto(&mut state, "tools");
+        state.handle_key(KeyCode::Enter); // 进工具页
+        state.handle_key(KeyCode::Down);
+        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        let rows = state.form_rows();
+        assert_eq!(rows.len(), 5, "默认引擎 + 三把 API Key + GitHub Token");
+        assert_eq!(rows[4].label, "GitHub Token");
+        assert_eq!(
+            rows[4].value, "（未配置）",
+            "Token 与其余凭据同口径呈现"
         );
     }
 

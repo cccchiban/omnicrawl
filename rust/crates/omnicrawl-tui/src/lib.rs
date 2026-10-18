@@ -14,6 +14,7 @@ pub mod args;
 pub mod clipboard;
 pub mod commands;
 pub mod diagnostics;
+pub mod image_archive;
 pub mod image_path;
 pub mod monitor;
 pub mod paste;

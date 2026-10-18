@@ -93,12 +93,13 @@ fn run() -> Result<ExitCode, String> {
         Duration::from_secs_f64(SPLASH_HOLD_AFTER_DONE_SECONDS),
     )?;
 
-    let mut guard = TerminalGuard::start()?;
-    // 运行期诊断改走会话流（用户要求：不要再盖住画布）。启动期诊断仍归启动画面日志框，
-    // 所以接收端在这里才装：`install` 之后，进程内库代码（含宿主 crate）的诊断都不再写 stderr。
+    // 运行期诊断改走会话流（用户要求：不要再盖住画布）。启动期诊断仍归启动画面日志框
+    // （桥优先），所以接收端在离开启动画面后、进备用屏幕之前就装上：之后进程内库代码
+    // （含宿主 crate）与 `report_startup_log` 的无桥分支都不再写 stderr。
     omnicrawl_tui::diagnostics::install_panic_hook(&environment);
     let diagnostic_lines = omnicrawl_tui::diagnostics::install(&environment);
     app.attach_diagnostics(diagnostic_lines);
+    let mut guard = TerminalGuard::start()?;
     // 事件循环按时间窗等待终端事件：Windows 默认计时器粒度约 15.6ms，睡 20ms 可能变成 31ms，
     // 这段白等待直接叠加在「回车 → 首字」上。提升到 1ms，随进程退出恢复。
     let timer_resolution = TimerResolutionGuard::acquire();

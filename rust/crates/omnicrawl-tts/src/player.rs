@@ -4,35 +4,24 @@
 //! WAV；macOS/Linux 回退到系统命令（afplay / aplay / paplay）。默认异步（不阻塞
 //! 调用线程）；`blocking = true` 时同步等待播放结束——CLI 等短生命周期进程必须用
 //! 同步播放，否则进程退出会终止播放，导致听不到声音。
+//!
+//! 这里不往 stderr 写任何东西：TUI 是全屏画布，库里的 `eprintln!` 落在终端光标处，
+//! 会盖住会话区与输入区。播放结果交给调用方，由宿主决定去处（`diagnostics` 上报）。
 
 use std::path::Path;
 
-/// 播放 WAV 文件；返回是否成功发起播放。
+/// 播放 WAV 文件；成功返回 `Ok(())`，失败返回原因。
 ///
 /// `blocking = false`（默认）：异步发起后立即返回，不阻塞调用线程；适合长生命
 /// 周期进程。`blocking = true`：同步等待播放结束；适合 CLI 等短生命周期进程。
 ///
-/// 任何失败只返回 `false`，绝不 panic。
-pub fn play_wav(path: &Path, blocking: bool) -> bool {
+/// 任何失败只返回 `Err`，绝不 panic。
+pub fn play_wav(path: &Path, blocking: bool) -> Result<(), String> {
     let audio_path = crate::paths::resolve_lenient(path);
     if !audio_path.is_file() {
-        eprintln!("自动播放失败：音频文件不存在 {}", audio_path.display());
-        return false;
+        return Err(format!("音频文件不存在 {}", audio_path.display()));
     }
-    match play(&audio_path, blocking) {
-        Ok(()) => {
-            eprintln!(
-                "已自动播放 {}（{}）",
-                audio_path.display(),
-                if blocking { "同步" } else { "异步" }
-            );
-            true
-        }
-        Err(error) => {
-            eprintln!("自动播放失败（{}）：{error}", audio_path.display());
-            false
-        }
-    }
+    play(&audio_path, blocking)
 }
 
 #[cfg(windows)]
@@ -56,7 +45,7 @@ fn play(path: &Path, blocking: bool) -> Result<(), String> {
     let flags = SND_FILENAME | if blocking { 0 } else { SND_ASYNC };
     let played = unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), flags) };
     if played == 0 {
-        return Err("PlaySoundW 未能播放该文件。".to_string());
+        return Err(format!("PlaySoundW 未能播放 {}", path.display()));
     }
     Ok(())
 }

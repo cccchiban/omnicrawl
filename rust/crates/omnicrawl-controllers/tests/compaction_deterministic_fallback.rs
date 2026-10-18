@@ -62,6 +62,7 @@ fn measure() -> MeasureInput {
         usage: TokenUsageSample::default(),
         provider_input_tokens: 0,
         emergency_context_ratio: 0.9,
+        nodes: Vec::new(),
     }
 }
 

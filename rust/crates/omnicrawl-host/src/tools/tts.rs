@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use omnicrawl_config::features::tts::TtsConfiguration;
 use omnicrawl_config::features::tts_cloud::TtsCloudConfiguration;
+use omnicrawl_core::diagnostics;
 use omnicrawl_core::ToolResult;
 use omnicrawl_tts::player::play_wav;
 use omnicrawl_tts::result::TtsResult;
@@ -65,7 +66,7 @@ impl TtsOptions {
             Err(message) => return error_result(&message),
         };
         if self.configuration.auto_play {
-            play_wav(&result.audio_path, false);
+            report_play(&result.audio_path);
         }
         let summary = json!({
             "ok": true,
@@ -93,7 +94,7 @@ impl TtsOptions {
             output_path: self.reply_output_path(),
         };
         let result = self.run(&request)?;
-        play_wav(&result.audio_path, false);
+        report_play(&result.audio_path);
         Ok(result.audio_path)
     }
 
@@ -154,6 +155,13 @@ pub fn tts_backend(
             speed: openai.speed,
             timeout_seconds: openai.timeout_seconds.max(1) as u64,
         })
+    }
+}
+
+/// 播放一次合成结果：失败上报为诊断（TUI 里进会话流，不再写到终端光标处盖住画布）。
+fn report_play(path: &Path) {
+    if let Err(error) = play_wav(path, false) {
+        diagnostics::warn(format!("[host] 自动播放失败：{error}"));
     }
 }
 

@@ -15,7 +15,7 @@ name: 发布 npm 包
 # 原因见 rust/docs/python-free-build.md「发布产物的目标选择」。
 # 但平台二进制仍只能在对应 runner 上构建（或交叉编译），因此矩阵里每个平台
 # 各自构建内核（+ 宿主）并上传暂存产物，发布任务把所有平台下载齐、跑安装冒烟后才逐一发布。
-# 没有宿主载荷的平台（armv7 嵌入式）只发内核，启动器会退回协议直连。
+# 五个平台都发完整宿主；armv7 在 x64 runner 上靠 zig 交叉，因此不跑宿主冒烟（无法执行 ARM 产物）。
 on:
   push:
     tags:
@@ -58,7 +58,7 @@ jobs:
             runner: ubuntu-latest
             target: armv7-unknown-linux-musleabihf
             platform: linux-arm
-            host: false
+            host: true
             zigbuild: true
           - package: cli-linux-arm64-musl
             # 同 x64：内核 musl 静态，宿主载荷原生 gnu 目标。
@@ -166,15 +166,33 @@ jobs:
       # x86_64 musl 的宿主载荷本机已整包构建通过；arm64 runner 上还没实测，所以这一步先保持原生目标，
       # 详见 rust/docs/python-free-build.md「发布产物的目标选择」。
       - name: 构建宿主载荷（Linux：原生目标）
-        if: matrix.host && runner.os == 'Linux'
+        if: matrix.host && runner.os == 'Linux' && matrix.platform != 'linux-arm'
         run: node packages/cli/scripts/build-host.mjs
 
+      # armv7 例外：runner 是 x64，没有 32 位 ARM 的原生工具链，只能交叉。
+      # TLS 栈换成纯 Rust 后不再需要交叉 BoringSSL，`--target` 加 `--zigbuild` 即可；
+      # `--platform` 必须显式给 linux-arm，否则载荷会落到构建机的 linux-x64 键下。
+      # 注意产物是 musl 静态，因此该平台包不再依赖 runner 的 glibc。
+      - name: 构建宿主载荷（Linux：zig 交叉到 ARMv7）
+        if: matrix.host && runner.os == 'Linux' && matrix.zigbuild && matrix.platform == 'linux-arm'
+        run: >-
+          node packages/cli/scripts/build-host.mjs
+          --target ${{ matrix.target }}
+          --platform ${{ matrix.platform }}
+          --zigbuild
+
+      # 冒烟要真正启动宿主二进制。armv7 在 x64 runner 上跑不了（没有 qemu / binfmt 注册），
+      # 交叉产物只能靠 prepare.mjs 的结构校验兜底，不能在这里假装通过。
       - name: 宿主冒烟（无终端提示）
-        if: matrix.host
+        if: matrix.host && matrix.platform != 'linux-arm'
         run: node packages/cli/scripts/host-smoke.mjs --platform ${{ matrix.platform }}
 
+      # host 为真的平台必须带宿主，否则 prepare.mjs 只会打印警告并静默发出内核包。
+      # armv7 没有宿主冒烟兜底，这一步是它唯一的拦截点。
       - name: 暂存平台包
-        run: node packages/cli/scripts/prepare.mjs
+        run: >-
+          node packages/cli/scripts/prepare.mjs
+          ${{ matrix.host && '--require-host' || '' }}
 
       - name: 上传暂存产物
         uses: actions/upload-artifact@v4

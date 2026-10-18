@@ -1,0 +1,15 @@
+[package]
+name = "omnicrawl-tls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# 密码学复用 `ring`（已审计，且自带预生成汇编、不需要外部 C 工具链与 NASM）。
+# 自研面刻意收敛在「线格式 + 握手编排」：那才是 BoringSSL 无法替代的部分。
+# ClientHello 的构造、记录层与密钥调度的编排在自己手里，原语交给 ring。
+[dependencies]
+ring = "0.17"
+rustls-pki-types = "1"
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+webpki-roots = "1"

@@ -63,8 +63,11 @@ pub fn saved_tokens_notice(raw_chars: usize, summary_chars: usize) -> Option<Str
 }
 
 /// 纯字符数的 Token 下界折算（4 字符 1 token）。
+///
+/// 规则本体在 [`crate::context_compaction::meter::chars_token_floor`]：上下文压缩与工具段压缩
+/// 的计量文案共用同一份折算，避免「两条链路报不同的省量」。
 pub fn chars_token_floor(chars: usize) -> i64 {
-    ((chars + 3) / 4) as i64
+    crate::context_compaction::meter::chars_token_floor(chars)
 }
 
 /// 工具参数摘要：超长（如 `write_file` 正文）截断，供压缩模型判断调用意图。

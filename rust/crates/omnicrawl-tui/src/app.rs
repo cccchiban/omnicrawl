@@ -111,7 +111,7 @@ use omnicrawl_config::features::decision_model::{
     DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
     DEFAULT_LOCAL_DECISION_CHANNEL_KEY, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
     DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
-    DEFAULT_DECISION_RETRY_COUNT,
+    DECISION_SWITCH_WEB_SEARCH, DEFAULT_DECISION_RETRY_COUNT,
 };
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::tools::evicted_call_ids_for;
@@ -2713,7 +2713,7 @@ impl App {
             // 已消费这次按键：图片不能进输入框，也不能让 `v` 落进正文。
             return true;
         }
-        self.state.composer.insert_image("image/png", png);
+        self.state.composer.insert_clipboard_image("image/png", png);
         self.state.touch_composer();
         true
     }
@@ -2895,6 +2895,12 @@ impl App {
                 self.state.notice(error.to_string());
                 return;
             }
+        };
+        // 归档只在 `turn.start` 通过后做：本轮真发得出去，才不至于为一次被拦下的提交留废文件。
+        // 复制失败不阻断发送（见 `image_archive`），正文里只列真正落盘成功的那几张。
+        let text = match crate::image_archive::archive_pasted_images(&self.workspace, &images) {
+            Some(note) => format!("{text}\n\n{note}"),
+            None => text,
         };
         let images = images
             .into_iter()
@@ -3801,7 +3807,7 @@ impl App {
         ))
     }
 
-    /// 重建三处检索重排运行期（记忆搜索、知识库检索与 Skill 检索各一份）。
+    /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份）。
     fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
         self.registry_options.memory.rerank = Arc::new(
             omnicrawl_host::tools::rerank_options_from_config(
@@ -3819,6 +3825,13 @@ impl App {
             omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_SKILL_SEARCH,
+            ),
+        );
+        // 联网搜索的排序运行期嵌在搜索选项里，只换这一项：引擎与凭据保持当前值。
+        self.registry_options.web_search.rerank = Arc::new(
+            omnicrawl_host::tools::rerank_options_from_config(
+                environment,
+                DECISION_SWITCH_WEB_SEARCH,
             ),
         );
         self.rebuild_registry()
@@ -4749,6 +4762,9 @@ impl App {
         }
         if let Some(key) = keep_or_replace(&field_text(values, 3)) {
             configuration.firecrawl_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 4)) {
+            configuration.github_token = key;
         }
         let path = save_web_search_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -6747,6 +6763,7 @@ fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
         tavily_configured: !configuration.tavily_api_key.trim().is_empty(),
         exa_configured: !configuration.exa_api_key.trim().is_empty(),
         firecrawl_configured: !configuration.firecrawl_api_key.trim().is_empty(),
+        github_configured: !configuration.github_token.trim().is_empty(),
     }
 }
 

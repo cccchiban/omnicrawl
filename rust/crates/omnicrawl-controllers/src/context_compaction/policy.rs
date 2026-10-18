@@ -91,6 +91,15 @@ pub struct ContextBudgetSnapshot {
     pub emergency_ratio_reached: bool,
     pub cache_hit_ratio: f64,
     pub provider_input_tokens: i64,
+    /// 价格来源：供应商上报的输入 Token，或纯启发式。
+    ///
+    /// `provider_input_tokens` 仍是「取大值」后的口径（与 Python 对齐），这里是计量器自己的
+    /// 判断：只有供应商数字不低于启发式锚点时才采信它，后续只叠加有符号增量。
+    pub baseline: Option<super::meter::MeasurementBaseline>,
+    /// 相对锚点的有符号增量：压缩、淘汰让它变负。
+    pub surface_delta_tokens: i64,
+    /// 逐事件价格（模型可见事件），供范围选择从尾部累加。
+    pub nodes: Vec<super::meter::TokenNode>,
 }
 
 impl ContextBudgetSnapshot {
@@ -161,6 +170,32 @@ impl ContextBudgetSnapshot {
             Value::from(self.provider_input_tokens),
         );
         Value::Object(map)
+    }
+
+    /// 计量器自己的诊断：价格来源、有符号增量与逐事件账。
+    ///
+    /// 刻意不并进 [`Self::to_dict`]：那份载荷逐字对齐 Python 的测量快照（含字段顺序被
+    /// parity 用例锁定），新增键会让对齐测试失败；这份只给本地诊断与回放看。
+    pub fn meter_payload(&self) -> Value {
+        serde_json::json!({
+            "baseline": match self.baseline {
+                Some(super::meter::MeasurementBaseline::Usage(tokens)) => {
+                    serde_json::json!({"kind": "usage", "tokens": tokens})
+                }
+                Some(super::meter::MeasurementBaseline::Estimated(tokens)) => {
+                    serde_json::json!({"kind": "estimated", "tokens": tokens})
+                }
+                None => serde_json::json!({"kind": "none", "tokens": 0}),
+            },
+            "surface_delta_tokens": self.surface_delta_tokens,
+            "nodes": self.nodes.iter().map(|node| {
+                serde_json::json!({
+                    "event_id": node.event_id,
+                    "type": node.event_type,
+                    "tokens": node.tokens,
+                })
+            }).collect::<Vec<Value>>(),
+        })
     }
 }
 
@@ -304,6 +339,8 @@ pub struct MeasureInput {
     pub usage: TokenUsageSample,
     pub provider_input_tokens: i64,
     pub emergency_context_ratio: f64,
+    /// 已投影好的逐事件价格；有值时预算快照会一并发出去，供范围选择按尾部累加。
+    pub nodes: Vec<super::meter::TokenNode>,
 }
 
 /// 按 Token 计数直接测量（`measure_from_token_counts`）。
@@ -320,6 +357,7 @@ pub struct TokenCountInput {
     pub usage: TokenUsageSample,
     pub emergency_context_ratio: f64,
     pub provider_input_tokens: i64,
+    pub nodes: Vec<super::meter::TokenNode>,
 }
 
 impl DefaultContextBudgetManager {
@@ -337,9 +375,15 @@ impl DefaultContextBudgetManager {
         let cutoff = recent_turn_cutoff(&history, input.recent_turns);
         let cold_messages = &history[..cutoff];
         let recent_messages = &history[cutoff..];
-        let mut stable_context_tokens = estimate_text_tokens(&input.system_prompt);
-        stable_context_tokens += estimate_messages_tokens(&input.context_messages);
-        stable_context_tokens += estimate_json_tokens(&Value::Array(input.tool_schemas.clone()));
+        // 稳定上下文与历史的计价走同一入口（`meter::conversation_*`），宿主回报的
+        // 「压缩后大小」也用它，三处不可能各算各的。
+        let stable_context_tokens = super::meter::conversation_tokens(
+            &input.system_prompt,
+            &input.context_messages,
+            &input.tool_schemas,
+            &[],
+            &estimate_text_tokens,
+        );
 
         self.measure_from_token_counts(&TokenCountInput {
             stable_context_tokens,
@@ -353,6 +397,7 @@ impl DefaultContextBudgetManager {
             usage: input.usage,
             emergency_context_ratio: input.emergency_context_ratio,
             provider_input_tokens: input.provider_input_tokens,
+            nodes: input.nodes.clone(),
         })
     }
 
@@ -410,14 +455,26 @@ impl DefaultContextBudgetManager {
         };
         let emergency_tokens =
             ((input.context_window_tokens as f64) * input.emergency_context_ratio).ceil() as i64;
-        // 触发口径＝回合结束后实际上下文（不含下一轮用户预留）；与供应商回报取大值。
-        let post_turn_context_tokens = std::cmp::max(
-            input.stable_context_tokens
-                + input.existing_summary_tokens
-                + input.cold_history_tokens
-                + input.recent_history_tokens,
-            input.provider_input_tokens,
-        );
+        // 触发口径＝回合结束后实际上下文（不含下一轮用户预留）。
+        //
+        // 供应商回报只有「不低于启发式锚点」时才采信：摘要调用尚未回来时供应商数字会滞后，
+        // 此时相信它会低估压力、让这一回合错过压缩窗口。两条路只与估算比较，不叠加。
+        let heuristic_context_tokens = input.stable_context_tokens
+            + input.existing_summary_tokens
+            + input.cold_history_tokens
+            + input.recent_history_tokens;
+        let baseline = if input.provider_input_tokens > 0
+            && input.provider_input_tokens >= heuristic_context_tokens
+        {
+            super::meter::MeasurementBaseline::Usage(input.provider_input_tokens)
+        } else {
+            super::meter::MeasurementBaseline::Estimated(heuristic_context_tokens)
+        };
+        // 有符号增量＝当前启发式表面 − 采信基准。采信供应商采样时它是负值（启发式表面更小），
+        // 之后压缩再减一次也不会重复计数；采信启发式时恒为 0。
+        let surface_delta_tokens = heuristic_context_tokens - baseline.tokens();
+        let post_turn_context_tokens =
+            std::cmp::max(heuristic_context_tokens, input.provider_input_tokens);
 
         Ok(ContextBudgetSnapshot {
             stable_context_tokens: input.stable_context_tokens,
@@ -437,6 +494,9 @@ impl DefaultContextBudgetManager {
             emergency_ratio_reached: estimated_next_input_tokens >= emergency_tokens,
             cache_hit_ratio,
             provider_input_tokens: input.provider_input_tokens,
+            baseline: Some(baseline),
+            surface_delta_tokens,
+            nodes: Vec::new(),
         })
     }
 
@@ -492,6 +552,42 @@ impl DefaultContextBudgetManager {
             previous_covered_event_ids: previous_covered,
             single_large_turn: turns.len() == 1,
         })
+    }
+
+    /// 按逐事件价格选择压缩窗口：从尾部往前累加，凑够保留量即停。
+    ///
+    /// 与 [`Self::select_batch`]（整个历史一次压完）不同，这里按**价格**而不是回合边界
+    /// 决定窗口，且不劈开工具调用/结果对——劈开会让摘要模型看到孤立的 `tool_result`，
+    /// 完整性校验必然判为不合格。
+    ///
+    /// `nodes` 的价格账（顺序即模型可见顺序），`retain_tokens` 是要留在上下文里的量，
+    /// 返回**需要压缩**的事件 ID（保留窗口之前的那一段）。
+    pub fn select_range_by_tokens(
+        nodes: &[super::meter::TokenNode],
+        retain_tokens: i64,
+    ) -> Vec<String> {
+        if nodes.is_empty() {
+            return Vec::new();
+        }
+        let mut kept: i64 = 0;
+        let mut boundary = nodes.len();
+        while boundary > 0 && kept < retain_tokens {
+            boundary -= 1;
+            kept += nodes[boundary].tokens;
+        }
+        // 边界前移，直到保留窗口的第一条不再是孤立的工具结果：连它的调用请求一起留下。
+        while boundary > 0
+            && matches!(
+                nodes[boundary].event_type.as_str(),
+                "tool_result" | "tool_call_denied"
+            )
+        {
+            boundary -= 1;
+        }
+        nodes[..boundary]
+            .iter()
+            .map(|node| node.event_id.clone())
+            .collect()
     }
 
     pub fn decide_auto_compaction(
@@ -910,19 +1006,17 @@ fn complete_turns(events: &[SourceEvent]) -> Vec<Vec<SourceEvent>> {
     turns
 }
 
+/// 一批模型可见消息的 Token 估算（含多模态投影，见 [`super::meter`]）。
+///
+/// 多模态 `content` 里的图片只按句柄计价：Base64 与模型消耗的视觉 Token 无关，算进去会让
+/// 阈值判断提前一个数量级触发。
 pub fn estimate_messages_tokens(messages: &[Value]) -> i64 {
-    let mut total = 0;
-    for message in messages {
-        total += 4;
-        total += estimate_text_tokens(&value_text(message.get("role")));
-        total += estimate_value_tokens(&message.get("content").cloned().unwrap_or(Value::from("")));
-        for key in ["name", "tool_call_id", "tool_calls"] {
-            if let Some(value) = message.get(key) {
-                total += estimate_value_tokens(value);
-            }
-        }
-    }
-    total
+    super::meter::messages_tokens(messages, &estimate_text_tokens)
+}
+
+/// 单条消息估算：角色、投影后的内容与工具字段。
+pub fn estimate_message_tokens(message: &Value) -> i64 {
+    super::meter::message_tokens(message, &estimate_text_tokens)
 }
 
 fn value_text(value: Option<&Value>) -> String {
@@ -947,19 +1041,10 @@ pub fn estimate_json_tokens(value: &Value) -> i64 {
 }
 
 /// CJK 字符按 1 token、其余按 4 字符 1 token 折算。
+///
+/// 规则本体在 [`super::meter::text_tokens`]：TUI 也按同一份实现计价，两边不会漂。
 pub fn estimate_text_tokens(text: &str) -> i64 {
-    if text.is_empty() {
-        return 0;
-    }
-    let total = text.chars().count() as i64;
-    let cjk = text.chars().filter(|item| is_cjk(*item)).count() as i64;
-    let rest = total - cjk;
-    cjk + (rest + 3) / 4
-}
-
-fn is_cjk(item: char) -> bool {
-    matches!(item as u32,
-        0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x3040..=0x30ff | 0xac00..=0xd7af)
+    super::meter::text_tokens(text)
 }
 
 fn recent_turn_cutoff(messages: &[Value], recent_turns: i64) -> usize {

@@ -384,11 +384,14 @@ const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 9] = [
 /// 联网搜索页的字段；顺序与 `app.rs` 读值时的下标一一对应。
 ///
 /// 三把 API Key 是凭据：界面只显示掩码、进输入态也从空起步，留空表示保留磁盘原值。
-const WEB_SEARCH_FIELDS: [FieldSpec; 4] = [
+///
+/// GitHub Token 同样是凭据（可选项）：留空即维持未配置，GitHub 引擎照常走公开搜索页。
+const WEB_SEARCH_FIELDS: [FieldSpec; 5] = [
     FieldSpec::enumerated("默认引擎", &WEB_SEARCH_ENGINE_OPTIONS),
     FieldSpec::secret("Tavily API Key"),
     FieldSpec::secret("Exa API Key"),
     FieldSpec::secret("Firecrawl API Key"),
+    FieldSpec::secret("GitHub Token"),
 ];
 
 /// 表单类设置页。

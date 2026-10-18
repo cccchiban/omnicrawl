@@ -19,7 +19,7 @@ TTS 合成客户端：把文本交给云服务的语音接口，拿回音频并�
 | `text` | 长文本按句切块（两家都有单次请求的长度上限） |
 | `codec` | 响应音频的解码：WAV 容器与裸 PCM 16 位 |
 | `audio` | 8/16/24/32 位 PCM WAV 读写（含内存字节解码） |
-| `player` | Windows `PlaySoundW`（同步/异步）、macOS/Linux 系统播放器回退 |
+| `player` | Windows `PlaySoundW`（同步/异步）、macOS/Linux 系统播放器回退；只返回结果、不写 stderr |
 | `result` | 合成结果 `TtsResult` |
 
 ## 关键决策
