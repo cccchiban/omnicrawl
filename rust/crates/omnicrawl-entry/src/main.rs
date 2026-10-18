@@ -193,7 +193,8 @@ fn print_help() {
          decision ...  决策接口（serve / ensure / stop / status）\n\
          plugin ...    插件管理（install / list / info / enable / disable / update /\n\
                        rollback / uninstall / system / doctor）\n\
-         kernel ...    直连 Rust 内核进程\n\n\
+         kernel ...    直连 Rust 内核进程\n\
+         connector <平台>  启动宿主承载的连接器\n\n\
          --resume <id>  启动终端工作台时恢复指定会话\n\
          --version, -V  打印版本\n\
          --help, -h     打印本说明"
