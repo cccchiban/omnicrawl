@@ -2211,11 +2211,14 @@ impl App {
         }
     }
 
-    /// 鼠标移动：只关心输入区方框上边框里的 `[ ESC ]`，命中则点亮为淡黄色。
+    /// 鼠标移动：关心输入区方框上边框里的 `[ ESC ]` 与后台任务卡上的「立即结束」按钮，
+    /// 命中则点亮为淡黄色。
     ///
-    /// 位置由渲染路径登记（`AppState::runtime_esc_area`），所以这里不必重算显示行——
-    /// 长会话下那是一次不便宜的折行。
+    /// `[ ESC ]` 的位置由渲染路径登记（`AppState::runtime_esc_area`），所以这里不必重算显示行——
+    /// 长会话下那是一次不便宜的折行。「立即结束」按钮的列区间随显示行缓存一起算好，
+    /// 命中测试只做窗口换算。
     fn update_conversation_hover(&mut self, column: u16, row: u16) {
+        self.update_stop_button_hover(column, row);
         if !self.state.turn.is_running() {
             self.state.runtime_esc_hover = false;
             return;
@@ -2225,6 +2228,32 @@ impl App {
             .runtime_esc_area()
             .is_some_and(|area| area.contains(Position::new(column, row)));
         self.state.runtime_esc_hover = hover;
+    }
+
+    /// 悬停判定：鼠标是否落在某个「立即结束」按钮上。
+    fn update_stop_button_hover(&mut self, column: u16, row: u16) {
+        let area = ui::layout(self.viewport, &self.state).conversation;
+        if !area.contains(Position::new(column, row)) {
+            self.state.set_stop_button_hover(None);
+            return;
+        }
+        let relative = usize::from(row - area.y);
+        let hovered = if self.on_stop_button(area, relative, column) {
+            self.monitor_call_id_at(area, relative)
+        } else {
+            None
+        };
+        self.state.set_stop_button_hover(hovered);
+    }
+
+    /// 屏幕列是否落在该行「立即结束」按钮的格子里。
+    fn on_stop_button(&self, area: Rect, relative: usize, column: u16) -> bool {
+        let text = conversation::text_area(area);
+        conversation::stop_button_columns(&self.state, area, self.state.scroll_from_bottom, relative)
+            .is_some_and(|(start, width)| {
+                let column = usize::from(column.saturating_sub(text.x));
+                column >= usize::from(start) && column < usize::from(start) + usize::from(width)
+            })
     }
 
     /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
@@ -2278,6 +2307,13 @@ impl App {
             return;
         }
         let relative = (row - areas.conversation.y) as usize;
+        // 「立即结束」按钮优先：它压在标题行的右缘上，先于卡片的收起/展开判定。
+        if self.on_stop_button(areas.conversation, relative, column) {
+            if let Some(call_id) = self.monitor_call_id_at(areas.conversation, relative) {
+                self.stop_monitor_poll(&call_id);
+                return;
+            }
+        }
         let hit = conversation::hit_test(
             &self.state,
             areas.conversation,
@@ -2286,6 +2322,7 @@ impl App {
         );
         match hit {
             Some(LineHit::ToolHint { call_id }) => self.state.expand_tool(&call_id),
+            Some(LineHit::ToolStop { call_id }) => self.stop_monitor_poll(&call_id),
             Some(LineHit::ToolCard { call_id }) => {
                 // 对映 Python：缩略态点卡片无效，展开态点卡片才是收起。
                 self.state.collapse_tool(&call_id);
@@ -2295,6 +2332,33 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// 某一行所属的后台任务卡 `call_id`（只有 monitor 卡才算）。
+    fn monitor_call_id_at(&self, area: Rect, relative: usize) -> Option<String> {
+        match conversation::hit_test(&self.state, area, self.state.scroll_from_bottom, relative) {
+            Some(LineHit::ToolCard { call_id }) | Some(LineHit::ToolStop { call_id }) => {
+                call_id.starts_with("monitor:").then_some(call_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// 「立即结束」：打断该后台任务上正在跑的长轮询，让这一轮 poll 立刻带着当前结果返回。
+    ///
+    /// 只提前收口等待，不停任务、不动进程——`monitor` 任务的生死由模型侧的
+    /// `action=stop` 决定，界面按钮不该替它做决定。
+    fn stop_monitor_poll(&mut self, call_id: &str) {
+        let Some(monitor_id) = call_id.strip_prefix("monitor:") else {
+            return;
+        };
+        let interrupted = self.registry.monitors().interrupt_wait(monitor_id);
+        let message = if interrupted {
+            format!("已结束 {monitor_id} 的等待，本轮轮询立即返回。")
+        } else {
+            format!("{monitor_id} 当前没有正在等待的轮询，无事可做。")
+        };
+        self.state.show_notice_line(message, Instant::now());
     }
 
     fn handle_key(&mut self, key: KeyEvent) {

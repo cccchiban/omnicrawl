@@ -28,7 +28,7 @@ pub const TOOL_NAME_ALIASES: [(&str, &str); 5] = [
 ];
 
 /// 模型常见误写的参数名 → 真实参数名（`startline` / `maxLines` / `tabId` 这类）。
-pub const ARGUMENT_NAME_ALIASES: [(&str, &str); 48] = [
+pub const ARGUMENT_NAME_ALIASES: [(&str, &str); 50] = [
     ("cmd", "command"),
     ("caseSensitive", "case_sensitive"),
     ("casesensitive", "case_sensitive"),
@@ -53,6 +53,8 @@ pub const ARGUMENT_NAME_ALIASES: [(&str, &str); 48] = [
     ("monitorid", "monitor_id"),
     ("maxEvents", "max_events"),
     ("maxevents", "max_events"),
+    ("waitSeconds", "wait_seconds"),
+    ("waitseconds", "wait_seconds"),
     ("tabId", "tab"),
     ("tabid", "tab"),
     ("timeoutSeconds", "timeout_seconds"),

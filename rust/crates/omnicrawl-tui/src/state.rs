@@ -329,6 +329,11 @@ pub struct PendingImage {
     pub placeholder: String,
     pub media_type: String,
     pub bytes: Vec<u8>,
+    /// 发送前要不要把字节复制一份到工作区临时目录。
+    ///
+    /// 只有 `Ctrl+V` 的剪贴板位图需要（磁盘上原本没有这份图，模型事后想再读就没有了）；
+    /// 粘贴进来的图片路径本来就指向磁盘上的原文件，不必再复制。
+    pub archive: bool,
 }
 
 /// 一条「已从输入框交出、尚未发往内核」的提问：文本 + 随行的图片。
@@ -485,7 +490,19 @@ impl Composer {
     ///
     /// 与文本粘贴折叠同一套占位符语义：整块删除、左右移动不停在块中间；占位符被删掉后
     /// 附件随之丢弃（[`Self::prune_pastes`]），不会被静默发出去。
+    ///
+    /// 粘贴进来的图片路径走这里：原文件本来就在磁盘上，不必再复制一份。
     pub fn insert_image(&mut self, media_type: &str, bytes: Vec<u8>) {
+        self.push_image(media_type, bytes, false);
+    }
+
+    /// 剪贴板位图的粘贴入口：与 [`Self::insert_image`] 同形，但发送前会复制一份到工作区
+    /// 临时目录（`Ctrl+V` 的图只在内存与内核请求里存在，事后想再读就得有这份副本）。
+    pub fn insert_clipboard_image(&mut self, media_type: &str, bytes: Vec<u8>) {
+        self.push_image(media_type, bytes, true);
+    }
+
+    fn push_image(&mut self, media_type: &str, bytes: Vec<u8>, archive: bool) {
         self.image_sequence += 1;
         let placeholder = image_placeholder(self.image_sequence);
         self.images.push((
@@ -494,6 +511,7 @@ impl Composer {
                 placeholder: placeholder.clone(),
                 media_type: media_type.to_string(),
                 bytes,
+                archive,
             },
         ));
         self.insert(&placeholder);
@@ -1082,6 +1100,10 @@ pub struct AppState {
     selection: Option<TextSelection>,
     /// 会话流末尾 `[ ESC ]` 提示是否被鼠标悬停（悬停时染成淡黄色）。
     pub runtime_esc_hover: bool,
+    /// 正在被悬停的后台任务卡「立即结束」按钮所属的 `call_id`（悬停时染成淡黄色）。
+    ///
+    /// 同一时刻只可能悬停一个按钮，用「命中的卡片」而不是布尔值，卡片重排后也不会串色。
+    stop_button_hover: Option<String>,
     /// 输入区方框上边框里 `[ ESC ]` 的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
     ///
     /// 状态行搬到方框边框后就不再走会话流的命中测试，只能由渲染路径把位置记下来：
@@ -1146,6 +1168,7 @@ impl AppState {
             carousel_lines: load_carousel_message_lines(),
             selection: None,
             runtime_esc_hover: false,
+            stop_button_hover: None,
             runtime_esc_area: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),
@@ -2500,6 +2523,7 @@ impl AppState {
         self.touch_composer();
     }
 
+
     /// 是否在消息流里显示思考段（`ui.show_thinking`）。
     ///
     /// 这是个纯界面开关，但会改变会话区的显示行（思考段整段出现/消失），
@@ -2928,6 +2952,29 @@ impl AppState {
     /// 渲染路径登记 `[ ESC ]` 的位置（渲染只拿 `&AppState`，因此用 `Cell` 写入）。
     pub fn set_runtime_esc_area(&self, area: Option<ratatui::layout::Rect>) {
         self.runtime_esc_area.set(area);
+    }
+
+    /// 正在被悬停的「立即结束」按钮属于哪张卡（渲染层据此把它染成淡黄色）。
+    pub fn stop_button_hover(&self) -> Option<&str> {
+        self.stop_button_hover.as_deref()
+    }
+
+    /// 记录本轮悬停命中；变化时让受影响的两张卡重算显示行。
+    ///
+    /// 按钮颜色是随显示行一起烘焙的，所以只 `bump` 重画不够——旧卡要褪回灰色、
+    /// 新卡要转成淡黄，两条记录都得重算；没变化时直接返回，鼠标划过每张卡不会白算。
+    pub fn set_stop_button_hover(&mut self, call_id: Option<String>) {
+        if self.stop_button_hover == call_id {
+            return;
+        }
+        let previous = self.stop_button_hover.take();
+        self.stop_button_hover = call_id;
+        for key in [previous, self.stop_button_hover.clone()].into_iter().flatten() {
+            if let Some(index) = self.tool_card_slot(&key) {
+                self.touch_record(index);
+            }
+        }
+        self.touch_conversation_view();
     }
 
     /// 只读取工具卡（按 `call_id`；空 id 不匹配，避免误命中别的调用）。

@@ -4,7 +4,7 @@
 //! 由当前宿主持有（宿主关闭或所属回合取消时回收整棵进程树），输出进内存环形缓冲，
 //! 模型按游标增量轮询，不写持久化日志。参数与文案逐条对齐 Python。
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Local};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+
+use omnicrawl_controllers::shared::MAX_TOOL_TIMEOUT_SECONDS;
 
 use super::arguments::{limited_int, optional_text};
 use super::command::{invocation, CommandOutcome, Shell};
@@ -174,6 +176,9 @@ struct State {
     buffer_limit: usize,
     event_chars: usize,
     scope: Option<String>,
+    /// 正在 `wait_seconds` 长轮询里的任务。界面点「立即结束」时把 id 放进来唤醒等待，
+    /// 让这一轮 poll 立刻带着当前快照返回，而不是等满超时。
+    interrupted: BTreeSet<String>,
 }
 
 struct Inner {
@@ -218,6 +223,7 @@ impl MonitorManager {
                     buffer_limit,
                     event_chars,
                     scope: None,
+                    interrupted: BTreeSet::new(),
                 }),
                 wake: Condvar::new(),
             }),
@@ -327,6 +333,9 @@ impl MonitorManager {
     ///
     /// 等待期间挂在同一个条件变量上：读取线程每落一条事件、等待线程标记终态都会唤醒它，
     /// 因此 SSE 侧的长轮询不需要忙等。
+    ///
+    /// 界面点「立即结束」会插一条 [`Self::interrupt_wait`]，让等待按「观测到变化」返回，
+    /// 从而带着当前快照收口。
     pub fn wait_for_events(&self, monitor_id: &str, cursor: u64, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut state = self.state();
@@ -334,7 +343,10 @@ impl MonitorManager {
             let Some(task) = state.tasks.get(monitor_id) else {
                 return true;
             };
-            if task.next_sequence.saturating_sub(1) > cursor || task.status != Status::Running {
+            if task.next_sequence.saturating_sub(1) > cursor
+                || task.status != Status::Running
+                || state.interrupted.contains(monitor_id)
+            {
                 return true;
             }
             let now = Instant::now();
@@ -348,6 +360,30 @@ impl MonitorManager {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = guard;
         }
+    }
+
+    /// 打断某个任务上正在进行的 `wait_seconds` 长轮询：该轮 poll 立刻返回当前结果。
+    ///
+    /// 只是一次「提前收口」的记号，不动任务本身的状态与进程；打断标记由被唤醒的那一轮
+    /// poll 自己消费（[`Self::take_interrupted`]），没人在等时也会被下一位取走并忽略。
+    /// 返回是否真的有等待方（供调用方判断点击要不要提示）。任务已跑完时没有等待方。
+    pub fn interrupt_wait(&self, monitor_id: &str) -> bool {
+        let mut state = self.state();
+        let Some(task) = state.tasks.get(monitor_id) else {
+            return false;
+        };
+        if task.status != Status::Running {
+            return false;
+        }
+        state.interrupted.insert(monitor_id.to_string());
+        drop(state);
+        self.inner.wake.notify_all();
+        true
+    }
+
+    /// 取走并清除打断标记：由被唤醒的那轮 poll 消费，避免影响下一轮长轮询。
+    pub fn take_interrupted(&self, monitor_id: &str) -> bool {
+        self.state().interrupted.remove(monitor_id)
     }
 
     fn start(&self, arguments: &Map<String, Value>) -> Result<CommandOutcome, ToolError> {
@@ -466,6 +502,22 @@ impl MonitorManager {
         let monitor_id = self.task_id(arguments)?;
         let cursor = limited_int(arguments, "cursor", 0, 0, 2_000_000_000);
         let max_events = limited_int(arguments, "max_events", 100, 1, MAX_EVENTS_PER_POLL as i64);
+        // 等待是可选的长轮询：先等到「有新事件或任务终态」，再读一次，因此最多只多花
+        // 一轮读取的时间。0 表示立即返回，与不传该参数同义。
+        let wait_seconds = limited_int(arguments, "wait_seconds", 0, 0, MAX_TOOL_TIMEOUT_SECONDS);
+        let mut waited = false;
+        let mut interrupted = false;
+        if wait_seconds > 0 {
+            // 上一轮残留的记号不能吃掉本轮的等待：开等之前先清干净。
+            self.take_interrupted(&monitor_id);
+            waited = !self.wait_for_events(
+                &monitor_id,
+                cursor.max(0) as u64,
+                Duration::from_secs(wait_seconds as u64),
+            );
+            // 界面点「立即结束」：这一轮不再等满，带着当前结果返回。
+            interrupted = self.take_interrupted(&monitor_id);
+        }
         let result = self.poll_events(&monitor_id, cursor, max_events)?;
         let snapshot = &result.snapshot;
 
@@ -476,6 +528,11 @@ impl MonitorManager {
         ];
         if let Some(exit_code) = snapshot.exit_code {
             lines.push(format!("退出码：{exit_code}"));
+        }
+        if interrupted {
+            lines.push("等待：已被界面中断，返回当前结果。".to_string());
+        } else if waited && result.events.is_empty() {
+            lines.push(format!("等待：已等待 {wait_seconds} 秒，期间无新增输出。"));
         }
         if (cursor.max(0) as u64) < result.first_available_cursor && snapshot.dropped_events > 0 {
             lines.push(format!(
@@ -1307,5 +1364,229 @@ mod tests {
                 .expect("停止第二个任务")
                 .ok
         );
+    }
+
+    #[test]
+    fn poll_wait_seconds_returns_early_on_new_output() {
+        let (shell, _, sleeping) = shell();
+        let manager = MonitorManager::new(root("wait-early"));
+        // 先输出一行再长时间挂住：新事件落地时等待必须立刻结束，而不是睡满超时。
+        let command = if shell == "bash" {
+            format!("echo wait-ok; {sleeping}")
+        } else {
+            "Write-Output 'wait-ok'; Start-Sleep -Seconds 30".to_string()
+        };
+        let monitor_id = start(&manager, shell, &command);
+        // 启动事件本身就是「新事件」：先把它消费掉，之后的游标才真正需要等 stdout。
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("首次轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+        let begun = Instant::now();
+        let output = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 30,
+            })))
+            .expect("长轮询")
+            .output;
+        let elapsed = begun.elapsed();
+        assert!(output.contains("stdout: wait-ok"), "{output}");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "有新输出应当提前返回，实际等待 {elapsed:?}"
+        );
+        // 提前返回意味着没有等满，不得给出「等满但无输出」的提示。
+        assert!(!output.contains("等待：已等待"), "{output}");
+        let _ = manager.run(&args(json!({"action": "stop", "monitor_id": monitor_id})));
+    }
+
+    #[test]
+    fn poll_wait_seconds_falls_back_to_deadline_without_output() {
+        let Some((shell, sleeping)) = sleeping_shell() else {
+            eprintln!("跳过：本机既没有 Git Bash 也没有 PowerShell");
+            return;
+        };
+        let manager = MonitorManager::new(root("wait-deadline"));
+        let monitor_id = start(&manager, shell, &sleeping);
+        // 先把启动事件消费掉，之后的游标上确实没有新事件可等。
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("首次轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+        let begun = Instant::now();
+        let output = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 1,
+            })))
+            .expect("长轮询")
+            .output;
+        let elapsed = begun.elapsed();
+        assert!(elapsed >= Duration::from_secs(1), "应当等满，实际 {elapsed:?}");
+        assert!(
+            output.contains("等待：已等待 1 秒，期间无新增输出。"),
+            "{output}"
+        );
+        assert!(output.contains("状态：running"), "{output}");
+        let _ = manager.run(&args(json!({"action": "stop", "monitor_id": monitor_id})));
+    }
+
+    #[test]
+    fn poll_wait_seconds_returns_immediately_on_terminal_state() {
+        let (shell, quick, _) = shell();
+        let manager = MonitorManager::new(root("wait-terminal"));
+        let monitor_id = start(&manager, shell, &quick);
+        // 任务落终态后等待条件立刻成立：即便 wait_seconds 很大也不该真的等下去。
+        poll_until(&manager, &monitor_id, Duration::from_secs(20), |output| {
+            output.contains("任务已完成")
+        });
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+        let begun = Instant::now();
+        let output = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 30,
+            })))
+            .expect("长轮询")
+            .output;
+        let elapsed = begun.elapsed();
+        assert!(output.contains("状态：completed"), "{output}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "终态应当立即返回，实际等待 {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn interrupt_wait_wakes_a_long_poll_early() {
+        let Some((shell, sleeping)) = sleeping_shell() else {
+            eprintln!("跳过：本机既没有 Git Bash 也没有 PowerShell");
+            return;
+        };
+        let manager = MonitorManager::new(root("wait-interrupt"));
+        let monitor_id = start(&manager, shell, &sleeping);
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("首次轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+
+        let begun = Instant::now();
+        let waiter = {
+            let manager = manager.clone();
+            let monitor_id = monitor_id.clone();
+            thread::spawn(move || {
+                manager
+                    .run(&args(json!({
+                        "action": "poll",
+                        "monitor_id": monitor_id,
+                        "cursor": cursor,
+                        "wait_seconds": 30,
+                    })))
+                    .expect("长轮询")
+                    .output
+            })
+        };
+        // 让等待方先真的进入等待，否则打断记号会在它开等之前被清掉。
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            manager.interrupt_wait(&monitor_id),
+            "运行中的任务要能被标记打断"
+        );
+        let output = waiter.join().expect("等待线程结束");
+        let elapsed = begun.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "打断后应当提前返回，实际等待 {elapsed:?}"
+        );
+        assert!(
+            output.contains("等待：已被界面中断，返回当前结果。"),
+            "{output}"
+        );
+        assert!(output.contains("状态：running"), "{output}");
+        // 打断只是提前收口：任务本身仍在跑，没有被顺带停掉。
+        let listed = manager
+            .run(&args(json!({"action": "list"})))
+            .expect("列表")
+            .output;
+        assert!(listed.contains(&format!("- {monitor_id}：running")), "{listed}");
+        let _ = manager.run(&args(json!({"action": "stop", "monitor_id": monitor_id})));
+    }
+
+    #[test]
+    fn interrupt_wait_refuses_finished_tasks() {
+        let (shell, quick, _) = shell();
+        let manager = MonitorManager::new(root("wait-interrupt-done"));
+        let monitor_id = start(&manager, shell, &quick);
+        poll_until(&manager, &monitor_id, Duration::from_secs(20), |output| {
+            output.contains("任务已完成")
+        });
+        assert!(
+            !manager.interrupt_wait(&monitor_id),
+            "已落终态的任务没有等待方，不该报「已打断」"
+        );
+        // 记号一旦被取走就没了：连续两次取只成功一次。
+        assert!(manager.interrupt_wait(&monitor_id) == false);
+    }
+
+    #[test]
+    fn poll_wait_seconds_is_clamped_and_optional() {
+        let (shell, quick, _) = shell();
+        let manager = MonitorManager::new(root("wait-clamp"));
+        let monitor_id = start(&manager, shell, &quick);
+        poll_until(&manager, &monitor_id, Duration::from_secs(20), |output| {
+            output.contains("任务已完成")
+        });
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+        // 负数与非法值回落默认 0（立即返回），不会变成无限等待。
+        for value in [Value::from(-5), Value::from("abc"), Value::from(true)] {
+            let begun = Instant::now();
+            let output = manager
+                .run(&args(json!({
+                    "action": "poll",
+                    "monitor_id": monitor_id,
+                    "cursor": cursor,
+                    "wait_seconds": value,
+                })))
+                .expect("轮询")
+                .output;
+            assert!(
+                begun.elapsed() < Duration::from_secs(2),
+                "{value} 不该产生等待"
+            );
+            assert!(output.starts_with("后台任务："), "{output}");
+        }
     }
 }

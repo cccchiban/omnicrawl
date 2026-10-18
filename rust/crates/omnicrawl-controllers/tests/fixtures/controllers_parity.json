@@ -6739,6 +6739,8 @@
         "monitorid": "monitor_id",
         "maxEvents": "max_events",
         "maxevents": "max_events",
+        "waitSeconds": "wait_seconds",
+        "waitseconds": "wait_seconds",
         "tabId": "tab",
         "tabid": "tab",
         "timeoutSeconds": "timeout_seconds",
@@ -8075,8 +8077,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8307,8 +8309,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8582,8 +8584,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8775,8 +8777,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8983,8 +8985,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -9177,8 +9179,8 @@
           },
           {
             "name": "monitor",
-            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
-            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+            "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件，poll 可传 wait_seconds 长轮询（有新输出或任务结束即返回，否则等到超时）；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+            "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100,\"wait_seconds\":30}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true

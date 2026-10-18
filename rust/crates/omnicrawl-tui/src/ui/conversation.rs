@@ -61,9 +61,20 @@ pub enum LineHit {
     ToolHint { call_id: String },
     /// 工具卡其余部分：处于展开态时点击收起。
     ToolCard { call_id: String },
+    /// 后台任务卡的「立即结束」按钮：点击打断正在跑的长轮询（只有运行中的 monitor 卡有）。
+    ToolStop { call_id: String },
     /// 思考段：点击在折叠与展开之间切换（`index` 是该记录在消息流里的下标）。
     Reasoning { index: usize },
 }
+
+/// 工具卡标题行右侧的「立即结束」按钮。
+///
+/// 只有**还在跑**的后台任务卡才画它：点击打断该任务的 `wait_seconds` 长轮询，
+/// 让模型侧那一轮 poll 立刻带着当前结果返回。按钮本身停在屏幕最右缘，与标题文本
+/// 共用一行，标题过长时让位（截断）给按钮，越窄的窗口越早放弃绘制按钮。
+const STOP_BUTTON: &str = "[立即结束]";
+/// 按钮与其左侧内容之间至少留一格。
+const STOP_BUTTON_GAP: usize = 1;
 
 /// 一行显示行在工具卡图片块里的位置。
 ///
@@ -76,13 +87,16 @@ pub struct ImageRow {
     pub offset: u16,
 }
 
-/// 显示行 + 它承载的点击目标与图片标记。
+/// 显示行 + 它承载的点击目标、图片标记与按钮格子。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayLine {
     pub line: Line<'static>,
     pub hit: Option<LineHit>,
     /// 图片块的占位行；`None` 表示普通文本行。
     pub image: Option<ImageRow>,
+    /// 本行上「立即结束」按钮占的列区间（显示列，相对行首）。悬停判定用它，
+    /// 不必再按文本反推按钮在哪一格。`None` 表示本行没有按钮。
+    pub button: Option<(u16, u16)>,
 }
 
 impl DisplayLine {
@@ -91,6 +105,7 @@ impl DisplayLine {
             line,
             hit: None,
             image: None,
+            button: None,
         }
     }
 
@@ -99,6 +114,20 @@ impl DisplayLine {
             line,
             hit: Some(hit),
             image: None,
+            button: None,
+        }
+    }
+
+    /// 工具卡标题行 + 它右侧的「立即结束」按钮。
+    ///
+    /// 整行仍是 `ToolCard`（点标题照旧收起卡片），按钮那几格单独登记列区间：
+    /// 悬停按它提亮，点击由 [`LineHit::ToolStop`] 分派。
+    fn with_button(line: Line<'static>, hit: LineHit, button: (u16, u16)) -> Self {
+        Self {
+            line,
+            hit: Some(hit),
+            image: None,
+            button: Some(button),
         }
     }
 
@@ -113,6 +142,7 @@ impl DisplayLine {
                 call_id: call_id.to_string(),
                 offset,
             }),
+            button: None,
         }
     }
 
@@ -126,6 +156,7 @@ impl DisplayLine {
                 call_id: image_key.to_string(),
                 offset,
             }),
+            button: None,
         }
     }
 }
@@ -833,6 +864,30 @@ pub fn hit_test(
     cache.visible_slice(index, index + 1).into_iter().next()?.hit
 }
 
+/// 会话区第 `row` 行（区内相对行号）上「立即结束」按钮占的列区间；那行没有按钮时 `None`。
+///
+/// 列区间由渲染路径随显示行一起算好（`DisplayLine::button`），这里只做窗口换算，
+/// 因此悬停判定与真正画出来的格子永远一致。
+pub fn stop_button_columns(
+    state: &AppState,
+    area: Rect,
+    scroll_from_bottom: usize,
+    row: usize,
+) -> Option<(u16, u16)> {
+    let text = text_area(area);
+    let cache = cache_of(state, text.width);
+    let (start, end) = window_range(
+        cache.visible_len(),
+        text.height as usize,
+        scroll_from_bottom,
+    );
+    let index = start.checked_add(row)?;
+    if index >= end {
+        return None;
+    }
+    cache.visible_slice(index, index + 1).first()?.button
+}
+
 /// 会话区第 `row` 行（区内相对行号）对应的显示行下标；越界返回 `None`。
 ///
 /// 与 [`render`] 同一套文本区宽度与滚动计算，因此鼠标命中、选区和绘制不会错位。
@@ -1035,6 +1090,7 @@ fn push_prefixed(
     }
 }
 
+
 /// 消息内边距 + 一行富文本（子任务树与子代理会话面板用）。
 fn padded_styled(text: &StyledText) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = vec![Span::raw(MESSAGE_PAD.to_string())];
@@ -1167,13 +1223,26 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     );
     // 标题超宽时**换行**（不再用省略号截断），续行缩进到参数起始列——也就是
     // `● bash ls -la` 里 `ls` 所在的那一列，参数列表能对齐着读。
-    for row in tool_title_rows(&title, width) {
-        lines.push(DisplayLine::with_hit(
-            row,
-            LineHit::ToolCard {
-                call_id: card.call_id.clone(),
-            },
-        ));
+    let rows = tool_title_rows(&title, width);
+    // 运行中的后台任务卡在标题行右侧挂一个「立即结束」按钮。
+    let button_row = if running && is_monitor_card(card) {
+        stop_button_slot(&rows, width)
+    } else {
+        None
+    };
+    let hovered = state.stop_button_hover() == Some(card.call_id.as_str());
+    for (index, row) in rows.into_iter().enumerate() {
+        let hit = LineHit::ToolCard {
+            call_id: card.call_id.clone(),
+        };
+        lines.push(match button_row.filter(|(slot, _)| *slot == index) {
+            Some((_, button)) => DisplayLine::with_button(
+                attach_stop_button(row, button, hovered),
+                hit,
+                button,
+            ),
+            None => DisplayLine::with_hit(row, hit),
+        });
     }
 
     // 压缩提示：灰色一行，画在工具结果上方；**工具调用完成后才显示**（用户要求），
@@ -1317,6 +1386,60 @@ fn tool_title_rows(title: &StyledText, width: usize) -> Vec<Line<'static>> {
         out.push(Line::from(spans));
     }
     out
+}
+
+/// 这张卡是不是后台任务（monitor）卡。
+///
+/// `push_monitor_batch` 建的卡用 `monitor:<id>` 作 `call_id` 并把工具名写成 `monitor`；
+/// 两者任一命中即算——回放历史事件时 `call_id` 可能为空，只能靠名字认。
+fn is_monitor_card(card: &ToolCard) -> bool {
+    card.name == "monitor" || card.call_id.starts_with("monitor:")
+}
+
+/// 「立即结束」按钮该落在哪一行、占哪几列；窗口太窄放不下时返回 `None`。
+///
+/// 按钮贴右缘（宽度已扣掉滚动条），选**最后一行**标题：多行标题时按钮落在最下面那行，
+/// 不会把首行的工具名挤掉。左侧内容不足留一格间隙时同样放弃——宁可没有按钮，
+/// 也不让它压着标题文字。
+fn stop_button_slot(rows: &[Line<'static>], width: usize) -> Option<(usize, (u16, u16))> {
+    let button_width = display_width(STOP_BUTTON);
+    if width <= button_width + STOP_BUTTON_GAP {
+        return None;
+    }
+    let index = rows.len().checked_sub(1)?;
+    let used = display_width(&text_of_line(&rows[index]));
+    if used + STOP_BUTTON_GAP + button_width > width {
+        return None;
+    }
+    let column = width - button_width;
+    Some((index, (column as u16, button_width as u16)))
+}
+
+/// 把按钮贴到行右缘：补足到按钮起始列，再画按钮本身。
+///
+/// 未悬停时灰色，鼠标放上去转淡黄（与 `[ ESC ]` 一致）。
+fn attach_stop_button(row: Line<'static>, button: (u16, u16), hovered: bool) -> Line<'static> {
+    let style = if hovered {
+        theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    };
+    let mut spans: Vec<Span<'static>> = row.spans;
+    let used = display_width(&text_of_line(&Line::from(spans.clone())));
+    let pad = usize::from(button.0).saturating_sub(used).max(STOP_BUTTON_GAP);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(STOP_BUTTON.to_string(), style));
+    Line::from(spans)
+}
+
+/// 一行的纯文本（只用于量显示宽度）。
+fn text_of_line(line: &Line<'static>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 /// 标题里参数段的起始列（`● bash ls -la` 里 `ls` 的列号）。
@@ -1698,6 +1821,87 @@ mod tests {
             now + std::time::Duration::from_millis(1500),
         );
         state
+    }
+
+    #[test]
+    fn monitor_card_shows_a_grey_stop_button_that_turns_amber_on_hover() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[stdout] ready".to_string(),
+        );
+        let display = display_lines(&state, 60);
+        let row = display
+            .iter()
+            .find(|line| line.button.is_some())
+            .expect("运行中的后台任务卡要有「立即结束」按钮");
+        let text = text_of(&row.line);
+        assert!(text.ends_with("[立即结束]"), "按钮贴在行右缘：{text:?}");
+        assert_eq!(text, text.trim_end(), "按钮右边不该挂空格：{text:?}");
+        let button_span = row.line.spans.last().expect("按钮是最后一个 span");
+        assert_eq!(
+            button_span.style.fg,
+            Some(Color::DarkGray),
+            "未悬停时按钮是灰色"
+        );
+        // 整行仍是卡片命中（点标题照旧收起），按钮的列区间单独登记。
+        assert_eq!(
+            row.hit,
+            Some(LineHit::ToolCard {
+                call_id: "monitor:m1".to_string()
+            })
+        );
+
+        // 悬停：同一张卡的按钮转淡黄。
+        state.set_stop_button_hover(Some("monitor:m1".to_string()));
+        let hovered = display_lines(&state, 60);
+        let row = hovered
+            .iter()
+            .find(|line| line.button.is_some())
+            .expect("按钮还在");
+        assert_eq!(
+            row.line.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::Yellow)),
+            "悬停时按钮要变黄"
+        );
+    }
+
+    #[test]
+    fn stop_button_only_belongs_to_running_monitor_cards() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        // 跑完的后台任务卡不再有按钮。
+        state.push_monitor_batch("m1", "completed", "Monitor · m1 · completed".to_string());
+        assert!(
+            display_lines(&state, 60).iter().all(|line| line.button.is_none()),
+            "终态的后台任务卡不该留按钮"
+        );
+
+        // 普通工具卡也没有按钮。
+        let state = state_with_tool(true, 3);
+        assert!(
+            display_lines(&state, 60).iter().all(|line| line.button.is_none()),
+            "普通工具卡不该有「立即结束」按钮"
+        );
+    }
+
+    #[test]
+    fn stop_button_is_dropped_when_the_row_is_too_narrow() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[stdout] ready".to_string(),
+        );
+        // 窗口窄到放不下标题 + 间隙 + 按钮：宁可不画，也不压着标题文字。
+        assert!(
+            display_lines(&state, 12).iter().all(|line| line.button.is_none()),
+            "太窄时不该画按钮"
+        );
+        assert!(
+            display_lines(&state, 60).iter().any(|line| line.button.is_some()),
+            "够宽时要画出来"
+        );
     }
 
     #[test]
