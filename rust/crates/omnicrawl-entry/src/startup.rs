@@ -99,17 +99,41 @@ pub fn bootstrap(env: &ConfigEnvironment, interactive: bool) -> Result<StartupOu
     Ok(StartupOutcome { setup, lines })
 }
 
-/// 连接器的子进程命令行：内核二进制的 `--connector <平台>`（与 `omnicrawl-cli` 的入口一致）。
+/// 连接器的子进程命令行：优先宿主二进制（真实工具表与会话），无宿主载荷时退回内核。
+///
+/// 内核的 `--connector <平台>` 只在进程内自持三个自持工具，其余工具一律 `tool_unavailable`，
+/// 会话也不落盘——远程用户会看到「无法访问项目仓库」。因此只要有宿主载荷，就走
+/// `omnicrawl-host connector <平台>`（由宿主承载完整 Agent）；只有像 armv7 那样只发内核的
+/// 平台才退回旧路径，那条路径的行为与提示保持不变。
 pub fn connector_specs(kernel: &Path) -> Vec<ConnectorSpec> {
-    let mut specs = default_connector_specs(kernel);
-    for spec in specs.iter_mut() {
-        for argument in spec.args.iter_mut() {
-            if argument == "connector" {
-                *argument = "--connector".to_string();
+    let host = host_binary_beside(kernel);
+    match host {
+        // 有宿主载荷：连接器由宿主承载（`omnicrawl-host connector <平台>`）。
+        Some(program) => default_connector_specs(program),
+        None => {
+            let mut specs = default_connector_specs(kernel);
+            for spec in specs.iter_mut() {
+                for argument in spec.args.iter_mut() {
+                    if argument == "connector" {
+                        *argument = "--connector".to_string();
+                    }
+                }
             }
+            specs
         }
     }
-    specs
+}
+
+/// 与内核同目录的宿主二进制；不存在时返回 `None`（退回内核连接器模式）。
+fn host_binary_beside(kernel: &Path) -> Option<PathBuf> {
+    let directory = kernel.parent()?;
+    let name = if cfg!(windows) {
+        "omnicrawl-host.exe"
+    } else {
+        "omnicrawl-host"
+    };
+    let candidate = directory.join(name);
+    candidate.is_file().then_some(candidate)
 }
 
 /// 拉起已配置的连接器；未配置任何平台时监督器不启动任何子进程。
@@ -265,8 +289,9 @@ mod tests {
         );
     }
 
+    /// 无宿主载荷（armv7 等）时退回内核：那条路径保留 `--connector <平台>` 的旧写法。
     #[test]
-    fn connector_specs_use_the_kernel_flag() {
+    fn connector_specs_use_the_kernel_flag_without_a_host_binary() {
         let specs = connector_specs(Path::new("C:/bin/omnicrawl.exe"));
         let lines: Vec<Vec<String>> = specs.iter().map(|spec| spec.command_line()).collect();
         assert_eq!(
@@ -284,6 +309,48 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    /// 有宿主载荷时连接器由宿主承载：内核那条路径只能对话（工具全不可用、会话不落盘），
+    /// 远程用户会看到「无法访问项目」。
+    #[test]
+    fn connector_specs_prefer_the_host_binary() {
+        let root = std::env::temp_dir().join(format!("oc-entry-connector-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建立临时目录");
+        let kernel = root.join(if cfg!(windows) {
+            "omnicrawl.exe"
+        } else {
+            "omnicrawl"
+        });
+        std::fs::write(&kernel, b"").expect("写内核占位");
+        let host = root.join(if cfg!(windows) {
+            "omnicrawl-host.exe"
+        } else {
+            "omnicrawl-host"
+        });
+        std::fs::write(&host, b"").expect("写宿主占位");
+
+        let lines: Vec<Vec<String>> = connector_specs(&kernel)
+            .iter()
+            .map(|spec| spec.command_line())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                vec![
+                    host.to_string_lossy().to_string(),
+                    "connector".to_string(),
+                    "telegram".to_string()
+                ],
+                vec![
+                    host.to_string_lossy().to_string(),
+                    "connector".to_string(),
+                    "feishu".to_string()
+                ],
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

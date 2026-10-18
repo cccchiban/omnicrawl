@@ -52,6 +52,18 @@ MCP 由宿主进程内的管理器持有，模型目录走注入式网络端口�
 SO_REUSEPORT 绑定同一端口（等价 uvicorn 的多 worker）。不支持 SO_REUSEPORT 的平台
 （Windows、Solaris/illumos）退化为单进程并打印告警，运行状态仍走共享存储。
 
+**`connector`（连接器承载）**：同一个二进制另有 `connector <telegram|feishu>` 模式
+（`src/connector.rs`），不为 HTTP 服务负责——它把消息平台连接器的 `AgentDriver` 面接到本
+crate 的 `AgentService`，于是远程任务用的是与本地 TUI 同一套工具表、会话目录与
+`omnicrawl-commands` 命令注册表。`omnicrawl-entry` 的 `startup::connector_specs` 在有宿主
+载荷时把连接器交给这条路径；无宿主载荷的平台（armv7 等）仍退回内核的 `--connector`
+（只自持三个自持工具，**只能对话**）。审批与提问由连接器桥接后再回填 `AgentService`
+已有的待决决策入口，因此 `/approve` 与「回复文本作答」都真的生效。
+
+该模式**不挂隔离工作区**（`connector_options_from_process`）：远程改的是用户当前那个工作区，
+再套一层 worktree 会让远端与本地看到的不是同一份事实。连接器自身保证同一时刻只有一个活动
+任务，所以这里直接用 `AgentService` 的单活动运行语义，不额外加锁。
+
 **`routes/query.rs`**：查询参数与请求体的取值校验，按 Python 侧 Pydantic 模型的限长、
 取值域与失败形状逐条实现；校验失败一律 `422 VALIDATION_ERROR` 加逐字段 `details`。
 

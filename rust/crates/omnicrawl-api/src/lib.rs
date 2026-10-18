@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod config;
+pub mod connector;
 pub mod error;
 pub mod model_discovery;
 pub mod openapi;

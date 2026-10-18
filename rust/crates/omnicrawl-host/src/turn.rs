@@ -357,10 +357,23 @@ impl TurnRunner {
         params: SessionSettingsParams,
         on_event: &mut dyn FnMut(HostEvent),
     ) -> Result<Value, String> {
+        self.request_value(Command::SessionSettings(Box::new(params)), "设置", on_event)
+    }
+
+    /// 发一条命令并等它的响应帧；期间到达的宿主事件照常交给回调。
+    ///
+    /// 只有「内核主循环空闲」时可用：回合在途时内核被占用，调用方要么在回合之外调用，
+    /// 要么走 `serve_request` 之外的事件循环（见 `TurnRunner::submit`）。
+    pub fn request_value(
+        &mut self,
+        command: Command,
+        label: &str,
+        on_event: &mut dyn FnMut(HostEvent),
+    ) -> Result<Value, String> {
         let id = self.kernel.next_id();
         self.kernel
-            .send_frame(&Command::SessionSettings(Box::new(params)).to_frame(id.clone()))
-            .map_err(|error| format!("发送设置帧失败：{error}"))?;
+            .send_frame(&command.to_frame(id.clone()))
+            .map_err(|error| format!("发送{label}帧失败：{error}"))?;
 
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         while Instant::now() < deadline {
@@ -369,48 +382,70 @@ impl TurnRunner {
                 .min(POLL_INTERVAL);
             let Some(frame) = self.kernel.recv_until_closed(wait) else {
                 if self.kernel.is_closed() {
-                    return Err("内核进程在设置下发期退出。".to_string());
+                    return Err(format!("内核进程在{label}期退出。"));
                 }
                 continue;
             };
             if frame.is_response() && frame.id() == Some(&id) {
                 return match frame.error.as_ref() {
-                    Some(error) => Err(format!("内核拒绝设置：{}", error.message)),
+                    Some(error) => Err(format!("内核拒绝{label}：{}", error.message)),
                     None => Ok(frame.result.clone().unwrap_or(Value::Null)),
                 };
             }
             self.dispatch(frame, on_event);
         }
-        Err("等待内核设置响应超时。".to_string())
+        Err(format!("等待内核{label}响应超时。"))
     }
 
     /// 显式压缩当前会话；内核回 `{summary, compacted}`。
     pub fn compact_session(&mut self) -> Result<Value, String> {
-        let id = self.kernel.next_id();
-        self.kernel
-            .send_frame(&Command::SessionCompact.to_frame(id.clone()))
-            .map_err(|error| format!("发送压缩帧失败：{error}"))?;
+        self.request_value(Command::SessionCompact, "压缩", &mut |_| {})
+    }
 
-        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-        while Instant::now() < deadline {
-            let wait = deadline
-                .saturating_duration_since(Instant::now())
-                .min(POLL_INTERVAL);
-            let Some(frame) = self.kernel.recv_until_closed(wait) else {
-                if self.kernel.is_closed() {
-                    return Err("内核进程在压缩期退出。".to_string());
-                }
-                continue;
-            };
-            if frame.is_response() && frame.id() == Some(&id) {
-                return match frame.error.as_ref() {
-                    Some(error) => Err(format!("内核拒绝压缩：{}", error.message)),
-                    None => Ok(frame.result.clone().unwrap_or(Value::Null)),
-                };
-            }
-            self.dispatch(frame, &mut |_| {});
-        }
-        Err("等待内核压缩响应超时。".to_string())
+    /// 撤销最近一轮；内核回 `{kind, message_count, side_effects_reverted, history}`。
+    pub fn undo_turn(&mut self) -> Result<Value, String> {
+        self.request_value(Command::TurnUndo, "撤销", &mut |_| {})
+    }
+
+    /// 换一份提示词装配并即时下发内核。
+    ///
+    /// 模式切换与工作区切换都改 system prompt（模板或活动模式、AGENTS.md、Skill 目录都在
+    /// 装配里），因此必须与握手走同一份装配结果：调用方重建 [`PromptRuntime`] 后交给这里，
+    /// 由本方法下发 `session.settings`。内核只按帧里的文本发请求。
+    pub fn apply_prompt(
+        &mut self,
+        prompt: Arc<PromptRuntime>,
+        on_event: &mut dyn FnMut(HostEvent),
+    ) -> Result<(), String> {
+        let session_id = self.session_id();
+        let plugins = self.options.plugins.clone();
+        let has_tools = !self.registry.declarations().is_empty();
+        let messages = prompt.context_messages_with_plugins(
+            has_tools,
+            plugins.as_deref(),
+            session_id.as_deref(),
+            None,
+        )?;
+        let settings = SessionModelSettings {
+            system_prompt: Some(prompt.system_prompt()),
+            context_messages: Some(messages),
+            ..SessionModelSettings::default()
+        };
+        self.request_value(
+            Command::SessionSettings(Box::new(SessionSettingsParams {
+                model: Some(Box::new(settings)),
+                compaction: None,
+            })),
+            "提示词设置",
+            on_event,
+        )?;
+        self.options.prompt = Some(prompt);
+        Ok(())
+    }
+
+    /// 当前提示词装配（模式切换时以它为底重建）。
+    pub fn prompt(&self) -> Option<Arc<PromptRuntime>> {
+        self.options.prompt.clone()
     }
 
     /// 查询／取消内核持有的后台 SubAgent 任务；返回 `{unavailable, tasks, task, result}`。
@@ -419,31 +454,7 @@ impl TurnRunner {
             action: action.to_string(),
             task_id: task_id.to_string(),
         };
-        let id = self.kernel.next_id();
-        self.kernel
-            .send_frame(&Command::SubagentQuery(params).to_frame(id.clone()))
-            .map_err(|error| format!("发送后台任务查询帧失败：{error}"))?;
-
-        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-        while Instant::now() < deadline {
-            let wait = deadline
-                .saturating_duration_since(Instant::now())
-                .min(POLL_INTERVAL);
-            let Some(frame) = self.kernel.recv_until_closed(wait) else {
-                if self.kernel.is_closed() {
-                    return Err("内核进程在后台任务查询期退出。".to_string());
-                }
-                continue;
-            };
-            if frame.is_response() && frame.id() == Some(&id) {
-                return match frame.error.as_ref() {
-                    Some(error) => Err(format!("内核拒绝后台任务查询：{}", error.message)),
-                    None => Ok(frame.result.clone().unwrap_or(Value::Null)),
-                };
-            }
-            self.dispatch(frame, &mut |_| {});
-        }
-        Err("等待内核后台任务查询响应超时。".to_string())
+        self.request_value(Command::SubagentQuery(params), "后台任务查询", &mut |_| {})
     }
 
     /// 取出已排队的宿主通知（不阻塞）。

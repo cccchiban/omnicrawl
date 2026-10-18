@@ -8,6 +8,13 @@
 与配置持久化由宿主侧承担（边界见 `src/agent.rs` 的 `AgentDriver`），最终形态是 Rust 内核的
 协议 v1 宿主对端（`rust/docs/protocol-v1.md`）。
 
+**承载方决定能力边界**。宿主载荷里的 `omnicrawl-host connector <平台>` 由
+`omnicrawl-api` 的 `service::AgentService` 承载（`rust/crates/omnicrawl-api/src/connector.rs`）：
+连接器拿到的是**真实工具表、会话存储与 `omnicrawl-commands` 命令注册表**，因此远程任务能
+读写工作区、跑 shell、用记忆与知识库工具。内核自带的 `omnicrawl --connector <平台>` 只在
+进程内自持 `update_todos` / `ask_user` / `pause_work`，其余工具一律回 `tool_unavailable`、
+会话也不落盘，**只能对话**；它只保留给不带宿主载荷的平台（armv7 等）。
+
 ## 目录
 
 ```
@@ -21,7 +28,7 @@ src/
 │   ├── files.rs            # 文件字段提取、扩展名分类、落盘命名与相对路径
 │   ├── dispatch.rs         # 更新路由（标识/白名单/命令/文件）与 /thinking、/workspace 判定
 │   ├── api.rs              # Bot API：getUpdates、sendMessage、editMessageText、getFile、下载
-│   └── bot.rs              # 轮询服务：单活动任务、流式显示、工具确认桥
+│   └── bot.rs              # 轮询服务：单活动任务、流式显示、工具确认桥与提问桥
 └── feishu/
     ├── config.rs           # 环境变量 > [feishu] > 根级 fs_* 别名的配置解析与诊断
     ├── text.rs             # 内部标签清理、脱敏、分段与正文定型

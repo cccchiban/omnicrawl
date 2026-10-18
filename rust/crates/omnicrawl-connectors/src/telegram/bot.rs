@@ -27,7 +27,7 @@ use super::files::{
     temp_destination, unix_seconds, TelegramFile,
 };
 use super::format::{plan_abort, plan_finalize, truncate_for_stream, FinalizePlan};
-use crate::agent::{AgentDriver, ConfirmHandler, TurnError, TurnEvent};
+use crate::agent::{AgentDriver, AskUserHandler, ConfirmHandler, TurnError, TurnEvent};
 use crate::http::HttpTransport;
 
 /// `close()` 等待任务线程退出的最大时长。
@@ -87,10 +87,76 @@ impl PendingConfirm {
     }
 }
 
+/// 一次等待用户回答的 `ask_user` 请求。
+struct PendingQuestion {
+    kind: String,
+    question: String,
+    options: Vec<String>,
+    chat_id: i64,
+    user_id: i64,
+    answer: Mutex<Option<String>>,
+    signal: Condvar,
+}
+
+impl PendingQuestion {
+    fn new(kind: &str, question: &str, options: Vec<String>, chat_id: i64, user_id: i64) -> PendingQuestion {
+        PendingQuestion {
+            kind: kind.to_string(),
+            question: question.to_string(),
+            options,
+            chat_id,
+            user_id,
+            answer: Mutex::new(None),
+            signal: Condvar::new(),
+        }
+    }
+
+    /// 发给用户的提问提示：没有选项时只提示直接回复，有选项时列出编号。
+    fn prompt(&self) -> String {
+        if self.options.is_empty() {
+            let mut text = format!("❓ {}\n请直接回复答案。", self.question);
+            if self.kind == "confirm" {
+                text.push_str("\n（例如：是 / 否，或 yes / no）");
+            }
+            return text;
+        }
+        let list = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| format!("{}. {option}", index + 1))
+            .collect::<Vec<String>>()
+            .join("\n");
+        format!(
+            "❓ {}\n{list}\n直接回复选项正文即可作答。",
+            self.question
+        )
+    }
+
+    /// 返回 `Some(answer)` 表示已作答；`None` 表示等待超时或未作答。
+    fn wait(&self, timeout: Duration) -> Option<String> {
+        let guard = self.answer.lock().expect("提问状态锁中毒");
+        let (guard, _) = self
+            .signal
+            .wait_timeout_while(guard, timeout, |answer| answer.is_none())
+            .expect("提问状态锁中毒");
+        guard.clone()
+    }
+
+    fn resolve(&self, answer: Option<String>) {
+        let mut guard = self.answer.lock().expect("提问状态锁中毒");
+        if guard.is_none() {
+            *guard = answer;
+        }
+        self.signal.notify_all();
+    }
+}
+
 #[derive(Default)]
 struct BotState {
     active: Option<Arc<ActiveTask>>,
     pending: Option<Arc<PendingConfirm>>,
+    question: Option<Arc<PendingQuestion>>,
 }
 
 /// 通过 Telegram 远程驱动单个 OmniCrawl Agent 的轮询服务。
@@ -125,9 +191,10 @@ impl<D: AgentDriver> TelegramBot<D> {
         })
     }
 
-    /// 把自身注册成宿主的工具确认桥。
+    /// 把自身注册成宿主的工具确认桥与提问桥。
     pub fn bind_handlers(self: &Arc<Self>) {
         self.driver.set_confirm_handler(self.clone());
+        self.driver.set_ask_user_handler(self.clone());
     }
 
     /// 绑定确认桥并进入轮询主循环，直到 [`TelegramBot::request_stop`] 或认证失败。
@@ -171,13 +238,17 @@ impl<D: AgentDriver> TelegramBot<D> {
 
     /// 停止轮询并回收 Agent 资源。
     ///
-    /// 先置停止/取消事件并释放挂起的工具确认（否则确认回调会阻塞到超时），
+    /// 先置停止/取消事件并释放挂起的工具确认与提问（否则两条桥都会阻塞到超时），
     /// 再等待任务线程自行退出（上限 [`CLOSE_TASK_JOIN_TIMEOUT`]），最后通知宿主关闭。
     pub fn close(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        let (task, pending) = {
+        let (task, pending, question) = {
             let state = self.state.lock().expect("状态锁中毒");
-            (state.active.clone(), state.pending.clone())
+            (
+                state.active.clone(),
+                state.pending.clone(),
+                state.question.clone(),
+            )
         };
         if let Some(task) = &task {
             task.cancel.store(true, Ordering::SeqCst);
@@ -185,6 +256,9 @@ impl<D: AgentDriver> TelegramBot<D> {
         }
         if let Some(pending) = &pending {
             pending.resolve(false);
+        }
+        if let Some(question) = &question {
+            question.resolve(None);
         }
         let deadline = Instant::now() + CLOSE_TASK_JOIN_TIMEOUT;
         while Instant::now() < deadline && self.is_busy() {
@@ -206,7 +280,7 @@ impl<D: AgentDriver> TelegramBot<D> {
         self.stopped.store(true, Ordering::SeqCst);
     }
 
-    /// 处理一条更新：白名单 → 命令 / 任务 / 文件。
+    /// 处理一条更新：白名单 → 提问回答 → 命令 / 任务 / 文件。
     pub fn handle_update(self: &Arc<Self>, update: &Value) {
         match route_update(update, &self.allowed) {
             UpdateRoute::MissingIdentifiers | UpdateRoute::Unsupported => {}
@@ -217,7 +291,13 @@ impl<D: AgentDriver> TelegramBot<D> {
                 chat_id,
                 user_id,
                 text,
-            } => self.dispatch(chat_id, user_id, &text),
+            } => {
+                // 挂起提问优先于命令与任务：回答只交给当前提问，不启动新任务。
+                if self.answer_pending_question(chat_id, user_id, &text) {
+                    return;
+                }
+                self.dispatch(chat_id, user_id, &text)
+            }
             UpdateRoute::File {
                 chat_id,
                 user_id,
@@ -225,6 +305,40 @@ impl<D: AgentDriver> TelegramBot<D> {
                 caption,
             } => self.spawn_file_task(chat_id, user_id, file, caption),
         }
+    }
+
+    /// 文本是否被当前挂起的 `ask_user` 提问消费。
+    ///
+    /// 仅发起该任务的白名单用户本人可作答；`select` 提问只接受已声明的选项之一，
+    /// `/cancel` 等同取消当前任务。返回 `true` 表示该文本不再作为任务或命令处理。
+    pub fn answer_pending_question(self: &Arc<Self>, chat_id: i64, user_id: i64, text: &str) -> bool {
+        let question = {
+            let state = self.state.lock().expect("状态锁中毒");
+            match state.question.clone() {
+                Some(question) => question,
+                None => return false,
+            }
+        };
+        if question.chat_id != chat_id || question.user_id != user_id {
+            return false;
+        }
+        let answer = text.trim().to_string();
+        if answer == "/cancel" {
+            question.resolve(None);
+            self.request_cancel(chat_id);
+            return true;
+        }
+        if answer.is_empty() {
+            self.send(chat_id, "请发送非空回答。");
+            return true;
+        }
+        if question.kind == "select" && !question.options.contains(&answer) {
+            self.send(chat_id, "请回复问题列出的选项之一。");
+            return true;
+        }
+        question.resolve(Some(answer));
+        self.send(chat_id, "✅ 已收到回答。");
+        true
     }
 
     /// 分发基础命令、宿主命令与任务文本。
@@ -412,9 +526,13 @@ impl<D: AgentDriver> TelegramBot<D> {
 
     /// 请求取消当前任务；无活动任务时仅提示。
     pub fn request_cancel(&self, chat_id: i64) {
-        let (task, pending) = {
+        let (task, pending, question) = {
             let state = self.state.lock().expect("状态锁中毒");
-            (state.active.clone(), state.pending.clone())
+            (
+                state.active.clone(),
+                state.pending.clone(),
+                state.question.clone(),
+            )
         };
         let Some(task) = task else {
             self.send(chat_id, "当前没有正在执行的任务。");
@@ -429,6 +547,12 @@ impl<D: AgentDriver> TelegramBot<D> {
         if let Some(pending) = pending {
             if pending.chat_id == chat_id {
                 pending.resolve(false);
+            }
+        }
+        // 挂起提问同样要释放，否则提问桥会一直等到超时。
+        if let Some(question) = question {
+            if question.chat_id == chat_id {
+                question.resolve(None);
             }
         }
         self.send(chat_id, "⏹ 已请求取消当前任务，请稍候……");
@@ -694,6 +818,84 @@ impl<D: AgentDriver> ConfirmHandler for TelegramBot<D> {
             None => {
                 self.send(task.chat_id, "⏰ 确认超时，已自动拒绝该操作。");
                 false
+            }
+        }
+    }
+}
+
+impl<D: AgentDriver> AskUserHandler for TelegramBot<D> {
+    /// 把 `ask_user` 转发到 Telegram，等用户回复文本，超时按「未作答」。
+    ///
+    /// 没有选项时只提示直接回复；有选项时列出编号，同时接受直接回复选项正文。
+    fn ask(&self, request: &Value) -> Option<String> {
+        if self.is_stopped() {
+            return None;
+        }
+        let task = {
+            let state = self.state.lock().expect("状态锁中毒");
+            match state.active.clone() {
+                Some(task) if task.running.load(Ordering::SeqCst) => task,
+                _ => return None,
+            }
+        };
+        let question_text = request
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let kind = request
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("question")
+            .trim()
+            .to_string();
+        let options: Vec<String> = request
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let question = Arc::new(PendingQuestion::new(
+            &kind,
+            &question_text,
+            options,
+            task.chat_id,
+            task.user_id,
+        ));
+        {
+            let mut state = self.state.lock().expect("状态锁中毒");
+            state.question = Some(question.clone());
+        }
+
+        self.send(task.chat_id, &question.prompt());
+
+        let timeout = self.confirm_timeout;
+        let answered = question.wait(timeout);
+        {
+            let mut state = self.state.lock().expect("状态锁中毒");
+            let same = state
+                .question
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, &question))
+                .unwrap_or(false);
+            if same {
+                state.question = None;
+            }
+        }
+        match answered {
+            Some(answer) => Some(answer),
+            None => {
+                if !self.is_stopped() {
+                    self.send(task.chat_id, "⏰ 提问超时，本轮不再等待作答。");
+                }
+                None
             }
         }
     }

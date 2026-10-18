@@ -1546,7 +1546,9 @@ name = "omnicrawl-api"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "omnicrawl-commands",
  "omnicrawl-config",
+ "omnicrawl-connectors",
  "omnicrawl-controllers",
  "omnicrawl-extensions",
  "omnicrawl-host",

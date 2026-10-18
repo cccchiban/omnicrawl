@@ -24,6 +24,9 @@ Rust 统一启动入口，对应 Python `omnicrawl/entry.py` 的路由与子进�
 - `--help` / `--version`；`--resume <id>`（透传给 TUI）；
 - `kernel ...`：启动 Rust 内核并透传标准输入、输出和错误；
 - `api ...`：启动 `omnicrawl-api`；
+- `connector <平台>` / `--connector <平台>`：启动**宿主承载**的连接器——转发给
+  `omnicrawl-api connector <平台>`（真实工具表、会话与命令注册表）；`startup::connector_specs`
+  在无宿主载荷的平台（armv7 等）退回内核的 `--connector`，那条路径只自持三个自持工具；
 - 默认路由（`src/main.rs::run_tui`）：无交互终端直接报错退出（不静默回退）→
   `startup::bootstrap` 跑首次配置与启动诊断（配置错误退出码 1、凭据缺失 2）→
   `startup::start_connectors` 拉起已配置的 Telegram / 飞书连接器 → 起 `omnicrawl-tui`

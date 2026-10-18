@@ -314,12 +314,22 @@ python -m omnicrawl.connectors.fsapp --check-agent
 
 ### 3. 启动连接器
 
-启动 TUI（`ocl`、`omnicrawl`、`python -m omnicrawl` 或源码目录下的
-`python main.py`）时，满足配置条件会自动启动飞书连接器子进程。也可以继续手工独立启动：
+启动 TUI（`ocl`、`omnicrawl` 或源码目录下的 `omnicrawl`）时，满足配置条件会自动启动
+飞书连接器子进程。也可以继续手工独立启动：
 
 ```powershell
-python -m omnicrawl.connectors.fsapp
+# 宿主承载（推荐：真实工具表、会话落盘与完整命令面）
+omnicrawl-host connector feishu
+
+# 无宿主载荷的平台（如 armv7）：退回内核承载，只能对话
+omnicrawl --connector feishu
 ```
+
+**承载方决定能力边界**：宿主载荷里的连接器跑在 `omnicrawl-api` 的同一套
+`AgentService` 上，因此远程任务能读写工作区、跑 shell、用记忆与知识库工具，斜杠命令
+也是本地 TUI 那一套注册表。内核自带的 `--connector feishu` 只在进程内自持
+`update_todos` / `ask_user` / `pause_work`，其余工具一律回 `tool_unavailable`、会话
+也不落盘——那条路径**只能对话**，只保留给不带宿主载荷的平台。
 
 自动联动默认开启。若只想运行 TUI，或需要手工调试连接器，可关闭自动启动：
 
@@ -327,17 +337,16 @@ python -m omnicrawl.connectors.fsapp
 $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 ```
 
-自动启动只检查本地配置，不会在主进程中创建飞书 Agent 或建立网络连接；缺少
-`lark-oapi`、网络错误或连接器退出只会记录警告，不会阻止 TUI 启动。
+自动启动只检查本地配置，不会在主进程中创建飞书 Agent 或建立网络连接；连接器启动失败
+只会记录警告，不会阻止 TUI 启动。
 
 **运行日志**：TUI 自动拉起的连接器子进程把 stdout/stderr 落盘到用户配置目录
 `~/.OmniCrawl/logs/飞书.log`（Telegram 为 `~/.OmniCrawl/logs/Telegram.log`），
 因此连接器不会污染全屏界面，排查“进程活着但收不到消息”等场景时可随时查看该
-文件中的白名单拦截、断线重连和卡片回调日志。手工 `python -m` 启动时日志仍输出
-到当前终端。
+文件中的白名单拦截、断线重连和卡片回调日志。手工启动时日志输出到当前终端。
 
 **多进程单例**：每个连接器平台在同一用户下只允许一个活动实例。多个 TUI/API
-进程并存、或 TUI 自动启动与手工 `python -m` 同时运行时，后启动的一方会检测
+进程并存、或 TUI 自动启动与手工启动同时运行时，后启动的一方会检测
 到已有实例并跳过（日志提示“已有实例在运行”），避免飞书 WebSocket 被重复
 建立、消息被多个实例重复处理。单例锁文件位于用户配置目录
 `~/.OmniCrawl/connector-飞书.lock`，记录持有进程 PID；进程崩溃残留时，下一个

@@ -17,7 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
+omnicrawl-commands = { path = "../omnicrawl-commands" }
 omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-connectors = { path = "../omnicrawl-connectors" }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
 omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 omnicrawl-host = { path = "../omnicrawl-host" }

@@ -1267,6 +1267,21 @@ pub fn resolve_kernel_program(env: &ConfigEnvironment, explicit: Option<&Path>) 
 /// `.agent_sessions`（与 Python 同一套布局）。系统提示词与上下文消息走 `PromptRuntime`
 /// 装配（模板 / AGENTS.md / Skill / 运行环境），装不出来才回落到配置文本。
 pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, String> {
+    options_from_process_profile(env, true)
+}
+
+/// 连接器宿主的服务选项：与 API 同源，但**不挂隔离工作区**。
+///
+/// 远程连接器改的是用户当前那个工作区，会话也在同一份目录里；再套一层 worktree 会让
+/// 「远程改的文件」落在隔离区、退出才 apply，与本地工作区看到的不是同一份事实。
+pub fn connector_options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, String> {
+    options_from_process_profile(env, false)
+}
+
+fn options_from_process_profile(
+    env: &ConfigEnvironment,
+    isolate: bool,
+) -> Result<ServiceOptions, String> {
     let llm = load_llm_config(env).map_err(|error| error.to_string())?;
     if llm.model.trim().is_empty() {
         return Err(
@@ -1278,12 +1293,17 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     let main_workspace = context.workspace_root;
     // 主 Agent 隔离工作区（对映 Python `api/app.py::create_default_agent`）：多个进程并行时各自在
     // 独立 worktree / 目录副本里读写，互不写穿；创建失败仅告警并回退主工作区。
-    let workspace_config = load_agent_workspace_config(env, None).unwrap_or_default();
-    let (workspace, isolation) = prepare_isolated_workspace(
-        IsolationOptions::new(&main_workspace).with_config(workspace_config),
-    );
-    // 启动清扫（后台）：回收上次崩溃 / 被强杀遗留的过期隔离区。
-    start_background_isolation_sweep(None);
+    let (workspace, isolation) = if isolate {
+        let workspace_config = load_agent_workspace_config(env, None).unwrap_or_default();
+        let prepared = prepare_isolated_workspace(
+            IsolationOptions::new(&main_workspace).with_config(workspace_config),
+        );
+        // 启动清扫（后台）：回收上次崩溃 / 被强杀遗留的过期隔离区。
+        start_background_isolation_sweep(None);
+        prepared
+    } else {
+        (main_workspace.clone(), None)
+    };
     let approval = load_approval_mode(env, None)
         .map_err(|error| error.to_string())
         .and_then(|mode| {
@@ -1380,6 +1400,7 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 bing +
     // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl 与三把 API Key 全部
     // 失效，工具会一直报「来源：bing」（与 TUI 同源，见 `web_search_options_from_config`）。
+    // 该装配函数同时按 `[decision_models.features] web_search_rerank` 装上排序运行期。
     options.registry_options.web_search =
         omnicrawl_host::tools::web_search_options_from_config(env);
     // 图像生成同理：默认选项是「未启用 + 无凭据」，不装的话 `[image_gen]` 里配好的服务商、
@@ -1917,6 +1938,145 @@ impl AgentService {
         store
             .archive_session(&self.current_session_id(), utc_now())
             .map_err(session_store_error)
+    }
+
+    /// 撤销最近一轮（连接器 `/undo`）：整轮回退由内核执行，会改会话与工作区。
+    pub fn undo_current_session(&self) -> Result<Value, ApiError> {
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，暂不能回退会话。"))?;
+        match guard.as_mut() {
+            Some(runner) => runner.undo_turn().map_err(kernel_command_failed),
+            None => Err(ApiError::service_unavailable()),
+        }
+    }
+
+    /// 把一段 assistant 文本追加进内核会话历史（`/review` 的报告注入）。
+    ///
+    /// 与 `session.append` 同口径：只允许 assistant 角色，空内容不注入。
+    pub fn append_assistant_text(&self, content: &str) -> Result<bool, ApiError> {
+        if content.trim().is_empty() {
+            return Ok(false);
+        }
+        let params = omnicrawl_ipc::bridge::SessionAppendParams {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+        };
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，暂不能写入上下文。"))?;
+        match guard.as_mut() {
+            Some(runner) => {
+                let value = runner
+                    .request_value(
+                        omnicrawl_ipc::bridge::Command::SessionAppend(params),
+                        "上下文追加",
+                        &mut |_| {},
+                    )
+                    .map_err(kernel_command_failed)?;
+                Ok(value
+                    .get("appended")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
+            }
+            None => Err(ApiError::service_unavailable()),
+        }
+    }
+
+    /// 启用主 Agent 模式（`/plan`）：重算 system prompt 与上下文消息后下发内核。
+    ///
+    /// 模式提示词由宿主装配（模板 + AGENTS.md + Skill），因此这里必须与握手走同一份装配
+    /// 结果：先重建 [`PromptRuntime`] 再交给运行器下发。
+    pub fn activate_mode(&self, mode: &str) -> Result<String, ApiError> {
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，暂不能切换模式。"))?;
+        let Some(runner) = guard.as_mut() else {
+            return Err(ApiError::service_unavailable());
+        };
+        let Some(current) = runner.prompt() else {
+            return Err(ApiError::new(
+                "PROMPT_DISABLED",
+                "提示词装配未启用，无法切换模式。",
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+            ));
+        };
+        // 以当前装配为底重建：模板、工作区与 Skill 目录都不变，只换活动模式。
+        let mut options = PromptOptions::new(self.workspace_root());
+        options.agent_temp_dir = omnicrawl_host::prompt::DEFAULT_AGENT_TEMP_DIR.to_string();
+        options.workspace_detection_summary =
+            detect_project_context(&self.options.env, None).detection_summary();
+        options.system_prompt_override = None;
+        let advisor = omnicrawl_config::features::advisor::load_advisor_config(&self.options.env, None)
+            .unwrap_or_default();
+        options.advisor_active = advisor.enabled;
+        options.advisor_blacklisted = advisor
+            .disabled_for_models
+            .iter()
+            .any(|name| *name == self.current_model());
+        options.mode = mode.to_string();
+        let _ = current;
+        let rebuilt = PromptRuntime::load(&self.options.env, options)
+            .map_err(|error| prompt_failed(error.to_string()))?;
+        let activated = mode.trim().to_string();
+        runner
+            .apply_prompt(Arc::new(rebuilt), &mut |_| {})
+            .map_err(kernel_command_failed)?;
+        Ok(activated)
+    }
+
+    /// 替换顾问运行期配置并重建工具表（连接器 `/advisor`）。
+    ///
+    /// 与 TUI 的 `command_apply_advisor_config` 同义：写盘由命令处理器负责，这里只把新配置
+    /// 映射成运行期选项再重建工具表，让 advisor 工具即时出现/消失。
+    pub fn apply_advisor_config(
+        &self,
+        config: &omnicrawl_config::features::advisor::AdvisorConfig,
+    ) -> Result<(), ApiError> {
+        let environment = self.options.env.clone();
+        let mut registry_options = self.current_registry_options();
+        let previous = registry_options.advisor.clone();
+        let mut advisor = previous.clone();
+        advisor.enabled = config.enabled && !config.model_key.trim().is_empty();
+        advisor.effort = config.effort.clone();
+        advisor.disabled_for_models = config.disabled_for_models.clone();
+        match omnicrawl_config::models::channels::load_channel_configuration(&environment, None, None)
+            .ok()
+            .and_then(|channels| {
+                channels
+                    .channels
+                    .into_iter()
+                    .find(|channel| channel.key == config.model_key)
+            }) {
+            Some(channel) => {
+                advisor.model = channel.model_id.clone();
+                advisor.base_url = if channel.base_url.trim().is_empty() {
+                    self.options.model.base_url.clone()
+                } else {
+                    channel.base_url.clone()
+                };
+                // 顾问凭据只认渠道里的明文密钥（与运行期 `resolve_api_key` 同口径）。
+                advisor.api_key = channel.api_key.clone();
+            }
+            None => {
+                advisor.model = config.model_key.clone();
+                advisor.base_url = self.options.model.base_url.clone();
+                advisor.api_key = String::new();
+            }
+        }
+        registry_options.advisor = advisor;
+        if let Err(error) = self.reload_registry_options(&registry_options, "顾问设置") {
+            // 回滚：不能让磁盘是新值、运行期是旧值这种看不见的错配留在进程里。
+            let mut rollback = self.current_registry_options();
+            rollback.advisor = previous;
+            let _ = self.reload_registry_options(&rollback, "顾问回滚");
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// `POST /sessions/current/compact`：显式压缩当前会话，返回内核回执。
@@ -2734,6 +2894,26 @@ fn kernel_command_failed(message: impl Into<String>) -> ApiError {
     )
 }
 
+/// 提示词装配失败（模式切换要求重新装配 system prompt）。
+fn prompt_failed(message: impl Into<String>) -> ApiError {
+    ApiError::new(
+        "PROMPT_DISABLED",
+        format!("提示词装配失败：{}", message.into()),
+        StatusCode::SERVICE_UNAVAILABLE,
+        None,
+    )
+}
+
+/// 连接器进程读到的 `config.toml`：读不到就按空对象处理。
+///
+/// 与内核连接器模式同口径（`omnicrawl-cli` 的 `connector_config_data`）：`[telegram]` /
+/// `[feishu]` 段由连接器自己解析，配置读取失败只意味着「未配置」，不该让进程起不来。
+pub fn connector_config_data(env: &ConfigEnvironment) -> Value {
+    omnicrawl_config::core::runtime::load_config_data(env, None)
+        .map(|table| omnicrawl_config::value::toml_to_json_object(&table))
+        .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
+}
+
 /// SubAgent 后台任务不可用（功能未启用）。
 fn subagent_unavailable() -> ApiError {
     ApiError::new(
@@ -2825,6 +3005,81 @@ mod tests {
         ));
         std::fs::create_dir_all(&home).expect("临时主目录");
         ConfigEnvironment::new(home, std::env::consts::OS.to_string())
+    }
+
+    /// 连接器宿主必须拿到**真实工具表**：内核自带的 `--connector` 只自持三个工具，
+    /// 其余一律 `tool_unavailable`，远程用户看到的就是「我无法访问你的项目仓库」。
+    /// 这条断言钉住修复本身——工具表非空，且文件/命令类工具真的在表里。
+    #[test]
+    fn connector_options_declare_the_real_tool_table() {
+        let environment = isolated_environment("connector-tools");
+        let home = environment.home().to_path_buf();
+        std::fs::create_dir_all(home.join(".OmniCrawl")).expect("用户配置目录");
+        std::fs::write(
+            home.join(".OmniCrawl/config.toml"),
+            r#"
+[llm]
+api_key = "test-secret"
+base_url = "https://config.example/v1"
+model = "test-model"
+"#,
+        )
+        .expect("写 config.toml");
+
+        let env = ConfigEnvironment::new(home.clone(), std::env::consts::OS.to_string());
+        let options = connector_options_from_process(&env).expect("连接器选项应能装配");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("工作区目录");
+
+        let registry = omnicrawl_host::tools::ToolRegistry::new(
+            workspace,
+            &options.registry_options,
+            options.model.request_timeout_seconds.map(|v| v as i64).unwrap_or(600),
+        )
+        .expect("工具表应能构建");
+        let names: Vec<String> = registry
+            .declarations()
+            .iter()
+            .filter_map(|item| {
+                item.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+
+        assert!(!names.is_empty(), "连接器宿主必须有工具表");
+        for expected in ["read", "write_file", "Edit_file", "bash", "grep", "list"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "连接器宿主缺少 {expected}：{names:?}"
+            );
+        }
+    }
+
+    /// 连接器宿主与 API 的差别只在「不挂隔离工作区」：远程改的是用户当前那个工作区。
+    #[test]
+    fn connector_options_skip_the_isolated_workspace() {
+        let environment = isolated_environment("connector-workspace");
+        let home = environment.home().to_path_buf();
+        std::fs::create_dir_all(home.join(".OmniCrawl")).expect("用户配置目录");
+        std::fs::write(
+            home.join(".OmniCrawl/config.toml"),
+            r#"
+[llm]
+api_key = "test-secret"
+base_url = "https://config.example/v1"
+model = "test-model"
+"#,
+        )
+        .expect("写 config.toml");
+
+        let env = ConfigEnvironment::new(home.clone(), std::env::consts::OS.to_string());
+        let options = connector_options_from_process(&env).expect("连接器选项应能装配");
+        assert!(
+            options.isolation.lock().map(|slot| slot.is_none()).unwrap_or(false),
+            "连接器宿主不应创建隔离工作区"
+        );
     }
 
     /// 启动时的会话块必须带记忆根与整段压缩策略：缺了这两项，用户配置就「写了却不生效」

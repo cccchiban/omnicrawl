@@ -13,17 +13,19 @@ OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状�
 ## 工作原理
 
 - 基于 Telegram Bot API 的 **getUpdates 长轮询**（无需公网 IP、无需 webhook、无需域名）。
-- 零新增依赖：仅使用 `requests` 调用 Telegram HTTP API。
 - tg 客户端是**独立进程**，与 TUI/API 完全解耦：
   - TUI 启动时若 Telegram 配置同时包含 Bot Token 和授权用户 ID，会自动拉起该子进程；
   - TUI 关闭时会自动终止该子进程及其后代；
-  - 未配置 token 或授权用户 ID 时不会自动启动；手工执行
-    `python -m omnicrawl.connectors.telegram` 仍只会打印中文提示并以退出码 1 结束。
+  - 未配置 token 或授权用户 ID 时不会自动启动。
   - 自动启动失败只记录警告，不阻塞 TUI；设置
     `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭 Telegram/飞书自动联动。
+- **由宿主承载**：连接器进程是宿主载荷里的 `omnicrawl-host connector telegram`，因此
+  远程任务用的是**与本地 TUI 同一套**工具表、会话目录与斜杠命令——能读写工作区文件、
+  跑 shell、用记忆与知识库工具。内核自带的 `omnicrawl --connector telegram` 只自持
+  `update_todos` / `ask_user` / `pause_work`，其余工具一律回 `tool_unavailable`、
+  会话也不落盘，**只能对话**；只有不带宿主载荷的平台（如 armv7）才会退回那条路径。
 - 跨进程同步：推理强度（`/reasoning`）、审批模式（`/approval`，默认 `review` 自动审查）与工作区（`/workspace`）通过 `config.toml`
-  持久化；tg 客户端每次任务开始前重读配置并应用到当前 Agent，TUI 侧重启或下次
-  读取时同样生效。Telegram 远程仅支持 `manual`/`review`，禁止 `auto`（完全自动仅限本地 TUI）；若磁盘上为 `auto`，Telegram 侧按 `review` 降级生效。
+  持久化；TUI 侧重启或下次读取时同样生效。Telegram 远程仅支持 `manual`/`review`，禁止 `auto`（完全自动仅限本地 TUI）；若磁盘上为 `auto`，Telegram 侧按 `review` 降级生效。
 
 ## 配置步骤（AI 引导用户完成）
 
@@ -38,9 +40,7 @@ OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状�
 1. 与 [@userinfobot](https://t.me/userinfobot) 对话（或任意能查 ID 的机器人）。
 2. 它会返回你的数字 **User ID**（形如 `123456789`）。只允许该 ID 的用户操作你的 Bot。
 
-### 3. 写入配置（二选一，环境变量优先级更高）
-
-**方式 A：config.toml**（推荐，随 OmniCrawl 用户配置统一管理）
+### 3. 写入配置
 
 在 `config.toml` 顶层追加（与 `config.example.toml` 的 `[telegram]` 段一致）：
 
@@ -50,33 +50,34 @@ OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状�
 bot_token = "123456789:AAxxxxxxxxxxxxxxxxxxxx"
 # 允许远程操作的用户 ID 列表（安全白名单，必填；向 @userinfobot 可查自己的 ID）。
 allowed_user_ids = [123456789]
-# 敏感工具（bash/powershell）确认超时秒数，超时自动拒绝。
+# 敏感工具（bash/powershell）确认与提问的超时秒数，超时自动拒绝/放弃作答。
 confirmation_timeout_seconds = 300
 ```
 
-**方式 B：环境变量**
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "123456789:AAxxxxxxxxxxxxxxxxxxxx"
-$env:TELEGRAM_ALLOWED_USER_IDS = "123456789"          # 逗号分隔可配多个
-$env:TELEGRAM_CONFIRM_TIMEOUT = "300"
-```
-
-配置读取规则（`load_telegram_config`）：环境变量 > config.toml `[telegram]` 段。
-缺失任一必填项（token / 白名单）时，`main()` 打印明确提示并以退出码 1 结束。
+配置读取规则（`load_telegram_config`）：只读 `config.toml` 的 `[telegram]` 段。
+缺失任一必填项（token / 白名单）时打印明确提示并以退出码 1 结束。
+（历史上还接受 `TELEGRAM_*` 环境变量，Rust 侧已统一为「配置只读 TOML」。）
 
 ### 4. 启动
 
-启动 TUI（`ocl`、`omnicrawl`、`python -m omnicrawl` 或源码目录下的
-`python main.py`）时，满足配置条件会自动启动 Telegram 子进程。也可以继续手工独立启动：
+启动 TUI（`ocl`、`omnicrawl` 或源码目录下的 `omnicrawl`）时，满足配置条件会自动启动
+Telegram 子进程。也可以继续手工独立启动：
 
 ```powershell
-python -m omnicrawl.connectors.telegram
+# 宿主承载（推荐：真实工具表与会话）
+omnicrawl-host connector telegram
+
+# 无宿主载荷的平台（如 armv7）：退回内核承载，只能对话
+omnicrawl --connector telegram
 ```
 
 同一平台同一用户只允许一个活动连接器实例：多个 TUI/API 进程并存，或 TUI
 自动启动与手工启动同时存在时，后启动的一方会检测到已有实例并跳过，避免
 Telegram 轮询被重复启动。单例机制见 `connectors/README.md`。
+
+**一个平台只能有一个轮询实例**：若另一处（如内核承载的旧进程）仍在轮询同一个
+Bot，新实例会持续收到 Telegram 的 `409 Conflict` 并退避重试，表现为「另一个
+实例在抢更新」。先停掉旧进程再启动新的。
 
 如需排障或只运行 TUI，可在启动前关闭自动联动：
 
@@ -87,7 +88,7 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 启动成功的标志：日志输出 `Telegram Bot 已启动（polling），允许用户：[...]`。
 随后在 Telegram 中给自己的 Bot 发 `/status` 做冒烟验证。
 
-**关闭**：`Ctrl+C`（`KeyboardInterrupt` 会优雅停止轮询并回收 Agent 资源）。
+**关闭**：`Ctrl+C`（会优雅停止轮询并回收 Agent 资源）。
 
 ## 支持的命令
 
@@ -110,17 +111,23 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 
 **审批归属**：敏感工具确认只能由**发起该任务的白名单用户本人**批准/拒绝
 （`/approve` `/reject`）；同一群聊里的其他白名单用户无权代为审批。
-**取消与确认**：`/cancel` 会同时释放挂起的确认请求（按拒绝处理），
-确认回调不会悬挂到超时。
+**取消与确认**：`/cancel` 会同时释放挂起的确认请求（按拒绝处理）与挂起的提问，
+两条回调都不会悬挂到超时。
 
-### harness 管理命令（转发 TUI 同一套 slash.py 实现）
+**提问（`ask_user`）**：Agent 请求补充信息时会发一条 `❓ <问题>` 消息——有选项时逐条
+列出编号，直接回复选项正文即可；`select` 提问只接受已声明的选项之一，`confirm`
+也接受「是/否」这类文本。回复只交给当前提问，不会启动新任务；超时未作答时该轮按
+「未作答」继续推进（不编造答案）。取消任务同样会释放挂起的提问。
 
+### harness 管理命令（与本地 TUI 同一套 `omnicrawl-commands` 注册表）
+
+由宿主承载的连接器直接复用 TUI 的命令注册表，因此这些命令**真的可用**：
 `/sessions`、`/archives`、`/archive`、`/history`、`/undo`、`/compact`、
-`/rename`、`/resume <id>`、`/resume latest`（直接恢复最近活动会话）、`/plan`
-（启用主 Agent 计划模式，后续任务追加 `omnicrawl/templates/plan.md`）、
-`/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/skills`、
-`/memory:clean`、`/mcp`、`/plugins`、`/review`（派生评审子 Agent：完整 git
-权限 + 自动批准收集 diff，按结构化 JSON 输出审查结果）等。
+`/rename`、`/resume <id>`、`/plan`（启用主 Agent 计划模式，后续任务追加模式提示词）、
+`/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/model`、`/advisor`、
+`/skills`、`/memory:clean`、`/mcp`、`/plugins` 等。
+`/review` 例外：它要派生子 Agent 且子任务的工具批次必须回到宿主执行，连接器的同步
+路径会在等待中阻塞事件循环，因此返回明确的「暂不可用」而不是悄悄变成一次对话。
 
 Telegram 远程：`/approval` 查看当前模式，`/approval:manual|review`（含 `/auto-approve:off`、`/auto-review:on`）可远程切换并持久化到 `config.toml`，跨进程同步生效；`/approval:auto`（含 `/auto-approve:on`）在远程被拒绝并提示“仅限本地 TUI”。未知 `/` 命令返回提示且不启动任务。默认审批为 `review`（自动审查）。
 
@@ -159,20 +166,21 @@ Agent 处理；消息 `caption` 作为补充说明一并附带（例如发截图
 
 - **流式输出不丢内容**：任务失败/取消时，已流式输出的部分会保留在流式消息中
   （追加「…（输出中断）」标记），错误/取消提示单独一条消息发送，不覆盖。
-- **关闭流程**：`close()` 先释放挂起的工具确认（按拒绝）并请求取消，再等待
-  任务线程自行退出（上限 10s），最后才关闭 Agent；文件下载线程在服务停止后
-  不再启动新任务。
+- **关闭流程**：`close()` 先释放挂起的工具确认（按拒绝）与挂起的提问（按未作答）
+  并请求取消，再等待任务线程自行退出（上限 10s），最后才关闭 Agent；文件下载线程在
+  服务停止后不再启动新任务。
 - **错误退出**：轮询遇到不可恢复的 Telegram API 错误（Token 失效等）时打印
   清晰消息并以退出码 1 结束，不输出原始 traceback。
-- **配置同步开销**：每次任务前同步 TUI 侧配置时，先按 config.toml 的 mtime
-  判断是否有变化，未变则跳过重读（任务间零磁盘 I/O）。
+- **事件游标过期**：回合事件按条数保留，长流输出会挤掉早期增量；连接器跳到保留
+  窗口起点继续读，不会因为「没跟上增量」把整轮判失败。
 
 ## 文件边界
 
-- `rust/crates/omnicrawl-connectors/src/telegram/`：Bot 轮询服务、命令分发、任务执行、工具确认桥。
+- `rust/crates/omnicrawl-connectors/src/telegram/`：Bot 轮询服务、命令分发、任务执行、工具确认桥与提问桥。
 - `rust/crates/omnicrawl-connectors/src/lib.rs`、`README.md`：包说明与使用约定。
-- `rust/crates/omnicrawl-config/src/features/agent_workspace.rs`：`[workspace] root` 持久化（跨端工作区同步）。
-- `tests/test_telegram_connector.py`：回归测试（mock Telegram API 与 Agent，无网络）。
+- `rust/crates/omnicrawl-api/src/connector.rs`：**宿主侧连接器承载**（`connector <平台>`）：把连接器的 `AgentDriver` 面接到本地 API 的同一个 `AgentService`（真实工具表、会话、命令注册表）。
+- `rust/crates/omnicrawl-config/src/core/workspace.rs`：`[workspace] root` 持久化（跨端工作区同步）。
+- `rust/crates/omnicrawl-entry/src/startup.rs`：按宿主载荷可用性选择连接器承载方（`connector_specs`）。
 - `omnicrawl/docs/TELEGRAM.md`：本文档。
 
 ## 验证清单
@@ -180,10 +188,11 @@ Agent 处理；消息 `caption` 作为补充说明一并附带（例如发截图
 配置或修改后至少执行：
 
 ```powershell
-python -m pytest tests/test_telegram_connector.py tests/test_api_module_boundaries.py -q
-python -m compileall -q rust/crates/omnicrawl-connectors/src/telegram/
+cargo test -p omnicrawl-api -p omnicrawl-connectors
 ```
 
 手工冒烟：给自己 Bot 发 `/status` 应返回状态文本；发普通文本应启动任务并流式回发；
 发一张图片应出现「✅ 已收到文件：位于 .omnicrawl/.agent_tmp/images/...」；
-未授权用户发消息应无任何回复。
+未授权用户发消息应无任何回复。要验证「真的能访问项目」，发一句
+「列出当前工作区根目录下的文件名，不要修改任何文件」——由宿主承载时这会真的读目录；
+内核承载（无宿主载荷平台）下它会回「工具在当前模式下不可用」。

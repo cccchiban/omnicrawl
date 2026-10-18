@@ -23,6 +23,11 @@ const TUI_ENV: &str = "OMNICRAWL_TUI_BINARY";
 const API_ENV: &str = "OMNICRAWL_API_BINARY";
 const KERNEL_ENV: &str = "OMNICRAWL_KERNEL_BINARY";
 const DECISION_ENV: &str = "OMNICRAWL_DECISION_BINARY";
+/// 连接器模式：`omnicrawl-host connector <平台>` 由宿主承载连接器（真实工具表与会话）。
+///
+/// 与内核的 `--connector <平台>` 并存：无宿主载荷的平台（armv7 等）仍由内核承载，那条
+/// 路径的能力边界（只自持三个工具）不变，提示也照旧。
+const CONNECTOR_COMMAND: &str = "connector";
 
 fn main() -> ExitCode {
     match run(env::args_os().skip(1).collect()) {
@@ -80,6 +85,15 @@ fn run(args: Vec<OsString>) -> Result<i32, String> {
         Some(DECISION_COMMAND) => {
             let target = resolve_target(DECISION_ENV, "omnicrawl-decision", None)?;
             run_child(&target, &args[1..], &context.workspace_root)
+        }
+        // 连接器由宿主承载：连接器自身要真实工具表与会话，只有宿主载荷有这一整套。
+        // `--connector <平台>` 同样接住（内核旧写法的转发），两侧行为一致。
+        Some(CONNECTOR_COMMAND) | Some("--connector") => {
+            let target = resolve_target(API_ENV, "omnicrawl-api", None)?;
+            // 两种写法都只取平台名之后的部分：宿主侧统一走 `connector <平台>`。
+            let mut forwarded: Vec<OsString> = vec![OsString::from(CONNECTOR_COMMAND)];
+            forwarded.extend(args[1..].iter().cloned());
+            run_child(&target, &forwarded, &context.workspace_root)
         }
         _ => run_tui(&args, &context.workspace_root),
     }
