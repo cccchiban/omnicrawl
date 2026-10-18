@@ -21,6 +21,12 @@ on:
     tags:
       - "npm-v*"
   workflow_dispatch:
+    inputs:
+      # 只跑五个平台的构建与暂存，不发布任何包：用来在正式打 tag 前验证全链路。
+      dry_run:
+        description: "只构建不发布（dry-run）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -207,6 +213,8 @@ jobs:
   publish:
     name: 发布
     needs: platform
+    # dry-run（手动触发时勾选）只验证构建，不走发布步骤。
+    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
