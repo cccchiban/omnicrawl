@@ -59,9 +59,12 @@ fn summary_of(item: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 数据集 `seed.memories` 里的全部 content，用来确认边界处的同分项确实来自预置数据。
+/// 数据集里的全部 content：`seed.memories` 的预置项 + 用例中 `memory_write` 成功写入的项。
+///
+/// 后者必须算进来——用例 8 会真的写一条新记忆，它和预置项一样参与检索排序，
+/// 因此完全可能出现在截断边界上。只认预置数据会让这个断言在时间戳顺序不同的机器上假失败。
 fn seeded_summaries(data: &Value) -> Vec<String> {
-    data["seed"]["memories"]
+    let mut summaries: Vec<String> = data["seed"]["memories"]
         .as_array()
         .map(|items| {
             items
@@ -69,7 +72,26 @@ fn seeded_summaries(data: &Value) -> Vec<String> {
                 .filter_map(|item| item["content"].as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Some(cases) = data["cases"].as_array() {
+        for case in cases {
+            if case["tool"].as_str() != Some("memory_write") || !case["ok"].as_bool().unwrap_or(false)
+            {
+                continue;
+            }
+            let written = case["arguments"]["memories"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item["content"].as_str().map(str::to_string))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            summaries.extend(written);
+        }
+    }
+    summaries
 }
 
 /// 把数据集里的 `{ID1}`、`{ID2}` 占位符换成本次运行真实生成的记忆 id。
