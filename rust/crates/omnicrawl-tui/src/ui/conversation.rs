@@ -63,6 +63,8 @@ pub enum LineHit {
     ToolCard { call_id: String },
     /// 后台任务卡的「立即结束」按钮：点击打断正在跑的长轮询（只有运行中的 monitor 卡有）。
     ToolStop { call_id: String },
+    /// 失败提示行上的「重试」按钮：用原样的用户消息再提交一次（`index` 是失败记录下标）。
+    RetryTurn { index: usize },
     /// 思考段：点击在折叠与展开之间切换（`index` 是该记录在消息流里的下标）。
     Reasoning { index: usize },
 }
@@ -75,6 +77,10 @@ pub enum LineHit {
 const STOP_BUTTON: &str = "[立即结束]";
 /// 按钮与其左侧内容之间至少留一格。
 const STOP_BUTTON_GAP: usize = 1;
+/// 失败提示上的重试按钮文案。
+const RETRY_BUTTON: &str = "[ 重试 ]";
+/// 回合失败提示的正文色（暗红）：与「成功」区分，但不像纯红那样刺眼。
+const FAILURE_COLOR: Color = Color::Rgb(200, 90, 90);
 
 /// 一行显示行在工具卡图片块里的位置。
 ///
@@ -669,6 +675,9 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
             state.reasoning_visible_chars(index, text.chars().count()),
         ),
         Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
+        Record::Failure { message, retryable } => {
+            push_failure(&mut lines, message, *retryable, index, width, state)
+        }
         Record::Tool(card) => push_tool(&mut lines, card, width, state),
         Record::SubagentTree(tree) => push_subagent_tree(&mut lines, tree),
         Record::SubagentConversation(panel) => {
@@ -1090,6 +1099,40 @@ fn push_prefixed(
     }
 }
 
+/// 回合失败的提示行：暗红色正文 + 可选的「重试」按钮（蓝色，悬停转淡黄）。
+///
+/// 按钮单独占一行，接在正文之后缩进对齐——失败正文常常折成多行，把按钮放在正文
+/// 右侧会随窗口宽度飘。点击它等于用原样的用户消息再提交一次（见 `retry_failure`）。
+fn push_failure(
+    lines: &mut Vec<DisplayLine>,
+    message: &str,
+    retryable: bool,
+    index: usize,
+    width: usize,
+    state: &AppState,
+) {
+    push_prefixed(lines, "· ", message, width, FAILURE_COLOR);
+    if !retryable {
+        return;
+    }
+    let hovered = state.retry_button_hover() == Some(index);
+    let style = if hovered {
+        theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+    } else {
+        theme::rich_style(theme::ACCENT_BLUE).add_modifier(Modifier::BOLD)
+    };
+    let indent = MESSAGE_PAD.to_string();
+    let column = display_width(&indent) as u16;
+    let button = (column, display_width(RETRY_BUTTON) as u16);
+    lines.push(DisplayLine::with_button(
+        Line::from(vec![
+            Span::raw(indent),
+            Span::styled(RETRY_BUTTON.to_string(), style),
+        ]),
+        LineHit::RetryTurn { index },
+        button,
+    ));
+}
 
 /// 消息内边距 + 一行富文本（子任务树与子代理会话面板用）。
 fn padded_styled(text: &StyledText) -> Line<'static> {
@@ -1902,6 +1945,89 @@ mod tests {
             display_lines(&state, 60).iter().any(|line| line.button.is_some()),
             "够宽时要画出来"
         );
+    }
+
+    #[test]
+    fn failed_turn_shows_a_retry_button_that_turns_amber_on_hover() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.fail_turn_with("上游错误已达到本回合自动重试上限".to_string(), true);
+
+        let display = display_lines(&state, 60);
+        let row = display
+            .iter()
+            .find(|line| matches!(line.hit, Some(LineHit::RetryTurn { .. })))
+            .expect("可重试的失败提示要有「重试」按钮");
+        assert!(text_of(&row.line).contains("[ 重试 ]"), "{:?}", text_of(&row.line));
+        assert_eq!(
+            row.line.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::Blue)),
+            "未悬停时按钮是蓝色"
+        );
+
+        let index = match &row.hit {
+            Some(LineHit::RetryTurn { index }) => *index,
+            other => panic!("命中应是重试按钮：{other:?}"),
+        };
+        state.set_retry_button_hover(Some(index));
+        let hovered = display_lines(&state, 60);
+        let row = hovered
+            .iter()
+            .find(|line| matches!(line.hit, Some(LineHit::RetryTurn { .. })))
+            .expect("按钮还在");
+        assert_eq!(
+            row.line.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::Yellow)),
+            "悬停时按钮要变黄"
+        );
+    }
+
+    #[test]
+    fn non_retryable_failure_has_no_retry_button() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.set_status(Some("请求失败，正在自动重试（第4次）".to_string()));
+        state.fail_turn("已取消当前回合。".to_string());
+        // 修复点：重试耗尽后状态行必须复位，不能停在「正在自动重试」。
+        assert_eq!(state.status, None, "失败收尾要清掉重试中的状态行");
+        assert!(!state.turn.is_running(), "失败收尾要退出运行态");
+        assert!(
+            display_lines(&state, 60)
+                .iter()
+                .all(|line| !matches!(line.hit, Some(LineHit::RetryTurn { .. }))),
+            "取消这类失败不该给重试按钮"
+        );
+    }
+
+    #[test]
+    fn retry_marks_the_old_failure_spent_and_reuses_the_user_message() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "重发我".to_string(), Vec::new());
+        state.fail_turn_with("网络中断".to_string(), true);
+        let index = state.last_failure_slot().expect("有失败记录");
+
+        let text = state.retry_failure(index).expect("可重试");
+        assert_eq!(text, "重发我", "重试要复用原来那条用户消息");
+        // 点过一次后按钮消失：避免连点重复重发。
+        assert!(!state.failure_is_retryable(index));
+        assert!(state.retry_failure(index).is_none());
+
+        let display = display_lines(&state, 60);
+        assert!(
+            display
+                .iter()
+                .all(|line| !matches!(line.hit, Some(LineHit::RetryTurn { .. }))),
+            "用过的失败记录不该再画按钮"
+        );
+    }
+
+    #[test]
+    fn retry_without_a_user_message_is_refused() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        // 没有前置用户消息的失败（例如会话恢复后的中断提示）不该重发任何东西。
+        state.fail_turn_with("上一回合在会话恢复前中断。".to_string(), true);
+        let index = state.last_failure_slot().expect("有失败记录");
+        assert!(state.retry_failure(index).is_none());
     }
 
     #[test]

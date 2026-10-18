@@ -429,6 +429,11 @@ pub struct App {
     tool_deadline: Option<Instant>,
     /// 待响应的宿主命令（`turn.undo`、`session.compact`）：响应到达时据此回填结果。
     pending_commands: HashMap<Id, KernelCommand>,
+    /// 在途 `turn.submit` 的请求 id：它的响应帧带回合失败原因，必须接住。
+    ///
+    /// 不登记就会像以前一样被当成「无关响应」丢掉——重试耗尽后界面停在
+    /// 「正在自动重试」正是这么来的。
+    pending_turn_submit: Option<Id>,
     /// 同步内核往返期间收到的其他帧：按原顺序交给下一次 `drain_frames`，不丢通知。
     deferred_frames: VecDeque<Frame>,
     next_turn: u64,
@@ -827,6 +832,7 @@ impl App {
             completion_sender,
             tool_deadline: None,
             pending_commands: HashMap::new(),
+            pending_turn_submit: None,
             deferred_frames: VecDeque::new(),
             next_turn: 1,
             advisor_context,
@@ -1474,6 +1480,12 @@ impl App {
             None => {
                 if let Some(command) = self.pending_commands.remove(&id) {
                     self.finish_kernel_command(command, &frame);
+                } else if self.pending_turn_submit.as_ref() == Some(&id) {
+                    // `turn.submit` 的确认帧：成功不带错误，失败带回合终止原因。
+                    self.pending_turn_submit = None;
+                    if let Some(error) = frame.error.as_ref() {
+                        self.fail_submitted_turn(&error.message);
+                    }
                 } else if self.prompt_request.as_ref() == Some(&id) {
                     self.prompt_request = None;
                     if let Some(error) = frame.error.as_ref() {
@@ -2219,6 +2231,7 @@ impl App {
     /// 命中测试只做窗口换算。
     fn update_conversation_hover(&mut self, column: u16, row: u16) {
         self.update_stop_button_hover(column, row);
+        self.update_retry_button_hover(column, row);
         if !self.state.turn.is_running() {
             self.state.runtime_esc_hover = false;
             return;
@@ -2228,6 +2241,31 @@ impl App {
             .runtime_esc_area()
             .is_some_and(|area| area.contains(Position::new(column, row)));
         self.state.runtime_esc_hover = hover;
+    }
+
+    /// 悬停判定：鼠标是否落在某个「重试」按钮上。
+    fn update_retry_button_hover(&mut self, column: u16, row: u16) {
+        let area = ui::layout(self.viewport, &self.state).conversation;
+        if !area.contains(Position::new(column, row)) {
+            self.state.set_retry_button_hover(None);
+            return;
+        }
+        let relative = usize::from(row - area.y);
+        // 「立即结束」压在工具卡标题行右缘，命中它时不算重试按钮的悬停。
+        let hovered = if self.on_stop_button(area, relative, column) {
+            None
+        } else {
+            match conversation::hit_test(
+                &self.state,
+                area,
+                self.state.scroll_from_bottom,
+                relative,
+            ) {
+                Some(LineHit::RetryTurn { index }) => Some(index),
+                _ => None,
+            }
+        };
+        self.state.set_retry_button_hover(hovered);
     }
 
     /// 悬停判定：鼠标是否落在某个「立即结束」按钮上。
@@ -2323,6 +2361,7 @@ impl App {
         match hit {
             Some(LineHit::ToolHint { call_id }) => self.state.expand_tool(&call_id),
             Some(LineHit::ToolStop { call_id }) => self.stop_monitor_poll(&call_id),
+            Some(LineHit::RetryTurn { index }) => self.retry_turn(index),
             Some(LineHit::ToolCard { call_id }) => {
                 // 对映 Python：缩略态点卡片无效，展开态点卡片才是收起。
                 self.state.collapse_tool(&call_id);
@@ -2332,6 +2371,39 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// `turn.submit` 的失败响应：把回合收口成可重试的失败提示。
+    ///
+    /// 内核在重试耗尽后返回的是回合终止错误（`turn_error`），这时本回合不会再有
+    /// `turn.finished`，必须在这里自己复位状态行与在途卡片。
+    fn fail_submitted_turn(&mut self, message: &str) {
+        // 回合已经收口（用户按 Esc 提前 fail_turn、或失败前已收到 `turn.finished`）：
+        // 再落一条失败提示就是重复上报，直接跳过。
+        if !self.state.turn.is_running() {
+            return;
+        }
+        // 取消是用户自己的动作（Esc），不提供重试按钮——再发一次等于撤销用户意图。
+        if message.contains("已取消") || message.contains("回合已取消") {
+            self.state.fail_turn(message.to_string());
+            return;
+        }
+        let retryable = is_retryable_failure(message);
+        self.state.fail_turn_with(message.to_string(), retryable);
+    }
+
+    /// 「重试」按钮：用原样的用户消息再提交一次，重新进入自动重试循环。
+    fn retry_turn(&mut self, index: usize) {
+        if self.state.turn.is_running() {
+            self.state
+                .show_notice_line("当前回合还在执行，等它结束再重试。", Instant::now());
+            return;
+        }
+        let Some(text) = self.state.retry_failure(index) else {
+            return;
+        };
+        // 只重发文本：失败的那一轮已经交过一次图，重放图片会让同一张图在上下文里出现两遍。
+        self.submit_to_kernel(text, Vec::new());
     }
 
     /// 某一行所属的后台任务卡 `call_id`（只有 monitor 卡才算）。
@@ -2851,11 +2923,12 @@ impl App {
             })));
             self.restore_skill_context_after_turn = true;
         }
-        self.send(Command::TurnSubmit(omnicrawl_ipc::TurnSubmitParams {
+        let id = self.send(Command::TurnSubmit(omnicrawl_ipc::TurnSubmitParams {
             turn_id,
             user_text: text,
             images,
         }));
+        self.pending_turn_submit = Some(id);
     }
 
     /// 回合收尾：把 `/skill:` 用过的活动技能正文换回常规上下文装配。
@@ -7439,10 +7512,61 @@ fn mcp_manager(workspace: &Path) -> Option<Arc<McpClientManager>> {
     Some(manager)
 }
 
+/// 失败的回合错误是否值得提供「重试」按钮。
+///
+/// 判据是「原样再发一次有没有机会成功」：网络中断、超时、上游 5xx、限流、以及自动重试
+/// 用尽都算；上下文超限（要先压缩）、参数非法、鉴权失败这类确定性错误不给按钮，
+/// 免得用户点出一个必然再次失败的结果。
+fn is_retryable_failure(message: &str) -> bool {
+    const NOT_RETRYABLE: &[&str] = &[
+        "上下文长度",
+        "context length",
+        "超过上下文",
+        "鉴权",
+        "unauthorized",
+        "401",
+        "invalid api key",
+        "参数",
+        "invalid params",
+        "工具状态",
+        "重复提交",
+    ];
+    let lower = message.to_lowercase();
+    if NOT_RETRYABLE
+        .iter()
+        .any(|marker| lower.contains(&marker.to_lowercase()))
+    {
+        return false;
+    }
+    // 默认给按钮：内核的错误都是「这一轮没跑成」，重发是用户最自然的补救动作。
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use omnicrawl_config::models::llm::provider_options_from_json;
+
+    #[test]
+    fn retryable_failures_are_the_ones_worth_resending() {
+        // 网络类失败：原样重发有机会成功，给按钮。
+        for message in [
+            "上游错误已达到本回合自动重试上限，已停止本次请求。connection reset",
+            "请求超时",
+            "502 bad gateway",
+        ] {
+            assert!(is_retryable_failure(message), "{message} 应当可重试");
+        }
+        // 确定性失败：重发只会再失败一次，不给按钮。
+        for message in [
+            "超过上下文长度限制",
+            "鉴权失败：401 unauthorized",
+            "参数不合法：invalid params",
+            "网关判定工具状态重复提交",
+        ] {
+            assert!(!is_retryable_failure(message), "{message} 不该重试");
+        }
+    }
 
     /// 钉住这次修复的触发条件：`Ctrl+V` 只认**抬起**。
     ///

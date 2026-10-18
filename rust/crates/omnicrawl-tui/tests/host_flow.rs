@@ -436,9 +436,11 @@ fn denial_reports_denied_and_kernel_close_keeps_the_scene_for_a_keypress() {
         harness.app.state.status
     );
     assert!(
-        harness.app.state.records.iter().any(
-            |record| matches!(record, Record::Notice(text) if text.contains("内核进程已退出"))
-        ),
+        harness.app.state.records.iter().any(|record| matches!(
+            record,
+            Record::Notice(text) | Record::Failure { message: text, .. }
+                if text.contains("内核进程已退出")
+        )),
         "应把内核退出写进消息流：{:?}",
         harness.app.state.records
     );
@@ -2194,4 +2196,116 @@ fn retry_status_reaches_the_status_line_and_steps_aside() {
     );
     harness.expect_ready(|app| !app.state.turn.is_running(), "回合应当收尾");
     assert_eq!(harness.app.state.status, None);
+}
+
+#[test]
+fn retry_exhausted_failure_resets_the_status_line_and_offers_retry() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.state.composer.insert("问一句");
+    harness.press(KeyCode::Enter);
+    assert!(harness.app.state.turn.is_running(), "提交后应进入运行态");
+
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .expect("应发出 turn.submit");
+    let submit_id = submitted.id().expect("turn.submit 应当带 id");
+
+    // 重试过程中的状态行：这正是以前会留在屏幕上的那句。
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"turn.retry_status\",\
+         \"params\":{\"message\":\"请求失败，正在自动重试（第4次）\"}}\n",
+    );
+    harness.expect_ready(
+        |app| app.state.status.as_deref() == Some("请求失败，正在自动重试（第4次）"),
+        "重试提示应当落到状态行",
+    );
+
+    // 重试耗尽：内核用 turn.submit 的错误响应终结这一回合（不发 turn.finished）。
+    let id = match &submit_id {
+        Id::Number(value) => *value,
+        other => panic!("id 应当是数字：{other:?}"),
+    };
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32603,\"message\":\
+         \"上游错误已达到本回合自动重试上限，已停止本次请求。connection reset\"}}}}\n"
+    ));
+
+    // 1) 状态行必须复位，不能停在「正在自动重试」。
+    harness.expect_ready(
+        |app| !app.state.turn.is_running(),
+        "失败响应后应当退出运行态",
+    );
+    assert_eq!(
+        harness.app.state.status, None,
+        "重试耗尽后状态行必须清空，不能停在「正在自动重试」"
+    );
+
+    // 2) 消息流里要有一条带重试按钮的失败记录。
+    let index = harness
+        .app
+        .state
+        .last_failure_slot()
+        .expect("失败应当落进消息流");
+    assert!(
+        harness.app.state.failure_is_retryable(index),
+        "网络类失败应当提供重试：{:?}",
+        harness.app.state.records
+    );
+
+    // 3) 走真实的鼠标点击路径（用户就是这样点的），而不是直接调内部方法。
+    let area = Rect::new(0, 0, 80, 24);
+    harness.app.set_viewport(area);
+    let conversation = omnicrawl_tui::ui::layout(area, &harness.app.state).conversation;
+    // 该失败记录在显示行里的位置：从会话区顶部往下找到按钮那一行。
+    let button_row = (0..conversation.height as usize)
+        .find(|row| {
+            matches!(
+                omnicrawl_tui::ui::conversation::hit_test(
+                    &harness.app.state,
+                    conversation,
+                    harness.app.state.scroll_from_bottom,
+                    *row,
+                ),
+                Some(omnicrawl_tui::ui::conversation::LineHit::RetryTurn { .. })
+            )
+        })
+        .expect("会话区里应当画出了重试按钮");
+    let before = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    let text = omnicrawl_tui::ui::conversation::text_area(conversation);
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        text.x + 1,
+        conversation.y + button_row as u16,
+    ));
+    let after = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    assert_eq!(after, before + 1, "点重试要重新发出 turn.submit");
+    assert!(
+        harness.app.state.turn.is_running(),
+        "重试应当重新进入运行态"
+    );
+    let resent = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .next_back()
+        .expect("应发出重试的 turn.submit");
+    assert_eq!(
+        resent.params.clone().unwrap_or(Value::Null)["user_text"],
+        "问一句",
+        "重试要原样重发那条用户消息"
+    );
+
+    // 用过的失败记录不再提供按钮，避免连点重复重发。
+    assert!(!harness.app.state.failure_is_retryable(index));
 }

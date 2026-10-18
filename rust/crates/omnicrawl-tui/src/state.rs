@@ -157,6 +157,15 @@ pub enum Record {
     Assistant(String),
     Tool(ToolCard),
     Notice(String),
+    /// 回合失败的提示：正文 + 是否提供「重试」按钮。
+    ///
+    /// 只有**可重发**的失败才带按钮（网络中断、上游 5xx、重试用尽）：点击后用原样的
+    /// 用户消息再提交一次，等价于用户手动重发，从而重新进入自动重试循环。
+    /// 取消、上下文超限、工具状态被拒这类需要先改输入或先压缩的失败不带按钮。
+    Failure {
+        message: String,
+        retryable: bool,
+    },
     /// 一个 SubAgent 批次的进度树：同批次的任务事件在第 `i` 条记录上原地更新
     /// （对映 Python 把 `SubAgentProgressTree` 挂进消息区、后续事件复用同一组件）。
     SubagentTree(SubAgentProgressTree),
@@ -1104,6 +1113,8 @@ pub struct AppState {
     ///
     /// 同一时刻只可能悬停一个按钮，用「命中的卡片」而不是布尔值，卡片重排后也不会串色。
     stop_button_hover: Option<String>,
+    /// 正在被悬停的「重试」按钮所属的失败记录下标（悬停时染成淡黄色）。
+    retry_button_hover: Option<usize>,
     /// 输入区方框上边框里 `[ ESC ]` 的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
     ///
     /// 状态行搬到方框边框后就不再走会话流的命中测试，只能由渲染路径把位置记下来：
@@ -1169,6 +1180,7 @@ impl AppState {
             selection: None,
             runtime_esc_hover: false,
             stop_button_hover: None,
+            retry_button_hover: None,
             runtime_esc_area: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),
@@ -2510,7 +2522,15 @@ impl AppState {
     }
 
     /// 回合失败或取消：状态复位并把原因写进消息流。
+    ///
+    /// `retryable` 决定这条失败提示带不带「重试」按钮：网络中断、上游 5xx、自动重试用尽
+    /// 这类「原样重发就有机会成功」的失败要带；取消、上下文超限这类需要先改输入的不带。
     pub fn fail_turn(&mut self, message: String) {
+        self.fail_turn_with(message, false)
+    }
+
+    /// 带重试能力的回合失败收尾。
+    pub fn fail_turn_with(&mut self, message: String, retryable: bool) {
         self.turn = TurnState::Idle;
         self.turn_started = None;
         self.status = None;
@@ -2518,9 +2538,55 @@ impl AppState {
         self.close_running_cards("工具调用在回合结束前未收到结果。");
         // 中途停下的思考不再逐帧铺开：当场补全到已到达的长度，免得停在半句。
         self.settle_reasoning_reveal();
-        self.records.push(Record::Notice(message));
+        self.records.push(Record::Failure {
+            message,
+            retryable,
+        });
         self.touch_appended();
         self.touch_composer();
+    }
+
+    /// 最近一条失败记录的下标（重试按钮以它为锚点重发）。
+    pub fn last_failure_slot(&self) -> Option<usize> {
+        self.records
+            .iter()
+            .rposition(|record| matches!(record, Record::Failure { .. }))
+    }
+
+    /// 失败记录是否可重试。
+    pub fn failure_is_retryable(&self, index: usize) -> bool {
+        matches!(
+            self.records.get(index),
+            Some(Record::Failure {
+                retryable: true,
+                ..
+            })
+        )
+    }
+
+    /// 重试某条失败回合：取失败前最近一条用户消息的文本重发。
+    ///
+    /// 只返回文本：失败那一轮已经把图片交过一次，重放会让同一张图在上下文里出现两遍。
+    /// 失败记录已被后续回合盖过（找不到用户消息）时返回 `None`。
+    pub fn retry_failure(&mut self, index: usize) -> Option<String> {
+        if !self.failure_is_retryable(index) {
+            return None;
+        }
+        let previous = self
+            .records
+            .get(..index)?
+            .iter()
+            .rposition(|record| matches!(record, Record::User(_)))?;
+        let Some(Record::User(user)) = self.records.get(previous) else {
+            return None;
+        };
+        let text = user.text.clone();
+        // 旧的失败提示已经过时：标记成不可重试，避免连点重复重发。
+        if let Some(Record::Failure { retryable, .. }) = self.records.get_mut(index) {
+            *retryable = false;
+        }
+        self.touch_record(index);
+        Some(text)
     }
 
 
@@ -2973,6 +3039,24 @@ impl AppState {
             if let Some(index) = self.tool_card_slot(&key) {
                 self.touch_record(index);
             }
+        }
+        self.touch_conversation_view();
+    }
+
+    /// 正在被悬停的「重试」按钮属于哪条失败记录（渲染层据此把它染成淡黄色）。
+    pub fn retry_button_hover(&self) -> Option<usize> {
+        self.retry_button_hover
+    }
+
+    /// 记录本轮重试按钮的悬停命中；变化时重算受影响的那条失败记录。
+    pub fn set_retry_button_hover(&mut self, index: Option<usize>) {
+        if self.retry_button_hover == index {
+            return;
+        }
+        let previous = self.retry_button_hover;
+        self.retry_button_hover = index;
+        for slot in [previous, index].into_iter().flatten() {
+            self.touch_record(slot);
         }
         self.touch_conversation_view();
     }
