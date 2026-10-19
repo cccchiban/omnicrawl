@@ -11,6 +11,8 @@ use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
+use super::cookies::{self, SharedJar};
+
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -23,7 +25,10 @@ pub const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
 pub enum WebErrorKind {
     Timeout,
     Connect,
+    /// 证书链不可信（只有这类才可能被 `insecure=true` 绕过）。
     Tls,
+    /// TLS 握手谈不成：对端只支持 1.2、套件不匹配、Alert 等。
+    Handshake,
     Other,
 }
 
@@ -57,6 +62,73 @@ impl WebResponse {
     }
 }
 
+/// 按 `content-encoding` 还原响应体。
+///
+/// 传输层刻意不发 `accept-encoding`（本栈默认不解压），但服务端并不总是遵守约定：
+/// `www.163.com` 在 h2 下不声明压缩也会回 `content-encoding: gzip`。若把那些字节当文本，
+/// 正文会变成乱码而状态码仍是 200——比明确报错更难排查，因此统一在出口还原。
+/// 认不出的编码明确报错，绝不把压缩字节透给上层。
+pub fn decode_content(body: Vec<u8>, encoding: Option<&str>) -> Result<Vec<u8>, WebError> {
+    let declared = encoding.unwrap_or("").to_lowercase();
+    let mut encodings: Vec<&str> = declared
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect();
+    // 没声明编码却带着 gzip 魔数：同样是压缩体，按 gzip 处理。
+    if encodings.is_empty() && body.starts_with(&[0x1f, 0x8b]) {
+        encodings.push("gzip");
+    }
+    // 多层编码按声明的逆序还原。
+    let mut body = body;
+    for encoding in encodings.iter().rev() {
+        body = decode_one_encoding(body, encoding)?;
+    }
+    Ok(body)
+}
+
+fn decode_one_encoding(body: Vec<u8>, encoding: &str) -> Result<Vec<u8>, WebError> {
+    match encoding {
+        "" | "identity" => Ok(body),
+        "gzip" | "x-gzip" => inflate_gzip(&body),
+        "deflate" => inflate_deflate(&body),
+        other => Err(WebError::new(
+            WebErrorKind::Other,
+            format!("服务端返回了本实现不支持的压缩编码 {other}。"),
+        )),
+    }
+}
+
+fn inflate_gzip(body: &[u8]) -> Result<Vec<u8>, WebError> {
+    // 传输层可能已经解过压却仍保留着响应头：没有 gzip 魔数就说明正文已是明文。
+    if !body.starts_with(&[0x1f, 0x8b]) {
+        return Ok(body.to_vec());
+    }
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(body)
+        .read_to_end(&mut out)
+        .map_err(|error| {
+            WebError::new(WebErrorKind::Other, format!("gzip 解压失败：{error}"))
+        })?;
+    Ok(out)
+}
+
+/// `deflate` 在实践中有两种写法：zlib 包装与裸流脚本。先按 zlib 解，失败再按裸流解。
+fn inflate_deflate(body: &[u8]) -> Result<Vec<u8>, WebError> {
+    let mut out = Vec::new();
+    if flate2::read::ZlibDecoder::new(body)
+        .read_to_end(&mut out)
+        .is_ok()
+    {
+        return Ok(out);
+    }
+    out.clear();
+    flate2::read::DeflateDecoder::new(body)
+        .read_to_end(&mut out)
+        .map_err(|error| WebError::new(WebErrorKind::Other, format!("deflate 解压失败：{error}")))?;
+    Ok(out)
+}
+
 #[derive(Debug, Clone)]
 pub struct WebRequest {
     pub method: String,
@@ -74,6 +146,11 @@ pub struct WebRequest {
     /// `None` 表示调用方没有要求指纹模拟：普通传输（ureq）会忽略它，只有
     /// [`super::tls_transport::TlsWebTransport`] 会据此挑选 TLS 档案与 HTTP 头。
     pub impersonate: Option<String>,
+    /// 本次请求要用的 cookie 罐：传输层逐跳自动回带与收割。
+    ///
+    /// 放在请求上而不是传输上，是因为罐的生命周期归调用方（抓取工具跨请求共用一份），
+    /// 传输只是无状态的执行体。`None` 表示不处理 cookie。
+    pub cookie_jar: Option<SharedJar>,
 }
 
 impl WebRequest {
@@ -88,6 +165,7 @@ impl WebRequest {
             timeout,
             max_redirects: MAX_REDIRECTS,
             impersonate: None,
+            cookie_jar: None,
         }
     }
 
@@ -107,6 +185,7 @@ impl WebRequest {
             timeout,
             max_redirects: 0,
             impersonate: None,
+            cookie_jar: None,
         }
     }
 
@@ -126,6 +205,7 @@ impl WebRequest {
             timeout,
             max_redirects: 0,
             impersonate: None,
+            cookie_jar: None,
         }
     }
 }
@@ -394,7 +474,14 @@ impl UreqWebTransport {
         let mut builder = ureq::http::Request::builder()
             .method(request.method.as_str())
             .uri(request.url.as_str());
-        for (key, value) in &request.headers {
+        // 逐跳回带：罐里该给的 cookie 在每一跳都重新算（重定向可能换主机或路径）。
+        let mut headers = request.headers.clone();
+        cookies::apply_header(
+            request.cookie_jar.as_deref(),
+            &request.url,
+            &mut headers,
+        );
+        for (key, value) in &headers {
             builder = builder.header(key.as_str(), value.as_str());
         }
         let http_request = builder
@@ -408,11 +495,28 @@ impl UreqWebTransport {
                     .get("location")
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_string);
+                // ureq 按自身特性可能已解压，但服务端仍带着 content-encoding 头；
+                // 这里把声明交给出口，由 decode_content 决定是否需要再解一次。
+                let content_encoding = response
+                    .headers()
+                    .get("content-encoding")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
+                // `Set-Cookie` 可以有多个同名头，`get` 只返回第一个。
+                let set_cookies: Vec<String> = response
+                    .headers()
+                    .get_all("set-cookie")
+                    .iter()
+                    .filter_map(|value| value.to_str().ok())
+                    .map(str::to_string)
+                    .collect();
                 let mut raw = Vec::new();
                 let _ = response.into_body().into_reader().read_to_end(&mut raw);
                 Ok(RawResponse {
                     status,
                     location,
+                    content_encoding,
+                    set_cookies,
                     body: raw,
                 })
             }
@@ -425,6 +529,10 @@ impl UreqWebTransport {
 struct RawResponse {
     status: u16,
     location: Option<String>,
+    /// 服务端声明的压缩方式；由出口统一决定是否解压。
+    content_encoding: Option<String>,
+    /// 本条响应的全部 `Set-Cookie`（同名多值，不能只取第一个）。
+    set_cookies: Vec<String>,
     body: Vec<u8>,
 }
 
@@ -442,6 +550,13 @@ impl WebTransport for UreqWebTransport {
             let mut hop = request.clone();
             hop.url = current.clone();
             let response = self.send_once(&hop)?;
+            // 收割这一跳的 cookie：重定向链上的 `Set-Cookie` 必须立即生效，
+            // 否则「登录跳转后带不上会话」的站点永远跟不进去。
+            cookies::harvest(
+                request.cookie_jar.as_deref(),
+                &current,
+                response.set_cookies.iter(),
+            );
             // 只跟随 GET 的重定向：POST（图片生成）由服务端直接应答，改写方法会丢请求体。
             if request.method == "GET" && REDIRECT_STATUSES.contains(&response.status) {
                 if let Some(location) = response.location.as_deref() {
@@ -458,7 +573,7 @@ impl WebTransport for UreqWebTransport {
             return Ok(WebResponse {
                 status: response.status,
                 final_url: current,
-                body: response.body,
+                body: decode_content(response.body, response.content_encoding.as_deref())?,
             });
         }
     }
@@ -537,5 +652,62 @@ mod tests {
         assert_eq!(parse_dword("0x1"), 1);
         assert_eq!(parse_dword("0"), 0);
         assert_eq!(parse_dword("2"), 2);
+    }
+
+    fn gzip(text: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(text.as_bytes()).expect("压缩");
+        encoder.finish().expect("收尾")
+    }
+
+    #[test]
+    fn a_gzip_body_is_restored_from_its_header() {
+        let payload = "<html><title>163</title></html>";
+        let decoded = decode_content(gzip(payload), Some("gzip")).expect("应当解压");
+        assert_eq!(String::from_utf8(decoded).expect("UTF-8"), payload);
+    }
+
+    /// 163 的实测形态：不声明 accept-encoding 也回 gzip，且响应头就是唯一的线索。
+    #[test]
+    fn a_gzip_body_without_a_declared_encoding_is_still_restored() {
+        let payload = "网页正文";
+        let decoded = decode_content(gzip(payload), None).expect("应当按魔数解压");
+        assert_eq!(String::from_utf8(decoded).expect("UTF-8"), payload);
+    }
+
+    #[test]
+    fn a_plain_body_is_passed_through() {
+        let payload = "<html>纯文本</html>".as_bytes().to_vec();
+        assert_eq!(decode_content(payload.clone(), None).expect("原样"), payload);
+        assert_eq!(
+            decode_content(payload.clone(), Some("identity")).expect("原样"),
+            payload
+        );
+    }
+
+    #[test]
+    fn an_unknown_encoding_is_reported_instead_of_leaked() {
+        let error = decode_content(vec![0x28, 0xb5, 0x2f, 0xfd], Some("br"))
+            .expect_err("不支持的编码必须报错");
+        assert!(error.message.contains("br"), "实际：{}", error.message);
+    }
+
+    #[test]
+    fn chained_encodings_are_restored_in_reverse_order() {
+        // 先 gzip 再 gzip：声明顺序是「编码顺序」，还原必须逆序。
+        let payload = "多层编码";
+        let decoded = decode_content(gzip_bytes(gzip(payload)), Some("gzip, gzip"))
+            .expect("应当逐层解压");
+        assert_eq!(String::from_utf8(decoded).expect("UTF-8"), payload);
+    }
+
+    fn gzip_bytes(bytes: Vec<u8>) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&bytes).expect("压缩");
+        encoder.finish().expect("收尾")
     }
 }

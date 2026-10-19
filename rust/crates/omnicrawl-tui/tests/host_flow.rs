@@ -649,6 +649,25 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
             names: vec!["web_search".to_string()],
         }),
     });
+    // 子代理建议同时开启：两条请求并发发起，总耗时取较大者。
+    harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_tui::tools::decision_suggest::SuggestChannel {
+            mode: "jev".to_string(),
+            model: "stub".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "stub".to_string(),
+            api_key_env: "STUB".to_string(),
+            retry_count: 1,
+        }),
+        masking: None,
+        client: Arc::new(SlowSuggestClient {
+            delay: Duration::from_millis(1500),
+            names: vec!["explore".to_string()],
+        }),
+    });
+    // 候选角色钉死：生产路径取工具表里的角色清单，会随本机 subagents 配置漂移。
+    harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
 
     // 提一条普通提问：建议在后台跑，UI 线程不该等它。
     harness.app.state.composer.set_text("查一下这个库的最新版本");
@@ -677,14 +696,14 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
     harness.app.drain_frames();
     assert!(submitted(&harness).is_none(), "建议未回来前不该提交回合");
 
-    // 结果回来：提交到达，且 user 文本尾部带上建议行。
+    // 结果回来：提交到达，且 user 文本尾部带上两行建议（工具在前，子代理在后）。
     harness.expect_ready(
         |app| app.state.turn.is_running(),
         "建议回来后应当进入回合运行态",
     );
     assert_eq!(
         submitted(&harness).expect("应当发过 turn.submit"),
-        "查一下这个库的最新版本\n\n当前请求建议调用tool：web_search。"
+        "查一下这个库的最新版本\n\n当前请求建议调用tool：web_search。\n当前请求建议使用子代理：explore。"
     );
 }
 
@@ -2357,4 +2376,70 @@ fn retry_exhausted_failure_resets_the_status_line_and_offers_retry() {
 
     // 用过的失败记录不再提供按钮，避免连点重复重发。
     assert!(!harness.app.state.failure_is_retryable(index));
+}
+
+/// 设置面板打开时粘贴要落进当前字段的输入态，且不落到主输入框。
+///
+/// 回归的对象：`Event::Paste` 分支早先要求 `settings.is_none()`，bracketed paste 送来的
+/// 长凭据因此被整条丢掉（面板里只能逐字符敲）。
+///
+/// 面板状态直接注入（不用 `/settings`）：这样渠道行是确定的，不与本机 `config.toml` 耦合。
+#[test]
+fn pasting_into_an_open_settings_panel_reaches_the_editing_field() {
+    use omnicrawl_tui::ui::settings::{
+        ChannelField, ChannelRow, SettingsState, SettingsValues, ToolSwitchRow,
+    };
+
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    type_text(&mut harness, "草稿");
+    harness.app.settings = Some(SettingsState::new(
+        SettingsValues::new(128_000, 80, Vec::<ToolSwitchRow>::new()).with_channels(
+            vec![ChannelRow {
+                key: "probe".to_string(),
+                profile_id: "probe-profile".to_string(),
+                name: "探测渠道".to_string(),
+                provider: "openai".to_string(),
+                protocol: "chat_completions".to_string(),
+                base_url: "https://api.example.com/v1".to_string(),
+                api_key: String::new(),
+                api_key_env: "PROBE_API_KEY".to_string(),
+                model_id: "gpt-5.2".to_string(),
+                user_agent: String::new(),
+                enabled: true,
+            }],
+            "probe",
+            ChannelRow::default(),
+        ),
+    ));
+
+    // 模型管理 → 渠道表单 → API Key 行（字段顺序里的第 5 个）。
+    harness.press(KeyCode::Enter); // 进右侧面板
+    harness.press(KeyCode::Enter); // 编辑选中渠道
+    for _ in 0..4 {
+        harness.press(KeyCode::Down);
+    }
+    let settings = harness.app.settings.as_ref().expect("面板应开着");
+    assert_eq!(
+        settings.channel_form().map(|form| form.field),
+        Some(ChannelField::ApiKey),
+        "字段游标应停在 API Key 行"
+    );
+
+    harness
+        .app
+        .handle_event(Event::Paste("sk-pasted-from-clipboard\n".to_string()));
+    harness.press(KeyCode::Enter); // 提交字段
+
+    let settings = harness.app.settings.as_ref().expect("面板应开着");
+    let form = settings.channel_form().expect("仍在渠道表单");
+    assert_eq!(
+        form.row.api_key, "sk-pasted-from-clipboard",
+        "粘贴的凭据应落进 API Key 字段（且只取首行）"
+    );
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "草稿",
+        "设置面板打开时粘贴不能落到主输入框"
+    );
 }

@@ -198,3 +198,56 @@ fn an_unreachable_host_reports_an_error_instead_of_hanging() {
         Ok(_) => panic!("不存在的域名不该连上"),
     }
 }
+
+#[test]
+#[ignore = "需要外网"]
+fn a_tls12_only_site_completes_a_handshake_and_serves_http11() {
+    // 百度只支持到 TLS 1.2。这一条曾经断言「必须失败」并只检查报错文案，因为当时
+    // 实现只有 1.3；现在 1.2 已经支持，因此改为断言真实可用：
+    // 握手走完、版本是 1.2、并且能取到页面。
+    let mut connection = Connection::connect_to("www.baidu.com", 443, Family::Chrome, None, TIMEOUT)
+        .unwrap_or_else(|error| panic!("百度应当能用 TLS 1.2 握手：{error}"));
+    assert_eq!(
+        connection.version(),
+        Some(omnicrawl_tls::session::Version::Tls12),
+        "百度是 1.2-only 站点，协商结果必须是 1.2"
+    );
+    let response = connection.get("/").expect("请求应当完成");
+    assert!(
+        (200..400).contains(&response.status),
+        "意外的状态码 {}",
+        response.status
+    );
+    assert!(!response.body.is_empty(), "响应体不该为空");
+}
+
+#[test]
+#[ignore = "需要外网"]
+fn a_second_tls12_only_site_also_works() {
+    // 换一家不同的服务端实现：QQ 主站同样只到 1.2，且过去被判为「回落」失败。
+    let mut connection = Connection::connect_to("www.qq.com", 443, Family::Chrome, None, TIMEOUT)
+        .unwrap_or_else(|error| panic!("qq.com 应当能用 TLS 1.2 握手：{error}"));
+    assert_eq!(
+        connection.version(),
+        Some(omnicrawl_tls::session::Version::Tls12),
+        "qq.com 的协商结果应当是 1.2"
+    );
+    let response = connection.get("/").expect("请求应当完成");
+    assert!((200..400).contains(&response.status), "意外的状态码 {}", response.status);
+}
+
+#[test]
+#[ignore = "需要外网"]
+fn a_hello_retry_request_for_secp256r1_completes_the_handshake() {
+    // gitee 的 key_share 只认 P-256：服务端会发 HelloRetryRequest 要求换组。
+    // 修复前这里会直接报「只支持 X25519」，修复后应当能一路走到 get。
+    let mut connection = Connection::connect_to("gitee.com", 443, Family::Chrome, None, TIMEOUT)
+        .unwrap_or_else(|error| panic!("gitee.com 握手失败：{error}"));
+    let response = connection.get("/").expect("请求应当完成");
+    assert!(
+        (200..400).contains(&response.status),
+        "意外的状态码 {}",
+        response.status
+    );
+    assert!(!response.body.is_empty(), "响应体不该为空");
+}

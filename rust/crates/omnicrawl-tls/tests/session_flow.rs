@@ -17,7 +17,7 @@ use omnicrawl_tls::profile::Family;
 use omnicrawl_tls::record::{ContentType, RecordKey};
 use omnicrawl_tls::session::{ClientHandshake, HandshakeError, PeerPolicy, State};
 use omnicrawl_tls::verify::{finished_verify_data, TrustAnchors};
-use omnicrawl_tls::{ext, group, suite};
+use omnicrawl_tls::{ext, group};
 
 fn rng() -> ring::rand::SystemRandom {
     ring::rand::SystemRandom::new()
@@ -132,7 +132,24 @@ impl FakeServer {
         server_exchange: omnicrawl_tls::X25519Exchange,
         signer: Signer,
     ) -> (Self, Vec<u8>) {
-        let suite = CipherSuite::Aes128GcmSha256;
+        Self::accept_with_suite(
+            client_hello,
+            client_public,
+            server_exchange,
+            signer,
+            CipherSuite::Aes128GcmSha256,
+        )
+    }
+
+    /// 按指定套件协商：不同套件的哈希不同（SHA256 / SHA384），客户端必须按协商结果
+    /// 重算转录，否则从这里开始的密钥全错。
+    fn accept_with_suite(
+        client_hello: &[u8],
+        client_public: &[u8],
+        server_exchange: omnicrawl_tls::X25519Exchange,
+        signer: Signer,
+        suite: CipherSuite,
+    ) -> (Self, Vec<u8>) {
         let mut transcript = Transcript::new(suite);
         transcript.push(client_hello);
 
@@ -143,7 +160,7 @@ impl FakeServer {
         body.extend_from_slice(&0x0303u16.to_be_bytes());
         body.extend_from_slice(&[0x5a; 32]);
         body.push(0);
-        body.extend_from_slice(&suite::TLS_AES_128_GCM_SHA256.to_be_bytes());
+        body.extend_from_slice(&suite.code().to_be_bytes());
         body.push(0);
         let mut extensions = Vec::new();
         extensions.extend_from_slice(&kind_len(ext::SUPPORTED_VERSIONS, &[0x03, 0x04]));
@@ -248,11 +265,26 @@ fn encrypted_extensions_body(alpn: Option<&str>) -> Vec<u8> {
     body
 }
 
-/// 把客户端从 Start 推到 WaitFinished，返回（服务端, 客户端）。
+/// 把客户端从 Start 推到 WaitFinished，返回持有服务端状态的对象。
 fn handshake_until_wait_finished(
     client: &mut ClientHandshake,
     chain: &[&[u8]],
     signer: Signer,
+) -> FakeServer {
+    handshake_until_wait_finished_with_suite(
+        client,
+        chain,
+        signer,
+        CipherSuite::Aes128GcmSha256,
+    )
+}
+
+/// 同上，但指定服务端协商出的套件。
+fn handshake_until_wait_finished_with_suite(
+    client: &mut ClientHandshake,
+    chain: &[&[u8]],
+    signer: Signer,
+    suite: CipherSuite,
 ) -> FakeServer {
     let client_hello_record = client.start(&rng()).expect("生成 ClientHello");
     let (record, _) = omnicrawl_tls::record::parse_record(&client_hello_record).expect("解析");
@@ -260,8 +292,13 @@ fn handshake_until_wait_finished(
     let client_public = extract_x25519_public(&client_hello);
 
     let server_exchange = omnicrawl_tls::X25519Exchange::generate(&rng()).expect("服务端密钥");
-    let (mut server, server_hello) =
-        FakeServer::accept(&client_hello, &client_public, server_exchange, signer);
+    let (mut server, server_hello) = FakeServer::accept_with_suite(
+        &client_hello,
+        &client_public,
+        server_exchange,
+        signer,
+        suite,
+    );
 
     client
         .feed_record(&omnicrawl_tls::record::Record {
@@ -349,6 +386,50 @@ fn an_ecdsa_certificate_completes_a_full_handshake() {
     let (kind, body) = server_read.open(&sealed).expect("服务端应当能解开");
     assert_eq!(kind, ContentType::ApplicationData);
     assert_eq!(body, b"GET / HTTP/1.1\r\n");
+}
+
+/// 服务端按自己的偏好选 0x1302（SHA384）时，客户端的转录必须换成 SHA384 重算。
+///
+/// 这条用例守护的是一个真实事故：客户端在发 ClientHello 时只能用占位套件开转录，
+/// 若收到 ServerHello 后不按协商套件重建，握手协商本身照样成功，但第一条加密记录
+/// 就解不开——线上表现为「记录解密失败（密钥、序号或附加数据不匹配）」，且只在对端
+/// 按服务端偏好选择套件时出现（bing、duckduckgo、taobao 都是这样被打挂的）。
+#[test]
+fn a_sha384_suite_completes_a_full_handshake() {
+    let mut client = ClientHandshake::new(Family::Chrome, "example.com")
+        .with_trust(TrustAnchors::from_der(&[CA_DER.into()]).expect("加载测试根"))
+        .with_verify_time(verify_time());
+
+    let mut server = handshake_until_wait_finished_with_suite(
+        &mut client,
+        &[LEAF_EC_DER, CA_DER],
+        Signer::ecdsa(),
+        CipherSuite::Aes256GcmSha384,
+    );
+
+    let finished = server.server_finished();
+    client
+        .feed_record(&omnicrawl_tls::record::Record {
+            kind: ContentType::ApplicationData,
+            payload: finished,
+        })
+        .expect("SHA384 的 Finished 应当校验通过");
+    assert_eq!(client.state(), State::SendClientFinished);
+
+    let client_finished = client.finish().expect("应当发出客户端 Finished");
+    let plaintext = server.expect_client_finished(&client_finished);
+    assert_eq!(plaintext.len(), 4 + 48, "SHA-384 的 verify_data 是 48 字节");
+
+    let sealed = client.seal_application(b"GET / HTTP/1.1
+").expect("加密");
+    let secrets = client.application_secrets().expect("应用密钥");
+    let mut server_read =
+        RecordKey::new(CipherSuite::Aes256GcmSha384.aead(), &secrets.client.key, secrets.client.iv)
+            .expect("服务端应用读密钥");
+    let (kind, body) = server_read.open(&sealed).expect("服务端应当能解开");
+    assert_eq!(kind, ContentType::ApplicationData);
+    assert_eq!(body, b"GET / HTTP/1.1
+");
 }
 
 #[test]

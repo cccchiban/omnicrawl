@@ -833,6 +833,49 @@ fn a_goaway_that_excludes_the_stream_is_an_error() {
     let _ = server.join();
 }
 
+/// SETTINGS 与 GOAWAY 出现在同一批读取里时，GOAWAY 不能被吞掉。
+///
+/// 设置交换阶段只关心「收到 PeerSettings 了吗」，若顺手把同批的 GOAWAY 丢掉，连接
+/// 看起来是活的，后面的请求却会撞上「对端已关闭」，错误出现在完全无关的地方。
+#[test]
+fn a_goaway_during_the_settings_exchange_fails_the_connection() {
+    let (client_side, mut server_side) = Pipe::pair();
+    let server = thread::spawn(move || {
+        let mut tls = ServerTls::accept(&mut server_side);
+        tls.finish_handshake(&mut server_side);
+        let _preamble = tls.read_plaintext(&mut server_side);
+        let mut batch = encode_frame(&Frame::Settings {
+            ack: false,
+            settings: Vec::new(),
+        })
+        .expect("编码 SETTINGS");
+        batch.extend_from_slice(
+            &encode_frame(&Frame::GoAway {
+                last_stream_id: 0,
+                code: ErrorCode::NoError as u32,
+                debug: b"not for you".to_vec(),
+            })
+            .expect("编码 GOAWAY"),
+        );
+        tls.write_h2(&mut server_side, &batch);
+        server_side
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("设置读超时");
+        let mut sink = [0u8; 64];
+        let _ = std::io::Read::read(&mut server_side, &mut sink);
+    });
+
+    match Connection::connect(client_side, Family::Chrome, "example.com", None) {
+        Err(DriverError::BadResponse(detail)) => {
+            assert!(detail.contains("GOAWAY"), "{detail}");
+            assert!(detail.contains("not for you"), "debug 载荷要带上：{detail}");
+        }
+        Ok(_) => panic!("设置交换阶段的 GOAWAY 应当让连接失败"),
+        Err(other) => panic!("应当是 GOAWAY 错误，得到 {other:?}"),
+    }
+    let _ = server.join();
+}
+
 #[test]
 fn connecting_to_a_closed_port_reports_an_io_error() {
     // 绑一个端口再立刻释放，随后连接必然失败。

@@ -15,6 +15,7 @@ use scraper::{ElementRef, Html, Node, Selector};
 use serde_json::{Map, Value};
 
 use super::error::{ToolError, ToolOutcome};
+use super::cookies::{CookieJar, SharedJar};
 use super::web_search::{clamp_float, clamp_int, strip_tags, truncate};
 use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind, WebRequest,
@@ -40,6 +41,10 @@ pub struct FetcherOptions {
     pub max_workers: usize,
     /// `None`：自动检测 Windows 系统代理；`Some("")`：不使用代理；其他为显式地址。
     pub proxy: Option<String>,
+    /// 进程内 cookie 罐：一次抓取内多个 URL 共用一份，`Set-Cookie` 会被后续请求回带。
+    ///
+    /// 不落盘：罐跟着进程走，退出即失。`None` 表示完全不做 cookie 处理。
+    pub cookie_jar: Option<SharedJar>,
 }
 
 impl Default for FetcherOptions {
@@ -52,6 +57,7 @@ impl Default for FetcherOptions {
             request_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_workers: MAX_WORKERS,
             proxy: None,
+            cookie_jar: Some(Arc::new(CookieJar::new())),
         }
     }
 }
@@ -211,6 +217,7 @@ fn fetch_one_inner(
         request.insecure = plan.insecure;
         request.max_redirects = MAX_REDIRECTS;
         request.impersonate = Some(plan.impersonate.clone());
+        request.cookie_jar = options.cookie_jar.clone();
         let response = options
             .transport
             .send(&request)
@@ -257,6 +264,8 @@ fn friendly_error(kind: WebErrorKind, message: &str) -> String {
         WebErrorKind::Tls => {
             "TLS 证书校验失败；内网自签名站点可在参数中加 insecure=true 重试。".to_string()
         }
+        // 握手谈不成与证书无关：这里必须透出真实原因，否则会把人引去查证书。
+        WebErrorKind::Handshake => format!("TLS 握手失败：{message}"),
         WebErrorKind::Other => format!("网络请求失败：{message}"),
     }
 }

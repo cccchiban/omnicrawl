@@ -85,7 +85,8 @@ impl CipherSuite {
         }
     }
 
-    fn hash_len(&self) -> usize {
+    /// 该套件所用哈希的输出长度（字节）。
+    pub fn hash_len(&self) -> usize {
         self.hash().output_len()
     }
 }
@@ -118,15 +119,38 @@ impl Transcript {
         self.state.update(data);
     }
 
-    /// 按 RFC 8446 §4.4.1 放入 `message_hash`：`1 字节哈希类型 + 1 字节长度 + 哈希值`。
+    /// 按 RFC 8446 §4.4.1 放入 `message_hash`。
     ///
-    /// HelloRetryRequest 之后，转录里的 ClientHello1 必须换成它的哈希，而不是保留原字节。
-    /// 保留了会算出不同的转录哈希，服务端的 Finished 就永远对不上——这个错误只在
-    /// HRR 路径上出现，普通握手测不出来。
+    /// 线上形状是一条完整的合成握手消息：
+    ///
+    /// ```text
+    /// message_hash = 0xfe || 00 00 Hash.length || Hash(ClientHello1)
+    /// ```
+    ///
+    /// 三个细节都不能省：类型字节是 254（不是 1）、长度是三字节、长度值为哈希长度
+    /// 而不是 `2 + 哈希长度`。任何一处写错都会让 HRR 路径的转录哈希与服务端不一致，
+    /// 而普通握手测不出来。
     pub fn push_message_hash(&mut self, hash: &[u8]) {
-        self.state.update(&[0x01]);
-        self.state.update(&[hash.len() as u8]);
+        self.state.update(&[0xfe]);
+        self.state.update(&[0, 0, hash.len() as u8]);
         self.state.update(hash);
+    }
+
+    /// 当前转录摘要用的是什么哈希。
+    ///
+    /// 客户端一开始不知道会协商出哪个套件，只能先用一个占位套件开转录；收到
+    /// ServerHello 后必须核对一次，不一致就用 [`Transcript::restarted`] 重建——
+    /// 同一个哈希函数累加的结果与「先缓冲再一次性哈希」完全等价，因此重建只要拿到
+    /// 已累积的明文即可。
+    pub fn hash_len(&self) -> usize {
+        self.hash().len()
+    }
+
+    /// 用一个已累积原始消息的缓冲按新套件重建转录。
+    pub fn restarted(suite: CipherSuite, messages: &[u8]) -> Self {
+        let mut transcript = Self::new(suite);
+        transcript.push(messages);
+        transcript
     }
 
     /// 当前转录哈希。

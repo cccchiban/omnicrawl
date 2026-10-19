@@ -22,10 +22,27 @@
 //! | [`http2`] | HTTP/2 帧层：帧头与各类型帧的编解码与校验 | 完成 |
 //! | [`h2conn`] | HTTP/2 连接层：流状态、流量控制、HEADERS/CONTINUATION 拼接 | 完成 |
 //! | [`http1`] | HTTP/1.1 客户端编解码：请求行、响应头、三种响应体定界 | 完成 |
+//! | [`tls12`] | TLS 1.2 客户端：PRF、密钥块、ECDHE 的 SKE、AEAD 记录层 | 完成 |
+//!
+//! ## 协议版本
+//!
+//! 同时支持 **TLS 1.3 与 TLS 1.2**，由服务端选择：
+//!
+//! - 服务端支持 1.3 时走 1.3（ClientHello 的 `supported_versions` 把 1.3 排在前）。
+//! - 服务端只到 1.2 时自动回落：1.2 服务端不会回 `supported_versions`，
+//!   `legacy_version`=0x0303 即视为 1.2，之后走 [`tls12`] 那套 PRF 与 AEAD 记录层。
+//!
+//! 两个版本在记录层上**不共用**：1.3 的加密记录一律是 `application_data`（真类型藏在
+//! 末字节），1.2 保留真实记录类型并把它写进 AAD。因此协商结果是显式的
+//! [`session::Version`]，上层不必靠猜。
+//!
+//! 1.2 侧的能力边界：只做 ECDHE + AEAD（AES-GCM / ChaCha20-Poly1305）。CBC 与 RSA
+//! 密钥传输明确拒绝——前者的 MAC-then-Encrypt 填充与隐式 IV 极易写错，后者在没有
+//! 客户端私钥时根本走不通。
 //!
 //! 应用层由 ALPN 决定：协商出 `h2` 走 HTTP/2，协商出 `http/1.1` 在同一套 TLS 记录层上
-//! 退到 HTTP/1.1 报文。只支持这两种——服务端选别的会如实报
-//! [`driver::DriverError::UnsupportedAlpn`]。
+//! 退到 HTTP/1.1 报文。1.2 下服务端不回 ALPN 是常态（老服务器不发这个扩展），此时按
+//! HTTP/1.1 走；1.3 下不回 ALPN 则如实报 [`driver::DriverError::UnsupportedAlpn`]。
 //!
 //! 尚未完成：`profile` 里 Firefox / Safari 的逐字节校准、证书吊销检查、
 //! 服务端推送（刻意不支持）、0-RTT、会话恢复。
@@ -53,6 +70,7 @@ pub mod parse;
 pub mod profile;
 pub mod record;
 pub mod session;
+pub mod tls12;
 pub mod verify;
 pub mod wire;
 
@@ -64,7 +82,7 @@ pub use h2conn::{ClientConnection, ConnectionError, Event, Feed, StreamState};
 pub use handshake::{
     negotiated_alpn, parse_certificate_chain, parse_certificate_leaf, parse_certificate_verify,
     parse_encrypted_extensions, parse_server_hello, take_handshake_messages, CertificateVerify,
-    HandshakeMessage, ServerHello, X25519Exchange,
+    HandshakeMessage, KeyExchange, KeyExchangeError, ServerHello, X25519Exchange,
 };
 pub use hpack::{Decoder, DynamicTable, Encoder, Header, HpackError};
 pub use http1::{BodyKind, Head, Http1Error};
@@ -79,10 +97,12 @@ pub use keyschedule::{
 pub use parse::{parse_client_hello, ParseError};
 pub use profile::{spec_for, Family};
 pub use record::{ContentType, Record, RecordError, RecordKey, MAX_PLAINTEXT, TAG_LEN};
-pub use session::{ClientHandshake, HandshakeError, PeerPolicy, State};
+pub use session::{ClientHandshake, HandshakeError, PeerPolicy, State, Version};
+pub use tls12::{RecordKey12, Suite12, Transcript12};
 pub use verify::{
     certificate_verify_message, finished_verify_data, signature_algorithm_for_scheme,
-    verify_certificate_verify, verify_finished, verify_server_chain, TrustAnchors, VerifyError,
+    verify_certificate_verify, verify_finished, verify_raw_signature, verify_server_chain,
+    TrustAnchors, VerifyError,
 };
 pub use wire::{EncodeError, Extension};
 

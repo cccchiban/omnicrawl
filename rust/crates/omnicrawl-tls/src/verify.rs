@@ -187,6 +187,40 @@ pub fn verify_certificate_verify(
         .map_err(|_| VerifyError::BadSignature)
 }
 
+/// 用「已拼好的原始消息」验签，供 TLS 1.2 的 `ServerKeyExchange` 使用。
+///
+/// 1.2 与 1.3 的签名方案取值相同（`0x0403` 等），但有一个关键差别：1.2 的 RSA
+/// 可以配 `rsa_pkcs1_*`（PKCS#1 v1.5），而 1.3 强制 PSS。因此这里不能复用
+/// [`signature_algorithm_for_scheme`]——它把 `0x0401`/`0x0501` 视为不支持。
+///
+/// 被签名的内容由调用方拼好（1.2 是 `client_random || server_random || params`），
+/// 与 1.3 的 `0x20×64` 前缀完全不同，这也是不能共用同一个函数的原因。
+pub fn verify_raw_signature(
+    leaf: &CertificateDer<'_>,
+    scheme: u16,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), VerifyError> {
+    let algorithm = tls12_signature_algorithm(scheme)
+        .ok_or(VerifyError::UnsupportedSignatureScheme(scheme))?;
+    let cert = EndEntityCert::try_from(leaf)
+        .map_err(|error| VerifyError::UntrustedCertificate(format!("叶证书无法解析：{error}")))?;
+    cert.verify_signature(algorithm, message, signature)
+        .map_err(|_| VerifyError::BadSignature)
+}
+
+/// 1.2 的 `signature_algorithms` 取值到 webpki 算法：在 1.3 的基础上补上 PKCS#1 v1.5。
+fn tls12_signature_algorithm(
+    scheme: u16,
+) -> Option<&'static dyn rustls_pki_types::SignatureVerificationAlgorithm> {
+    Some(match scheme {
+        0x0401 => webpki::ring::RSA_PKCS1_2048_8192_SHA256,
+        0x0501 => webpki::ring::RSA_PKCS1_2048_8192_SHA384,
+        0x0601 => webpki::ring::RSA_PKCS1_2048_8192_SHA512,
+        other => return signature_algorithm_for_scheme(other),
+    })
+}
+
 /// 受信根证书集合。
 pub struct TrustAnchors {
     anchors: Vec<TrustAnchor<'static>>,

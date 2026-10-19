@@ -28,6 +28,7 @@ pub mod ext {
     pub const SESSION_TICKET: u16 = 0x0023;
     pub const PRE_SHARED_KEY: u16 = 0x0029;
     pub const SUPPORTED_VERSIONS: u16 = 0x002b;
+    pub const COOKIE: u16 = 0x002c;
     pub const PSK_KEY_EXCHANGE_MODES: u16 = 0x002d;
     pub const KEY_SHARE: u16 = 0x0033;
     pub const APPLICATION_SETTINGS: u16 = 0x4469;

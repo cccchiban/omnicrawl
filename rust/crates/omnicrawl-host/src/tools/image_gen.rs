@@ -142,6 +142,7 @@ impl GenFailure {
                 WebErrorKind::Timeout => "请求超时。".to_string(),
                 WebErrorKind::Connect => "无法连接目标（网络不可达或目标拒绝连接）。".to_string(),
                 WebErrorKind::Tls => "TLS 证书校验失败。".to_string(),
+                WebErrorKind::Handshake => format!("TLS 握手失败：{message}"),
                 WebErrorKind::Other => format!("网络请求失败：{message}"),
             },
         }

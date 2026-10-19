@@ -45,13 +45,15 @@ use std::time::Instant;
 use omnicrawl_tls::driver::{Connection, DriverError, Response};
 use omnicrawl_tls::hpack::Header;
 use omnicrawl_tls::profile::Family;
-use omnicrawl_tls::verify::TrustAnchors;
+use omnicrawl_tls::session::HandshakeError;
+use omnicrawl_tls::verify::{TrustAnchors, VerifyError};
 use serde_json::Value;
 
 use super::web_transport::{
-    resolve_url, UreqWebTransport, WebError, WebErrorKind, WebRequest, WebResponse, WebTransport,
-    REDIRECT_STATUSES,
+    decode_content, resolve_url, UreqWebTransport, WebError, WebErrorKind, WebRequest, WebResponse,
+    WebTransport, REDIRECT_STATUSES,
 };
+use super::cookies;
 
 /// Python `_IMPERSONATE_OPTIONS` 的顺序（`omnicrawl/net/fetcher.py:62`）。
 ///
@@ -319,7 +321,14 @@ fn send_once(
     }
     .map_err(|error| classify_driver(&error))?;
 
-    let headers = to_hpack_headers(&request.headers);
+    // 逐跳回带：罐里的 cookie 在每跳重新计算（重定向可能换主机或路径）。
+    let mut headers = request.headers.clone();
+    cookies::apply_header(
+        request.cookie_jar.as_deref(),
+        &request.url,
+        &mut headers,
+    );
+    let headers = to_hpack_headers(&headers);
     let response = connection
         .request_with_headers(
             &request.method,
@@ -357,6 +366,10 @@ fn to_hpack_headers(headers: &[(String, String)]) -> Vec<Header> {
 }
 
 /// 把驱动层错误映射到内核统一的分类。
+///
+/// 只有**证书链本身**的问题才算 `Tls`：握手阶段的其他失败（对端只支持 1.2、套件不匹配、
+/// Alert、密钥派生失败）都属于「这个站点谈不成」，把它们也报成「证书校验失败」会让人
+/// 去查证书、甚至加 `insecure=true` 重试，而那条路根本走不到证书校验。
 fn classify_driver(error: &DriverError) -> WebError {
     match error {
         DriverError::Io(io) => match io.kind() {
@@ -365,7 +378,12 @@ fn classify_driver(error: &DriverError) -> WebError {
             }
             _ => WebError::new(WebErrorKind::Connect, io.to_string()),
         },
-        DriverError::Handshake(inner) => WebError::new(WebErrorKind::Tls, inner.to_string()),
+        DriverError::Handshake(inner) => match inner {
+            HandshakeError::Verification(verify) if is_certificate_problem(verify) => {
+                WebError::new(WebErrorKind::Tls, inner.to_string())
+            }
+            _ => WebError::new(WebErrorKind::Handshake, inner.to_string()),
+        },
         DriverError::UnsupportedAlpn(protocol) => WebError::new(
             WebErrorKind::Other,
             match protocol {
@@ -375,6 +393,18 @@ fn classify_driver(error: &DriverError) -> WebError {
         ),
         other => WebError::new(WebErrorKind::Other, other.to_string()),
     }
+}
+
+/// 这类失败才真的是「证书不可信」，`insecure=true` 有机会绕过。
+fn is_certificate_problem(error: &VerifyError) -> bool {
+    matches!(
+        error,
+        VerifyError::UntrustedCertificate(_)
+            | VerifyError::WrongHostName(_)
+            | VerifyError::CertificateNotValidYet(_)
+            | VerifyError::UnsupportedSignatureScheme(_)
+            | VerifyError::BadSignature
+    )
 }
 
 impl WebTransport for TlsWebTransport {
@@ -412,7 +442,19 @@ impl WebTransport for TlsWebTransport {
             }
             let mut hop = request.clone();
             hop.timeout = remaining;
+            // URL 也跟着当前跳走：`send_once` 要用它算这一跳该带哪些 cookie。
+            hop.url = current.clone();
             let (response, _protocol) = send_once(&hop, &target, &family, trust)?;
+            // 收割这一跳的 cookie：重定向链上的 `Set-Cookie` 必须立即生效。
+            cookies::harvest(
+                request.cookie_jar.as_deref(),
+                &current,
+                response
+                    .headers
+                    .iter()
+                    .filter(|header| header.name.eq_ignore_ascii_case("set-cookie"))
+                    .map(|header| header.value.as_str()),
+            );
 
             if request.method == "GET" && REDIRECT_STATUSES.contains(&response.status) {
                 if let Some(location) = response.header("location") {
@@ -426,11 +468,12 @@ impl WebTransport for TlsWebTransport {
                     }
                 }
             }
+            let content_encoding = response.header("content-encoding").map(str::to_string);
             return Ok(WebResponse {
                 status: response.status,
                 // 复用同一个 `location` 变量语义：最终地址就是当前跳的 URL。
                 final_url: current,
-                body: response.body,
+                body: decode_content(response.body, content_encoding.as_deref())?,
             });
         }
     }

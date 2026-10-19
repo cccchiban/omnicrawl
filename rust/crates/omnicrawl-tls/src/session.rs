@@ -21,11 +21,12 @@ use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 
 use crate::handshake::{
     hs, parse_certificate_chain, parse_certificate_verify, parse_encrypted_extensions,
-    parse_server_hello, take_handshake_messages, HandshakeMessage, X25519Exchange,
+    parse_server_hello, take_handshake_messages, HandshakeMessage, KeyExchange,
 };
 use crate::keyschedule::{ApplicationSecrets, HandshakeSecrets, KeySchedule, Transcript};
 use crate::profile::{spec_for, Family};
 use crate::record::{ContentType, Record, RecordKey};
+use crate::tls12::{RecordKey12, Suite12, Transcript12, MASTER_LEN};
 use crate::verify::{
     finished_verify_data, server_verify_context, verify_certificate_verify, verify_server_chain,
     TrustAnchors, VerifyError,
@@ -51,9 +52,29 @@ pub enum State {
     /// 这个状态单独存在是有意义的：此时应用读密钥已经就绪，但**写**密钥仍是握手密钥。
     /// 若在这里就允许发应用数据，服务端会因为「没收到客户端 Finished」直接断开。
     SendClientFinished,
+    /// TLS 1.2 分支：等 Certificate。
+    WaitCertificate12,
+    /// TLS 1.2 分支：等 ServerKeyExchange。
+    WaitServerKeyExchange,
+    /// TLS 1.2 分支：等 ServerHelloDone。
+    WaitServerHelloDone,
+    /// TLS 1.2 分支：本端 flight 已发出，等服务端 CCS 与 Finished。
+    WaitServerFinished12,
     /// 握手完成，可以发应用数据。
     Connected,
 }
+
+/// 协商出的 TLS 版本。
+///
+/// 两个版本在这条实现里是**两套独立的记录层与密钥调度**（1.3 的密钥藏在
+/// `application_data` 里、1.2 保留真实记录类型），因此协商结果必须显式暴露给上层，
+/// 不能靠「有没有 application_secrets」猜。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    Tls12,
+    Tls13,
+}
+
 
 /// 对端身份校验策略。
 ///
@@ -87,6 +108,10 @@ pub enum HandshakeError {
     Record(String),
     /// 缺少必要信息（例如尚未解析出的密码套件）。
     Missing(&'static str),
+    /// 对端回落到了 TLS 1.2 或更低版本，且本实现无法与该版本协商。
+    ///
+    /// TLS 1.2 已经支持，因此这个错误只在对方选到 **1.1 及更低** 时出现。
+    UnsupportedVersion(u16),
 }
 
 impl std::fmt::Display for HandshakeError {
@@ -106,17 +131,41 @@ impl std::fmt::Display for HandshakeError {
             Self::KeySchedule(detail) => write!(formatter, "密钥派生失败：{detail}"),
             Self::Record(detail) => write!(formatter, "记录层错误：{detail}"),
             Self::Missing(what) => write!(formatter, "握手状态缺少：{what}"),
+            Self::UnsupportedVersion(version) => write!(
+                formatter,
+                "对端协商到了 TLS {}（本实现支持 TLS 1.2 与 1.3）",
+                format_version(*version)
+            ),
         }
     }
 }
 
 impl std::error::Error for HandshakeError {}
 
+/// 把 TLS 版本号写成惯用的「1.2」形式。
+///
+/// 编码是 `major << 8 | minor`，但直接移位会得到「3.3」这种没人用的写法（0x0303 是
+/// TLS 1.2 的 legacy_version）。业界写法是 `(major - 2).(minor - 1)`：0x0301 是 1.0、
+/// 0x0303 是 1.2、0x0304 是 1.3。只减 major 会把它渲染成 1.3，报错文案于是自相矛盾。
+fn format_version(version: u16) -> String {
+    format!(
+        "{}.{}",
+        (version >> 8).saturating_sub(2),
+        (version & 0xff).saturating_sub(1)
+    )
+}
+
 impl From<VerifyError> for HandshakeError {
     fn from(error: VerifyError) -> Self {
         Self::Verification(error)
     }
 }
+
+/// ClientHello 里必须跨重发复用的三个值：random、session_id 与 GREASE 值。
+type HelloSeed = ([u8; 32], Vec<u8>, u16);
+
+/// HRR 重发时沿用的 `(random, session_id, GREASE, cookie)`。
+type ReusedHello<'a> = (&'a [u8; 32], &'a [u8], u16, &'a [u8]);
 
 /// 客户端握手。
 ///
@@ -132,8 +181,14 @@ pub struct ClientHandshake {
     family: Family,
     host: String,
     state: State,
-    exchange: Option<X25519Exchange>,
+    exchange: Option<KeyExchange>,
     transcript: Transcript,
+    /// 已经进入转录的握手消息原文（按发送/接收顺序）。
+    ///
+    /// 客户端的转录在发 ClientHello 时只能先用一个占位套件开张，真正的套件要等
+    /// ServerHello。若协商出的套件用别的哈希（SHA384、SHA512），累积到那一刻的
+    /// 摘要必须按新套件重算，因此得留着原文——摘要本身是无法「换算法」的。
+    transcript_messages: Vec<u8>,
     /// 已协商套件（收到 ServerHello 后才有）。
     suite: Option<crate::keyschedule::CipherSuite>,
     handshake_secrets: Option<HandshakeSecrets>,
@@ -152,10 +207,46 @@ pub struct ClientHandshake {
     retry_pending: Option<Vec<u8>>,
     /// 是否已经因 HRR 重试过一次。
     retried: bool,
+    /// 首个 ClientHello 的 random、session_id 与 GREASE 值：HRR 之后必须原样复用。
+    first_hello: Option<HelloSeed>,
     policy: PeerPolicy,
     anchors: Option<TrustAnchors>,
     /// 校验时间点；`None` 表示用系统当前时间。
     verify_at: Option<UnixTime>,
+    /// TLS 1.2 分支的密钥与转录状态。`None` 表示还没协商到 1.2。
+    tls12: Option<Handshake12>,
+    /// 已经在 `start` 里抽好的客户端 random（1.2 的 PRF 与 SKE 验签都要用它）。
+    client_random: Option<[u8; 32]>,
+    /// 1.2 分支里待发出的本端 flight（ClientKeyExchange + CCS + Finished）。
+    tls12_flight: Option<Vec<u8>>,
+    /// 1.2 的 ClientKeyExchange 需要的客户端 ECDHE 公钥。
+    tls12_client_key: Option<Vec<u8>>,
+    /// 首个 ClientHello 里为 P-256 准备的密钥对：1.2 没有 HRR，服务端可能挑它。
+    p256_exchange: Option<KeyExchange>,
+}
+
+/// TLS 1.2 分支的中间状态。
+///
+/// 1.3 的密钥是「握手/应用两阶段、两方向四个 secret」，1.2 只有「master secret 派生出
+/// 四个 key/iv」，因此单独一个结构体比往 1.3 的字段里塞 `Option` 更不容易用错。
+struct Handshake12 {
+    suite: Suite12,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    /// `pre_master_secret`（ECDHE 共享密钥）。
+    pre_master: Vec<u8>,
+    master: [u8; MASTER_LEN],
+    /// 累积到 ServerHelloDone 为止的握手原文：EMS 的 session_hash 与两条 Finished
+    /// 都要用它，且 client Finished 之后还要继续累积（server Finished 覆盖它）。
+    messages: Vec<u8>,
+    /// extended master secret 是否协商成功（决定 client Finished 之后是否要换转录）。
+    extended_master: bool,
+    read_key: Option<RecordKey12>,
+    write_key: Option<RecordKey12>,
+    server_chain: Vec<CertificateDer<'static>>,
+    alpn: Option<String>,
+    /// 服务端 flight（到 ServerHelloDone）的转录哈希，EMS 的 `session_hash` 用它。
+    session_hash: Vec<u8>,
 }
 
 impl ClientHandshake {
@@ -169,6 +260,7 @@ impl ClientHandshake {
             state: State::Start,
             exchange: None,
             transcript: Transcript::new(crate::keyschedule::CipherSuite::Aes128GcmSha256),
+            transcript_messages: Vec::new(),
             suite: None,
             handshake_secrets: None,
             application_secrets: None,
@@ -180,9 +272,15 @@ impl ClientHandshake {
             client_hello_bytes: None,
             retry_pending: None,
             retried: false,
+            first_hello: None,
             policy: PeerPolicy::Inspect,
             anchors: None,
             verify_at: None,
+            tls12: None,
+            client_random: None,
+            tls12_flight: None,
+            tls12_client_key: None,
+            p256_exchange: None,
         }
     }
 
@@ -208,17 +306,39 @@ impl ClientHandshake {
     }
 
     pub fn alpn(&self) -> Option<&str> {
-        self.alpn.as_deref()
+        match &self.tls12 {
+            Some(state) => state.alpn.as_deref(),
+            None => self.alpn.as_deref(),
+        }
+    }
+
+    /// 协商出的 TLS 版本；握手还没定版本时返回 `None`。
+    pub fn version(&self) -> Option<Version> {
+        if self.tls12.is_some() {
+            Some(Version::Tls12)
+        } else if self.suite.is_some() {
+            Some(Version::Tls13)
+        } else {
+            None
+        }
+    }
+
+    /// 1.2 的 master secret（1.3 没有这个概念，返回 `None`）。
+    pub fn master_secret(&self) -> Option<&[u8]> {
+        self.tls12.as_ref().map(|state| state.master.as_slice())
     }
 
     /// 对端证书链（第一张为叶证书）。
     pub fn server_chain(&self) -> &[CertificateDer<'static>] {
-        &self.server_chain
+        match &self.tls12 {
+            Some(state) => &state.server_chain,
+            None => &self.server_chain,
+        }
     }
 
     /// 对端叶证书。
     pub fn server_certificate(&self) -> Option<&[u8]> {
-        self.server_chain.first().map(|der| der.as_ref())
+        self.server_chain().first().map(|der| der.as_ref())
     }
 
     /// 已通过签名校验的 CertificateVerify。
@@ -240,29 +360,22 @@ impl ClientHandshake {
                 self.state
             )));
         }
-        let exchange = X25519Exchange::generate(rng)
+        // 首次 key_share 同时给出 X25519 与 P-256 的公钥。
+        //
+        // 1.3 允许服务端用 HelloRetryRequest 指定组，因此只发 X25519 也够用；但 1.2
+        // **没有** HRR，服务端只能在 ClientHello 已有的公钥里挑——只发 X25519 的话，
+        // 认死 P-256 的站点（例如百度）会在 ServerKeyExchange 里返回我们没给过的组，
+        // 握手当场失败。真实浏览器档案本来也同时带这两组，因此这不改变指纹形状。
+        let exchange = KeyExchange::generate(crate::client_hello::group::X25519, rng)
             .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
-        let key_share = [(
-            crate::client_hello::group::X25519,
-            exchange.public_key.clone(),
-        )];
-        let spec = spec_for(self.family, &self.host, &key_share);
-
-        let seed = random_byte(rng)?;
-        let grease = crate::client_hello::pick_grease(seed);
-        let mut random = [0u8; 32];
-        rng.fill(&mut random)
-            .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
-        let mut session_id = vec![0u8; spec.session_id_len];
-        if !session_id.is_empty() {
-            rng.fill(&mut session_id)
-                .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
-        }
-
-        let body = spec
-            .encode(grease, &random, &session_id)
+        let p256 = KeyExchange::generate(crate::client_hello::group::SECP256R1, rng)
             .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
-        self.transcript.push(&body);
+        let (body, used) = self.encode_client_hello(&exchange, Some(&p256), rng, None)?;
+        // 重发时必须逐字节复用的三个值，趁现在留住。
+        self.client_random = Some(used.0);
+        self.p256_exchange = Some(p256);
+        self.first_hello = Some(used);
+        self.push_transcript(&body);
         let record = Record {
             kind: ContentType::Handshake,
             payload: body,
@@ -276,8 +389,97 @@ impl ClientHandshake {
         Ok(bytes)
     }
 
+    /// 按当前档案把一次密钥交换的公钥编成 ClientHello 的消息体。
+    ///
+    /// `reuse` 只给 HelloRetryRequest 之后的重发用：RFC 8446 §4.1.2 要求第二个
+    /// ClientHello 除 `key_share`（以及回带的 cookie）外必须与第一个逐字节一致，
+    /// 尤其是 `random`、`session_id` 与 GREASE 值。重新抽这些值会被服务端判为
+    /// illegal_parameter 并直接 Alert。
+    fn encode_client_hello(
+        &self,
+        exchange: &KeyExchange,
+        extra: Option<&KeyExchange>,
+        rng: &dyn SecureRandom,
+        reuse: Option<ReusedHello>,
+    ) -> Result<(Vec<u8>, HelloSeed), HandshakeError> {
+        let mut key_share = vec![(exchange.group, exchange.public_key.clone())];
+        // 第二组的公钥只对 1.2 有意义（1.3 有 HRR）。按组的常见优先级排在前一组之后。
+        if let Some(extra) = extra {
+            key_share.push((extra.group, extra.public_key.clone()));
+        }
+        let mut spec = spec_for(self.family, &self.host, &key_share);
+
+        let (random, session_id, grease, cookie) = match reuse {
+            Some((random, session_id, grease, cookie)) => {
+                (*random, session_id.to_vec(), grease, cookie)
+            }
+            None => {
+                let seed = random_byte(rng)?;
+                let grease = crate::client_hello::pick_grease(seed);
+                let mut random = [0u8; 32];
+                rng.fill(&mut random)
+                    .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
+                let mut session_id = vec![0u8; spec.session_id_len];
+                if !session_id.is_empty() {
+                    rng.fill(&mut session_id)
+                        .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
+                }
+                (random, session_id, grease, &[][..])
+            }
+        };
+
+        if !cookie.is_empty() {
+            // cookie 放在 key_share 之前：顺序不影响语义，但与真实浏览器一致。
+            let mut data = Vec::with_capacity(cookie.len() + 2);
+            data.extend_from_slice(&(cookie.len() as u16).to_be_bytes());
+            data.extend_from_slice(cookie);
+            let position = spec
+                .extensions
+                .iter()
+                .position(|slot| slot.kind == crate::client_hello::ext::KEY_SHARE)
+                .unwrap_or(spec.extensions.len());
+            spec.extensions.insert(
+                position,
+                crate::client_hello::ExtensionSlot::new(crate::client_hello::ext::COOKIE, data),
+            );
+        }
+
+        if reuse.is_some() {
+            // RFC 8446 §4.1.4：HRR 之后这个 ClientHello 的 key_share 必须只含
+            // **一个** KeyShareEntry。Chromium 档案会在首位塞一个 GREASE 占位项，
+            // 重发时带着它就会被判 illegal_parameter（Alert 47）。
+            let single = crate::client_hello::key_share(&[(
+                exchange.group,
+                exchange.public_key.clone(),
+            )]);
+            if let Some(slot) = spec
+                .extensions
+                .iter_mut()
+                .find(|slot| slot.kind == crate::client_hello::ext::KEY_SHARE)
+            {
+                slot.data = single;
+            }
+        }
+
+        let body = spec
+            .encode(grease, &random, &session_id)
+            .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
+        Ok((body, (random, session_id, grease)))
+    }
+
+    /// 把一条完整握手消息推进转录，同时留下原文以备换哈希重算。
+    fn push_transcript(&mut self, raw: &[u8]) {
+        self.transcript.push(raw);
+        self.transcript_messages.extend_from_slice(raw);
+    }
+
     /// 喂入一条已解析的记录。
     pub fn feed_record(&mut self, record: &Record) -> Result<(), HandshakeError> {
+        // 1.2 一旦协商成功，记录层就完全换了一套：类型是真实的、CCS 有语义、
+        // 加密记录的类型是 handshake/alert 而不是 application_data。
+        if self.tls12.is_some() {
+            return self.feed_record_12(record);
+        }
         match record.kind {
             ContentType::Alert => self.handle_alert(&record.payload),
             // 1.3 中间设备的兼容性 CCS，忽略。
@@ -328,20 +530,29 @@ impl ClientHandshake {
             return self.handle_hello_retry_request(message, &parsed);
         }
 
-        let suite = crate::keyschedule::CipherSuite::from_code(parsed.cipher_suite).ok_or(
-            HandshakeError::Malformed(format!("对端选了非 1.3 套件 {:#06x}", parsed.cipher_suite)),
-        )?;
-        if parsed.selected_version != 0x0304 {
-            return Err(HandshakeError::Malformed(format!(
-                "对端协商出的版本是 {:#06x}，不是 TLS 1.3",
-                parsed.selected_version
-            )));
+        // 版本决定后面走哪套密钥调度：1.2 与 1.3 在记录层、PRF、转录上都不共用。
+        //
+        // 1.2 服务端不会回 `supported_versions`（那是 1.3 的扩展），因此
+        // `selected_version` 停在 `legacy_version`=0x0303 就是回落。
+        if parsed.selected_version == crate::tls12::TLS12_VERSION {
+            return self.handle_server_hello_12(message, &parsed);
         }
-        if parsed.key_share_group != crate::client_hello::group::X25519 {
+        if parsed.selected_version != 0x0304 {
+            return Err(HandshakeError::UnsupportedVersion(parsed.selected_version));
+        }
+        let suite = crate::keyschedule::CipherSuite::from_code(parsed.cipher_suite).ok_or(
+            HandshakeError::Malformed(format!(
+                "对端选了本实现不支持的 1.3 套件 {:#06x}",
+                parsed.cipher_suite
+            )),
+        )?;
+        if !matches!(
+            parsed.key_share_group,
+            crate::client_hello::group::X25519 | crate::client_hello::group::SECP256R1
+        ) {
             return Err(HandshakeError::Malformed(format!(
-                "对端选择的组 {:#06x} 不是 X25519（{:#06x}）",
-                parsed.key_share_group,
-                crate::client_hello::group::X25519
+                "对端选择的组 {:#06x} 不受支持（仅支持 X25519 与 secp256r1）",
+                parsed.key_share_group
             )));
         }
         if parsed.key_share.is_empty() {
@@ -350,11 +561,37 @@ impl ClientHandshake {
             ));
         }
 
-        self.transcript.push(&message.raw);
-        let exchange = self
-            .exchange
-            .take()
-            .ok_or(HandshakeError::Missing("X25519 密钥对"))?;
+        // 转录在发 ClientHello 时只能按占位套件开张，真正的套件到这里才知道。若协商出的
+        // 套件用别的哈希（例如 0x1302 用 SHA384），必须把已累积的消息按新哈希重算一遍：
+        // 漏掉这一步，从这里开始的每个密钥都会错，症状是第一条加密记录就解不开，
+        // 而握手协商本身看起来完全正常。
+        self.push_transcript(&message.raw);
+        if self.transcript.hash_len() != suite.hash_len() {
+            self.transcript = Transcript::restarted(suite, &self.transcript_messages);
+        }
+        // 服务端只能选我们发过的 key_share。首份 ClientHello 同时发了 X25519 与 P-256，
+        // 因此这两个组都可能被直接选中（不必经过 HRR）；HRR 之后只剩一个候选。
+        let exchange = if self.exchange.as_ref().map(|inner| inner.group)
+            == Some(parsed.key_share_group)
+        {
+            self.exchange.take()
+        } else if self.p256_exchange.as_ref().map(|inner| inner.group)
+            == Some(parsed.key_share_group)
+        {
+            self.p256_exchange.take()
+        } else {
+            let offered: Vec<String> = [self.exchange.as_ref(), self.p256_exchange.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(|inner| format!("{:#06x}", inner.group))
+                .collect();
+            return Err(HandshakeError::Malformed(format!(
+                "对端选了组 {:#06x}，但我们只为组 {} 发过公钥",
+                parsed.key_share_group,
+                offered.join("、")
+            )));
+        };
+        let exchange = exchange.ok_or(HandshakeError::Missing("ECDHE 密钥对"))?;
         let shared = exchange
             .agree(&parsed.key_share)
             .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
@@ -396,11 +633,15 @@ impl ClientHandshake {
                 "服务端再次要求 HelloRetryRequest；只允许一次".to_string(),
             ));
         }
-        if parsed.key_share_group != crate::client_hello::group::X25519 {
+        if !matches!(
+            parsed.key_share_group,
+            crate::client_hello::group::X25519 | crate::client_hello::group::SECP256R1
+        ) {
             return Err(HandshakeError::Malformed(format!(
-                "服务端要求改用组 {:#06x}，但本实现只支持 X25519（{:#06x}）",
+                "服务端要求改用组 {:#06x}，但本实现只支持 X25519（{:#06x}）与 secp256r1（{:#06x}）",
                 parsed.key_share_group,
-                crate::client_hello::group::X25519
+                crate::client_hello::group::X25519,
+                crate::client_hello::group::SECP256R1
             )));
         }
 
@@ -413,35 +654,38 @@ impl ClientHandshake {
         self.suite = Some(suite);
 
         // 转录改写成 message_hash，丢弃原来的 ClientHello1 字节。
-        let first_hash = self.transcript.hash();
+        //
+        // 这里的哈希必须用协商套件所对应的哈希：ClientHello1 从头到尾没有变过，
+        // 但它被累加时转录还停在占位套件上，因此要按套件重算而不是取当前摘要。
+        let first_hash = Transcript::restarted(suite, &self.transcript_messages).hash();
         self.transcript = Transcript::new(suite);
         self.transcript.push_message_hash(&first_hash);
-        self.transcript.push(&message.raw);
+        self.transcript_messages = vec![0xfe, 0, 0, first_hash.len() as u8];
+        self.transcript_messages.extend_from_slice(&first_hash);
+        self.push_transcript(&message.raw);
 
-        // 重新生成 X25519 密钥对并重发 ClientHello。
+        // 按服务端要求的组重新生成密钥对，并只带这一组的 key_share 重发 ClientHello。
+        // random、session_id 与 GREASE 必须沿用第一个 ClientHello：改掉其中任何一个，
+        // 服务端都会以 illegal_parameter 拒掉这次重试。
         let rng = ring::rand::SystemRandom::new();
-        let exchange = X25519Exchange::generate(&rng)
+        let exchange = KeyExchange::generate(parsed.key_share_group, &rng)
             .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
-        let key_share = [(
-            crate::client_hello::group::X25519,
-            exchange.public_key.clone(),
-        )];
-        let spec = spec_for(self.family, &self.host, &key_share);
-        let seed = random_byte(&rng)?;
-        let grease = crate::client_hello::pick_grease(seed);
-        let mut random = [0u8; 32];
-        rng.fill(&mut random)
-            .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
-        let mut session_id = vec![0u8; spec.session_id_len];
-        if !session_id.is_empty() {
-            rng.fill(&mut session_id)
-                .map_err(|_| HandshakeError::Malformed("随机源不可用".to_string()))?;
-        }
-        let body = spec
-            .encode(grease, &random, &session_id)
-            .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
-        self.transcript.push(&body);
+        let first = self.first_hello.clone();
+        let (random, session_id, grease) = first
+            .as_ref()
+            .map(|(random, session_id, grease)| (random, session_id.as_slice(), *grease))
+            .ok_or(HandshakeError::Missing("首个 ClientHello 的随机参数"))?;
+        let (body, _) = self.encode_client_hello(
+            &exchange,
+            None,
+            &rng,
+            Some((random, session_id, grease, &parsed.cookie)),
+        )?;
+        self.push_transcript(&body);
 
+        // 重发之后只剩一个候选：另一个组必须清掉，否则「按组取密钥」会取到从未
+        // 在第二个 ClientHello 里出现过的公钥。
+        self.p256_exchange = None;
         self.exchange = Some(exchange);
         self.retry_pending = Some(body);
         self.retried = true;
@@ -459,6 +703,415 @@ impl ClientHandshake {
             payload: body,
         };
         record.encode(0x0303).ok()
+    }
+
+    // ---- TLS 1.2 分支 ----
+
+    /// 1.2 的 ServerHello：只确定套件与两个 random，密钥要等 ServerKeyExchange。
+    ///
+    /// 1.2 的 PRF 用哪个哈希由套件决定（`0xc02c`/`0xc030` 是 SHA-384），因此转录不能
+    /// 沿用 1.3 占位套件开的那一份，要按套件重建。
+    fn handle_server_hello_12(
+        &mut self,
+        message: &HandshakeMessage,
+        parsed: &crate::handshake::ServerHello,
+    ) -> Result<(), HandshakeError> {
+        let suite = Suite12::from_code(parsed.cipher_suite).ok_or_else(|| {
+            // 明确区分「不支持这个版本」与「不支持这个套件」：后者常见于 CBC 老站点，
+            // 报成版本问题会让人误以为我们连 1.2 都没实现。
+            HandshakeError::Malformed(format!(
+                "对端选了 1.2 套件 {:#06x}，本实现只支持 ECDHE + AEAD（GCM / ChaCha20-Poly1305）",
+                parsed.cipher_suite
+            ))
+        })?;
+        let client_random = self
+            .client_random
+            .ok_or(HandshakeError::Missing("客户端 random"))?;
+
+        // 这里累积的原文是 1.2 的转录源头：EMS 的 session_hash、两条 Finished 都用它。
+        // 已累积的只有 ClientHello 与 ServerHello。
+        let mut messages = self.transcript_messages.clone();
+        messages.extend_from_slice(&message.raw);
+
+        let extended_master = crate::tls12::has_extended_master_secret(&parsed.extensions);
+        let alpn = crate::handshake::negotiated_alpn(&parsed.extensions);
+        self.tls12 = Some(Handshake12 {
+            suite,
+            client_random,
+            server_random: parsed.random,
+            pre_master: Vec::new(),
+            master: [0u8; MASTER_LEN],
+            messages,
+            extended_master,
+            read_key: None,
+            write_key: None,
+            server_chain: Vec::new(),
+            alpn,
+            session_hash: Vec::new(),
+        });
+        self.state = State::WaitCertificate12;
+        Ok(())
+    }
+
+    /// 1.2 的记录分派。加密之后记录类型仍是真实的，因此按「读密钥是否已装」分两段。
+    fn feed_record_12(&mut self, record: &Record) -> Result<(), HandshakeError> {
+        let encrypted = self
+            .tls12
+            .as_ref()
+            .map(|state| state.read_key.is_some())
+            .unwrap_or(false);
+
+        // CCS 必须在「有没有读密钥」之前判：服务端的 CCS 正是**安装**读密钥的时机，
+        // 放在后面会被 "未加密" 分支当成意外类型。
+        if record.kind == ContentType::ChangeCipherSpec {
+            return self.handle_change_cipher_spec_12();
+        }
+
+        if !encrypted {
+            // 服务端 flight 结束后、CCS 之前，OpenSSL 会先发一条 NewSessionTicket
+            // （RFC 5077 允许它在 CCS 前或后）。这条记录**已经是加密的**：服务端在
+            // 发完 ServerHelloDone 时就切了写密钥。此时我们还没装读密钥，无法解密，
+            // 也不必解密——它只是会话票据。因此在这一阶段直接跳过握手记录，
+            // 当普通明文处理会让状态机看到一个类型 4 并报错。
+            if record.kind == ContentType::Handshake {
+                let (messages, _) = take_handshake_messages(&record.payload);
+                if !messages.is_empty()
+                    && messages
+                        .iter()
+                        .all(|message| message.kind == hs::NEW_SESSION_TICKET)
+                {
+                    // 它是明文，且位于 server Finished **之前**，因此必须进转录：
+                    // 1.2 的 Finished 覆盖「此前全部握手消息」，漏掉它只会表现为
+                    // 「转录不一致」，不会指向 ticket。
+                    let state = self.tls12.as_mut().expect("1.2 状态");
+                    for message in &messages {
+                        state.messages.extend_from_slice(&message.raw);
+                    }
+                    return Ok(());
+                }
+            }
+            return match record.kind {
+                ContentType::Alert => self.handle_alert(&record.payload),
+                ContentType::Handshake => self.handle_plain_12(&record.payload),
+                // 还没协商完就收到 CCS 或应用数据：顺序违规，必须拒绝而不是跳过。
+                other => Err(HandshakeError::Malformed(format!(
+                    "1.2 握手阶段收到意外的记录类型 {}",
+                    other as u8
+                ))),
+            };
+        }
+
+        match record.kind {
+            ContentType::Alert => self.handle_alert(&record.payload),
+            ContentType::ChangeCipherSpec => self.handle_change_cipher_spec_12(),
+            ContentType::Handshake => {
+                let plaintext = self
+                    .tls12
+                    .as_mut()
+                    .and_then(|state| state.read_key.as_mut())
+                    .ok_or(HandshakeError::Missing("1.2 握手读密钥"))?
+                    .open(record)
+                    .map_err(HandshakeError::Record)?;
+                self.handle_encrypted_12(&plaintext)
+            }
+            ContentType::ApplicationData => Err(HandshakeError::Malformed(
+                "1.2 握手尚未完成就收到应用数据".to_string(),
+            )),
+        }
+    }
+
+    /// 1.2 的明文握手消息：Certificate → ServerKeyExchange → ServerHelloDone。
+    fn handle_plain_12(&mut self, payload: &[u8]) -> Result<(), HandshakeError> {
+        let (messages, consumed) = take_handshake_messages(payload);
+        if consumed != payload.len() {
+            return Err(HandshakeError::Malformed(
+                "1.2 握手负载尾部有残缺消息".to_string(),
+            ));
+        }
+        for message in messages {
+            let current = self.state;
+            match (current, message.kind) {
+                (State::WaitCertificate12, hs::CERTIFICATE) => {
+                    // 1.2 的 Certificate 没有 per-entry 扩展块，用 1.3 的解析器会读歪。
+                    let chain = crate::tls12::parse_certificate_chain(&message.body)
+                        .map_err(HandshakeError::Malformed)?;
+                    let chain: Vec<CertificateDer<'static>> = chain
+                        .into_iter()
+                        .map(|der| CertificateDer::from(der).into_owned())
+                        .collect();
+                    self.verify_chain_12(&chain)?;
+                    let state = self.tls12.as_mut().expect("1.2 状态");
+                    state.server_chain = chain;
+                    state.messages.extend_from_slice(&message.raw);
+                    self.state = State::WaitServerKeyExchange;
+                }
+                (State::WaitServerKeyExchange, hs::SERVER_KEY_EXCHANGE) => {
+                    self.handle_server_key_exchange_12(&message)?;
+                }
+                (State::WaitServerHelloDone, hs::SERVER_HELLO_DONE) => {
+                    self.tls12
+                        .as_mut()
+                        .expect("1.2 状态")
+                        .messages
+                        .extend_from_slice(&message.raw);
+                    self.finish_server_flight_12()?;
+                }
+                // 支持证书认证就必须回客户端证书；我们不发，假装没看见会让服务端一直等。
+                (_, hs::CERTIFICATE_REQUEST) => {
+                    return Err(HandshakeError::Malformed(
+                        "服务端要求客户端证书（CertificateRequest），本实现不支持客户端认证"
+                            .to_string(),
+                    ));
+                }
+                (state, received) => {
+                    return Err(HandshakeError::UnexpectedMessage { state, received });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 1.2 的 `ServerKeyExchange`：验签、算 pre_master，并留住 ClientKeyExchange 的公钥。
+    fn handle_server_key_exchange_12(
+        &mut self,
+        message: &HandshakeMessage,
+    ) -> Result<(), HandshakeError> {
+        let parsed = crate::tls12::parse_server_key_exchange(&message.body)
+            .map_err(HandshakeError::Malformed)?;
+
+        let (leaf, client_random, server_random) = {
+            let state = self.tls12.as_ref().expect("1.2 状态");
+            let leaf = state
+                .server_chain
+                .first()
+                .ok_or(HandshakeError::Missing("1.2 叶证书"))?
+                .clone();
+            (leaf, state.client_random, state.server_random)
+        };
+
+        // 1.2 的 SKE 签名覆盖两个 random 与曲线参数；漏掉 random 会让验签永远失败，
+        // 而错误信息只会说「签名不匹配」。
+        let signed =
+            crate::tls12::signed_key_exchange_message(&client_random, &server_random, &parsed.params);
+        crate::verify::verify_raw_signature(&leaf, parsed.scheme, &signed, &parsed.signature)?;
+
+        // 1.2 没有 HRR，服务端只能在我们已给出公钥的组里挑。首份 ClientHello 同时发了
+        // X25519 与 P-256，因此两个都可能被选中（百度就选 P-256）。
+        let exchange = if self.exchange.as_ref().map(|inner| inner.group) == Some(parsed.group) {
+            self.exchange.take()
+        } else if self.p256_exchange.as_ref().map(|inner| inner.group) == Some(parsed.group) {
+            self.p256_exchange.take()
+        } else {
+            let offered: Vec<String> = [self.exchange.as_ref(), self.p256_exchange.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(|inner| format!("{:#06x}", inner.group))
+                .collect();
+            return Err(HandshakeError::Malformed(format!(
+                "ServerKeyExchange 用了组 {:#06x}，但我们只为组 {} 发过公钥",
+                parsed.group,
+                offered.join("、")
+            )));
+        };
+        let exchange = exchange.ok_or(HandshakeError::Missing("ECDHE 密钥对"))?;
+        let public_key = exchange.public_key.clone();
+        let shared = exchange
+            .agree(&parsed.point)
+            .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
+
+        let state = self.tls12.as_mut().expect("1.2 状态");
+        state.pre_master = shared;
+        state.messages.extend_from_slice(&message.raw);
+        self.tls12_client_key = Some(public_key);
+        self.state = State::WaitServerHelloDone;
+        Ok(())
+    }
+
+    /// 服务端 flight 结束：派生 master secret 与密钥块，并备好本端 flight
+    /// （ClientKeyExchange + CCS + Finished）交给驱动层发出。
+    fn finish_server_flight_12(&mut self) -> Result<(), HandshakeError> {
+        let public_key = self
+            .tls12_client_key
+            .take()
+            .ok_or(HandshakeError::Missing("1.2 的 ECDHE 公钥"))?;
+        let cke =
+            crate::tls12::client_key_exchange_body(&public_key).map_err(HandshakeError::Malformed)?;
+
+        let sealed = {
+            let state = self.tls12.as_mut().expect("1.2 状态");
+            let hash = state.suite.prf_hash();
+            // RFC 7627 §4 与 RFC 5246 §7.4.9 对「会话转录」的边界是同一条：
+            // ClientHello 一直到**并包含** ClientKeyExchange。少了 CKE 会让
+            // master secret 全错，症状是服务端回 bad_record_mac（记录层解不开），
+            // 而不是任何与 Finished 有关的错误——这条边界踩过一次。
+            state
+                .messages
+                .extend_from_slice(&hs_message(hs::CLIENT_KEY_EXCHANGE, &cke));
+            let session_hash = Transcript12::restarted(hash, &state.messages).hash();
+            state.session_hash = session_hash.clone();
+            let master = if state.extended_master {
+                crate::tls12::extended_master_secret(hash, &state.pre_master, &session_hash)
+            } else {
+                // 没协商 EMS 时退回 RFC 5246 的派生（两个 random）。
+                crate::tls12::master_secret(
+                    hash,
+                    &state.pre_master,
+                    &state.client_random,
+                    &state.server_random,
+                )
+            };
+            state.master = master;
+            let block = crate::tls12::key_block(
+                hash,
+                state.suite,
+                &state.master,
+                &state.client_random,
+                &state.server_random,
+            );
+            state.write_key = Some(
+                RecordKey12::new(state.suite, &block.client).map_err(HandshakeError::Record)?,
+            );
+
+            // client Finished 覆盖「到 ServerHelloDone 为止」的转录；算出之后才把它
+            // 自己推进转录，供随后的 server Finished 校验使用。
+            let verify = crate::tls12::finished_verify_data(
+                hash,
+                &state.master,
+                "client finished",
+                &session_hash,
+            );
+            let finished_raw = hs_message(hs::FINISHED, &verify);
+            let sealed = state
+                .write_key
+                .as_mut()
+                .expect("1.2 写密钥")
+                .seal(ContentType::Handshake, &finished_raw)
+                .map_err(HandshakeError::Record)?;
+
+            state.messages.extend_from_slice(&finished_raw);
+            sealed
+        };
+
+        let mut out = Vec::new();
+        for record in [
+            Record {
+                kind: ContentType::Handshake,
+                payload: hs_message(hs::CLIENT_KEY_EXCHANGE, &cke),
+            },
+            Record {
+                kind: ContentType::ChangeCipherSpec,
+                payload: vec![0x01],
+            },
+            sealed,
+        ] {
+            out.extend_from_slice(
+                &record
+                    .encode(crate::tls12::TLS12_VERSION)
+                    .map_err(|error| HandshakeError::Malformed(format!("{error}")))?,
+            );
+        }
+        self.tls12_flight = Some(out);
+        self.state = State::WaitServerFinished12;
+        Ok(())
+    }
+
+    /// 收到服务端 CCS：此时才装读密钥（服务端的加密记录紧随其后）。
+    fn handle_change_cipher_spec_12(&mut self) -> Result<(), HandshakeError> {
+        if self.state != State::WaitServerFinished12 {
+            return Err(HandshakeError::UnexpectedMessage {
+                state: self.state,
+                received: ContentType::ChangeCipherSpec as u8,
+            });
+        }
+        // 服务端的加密记录从 CCS 之后开始，因此读密钥在这里装。
+        let state = self.tls12.as_mut().expect("1.2 状态");
+        if state.read_key.is_none() {
+            let block = crate::tls12::key_block(
+                state.suite.prf_hash(),
+                state.suite,
+                &state.master,
+                &state.client_random,
+                &state.server_random,
+            );
+            state.read_key = Some(
+                RecordKey12::new(state.suite, &block.server).map_err(HandshakeError::Record)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// 1.2 的加密握手消息：只可能是服务端 Finished。
+    fn handle_encrypted_12(&mut self, plaintext: &[u8]) -> Result<(), HandshakeError> {
+        let (messages, consumed) = take_handshake_messages(plaintext);
+        if consumed != plaintext.len() {
+            return Err(HandshakeError::Malformed(
+                "1.2 加密握手负载尾部有残缺消息".to_string(),
+            ));
+        }
+        for message in messages {
+            match (self.state, message.kind) {
+                (State::WaitServerFinished12, hs::FINISHED) => {
+                    let state = self.tls12.as_mut().expect("1.2 状态");
+                    let hash = state.suite.prf_hash();
+                    let transcript = Transcript12::restarted(hash, &state.messages);
+                    let expected = crate::tls12::finished_verify_data(
+                        hash,
+                        &state.master,
+                        "server finished",
+                        &transcript.hash(),
+                    );
+                    // 常量时间比较：逐字节早退会把「前几字节正确」泄漏给对端。
+                    if !constant_time_eq(&expected, &message.body) {
+                        return Err(HandshakeError::Verification(VerifyError::FinishedMismatch));
+                    }
+                    state.messages.extend_from_slice(&message.raw);
+                    self.state = State::Connected;
+                    return Ok(());
+                }
+                // 1.2 的服务端可能在 Finished 之前先发 NewSessionTicket（带
+                // session_ticket 扩展时几乎必然如此）。不做会话恢复，但要容忍它：
+                // 直接报「收到了握手消息类型 4」会让本来正常的连接断在最后一步。
+                (State::WaitServerFinished12, hs::NEW_SESSION_TICKET) => {
+                    self.tls12
+                        .as_mut()
+                        .expect("1.2 状态")
+                        .messages
+                        .extend_from_slice(&message.raw);
+                }
+                (current, received) => {
+                    return Err(HandshakeError::UnexpectedMessage {
+                        state: current,
+                        received,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 1.2 分支里的证书链信任判定（策略与 1.3 一致）。
+    fn verify_chain_12(&self, chain: &[CertificateDer<'static>]) -> Result<(), HandshakeError> {
+        if self.policy != PeerPolicy::VerifyChain {
+            return Ok(());
+        }
+        let anchors = self
+            .anchors
+            .as_ref()
+            .ok_or(HandshakeError::Missing("受信根"))?;
+        let name = ServerName::try_from(self.host.as_str())
+            .map_err(|error| VerifyError::WrongHostName(format!("{error}")))?;
+        crate::verify::verify_server_chain(
+            anchors,
+            chain,
+            &name,
+            self.verify_at.unwrap_or_else(UnixTime::now),
+        )?;
+        Ok(())
+    }
+
+    /// 取出 1.2 分支待发送的整段 flight（ClientKeyExchange + CCS + Finished）。
+    pub fn take_tls12_flight(&mut self) -> Option<Vec<u8>> {
+        self.tls12_flight.take()
     }
 
     /// 加密握手消息：先解密，再按内层类型分派。
@@ -503,7 +1156,7 @@ impl ClientHandshake {
                 let extensions =
                     parse_encrypted_extensions(&message.body).map_err(HandshakeError::Malformed)?;
                 self.alpn = crate::handshake::negotiated_alpn(&extensions);
-                self.transcript.push(&message.raw);
+                self.push_transcript(&message.raw);
                 self.state = State::WaitCertificate;
                 Ok(())
             }
@@ -516,7 +1169,7 @@ impl ClientHandshake {
                     .into_iter()
                     .map(|der| CertificateDer::from(der).into_owned())
                     .collect();
-                self.transcript.push(&message.raw);
+                self.push_transcript(&message.raw);
                 self.state = State::WaitCertificateVerify;
                 Ok(())
             }
@@ -563,20 +1216,22 @@ impl ClientHandshake {
         }
 
         self.certificate_verify = Some(parsed);
-        self.transcript.push(&message.raw);
+        self.push_transcript(&message.raw);
         self.state = State::WaitFinished;
         Ok(())
     }
 
     fn handle_server_finished(&mut self, message: &HandshakeMessage) -> Result<(), HandshakeError> {
         let suite = self.suite.ok_or(HandshakeError::Missing("协商套件"))?;
-        let secrets = self
-            .handshake_secrets
-            .as_ref()
-            .ok_or(HandshakeError::Missing("握手密钥"))?;
         // 转录此时只含 server Finished 之前的消息。
-        let expected = finished_verify_data(suite, &secrets.server_secret, &self.transcript)
-            .map_err(HandshakeError::KeySchedule)?;
+        let expected = {
+            let secrets = self
+                .handshake_secrets
+                .as_ref()
+                .ok_or(HandshakeError::Missing("握手密钥"))?;
+            finished_verify_data(suite, &secrets.server_secret, &self.transcript)
+                .map_err(HandshakeError::KeySchedule)?
+        };
         if expected.len() != message.body.len() {
             return Err(HandshakeError::Verification(
                 VerifyError::BadFinishedLength {
@@ -588,11 +1243,19 @@ impl ClientHandshake {
         if expected != message.body {
             return Err(HandshakeError::Verification(VerifyError::FinishedMismatch));
         }
-        self.transcript.push(&message.raw);
+        self.push_transcript(&message.raw);
 
-        let application = secrets
-            .application_secrets(&self.transcript.hash())
-            .map_err(HandshakeError::KeySchedule)?;
+        // 转录刚被推进，`handle_server_finished` 里不能再挂着对 `handshake_secrets`
+        // 的不可变借用，因此先把派生应用密钥所需的东西拷出来。
+        let application = {
+            let secrets = self
+                .handshake_secrets
+                .as_ref()
+                .ok_or(HandshakeError::Missing("握手密钥"))?;
+            secrets
+                .application_secrets(&self.transcript.hash())
+                .map_err(HandshakeError::KeySchedule)?
+        };
         // 只换读密钥：写方向还要用握手密钥把本端 Finished 发出去。
         self.read_key = Some(
             RecordKey::new(suite.aead(), &application.server.key, application.server.iv)
@@ -634,7 +1297,7 @@ impl ClientHandshake {
             .seal(ContentType::Handshake, &raw)
             .map_err(HandshakeError::Record)?;
 
-        self.transcript.push(&raw);
+        self.push_transcript(&raw);
         let application = self
             .application_secrets
             .as_ref()
@@ -648,12 +1311,23 @@ impl ClientHandshake {
     }
 
     /// 加密一条应用数据记录（握手完成后可用）。
+    ///
+    /// 1.2 与 1.3 的记录形状不同（1.2 保留真实类型、1.3 一律 `application_data`），
+    /// 因此这里按协商版本分派，调用方不需要知道差别。
     pub fn seal_application(&mut self, data: &[u8]) -> Result<Record, HandshakeError> {
         if self.state != State::Connected {
             return Err(HandshakeError::Malformed(format!(
                 "握手未完成（{:?}），不能发应用数据",
                 self.state
             )));
+        }
+        if let Some(state) = self.tls12.as_mut() {
+            return state
+                .write_key
+                .as_mut()
+                .ok_or(HandshakeError::Missing("1.2 应用写密钥"))?
+                .seal(ContentType::ApplicationData, data)
+                .map_err(HandshakeError::Record);
         }
         self.write_key
             .as_mut()
@@ -664,6 +1338,18 @@ impl ClientHandshake {
 
     /// 解密一条对端的应用数据记录。
     pub fn open_application(&mut self, payload: &[u8]) -> Result<Vec<u8>, HandshakeError> {
+        self.open_application_typed(ContentType::ApplicationData, payload)
+    }
+
+    /// 解密一条对端记录，并返回它的内层类型。
+    ///
+    /// 1.2 的加密记录**保留真实类型**（可能是 handshake，例如会话票据），因此调用方
+    /// 只传载荷是不够的，必须把记录类型一起交进来。
+    pub fn open_application_typed(
+        &mut self,
+        kind: ContentType,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, HandshakeError> {
         if self.state != State::Connected {
             return Err(HandshakeError::Malformed(format!(
                 "握手未完成（{:?}），不能读应用数据",
@@ -671,16 +1357,37 @@ impl ClientHandshake {
             )));
         }
         let record = Record {
-            kind: ContentType::ApplicationData,
+            kind,
             payload: payload.to_vec(),
         };
-        let (kind, body) = self
+        if let Some(state) = self.tls12.as_mut() {
+            let body = state
+                .read_key
+                .as_mut()
+                .ok_or(HandshakeError::Missing("1.2 应用读密钥"))?
+                .open(&record)
+                .map_err(HandshakeError::Record)?;
+            return match kind {
+                ContentType::ApplicationData => Ok(body),
+                // 1.2 里握手记录是 NewSessionTicket 或 Finished 之后的补充消息，忽略。
+                ContentType::Handshake => Ok(Vec::new()),
+                ContentType::Alert => Err(HandshakeError::Alert {
+                    level: body.first().copied().unwrap_or(0),
+                    description: body.get(1).copied().unwrap_or(0),
+                }),
+                other => Err(HandshakeError::Malformed(format!(
+                    "1.2 期望应用数据，收到记录类型 {}",
+                    other as u8
+                ))),
+            };
+        }
+        let (inner, body) = self
             .read_key
             .as_mut()
             .ok_or(HandshakeError::Missing("应用读密钥"))?
             .open(&record)
             .map_err(HandshakeError::Record)?;
-        match kind {
+        match inner {
             ContentType::ApplicationData => Ok(body),
             // 握手完成后服务端仍会发 NewSessionTicket（每条一个握手记录）。
             // 我们不做会话恢复，但**必须容忍**它——报错会让正常连接直接断掉。
@@ -696,6 +1403,29 @@ impl ClientHandshake {
             ))),
         }
     }
+}
+
+/// 拼一条握手消息（类型 + 三字节长度 + 体）。
+fn hs_message(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + body.len());
+    out.push(kind);
+    out.push((body.len() >> 16) as u8);
+    out.push((body.len() >> 8) as u8);
+    out.push(body.len() as u8);
+    out.extend_from_slice(body);
+    out
+}
+
+/// 常量时间比较。逐字节早退会把「前几字节正确」这一信息泄漏给对端。
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 fn random_byte(rng: &dyn SecureRandom) -> Result<u8, HandshakeError> {
@@ -772,5 +1502,221 @@ mod tests {
         assert_eq!(handshake.policy(), PeerPolicy::Inspect);
         assert!(handshake.server_chain().is_empty());
         assert!(handshake.certificate_verify().is_none());
+    }
+
+    #[test]
+    fn version_codes_are_rendered_as_the_public_version_names() {
+        // 0x0303 是 TLS 1.2 的 legacy_version：渲染成 1.3 会让「对端回落」的报错自相矛盾。
+        assert_eq!(format_version(0x0301), "1.0");
+        assert_eq!(format_version(0x0302), "1.1");
+        assert_eq!(format_version(0x0303), "1.2");
+        assert_eq!(format_version(0x0304), "1.3");
+    }
+
+    #[test]
+    fn a_tls12_server_hello_switches_to_the_12_branch() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: server_hello_12(0xc02f, &[]),
+        };
+        handshake
+            .feed_record(&record)
+            .expect("1.2 的 ServerHello 应当被接受");
+        assert_eq!(handshake.version(), Some(Version::Tls12));
+        assert_eq!(handshake.state(), State::WaitCertificate12);
+    }
+
+    #[test]
+    fn a_tls11_peer_is_reported_as_unsupported() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        // legacy_version = 0x0302（TLS 1.1），且没有 supported_versions。
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: server_hello_raw(0x0302, 0xc02f, &[]),
+        };
+        let error = handshake.feed_record(&record).expect_err("1.1 不受支持");
+        let text = error.to_string();
+        assert!(text.contains("TLS 1.1"), "实际文案：{text}");
+    }
+
+    #[test]
+    fn an_unsupported_12_suite_is_named_in_the_error() {
+        // CBC 套件（0xc013）不在支持范围：必须报「套件不支持」而不是「版本不支持」，
+        // 否则会让人以为我们连 1.2 都没实现。
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: server_hello_12(0xc013, &[]),
+        };
+        let error = handshake.feed_record(&record).expect_err("CBC 套件不受支持");
+        let text = error.to_string();
+        assert!(text.contains("1.2 套件"), "实际文案：{text}");
+        assert!(text.contains("0xc013"), "实际文案：{text}");
+    }
+
+    #[test]
+    fn a_12_server_hello_records_alpn_and_extended_master_secret() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        let alpn = crate::client_hello::alpn(&["h2"]);
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: server_hello_12(
+                0xc02f,
+                &[
+                    (crate::client_hello::ext::EXTENDED_MASTER_SECRET, Vec::new()),
+                    (crate::client_hello::ext::ALPN, alpn),
+                ],
+            ),
+        };
+        handshake.feed_record(&record).expect("应当接受");
+        assert_eq!(handshake.alpn(), Some("h2"));
+        assert!(handshake.tls12.as_ref().expect("1.2 状态").extended_master);
+    }
+
+    /// 造一条 1.2 的 ServerHello：没有 `supported_versions`，版本就是 `legacy_version`。
+    fn server_hello_12(suite: u16, extensions: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        server_hello_raw(0x0303, suite, extensions)
+    }
+
+    /// 造一条指定 legacy_version 与扩展的 ServerHello（含握手头）。
+    fn server_hello_raw(legacy: u16, suite: u16, extensions: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut block = Vec::new();
+        for (kind, data) in extensions {
+            block.extend_from_slice(&kind.to_be_bytes());
+            block.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            block.extend_from_slice(data);
+        }
+        let mut body = Vec::new();
+        body.extend_from_slice(&legacy.to_be_bytes());
+        body.extend_from_slice(&[0x5a; 32]);
+        body.push(0);
+        body.extend_from_slice(&suite.to_be_bytes());
+        body.push(0);
+        body.extend_from_slice(&(block.len() as u16).to_be_bytes());
+        body.extend_from_slice(&block);
+        let mut message = vec![hs::SERVER_HELLO];
+        message.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        message.extend_from_slice(&body);
+        message
+    }
+
+    /// 造一条要求改用 `group` 并带 cookie 的 HelloRetryRequest。
+    fn hello_retry_request(group: u16, cookie: &[u8]) -> Vec<u8> {
+        let mut extensions = Vec::new();
+        extensions.extend_from_slice(&crate::client_hello::ext::SUPPORTED_VERSIONS.to_be_bytes());
+        extensions.extend_from_slice(&2u16.to_be_bytes());
+        extensions.extend_from_slice(&0x0304u16.to_be_bytes());
+        extensions.extend_from_slice(&crate::client_hello::ext::KEY_SHARE.to_be_bytes());
+        extensions.extend_from_slice(&2u16.to_be_bytes());
+        extensions.extend_from_slice(&group.to_be_bytes());
+        if !cookie.is_empty() {
+            extensions.extend_from_slice(&crate::client_hello::ext::COOKIE.to_be_bytes());
+            extensions.extend_from_slice(&((cookie.len() + 2) as u16).to_be_bytes());
+            extensions.extend_from_slice(&(cookie.len() as u16).to_be_bytes());
+            extensions.extend_from_slice(cookie);
+        }
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x0303u16.to_be_bytes());
+        body.extend_from_slice(&crate::handshake::HELLO_RETRY_REQUEST_RANDOM);
+        body.push(0);
+        body.extend_from_slice(&0x1301u16.to_be_bytes());
+        body.push(0);
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(&extensions);
+
+        let mut message = vec![hs::SERVER_HELLO];
+        message.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        message.extend_from_slice(&body);
+        message
+    }
+
+    /// 取出重发的 ClientHello 体（驱动层要原样发出，这里直接检查它的内容）。
+    fn retried_client_hello(handshake: &mut ClientHandshake) -> Vec<u8> {
+        let record = handshake
+            .take_retry_client_hello()
+            .expect("HRR 之后应当有待发的 ClientHello");
+        let (parsed, consumed) = crate::record::parse_record(&record).expect("应当能解析");
+        assert_eq!(consumed, record.len());
+        assert_eq!(parsed.kind, ContentType::Handshake);
+        parsed.payload
+    }
+
+    #[test]
+    fn a_hello_retry_request_for_p256_is_answered_with_a_p256_key_share() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: hello_retry_request(crate::client_hello::group::SECP256R1, &[]),
+        };
+        handshake.feed_record(&record).expect("HRR 应当被接受");
+
+        let body = retried_client_hello(&mut handshake);
+        let (spec, _, _) = crate::parse::parse_client_hello(&body).expect("应当能解析");
+        let slot = spec
+            .extensions
+            .iter()
+            .find(|slot| slot.kind == crate::client_hello::ext::KEY_SHARE)
+            .expect("应当有 key_share");
+        // 恰好一个条目：组 0x0017 + 65 字节未压缩点。
+        assert_eq!(u16::from_be_bytes([slot.data[2], slot.data[3]]), 0x0017);
+        assert_eq!(
+            u16::from_be_bytes([slot.data[4], slot.data[5]]) as usize,
+            65,
+            "P-256 的公钥应当是 65 字节"
+        );
+    }
+
+    #[test]
+    fn the_retried_client_hello_reuses_the_first_random_and_session_id() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        let first = handshake.start(&rng()).expect("生成");
+        let (first_record, _) = crate::record::parse_record(&first).expect("解析");
+        let (first_spec, first_random, first_session_id) =
+            crate::parse::parse_client_hello(&first_record.payload).expect("解析");
+
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: hello_retry_request(crate::client_hello::group::SECP256R1, &[0xab; 16]),
+        };
+        handshake.feed_record(&record).expect("HRR 应当被接受");
+
+        let body = retried_client_hello(&mut handshake);
+        let (spec, random, session_id) = crate::parse::parse_client_hello(&body).expect("解析");
+        // 换掉 random 或 session_id 会被服务端判为 illegal_parameter。
+        assert_eq!(random, first_random, "random 必须沿用第一个 ClientHello");
+        assert_eq!(session_id, first_session_id, "session_id 必须沿用");
+        assert_eq!(
+            spec.cipher_suites, first_spec.cipher_suites,
+            "密码套件顺序也要一致"
+        );
+    }
+
+    #[test]
+    fn a_hello_retry_request_cookie_is_echoed_back() {
+        let mut handshake = ClientHandshake::new(Family::Chrome, "example.com");
+        handshake.start(&rng()).expect("生成");
+        let cookie = [0x5a; 24];
+        let record = Record {
+            kind: ContentType::Handshake,
+            payload: hello_retry_request(crate::client_hello::group::SECP256R1, &cookie),
+        };
+        handshake.feed_record(&record).expect("HRR 应当被接受");
+
+        let body = retried_client_hello(&mut handshake);
+        let (spec, _, _) = crate::parse::parse_client_hello(&body).expect("解析");
+        let slot = spec
+            .extensions
+            .iter()
+            .find(|slot| slot.kind == crate::client_hello::ext::COOKIE)
+            .expect("重发的 ClientHello 必须回带 cookie");
+        // cookie 扩展的数据是「2 字节长度 + 原始 cookie」。
+        assert_eq!(&slot.data[2..], &cookie);
     }
 }

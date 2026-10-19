@@ -35,6 +35,13 @@ impl ContentType {
 /// 明文记录的最大载荷（TLS 1.3 固定 2^14）。
 pub const MAX_PLAINTEXT: usize = 16_384;
 
+/// 记录层允许的最大载荷（按 TLS 1.2 的宽松上限：2^14 + 2048）。
+///
+/// 1.3 的密文上限更小（2^14 + 1 内层类型 + 16 tag），但解析层无法在拿到密钥前区分
+/// 版本；按较大的那个校验既不会放过真正的超限记录（解密阶段仍会拦），也不会让
+/// 合法的 1.2 大记录在解析阶段被误判。
+pub const MAX_CIPHERTEXT_12: usize = 16_384 + 2048;
+
 /// TLS 1.3 的 `inner` 类型字节与 AEAD tag 各占 1 与 16 字节。
 const INNER_TYPE_LEN: usize = 1;
 /// AEAD 认证标签长度（AES-GCM 与 ChaCha20-Poly1305 均为 16）。
@@ -99,7 +106,11 @@ pub fn parse_record(data: &[u8]) -> Result<(Record, usize), RecordError> {
     }
     let kind = ContentType::from_u8(data[0]).ok_or(RecordError::UnknownType(data[0]))?;
     let len = u16::from_be_bytes([data[3], data[4]]) as usize;
-    if len > MAX_PLAINTEXT + TAG_LEN + INNER_TYPE_LEN {
+    // 上限按 **1.2** 取（2^14 + 2048，RFC 5246 §6.2.3 允许密文比明文多出 2048 字节）。
+    // 1.3 自己的上限（2^14 + 1 + 16）更小，两者取大者即可：真正的解密在拿到密钥之后，
+    // 过长的载荷会在那一层被 AEAD 拒绝。按 1.3 的紧上限解析会让 1.2 服务端发来的
+    // 大记录在「还没看内容」时就被判成非法。
+    if len > MAX_CIPHERTEXT_12 {
         return Err(RecordError::TooLarge(len));
     }
     let total = 5 + len;
@@ -290,6 +301,32 @@ mod tests {
         data.extend_from_slice(&0xffffu16.to_be_bytes());
         let error = parse_record(&data).expect_err("超长必须报错");
         assert!(matches!(error, RecordError::TooLarge(0xffff)));
+    }
+
+    #[test]
+    fn a_12_sized_record_is_not_rejected_by_the_record_parser() {
+        // 1.2 允许密文比明文多 2048 字节，实际站点（百度）会发接近 2^14 + 2048 的记录。
+        // 按 1.3 的紧上限解析会在「还没拿到密钥」时就把它判成非法，症状是
+        // 记录层报 TooLarge 而不是任何解密错误。
+        let payload_len = MAX_CIPHERTEXT_12;
+        assert!(
+            payload_len > MAX_PLAINTEXT + TAG_LEN + 1,
+            "这条用例要覆盖到 1.3 上限之外"
+        );
+        let mut data = vec![23, 0x03, 0x03];
+        data.extend_from_slice(&(payload_len as u16).to_be_bytes());
+        data.extend_from_slice(&vec![0xaa; payload_len]);
+        let (record, consumed) = parse_record(&data).expect("1.2 尺寸的记录应当能解析");
+        assert_eq!(record.payload.len(), payload_len);
+        assert_eq!(consumed, data.len());
+
+        // 超过 1.2 上限的仍然必须拒绝。
+        let mut data = vec![23, 0x03, 0x03];
+        data.extend_from_slice(&((MAX_CIPHERTEXT_12 + 1) as u16).to_be_bytes());
+        assert!(matches!(
+            parse_record(&data),
+            Err(RecordError::TooLarge(_))
+        ));
     }
 
     #[test]

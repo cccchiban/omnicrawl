@@ -14,7 +14,7 @@ use crate::h2conn::{ClientConnection, ConnectionError, Event, StreamState};
 use crate::hpack::Header;
 use crate::profile::Family;
 use crate::record::{parse_record, ContentType, Record, RecordError, MAX_PLAINTEXT};
-use crate::session::{ClientHandshake, HandshakeError, State};
+use crate::session::{ClientHandshake, HandshakeError, State, Version};
 use crate::verify::TrustAnchors;
 use crate::wire::EncodeError;
 
@@ -414,9 +414,14 @@ impl<S: Transport> Connection<S> {
                 other => other,
             })?;
             self.handshake.feed_record(&record)?;
-            // HRR 不推进状态，但要求我们换组重发 ClientHello。
+            // HRR 不推进状态，但要求我们换组重发 ClientHello；
+            // 1.2 在收到 ServerHelloDone 后要发出整段 flight。两者都不会推进到
+            // Connected，因此必须在这里各查一次。
             if let Some(retry) = self.handshake.take_retry_client_hello() {
                 self.transport.write_all(&retry)?;
+            }
+            if let Some(flight) = self.handshake.take_tls12_flight() {
+                self.transport.write_all(&flight)?;
             }
         }
 
@@ -449,32 +454,62 @@ impl<S: Transport> Connection<S> {
                 self.protocol = Application::Http1;
                 Ok(())
             }
+            // 1.2 的分支里，服务端不协商 ALPN 是常态（老服务器根本不发这个扩展）。
+            // 此时按 HTTP/1.1 走：那是 1.2 时代的事实默认值，比直接失败更接近浏览器行为。
+            //
+            // 1.3 分支不这样做：1.3 的服务端**应当**回 ALPN，没回说明它没按协议谈，
+            // 猜一个协议继续发只会在后面收到更加莫名的错误。
+            None if self.handshake.version() == Some(Version::Tls12) => {
+                self.protocol = Application::Http1;
+                Ok(())
+            }
             other => Err(DriverError::UnsupportedAlpn(other.map(str::to_string))),
         }
     }
 
     /// 读到服务端 SETTINGS 并回 ACK，之后才允许发请求。
     ///
-    /// 读到服务端 SETTINGS 并回 ACK，之后才允许发请求。
+    /// 真实浏览器会在设置交换处等一轮再发请求；不等待就发，会在部分服务端
+    /// （例如 example.com 的 nginx）被判为协议违规并 GOAWAY。
     ///
-    /// 只处理设置交换期间会出现的帧。若同一次读取里还夹带了别的帧（例如服务端
-    /// 抢先发来的响应），`pump` 已经把它们交给 HTTP/2 层处理，事件会被丢弃——
-    /// 因此这里必须在**发请求之前**调用，不能复用后面的读取。
+    /// 这一轮读到的其他事件不能丢：GOAWAY 若被吞掉，连接看起来还在，后面的请求
+    /// 却会撞上「对端已关闭」，错误发生在完全无关的地方。因此这里遇到 GOAWAY
+    /// 直接失败，其余事件保留下来供后续读取。
     fn exchange_settings(&mut self) -> Result<(), DriverError> {
         loop {
             let events = self.pump()?;
+            if events
+                .iter()
+                .any(|event| matches!(event, Event::GoAway { .. }))
+            {
+                return Err(self.goaway_error());
+            }
             if events
                 .iter()
                 .any(|event| matches!(event, Event::PeerSettings(_)))
             {
                 return Ok(());
             }
-            if events
-                .iter()
-                .any(|event| matches!(event, Event::GoAway { .. }))
-            {
-                return Ok(());
+        }
+    }
+
+    /// 把已记录的 GOAWAY 转成一个能说明「为什么关」的错误。
+    ///
+    /// `debug` 常常是唯一能说明原因的东西：不少服务端用 `NO_ERROR` 关连接表达
+    /// 「我不想按你这套协议谈」，真正的理由只写在这个字段里。
+    fn goaway_error(&self) -> DriverError {
+        match self.h2.goaway_received() {
+            Some((last_stream_id, code)) => {
+                let debug = self
+                    .h2
+                    .goaway_debug()
+                    .map(|bytes| format!("：{}", String::from_utf8_lossy(bytes)))
+                    .unwrap_or_default();
+                DriverError::BadResponse(format!(
+                    "对端发来 GOAWAY（last_stream_id={last_stream_id} code={code}）{debug}"
+                ))
             }
+            None => DriverError::BadResponse("对端发来 GOAWAY".to_string()),
         }
     }
 
@@ -502,7 +537,10 @@ impl<S: Transport> Connection<S> {
         Ok(())
     }
 
-    /// 把明文 HTTP/2 字节按 2^14 切成记录后发出。
+    /// 把明文应用层字节按 2^14 切成记录后发出。
+    ///
+    /// 两个版本的差别在记录封装的形状上：1.3 的所有加密记录类型都是 23（真类型藏在内层），
+    /// 1.2 保留真实类型。`seal_application` 已经按版本处理，这里只管切片。
     fn send_h2(&mut self, bytes: &[u8]) -> Result<(), DriverError> {
         if bytes.is_empty() {
             return Ok(());
@@ -522,7 +560,10 @@ impl<S: Transport> Connection<S> {
             if record.kind == ContentType::ChangeCipherSpec {
                 continue;
             }
-            let plaintext = self.handshake.open_application(&record.payload)?;
+            // 1.2 的记录保留真实类型，必须把类型一起交给解密（它参与 AAD）。
+            let plaintext = self
+                .handshake
+                .open_application_typed(record.kind, &record.payload)?;
             // NewSessionTicket 等握手后消息会解出空载荷，跳过即可。
             if plaintext.is_empty() {
                 continue;
@@ -535,6 +576,11 @@ impl<S: Transport> Connection<S> {
 
     pub fn alpn(&self) -> Option<&str> {
         self.handshake.alpn()
+    }
+
+    /// 协商出的 TLS 版本。握手完成后一定非 `None`。
+    pub fn version(&self) -> Option<Version> {
+        self.handshake.version()
     }
 
     /// 协商出的应用层协议。
@@ -701,10 +747,17 @@ impl<S: Transport> Connection<S> {
             },
             crate::http1::BodyKind::UntilEof => {
                 // 服务端发完就关连接；已发 `Connection: close`，这里等 EOF 即可。
+                //
+                // 1.2 的服务端在关闭前通常先发一条 `close_notify`（Alert level=1
+                // description=0）。它是**正常收尾**而不是错误：把它当失败会让每个
+                // 不带 Content-Length 的 1.2 响应都报「握手失败」。
                 loop {
                     match self.read_app() {
                         Ok(()) => {}
                         Err(DriverError::Eof) => break,
+                        Err(DriverError::Handshake(HandshakeError::Alert {
+                            level: 1, ..
+                        })) => break,
                         Err(error) => return Err(error),
                     }
                 }
@@ -743,7 +796,11 @@ impl<S: Transport> Connection<S> {
             if record.kind == ContentType::ChangeCipherSpec {
                 continue;
             }
-            let plaintext = self.handshake.open_application(&record.payload)?;
+            // 1.2 的记录保留真实类型（可能是 handshake，例如会话票据），类型参与 AAD，
+            // 所以必须原样交给解密。
+            let plaintext = self
+                .handshake
+                .open_application_typed(record.kind, &record.payload)?;
             // NewSessionTicket 等握手后消息会解出空载荷，跳过即可。
             if plaintext.is_empty() {
                 continue;
@@ -815,22 +872,14 @@ impl<S: Transport> Connection<S> {
                 }
                 _ => {}
             }
-            if let Some((last_stream_id, code)) = self.h2.goaway_received() {
+            if let Some((last_stream_id, _code)) = self.h2.goaway_received() {
                 // RFC 9113 §6.8：GOAWAY 只表示「不再接受新流」。`last_stream_id` 及更小的
                 // 流仍可能正常完成，**不能**一看到 GOAWAY 就判失败。
                 //
                 // 这里踩过一次：某站点把响应帧与 GOAWAY 一起发来（NO_ERROR 收尾），我们
                 // 先处理 GOAWAY 就报「流未完成」，表现为明明拿到了 200 却报错。
                 if stream_id > last_stream_id {
-                    // `debug` 常常是唯一能说明「为什么关」的东西。
-                    let debug = self
-                        .h2
-                        .goaway_debug()
-                        .map(|bytes| format!("：{}", String::from_utf8_lossy(bytes)))
-                        .unwrap_or_default();
-                    return Err(DriverError::BadResponse(format!(
-                        "对端发来 GOAWAY（last_stream_id={last_stream_id} code={code}），流 {stream_id} 未被处理{debug}"
-                    )));
+                    return Err(self.goaway_error());
                 }
             }
             self.pump()?;

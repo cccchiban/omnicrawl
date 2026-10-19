@@ -1,7 +1,8 @@
 //! 密钥交换与握手消息解析：把「收到 ServerHello」推进到「已算出握手密钥」。
 //!
-//! 支持的组只有 X25519：四个浏览器档案的首选都是它，且 `ring` 提供已审计实现。
-//! 刻意不支持 P-256/384——需要时再加，现在加只会扩大未验证的面积。
+//! 支持的组是 X25519 与 secp256r1（P-256）：四个浏览器档案的首选都是 X25519，但一部分
+//! 服务端会在 HelloRetryRequest 里要求改用 P-256，只认 X25519 的客户端会在这一步失败。
+//! 两者的原语都由 `ring` 提供已审计实现，这一层只负责按组挑选算法并做长度校验。
 //!
 //! 这一层的职责边界：解析 ServerHello 与 EncryptedExtensions、Certificate、
 //! CertificateVerify、Finished 这几条消息的结构，并把它们按 1.3 的规则推进转录哈希。
@@ -10,6 +11,7 @@
 use ring::agreement;
 
 use crate::client_hello::ext;
+use crate::client_hello::group;
 use crate::wire::LengthWidth;
 
 /// 密钥交换错误。
@@ -26,37 +28,58 @@ pub enum KeyExchangeError {
 impl std::fmt::Display for KeyExchangeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedGroup(value) => {
-                write!(
-                    formatter,
-                    "对端选择的组 {value:#06x} 不受支持（仅支持 X25519）"
-                )
-            }
+            Self::UnsupportedGroup(value) => write!(
+                formatter,
+                "对端选择的组 {value:#06x} 不受支持（仅支持 X25519 与 secp256r1）"
+            ),
             Self::BadKeyLength { expected, actual } => {
                 write!(formatter, "公钥长度应为 {expected} 字节，实际 {actual}")
             }
-            Self::AgreementFailed => write!(formatter, "X25519 协商失败（公钥不合法）"),
+            Self::AgreementFailed => write!(formatter, "密钥协商失败（公钥不合法）"),
         }
     }
 }
 
 impl std::error::Error for KeyExchangeError {}
 
-/// 一次 X25519 密钥交换的客户端侧状态。
-pub struct X25519Exchange {
+/// 组编号到 `ring` 的 ECDHE 算法。P-384 不在支持范围：档案里虽然声明了它，
+/// 但没有任何实测站点要求过，加进来只会扩大未验证的面积。
+fn algorithm_for(group: u16) -> Option<&'static agreement::Algorithm> {
+    match group {
+        group::X25519 => Some(&agreement::X25519),
+        group::SECP256R1 => Some(&agreement::ECDH_P256),
+        _ => None,
+    }
+}
+
+/// 该组的公钥在线上占多少字节：X25519 是 32 字节原始公钥，P-256 是 65 字节未压缩点。
+fn public_key_len(group: u16) -> Option<usize> {
+    match group {
+        group::X25519 => Some(32),
+        group::SECP256R1 => Some(65),
+        _ => None,
+    }
+}
+
+/// 一次 ECDHE 密钥交换的客户端侧状态。
+pub struct KeyExchange {
     private: agreement::EphemeralPrivateKey,
-    /// 待放进 `key_share` 扩展的公钥（32 字节）。
+    /// 本次生成的组编号（决定公钥格式）。
+    pub group: u16,
+    /// 待放进 `key_share` 扩展的公钥。
     pub public_key: Vec<u8>,
 }
 
-impl X25519Exchange {
-    /// 用调用方给的随机源生成密钥对。
+impl KeyExchange {
+    /// 用调用方给的随机源为指定组生成密钥对。
     ///
     /// 随机源由外部提供而不是内置 `SystemRandom`：这一层的测试要可复现，
     /// 而生产调用方本来就该自己决定随机源（并保证其质量）。
-    pub fn generate(rng: &dyn ring::rand::SecureRandom) -> Result<Self, KeyExchangeError> {
-        let private = agreement::EphemeralPrivateKey::generate(&agreement::X25519, rng)
-            .map_err(|_| KeyExchangeError::AgreementFailed)?;
+    pub fn generate(group: u16, rng: &dyn ring::rand::SecureRandom) -> Result<Self, KeyExchangeError> {
+        let algorithm = algorithm_for(group).ok_or(KeyExchangeError::UnsupportedGroup(group))?;
+        let private =
+            agreement::EphemeralPrivateKey::generate(algorithm, rng)
+                .map_err(|_| KeyExchangeError::AgreementFailed)?;
         let public_key = private
             .compute_public_key()
             .map_err(|_| KeyExchangeError::AgreementFailed)?
@@ -64,21 +87,43 @@ impl X25519Exchange {
             .to_vec();
         Ok(Self {
             private,
+            group,
             public_key,
         })
     }
 
     /// 用对端的公钥算出共享密钥（`ECDHE` 的结果，作为 `HKDF-Extract` 的 IKM）。
     pub fn agree(self, peer_public: &[u8]) -> Result<Vec<u8>, KeyExchangeError> {
-        if peer_public.len() != 32 {
+        let expected = public_key_len(self.group)
+            .ok_or(KeyExchangeError::UnsupportedGroup(self.group))?;
+        if peer_public.len() != expected {
             return Err(KeyExchangeError::BadKeyLength {
-                expected: 32,
+                expected,
                 actual: peer_public.len(),
             });
         }
-        let peer = agreement::UnparsedPublicKey::new(&agreement::X25519, peer_public);
+        let peer = agreement::UnparsedPublicKey::new(self.private.algorithm(), peer_public);
         agreement::agree_ephemeral(self.private, &peer, |material| material.to_vec())
             .map_err(|_| KeyExchangeError::AgreementFailed)
+    }
+}
+
+/// 只做 X25519 的密钥交换。档案的首次 `key_share` 用它，也保留了更窄的调用面。
+pub struct X25519Exchange {
+    inner: KeyExchange,
+    /// 待放进 `key_share` 扩展的公钥（32 字节）。
+    pub public_key: Vec<u8>,
+}
+
+impl X25519Exchange {
+    pub fn generate(rng: &dyn ring::rand::SecureRandom) -> Result<Self, KeyExchangeError> {
+        let inner = KeyExchange::generate(group::X25519, rng)?;
+        let public_key = inner.public_key.clone();
+        Ok(Self { inner, public_key })
+    }
+
+    pub fn agree(self, peer_public: &[u8]) -> Result<Vec<u8>, KeyExchangeError> {
+        self.inner.agree(peer_public)
     }
 }
 
@@ -95,6 +140,11 @@ pub struct ServerHello {
     pub key_share: Vec<u8>,
     /// 协商出的 TLS 版本（来自 `supported_versions`）。
     pub selected_version: u16,
+    /// HRR 下发的 cookie（客户端必须在第二个 ClientHello 里原样回带）；空表示没有。
+    pub cookie: Vec<u8>,
+    /// 扩展原文。1.2 的 ALPN 与 extended master secret 都在这里（1.3 在
+    /// EncryptedExtensions），因此解析层必须把它交出去。
+    pub extensions: Vec<(u16, Vec<u8>)>,
 }
 
 /// 一个握手消息：类型 + 体。
@@ -112,7 +162,12 @@ pub mod hs {
     pub const SERVER_HELLO: u8 = 2;
     pub const ENCRYPTED_EXTENSIONS: u8 = 8;
     pub const CERTIFICATE: u8 = 11;
+    pub const SERVER_KEY_EXCHANGE: u8 = 12;
+    pub const CERTIFICATE_REQUEST: u8 = 13;
+    pub const SERVER_HELLO_DONE: u8 = 14;
     pub const CERTIFICATE_VERIFY: u8 = 15;
+    pub const CLIENT_KEY_EXCHANGE: u8 = 16;
+    pub const NEW_SESSION_TICKET: u8 = 4;
     pub const FINISHED: u8 = 20;
 }
 
@@ -226,10 +281,13 @@ pub fn parse_server_hello(body: &[u8]) -> Result<ServerHello, String> {
     let mut selected_version = legacy_version;
     let mut key_share_group = 0u16;
     let mut key_share = Vec::new();
+    let mut cookie_opaque = Vec::new();
+    let mut all_extensions = Vec::new();
     let mut extensions = Reader::new(extensions_block);
     while extensions.remaining() >= 4 {
         let kind = extensions.u16().ok_or("扩展类型截断")?;
         let data = extensions.block(LengthWidth::U16).ok_or("扩展数据截断")?;
+        all_extensions.push((kind, data.to_vec()));
         match kind {
             ext::SUPPORTED_VERSIONS => {
                 if data.len() < 2 {
@@ -249,6 +307,14 @@ pub fn parse_server_hello(body: &[u8]) -> Result<ServerHello, String> {
                         .to_vec();
                 }
             }
+            ext::COOKIE => {
+                // HRR 可以带 cookie，客户端必须在 ClientHello2 里原样回带。
+                let mut cookie = Reader::new(data);
+                cookie_opaque = cookie
+                    .block(LengthWidth::U16)
+                    .ok_or("cookie 长度截断")?
+                    .to_vec();
+            }
             _ => {}
         }
     }
@@ -262,6 +328,8 @@ pub fn parse_server_hello(body: &[u8]) -> Result<ServerHello, String> {
         key_share_group,
         key_share,
         selected_version,
+        cookie: cookie_opaque,
+        extensions: all_extensions,
     })
 }
 
@@ -362,7 +430,6 @@ pub fn parse_certificate_verify(body: &[u8]) -> Result<CertificateVerify, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client_hello::group;
 
     fn rng() -> ring::rand::SystemRandom {
         ring::rand::SystemRandom::new()
@@ -405,6 +472,44 @@ mod tests {
         let alice2 = X25519Exchange::generate(&rng()).expect("生成");
         let with_carol = alice2.agree(&carol_public).expect("协商");
         assert_ne!(with_bob, with_carol);
+    }
+
+    #[test]
+    fn p256_agreement_is_symmetric_and_uses_a_65_byte_point() {
+        let alice = KeyExchange::generate(group::SECP256R1, &rng()).expect("生成");
+        let bob = KeyExchange::generate(group::SECP256R1, &rng()).expect("生成");
+        assert_eq!(alice.group, group::SECP256R1);
+        // 未压缩点：0x04 前缀 + 32 字节 X + 32 字节 Y。
+        assert_eq!(alice.public_key.len(), 65);
+        assert_eq!(alice.public_key[0], 0x04);
+        let alice_public = alice.public_key.clone();
+        let bob_public = bob.public_key.clone();
+        let from_alice = alice.agree(&bob_public).expect("协商");
+        let from_bob = bob.agree(&alice_public).expect("协商");
+        assert_eq!(from_alice, from_bob, "双方必须得到同一个共享密钥");
+        assert_eq!(from_alice.len(), 32);
+    }
+
+    #[test]
+    fn p256_rejects_a_key_of_the_x25519_length() {
+        let exchange = KeyExchange::generate(group::SECP256R1, &rng()).expect("生成");
+        let error = exchange.agree(&[0u8; 32]).expect_err("长度不对");
+        assert_eq!(
+            error,
+            KeyExchangeError::BadKeyLength {
+                expected: 65,
+                actual: 32
+            }
+        );
+    }
+
+    #[test]
+    fn an_unsupported_group_is_refused_up_front() {
+        match KeyExchange::generate(group::SECP384R1, &rng()) {
+            Ok(_) => panic!("P-384 不该被支持"),
+            Err(error) => assert_eq!(error, KeyExchangeError::UnsupportedGroup(group::SECP384R1)),
+        }
+        assert_eq!(public_key_len(group::SECP384R1), None);
     }
 
     /// 构造一份最小的 ServerHello 以便测试解析路径。

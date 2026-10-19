@@ -14,6 +14,7 @@ pub mod advisor;
 pub mod arguments;
 pub mod command;
 pub mod config_tool;
+pub mod cookies;
 pub mod declarations;
 pub mod decision_choice;
 pub mod decision_prune;
@@ -58,6 +59,7 @@ pub use decision_suggest::{
     SuggestionInputs,
 };
 pub use error::{ToolError, ToolOutcome};
+pub use cookies::{CookieJar, SharedJar};
 pub use fetcher::FetcherOptions;
 pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;

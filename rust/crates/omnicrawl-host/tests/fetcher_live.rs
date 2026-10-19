@@ -68,3 +68,52 @@ fn a_http11_only_site_is_fetched_too() {
     println!("{output}");
     assert!(output.contains("状态: 200"), "{output}");
 }
+
+#[test]
+#[ignore = "需要外网"]
+fn the_fetcher_reaches_a_tls12_only_site() {
+    // 百度主站只支持到 TLS 1.2。这一条走的是完整的 `fetcher` 工具执行体（含指纹传输、
+    // 重定向、正文提取），是「1.2 回落」在真实调用链上的唯一证据。
+    let output = fetcher::fetcher(&options(), &arguments("https://www.baidu.com/", "chrome"))
+        .unwrap_or_else(|error| panic!("百度应当能抓：{error}"));
+    assert!(!output.contains("失败:"), "抓取失败：\n{output}");
+    assert!(output.contains("状态: 200"), "{output}");
+    assert!(!output.contains("TLS"), "不该再报 TLS 错误：\n{output}");
+}
+
+#[test]
+#[ignore = "需要外网"]
+fn the_fetcher_reaches_another_tls12_only_site() {
+    // 换一家服务端实现，避免「恰好这一个站点能过」。
+    let output = fetcher::fetcher(&options(), &arguments("https://www.qq.com/", "chrome"))
+        .unwrap_or_else(|error| panic!("qq.com 应当能抓：{error}"));
+    assert!(!output.contains("失败:"), "抓取失败：\n{output}");
+    assert!(output.contains("状态: 200"), "{output}");
+}
+
+/// 真实站点的 cookie：`Set-Cookie` 要被收下，且在后续请求里回带回去。
+///
+/// 走的是默认传输（指纹栈 + h2/1.1），因此这条同时覆盖两条记录通路。
+/// 断言只看「罐里有了」与「回带成功抓到了」，不假设具体站点的 cookie 名。
+#[test]
+#[ignore = "需要外网"]
+fn cookies_from_a_real_site_are_stored_and_replayed() {
+    let jar = std::sync::Arc::new(omnicrawl_host::tools::cookies::CookieJar::new());
+    let options = FetcherOptions {
+        proxy: Some(String::new()),
+        cookie_jar: Some(jar.clone()),
+        ..FetcherOptions::default()
+    };
+    let output = fetcher::fetcher(&options, &arguments("https://www.baidu.com/", "chrome"))
+        .unwrap_or_else(|error| panic!("百度应当能抓：{error}"));
+    assert!(output.contains("状态: 200"), "{output}");
+    assert!(
+        jar.count() > 0,
+        "百度会下发 Set-Cookie，罐里不该是空的：\n{output}"
+    );
+
+    // 再抓一次同一站点：这次请求必须带上罐里的 cookie。
+    let again = fetcher::fetcher(&options, &arguments("https://www.baidu.com/", "chrome"))
+        .unwrap_or_else(|error| panic!("第二次抓取应当成功：{error}"));
+    assert!(again.contains("状态: 200"), "{again}");
+}
