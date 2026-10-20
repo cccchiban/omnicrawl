@@ -153,12 +153,22 @@ fn resolve_target(
     } else {
         default_name.to_string()
     };
-    let directory = sibling_dir.map(PathBuf::from).or_else(|| {
-        env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(PathBuf::from))
-    });
-    if let Some(directory) = directory {
+    // 先看调用方给的目录（工作区），再看宿主自身目录：装配包把内核放在 `bin/`、宿主放在
+    // `host/`，工作区里通常没有同名可执行文件。只查工作区会退回裸文件名，而下游要靠
+    // 「内核路径的同级目录」判断有没有宿主载荷（连接器由谁承载），裸名一律判成没有。
+    let mut directories: Vec<PathBuf> = Vec::new();
+    if let Some(directory) = sibling_dir {
+        directories.push(directory.to_path_buf());
+    }
+    if let Ok(current) = env::current_exe() {
+        if let Some(directory) = current.parent() {
+            let directory = directory.to_path_buf();
+            if !directories.contains(&directory) {
+                directories.push(directory);
+            }
+        }
+    }
+    for directory in directories {
         let sibling = directory.join(&executable_name);
         if sibling.is_file() {
             return Ok(sibling);
@@ -219,5 +229,35 @@ mod tests {
             resolve_target("__OMNICRAWL_MISSING__", "omnicrawl", Some(Path::new("."))).unwrap();
         let name = target.file_name().unwrap().to_string_lossy();
         assert!(name == "omnicrawl" || name == "omnicrawl.exe");
+    }
+
+    /// 调用方给的目录里能找到可执行文件时就用它；找不到才退回裸文件名（交给 PATH）。
+    ///
+    /// 装配包把内核放在 `bin/`、宿主放在 `host/`，工作区里没有同名文件；连接器承载方的判定
+    /// 依赖这里返回真实路径，裸文件名会让下游以为「没有宿主载荷」。
+    #[test]
+    fn resolve_target_prefers_the_given_directory() {
+        let root = std::env::temp_dir().join(format!("oc-entry-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建立临时目录");
+        let name = if cfg!(windows) {
+            "omnicrawl.exe"
+        } else {
+            "omnicrawl"
+        };
+        let found = root.join(name);
+        std::fs::write(&found, b"").expect("写占位可执行文件");
+
+        let resolved = resolve_target("__OMNICRAWL_MISSING__", "omnicrawl", Some(&root)).unwrap();
+        assert_eq!(resolved, found);
+
+        let missing =
+            resolve_target("__OMNICRAWL_MISSING__", "omnicrawl-absent", Some(&root)).unwrap();
+        // 哪儿都找不到时只留裸文件名，交给 PATH；绝不能凭空造路径。
+        assert!(
+            !missing.is_absolute() && missing.components().count() == 1,
+            "{missing:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

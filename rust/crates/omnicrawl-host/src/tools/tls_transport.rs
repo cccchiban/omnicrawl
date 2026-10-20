@@ -29,10 +29,13 @@
 //!
 //! | 维度 | 现在 | 说明 |
 //! |---|---|---|
-//! | 内容压缩 | 不声明 `accept-encoding` | 本栈不解压，声明了会拿到二进制 |
+//! | 内容压缩 | 按族声明 `accept-encoding`（`gzip, deflate, br`） | 只声明本实现真能解开的编码，由 `decode_content` 统一还原 |
 //! | HTTP/2 设置 | 只发 MAX_FRAME_SIZE 与 INITIAL_WINDOW_SIZE | 不发 `ENABLE_PUSH=0`（nginx 会 GOAWAY） |
 //! | 连接专有头 | 一律不发 | h2 禁止；1.1 通路自动补 `Connection: close` |
 //! | 明文 http:// | 走 ureq 分支 | 自研栈只做 TLS，明文没有指纹可模拟 |
+//!
+//! 不声明 `zstd`：它的 Rust 绑定 `zstd-sys` 需要 C 工具链，与本仓库「纯 Rust 构建」的
+//! 约定冲突。声明一个自己解不开的编码并不「更像浏览器」——只会让服务端回不可用的字节。
 //!
 //! ## 指纹档案到 HTTP 头的一致性
 //!
@@ -54,6 +57,8 @@ use super::web_transport::{
     WebTransport, REDIRECT_STATUSES,
 };
 use super::cookies;
+use super::fetch_metadata;
+use super::referrer;
 
 /// Python `_IMPERSONATE_OPTIONS` 的顺序（`omnicrawl/net/fetcher.py:62`）。
 ///
@@ -114,6 +119,12 @@ struct FamilyIdentity {
     fetch_user: bool,
     /// `accept` 的默认值。
     accept: &'static str,
+    /// `accept-encoding` 的值。只声明本实现真能解开的编码：
+    /// 声明了却解不开，等于把二进制塞给正文提取；不声明又明显不像浏览器。
+    ///
+    /// 各族的顺序与浏览器实际发送一致（`br` 在 Chromium/Firefox 里优先于 `gzip`）。
+    /// 不声明 `zstd`：它需要 C 依赖（zstd-sys），本项目不引入 C/C++ 工具链。
+    accept_encoding: &'static str,
 }
 
 /// Chromium 145（本机 Edge 抓包版本，Chrome/Edge 共用同一份 TLS 档案）。
@@ -133,6 +144,7 @@ Gecko/20100101 Firefox/151.0",
             platform: None,
             fetch_user: true,
             accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            accept_encoding: "gzip, deflate, br",
         },
         "safari" => FamilyIdentity {
             user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
@@ -142,6 +154,7 @@ AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
             // Safari 不发 Sec-Fetch-User（与上一版记录一致）。
             fetch_user: false,
             accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            accept_encoding: "gzip, deflate, br",
         },
         // chrome 与 edge 都走 Chromium 档案，兜底分支同 chrome。
         other => {
@@ -162,6 +175,10 @@ AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
                 platform: Some("\"Windows\""),
                 fetch_user: true,
                 accept: CHROMIUM_ACCEPT,
+                // Chromium 实际发 `gzip, deflate, br, zstd`；本实现没有 zstd 解压，
+                // 因此只声明到 `br`——声明自己解不开的编码并不「更像浏览器」，
+                // 只会让服务端选一个本端处理不了的编码。
+                accept_encoding: "gzip, deflate, br",
             }
         }
     }
@@ -177,6 +194,10 @@ pub fn family_headers(family: &str) -> Vec<(String, String)> {
         ("user-agent".to_string(), identity.user_agent.to_string()),
         ("accept".to_string(), identity.accept.to_string()),
         (
+            "accept-encoding".to_string(),
+            identity.accept_encoding.to_string(),
+        ),
+        (
             "accept-language".to_string(),
             "zh-CN,zh;q=0.9,en;q=0.8".to_string(),
         ),
@@ -189,12 +210,9 @@ pub fn family_headers(family: &str) -> Vec<(String, String)> {
             identity.platform.unwrap_or("\"Windows\"").to_string(),
         ));
     }
-    headers.push(("sec-fetch-dest".to_string(), "document".to_string()));
-    headers.push(("sec-fetch-mode".to_string(), "navigate".to_string()));
-    headers.push(("sec-fetch-site".to_string(), "none".to_string()));
-    if identity.fetch_user {
-        headers.push(("sec-fetch-user".to_string(), "?1".to_string()));
-    }
+    // `sec-fetch-*` 不在这里写死：它们描述的是「这次请求在干什么」，必须按
+    // 发起方与用途算（见 `fetch_metadata`）。写死成导航取值时，一次跨站重定向
+    // 会被描述成「地址栏直接输入」，那是说错话而不是像不像的问题。
     headers.push(("upgrade-insecure-requests".to_string(), "1".to_string()));
     headers
 }
@@ -302,33 +320,83 @@ fn send_once(
     trust: Option<TrustAnchors>,
 ) -> Result<(Response, String), WebError> {
     let tls_family = family_for(family);
-    let mut connection = match request.proxy.as_deref() {
-        Some(proxy) if !proxy.trim().is_empty() => Connection::connect_via_proxy(
-            proxy,
-            &target.host,
-            target.port,
-            tls_family,
-            trust,
-            request.timeout,
-        ),
-        _ => Connection::connect_to(
-            &target.host,
-            target.port,
-            tls_family,
-            trust,
-            request.timeout,
-        ),
+    // 会话恢复只在「没走代理」时启用：代理通路是独立的连接实现，票据复用尚未在那里验证，
+    // 贸然套用会让本来正常的代理抓取多一层风险。
+    let use_resumption = request.tls_session_cache.is_some()
+        && !matches!(request.proxy.as_deref(), Some(proxy) if !proxy.trim().is_empty());
+    let mut connection = if use_resumption {
+        match request.tls_session_cache.as_deref() {
+            Some(cache) => Connection::connect_to_with_resumption(
+                &target.host,
+                target.port,
+                tls_family,
+                trust,
+                request.timeout,
+                cache,
+            ),
+            None => unreachable!("use_resumption 已经要求缓存存在"),
+        }
+    } else {
+        match request.proxy.as_deref() {
+            Some(proxy) if !proxy.trim().is_empty() => Connection::connect_via_proxy(
+                proxy,
+                &target.host,
+                target.port,
+                tls_family,
+                trust,
+                request.timeout,
+            ),
+            _ => Connection::connect_to(
+                &target.host,
+                target.port,
+                tls_family,
+                trust,
+                request.timeout,
+            ),
+        }
     }
     .map_err(|error| classify_driver(&error))?;
 
     // 逐跳回带：罐里的 cookie 在每跳重新计算（重定向可能换主机或路径）。
     let mut headers = request.headers.clone();
-    cookies::apply_header(
+    // 语境来自请求本身：`initiator` 决定是否跨站，`SameSite` 据此决定带不带。
+    cookies::apply_header_in(
         request.cookie_jar.as_deref(),
+        &request.url,
+        &cookies::RequestContext::new(
+            request.initiator.as_deref(),
+            true,
+            &request.method,
+        ),
+        &mut headers,
+    );
+    // `Referer`：值由发起方与策略共同决定（跨源默认只交源）。
+    referrer::apply_header(
+        request.referrer_policy,
+        request.initiator.as_deref(),
         &request.url,
         &mut headers,
     );
+    // `Sec-Fetch-*`：描述这次请求在干什么，取值随发起方与用途变化。
+    let mut metadata = fetch_metadata::FetchMetadata::compute(
+        request.purpose,
+        request.initiator.as_deref(),
+        &request.url,
+    );
+    // Safari 不发 `Sec-Fetch-User`（族差异与其它头同源，见 `identity_for`）。
+    metadata.user &= identity_for(&family).fetch_user;
+    fetch_metadata::apply(&mut headers, &metadata);
+    // 条件请求头：有可复用副本时先问「变了没有」，304 时用副本还原正文。
+    // 键与传输层的「存」共用同一个函数，否则会存进去却永远查不到。
+    super::http_cache::apply_conditional(
+        &super::web_transport::cache_key_for(request),
+        &request.method,
+        &mut headers,
+    );
     let headers = to_hpack_headers(&headers);
+    // 高熵 Client Hints 只在站点通过 `Accept-CH` 声明之后才补：真实浏览器就是这样，
+    // 没被要求就先发反而是明显的自动化特征（见 `client_hints`）。
+    let headers = apply_negotiated_hints(headers, &request.url, family);
     let response = connection
         .request_with_headers(
             &request.method,
@@ -345,10 +413,54 @@ fn send_once(
     Ok((response, protocol.as_str().to_string()))
 }
 
+/// 按协商声明给出某个提示头的值；本实现没有真实值可给时返回 `None`（宁可不发）。
+///
+/// 与 `identity_for` 共用同一份档案，因此头里的平台/品牌与实际 TLS 档案必然一致。
+/// 族级把关也在这里：Firefox 与 Safari 没有 Client Hints 体系，任何高熵提示都不发
+/// ——服务端声明了也一样，真实浏览器在那种情况下同样不会发。
+pub(crate) fn client_hint_value(hint: &str, family: &str) -> Option<String> {
+    let identity = identity_for(family);
+    // `client_hints` 为 `None` 的族（Firefox/Safari）没有这套头。
+    identity.client_hints?;
+    match hint {
+        "sec-ch-ua" => identity.client_hints.map(str::to_string),
+        "sec-ch-ua-mobile" => Some("\"?0\"".to_string()),
+        "sec-ch-ua-platform" => identity.platform.map(str::to_string),
+        "sec-ch-ua-platform-version" => {
+            super::client_hints::platform_version(family).map(str::to_string)
+        }
+        // 架构/位数/型号/完整版本没有真实值可给（会随设备变），一律不发。
+        _ => None,
+    }
+}
+
+/// 在已编码的头集合上按协商结果补高熵 Client Hints。
+///
+/// 抽成独立函数是为了能直接断言「最终要发出去的字节」——只测协商状态无法证明头真的发出去了。
+fn apply_negotiated_hints(
+    mut headers: Vec<Header>,
+    url: &str,
+    family: &str,
+) -> Vec<Header> {
+    for hint in super::client_hints::hints_for(url) {
+        // 声明里可能是 `sec-ch-ua` 这类基础提示；值缺失就跳过，绝不发空头。
+        let Some(value) = client_hint_value(&hint, family) else {
+            continue;
+        };
+        headers.retain(|header| !header.name.eq_ignore_ascii_case(&hint));
+        headers.push(Header::new(hint, value));
+    }
+    headers
+}
+
 fn to_hpack_headers(headers: &[(String, String)]) -> Vec<Header> {
     headers
         .iter()
         // 逐跳与专有头在两条通路上都不该由调用方给：h2 禁止它们，1.1 由驱动层自己补。
+        //
+        // `accept-encoding` 不在此列：它由档案族按「本实现真能解压的编码」给出，
+        // 属于正常的请求头。把它过滤掉会让服务端收不到压缩偏好（与浏览器不一致），
+        // 而解压已由 `decode_content` 统一处理。
         .filter(|(name, _)| {
             !matches!(
                 name.to_lowercase().as_str(),
@@ -358,7 +470,6 @@ fn to_hpack_headers(headers: &[(String, String)]) -> Vec<Header> {
                     | "proxy-connection"
                     | "transfer-encoding"
                     | "upgrade"
-                    | "accept-encoding"
             )
         })
         .map(|(name, value)| Header::new(name.to_lowercase(), value))
@@ -417,12 +528,25 @@ impl WebTransport for TlsWebTransport {
         let mut current = request.url.clone();
         let mut redirects = 0u32;
         let started = Instant::now();
+        // 每一跳的发起方：首跳沿用调用方给的（通常 `None`），重定向后变成上一跳地址。
+        let mut previous: Option<String> = request.initiator.clone();
+        // `Referer` 策略随响应头逐跳收窄，起点是请求带来的值（默认 strict-origin-when-cross-origin）。
+        let mut policy = request.referrer_policy;
+        // 304 但本地没有副本时，剔掉那个键并重来一次；只重试一次，避免与服务端互相踢球。
+        let mut retried_without_copy = false;
         loop {
+            // HSTS：声明过的站点不再走明文，第一跳与重定向目标都要判。
+            // 升级后握手失败就如实报错，绝不回退明文（回退会把降级攻击变成默认行为）。
+            if let Some(upgraded) = super::hsts::upgrade(&current) {
+                current = upgraded;
+            }
             let target = parse_target(&current)?;
             if target.scheme == "http" {
                 // 明文没有 TLS 指纹可言：直接在当前线程跑 ureq，但把 URL 换成当前跳。
                 let mut hop = request.clone();
                 hop.url = current.clone();
+                hop.initiator = previous.clone();
+                hop.referrer_policy = policy;
                 hop.impersonate = None;
                 return self.plain.send(&hop);
             }
@@ -444,7 +568,22 @@ impl WebTransport for TlsWebTransport {
             hop.timeout = remaining;
             // URL 也跟着当前跳走：`send_once` 要用它算这一跳该带哪些 cookie。
             hop.url = current.clone();
+            // `SameSite` 需要知道这一跳是谁发起的（首跳没有发起方）。
+            hop.initiator = previous.clone();
+            hop.referrer_policy = policy;
+            // 键必须在发送**前**定下：这一响应可能带 `Set-Cookie`，收割之后罐里就变了，
+            // 而 `cache_key_for` 含 Cookie——用收割后的状态当键会与查时用的键对不上。
+            let hop_key = super::web_transport::cache_key_for(&hop);
             let (response, _protocol) = send_once(&hop, &target, &family, trust)?;
+            // 响应头里的 `Referrer-Policy` 只收窄不收窄放宽，逐跳累积（每一跳都可能再收一次）。
+            let hop_headers: Vec<(String, String)> = response
+                .headers
+                .iter()
+                .map(|header| (header.name.clone(), header.value.clone()))
+                .collect();
+            // 从这一响应学习 HSTS（只认 https 来源，见 `hsts` 模块）。
+            super::hsts::record(&current, &hop_headers);
+            policy = referrer::policy_from_response(policy, &hop_headers);
             // 收割这一跳的 cookie：重定向链上的 `Set-Cookie` 必须立即生效。
             cookies::harvest(
                 request.cookie_jar.as_deref(),
@@ -457,23 +596,79 @@ impl WebTransport for TlsWebTransport {
             );
 
             if request.method == "GET" && REDIRECT_STATUSES.contains(&response.status) {
+                // 声明可能出现在重定向响应上，先记下来再跟下一跳。
+                super::client_hints::record(
+                    &current,
+                    &response
+                        .headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect::<Vec<_>>(),
+                );
                 if let Some(location) = response.header("location") {
                     if !location.trim().is_empty() {
                         if redirects >= request.max_redirects {
                             return Err(WebError::new(WebErrorKind::Other, "重定向次数过多。"));
                         }
                         redirects += 1;
+                        // 下一跳的发起方就是这一跳：`SameSite` 靠它判跨站。
+                        previous = Some(current.clone());
                         current = resolve_url(&current, location);
                         continue;
                     }
                 }
             }
             let content_encoding = response.header("content-encoding").map(str::to_string);
+            // 响应头按到达顺序原样带出：`accept-ch` 协商与 `content-type` 判定都靠它。
+            //
+            // HTTP/2 的伪头（`:status`）必须在这里滤掉：它不是响应头，状态码另有字段承载。
+            // 漏出去会污染 `WebResponse::headers`——实测中它会让 304 的还原结果看起来
+            // 还带着 `:status: 304`，与返回的 200 自相矛盾。
+            let headers: Vec<(String, String)> = response
+                .headers
+                .iter()
+                .filter(|header| !header.name.starts_with(':'))
+                .map(|header| (header.name.to_lowercase(), header.value.clone()))
+                .collect();
+            // 304：服务端说「你手上那份还有效」。正文在缓存副本里，原样交出去只会让上层
+            // 拿到一个空页面，因此这里用副本还原成 200（见 `http_cache` 模块文档）。
+            // 只有 GET 会带条件头，也只有 GET 有可还原的副本：别的方法收到 304 时如实上报，
+            // 绝不拿一份 GET 的正文冒充它的结果。
+            if response.status == 304 && request.method == "GET" {
+                if let Some(reused) = super::http_cache::reuse(&hop_key, &headers) {
+                    super::client_hints::record(&current, &reused.headers);
+                    return Ok(WebResponse {
+                        status: 200,
+                        // 复用同一个 `location` 变量语义：最终地址就是当前跳的 URL。
+                        final_url: current,
+                        body: reused.body,
+                        headers: reused.headers,
+                    });
+                }
+                // 没有副本（换了进程、超限被清、或键在收割 cookie 后变了）：剔除这个键
+                // 再重试一次。直接报错会让一次本该成功的抓取失败，而重试是无条件请求，
+                // 服务端必然回完整响应。只重试一次：仍拿 304 就说明对方行为异常，如实上报。
+                super::http_cache::forget(&hop_key);
+                if !retried_without_copy {
+                    retried_without_copy = true;
+                    continue;
+                }
+                return Err(WebError::new(
+                    WebErrorKind::Other,
+                    "服务端回了 304，但本进程没有可还原的缓存副本。".to_string(),
+                ));
+            }
+            let body = decode_content(response.body, content_encoding.as_deref())?;
+            // 存的是已解码正文：存压缩体会让 304 还原出来的是二进制。
+            super::http_cache::store(&hop_key, response.status, &body, &headers);
+            // 记住这一响应对该 origin 的 Client Hints 声明，供后续请求补头。
+            super::client_hints::record(&current, &headers);
             return Ok(WebResponse {
                 status: response.status,
                 // 复用同一个 `location` 变量语义：最终地址就是当前跳的 URL。
                 final_url: current,
-                body: decode_content(response.body, content_encoding.as_deref())?,
+                body,
+                headers,
             });
         }
     }
@@ -562,7 +757,54 @@ mod tests {
         }
     }
 
+    /// 高熵提示必须「服务端声明之后才发」：这是与真实浏览器一致的关键。
+    ///
+    /// 只测协商状态不够——要断言最终**发出去的头集合**里到底有没有它。
+    #[test]
+    fn negotiated_hints_reach_the_wire_only_after_accept_ch() {
+        // 协商状态是进程级全局的：与其它用例并发时必须串行，否则 reset 会互相清空。
+        let _serial = super::super::client_hints::test_guard();
+        super::super::client_hints::reset();
+        let url = "https://hints-wire.example.com/page";
+        let base = || to_hpack_headers(&family_headers("chrome"));
+
+        // 未声明：最终头集合里不得出现高熵提示。
+        let before = apply_negotiated_hints(base(), url, "chrome");
+        let names: Vec<&str> = before.iter().map(|header| header.name.as_str()).collect();
+        assert!(
+            !names.contains(&"sec-ch-ua-platform-version"),
+            "未被要求的平台版本不得预先发送：{names:?}"
+        );
+
+        // 声明之后：必须带上，且值与档案一致、格式带引号。
+        super::super::client_hints::record(
+            url,
+            &[(
+                "accept-ch".to_string(),
+                "Sec-CH-UA-Platform-Version".to_string(),
+            )],
+        );
+        let after = apply_negotiated_hints(base(), url, "chrome");
+        let value = after
+            .iter()
+            .find(|header| header.name == "sec-ch-ua-platform-version")
+            .map(|header| header.value.clone())
+            .expect("声明后必须发送平台版本");
+        assert!(value.starts_with('"') && value.ends_with('"'), "{value}");
+        // 同一族里平台与品牌与该档案的其它头必须自洽。
+        let platform = after
+            .iter()
+            .find(|header| header.name == "sec-ch-ua-platform")
+            .map(|header| header.value.clone());
+        assert_eq!(platform.as_deref(), Some("\"Windows\""));
+
+        super::super::client_hints::reset();
+    }
+
     /// 逐跳头必须被丢掉：h2 会因它们直接判协议错误，1.1 由驱动层自己补。
+    ///
+    /// 但 `accept-encoding` **不是**逐跳头：它由档案族给出、由 `decode_content` 解压，
+    /// 必须原样送到对端，否则服务端收不到压缩偏好（与浏览器不一致）。
     #[test]
     fn hop_by_hop_headers_are_dropped_before_encoding() {
         let headers = vec![
@@ -570,7 +812,7 @@ mod tests {
             ("Host".to_string(), "example.com".to_string()),
             ("Connection".to_string(), "keep-alive".to_string()),
             ("Transfer-Encoding".to_string(), "chunked".to_string()),
-            ("Accept-Encoding".to_string(), "gzip".to_string()),
+            ("Accept-Encoding".to_string(), "gzip, deflate, br".to_string()),
             ("Upgrade".to_string(), "h2c".to_string()),
             ("Accept".to_string(), "*/*".to_string()),
         ];
@@ -578,8 +820,15 @@ mod tests {
         let names: Vec<&str> = kept.iter().map(|header| header.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["user-agent", "accept"],
-            "名字必须转小写且滤掉逐跳头"
+            vec!["user-agent", "accept-encoding", "accept"],
+            "名字必须转小写且滤掉逐跳头（accept-encoding 保留）"
+        );
+        assert_eq!(
+            kept.iter()
+                .find(|header| header.name == "accept-encoding")
+                .map(|header| header.value.as_str()),
+            Some("gzip, deflate, br"),
+            "压缩偏好必须原样送达"
         );
     }
 
@@ -618,26 +867,34 @@ mod tests {
                     .unwrap_or_default()
                     .to_string()
             };
-            for required in [
-                "user-agent",
-                "accept",
-                "accept-language",
-                "sec-fetch-dest",
-                "sec-fetch-mode",
-                "sec-fetch-site",
-            ] {
+            for required in ["user-agent", "accept", "accept-language"] {
                 assert!(
                     !value(required).is_empty(),
                     "{family} 缺少 {required}：{headers:?}"
                 );
             }
-            assert_eq!(value("sec-fetch-dest"), "document", "{family}");
-            assert_eq!(value("sec-fetch-mode"), "navigate", "{family}");
-            assert_eq!(value("sec-fetch-site"), "none", "{family}");
+            // `sec-fetch-*` 不在这里出现：它们描述「这次请求在干什么」，由 `send_once`
+            // 按发起方与用途算（见 `fetch_metadata`）。族头像里若还留着固定值，
+            // 跨站重定向就会被描述成「地址栏直接输入」。
+            assert_eq!(
+                value("sec-fetch-dest"),
+                "",
+                "{family} 不该在族头像里写死 sec-fetch-dest：{headers:?}"
+            );
             assert_eq!(value("upgrade-insecure-requests"), "1", "{family}");
-            // 绝不发这两个：h2 禁止 Connection；Accept-Encoding 一发就得能解压。
+            // h2 禁止连接专有头。
             assert_eq!(value("connection"), "", "{family}");
-            assert_eq!(value("accept-encoding"), "", "{family}");
+            // `accept-encoding` 必须发（浏览器必发），且只声明本实现真能解压的编码：
+            // 声明 zstd 而解不开，等于让服务端回一个处理不了的编码。
+            let encoding = value("accept-encoding");
+            assert!(!encoding.is_empty(), "{family} 应当声明 accept-encoding");
+            for token in encoding.split(',').map(str::trim) {
+                assert!(
+                    matches!(token, "gzip" | "deflate" | "br"),
+                    "{family} 声明了本实现不支持的编码：{token}"
+                );
+            }
+            assert!(!encoding.contains("zstd"), "{family} 不得声明 zstd");
         }
 
         // 只有 Chromium 系发 Client Hints。
@@ -657,15 +914,15 @@ mod tests {
             "Firefox 不发 Client Hints"
         );
 
-        // Safari 不发 Sec-Fetch-User（其余族都发）。
-        assert!(!family_headers("safari")
-            .iter()
-            .any(|(key, _)| key == "sec-fetch-user"));
+        // Safari 不发 Sec-Fetch-User（其余族都发）。这个差异现在由族身份上的 `fetch_user`
+        // 标记表达，由 `send_once` 在算 `sec-fetch-*` 时读取（族头像里不再有该头）。
+        assert!(
+            !identity_for("safari").fetch_user,
+            "Safari 不该发 Sec-Fetch-User"
+        );
         for family in ["chrome", "firefox", "edge"] {
             assert!(
-                family_headers(family)
-                    .iter()
-                    .any(|(key, _)| key == "sec-fetch-user"),
+                identity_for(family).fetch_user,
                 "{family} 应当发 Sec-Fetch-User"
             );
         }

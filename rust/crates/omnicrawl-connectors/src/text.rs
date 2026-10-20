@@ -1,9 +1,9 @@
-//! 飞书文本处理：内部标签清理、脱敏、分段与正文定型。
+//! 平台无关的展示文本处理：内部标签清理、脱敏、分段与正文定型。
 //!
-//! 语义基准是 Python `omnicrawl/connectors/fsapp.py` 的 `_split_text` / `_clean_text` /
-//! `_display_text` / `_resolve_final_text` / `_split_segment_for_card` / `_parse_json` /
-//! `_text_value`。正则改写为手写扫描（本 crate 不引入 regex），边界与 Python 的
-//! 非贪婪匹配一致。
+//! 两个连接器共用（Telegram 与飞书），语义基准仍是 Python `omnicrawl/connectors/fsapp.py`
+//! 的 `_split_text` / `_clean_text` / `_display_text` / `_resolve_final_text` /
+//! `_split_segment_for_card` / `_parse_json` / `_text_value`。正则改写为手写扫描（本 crate
+//! 不引入 regex），边界与 Python 的非贪婪匹配一致。
 
 use serde_json::Value;
 

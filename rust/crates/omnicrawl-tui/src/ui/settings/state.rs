@@ -960,7 +960,7 @@ pub struct SettingsValues {
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
-    /// 工具页「联网搜索」行的初值（默认引擎与三把凭据是否已配置）。
+    /// 工具页「联网搜索」行的初值（默认引擎与各凭据是否已配置）。
     pub web_search: WebSearchRow,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
@@ -1115,7 +1115,7 @@ impl SettingsValues {
         self
     }
 
-    /// 工具页「联网搜索」行的初值（默认引擎与三把凭据是否已配置）。
+    /// 工具页「联网搜索」行的初值（默认引擎与各凭据是否已配置）。
     pub fn with_web_search(mut self, row: WebSearchRow) -> Self {
         self.web_search = row;
         self
@@ -1824,8 +1824,7 @@ const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl
 /// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
 /// 联网搜索页的提示：凭据留空表示不改动磁盘上的原值。
-const WEB_SEARCH_HINT: &str =
-    "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回工具页（凭据留空＝不改动）";
+const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回工具页（凭据留空＝不改动；引擎只由这里决定）";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
@@ -1967,7 +1966,7 @@ struct ToolsState {
     selected: usize,
     /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
     approval: String,
-    /// 联网搜索的当前配置（默认引擎 + 三把凭据是否已配置，凭据本身不进界面）。
+    /// 联网搜索的当前配置（默认引擎 + 各凭据是否已配置，凭据本身不进界面）。
     web_search: WebSearchRow,
     status: String,
 }
@@ -1979,6 +1978,9 @@ pub struct WebSearchRow {
     pub tavily_configured: bool,
     pub exa_configured: bool,
     pub firecrawl_configured: bool,
+    pub anysearch_configured: bool,
+    /// TinyFish API Key 是否已配置。它没有匿名通道，缺 Key 时引擎会如实报错。
+    pub tinyfish_configured: bool,
     /// GitHub Token 是否已配置。它不影响引擎可用性，只影响额度。
     pub github_configured: bool,
 }
@@ -1986,10 +1988,12 @@ pub struct WebSearchRow {
 impl Default for WebSearchRow {
     fn default() -> Self {
         Self {
-            engine: "bing".to_string(),
+            engine: "duckduckgo".to_string(),
             tavily_configured: false,
             exa_configured: false,
             firecrawl_configured: false,
+            anysearch_configured: false,
+            tinyfish_configured: false,
             github_configured: false,
         }
     }
@@ -2008,6 +2012,12 @@ impl WebSearchRow {
         }
         if self.firecrawl_configured {
             configured.push("Firecrawl 已配置");
+        }
+        if self.anysearch_configured {
+            configured.push("AnySearch 已配置");
+        }
+        if self.tinyfish_configured {
+            configured.push("TinyFish 已配置");
         }
         if self.github_configured {
             configured.push("GitHub 已配置");
@@ -4362,6 +4372,8 @@ impl SettingsState {
         let tavily = secret_draft_for(self.tools.web_search.tavily_configured);
         let exa = secret_draft_for(self.tools.web_search.exa_configured);
         let firecrawl = secret_draft_for(self.tools.web_search.firecrawl_configured);
+        let anysearch = secret_draft_for(self.tools.web_search.anysearch_configured);
+        let tinyfish = secret_draft_for(self.tools.web_search.tinyfish_configured);
         let github = secret_draft_for(self.tools.web_search.github_configured);
         self.pane = Pane::Form(FormKind::WebSearch);
         self.dropdown = None;
@@ -4372,6 +4384,8 @@ impl SettingsState {
                 FieldValue::Text(tavily),
                 FieldValue::Text(exa),
                 FieldValue::Text(firecrawl),
+                FieldValue::Text(anysearch),
+                FieldValue::Text(tinyfish),
                 FieldValue::Text(github),
             ]);
             form.set_focused(0);
@@ -7378,7 +7392,7 @@ mod tests {
         );
     }
 
-    /// 联网搜索页的初始值：默认引擎 tavily，Tavily 已配凭据、Exa 与 Firecrawl 未配。
+    /// 联网搜索页的初始值：默认引擎 tavily，Tavily 已配凭据，其余未配。
     fn web_search_state() -> SettingsState {
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows()).with_web_search(WebSearchRow {
@@ -7386,6 +7400,8 @@ mod tests {
                 tavily_configured: true,
                 exa_configured: false,
                 firecrawl_configured: false,
+                anysearch_configured: false,
+                tinyfish_configured: false,
                 github_configured: false,
             }),
         )
@@ -7404,7 +7420,7 @@ mod tests {
 
         // 未配任何凭据时只显示引擎。
         let plain = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
-        assert_eq!(plain.web_search_value(), "bing");
+        assert_eq!(plain.web_search_value(), "duckduckgo");
     }
 
     #[test]
@@ -7418,15 +7434,17 @@ mod tests {
         assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
         let rows = state.form_rows();
-        assert_eq!(rows.len(), 5, "默认引擎 + 三把 API Key + GitHub Token");
+        assert_eq!(rows.len(), 7, "默认引擎 + 五把 API Key + GitHub Token");
         assert_eq!(rows[0].value, "tavily", "引擎列显示当前值");
         assert!(rows[0].has_menu, "引擎是候选字段");
         assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
         assert_eq!(rows[2].value, "（未配置）", "未配凭据显示明确文案");
         assert_eq!(rows[3].value, "（未配置）", "Firecrawl 也是未配");
-        assert_eq!(rows[4].value, "（未配置）", "GitHub Token 未配");
+        assert_eq!(rows[4].value, "（未配置）", "AnySearch 未配（可匿名调用）");
+        assert_eq!(rows[5].value, "（未配置）", "TinyFish 未配（无匿名通道）");
+        assert_eq!(rows[6].value, "（未配置）", "GitHub Token 未配");
 
-        // 掩码原样保存 = 不改动：三把凭据都折成空串交给宿主。
+        // 掩码原样保存 = 不改动：五把凭据都折成空串交给宿主。
         let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
             state.handle_ctrl_key(KeyCode::Char('s'))
         else {
@@ -7437,17 +7455,23 @@ mod tests {
         assert_eq!(values[1], FieldValue::Text(String::new()), "掩码不当作新值");
         assert_eq!(values[2], FieldValue::Text(String::new()));
         assert_eq!(values[3], FieldValue::Text(String::new()));
-        assert_eq!(values[4], FieldValue::Text(String::new()), "GitHub Token 未配时也为空");
+        assert_eq!(values[4], FieldValue::Text(String::new()));
+        assert_eq!(values[5], FieldValue::Text(String::new()));
+        assert_eq!(
+            values[6],
+            FieldValue::Text(String::new()),
+            "GitHub Token 未配时也为空"
+        );
     }
 
     #[test]
-    fn web_search_page_offers_firecrawl_and_mixed_but_not_yahoo() {
+    fn web_search_page_offers_every_engine_but_not_retired_ones() {
         let mut state = web_search_state();
         goto(&mut state, "tools");
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.handle_key(KeyCode::Enter), None); // 展开「默认引擎」候选
+        assert_eq!(state.handle_key(KeyCode::Enter), None); // 展开「搜索引擎」候选
         let options: Vec<String> = state
             .dropdown_options()
             .into_iter()
@@ -7456,7 +7480,6 @@ mod tests {
         assert_eq!(
             options,
             vec![
-                "bing",
                 "duckduckgo",
                 "github",
                 "arxiv",
@@ -7464,9 +7487,11 @@ mod tests {
                 "tavily",
                 "exa",
                 "firecrawl",
+                "anysearch",
+                "tinyfish",
                 "mixed"
             ],
-            "候选来自 WEB_SEARCH_ENGINES：雅虎已下线"
+            "候选来自 WEB_SEARCH_ENGINES：雅虎与 bing 已下线"
         );
     }
 
@@ -7488,6 +7513,8 @@ mod tests {
                     FieldValue::Text(String::new()),
                     FieldValue::Text(String::new()),
                     FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
+                    FieldValue::Text(String::new()),
                 ],
             },
             "联网搜索已设为 exa，已保存到 config.toml。".to_string(),
@@ -7501,11 +7528,13 @@ mod tests {
             tavily_configured: true,
             exa_configured: true,
             firecrawl_configured: true,
+            anysearch_configured: true,
+            tinyfish_configured: true,
             github_configured: true,
         });
         assert_eq!(
             state.web_search_value(),
-            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置、GitHub 已配置）"
+            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置、AnySearch 已配置、TinyFish 已配置、GitHub 已配置）"
         );
     }
 
@@ -7517,12 +7546,11 @@ mod tests {
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Enter); // 进联网搜索表单页
         let rows = state.form_rows();
-        assert_eq!(rows.len(), 5, "默认引擎 + 三把 API Key + GitHub Token");
-        assert_eq!(rows[4].label, "GitHub Token");
-        assert_eq!(
-            rows[4].value, "（未配置）",
-            "Token 与其余凭据同口径呈现"
-        );
+        assert_eq!(rows.len(), 7, "默认引擎 + 五把 API Key + GitHub Token");
+        assert_eq!(rows[4].label, "AnySearch API Key");
+        assert_eq!(rows[5].label, "TinyFish API Key");
+        assert_eq!(rows[6].label, "GitHub Token");
+        assert_eq!(rows[6].value, "（未配置）", "Token 与其余凭据同口径呈现");
     }
 
     #[test]
@@ -8239,7 +8267,7 @@ mod tests {
         );
     }
 
-    /// 表单页（如联网搜索的三把凭据）同样接收粘贴，未进输入态时自动进入。
+    /// 表单页（如联网搜索的五把凭据）同样接收粘贴，未进输入态时自动进入。
     #[test]
     fn form_page_secret_accepts_pasted_text() {
         let mut state = web_search_state();

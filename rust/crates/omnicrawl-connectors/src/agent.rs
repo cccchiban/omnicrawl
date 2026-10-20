@@ -159,6 +159,14 @@ pub trait AgentDriver: Send + Sync + 'static {
     /// 交给宿主的斜杠命令注册表；`Ok(None)` 表示不是宿主认识的管理命令。
     fn handle_command(&self, text: &str, channel: &str) -> Result<Option<String>, String>;
 
+    /// 发布到平台命令菜单的命令表（`(命令名, 一句说明)`）。
+    ///
+    /// 返回空表表示该宿主没有可发布的菜单，连接器就不去动平台侧设置。菜单只是客户端
+    /// 提示，发布失败不影响命令分发。
+    fn command_menu(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// 执行一个回合：事件经 `events` 外发，返回最终回答文本。
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError>;
 

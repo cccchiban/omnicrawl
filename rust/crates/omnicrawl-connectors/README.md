@@ -22,26 +22,45 @@ src/
 ├── agent.rs                # 连接器 ↔ 宿主的边界：TurnEvent、AgentDriver、确认/提问桥
 ├── http.rs                 # 共用阻塞式 HTTP 传输（ureq + rustls）、表单与百分号编码
 ├── json.rs                 # Python json.dumps 等价序列化（卡片与提示负载的字节形状）
+├── text.rs                 # 平台无关：内部标签清理、脱敏、分段与正文定型（两侧共用）
+├── render.rs               # 平台无关：工具摘要/正文、变更预览、计划与子任务文本、卡片 JSON
 ├── telegram/
 │   ├── config.rs           # 环境变量 > [telegram] 段的配置解析与校验
 │   ├── format.rs           # 文本分段、流式裁剪与收尾计划（按字符计）
 │   ├── files.rs            # 文件字段提取、扩展名分类、落盘命名与相对路径
 │   ├── dispatch.rs         # 更新路由（标识/白名单/命令/文件）与 /thinking、/workspace 判定
-│   ├── api.rs              # Bot API：getUpdates、sendMessage、editMessageText、getFile、下载
-│   └── bot.rs              # 轮询服务：单活动任务、流式显示、工具确认桥与提问桥
+│   ├── api.rs              # Bot API：getUpdates、sendMessage、editMessageText、setMyCommands、getFile、下载
+│   ├── timeline.rs         # 时间线：正文段/工具/思考/计划/子任务各自独立成一条消息
+│   └── bot.rs              # 轮询服务：单活动任务、时间线装配、工具确认桥与提问桥
 └── feishu/
     ├── config.rs           # 环境变量 > [feishu] > 根级 fs_* 别名的配置解析与诊断
-    ├── text.rs             # 内部标签清理、脱敏、分段与正文定型
-    ├── render.rs           # 工具摘要/正文、文件变更预览、计划与子任务文本、卡片 JSON
     ├── file_send.rs        # [FILE:] 发文件：路径校验、扩展名分流、消息体与提示文案
     ├── files.rs            # 资源分类、临时目录落盘、post 富文本与 [FILE:] 标记
     ├── dedupe.rs           # 进程内去重与跨重启指纹（sha256 前 32 位）
     ├── inbox.rs            # 持久入站队列：pending 落盘与重放、done 去重与紧凑化、纯内存降级
-    ├── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息
+    ├── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息（卡片）
     ├── api.rs              # 开放接口：租户令牌缓存、消息创建/更新、资源下载、长连接端点
     ├── ws.rs               # 长连接：pbbp2 帧编解码、WebSocket 握手与帧收发、重连退避
     └── bot.rs              # 事件接入、命令分发、任务时间线装配、审批与提问桥、长连接主循环
 ```
+
+## 显示口径（两个连接器一致）
+
+Agent 运行时产生的每个条目独立成一条消息、按发生顺序出现；条目自己的流式更新只更新自己
+那条消息，条目之间互不覆盖：
+
+| 条目 | Telegram（纯文本） | 飞书（卡片） |
+|---|---|---|
+| 正文段 | `◇` 前缀，流式编辑，工具调用处封口 | 同左，Markdown 卡片 |
+| 工具调用 | `● 摘要 · 状态 · 耗时` + 正文 | 同左 |
+| 思考 | `🧠`，仅 `/thinking on` | `💭` 折叠面板 |
+| 执行计划 | `执行计划 · N/M 完成`，原地替换 | 同左 |
+| 子任务进度 | `◇ 子任务进度` 树，原地更新 | 同左 |
+
+模型一个 pass 的正文段以工具调用为边界：工具前后的文本**各自成条**，不会黏在同一条消息里
+（此前 Telegram 把所有增量累进同一条流式消息，长任务于是堆成一坨）。摘要与正文的生成规则
+（`tool_summary` / `tool_body` / `format_duration` / `normalize_todos` / `subagents_lines`）
+在 `src/render.rs` 里只有一份，两侧共用。
 
 ## 对照（parity）工作流
 
@@ -64,6 +83,9 @@ cd rust && cargo test -p omnicrawl-connectors
 
 `tests/feishu_bot.rs` 另外用桩件跑编排：白名单、消息去重、命令分发、正文/工具卡片序列、
 审批与取消的等待语义、提问卡片与文本回答的唤醒。
+
+`tests/telegram_bot.rs` 用同类桩件钉住 Telegram 的显示口径：工具前后的正文各自成条、
+工具消息原地收口、执行计划只占一条消息并原地替换、未授权用户零请求。
 
 ## 飞书入站持久队列（`feishu/inbox.rs`）
 

@@ -1408,7 +1408,7 @@ fn approval_row_text(state: &SettingsState, selected: bool) -> String {
     )
 }
 
-/// 联网搜索行的文本：`› 联网搜索：bing（Tavily 已配置）`。
+/// 联网搜索行的文本：`› 联网搜索：duckduckgo（Tavily 已配置）`。
 fn web_search_row_text(state: &SettingsState, selected: bool) -> String {
     format!(
         "{} {}：{}",

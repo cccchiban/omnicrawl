@@ -10,8 +10,6 @@ pub mod dedupe;
 pub mod file_send;
 pub mod files;
 pub mod inbox;
-pub mod render;
-pub mod text;
 pub mod timeline;
 pub mod upload;
 pub mod ws;
@@ -33,12 +31,17 @@ pub use files::{
 pub use inbox::{
     FeishuInbox, InboxRecord, DEFAULT_COMPACT_KEEP, DEFAULT_DEDUP_TTL_SECONDS, DEFAULT_MAX_RECORDS,
 };
-pub use render::{
+// 文本清理与显示映射与平台无关，已上提到 crate 根；这里既保留模块别名
+// （`feishu::render::…`、`feishu::text::…`），也保留扁平再导出，兼容既有路径。
+pub use crate::render;
+pub use crate::render::{
     card_json, format_duration, format_elapsed, markdown_card, normalize_todos, question_card_json,
-    question_resolved_card_json, reasoning_panel, render_tool_record, subagents_text, todos_text,
-    tool_body, tool_status_icon, tool_summary, SubagentNode,
+    question_resolved_card_json, reasoning_panel, render_tool_record, subagents_lines,
+    subagents_text, todos_lines, todos_text, tool_body, tool_status_icon, tool_summary,
+    SubagentNode,
 };
-pub use text::{
+pub use crate::text;
+pub use crate::text::{
     clean_text, display_text, parse_json_object, resolve_final_text, split_segment_for_card,
     split_text, text_value, MAX_TEXT_CHARS, SEGMENT_MAX_CHARS,
 };

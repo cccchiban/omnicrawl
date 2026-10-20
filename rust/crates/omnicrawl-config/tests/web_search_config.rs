@@ -28,7 +28,7 @@ fn write_text(path: &Path, text: &str) {
     std::fs::write(path, text).expect("写配置");
 }
 
-/// 没有 `web_search` 段时：默认引擎是无需要凭据的 bing，三把密钥都为空。
+/// 没有 `web_search` 段时：默认引擎是无需要凭据的 duckduckgo，五把密钥都为空。
 #[test]
 fn missing_section_yields_defaults() {
     let root = temp_root("empty");
@@ -39,6 +39,8 @@ fn missing_section_yields_defaults() {
     assert!(config.tavily_api_key.is_empty());
     assert!(config.exa_api_key.is_empty());
     assert!(config.firecrawl_api_key.is_empty());
+    assert!(config.anysearch_api_key.is_empty());
+    assert!(config.tinyfish_api_key.is_empty());
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -55,6 +57,8 @@ engine = "  Exa "
 tavily_api_key = "  tvly-key  "
 exa_api_key = " exa-key "
 firecrawl_api_key = " fc-key "
+anysearch_api_key = " as-key "
+tinyfish_api_key = " tf-key "
 "#,
     );
     let env = R::ConfigEnvironment::new(root.to_string_lossy().to_string(), "win32");
@@ -63,6 +67,8 @@ firecrawl_api_key = " fc-key "
     assert_eq!(config.tavily_api_key, "tvly-key");
     assert_eq!(config.exa_api_key, "exa-key");
     assert_eq!(config.firecrawl_api_key, "fc-key");
+    assert_eq!(config.anysearch_api_key, "as-key");
+    assert_eq!(config.tinyfish_api_key, "tf-key");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -99,14 +105,17 @@ fn unknown_engine_is_rejected_with_the_full_list() {
             WEB_SEARCH_ENGINES.join("、")
         )
     );
-    assert_eq!(WEB_SEARCH_ENGINES.len(), 9);
-    // 雅虎已下线；混合搜索与站点检索引擎都是合法值。
+    assert_eq!(WEB_SEARCH_ENGINES.len(), 10);
+    // 雅虎与 bing 已下线；混合搜索与站点检索引擎都是合法值。
     assert!(!WEB_SEARCH_ENGINES.contains(&"yahoo"));
+    assert!(!WEB_SEARCH_ENGINES.contains(&"bing"));
     // Google 与 Semantic Scholar 已下线：拿不到结果，不再作为引擎名保留。
     assert!(!WEB_SEARCH_ENGINES.contains(&"google"));
     assert!(!WEB_SEARCH_ENGINES.contains(&"semantic_scholar"));
     assert!(WEB_SEARCH_ENGINES.contains(&"mixed"));
     assert!(WEB_SEARCH_ENGINES.contains(&"firecrawl"));
+    assert!(WEB_SEARCH_ENGINES.contains(&"anysearch"));
+    assert!(WEB_SEARCH_ENGINES.contains(&"tinyfish"));
     for engine in ["github", "arxiv", "huggingface"] {
         assert!(WEB_SEARCH_ENGINES.contains(&engine), "{engine} 应当合法");
     }
@@ -121,12 +130,15 @@ fn api_key_resolution_is_per_engine() {
         tavily_api_key: "tvly-1".to_string(),
         exa_api_key: "exa-1".to_string(),
         firecrawl_api_key: "fc-1".to_string(),
+        anysearch_api_key: "as-1".to_string(),
+        tinyfish_api_key: "tf-1".to_string(),
         github_token: "ghp-1".to_string(),
     };
     assert_eq!(config.api_key_for("tavily"), "tvly-1");
     assert_eq!(config.api_key_for("Exa"), "exa-1", "大小写不敏感");
     assert_eq!(config.api_key_for("Firecrawl"), "fc-1");
-    assert_eq!(config.api_key_for("bing"), "");
+    assert_eq!(config.api_key_for("AnySearch"), "as-1");
+    assert_eq!(config.api_key_for("TinyFish"), "tf-1", "接口名大小写不敏感");
     assert_eq!(config.api_key_for("duckduckgo"), "");
     assert_eq!(config.api_key_for("mixed"), "", "混合搜索本身没有凭据");
     // GitHub Token 不参与「缺凭据即报错」的判定：没有它引擎也照常可用。
@@ -149,6 +161,8 @@ fn save_keeps_other_sections_and_round_trips() {
         tavily_api_key: "tvly-key".to_string(),
         exa_api_key: String::new(),
         firecrawl_api_key: "fc-key".to_string(),
+        anysearch_api_key: String::new(),
+        tinyfish_api_key: "tf-key".to_string(),
         github_token: "ghp-key".to_string(),
     };
     save_web_search_configuration(&env, &configuration, None).expect("写回联网搜索配置");

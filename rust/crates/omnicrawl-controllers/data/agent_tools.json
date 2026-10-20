@@ -58,8 +58,8 @@
       },
       {
         "name": "web_search",
-        "description": "是什么：在 Bing、DuckDuckGo、GitHub、arXiv、Hugging Face、Tavily、Exa 或 Firecrawl 搜索公开资料，engine=mixed 时并发查询多个渠道并去重合并。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily、Exa 与 Firecrawl 走检索接口，需先在 [web_search] 段配置对应 API Key；其余引擎抓各自站点的公开搜索页，统一走浏览器指纹环境。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：找代码用 github、找论文用 arxiv、找模型用 huggingface、通用检索用 bing/duckduckgo；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
-        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|github|arxiv|huggingface|tavily|exa|firecrawl|mixed\", \"max_results\": 20, \"language\": \"zh-CN\"}",
+        "description": "是什么：在 DuckDuckGo、GitHub、arXiv、Hugging Face、Tavily、Exa、Firecrawl、AnySearch 或 TinyFish 搜索公开资料；具体走哪个引擎由使用者在设置里选定，配成 mixed 时并发查询多个渠道并去重合并。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily、Exa、Firecrawl、AnySearch 与 TinyFish 走检索接口，需先在 [web_search] 段配置对应 API Key（AnySearch 可不配，走匿名额度；TinyFish 必配）；其余引擎抓各自站点的公开搜索页，统一走浏览器指纹环境。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。mixed 的条数：每路取 10 条、总量随渠道数增长（开启决策模型排序时每路保留排序靠前的 5 条），传了 max_results 才收窄总数。引擎不可由参数指定：传 engine 无效，需要换引擎只能改设置。建议：搜索结果是线索，需用 fetcher 获取正文并核实来源。",
+        "argument_schema": "{\"query\": \"关键词\", \"max_results\": 20, \"language\": \"zh-CN\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -67,7 +67,7 @@
       },
       {
         "name": "fetcher",
-        "description": "是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，并提取正文或返回 HTML。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；不执行 JS、不绕过验证码。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：多个网址可用逗号、换行分隔或 JSON 数组一次传入；默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。",
+        "description": "是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，提取正文或返回 HTML；静态提取拿不到内容时会在本地沙箱执行页面内联脚本重建正文。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；抓取前先查该站点的 robots.txt，明确禁止的路径一概不抓并说明命中的规则；不绕过验证码与挑战页。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：多个网址可用逗号、换行分隔或 JSON 数组一次传入；默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。",
         "argument_schema": "{\"urls\": \"https://a.example,https://b.example\", \"insecure\": false, \"parallel\": true, \"timeout\": 15, \"max_chars\": 8000, \"max_html\": false, \"impersonate\": \"chrome\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,

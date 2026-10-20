@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::hpack::{Decoder, Encoder, Header, HpackError};
 use crate::http2::{
     encode_frame, header_value, parse_frame, setting_id, ErrorCode, Frame, FrameError, Setting,
-    DEFAULT_MAX_FRAME_SIZE, DEFAULT_WINDOW_SIZE, MAX_MAX_FRAME_SIZE,
+    DEFAULT_MAX_FRAME_SIZE, DEFAULT_WINDOW_SIZE, HEADER_LEN, MAX_MAX_FRAME_SIZE,
 };
 
 /// 流状态（只保留客户端需要区分的几个）。
@@ -423,6 +423,30 @@ impl ClientConnection {
                 Ok(parsed) => parsed,
                 // 帧还没收全：留在缓冲里等下一批字节。
                 Err(FrameError::Incomplete { .. }) => break,
+                // 少数帧错误按规范是**流**错误，不能升级成连接错误——否则一个坏帧
+                // 会连带终止其它正常流。RFC 9113 §6.3 明确：PRIORITY 长度不为 5 时应
+                // 当作 FRAME_SIZE_ERROR 的流错误处理。
+                Err(error) if stream_error_code(&error).is_some() => {
+                    let code = stream_error_code(&error).unwrap_or(ErrorCode::FrameSizeError);
+                    // 规范要求用 RST_STREAM 回应该流；连接与其它流继续。
+                    let stream_id = stream_id_of_header(remaining);
+                    if stream_id != 0 {
+                        let reset = Frame::RstStream {
+                            stream_id,
+                            code: code.as_u32(),
+                        };
+                        if let Ok(bytes) = encode_frame(&reset) {
+                            out.extend_from_slice(&bytes);
+                        }
+                        events.push(Event::StreamReset {
+                            stream_id,
+                            code: code.as_u32(),
+                        });
+                    }
+                    // 该帧整段丢弃：跨度由帧头长度推出。
+                    offset += frame_span(remaining);
+                    continue;
+                }
                 Err(error) => {
                     // 协议错误不可恢复，残留字节也不必保留。
                     self.partial_frame.clear();
@@ -873,6 +897,45 @@ pub enum Event {
     SettingsAcknowledged,
 }
 
+/// 把「帧头里的原始流号」取出来：`parse_frame` 因长度不符提前失败时拿不到流号，
+/// 但回应流错误必须知道是哪一条流。
+fn stream_id_of_header(data: &[u8]) -> u32 {
+    if data.len() < HEADER_LEN {
+        return 0;
+    }
+    u32::from_be_bytes([data[5], data[6], data[7], data[8]]) & 0x7fff_ffff
+}
+
+/// 这一帧占多少字节（帧头 + 声明长度），用于跳过无法解析的整帧。
+fn frame_span(data: &[u8]) -> usize {
+    if data.len() < HEADER_LEN {
+        return data.len();
+    }
+    let length = ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | data[2] as usize;
+    // 声明长度可能不可信（超限帧），但 `parse_frame` 只会在帧已完整时才走到这里。
+    (HEADER_LEN + length).min(data.len())
+}
+
+/// 该帧错误按规范是否属于**流**错误（而不是连接错误）。
+///
+/// 判据来自 RFC 9113：帧类型已知但载荷长度不符时是 FRAME_SIZE_ERROR 的流错误。
+/// 流号非法、SETTINGS 相关的问题仍是连接错误，不能用这个函数放过。
+fn stream_error_code(error: &FrameError) -> Option<ErrorCode> {
+    match error {
+        FrameError::BadLength { frame, .. } | FrameError::Truncated(frame) => {
+            match *frame {
+                // PRIORITY 已废弃但字段与强制处理仍保留（见 §6.3）：
+                // 长度不为 5 时按 FRAME_SIZE_ERROR 的流错误处理，不能断连接。
+                "PRIORITY" | "RST_STREAM" | "WINDOW_UPDATE" | "PING" => {
+                    Some(ErrorCode::FrameSizeError)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1210,6 +1273,78 @@ mod tests {
         assert_eq!(
             connection.stream_state(stream_id),
             Some(StreamState::Closed)
+        );
+    }
+
+    /// 坏 PRIORITY 帧只能重置该流，**连接必须继续**。
+    ///
+    /// RFC 9113 §6.3：长度不为 5 时按 FRAME_SIZE_ERROR 的流错误处理。之前的实现把它
+    /// 当连接错误，一个坏帧会连带掐断同连接上所有正常流。
+    #[test]
+    fn a_malformed_priority_frame_resets_only_that_stream() {
+        let mut connection = ClientConnection::new();
+        // 手工拼一个长度 3 的 PRIORITY 帧（规范要求 5）。
+        let bad = [
+            0, 0, 3, // 长度 3
+            0x2, 0x0, // PRIORITY, 无标志
+            0, 0, 0, 5, // 流 5
+            1, 2, 3, // 3 字节载荷
+        ];
+        let feed = connection.feed(&bad).expect("连接不该因此中断");
+
+        // 必须回一条 RST_STREAM(FRAME_SIZE_ERROR) 给流 5。
+        let (reset, _) = parse_frame(&feed.outbound, DEFAULT_MAX_FRAME_SIZE).expect("解析 RST_STREAM");
+        assert_eq!(
+            reset,
+            Frame::RstStream {
+                stream_id: 5,
+                code: ErrorCode::FrameSizeError.as_u32(),
+            },
+            "应当以 FRAME_SIZE_ERROR 重置流 5"
+        );
+
+        // 关键：连接仍能正常处理后续帧（这里用一个合法 SETTINGS 验证）。
+        let settings = encode_frame(&Frame::Settings {
+            ack: false,
+            settings: vec![Setting {
+                id: setting_id::MAX_FRAME_SIZE,
+                value: 32_768,
+            }],
+        })
+        .expect("编码");
+        connection
+            .feed(&settings)
+            .expect("坏帧之后连接必须仍可用");
+        assert_eq!(connection.peer_max_frame_size(), 32_768);
+    }
+
+    /// 合法的 PRIORITY 帧（长度 5）必须被正常接受，不能误判成错误。
+    #[test]
+    fn a_well_formed_priority_frame_is_accepted_silently() {
+        let mut connection = ClientConnection::new();
+        let priority = encode_frame(&Frame::Priority {
+            stream_id: 3,
+            dependency: 1,
+            exclusive: true,
+            weight: 200,
+        })
+        .expect("编码");
+        let feed = connection.feed(&priority).expect("合法 PRIORITY 不该报错");
+        assert!(
+            feed.outbound.is_empty(),
+            "PRIORITY 不需要任何回应：{:?}",
+            feed.outbound
+        );
+    }
+
+    /// PRIORITY 帧的流号为 0 时规范要求**连接**错误（PROTOCOL_ERROR），不能被降级。
+    #[test]
+    fn a_priority_frame_on_stream_zero_is_a_connection_error() {
+        let mut connection = ClientConnection::new();
+        let bad = [0, 0, 5, 0x2, 0x0, 0, 0, 0, 0, 0, 0, 0, 1, 100];
+        assert!(
+            connection.feed(&bad).is_err(),
+            "流 0 的 PRIORITY 必须是连接错误"
         );
     }
 

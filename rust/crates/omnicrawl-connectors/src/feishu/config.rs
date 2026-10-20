@@ -181,9 +181,8 @@ fn parse_seconds(value: Option<&Value>) -> Result<f64, String> {
         Value::String(text) => text.trim().parse::<f64>().ok(),
         _ => None,
     });
-    let seconds = parsed.ok_or_else(|| {
-        "feishu.confirmation_timeout_seconds 必须是数字。".to_string()
-    })?;
+    let seconds =
+        parsed.ok_or_else(|| "feishu.confirmation_timeout_seconds 必须是数字。".to_string())?;
     Ok(if seconds > 1.0 { seconds } else { 1.0 })
 }
 

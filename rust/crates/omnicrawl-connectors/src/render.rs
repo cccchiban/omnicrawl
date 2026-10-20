@@ -1,16 +1,17 @@
-//! 飞书显示映射：工具摘要与正文、文件变更预览、执行计划、子任务进度与卡片 JSON。
+//! 平台无关的显示映射：工具摘要与正文、文件变更预览、执行计划、子任务进度与消息卡片 JSON。
 //!
-//! 语义基准是 Python `omnicrawl/connectors/fsapp.py` 的显示规则段（与 TUI 消息流同规则）：
-//! `_tool_summary` / `_tool_body` / `_sample_output_lines` / `_file_change_*` /
-//! `_reasoning_panel` / `_normalize_todos` / `_todos_text` / `_subagents_text` / `_card_json`。
+//! 两个连接器共用（Telegram 与飞书）。语义基准是 Python `omnicrawl/connectors/fsapp.py`
+//! 的显示规则段（与 TUI 消息流同规则）：`_tool_summary` / `_tool_body` /
+//! `_sample_output_lines` / `_file_change_*` / `_reasoning_panel` / `_normalize_todos` /
+//! `_todos_text` / `_subagents_text` / `_card_json`。
 //! `difflib.SequenceMatcher` 是变更统计的一部分，这里逐行移植（见 [`sequence_matcher`]）。
 
 use serde_json::Value;
 
 use omnicrawl_session::{redact_sensitive_text, redact_sensitive_values};
 
-use super::text::clean_text;
 use crate::json;
+use crate::text::clean_text;
 
 /// 工具正文采样上限：最多 5 行，超出时保留首尾各 2 行有效行。
 pub const TOOL_BODY_MAX_LINES: usize = 5;
@@ -526,8 +527,19 @@ fn find_replace_count(result_text: &str) -> Option<String> {
 
 /// 思考折叠面板：运行中只显示最新五行，收口后给完整内容。
 pub fn reasoning_panel(text: &str, streaming: bool) -> Value {
+    let content = reasoning_body(text, streaming);
+    serde_json::json!({
+        "tag": "collapsible_panel",
+        "expanded": false,
+        "header": {"title": {"tag": "plain_text", "content": "💭 思考内容"}},
+        "elements": [{"tag": "markdown", "content": if content.is_empty() { "（无内容）" } else { content.as_str() }}],
+    })
+}
+
+/// 思考正文本身（不含面板外壳）：纯文本消息直接用这段。
+pub fn reasoning_body(text: &str, streaming: bool) -> String {
     let cleaned = clean_text(text);
-    let content = if streaming {
+    if streaming {
         let lines: Vec<&str> = cleaned
             .split('\n')
             .filter(|line| !line.trim().is_empty())
@@ -546,13 +558,7 @@ pub fn reasoning_panel(text: &str, streaming: bool) -> Value {
         format!("…（更早内容已省略）\n{tail}")
     } else {
         cleaned
-    };
-    serde_json::json!({
-        "tag": "collapsible_panel",
-        "expanded": false,
-        "header": {"title": {"tag": "plain_text", "content": "💭 思考内容"}},
-        "elements": [{"tag": "markdown", "content": if content.is_empty() { "（无内容）" } else { content.as_str() }}],
-    })
+    }
 }
 
 /// 规范化执行计划清单：过滤空步骤并限制条数。
@@ -592,17 +598,27 @@ pub fn normalize_todos(items: Option<&Value>) -> Vec<(String, bool)> {
 }
 
 /// 执行计划文本：标题 + 每步完成标记。
-pub fn todos_text(todos: &[(String, bool)]) -> String {
+///
+/// 标题与条目分开给：Telegram 是纯文本消息，飞书卡片是 Markdown，后者才需要强调标记。
+pub fn todos_lines(todos: &[(String, bool)]) -> Vec<String> {
     let completed = todos.iter().filter(|(_step, done)| *done).count();
-    let mut lines = vec![format!("**执行计划 · {completed}/{} 完成**", todos.len())];
+    let mut lines = vec![format!("执行计划 · {completed}/{} 完成", todos.len())];
     for (step, done) in todos {
         lines.push(format!("{} {step}", if *done { "▣" } else { "▢" }));
+    }
+    lines
+}
+
+pub fn todos_text(todos: &[(String, bool)]) -> String {
+    let mut lines = todos_lines(todos);
+    if let Some(heading) = lines.first_mut() {
+        *heading = format!("**{heading}**");
     }
     lines.join("\n")
 }
 
 /// 子任务进度段：根标签 + `├─`/`└─` 节点，与 TUI 进度树同形。
-pub fn subagents_text(order: &[String], nodes: &[(String, SubagentNode)]) -> String {
+pub fn subagents_lines(order: &[String], nodes: &[(String, SubagentNode)]) -> Vec<String> {
     let total = order.len();
     let lookup = |key: &str| {
         nodes
@@ -623,7 +639,7 @@ pub fn subagents_text(order: &[String], nodes: &[(String, SubagentNode)]) -> Str
     } else {
         "◇ 子任务进度"
     };
-    let mut lines = vec![format!("**{root} · {completed}/{total} 完成**")];
+    let mut lines = vec![format!("{root} · {completed}/{total} 完成")];
     let now = std::time::Instant::now();
     let visible = total.min(MAX_SUBAGENT_LINES);
     for (index, key) in order.iter().take(visible).enumerate() {
@@ -651,6 +667,14 @@ pub fn subagents_text(order: &[String], nodes: &[(String, SubagentNode)]) -> Str
     }
     if total > visible {
         lines.push(format!("… 还有 {} 个任务", total - visible));
+    }
+    lines
+}
+
+pub fn subagents_text(order: &[String], nodes: &[(String, SubagentNode)]) -> String {
+    let mut lines = subagents_lines(order, nodes);
+    if let Some(heading) = lines.first_mut() {
+        *heading = format!("**{heading}**");
     }
     lines.join("\n")
 }
@@ -966,6 +990,15 @@ mod tests {
         assert_eq!(
             todos_text(&todos),
             "**执行计划 · 2/2 完成**\n▣ 第一步\n▣ 第二步"
+        );
+        // 纯文本形态（Telegram）不带强调标记，其余逐行相同。
+        assert_eq!(
+            todos_lines(&todos),
+            vec![
+                "执行计划 · 2/2 完成".to_string(),
+                "▣ 第一步".to_string(),
+                "▣ 第二步".to_string(),
+            ]
         );
     }
 

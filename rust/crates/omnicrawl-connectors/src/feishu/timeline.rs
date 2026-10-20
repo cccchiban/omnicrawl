@@ -11,12 +11,12 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use super::render::{
+use crate::render::{
     card_json, markdown_card, normalize_todos, reasoning_panel, render_tool_record, subagents_text,
     todos_text, tool_body, tool_summary, SubagentNode, SUBAGENT_EVENT_STATUS,
     SUBAGENT_TERMINAL_STATUSES, TOOL_TERMINAL_STATUSES,
 };
-use super::text::{clean_text, split_segment_for_card};
+use crate::text::{clean_text, split_segment_for_card};
 
 /// 平台消息端口：发送/更新卡片与发送文本。
 pub trait MessagePort: Send + Sync {
@@ -358,9 +358,9 @@ impl SubAgentMessage {
                     agent_type: if agent_type.is_empty() {
                         "subagent".to_string()
                     } else {
-                        super::render::safe_label(Some(&Value::String(agent_type)), 80)
+                        crate::render::safe_label(Some(&Value::String(agent_type)), 80)
                     },
-                    description: super::render::safe_label(
+                    description: crate::render::safe_label(
                         Some(&Value::String(if description.is_empty() {
                             task_id.clone()
                         } else {
@@ -389,11 +389,11 @@ impl SubAgentMessage {
                 }
                 if !agent_type.is_empty() {
                     node.agent_type =
-                        super::render::safe_label(Some(&Value::String(agent_type)), 80);
+                        crate::render::safe_label(Some(&Value::String(agent_type)), 80);
                 }
                 if !description.is_empty() {
                     node.description =
-                        super::render::safe_label(Some(&Value::String(description)), 120);
+                        crate::render::safe_label(Some(&Value::String(description)), 120);
                 }
                 node.status = status.clone();
                 if matches!(status.as_str(), "running" | "waiting_approval")

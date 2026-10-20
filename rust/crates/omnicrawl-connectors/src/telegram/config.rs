@@ -30,11 +30,7 @@ pub fn load_telegram_config(section: Option<&Value>) -> Result<TelegramConfig, S
     .trim()
     .to_string();
 
-    let raw_allowed = section_or(
-        section,
-        "allowed_user_ids",
-        Value::String(String::new()),
-    );
+    let raw_allowed = section_or(section, "allowed_user_ids", Value::String(String::new()));
     let allowed_user_ids = parse_allowed_user_ids(&raw_allowed)?;
 
     let raw_timeout = section_or(
@@ -121,9 +117,7 @@ fn parse_seconds(raw: &Value) -> Result<f64, String> {
         Value::String(text) => text.trim().parse::<f64>().ok(),
         _ => None,
     };
-    parsed.ok_or_else(|| {
-        "telegram.confirmation_timeout_seconds 必须是数字。".to_string()
-    })
+    parsed.ok_or_else(|| "telegram.confirmation_timeout_seconds 必须是数字。".to_string())
 }
 
 fn identifier_of(value: &Value) -> Option<i64> {

@@ -6,7 +6,7 @@
 //! 测试用记录型实现替换。
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -21,6 +21,17 @@ pub use crate::http::UreqTransport;
 pub const API_BASE_TEMPLATE: &str = "https://api.telegram.org/bot{token}";
 /// 文件下载地址模板（与 `getFile` 返回的 `file_path` 拼接）。
 pub const FILE_DOWNLOAD_TEMPLATE: &str = "https://api.telegram.org/file/bot{token}/{path}";
+
+/// 编辑去重缓存上限：条目落地后不再被编辑，超限整体清空即可。
+const EDIT_CACHE_LIMIT: usize = 1024;
+
+/// Telegram 对「内容未改变」的编辑返回的错误片段，按成功处理。
+const NOT_MODIFIED: &str = "message is not modified";
+
+/// `setMyCommands` 单次可提交的命令条数上限（Telegram 侧硬限制）。
+pub const MAX_MENU_COMMANDS: usize = 100;
+/// 菜单描述的最大字符数（Telegram 侧硬限制）。
+const MAX_MENU_DESCRIPTION_CHARS: usize = 256;
 
 /// API 调用失败：网络、非 JSON 响应与 Telegram 的业务错误三类。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +89,8 @@ pub struct TelegramApi {
     file_base: String,
     transport: Arc<dyn HttpTransport>,
     request_timeout: Duration,
+    /// 每条消息最后一次成功落地的内容：跳过「未改变」的编辑（Telegram 对它会回 400）。
+    last_edits: Mutex<std::collections::HashMap<i64, String>>,
 }
 
 impl TelegramApi {
@@ -94,6 +107,7 @@ impl TelegramApi {
             file_base,
             transport,
             request_timeout: Duration::from_secs(30),
+            last_edits: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -173,8 +187,8 @@ impl TelegramApi {
         }
     }
 
-    /// 创建一条流式消息，返回 `message_id`；失败返回 None，不阻断任务。
-    pub fn create_stream_message(&self, chat_id: i64, text: &str) -> Option<i64> {
+    /// 创建一条消息，返回 `message_id`；失败返回 None，不阻断任务。
+    fn create_stream_message(&self, chat_id: i64, text: &str) -> Option<i64> {
         match self.call("sendMessage", &[], &chat_form(chat_id, text, None)) {
             Ok(result) => result.get("message_id").and_then(Value::as_i64),
             Err(error) => {
@@ -184,15 +198,75 @@ impl TelegramApi {
         }
     }
 
-    /// 编辑流式消息；失败只记日志，不阻断后续输出。
-    pub fn edit_stream_message(&self, chat_id: i64, message_id: i64, text: &str) {
-        if let Err(error) = self.call(
+    /// 编辑消息并回报成功与否；内容与上次落地相同或为空时直接视为成功。
+    ///
+    /// Telegram 对「内容未改变」的编辑回 400（`message is not modified`），时间线会把
+    /// 同一条目反复交付（例如思考面板与计划清单），因此这里按最后一次成功内容去重。
+    fn edit_if_changed(&self, chat_id: i64, message_id: i64, text: &str) -> bool {
+        if text.is_empty() {
+            return true;
+        }
+        {
+            let mut cache = self.last_edits.lock().expect("编辑缓存锁中毒");
+            if cache.get(&message_id).map(String::as_str) == Some(text) {
+                return true;
+            }
+            // 缓存只用于「同内容不重发」，条目落地后不会再被编辑，超限直接清空即可。
+            if cache.len() >= EDIT_CACHE_LIMIT {
+                cache.clear();
+            }
+        }
+        match self.call(
             "editMessageText",
             &[],
             &chat_form(chat_id, text, Some(message_id)),
         ) {
-            eprintln!("[telegram] 编辑流式消息失败（chat={chat_id}, msg={message_id}）：{error}");
+            Ok(_) => {
+                self.last_edits
+                    .lock()
+                    .expect("编辑缓存锁中毒")
+                    .insert(message_id, text.to_string());
+                true
+            }
+            // 「内容未改变」不是失败：消息已经是目标内容，更新缓存即可。
+            Err(TelegramApiError::Api { description, .. })
+                if description.contains(NOT_MODIFIED) =>
+            {
+                self.last_edits
+                    .lock()
+                    .expect("编辑缓存锁中毒")
+                    .insert(message_id, text.to_string());
+                true
+            }
+            Err(error) => {
+                eprintln!("[telegram] 编辑消息失败（chat={chat_id}, msg={message_id}）：{error}");
+                false
+            }
         }
+    }
+
+    /// 用 `setMyCommands` 覆盖 bot 的默认命令菜单；`commands` 先经 [`normalize_menu_commands`] 过滤。
+    ///
+    /// 菜单只是客户端侧的可视提示，服务端没有它一切照常工作，因此调用方拿到错误只需记日志。
+    pub fn set_my_commands(&self, commands: &[MenuCommand]) -> Result<usize, TelegramApiError> {
+        let normalized = normalize_menu_commands(commands);
+        let payload = Value::Array(
+            normalized
+                .iter()
+                .map(|command| {
+                    serde_json::json!({
+                        "command": command.command,
+                        "description": command.description,
+                    })
+                })
+                .collect(),
+        );
+        self.call(
+            "setMyCommands",
+            &[],
+            &[("commands".to_string(), payload.to_string())],
+        )?;
+        Ok(normalized.len())
     }
 
     /// `getFile` 换取远程路径。
@@ -230,6 +304,73 @@ impl TelegramApi {
     }
 }
 
+/// bot 命令菜单的一项：裸命令名（不带 `/`）与一句说明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuCommand {
+    pub command: String,
+    pub description: String,
+}
+
+impl MenuCommand {
+    pub fn new(command: impl Into<String>, description: impl Into<String>) -> MenuCommand {
+        MenuCommand {
+            command: command.into(),
+            description: description.into(),
+        }
+    }
+}
+
+/// 把宿主给的命令表收敛成 Telegram 能接受的形状。
+///
+/// 规则来自 Bot API：名字只能含小写字母、数字与下划线（`a-z0-9_`，1–32 字符且以字母开头），
+/// 描述 1–256 字符，同名只保留首次出现，总条数不超过 [`MAX_MENU_COMMANDS`]。不满足的条目
+/// 直接丢弃——命令本身在聊天里照样可用，菜单只是可视提示。
+pub fn normalize_menu_commands(commands: &[MenuCommand]) -> Vec<MenuCommand> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut normalized: Vec<MenuCommand> = Vec::new();
+    for command in commands {
+        if normalized.len() >= MAX_MENU_COMMANDS {
+            break;
+        }
+        let name = menu_command_name(&command.command);
+        if name.is_empty() || seen.contains(&name) {
+            continue;
+        }
+        let description = command.description.trim();
+        if description.is_empty() {
+            continue;
+        }
+        seen.push(name.clone());
+        normalized.push(MenuCommand {
+            command: name,
+            description: description.chars().take(MAX_MENU_DESCRIPTION_CHARS).collect(),
+        });
+    }
+    normalized
+}
+
+/// 规范化单个命令名：去掉前导斜杠、字母转小写后校验字符集。
+///
+/// Telegram 只接受 `a-z`、`0-9` 与下划线，且必须以字母开头。注册表里的
+/// `/memory:clean`、`/approval:review` 这类带分隔符的名字无法表示——硬改成下划线会让
+/// 菜单插入一个并不存在的命令，因此返回空串由调用方跳过（命令本身在聊天里照常可用）。
+fn menu_command_name(raw: &str) -> String {
+    let name = raw
+        .trim()
+        .trim_start_matches('/')
+        .chars()
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    let mut characters = name.chars();
+    let valid = matches!(characters.next(), Some(first) if first.is_ascii_alphabetic())
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && name.len() <= 32;
+    if !valid {
+        return String::new();
+    }
+    name
+}
+
 fn chat_form(chat_id: i64, text: &str, message_id: Option<i64>) -> Vec<(String, String)> {
     let mut form = vec![
         ("chat_id".to_string(), chat_id.to_string()),
@@ -239,4 +380,72 @@ fn chat_form(chat_id: i64, text: &str, message_id: Option<i64>) -> Vec<(String, 
         form.push(("message_id".to_string(), message_id.to_string()));
     }
     form
+}
+
+impl super::timeline::MessagePort for TelegramApi {
+    fn create(&self, chat_id: i64, text: &str) -> Option<i64> {
+        let message_id = self.create_stream_message(chat_id, text)?;
+        self.last_edits
+            .lock()
+            .expect("编辑缓存锁中毒")
+            .insert(message_id, text.to_string());
+        Some(message_id)
+    }
+
+    fn edit(&self, chat_id: i64, message_id: i64, text: &str) -> bool {
+        self.edit_if_changed(chat_id, message_id, text)
+    }
+
+    fn send_text(&self, chat_id: i64, text: &str) {
+        self.send_message(chat_id, text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(commands: &[MenuCommand]) -> Vec<String> {
+        normalize_menu_commands(commands)
+            .into_iter()
+            .map(|command| command.command)
+            .collect()
+    }
+
+    #[test]
+    fn menu_names_are_normalized_and_deduplicated() {
+        let commands = vec![
+            MenuCommand::new("/START", "开始"),
+            MenuCommand::new("status", "状态"),
+            MenuCommand::new("/Status", "重复项被丢弃"),
+            MenuCommand::new("/memory:clean", "带冒号的名字无法表示"),
+            MenuCommand::new("/1st", "数字开头不合法"),
+            MenuCommand::new("/too_long_name_that_exceeds_thirty_two_chars", "过长"),
+            MenuCommand::new("plan", "  "),
+            MenuCommand::new("workspace", "切换工作区"),
+        ];
+        assert_eq!(names(&commands), vec!["start", "status", "workspace"]);
+    }
+
+    #[test]
+    fn menu_descriptions_are_trimmed_and_capped() {
+        let long = "描".repeat(MAX_MENU_DESCRIPTION_CHARS + 10);
+        let normalized = normalize_menu_commands(&[MenuCommand::new("start", &long)]);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].description.chars().count(),
+            MAX_MENU_DESCRIPTION_CHARS
+        );
+    }
+
+    #[test]
+    fn menu_list_is_capped_at_telegram_limit() {
+        let commands: Vec<MenuCommand> = (0..MAX_MENU_COMMANDS + 5)
+            .map(|index| MenuCommand::new(format!("cmd{index}"), "说明"))
+            .collect();
+        assert_eq!(
+            normalize_menu_commands(&commands).len(),
+            MAX_MENU_COMMANDS
+        );
+    }
 }

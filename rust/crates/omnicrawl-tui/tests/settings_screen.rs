@@ -1093,8 +1093,16 @@ fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
         collapsed.contains("Firecrawl API Key：（未配置）"),
         "{collapsed}"
     );
+    assert!(
+        collapsed.contains("AnySearch API Key：（未配置）"),
+        "{collapsed}"
+    );
+    assert!(
+        collapsed.contains("TinyFish API Key：（未配置）"),
+        "{collapsed}"
+    );
 
-    state.handle_key(KeyCode::Enter); // 展开「默认引擎」候选
+    state.handle_key(KeyCode::Enter); // 展开「搜索引擎」候选
     let buffer = draw(&state, WIDTH, HEIGHT);
     let screen = text(&buffer);
     assert!(screen.contains("duckduckgo"), "候选项要列出来：{screen}");
@@ -1110,7 +1118,7 @@ fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
         .expect("浮层首项应当可点");
     let lines: Vec<String> = screen.lines().map(str::to_string).collect();
     let line = &lines[row as usize];
-    assert!(line.contains("bing"), "高亮行是候选本身：{line}");
+    assert!(line.contains("duckduckgo"), "高亮行是候选本身：{line}");
     assert!(!line.contains("API Key"), "高亮行不许有残留：{line}");
 
     // 收起后字段行原样回来（Clear 只擦浮层那一块）。

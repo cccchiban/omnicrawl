@@ -1,11 +1,13 @@
-//! 抓取用的进程内 cookie 罐：收 `Set-Cookie`、按 `domain`/`path`/`secure`/过期回带。
+//! 抓取用的进程内 cookie 罐：收 `Set-Cookie`、按 `domain`/`path`/`secure`/`SameSite`/过期回带。
 //!
 //! 只实现抓取场景需要的那部分 RFC 6265：
 //!
 //! - 不落盘：罐的生命周期就是进程，退出即失（抓取工具没有持久会话的语义）。
 //! - 不做 Public Suffix List 校验：没有那份表时，`Domain` 只按「必须是请求主机的后缀」校验，
 //!   拒绝 `Domain=com` 这类把 cookie 广播到整个顶级域之外还能成立的写法仍然做不到——
-//!   这里保守地要求 `Domain` 与请求主机域名匹配且不是单标签。
+//!   这里保守地要求 `Domain` 与请求主机域名匹配且不是单标签。`SameSite` 的「同站」判定
+//!   同样只能用「最后两段」近似可注册域，因此 `example.co.uk` 与 `other.co.uk` 会被误判为
+//!   同站（方向偏向多带 cookie，不会少带）。
 //! - 不实现 `HttpOnly` 的脚本隔离：本栈不执行脚本，那一项没有作用面，只原样保留标记。
 //!
 //! 之所以自己实现而不用 `cookie_store`：这里的规则面很小（存、匹配、拼一个 `Cookie` 头），
@@ -14,6 +16,16 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// `SameSite` 的三种取值。
+///
+/// 缺省（没写这个属性）按 `Lax` 处理——这是浏览器的现行默认，不是「不限」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SameSite {
+    Strict,
+    Lax,
+    None,
+}
 
 /// 一条 cookie。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,10 +39,66 @@ struct Cookie {
     path: String,
     secure: bool,
     http_only: bool,
+    same_site: SameSite,
     /// Unix 秒；`None` 是会话 cookie。
     expires_at: Option<i64>,
     /// 同一请求路径下按创建序回带（RFC 6265 §5.4 的第 2 条排序键）。
     created_at: i64,
+}
+
+/// 请求的站点语境：`SameSite` 要看「谁发起了这次请求」，光有目标地址判不出来。
+///
+/// 抓取工具没有页面里的子资源请求，实际只有两种情形：调用方直接抓一个地址（没有发起方，
+/// 等同同站），以及跟随重定向（发起方是上一跳）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestContext {
+    /// 发起这次请求的地址；`None` 表示没有跨站发起方（直接请求）。
+    initiator: Option<String>,
+    /// 顶层导航：地址栏输入、跟随链接、重定向链都属于这一类。
+    top_level_navigation: bool,
+    /// 安全方法（`GET`/`HEAD`）：`Lax` 的跨站放行只对安全方法成立。
+    safe_method: bool,
+}
+
+impl RequestContext {
+    /// 直接抓一个地址：没有发起方，因此没有跨站语境，所有 cookie 都该带上。
+    pub fn direct() -> Self {
+        Self {
+            initiator: None,
+            top_level_navigation: true,
+            safe_method: true,
+        }
+    }
+
+    /// 跟随重定向：发起方是上一跳地址。
+    ///
+    /// 重定向仍属于同一次顶层导航，因此 `Lax` 的跨站放行照旧成立；`Strict` 则会被跨站挡住。
+    pub fn redirected(initiator: &str, method: &str) -> Self {
+        Self {
+            initiator: Some(initiator.to_string()),
+            top_level_navigation: true,
+            safe_method: is_safe_method(method),
+        }
+    }
+
+    /// 显式构造，供测试与需要自定语境的上层使用。
+    pub fn new(initiator: Option<&str>, top_level_navigation: bool, method: &str) -> Self {
+        Self {
+            initiator: initiator.map(str::to_string),
+            top_level_navigation,
+            safe_method: is_safe_method(method),
+        }
+    }
+}
+
+impl Default for RequestContext {
+    fn default() -> Self {
+        Self::direct()
+    }
+}
+
+fn is_safe_method(method: &str) -> bool {
+    method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
 }
 
 /// 一条已解析的请求地址：只取 cookie 规则用到的三段。
@@ -116,14 +184,24 @@ impl CookieJar {
     }
 
     /// 该地址应当带哪些 cookie，按浏览器顺序拼成一个 `Cookie` 头。
+    ///
+    /// 返回 `None` 表示一个都不该带（含 `SameSite` 全部被挡的情形）。
     pub fn cookie_header(&self, url: &str) -> Option<String> {
+        self.cookie_header_in(url, &RequestContext::direct())
+    }
+
+    /// 带请求语境的版本：`SameSite` 在这里生效。
+    pub fn cookie_header_in(&self, url: &str, context: &RequestContext) -> Option<String> {
         let target = Target::parse(url)?;
         let now = now_seconds();
         let mut guard = self.lock();
         guard.retain(|item| item.expires_at.is_none_or(|value| value > now));
+        // 跨站判定只看一次：与目标地址绑定的属性，不随哪条 cookie 变。
+        let cross_site = is_cross_site(context, &target);
         let mut matched: Vec<&Cookie> = guard
             .iter()
             .filter(|item| matches(item, &target))
+            .filter(|item| same_site_allows(item.same_site, cross_site, context))
             .collect();
         if matched.is_empty() {
             return None;
@@ -167,7 +245,19 @@ impl CookieJar {
 pub type SharedJar = Arc<CookieJar>;
 
 /// 给一跳请求补 `Cookie` 头（罐为空或无匹配时不加）。
+///
+/// 不带请求语境，等同直接抓取（无跨站发起方）。
 pub fn apply_header(jar: Option<&CookieJar>, url: &str, headers: &mut Vec<(String, String)>) {
+    apply_header_in(jar, url, &RequestContext::direct(), headers);
+}
+
+/// 带请求语境的版本：`SameSite` 据此决定这一跳带不带 cookie。
+pub fn apply_header_in(
+    jar: Option<&CookieJar>,
+    url: &str,
+    context: &RequestContext,
+    headers: &mut Vec<(String, String)>,
+) {
     let Some(jar) = jar else {
         return;
     };
@@ -178,7 +268,7 @@ pub fn apply_header(jar: Option<&CookieJar>, url: &str, headers: &mut Vec<(Strin
     {
         return;
     }
-    if let Some(value) = jar.cookie_header(url) {
+    if let Some(value) = jar.cookie_header_in(url, context) {
         headers.push(("cookie".to_string(), value));
     }
 }
@@ -205,6 +295,75 @@ fn matches(cookie: &Cookie, target: &Target) -> bool {
         return false;
     }
     path_matches(&target.path, &cookie.path)
+}
+
+/// 本次请求是否跨站：比较发起方与目标的「站点」（近似可注册域）。
+///
+/// 没有发起方（直接抓取）就不算跨站——这不是放水，而是抓取工具确实没有页面来源：
+/// 真实浏览器在地址栏直接输入同样不带跨站语境。
+fn is_cross_site(context: &RequestContext, target: &Target) -> bool {
+    let Some(initiator) = context.initiator.as_deref() else {
+        return false;
+    };
+    let Some(source) = Target::parse(initiator) else {
+        // 发起方解析不出来时按跨站处理：宁可少带 cookie，也不把跨站凭据送出去。
+        return true;
+    };
+    site_of(&source.host) != site_of(&target.host)
+}
+
+/// 近似可注册域：没有 PSL 时取最后两段；单标签主机原样返回。
+///
+/// `co.uk` 这类多段公共后缀会被折成「最后两段」，从而把 `a.co.uk` 与 `b.co.uk` 判成同站。
+/// 方向是多带 cookie——抓取场景里这比少带安全，且不会把 cookie 送到目标域之外。
+fn site_of(host: &str) -> String {
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    if labels.len() <= 2 {
+        return labels.join(".");
+    }
+    labels[labels.len() - 2..].join(".")
+}
+
+/// `SameSite` 是否允许这条 cookie 随本次请求发出。
+///
+/// 语义与浏览器一致：
+/// - `None`：始终允许（`Secure` 由 `matches` 单独把关）。
+/// - `Strict`：跨站一律不发。
+/// - `Lax`：跨站只在「安全方法的顶层导航」时发；`POST` 等非安全方法不发。
+fn same_site_allows(value: SameSite, cross_site: bool, context: &RequestContext) -> bool {
+    if !cross_site {
+        return true;
+    }
+    match value {
+        SameSite::None => true,
+        SameSite::Strict => false,
+        SameSite::Lax => context.top_level_navigation && context.safe_method,
+    }
+}
+
+/// 名字前缀是否允许这条 cookie 被存储（RFC 6265bis §4.1.3）。
+///
+/// 两种前缀的约束不同，且**必须按整词匹配、大小写不敏感**：
+///
+/// - `__Secure-`：必须带 `Secure`，且来自安全来源（https）。
+/// - `__Host-`：必须带 `Secure`、来自安全来源、**不得带 `Domain`**（只能 host-only）、
+///   `Path` 必须是 `/`。这是最强的一条——它保证 cookie 只回到下发给它的那一个主机。
+///
+/// 为什么必须做：浏览器会拒收不合规的前缀 cookie，我们照收就会与浏览器行为不一致。
+/// 更要紧的是 `__Host-` 的语义靠服务端信任：放行一条 `__Host-` + `Domain=other.example`
+/// 的 cookie，等于让站点声明它本不该有的作用域。
+///
+/// 必须排除的一种误判：名字里**任意位置**出现 `__Host-` 不算，只有前缀才算——
+/// 否则 `my__Host-x` 这种普通名字会被错误拒绝。
+fn prefix_allows(name: &str, cookie: &Cookie, target: &Target) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("__host-") {
+        return cookie.secure && target.secure && cookie.host_only && cookie.path == "/";
+    }
+    if lower.starts_with("__secure-") {
+        return cookie.secure && target.secure;
+    }
+    true
 }
 
 /// `host` 是否落在 `domain` 上：完全一致，或（非 host-only 时）是它的子域。
@@ -259,6 +418,8 @@ fn parse_set_cookie(text: &str, target: &Target, now: i64) -> Option<Cookie> {
         path: default_path(&target.path),
         secure: false,
         http_only: false,
+        // 缺省按 `Lax`：这是浏览器现行默认，把「没写」当成「不限」会让跨站请求多带 cookie。
+        same_site: SameSite::Lax,
         expires_at: None,
         created_at: now,
     };
@@ -297,6 +458,14 @@ fn parse_set_cookie(text: &str, target: &Target, now: i64) -> Option<Cookie> {
             }
             "secure" => cookie.secure = true,
             "httponly" => cookie.http_only = true,
+            "samesite" => {
+                cookie.same_site = match raw.to_lowercase().as_str() {
+                    "strict" => SameSite::Strict,
+                    "none" => SameSite::None,
+                    // `lax` 与任何无法识别的值都落回 `Lax`：与浏览器的回退方向一致。
+                    _ => SameSite::Lax,
+                }
+            }
             "max-age" => {
                 if let Ok(seconds) = raw.parse::<i64>() {
                     max_age = Some(seconds);
@@ -309,6 +478,14 @@ fn parse_set_cookie(text: &str, target: &Target, now: i64) -> Option<Cookie> {
             }
             _ => {}
         }
+    }
+    // `SameSite=None` 必须同时带 `Secure`，否则浏览器整条拒收（属性顺序无关，故在循环后判定）。
+    if cookie.same_site == SameSite::None && !cookie.secure {
+        return None;
+    }
+    // 名字前缀对属性有强制要求（RFC 6265bis §4.1.3），同样必须在属性循环后判定。
+    if !prefix_allows(name, &cookie, target) {
+        return None;
     }
     // `Max-Age` 优先于 `Expires`（RFC 6265 §5.3 第 3 步）。
     cookie.expires_at = match max_age {
@@ -566,6 +743,71 @@ mod tests {
         }
     }
 
+    /// `__Secure-` 前缀：必须带 `Secure` 且来自 https。
+    #[test]
+    fn secure_prefix_requires_secure_attribute_and_an_https_origin() {
+        let jar = CookieJar::new();
+        // 合规：https 来源 + `Secure`。
+        assert!(jar.store("https://example.com/", "__Secure-sid=1; Secure"));
+        // 缺 `Secure`：拒收。
+        assert!(!jar.store("https://example.com/", "__Secure-bad=1; Path=/"));
+        // 明文来源：即使带 `Secure` 也拒收（前缀要求安全来源，不只是属性）。
+        assert!(!jar.store("http://example.com/", "__Secure-plain=1; Secure"));
+        assert_eq!(jar.count(), 1);
+    }
+
+    /// `__Host-` 前缀：还要 host-only 且 `Path=/`，这是最强的一条。
+    #[test]
+    fn host_prefix_requires_host_only_and_root_path() {
+        let jar = CookieJar::new();
+        // 合规：https + Secure + Path=/ + 无 Domain。
+        assert!(jar.store("https://example.com/", "__Host-sid=1; Secure; Path=/"));
+        // 带 Domain：拒收（`__Host-` 的意义就是不能带 Domain）。
+        assert!(!jar.store(
+            "https://example.com/",
+            "__Host-域=1; Secure; Path=/; Domain=example.com"
+        ));
+        // Path 不是 `/`：拒收。
+        assert!(!jar.store(
+            "https://example.com/",
+            "__Host-路径=1; Secure; Path=/app"
+        ));
+        // 缺 Secure：拒收。
+        assert!(!jar.store("https://example.com/", "__Host-无安全=1; Path=/"));
+        assert_eq!(jar.count(), 1);
+    }
+
+    /// 前缀匹配大小写不敏感：浏览器对 `__HOST-` 与 `__Host-` 一视同仁。
+    #[test]
+    fn prefixes_are_case_insensitive() {
+        let jar = CookieJar::new();
+        assert!(!jar.store("https://example.com/", "__HOST-bad=1; Path=/"));
+        assert!(!jar.store("https://example.com/", "__SECURE-bad=1; Path=/"));
+        assert!(jar.store("https://example.com/", "__HOST-ok=1; Secure; Path=/"));
+        assert!(jar.store("https://example.com/", "__SECURE-ok=1; Secure"));
+        assert_eq!(jar.count(), 2);
+    }
+
+    /// 只有**开头**的前缀才受约束：名字中间出现 `__Host-` 是普通名字。
+    ///
+    /// 这条防的是 `starts_with` 写成 `contains` 之后把正常 cookie 全拒了。
+    #[test]
+    fn a_prefix_in_the_middle_of_a_name_is_an_ordinary_name() {
+        let jar = CookieJar::new();
+        assert!(jar.store("http://example.com/", "my__Host-x=1; Path=/"));
+        assert!(jar.store("http://example.com/", "my__Secure-x=1; Path=/"));
+        assert_eq!(jar.count(), 2);
+    }
+
+    /// 没有前缀的普通名字不受影响（回归保护）。
+    #[test]
+    fn ordinary_names_are_unaffected() {
+        let jar = CookieJar::new();
+        assert!(jar.store("http://example.com/", "sid=1; Path=/"));
+        assert!(jar.store("http://example.com/", "under_score=1; Path=/"));
+        assert_eq!(jar.count(), 2);
+    }
+
     #[test]
     fn apply_header_respects_a_caller_supplied_cookie() {
         let jar = CookieJar::new();
@@ -580,5 +822,165 @@ mod tests {
         let mut explicit = vec![("Cookie".to_string(), "manual=1".to_string())];
         apply_header(Some(&jar), "https://example.com/", &mut explicit);
         assert_eq!(explicit.len(), 1, "重复的 Cookie 头会破坏语义：{explicit:?}");
+    }
+
+    /// 缺省不写 `SameSite` 就是 `Lax`：跨站的 POST 不该带上它。
+    #[test]
+    fn an_absent_samesite_defaults_to_lax() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1"));
+        // 跨站的 GET 顶层导航：Lax 放行。
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "GET")
+            )
+            .as_deref(),
+            Some("sid=1")
+        );
+        // 跨站的 POST：Lax 不放行。
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "POST")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn samesite_lax_blocks_cross_site_posts_but_allows_same_site_posts() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=Lax"));
+        // 同站（同一可注册域的不同子域）的 POST：不跨站，照常带。
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://api.example.com/", "POST")
+            )
+            .as_deref(),
+            Some("sid=1")
+        );
+    }
+
+    #[test]
+    fn samesite_strict_blocks_all_cross_site_requests() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=Strict"));
+        // 跨站 GET 也不带：这正是 Strict 与 Lax 的分界。
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "GET")
+            ),
+            None
+        );
+        // 同站仍然带。
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://example.com/prev", "GET")
+            )
+            .as_deref(),
+            Some("sid=1")
+        );
+    }
+
+    #[test]
+    fn samesite_none_is_sent_cross_site_when_secure() {
+        let jar = CookieJar::new();
+        assert!(jar.store(
+            "https://example.com/",
+            "sid=1; SameSite=None; Secure"
+        ));
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "POST")
+            )
+            .as_deref(),
+            Some("sid=1")
+        );
+    }
+
+    /// `SameSite=None` 没有 `Secure` 时浏览器整条拒收，不能只存一半。
+    #[test]
+    fn samesite_none_without_secure_is_rejected_entirely() {
+        let jar = CookieJar::new();
+        assert!(!jar.store("https://example.com/", "sid=1; SameSite=None"));
+        assert_eq!(jar.count(), 0);
+    }
+
+    /// 属性顺序不该影响判定：`Secure` 可能写在 `SameSite` 之后。
+    #[test]
+    fn attribute_order_does_not_change_the_none_secure_rule() {
+        let jar = CookieJar::new();
+        assert!(jar.store(
+            "https://example.com/",
+            "sid=1; SameSite=None; Secure"
+        ));
+        assert!(jar.store(
+            "https://example.com/",
+            "sid2=1; Secure; SameSite=None"
+        ));
+        assert_eq!(jar.count(), 2);
+    }
+
+    /// 没有发起方的直接抓取不算跨站：地址栏直接输入也不带跨站语境。
+    #[test]
+    fn a_direct_request_is_never_cross_site() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=Strict"));
+        assert_eq!(
+            jar.cookie_header("https://example.com/").as_deref(),
+            Some("sid=1")
+        );
+    }
+
+    /// 无法识别的值回退 Lax，与浏览器一致。
+    #[test]
+    fn an_unknown_samesite_value_falls_back_to_lax() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=Bogus"));
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "GET")
+            )
+            .as_deref(),
+            Some("sid=1"),
+            "Lax 放行跨站 GET"
+        );
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::redirected("https://other.com/", "POST")
+            ),
+            None,
+            "Lax 挡住跨站 POST"
+        );
+    }
+
+    /// 发起方不是 http(s) 时按跨站处理：宁可少带，也不把凭据送给无法判定的来源。
+    #[test]
+    fn an_unparseable_initiator_is_treated_as_cross_site() {
+        let jar = CookieJar::new();
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=Strict"));
+        assert_eq!(
+            jar.cookie_header_in(
+                "https://example.com/",
+                &RequestContext::new(Some("ftp://example.com/"), false, "GET")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn site_computation_uses_the_last_two_labels() {
+        assert_eq!(site_of("a.example.com"), "example.com");
+        assert_eq!(site_of("example.com"), "example.com");
+        assert_eq!(site_of("localhost"), "localhost");
+        // 无 PSL 的已知近似：两端都折成 `co.uk`，会被判成同站（方向是多带，不会少带）。
+        assert_eq!(site_of("a.co.uk"), "co.uk");
     }
 }

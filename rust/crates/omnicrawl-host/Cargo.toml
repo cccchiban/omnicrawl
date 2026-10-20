@@ -27,6 +27,8 @@ omnicrawl-session = { path = "../omnicrawl-session" }
 # fetcher / web_search 的浏览器指纹通路：自研 TLS + HTTP/2 + HTTP/1.1 栈（纯 Rust，
 # 不引入 BoringSSL、CMake、NASM 与 libclang）。
 omnicrawl-tls = { path = "../omnicrawl-tls" }
+# 本地 JS 沙箱（boa_engine）：正文由脚本拼装时在本机重建，不联网、不伪造指纹。
+omnicrawl-jsdom = { path = "../omnicrawl-jsdom" }
 # TTS 云服务通道（OpenAI audio/speech 与 Gemini TTS），纯 HTTP，无原生依赖。
 omnicrawl-tts = { path = "../omnicrawl-tts" }
 chrono = { workspace = true }
@@ -36,6 +38,9 @@ scraper = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }
+brotli = { version = "9.0.0", default-features = false, features = ["std"] }
+# 正文字符集还原：GBK/GB18030/Big5/Shift_JIS 站点不能用 UTF-8 解。纯 Rust，无 C 依赖。
+encoding_rs = "0.8"
 
 # 后台命令树要随宿主退出（含崩溃）被回收：Windows Job Object 的 kill-on-close。
 [target.'cfg(windows)'.dependencies]

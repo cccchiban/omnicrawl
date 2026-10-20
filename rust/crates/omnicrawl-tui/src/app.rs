@@ -4745,7 +4745,7 @@ impl App {
     /// 联网搜索页：写 `config.toml [web_search]`（字段顺序与 `WEB_SEARCH_FIELDS` 一致），
     /// 再换掉宿主侧搜索运行期。
     ///
-    /// 三把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
+    /// 五把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
     /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
     fn apply_web_search_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
@@ -4753,7 +4753,7 @@ impl App {
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         // 写盘前留一份磁盘原值：重建工具表失败时要把它写回去（这份还没被覆盖）。
         let previous = configuration.clone();
-        configuration.engine = field_text_or(values, 0, "bing");
+        configuration.engine = field_text_or(values, 0, "duckduckgo");
         if let Some(key) = keep_or_replace(&field_text(values, 1)) {
             configuration.tavily_api_key = key;
         }
@@ -4764,6 +4764,12 @@ impl App {
             configuration.firecrawl_api_key = key;
         }
         if let Some(key) = keep_or_replace(&field_text(values, 4)) {
+            configuration.anysearch_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 5)) {
+            configuration.tinyfish_api_key = key;
+        }
+        if let Some(key) = keep_or_replace(&field_text(values, 6)) {
             configuration.github_token = key;
         }
         let path = save_web_search_configuration(&environment, &configuration, None)
@@ -4771,7 +4777,7 @@ impl App {
         // 搜索运行期就在宿主侧：写盘后立即换掉。但执行体读的是工具表里那一份克隆
         // （`ToolRegistry::new` 会 clone `registry_options.web_search`），只改选项不重建
         // 的话正在跑的表还握着启动时的引擎与凭据——现象是「设置里选了 tavily，搜索仍报
-        // 来源：bing」，直到重启。重建失败时磁盘与运行期一起回滚（同 `apply_advisor_form`）。
+        // 来源：duckduckgo」，直到重启。重建失败时磁盘与运行期一起回滚（同 `apply_advisor_form`）。
         let previous_options = self.registry_options.web_search.clone();
         self.registry_options.web_search =
             omnicrawl_host::tools::web_search_options_from_config(&environment);
@@ -6755,7 +6761,7 @@ fn agent_workspace_form_values(config: &AgentWorkspaceConfig) -> Vec<FieldValue>
     ]
 }
 
-/// 联网搜索在工具页上的投影：默认引擎 + 三把凭据是否已配置（凭据本身不进界面状态）。
+/// 联网搜索在工具页上的投影：默认引擎 + 各凭据是否已配置（凭据本身不进界面状态）。
 fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
     let configuration = load_web_search_configuration(environment, None).unwrap_or_default();
     WebSearchRow {
@@ -6763,6 +6769,8 @@ fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
         tavily_configured: !configuration.tavily_api_key.trim().is_empty(),
         exa_configured: !configuration.exa_api_key.trim().is_empty(),
         firecrawl_configured: !configuration.firecrawl_api_key.trim().is_empty(),
+        anysearch_configured: !configuration.anysearch_api_key.trim().is_empty(),
+        tinyfish_configured: !configuration.tinyfish_api_key.trim().is_empty(),
         github_configured: !configuration.github_token.trim().is_empty(),
     }
 }

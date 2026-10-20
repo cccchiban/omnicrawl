@@ -1168,8 +1168,9 @@ mode = \"review\"
 
     impl WebTransport for StubTransport {
         fn send(&self, request: &WebRequest) -> Result<WebResponse, WebError> {
-            let body = if request.url.contains("bing.com") {
-                r#"<li class="b_algo"><h2><a href="https://example.com/1">标题一</a></h2><p>摘要一</p></li>"#
+            let body = if request.url.contains("duckduckgo.com") {
+                r#"<a class="result__a" href="https://example.com/1">标题一</a>
+<a class="result__snippet">摘要一</a>"#
             } else if request.url.contains("/images/generations") {
                 r#"{"data": [{"b64_json": "aGVsbG8=", "output_format": "png"}]}"#
             } else {
@@ -1179,6 +1180,7 @@ mode = \"review\"
                 status: 200,
                 final_url: request.url.clone(),
                 body: body.as_bytes().to_vec(),
+                headers: Vec::new(),
             })
         }
     }
@@ -1209,7 +1211,7 @@ mode = \"review\"
             .expect("web_search 应当被本宿主处理");
         assert!(searched.ok, "{}", searched.output);
         assert!(
-            searched.output.contains("来源：bing"),
+            searched.output.contains("来源：duckduckgo"),
             "{}",
             searched.output
         );

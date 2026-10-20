@@ -1,0 +1,19 @@
+[package]
+name = "omnicrawl-jsdom"
+description = "受控 JS 沙箱：在本地执行页面脚本（内联与外链）重建由 JS 拼装的正文，JS 侧环境伪装成有头浏览器"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 纯 Rust ECMAScript 引擎：不引入 C/C++、Node 或系统浏览器。
+# 0.22 是必需而不是求新：0.21 解析不了 `class A { static false() {} }` 这类合法语法
+# （现代打包产物里确实存在），整份 bundle 会被判成语法错误而无法执行。
+# 代价是它要求 MSRV 1.91，工作区 `rust-version` 因此从 1.90 抬到 1.91。
+boa_engine = { version = "0.22", default-features = false, features = ["annex-b"] }
+# scraper 不重新导出节点句柄类型，自己声明同一版本以便标注 `convert` 的入参。
+ego-tree = "0.6"
+regex = { workspace = true }
+scraper = { workspace = true }

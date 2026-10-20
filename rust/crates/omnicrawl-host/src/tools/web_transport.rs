@@ -12,6 +12,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use super::cookies::{self, SharedJar};
+use super::referrer;
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -53,21 +54,44 @@ pub struct WebResponse {
     pub final_url: String,
     /// 原始响应体：图片等多字节内容不能被文本解码破坏。
     pub body: Vec<u8>,
+    /// 响应头（名字已转小写，同名多值按到达顺序保留）。
+    ///
+    /// 除 `accept-ch` 协商外，正文解码也要读它：`content-type` 的 `charset` 决定
+    /// GBK 等站点怎么解（见 [`charset`](super::charset)）。因此真实通路必须填充它，
+    /// 只有不涉及文本的内部桩才给空向量。
+    pub headers: Vec<(String, String)>,
 }
 
 impl WebResponse {
-    /// 文本视图：非 UTF-8 字节按替换字符处理（网页抓取用）。
+    /// 取单个响应头（名字大小写不敏感；多值时用 `header_values`）。
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// 取某个响应头的全部值（`set-cookie` 这类多值头需要）。
+    pub fn header_values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.headers
+            .iter()
+            .filter(move |(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+    /// 文本视图：按 `content-type` 的 `charset` 解码（网页抓取用）。
+    ///
+    /// 不能一律按 UTF-8 强解：GBK 站点会得到满屏替换字符而状态码仍是 200。
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).to_string()
+        super::charset::decode_body(&self.body, self.header("content-type")).0
     }
 }
 
 /// 按 `content-encoding` 还原响应体。
 ///
-/// 传输层刻意不发 `accept-encoding`（本栈默认不解压），但服务端并不总是遵守约定：
-/// `www.163.com` 在 h2 下不声明压缩也会回 `content-encoding: gzip`。若把那些字节当文本，
-/// 正文会变成乱码而状态码仍是 200——比明确报错更难排查，因此统一在出口还原。
-/// 认不出的编码明确报错，绝不把压缩字节透给上层。
+/// 本栈按档案族声明 `accept-encoding`（`gzip, deflate, br`），因此正常情况下服务端会回
+/// 压缩体；此外服务端并不总守约定：`www.163.com` 在 h2 下即使没收到声明也会回
+/// `content-encoding: gzip`。若把那些字节当文本，正文会变成乱码而状态码仍是 200——
+/// 比明确报错更难排查，因此统一在出口还原。认不出的编码明确报错，绝不把压缩字节透给上层。
 pub fn decode_content(body: Vec<u8>, encoding: Option<&str>) -> Result<Vec<u8>, WebError> {
     let declared = encoding.unwrap_or("").to_lowercase();
     let mut encodings: Vec<&str> = declared
@@ -92,11 +116,22 @@ fn decode_one_encoding(body: Vec<u8>, encoding: &str) -> Result<Vec<u8>, WebErro
         "" | "identity" => Ok(body),
         "gzip" | "x-gzip" => inflate_gzip(&body),
         "deflate" => inflate_deflate(&body),
+        "br" => inflate_brotli(&body),
+        // `zstd` 需要 C 依赖（zstd-sys），本项目不引入 C/C++ 工具链，因此不声明该编码；
+        // 服务端若仍然回了它，只能如实报错而不是把二进制当文本。
         other => Err(WebError::new(
             WebErrorKind::Other,
             format!("服务端返回了本实现不支持的压缩编码 {other}。"),
         )),
     }
+}
+
+fn inflate_brotli(body: &[u8]) -> Result<Vec<u8>, WebError> {
+    let mut out = Vec::new();
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(body), &mut out).map_err(|error| {
+        WebError::new(WebErrorKind::Other, format!("brotli 解压失败：{error}"))
+    })?;
+    Ok(out)
 }
 
 fn inflate_gzip(body: &[u8]) -> Result<Vec<u8>, WebError> {
@@ -151,6 +186,21 @@ pub struct WebRequest {
     /// 放在请求上而不是传输上，是因为罐的生命周期归调用方（抓取工具跨请求共用一份），
     /// 传输只是无状态的执行体。`None` 表示不处理 cookie。
     pub cookie_jar: Option<SharedJar>,
+    /// 发起这次请求的地址；`None` 表示没有跨站发起方（调用方直接抓取）。
+    ///
+    /// 两处要用它：`SameSite` 判「跨站」得比较发起方与目标的站点；`Referer` 的值直接来自它。
+    /// 重定向链由传输层逐跳填写（发起方是上一跳）。
+    pub initiator: Option<String>,
+    /// `Referer` 的当前策略，随响应头收窄（见 [`referrer`](super::referrer)）。
+    pub referrer_policy: super::referrer::Policy,
+    /// 这次请求的用途：决定 `Sec-Fetch-*` 的取值（见
+    /// [`fetch_metadata`](super::fetch_metadata)）。
+    pub purpose: super::fetch_metadata::Purpose,
+    /// TLS 会话缓存：`Some` 时尝试复用票据（默认关闭，由配置 `[tls_resumption]` 控制）。
+    ///
+    /// 放在请求上而不是传输上，与 `cookie_jar` 同理：缓存的生命周期归调用方，
+    /// 一次抓取的多个 URL 共用一份。
+    pub tls_session_cache: Option<std::sync::Arc<omnicrawl_tls::session_cache::SessionCache>>,
 }
 
 impl WebRequest {
@@ -166,6 +216,10 @@ impl WebRequest {
             max_redirects: MAX_REDIRECTS,
             impersonate: None,
             cookie_jar: None,
+            initiator: None,
+            referrer_policy: super::referrer::Policy::DEFAULT,
+            purpose: super::fetch_metadata::Purpose::Navigation,
+            tls_session_cache: None,
         }
     }
 
@@ -186,6 +240,11 @@ impl WebRequest {
             max_redirects: 0,
             impersonate: None,
             cookie_jar: None,
+            initiator: None,
+            referrer_policy: super::referrer::Policy::DEFAULT,
+            // 带请求体的 POST 不是导航：浏览器里没有「navigate + JSON body」这种请求。
+            purpose: super::fetch_metadata::Purpose::Api,
+            tls_session_cache: None,
         }
     }
 
@@ -206,6 +265,11 @@ impl WebRequest {
             max_redirects: 0,
             impersonate: None,
             cookie_jar: None,
+            initiator: None,
+            referrer_policy: super::referrer::Policy::DEFAULT,
+            // 带请求体的 POST 不是导航：浏览器里没有「navigate + JSON body」这种请求。
+            purpose: super::fetch_metadata::Purpose::Api,
+            tls_session_cache: None,
         }
     }
 }
@@ -249,10 +313,6 @@ pub fn browser_headers(user_agent: &str) -> Vec<(String, String)> {
         ("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8"),
         ("Connection", "keep-alive"),
         ("Upgrade-Insecure-Requests", "1"),
-        ("Sec-Fetch-Dest", "document"),
-        ("Sec-Fetch-Mode", "navigate"),
-        ("Sec-Fetch-Site", "none"),
-        ("Sec-Fetch-User", "?1"),
         ("Cache-Control", "no-cache"),
     ];
     pairs
@@ -476,13 +536,42 @@ impl UreqWebTransport {
             .uri(request.url.as_str());
         // 逐跳回带：罐里该给的 cookie 在每一跳都重新算（重定向可能换主机或路径）。
         let mut headers = request.headers.clone();
-        cookies::apply_header(
+        // 语境来自请求本身：`initiator` 决定是否跨站，`SameSite` 据此决定带不带。
+        cookies::apply_header_in(
             request.cookie_jar.as_deref(),
             &request.url,
+            &cookies::RequestContext::new(request.initiator.as_deref(), true, &request.method),
+            &mut headers,
+        );
+        // `Referer`：值由发起方与策略共同决定（跨源默认只交源）。
+        referrer::apply_header(
+            request.referrer_policy,
+            request.initiator.as_deref(),
+            &request.url,
+            &mut headers,
+        );
+        // `Sec-Fetch-*`：描述这次请求在干什么，取值随发起方与用途变化。
+        let metadata = super::fetch_metadata::FetchMetadata::compute(
+            request.purpose,
+            request.initiator.as_deref(),
+            &request.url,
+        );
+        super::fetch_metadata::apply(&mut headers, &metadata);
+        // 条件请求头：有可复用副本时先问「变了没有」，304 时用副本还原正文。
+        super::http_cache::apply_conditional(
+            &cache_key_for(request),
+            &request.method,
             &mut headers,
         );
         for (key, value) in &headers {
             builder = builder.header(key.as_str(), value.as_str());
+        }
+        // 站点声明过的高熵 Client Hints 在这里补：与 TLS 通路同一套协商状态。
+        let family = family_of(request.impersonate.as_deref());
+        for hint in super::client_hints::hints_for(&request.url) {
+            if let Some(value) = super::tls_transport::client_hint_value(&hint, &family) {
+                builder = builder.header(hint.as_str(), value.as_str());
+            }
         }
         let http_request = builder
             .body(request.body.clone())
@@ -510,6 +599,17 @@ impl UreqWebTransport {
                     .filter_map(|value| value.to_str().ok())
                     .map(str::to_string)
                     .collect();
+                // 全部响应头必须在这里取：`into_body` 之后 `response` 已被消费。
+                let headers: Vec<(String, String)> = response
+                    .headers()
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .to_str()
+                            .ok()
+                            .map(|value| (name.as_str().to_lowercase(), value.to_string()))
+                    })
+                    .collect();
                 let mut raw = Vec::new();
                 let _ = response.into_body().into_reader().read_to_end(&mut raw);
                 Ok(RawResponse {
@@ -518,6 +618,7 @@ impl UreqWebTransport {
                     content_encoding,
                     set_cookies,
                     body: raw,
+                    headers,
                 })
             }
             Err(error) => Err(classify(&error)),
@@ -534,6 +635,8 @@ struct RawResponse {
     /// 本条响应的全部 `Set-Cookie`（同名多值，不能只取第一个）。
     set_cookies: Vec<String>,
     body: Vec<u8>,
+    /// 全部响应头（名字转小写），供 `accept-ch` 协商等上层判定使用。
+    headers: Vec<(String, String)>,
 }
 
 impl Default for UreqWebTransport {
@@ -546,10 +649,30 @@ impl WebTransport for UreqWebTransport {
     fn send(&self, request: &WebRequest) -> Result<WebResponse, WebError> {
         let mut current = request.url.clone();
         let mut redirects = 0;
+        // 每一跳的发起方：首跳沿用调用方给的（通常 `None`），重定向后变成上一跳地址。
+        let mut previous: Option<String> = request.initiator.clone();
+        // `Referer` 策略随响应头逐跳收窄，起点是请求带来的值。
+        let mut policy = request.referrer_policy;
+        // 304 但本地没有副本时，剔掉那个键并重来一次；只重试一次，避免与服务端互相踢球。
+        let mut retried_without_copy = false;
         loop {
+            // HSTS：声明过的站点不再走明文，第一跳与重定向目标都要判。
+            // 升级后握手失败就如实报错，绝不回退明文（回退会把降级攻击变成默认行为）。
+            if let Some(upgraded) = super::hsts::upgrade(&current) {
+                current = upgraded;
+            }
             let mut hop = request.clone();
             hop.url = current.clone();
+            hop.initiator = previous.clone();
+            hop.referrer_policy = policy;
+            // 键必须在发送**前**定下：这一响应可能带 `Set-Cookie`，收割之后罐里就变了，
+            // 而 `cache_key_for` 含 Cookie——用收割后的状态当键会与查时用的键对不上。
+            let hop_key = cache_key_for(&hop);
             let response = self.send_once(&hop)?;
+            // 从这一响应学习 HSTS（只认 https 来源，见 `hsts` 模块）。
+            super::hsts::record(&current, &response.headers);
+            // 响应头里的 `Referrer-Policy` 只收窄不放宽，逐跳累积。
+            policy = super::referrer::policy_from_response(policy, &response.headers);
             // 收割这一跳的 cookie：重定向链上的 `Set-Cookie` 必须立即生效，
             // 否则「登录跳转后带不上会话」的站点永远跟不进去。
             cookies::harvest(
@@ -565,17 +688,78 @@ impl WebTransport for UreqWebTransport {
                             return Err(WebError::new(WebErrorKind::Other, "重定向次数过多。"));
                         }
                         redirects += 1;
+                        // 下一跳的发起方就是这一跳：`SameSite` 靠它判跨站。
+                        previous = Some(current.clone());
                         current = resolve_url(&current, location);
                         continue;
                     }
                 }
             }
+            // 304：服务端说「你手上那份还有效」。正文在缓存副本里，原样交出去只会让上层
+            // 拿到一个空页面，因此这里用副本还原成 200（见 `http_cache` 模块文档）。
+            // 只有 GET 会带条件头，也只有 GET 有可还原的副本：别的方
+            // 法收到 304 时如实上报，绝不拿一份 GET 的正文冒充它的结果。
+            if response.status == 304 && request.method == "GET" {
+                if let Some(reused) = super::http_cache::reuse(&hop_key, &response.headers) {
+                    super::client_hints::record(&current, &reused.headers);
+                    return Ok(WebResponse {
+                        status: 200,
+                        final_url: current,
+                        body: reused.body,
+                        headers: reused.headers,
+                    });
+                }
+                // 没有副本（换了进程、超限被清、或键在收割 cookie 后变了）：剔除这个键
+                // 再重试一次。直接报错会让一次本该成功的抓取失败，而重试是无条件请求，
+                // 服务端必然回完整响应。只重试一次：仍拿 304 就说明对方行为异常，如实上报。
+                super::http_cache::forget(&hop_key);
+                if !retried_without_copy {
+                    retried_without_copy = true;
+                    continue;
+                }
+                return Err(WebError::new(
+                    WebErrorKind::Other,
+                    "服务端回了 304，但本进程没有可还原的缓存副本。".to_string(),
+                ));
+            }
+            let final_url = current;
+            let body = decode_content(response.body, response.content_encoding.as_deref())?;
+            // 存的是已解码正文：存压缩体会让 304 还原出来的是二进制。
+            super::http_cache::store(&hop_key, response.status, &body, &response.headers);
+            // 明文通路同样记声明：切换通路不应丢掉协商结果（须在 `final_url` 移入结构体前借用）。
+            super::client_hints::record(final_url.as_str(), &response.headers);
             return Ok(WebResponse {
                 status: response.status,
-                final_url: current,
-                body: decode_content(response.body, response.content_encoding.as_deref())?,
+                final_url,
+                body,
+                headers: response.headers,
             });
         }
+    }
+}
+
+/// 一次请求的缓存键：URL 加上这次实际会发出的 `Cookie` 头。
+///
+/// 必须**重新算一遍** `Cookie` 而不能读 `request.headers`：反序列化时那份不含 jar 里的
+/// cookie，用它当键会让「存」与「查」落到两个不同的键上——带 cookie 的请求永远命中不了。
+pub fn cache_key_for(request: &WebRequest) -> String {
+    let mut headers = request.headers.clone();
+    cookies::apply_header_in(
+        request.cookie_jar.as_deref(),
+        &request.url,
+        &cookies::RequestContext::new(request.initiator.as_deref(), true, &request.method),
+        &mut headers,
+    );
+    super::http_cache::key_for(&request.url, &headers)
+}
+
+/// 明文通路用的档案族名：`impersonate` 已是归一化后的族名，未知值回退 `chrome`。
+fn family_of(impersonate: Option<&str>) -> String {
+    match impersonate {
+        Some("firefox") => "firefox".to_string(),
+        Some("safari") => "safari".to_string(),
+        Some("edge") => "edge".to_string(),
+        _ => "chrome".to_string(),
     }
 }
 
@@ -592,6 +776,31 @@ fn classify(error: &ureq::Error) -> WebError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 响应头必须真的驱动正文解码：模块本身对了、接线没接上是最容易漏的一类缺陷。
+    #[test]
+    fn text_uses_the_charset_from_response_headers() {
+        let response = WebResponse {
+            status: 200,
+            final_url: "https://example.com/gbk".to_string(),
+            // 「中文」的 GBK 字节。
+            body: vec![0xD6, 0xD0, 0xCE, 0xC4],
+            headers: vec![(
+                "content-type".to_string(),
+                "text/html; charset=gbk".to_string(),
+            )],
+        };
+        assert_eq!(response.text(), "中文");
+
+        // 没有 content-type 时回退 UTF-8，不得因为缺少头而失败。
+        let plain = WebResponse {
+            status: 200,
+            final_url: "https://example.com/plain".to_string(),
+            body: "正文".as_bytes().to_vec(),
+            headers: Vec::new(),
+        };
+        assert_eq!(plain.text(), "正文");
+    }
 
     #[test]
     fn private_hosts_match_python_rules() {
@@ -675,6 +884,32 @@ mod tests {
         let payload = "网页正文";
         let decoded = decode_content(gzip(payload), None).expect("应当按魔数解压");
         assert_eq!(String::from_utf8(decoded).expect("UTF-8"), payload);
+    }
+
+    /// `br` 是 Chromium/Firefox/Safari 的首选编码，必须能还原成原文。
+    #[test]
+    fn a_brotli_body_is_restored_byte_for_byte() {
+        let payload = "网页正文，压缩后必须逐字节还原。".repeat(30);
+        let raw = payload.as_bytes().to_vec();
+        let mut compressed = Vec::new();
+        let params = brotli::enc::BrotliEncoderParams::default();
+        brotli::BrotliCompress(&mut std::io::Cursor::new(&raw), &mut compressed, &params)
+            .expect("压缩");
+        assert!(compressed.len() < raw.len(), "压测片段应当变小");
+
+        let decoded = decode_content(compressed, Some("br")).expect("br 应当能解压");
+        assert_eq!(decoded, raw, "解压结果必须与原文一致");
+    }
+
+    /// 不认识的编码必须明确报错：把压缩字节当文本会得到「状态 200 + 乱码」，更难排查。
+    #[test]
+    fn an_unsupported_encoding_is_reported_instead_of_passed_through() {
+        let error = decode_content(b"bytes".to_vec(), Some("zstd")).expect_err("应当报错");
+        assert!(
+            error.message.contains("不支持的压缩编码"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

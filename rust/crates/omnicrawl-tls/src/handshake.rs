@@ -232,6 +232,12 @@ impl<'a> Reader<'a> {
         })
     }
 
+    fn u32(&mut self) -> Option<u32> {
+        self.take(4).map(|slice| {
+            u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]])
+        })
+    }
+
     fn block(&mut self, width: LengthWidth) -> Option<&'a [u8]> {
         let len = match width {
             LengthWidth::U8 => self.u8()? as usize,
@@ -350,6 +356,43 @@ pub fn parse_encrypted_extensions(body: &[u8]) -> Result<Vec<(u16, Vec<u8>)>, St
         out.push((kind, data));
     }
     Ok(out)
+}
+
+/// TLS 1.3 的 NewSessionTicket（RFC 8446 §4.6.1）。
+///
+/// 字段顺序固定：`ticket_lifetime(4) || ticket_age_add(4) || nonce<0..255> ||
+/// ticket<1..2^16-1> || extensions<0..2^16-1>`。字段顺序写错不会立刻报错，
+/// 而是让派生的 PSK 完全错误——只有第二次握手被服务端拒绝时才显现。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSessionTicket {
+    pub lifetime: u32,
+    pub age_add: u32,
+    pub nonce: Vec<u8>,
+    pub ticket: Vec<u8>,
+}
+
+/// 解析 TLS 1.3 的 NewSessionTicket 消息体。
+pub fn parse_new_session_ticket(body: &[u8]) -> Result<NewSessionTicket, String> {
+    let mut reader = Reader::new(body);
+    let lifetime = reader.u32().ok_or("NewSessionTicket lifetime 截断")?;
+    let age_add = reader.u32().ok_or("NewSessionTicket age_add 截断")?;
+    let nonce = reader
+        .block(LengthWidth::U8)
+        .ok_or("NewSessionTicket nonce 截断")?
+        .to_vec();
+    let ticket = reader
+        .block(LengthWidth::U16)
+        .ok_or("NewSessionTicket ticket 截断")?
+        .to_vec();
+    if ticket.is_empty() {
+        return Err("NewSessionTicket 的 ticket 不能为空".to_string());
+    }
+    Ok(NewSessionTicket {
+        lifetime,
+        age_add,
+        nonce,
+        ticket,
+    })
 }
 
 /// 从 EncryptedExtensions 里取 ALPN 协商结果。

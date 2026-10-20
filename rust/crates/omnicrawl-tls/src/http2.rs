@@ -116,6 +116,11 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// 数值形式（与线格上的 32 位错误码一致）。
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
+
     pub fn from_u32(value: u32) -> Option<Self> {
         Some(match value {
             0x0 => Self::NoError,

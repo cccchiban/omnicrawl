@@ -912,7 +912,7 @@ impl AgentService {
                 json!({"message": PROTOCOL_WAIT_STATUS}),
             ),
             HostEvent::StreamRollback => (
-                "status.changed".to_string(),
+                crate::connector::ROLLBACK_EVENT.to_string(),
                 json!({"message": STREAM_ROLLBACK_STATUS}),
             ),
             HostEvent::TokenUsage(payload) => (
@@ -1397,9 +1397,9 @@ fn options_from_process_profile(
     // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
     options.registry_options.disabled_tools =
         load_disabled_tools(env, None).unwrap_or_default();
-    // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 bing +
-    // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl 与三把 API Key 全部
-    // 失效，工具会一直报「来源：bing」（与 TUI 同源，见 `web_search_options_from_config`）。
+    // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 duckduckgo +
+    // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl/anysearch/tinyfish 与各自的 API Key 全部
+    // 失效，工具会一直报「来源：duckduckgo」（与 TUI 同源，见 `web_search_options_from_config`）。
     // 该装配函数同时按 `[decision_models.features] web_search_rerank` 装上排序运行期。
     options.registry_options.web_search =
         omnicrawl_host::tools::web_search_options_from_config(env);

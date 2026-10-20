@@ -287,6 +287,109 @@ impl ClientHelloSpec {
         format!("{version},{ciphers},{extensions},{groups},{point_formats}")
     }
 
+    /// 带 PSK 的编码：把 `pre_shared_key` 追加为**最后一个**扩展，并返回 binder 的写入位置。
+    ///
+    /// RFC 8446 §4.2.11：`pre_shared_key` 必须是 ClientHello 的最后一项扩展——服务端据此
+    /// 定位 binder，放错位置会被直接拒绝。
+    ///
+    /// 返回 `(完整 ClientHello, binder 起始偏移, binder 长度)`。计算 binder 时必须用
+    /// 「截断到 binder 起始偏移」的前缀，且长度字段按 binder 已存在来计算——这正是
+    /// 返回完整字节 + 偏移的意义：长度字段已经写好了，只截字节。
+    pub fn encode_with_psk(
+        &self,
+        grease: u16,
+        random: &[u8; 32],
+        session_id: &[u8],
+        identities: &[(Vec<u8>, u32)],
+        binder_len: usize,
+    ) -> Result<(Vec<u8>, usize, usize), EncodeError> {
+        // 先按原样编码，再把 pre_shared_key 插到扩展块末尾并修正两层长度。
+        let base = self.encode(grease, random, session_id)?;
+        if identities.is_empty() {
+            return Err(EncodeError {
+                what: "PSK identities 不能为空",
+                len: 0,
+                max: usize::MAX,
+            });
+        }
+
+        // 计算 pre_shared_key 的数据段：identities 列表 + binders 列表。
+        let mut identity_list = Vec::new();
+        for (identity, obfuscated_age) in identities {
+            push_prefixed(&mut identity_list, LengthWidth::U16, "票据", identity)?;
+            identity_list.extend_from_slice(&obfuscated_age.to_be_bytes());
+        }
+        let mut psk_data = Vec::new();
+        push_prefixed(&mut psk_data, LengthWidth::U16, "identities", &identity_list)?;
+        // 每个 binder 是 PskBinderEntry：1 字节长度 + 实际 binder。漏掉那个长度字节会让
+        // binders 列表长度少 1，服务端解析到 binder 之前就报 decode_error(50)。
+        let mut binder_entries = Vec::with_capacity(binder_len + 1);
+        binder_entries.push(binder_len as u8);
+        binder_entries.extend_from_slice(&vec![0u8; binder_len]);
+        let mut binders = Vec::new();
+        push_prefixed(&mut binders, LengthWidth::U16, "binders", &binder_entries)?;
+        psk_data.extend_from_slice(&binders);
+
+        // 完整扩展：类型(2) + 长度(2) + 数据。
+        let mut extension = Vec::new();
+        push_u16(&mut extension, ext::PRE_SHARED_KEY);
+        push_prefixed(&mut extension, LengthWidth::U16, "pre_shared_key", &psk_data)?;
+
+        // 把扩展追加进 ClientHello 的扩展块，同时修正两层长度。
+        //
+        // 不在这里手工推算偏移：ClientHello 的 body 由「固定头部（版本/随机数/会话 ID/
+        // 套件/压缩方法）+ 扩展块」组成，扩展块前缀的长度字段位置取决于前几段的可变长度。
+        // 手工算错一字节不会报错，只会把长度写到相邻字段上（实测差值正好是 256 的倍数）。
+        // 因此改为先**解析**定位扩展块，再重建 body。
+        let body = &base[4..];
+        let mut cursor = 0usize;
+        cursor += 2; // legacy_version
+        cursor += 32; // random
+        let session_id_len = body[cursor] as usize;
+        cursor += 1 + session_id_len;
+        let suites_len = u16::from_be_bytes([body[cursor], body[cursor + 1]]) as usize;
+        cursor += 2 + suites_len;
+        let compression_len = body[cursor] as usize;
+        cursor += 1 + compression_len;
+        // 到这里是扩展块长度字段的位置。
+        let extension_len_offset = cursor;
+        let declared =
+            u16::from_be_bytes([body[extension_len_offset], body[extension_len_offset + 1]])
+                as usize;
+        let extensions_start = extension_len_offset + 2;
+        debug_assert_eq!(
+            extensions_start + declared,
+            body.len(),
+            "扩展块长度必须与 body 自洽"
+        );
+
+        let mut extensions = body[extensions_start..].to_vec();
+        // 截断点：只截掉 binder 数据本身，**保留** binders 列表长度前缀（2 字节）与
+        // 每个 entry 的 1 字节长度。依据是 RFC 8448 §4：那里 `payload` 恰好在
+        // `ClientHello prefix` 之后只多出 32 字节（binder 数据），其余长度字段都在 prefix 内。
+        // 多截这 3 字节会让服务端算出不同的 binder，直接 alert decrypt_error(51)。
+        let binder_data_start_in_extensions =
+            extensions.len() + extension.len() - binder_len;
+        // 返回给调用方的偏移是 binder 数据起点（回填用）；截断点另由 `binder_offset - 3` 推出。
+        let binder_start_in_extensions = binder_data_start_in_extensions;
+        extensions.extend_from_slice(&extension);
+
+        let mut body = body[..extension_len_offset].to_vec();
+        push_prefixed(&mut body, LengthWidth::U16, "扩展块", &extensions)?;
+
+        let mut hello = Vec::with_capacity(4 + body.len());
+        hello.extend_from_slice(&base[..4]);
+        hello.extend_from_slice(&body);
+        // 握手消息头里的 3 字节 body 长度也要更新。
+        let body_len = hello.len() - 4;
+        hello[1] = ((body_len >> 16) & 0xff) as u8;
+        hello[2] = ((body_len >> 8) & 0xff) as u8;
+        hello[3] = (body_len & 0xff) as u8;
+
+        let binder_offset = 4 + extension_len_offset + 2 + binder_start_in_extensions;
+        Ok((hello, binder_offset, binder_len))
+    }
+
     fn extension_data(&self, kind: u16) -> Option<&[u8]> {
         self.extensions
             .iter()

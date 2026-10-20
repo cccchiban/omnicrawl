@@ -8,7 +8,9 @@ pub mod autostart;
 pub mod feishu;
 pub mod http;
 pub mod json;
+pub mod render;
 pub mod telegram;
+pub mod text;
 
 pub use agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, ToolCall, ToolResult, TurnError,

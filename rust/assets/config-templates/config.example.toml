@@ -50,17 +50,23 @@ default_context_window_tokens = 1000000
 enabled = true
 
 # 联网搜索（web_search 工具）：默认引擎在 TUI /settings → 工具设置 → 联网搜索 中切换，
-# 也可在此手改。bing / duckduckgo / arxiv / huggingface
+# 也可在此手改。duckduckgo / arxiv / huggingface
 # 抓各自站点的公开搜索页，无需凭据，统一走浏览器指纹环境；
 # github 配了 github_token 时走 REST 检索接口，未配时仍抓公开搜索页；
-# tavily / exa / firecrawl 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）；
-# mixed 是混合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与。
-# 工具调用时传 engine 参数可覆盖这里的默认引擎。
+# tavily / exa / firecrawl / tinyfish 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）；
+# anysearch 走统一检索接口，anysearch_api_key 可选——留空即按 IP 走匿名免费额度；
+# tinyfish 走 GET 检索接口（每天 12,000 次以内免费），tinyfish_api_key 必填；
+# 走哪个引擎只看这里的设置：工具调用里的 engine 参数无效，agent 不能按单次任务改搜索通路。
+# mixed 是综合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与（anysearch 始终参与）。
 [web_search]
-engine = "bing"
+engine = "duckduckgo"
 tavily_api_key = ""
 exa_api_key = ""
 firecrawl_api_key = ""
+# AnySearch API Key（可选）：留空走匿名额度，填了则按该 Key 的付费额度计费。
+anysearch_api_key = ""
+# TinyFish API Key（必填才可用）：留空时调用该引擎会如实报缺凭据。
+tinyfish_api_key = ""
 # GitHub Token 可选：配置后 GitHub 引擎改走 REST 检索接口（30 次/分钟），
 # 留空则抓公开搜索页（10 次/分钟）。token 只影响额度，无需勾选任何仓库权限。
 github_token = ""

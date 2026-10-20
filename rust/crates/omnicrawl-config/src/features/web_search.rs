@@ -11,13 +11,12 @@ use crate::error::ConfigError;
 use crate::toml::{Table, Value};
 use crate::value::python_str;
 
-/// 可选引擎：抓页面型（Bing/DuckDuckGo/GitHub/arXiv/Hugging Face）、
-/// 接口型（Tavily/Exa/Firecrawl）与混合搜索。
+/// 可选引擎：抓页面型（DuckDuckGo/GitHub/arXiv/Hugging Face）、
+/// 接口型（Tavily/Exa/Firecrawl/AnySearch/TinyFish）与混合搜索。
 ///
 /// `mixed` 不是单一通路，而是一次并发查询多个渠道并把结果去重合并。
 /// 这里是引擎清单的唯一来源：宿主用它校验工具参数，设置界面用它铺候选。
-pub const WEB_SEARCH_ENGINES: [&str; 9] = [
-    "bing",
+pub const WEB_SEARCH_ENGINES: [&str; 10] = [
     "duckduckgo",
     "github",
     "arxiv",
@@ -25,6 +24,8 @@ pub const WEB_SEARCH_ENGINES: [&str; 9] = [
     "tavily",
     "exa",
     "firecrawl",
+    "anysearch",
+    "tinyfish",
     "mixed",
 ];
 
@@ -32,12 +33,13 @@ pub const WEB_SEARCH_ENGINES: [&str; 9] = [
 pub const MIXED_WEB_SEARCH_ENGINE: &str = "mixed";
 
 /// 默认引擎：无需凭据即可使用。
-pub const DEFAULT_WEB_SEARCH_ENGINE: &str = "bing";
+pub const DEFAULT_WEB_SEARCH_ENGINE: &str = "duckduckgo";
 
-/// 联网搜索的默认引擎与接口型引擎的凭据。
+/// 联网搜索选用的引擎与接口型引擎的凭据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchConfiguration {
-    /// 工具调用未指定 `engine` 时用的引擎。
+    /// 用哪个引擎（`[web_search] engine`）；配成 `mixed` 即综合搜索。
+    /// 工具参数不能覆盖它：引擎由使用者在设置里决定。
     pub engine: String,
     /// Tavily API Key（明文）。空串表示未配置。
     pub tavily_api_key: String,
@@ -45,6 +47,10 @@ pub struct WebSearchConfiguration {
     pub exa_api_key: String,
     /// Firecrawl API Key（明文）。空串表示未配置。
     pub firecrawl_api_key: String,
+    /// AnySearch API Key（明文）。空串表示匿名调用（按 IP 限流、走每日免费额度）。
+    pub anysearch_api_key: String,
+    /// TinyFish API Key（明文）。必填：Search 接口没有匿名通道。
+    pub tinyfish_api_key: String,
     /// GitHub Token（明文，`repo` 之外无需任何权限）。空串表示未配置。
     ///
     /// 只影响 GitHub 引擎：带 Token 请求会走 REST 检索接口（认证后 30 次/分钟），
@@ -59,6 +65,8 @@ impl Default for WebSearchConfiguration {
             tavily_api_key: String::new(),
             exa_api_key: String::new(),
             firecrawl_api_key: String::new(),
+            anysearch_api_key: String::new(),
+            tinyfish_api_key: String::new(),
             github_token: String::new(),
         }
     }
@@ -83,19 +91,23 @@ impl WebSearchConfiguration {
         self.tavily_api_key = self.tavily_api_key.trim().to_string();
         self.exa_api_key = self.exa_api_key.trim().to_string();
         self.firecrawl_api_key = self.firecrawl_api_key.trim().to_string();
+        self.anysearch_api_key = self.anysearch_api_key.trim().to_string();
+        self.tinyfish_api_key = self.tinyfish_api_key.trim().to_string();
         self.github_token = self.github_token.trim().to_string();
         Ok(self)
     }
 
     /// 指定引擎下生效的 API Key；抓页面型引擎没有凭据，返回空串。
     ///
-    /// GitHub 不在其列：它的 Token 是可选的提速项，没有 Token 也照常可用，
-    /// 因此由 [`Self::github_token`] 单独读取，不参与「缺凭据即报错」的判定。
+    /// GitHub 与 AnySearch 不在「缺凭据即报错」之列：GitHub 的 Token 只影响额度，
+    /// AnySearch 没有 Key 也能匿名调用，两者都单独读取。
     pub fn api_key_for(&self, engine: &str) -> &str {
         match engine.trim().to_lowercase().as_str() {
             "tavily" => self.tavily_api_key.as_str(),
             "exa" => self.exa_api_key.as_str(),
             "firecrawl" => self.firecrawl_api_key.as_str(),
+            "anysearch" => self.anysearch_api_key.as_str(),
+            "tinyfish" => self.tinyfish_api_key.as_str(),
             _ => "",
         }
     }
@@ -118,6 +130,8 @@ pub fn load_web_search_configuration(
         tavily_api_key: text_field(&section, "tavily_api_key", ""),
         exa_api_key: text_field(&section, "exa_api_key", ""),
         firecrawl_api_key: text_field(&section, "firecrawl_api_key", ""),
+        anysearch_api_key: text_field(&section, "anysearch_api_key", ""),
+        tinyfish_api_key: text_field(&section, "tinyfish_api_key", ""),
         github_token: text_field(&section, "github_token", ""),
     }
     .normalize()
@@ -147,6 +161,14 @@ pub fn save_web_search_configuration(
     section.insert(
         "firecrawl_api_key".to_string(),
         Value::String(configuration.firecrawl_api_key.clone()),
+    );
+    section.insert(
+        "anysearch_api_key".to_string(),
+        Value::String(configuration.anysearch_api_key.clone()),
+    );
+    section.insert(
+        "tinyfish_api_key".to_string(),
+        Value::String(configuration.tinyfish_api_key.clone()),
     );
     section.insert(
         "github_token".to_string(),

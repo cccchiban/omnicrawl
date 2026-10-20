@@ -35,6 +35,9 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 内核里的助手，回答保持简洁。";
 /// 工具批次在连接器模式下的错误码：调用方据此区分「工具失败」与「本模式没有执行器」。
 const TOOL_UNAVAILABLE: &str = "tool_unavailable";
+/// `/help` 的回执；与 [`KernelDriver::command_menu`] 发布到 Telegram 菜单的命令保持一致。
+const KERNEL_HELP_TEXT: &str =
+    "/status 查看工作区与会话；/new 开启新会话；/workspace <路径> 切换工作区";
 
 /// 内核连接器模式自持的工具名，与 Python 侧 `omnicrawl/agent/toolkit/tools.py` 的常量一致。
 /// 文件、shell、git、知识库与记忆等工具仍由宿主与插件侧提供，内核只挂不需要额外执行器的三个。
@@ -395,12 +398,19 @@ impl AgentDriver for KernelDriver {
                 self.reset_session()?;
                 Ok(Some("已开启新会话。".to_string()))
             }
-            "/help" => Ok(Some(
-                "/status 查看工作区与会话；/new 开启新会话；/workspace <路径> 切换工作区"
-                    .to_string(),
-            )),
+            "/help" => Ok(Some(KERNEL_HELP_TEXT.to_string())),
             _ => Ok(None),
         }
+    }
+
+    /// 内核自持的命令表：这条路径没有 `omnicrawl-commands` 注册表。
+    fn command_menu(&self) -> Vec<(String, String)> {
+        vec![
+            ("status".to_string(), "查看工作区与会话".to_string()),
+            ("new".to_string(), "开启新会话".to_string()),
+            ("workspace".to_string(), "切换工作区".to_string()),
+            ("help".to_string(), "查看可用命令".to_string()),
+        ]
     }
 
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError> {

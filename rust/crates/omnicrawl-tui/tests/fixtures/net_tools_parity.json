@@ -1,108 +1,117 @@
 {
-  "source": "omnicrawl/net/web_search.py + omnicrawl/net/fetcher.py（另有 Rust 专有的用例，无 Python 对映：firecrawl 与 mixed 搜索；fetcher 的 urls 换行分隔解析）",
+  "source": "omnicrawl/net/web_search.py + omnicrawl/net/fetcher.py（另有 Rust 专有的用例，无 Python 对映：firecrawl、anysearch、tinyfish 与 mixed 搜索；fetcher 的 urls 换行分隔解析）",
   "web_search": {
     "options": {
       "max_retries": 0,
       "timeout_seconds": 10.0,
       "proxy": "",
       "tavily_api_key": "tvly-fixture",
-      "firecrawl_api_key": "fc-fixture"
+      "firecrawl_api_key": "fc-fixture",
+      "tinyfish_api_key": "tf-fixture"
     },
     "cases": [
       {
         "arguments": {
           "query": "rust 工具"
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust+%E5%B7%A5%E5%85%B7&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust+%E5%B7%A5%E5%85%B7&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：bing｜查询：rust 工具｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+        "output": "来源：duckduckgo｜查询：rust 工具｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
           "max_results": 1
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
           "engine": "Bing"
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
           "engine": "unknown"
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
-        "requests": [],
-        "ok": false,
-        "output": "engine 必须是 bing、duckduckgo、github、arxiv、huggingface、tavily、exa、firecrawl、mixed 之一。"
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
+        "requests": [
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
+        ],
+        "ok": true,
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "  "
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [],
         "ok": false,
-        "output": "query 不能为空。"
+        "output": "query 不能为空。",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
           "max_results": 99
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
           "max_results": "2"
         },
-        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "html": "<html><body>\n<a class=\"result__a\" href=\"https://example.com/1\">标题 &amp; 一</a>\n<a class=\"result__snippet\">摘要一</a>\n<a class=\"result__a\" href=\"/relative\">相对链接</a>\n<a class=\"result__a\" href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a>\n</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
-          "query": "rust",
-          "engine": "duckduckgo"
+          "query": "rust"
         },
         "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
         "requests": [
           "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
           "query": "rust",
-          "engine": "DuckDuckGo",
           "language": "zh"
         },
         "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
@@ -110,12 +119,12 @@
           "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": true,
-        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2",
+        "engine": "DuckDuckGo"
       },
       {
         "arguments": {
           "query": "rust",
-          "engine": "duckduckgo",
           "language": "en-us"
         },
         "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
@@ -123,24 +132,24 @@
           "https://html.duckduckgo.com/html/?q=rust&kl=us-en"
         ],
         "ok": true,
-        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
-          "query": "rust",
-          "engine": "firecrawl"
+          "query": "rust"
         },
         "html": "{\"success\":true,\"data\":[\n{\"title\":\"火一\",\"url\":\"https://fc.example/1\",\"description\":\"火摘要一\"},\n{\"url\":\"https://fc.example/2\"},\n{\"title\":\"没 url\",\"url\":\"\"}\n]}",
         "requests": [
           "https://api.firecrawl.dev/v1/search"
         ],
         "ok": true,
-        "output": "来源：firecrawl｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 火一\n   https://fc.example/1\n   火摘要一\n2. https://fc.example/2"
+        "output": "来源：firecrawl｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 火一\n   https://fc.example/1\n   火摘要一\n2. https://fc.example/2",
+        "engine": "firecrawl"
       },
       {
         "arguments": {
           "query": "rust",
-          "engine": "firecrawl",
           "max_results": 1
         },
         "html": "{\"success\":true,\"data\":[\n{\"title\":\"火一\",\"url\":\"https://fc.example/1\",\"description\":\"火摘要一\"},\n{\"url\":\"https://fc.example/2\"}\n]}",
@@ -148,22 +157,55 @@
           "https://api.firecrawl.dev/v1/search"
         ],
         "ok": true,
-        "output": "来源：firecrawl｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 火一\n   https://fc.example/1\n   火摘要一"
+        "output": "来源：firecrawl｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 火一\n   https://fc.example/1\n   火摘要一",
+        "engine": "firecrawl"
+      },
+      {
+        "arguments": {
+          "query": "rust"
+        },
+        "html": "{\"code\":0,\"message\":\"success\",\"request_id\":\"r-1\",\"data\":{\"results\":[\n{\"title\":\"安一\",\"url\":\"https://as.example/1\",\"snippet\":\"安摘要一\",\"content\":\"安正文一\"},\n{\"title\":\"安二\",\"url\":\"https://as.example/2\",\"content\":\"只有正文\"},\n{\"url\":\"https://as.example/3\"},\n{\"title\":\"没 url\",\"url\":\"\"}\n],\"metadata\":{\"total_results\":3}}}",
+        "requests": [
+          "https://api.anysearch.com/v1/search"
+        ],
+        "ok": true,
+        "output": "来源：anysearch｜查询：rust｜用时：{ELAPSED}s｜共 3 条\n1. 安一\n   https://as.example/1\n   安摘要一\n2. 安二\n   https://as.example/2\n   只有正文\n3. https://as.example/3",
+        "engine": "anysearch"
       },
       {
         "arguments": {
           "query": "rust",
-          "engine": "mixed",
+          "max_results": 2
+        },
+        "html": "{\"code\":0,\"message\":\"success\",\"data\":{\"results\":[\n{\"title\":\"安一\",\"url\":\"https://as.example/1\",\"snippet\":\"安摘要一\"},\n{\"title\":\"安二\",\"url\":\"https://as.example/2\"}\n]}}",
+        "requests": [
+          "https://api.anysearch.com/v1/search"
+        ],
+        "ok": true,
+        "output": "来源：anysearch｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 安一\n   https://as.example/1\n   安摘要一\n2. 安二\n   https://as.example/2",
+        "engine": "anysearch"
+      },
+      {
+        "arguments": {
+          "query": "rust"
+        },
+        "html": "{\"query\":\"rust\",\"results\":[\n{\"position\":1,\"site_name\":\"a.example\",\"title\":\"微一\",\"url\":\"https://tf.example/1\",\"snippet\":\"微摘要一\"},\n{\"title\":\"微二\",\"url\":\"https://tf.example/2\"},\n{\"title\":\"没 url\",\"url\":\"\"}\n],\"total_results\":3,\"page\":0}",
+        "requests": [
+          "https://api.search.tinyfish.ai/?query=rust"
+        ],
+        "ok": true,
+        "output": "来源：tinyfish｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 微一\n   https://tf.example/1\n   微摘要一\n2. 微二\n   https://tf.example/2",
+        "engine": "tinyfish"
+      },
+      {
+        "arguments": {
+          "query": "rust",
           "max_results": 3
         },
         "routes": [
           {
-            "match": "bing.com",
-            "html": "<html><body>\n<li class=\"b_algo\"><h2><a href=\"https://a.example/x\">甲</a></h2><p>来自 bing</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://b.example/\">乙</a></h2><p>只在 bing</p></li>\n</body></html>"
-          },
-          {
             "match": "duckduckgo.com",
-            "html": "<html><body>\n<a class=\"result__a\" href=\"https://a.example/x/\">甲的另一份</a>\n<a class=\"result__a\" href=\"https://c.example\">丙</a>\n</body></html>"
+            "html": "<html><body>\n<a class=\"result__a\" href=\"https://a.example/x/\">甲</a>\n<a class=\"result__a\" href=\"https://c.example\">丙</a>\n</body></html>"
           },
           {
             "match": "api.tavily.com",
@@ -172,6 +214,10 @@
           {
             "match": "api.firecrawl.dev",
             "html": "{\"success\":true,\"data\":[{\"title\":\"戊\",\"url\":\"https://e.example\",\"description\":\"摘要戊\"}]}"
+          },
+          {
+            "match": "api.anysearch.com",
+            "html": "{\"code\":0,\"message\":\"success\",\"data\":{\"results\":[{\"title\":\"甲的另一份\",\"url\":\"https://a.example/x\",\"snippet\":\"来自 anysearch\"},{\"title\":\"乙\",\"url\":\"https://b.example/\",\"snippet\":\"只在 anysearch\"}]}}"
           },
           {
             "match": "github.com",
@@ -184,19 +230,25 @@
           {
             "match": "huggingface.co",
             "html": "<html><body><p>没有结果块。</p></body></html>"
+          },
+          {
+            "match": "api.search.tinyfish.ai",
+            "html": "{\"query\":\"rust\",\"results\":[{\"title\":\"己\",\"url\":\"https://f.example\",\"snippet\":\"摘要己\"}]}"
           }
         ],
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN",
           "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh",
           "https://github.com/search?q=rust&type=repositories",
           "https://arxiv.org/search/?searchtype=all&query=rust",
           "https://huggingface.co/models?search=rust",
           "https://api.tavily.com/search",
-          "https://api.firecrawl.dev/v1/search"
+          "https://api.firecrawl.dev/v1/search",
+          "https://api.anysearch.com/v1/search",
+          "https://api.search.tinyfish.ai/?query=rust"
         ],
         "ok": true,
-        "output": "来源：mixed（bing+duckduckgo+github+arxiv+huggingface+tavily+firecrawl）｜查询：rust｜用时：{ELAPSED}s｜共 3 条（去重 1 条）\n1. 甲\n   https://a.example/x\n   来自 bing\n   来源：bing+duckduckgo\n2. 乙\n   https://b.example/\n   只在 bing\n3. 丙\n   https://c.example"
+        "output": "来源：mixed（duckduckgo+github+arxiv+huggingface+tavily+firecrawl+anysearch+tinyfish）｜查询：rust｜用时：{ELAPSED}s｜共 3 条（去重 1 条）\n1. 甲\n   https://a.example/x/\n   来自 anysearch\n   来源：duckduckgo+anysearch\n2. 丙\n   https://c.example\n3. 丁\n   https://d.example\n   摘要丁",
+        "engine": "mixed"
       },
       {
         "arguments": {
@@ -204,10 +256,11 @@
         },
         "html": "<html><body>Please verify you're human before continuing.</body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": false,
-        "output": "搜索引擎要求人机验证、JS 挑战或检测到异常流量，已停止请求（不会绕过验证）。可稍后重试或换用其他引擎。"
+        "output": "搜索引擎要求人机验证、JS 挑战或检测到异常流量，已停止请求（不会绕过验证）。可稍后重试或换用其他引擎。",
+        "engine": "duckduckgo"
       },
       {
         "arguments": {
@@ -215,10 +268,11 @@
         },
         "html": "<html><body><p>没有任何结果块。</p></body></html>",
         "requests": [
-          "https://www.bing.com/search?q=rust&count=50&setlang=zh-CN"
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
         ],
         "ok": false,
-        "output": "未找到相关搜索结果（或页面结构无法解析）。"
+        "output": "未找到相关搜索结果（或页面结构无法解析）。",
+        "engine": "duckduckgo"
       }
     ]
   },

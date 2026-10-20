@@ -15,6 +15,7 @@ pub mod run_guard;
 pub mod skills;
 pub mod subagents;
 pub mod tool_output_compression;
+pub mod tls_resumption;
 pub mod tools;
 pub mod tts;
 // 云端 TTS 的服务商路由与两家接口参数（Rust 侧新增，Python 无对映）。

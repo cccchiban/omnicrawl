@@ -142,6 +142,14 @@ impl std::fmt::Display for HandshakeError {
 
 impl std::error::Error for HandshakeError {}
 
+/// 当前 Unix 秒。票据年龄与过期判断都以秒为单位，与 [`crate::session_cache::Session`] 一致。
+fn system_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// 把 TLS 版本号写成惯用的「1.2」形式。
 ///
 /// 编码是 `major << 8 | minor`，但直接移位会得到「3.3」这种没人用的写法（0x0303 是
@@ -223,6 +231,12 @@ pub struct ClientHandshake {
     tls12_client_key: Option<Vec<u8>>,
     /// 首个 ClientHello 里为 P-256 准备的密钥对：1.2 没有 HRR，服务端可能挑它。
     p256_exchange: Option<KeyExchange>,
+    /// 待恢复的会话：非空时 ClientHello 会带上 `pre_shared_key`。
+    offered_session: Option<crate::session_cache::Session>,
+    /// 本次连接开始时从缓存取出的那份会话（用于在成功后判断是否需要更新缓存）。
+    resumed: bool,
+    /// 本次连接结束时拿到的可恢复会话（服务端下发了 NewSessionTicket 才有）。
+    new_session: Option<crate::session_cache::Session>,
 }
 
 /// TLS 1.2 分支的中间状态。
@@ -281,7 +295,24 @@ impl ClientHandshake {
             tls12_flight: None,
             tls12_client_key: None,
             p256_exchange: None,
+            offered_session: None,
+            resumed: false,
+            new_session: None,
         }
+    }
+
+    /// 用一条缓存会话尝试恢复。
+    ///
+    /// 服务端可以选择不接受（票据过期、密钥轮换、限流都是常态），因此这只是「提出请求」；
+    /// 真正的结果要看 ServerHello 里有没有 `pre_shared_key` 扩展。
+    pub fn with_session(mut self, session: crate::session_cache::Session) -> Self {
+        self.offered_session = Some(session);
+        self
+    }
+
+    /// 本次握手是否真的走了恢复（服务端接受了 PSK）。
+    pub fn resumed(&self) -> bool {
+        self.resumed
     }
 
     /// 要求证书链能追到给定的受信根，并校验主机名。
@@ -461,10 +492,101 @@ impl ClientHandshake {
             }
         }
 
-        let body = spec
-            .encode(grease, &random, &session_id)
-            .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
+        let body = if let Some(session) = self.offered_session.as_ref() {
+            // 会话恢复：把 `pre_shared_key` 追加为最后一个扩展，再对「截断到 binder 之前」
+            // 的 ClientHello 算 binder 并回填。RFC 8446 §4.2.11.2 要求长度字段按 binder
+            // 已存在来写，因此必须用 `encode_with_psk` 返回的完整字节再截断。
+            let suite = crate::keyschedule::CipherSuite::from_code(session.suite)
+                .unwrap_or(crate::keyschedule::CipherSuite::Aes128GcmSha256);
+            let binder_len = suite.hash_len();
+            let age = session.obfuscated_age(system_unix_seconds());
+            let (mut hello, binder_offset, binder_len) = spec
+                .encode_with_psk(
+                    grease,
+                    &random,
+                    &session_id,
+                    &[(session.ticket.clone(), age)],
+                    binder_len,
+                )
+                .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
+            // 截断点 = binder 数据起点往回 3 字节：跳过 binders 列表长度（2）与
+            // entry 长度（1）。RFC 8448 §4 的 prefix 正是到 `identities` 之后、
+            // 这两个长度字段之前... 实测以 RFC 向量为准：prefix 包含它们，故只退 3 到
+            // 「binder 数据之前」。见 `psk_binder_matches_the_rfc8448_vector`。
+            // RFC 8448 §4 的 `ClientHello prefix` 包含 binders 列表长度前缀与 entry
+            // 长度字节（它们按完整 binder 已存在来写），只截掉 binder 数据本身。
+            // `binder_offset` 是 binder 数据起点，因此截断点要往回 3 字节
+            // （2 字节 binders 长度 + 1 字节 entry 长度）。
+            let truncate_at = binder_offset.saturating_sub(3);
+            let binder = crate::keyschedule::KeySchedule::psk_binder(
+                suite,
+                &session.psk,
+                &hello[..truncate_at],
+            )
+            .map_err(HandshakeError::Malformed)?;
+            // `binder_offset` 指向 binder 数据起点（entry 的 1 字节长度在它之前 1 字节）。
+            hello[binder_offset..binder_offset + binder_len].copy_from_slice(&binder[..binder_len]);
+            hello
+        } else {
+            spec.encode(grease, &random, &session_id)
+                .map_err(|error| HandshakeError::Malformed(format!("{error}")))?
+        };
         Ok((body, (random, session_id, grease)))
+    }
+
+    /// 收到 NewSessionTicket 后派生 PSK 并留下，供下一次连接复用。
+    ///
+    /// 派生需要 `resumption_master_secret`，而它的上下文是 **client Finished 之后**的
+    /// 转录哈希。因此这里必须等 `self.application_secrets` 已经就位；否则说明时序不对
+    /// （票据在成立前就到了），直接放弃这一条。
+    fn capture_session_ticket(&mut self, payload: &[u8]) {
+        let Some(ticket) = payload
+            .first()
+            .filter(|kind| **kind == hs::NEW_SESSION_TICKET)
+            .and_then(|_| {
+                let len = ((payload[1] as usize) << 16)
+                    | ((payload[2] as usize) << 8)
+                    | payload[3] as usize;
+                payload.get(4..4 + len)
+            })
+            .and_then(|body| crate::handshake::parse_new_session_ticket(body).ok())
+        else {
+            return;
+        };
+        let (Some(suite), Some(application)) = (self.suite, self.application_secrets.as_ref()) else {
+            return;
+        };
+        // `res master` 的上下文是 client Finished 之后的转录哈希。
+        let resumption_master = match crate::keyschedule::KeySchedule::resumption_master_secret(
+            suite,
+            &application.master_secret,
+            &self.transcript.hash(),
+        ) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let psk = match crate::keyschedule::KeySchedule::resumption_psk(
+            suite,
+            &resumption_master,
+            &ticket.nonce,
+        ) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        self.new_session = Some(crate::session_cache::Session {
+            ticket: ticket.ticket,
+            psk,
+            ticket_age_add: ticket.age_add,
+            issued_at: system_unix_seconds(),
+            lifetime: ticket.lifetime,
+            suite: suite.code(),
+            alpn: self.alpn.clone(),
+        });
+    }
+
+    /// 取走本次连接拿到的可恢复会话（启用恢复时由驱动层写入缓存）。
+    pub fn take_new_session(&mut self) -> Option<crate::session_cache::Session> {
+        self.new_session.take()
     }
 
     /// 把一条完整握手消息推进转录，同时留下原文以备换哈希重算。
@@ -596,7 +718,32 @@ impl ClientHandshake {
             .agree(&parsed.key_share)
             .map_err(|error| HandshakeError::Malformed(format!("{error}")))?;
 
-        let schedule = KeySchedule::new(suite);
+        // 服务端是否接受了我们提议的 PSK：体现在 ServerHello 里有没有 `pre_shared_key`。
+        // 接受时不发 Certificate / CertificateVerify（RFC 8446 §4.1.3），且密钥调度
+        // 必须用 PSK 作为 `early_secret` 的 ikm，否则两侧算出的密钥不同。
+        let accepted_psk = parsed
+            .extensions
+            .iter()
+            .any(|(kind, _)| *kind == crate::client_hello::ext::PRE_SHARED_KEY)
+            && self.offered_session.is_some();
+        self.resumed = accepted_psk;
+
+        let schedule = if accepted_psk {
+            let session = self
+                .offered_session
+                .as_ref()
+                .ok_or(HandshakeError::Missing("提议的会话"))?;
+            // 服务端选中的套件必须与票据绑定的套件一致，否则 PSK 根本不匹配。
+            if session.suite != parsed.cipher_suite {
+                return Err(HandshakeError::Malformed(format!(
+                    "会话恢复的套件不一致：票据是 {:#06x}，对端选了 {:#06x}",
+                    session.suite, parsed.cipher_suite
+                )));
+            }
+            KeySchedule::with_psk(suite, Some(&session.psk))
+        } else {
+            KeySchedule::new(suite)
+        };
         let transcript_hash = self.transcript.hash();
         let secrets = schedule
             .handshake_secrets(&shared, &transcript_hash)
@@ -1157,7 +1304,13 @@ impl ClientHandshake {
                     parse_encrypted_extensions(&message.body).map_err(HandshakeError::Malformed)?;
                 self.alpn = crate::handshake::negotiated_alpn(&extensions);
                 self.push_transcript(&message.raw);
-                self.state = State::WaitCertificate;
+                // 恢复路径下服务端不发 Certificate / CertificateVerify（RFC 8446 §4.1.3），
+                // EncryptedExtensions 之后直接就是 Finished。仍按证书路径等下去会让握手卡死。
+                self.state = if self.resumed {
+                    State::WaitFinished
+                } else {
+                    State::WaitCertificate
+                };
                 Ok(())
             }
             // 服务端可能跳过 CertificateRequest（我们不支持客户端认证），
@@ -1390,8 +1543,12 @@ impl ClientHandshake {
         match inner {
             ContentType::ApplicationData => Ok(body),
             // 握手完成后服务端仍会发 NewSessionTicket（每条一个握手记录）。
-            // 我们不做会话恢复，但**必须容忍**它——报错会让正常连接直接断掉。
-            ContentType::Handshake => Ok(Vec::new()),
+            // 启用恢复时把它解析出来备用；解析失败只是丢掉一条票据，**不能**报错——
+            // 那会让本来正常的连接直接断掉。
+            ContentType::Handshake => {
+                self.capture_session_ticket(&body);
+                Ok(Vec::new())
+            }
             ContentType::Alert => {
                 let level = body.first().copied().unwrap_or(0);
                 let description = body.get(1).copied().unwrap_or(0);

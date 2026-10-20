@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use omnicrawl_commands::agent::{AgentError, CommandAgent, GitOutput, SessionSummary, SubAgentRun};
-use omnicrawl_commands::framework::Channel;
+use omnicrawl_commands::framework::{Channel, CommandType};
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::AdvisorConfig;
@@ -44,6 +44,9 @@ use crate::service::{
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 回合收尾的兜底上限：超过它仍没有终态就按失败收口，避免任务线程永久挂住。
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// 模型流重试事件：显示层要靠它丢弃作废的半截输出，不能降级成状态提示。
+pub(crate) const ROLLBACK_EVENT: &str = "assistant.rollback";
 
 /// 启动指定平台的连接器并阻塞到它退出。
 pub fn run(platform: &str) -> Result<(), String> {
@@ -240,6 +243,9 @@ impl HostConnectorDriver {
                     events(TurnEvent::Status(message.to_string()));
                 }
             }
+            // 模型流重试：作废的半截输出必须让显示层丢弃，否则重试前的片段会和
+            // 重试后的新正文累积在同一条消息里。
+            ROLLBACK_EVENT => events(TurnEvent::StreamRollback),
             "tool.started" => {
                 let call = tool_call_from(data);
                 let step = data.get("step").and_then(Value::as_u64).unwrap_or(1);
@@ -365,6 +371,19 @@ impl AgentDriver for HostConnectorDriver {
             return Err(error);
         }
         Ok(result.message)
+    }
+
+    /// 发布到 Telegram 菜单的命令表来自全局命令注册表。
+    ///
+    /// 只取注册表里“不是纯界面动作”的命令：`/quit`、`/settings` 这类在远程被明确拒绝，
+    /// 列进菜单只会误导。Skill 是运行期发现的，不在静态注册表里，因此不涉及。
+    fn command_menu(&self) -> Vec<(String, String)> {
+        omnicrawl_commands::slash::registry()
+            .commands(false)
+            .into_iter()
+            .filter(|command| command.command_type != CommandType::Ui)
+            .map(|command| (command.name.clone(), command.description.clone()))
+            .collect()
     }
 
     fn run_turn(
@@ -867,5 +886,13 @@ mod tests {
         let missing = tool_call_from(&json!({}));
         assert_eq!(missing.name, "?");
         assert!(missing.id.is_none());
+    }
+
+    /// 模型流重试的回滚事件必须落到 `StreamRollback`：降级成状态提示时显示层收不到，
+    /// 作废的半截输出会和重试后的新正文累积在同一条消息里。
+    #[test]
+    fn stream_rollback_event_name_is_its_own_event() {
+        assert_eq!(ROLLBACK_EVENT, "assistant.rollback");
+        assert_ne!(ROLLBACK_EVENT, "status.changed");
     }
 }

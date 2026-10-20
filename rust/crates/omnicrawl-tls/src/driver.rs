@@ -188,6 +188,22 @@ impl Connection<std::net::TcpStream> {
         Self::connect(stream, family, host, trust)
     }
 
+    /// 带会话恢复的建连：与 [`Self::connect_to`] 相同，但会尝试复用缓存里的票据。
+    ///
+    /// 恢复失败（票据过期、密钥轮换）时返回错误，调用方可以重试完整握手——
+    /// 那条坏票据在这里已经被剔除，不会再次命中。
+    pub fn connect_to_with_resumption(
+        host: &str,
+        port: u16,
+        family: Family,
+        trust: Option<TrustAnchors>,
+        timeout: std::time::Duration,
+        cache: &crate::session_cache::SessionCache,
+    ) -> Result<Self, DriverError> {
+        let stream = connect_stream(host, port, timeout)?;
+        Self::connect_with_resumption(stream, family, host, port, trust, cache)
+    }
+
     /// 经 HTTP 代理的 CONNECT 隧道建立连接。
     ///
     /// `proxy` 形如 `http://127.0.0.1:7890`（也接受不带协议的 `host:port`）。只实现
@@ -397,6 +413,60 @@ impl<S: Transport> Connection<S> {
         Ok(connection)
     }
 
+    /// 带会话恢复的连接：尝试复用缓存里的票据，失败则静默回退完整握手。
+    ///
+    /// 回退是常态而不是异常：票据过期、服务端密钥轮换、限流都会让它失效。因此这里的
+    /// 策略是「拿不到就照常握手」——绝不因为恢复失败让本该成功的抓取失败。
+    ///
+    /// 恢复成功后会尝试取走服务端新下发的票据并写回缓存，让后续连接继续复用。
+    pub fn connect_with_resumption(
+        transport: S,
+        family: Family,
+        host: &str,
+        port: u16,
+        trust: Option<TrustAnchors>,
+        cache: &crate::session_cache::SessionCache,
+    ) -> Result<Self, DriverError> {
+        let key = crate::session_cache::cache_key(host, port);
+        let cached = cache.get(&key);
+        let handshake = match trust {
+            Some(anchors) => ClientHandshake::new(family, host).with_trust(anchors),
+            None => ClientHandshake::new(family, host),
+        };
+        let cached_was_offered = cached.is_some();
+        let handshake = match cached {
+            Some(session) => handshake.with_session(session),
+            None => handshake,
+        };
+
+        let mut h2 = ClientConnection::new();
+        h2.apply_profile(&crate::profile::http2_profile_for(family));
+        let mut connection = Self {
+            transport,
+            handshake,
+            h2,
+            authority: host.to_string(),
+            protocol: Application::Http2,
+            inbound: Vec::new(),
+            app_inbound: Vec::new(),
+        };
+        if let Err(error) = connection.perform_handshake() {
+            // 恢复尝试失败：这条票据几乎肯定是坏的（服务端换了密钥或已过期）。
+            // 丢掉它，让下一次连接走完整握手。这里不重连——传输层已被这次握手消耗，
+            // 由调用方决定是否重试。
+            if cached_was_offered {
+                cache.remove(&key);
+            }
+            return Err(error);
+        }
+        // 无论这次是恢复还是完整握手，服务端下发的新票据都写回缓存：
+        // 前者让恢复链继续，后者让下一次连接有机会恢复。
+        if let Some(fresh) = connection.handshake.take_new_session() {
+            cache.put(key, fresh);
+        }
+        Ok(connection)
+    }
+
     fn perform_handshake(&mut self) -> Result<(), DriverError> {
         let rng = ring::rand::SystemRandom::new();
         let client_hello = self.handshake.start(&rng)?;
@@ -581,6 +651,13 @@ impl<S: Transport> Connection<S> {
     /// 协商出的 TLS 版本。握手完成后一定非 `None`。
     pub fn version(&self) -> Option<Version> {
         self.handshake.version()
+    }
+
+    /// 本次握手是否走了会话恢复（服务端接受了我们提议的 PSK）。
+    ///
+    /// 用于诊断与测试：真实站点上能否恢复取决于服务端是否下发票据并在下次接受它。
+    pub fn uses_resumption(&self) -> bool {
+        self.handshake.resumed()
     }
 
     /// 协商出的应用层协议。

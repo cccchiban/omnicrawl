@@ -9,9 +9,10 @@ pub mod config;
 pub mod dispatch;
 pub mod files;
 pub mod format;
+pub mod timeline;
 
 pub use crate::http::{HttpReply, HttpTransport, UreqTransport};
-pub use api::{TelegramApi, TelegramApiError};
+pub use api::{normalize_menu_commands, MenuCommand, TelegramApi, TelegramApiError};
 pub use bot::{ActiveTask, TelegramBot, CLOSE_TASK_JOIN_TIMEOUT};
 pub use config::{
     load_telegram_config, validate_config, TelegramConfig, DEFAULT_CONFIRM_TIMEOUT_SECONDS,
@@ -28,4 +29,8 @@ pub use files::{
 pub use format::{
     plan_abort, plan_finalize, split_message, truncate_for_stream, AbortPlan, FinalizePlan,
     MAX_MESSAGE_LEN, STREAM_EDIT_INTERVAL_SECONDS,
+};
+pub use timeline::{
+    MessagePort, PlanMessage, ReasoningMessage, SubAgentMessage, TextMessage, TimelineMessage,
+    ToolMessage, ToolRecord,
 };

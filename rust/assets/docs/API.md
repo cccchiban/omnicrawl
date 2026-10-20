@@ -178,6 +178,7 @@ data: {"delta":"你好"}
 
 - `run.started`
 - `assistant.delta`
+- `assistant.rollback`
 - `status.changed`
 - `tool.started`
 - `tool.completed`
@@ -209,7 +210,7 @@ data: {"delta":"你好"}
 
 服务关闭时会先取消活动任务、唤醒待确认请求并等待生成线程退出；若等待超时，不会提前关闭仍被线程使用的 Agent，而是在最后一个生成线程退出后延迟关闭资源。关闭后创建新任务会返回 `SERVICE_CLOSED`。
 
-模型隐藏推理内容和 HTML artifact 正文不会写入 SSE；`tool.completed` 与 `artifact.available` 仅返回可公开的 artifact 元数据。客户端应使用 artifact 读取接口获取 HTML 正文。SubAgent 生命周期事件只包含 batch/task ID、角色、描述、状态、安全摘要、usage 和 artifact 引用；`subagent.task.waiting_approval` 只追加工具名、脱敏参数摘要与风险类别。外层 `subagent` 的 `tool.started` 参数会被压缩为任务数量、角色列表、并发和 `fail_fast`，不会发送完整任务 prompt。
+模型隐藏推理内容和 HTML artifact 正文不会写入 SSE；`tool.completed` 与 `artifact.available` 仅返回可公开的 artifact 元数据。`assistant.rollback` 表示模型流中断重试：此前流出的 `assistant.delta` 已作废，客户端应丢弃对应片段，不要追加显示。客户端应使用 artifact 读取接口获取 HTML 正文。SubAgent 生命周期事件只包含 batch/task ID、角色、描述、状态、安全摘要、usage 和 artifact 引用；`subagent.task.waiting_approval` 只追加工具名、脱敏参数摘要与风险类别。外层 `subagent` 的 `tool.started` 参数会被压缩为任务数量、角色列表、并发和 `fail_fast`，不会发送完整任务 prompt。
 
 ## 5. 调用示例
 

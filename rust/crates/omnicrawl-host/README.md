@@ -12,7 +12,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；另提供**凭据注入**（`model_credentials_env` / `kernel_credentials_env` / `frame_api_key_env`）——协议帧只带变量名，内核只从环境读密钥，所以 `config.toml` 里的字面 `api_key` 必须由宿主在起内核时补进子进程环境 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa 两条通路；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
@@ -111,9 +111,14 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
   调用方的 `max_results`**，不做固定截断。
-- **联网搜索是分组的例外**：结果按本地关键词覆盖度切成 5 组（每组 10 条）**并发**送审，各组取
-  前 5 条按组拼接，因此单次最多回 25 条（`RERANK_OUTPUT_LIMIT`；调用方 `max_results` 更小时按它
-  截断）。单组失败只影响该组——它按本地顺序顶上，组间位置不变。
+- **联网搜索按渠道排序**：每一路（一个渠道的结果）单独送审——本地先按关键词覆盖度圈出该路前
+  `RERANK_CHANNEL_POOL` 条，交决策模型排序后**每路留前 5 条**（`RERANK_KEEP_PER_CHANNEL`）。
+  `engine=mixed` 时每路各自排序、各自 ≤5 条，合并后总量随渠道数增长（N 路 × 5 条），没有固定
+  总量上限；只有调用方显式给了 `max_results` 才收窄总数。没有分组的中间层，也**没有 25 条上限**
+  （旧的分组机制 `RERANK_GROUPS` / `RERANK_GROUP_SIZE` / `RERANK_POOL_LIMIT` / `RERANK_OUTPUT_LIMIT`
+  已删除）。单引擎调用就是「唯一一路」，因此排序后同样只回 5 条。
+- **未开启排序时**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条、总量不限（显式
+  `max_results` 才收窄）；单引擎与接口型引擎仍按 `max_results` 截断，上限 `MAX_RESULTS_PER_ENGINE`（50）。
 - **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、网络失败、响应不可解析都退回本地
   排序结果（与审查通道的 fail-closed 相反，是本功能刻意选的：检索少几条比检索直接失败代价小）。
 - 出网内容沿用审查通道的 `[desensitization]` 旁路（`review::masking_from_config`）；脱敏构造失败

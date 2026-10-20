@@ -124,16 +124,32 @@ pub fn connector_specs(kernel: &Path) -> Vec<ConnectorSpec> {
     }
 }
 
-/// 与内核同目录的宿主二进制；不存在时返回 `None`（退回内核连接器模式）。
+/// 宿主二进制：优先与内核同目录，其次就是当前正在运行的宿主自身。
+///
+/// 内核路径可能是裸文件名（解析不到文件时的回退形态），此时 `parent()` 是空目录，同级探测
+/// 必然失败。那种情况下若判成「没有宿主载荷」，连接器会退回只能对话的内核路径——因此补一条
+/// 兜底：本进程就是 `omnicrawl-host`，它自己就是可用的宿主载荷。
 fn host_binary_beside(kernel: &Path) -> Option<PathBuf> {
-    let directory = kernel.parent()?;
     let name = if cfg!(windows) {
         "omnicrawl-host.exe"
     } else {
         "omnicrawl-host"
     };
-    let candidate = directory.join(name);
-    candidate.is_file().then_some(candidate)
+    let sibling = kernel
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map(|directory| directory.join(name));
+    // 兜底只认真正的宿主进程：链接了本 crate 的其他二进制不能冒充宿主载荷。
+    let itself = std::env::current_exe().ok().filter(|current| {
+        current
+            .file_name()
+            .map(|file| file == std::ffi::OsStr::new(name))
+            .unwrap_or(false)
+    });
+    sibling
+        .into_iter()
+        .chain(itself)
+        .find(|candidate| candidate.is_file())
 }
 
 /// 拉起已配置的连接器；未配置任何平台时监督器不启动任何子进程。

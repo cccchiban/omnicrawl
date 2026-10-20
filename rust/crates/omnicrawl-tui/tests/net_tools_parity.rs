@@ -5,10 +5,13 @@
 //! 逐字对照；`fetcher` 的抓取链路依赖 `curl_cffi` 会话，无从注入，对照的是它的纯函数
 //! （URL 解析、内网判定、meta refresh、标题与正文提取、截断、格式化）。
 //!
-//! 数据集里另有 Rust 专有的 `firecrawl` 与 `mixed`（混合搜索）用例：这两条通路没有
-//! Python 对映实现，用例固定的是本实现自己的契约（端点、请求体字段、去重与合并口径）。
+//! 数据集里另有 Rust 专有的 `firecrawl`、`anysearch`、`tinyfish` 与 `mixed`（混合搜索）用例：这些
+//! 通路没有 Python 对映实现，用例固定的是本实现自己的契约（端点、请求体字段、去重与合并口径）。
 //!
 //! 两侧的耗时字段都会规范化成 `{ELAPSED}`：它是真实时钟读数，不构成可对照的语义。
+//!
+//! 引擎不在 `arguments` 里：每个用例的 `engine` 是当时的 `[web_search] engine` 设置，
+//! `arguments` 里的 `engine`（若出现）只是验证「工具参数不能改引擎」的干扰项。
 
 use std::sync::{Arc, Mutex};
 
@@ -93,6 +96,7 @@ impl WebTransport for CaseTransport {
                         status: 200,
                         final_url: request.url.clone(),
                         body: body.clone().into_bytes(),
+                        headers: Vec::new(),
                     });
                 }
             }
@@ -105,6 +109,7 @@ impl WebTransport for CaseTransport {
             status: 200,
             final_url: request.url.clone(),
             body: self.body.lock().expect("页面锁").clone().into_bytes(),
+            headers: Vec::new(),
         })
     }
 }
@@ -131,12 +136,21 @@ fn web_search_cases_match_python() {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        tinyfish_api_key: section["options"]["tinyfish_api_key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         // 串行下发：请求集合可比，不比线程调度。
         mixed_parallelism: 1,
         ..WebSearchOptions::default()
     };
 
     for case in section["cases"].as_array().expect("搜索用例") {
+        // 引擎来自设置（`[web_search] engine`），不是工具参数：用例在 `engine` 里给出当时的设置。
+        let options = WebSearchOptions {
+            default_engine: case["engine"].as_str().unwrap_or_default().to_string(),
+            ..options.clone()
+        };
         transport.set_body(case["html"].as_str().unwrap_or_default());
         transport.set_routes(
             &case["routes"]

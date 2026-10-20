@@ -24,10 +24,6 @@ use super::files::{
     post_text_and_images, resolve_temp_destination, resource_file_key, resource_file_name,
     MESSAGE_RESOURCE_TYPES,
 };
-use super::render::{
-    question_card_json, question_resolved_card_json, ASK_USER_TOOL_NAME, TODO_TOOL_NAME,
-};
-use super::text::{display_text, parse_json_object, resolve_final_text, text_value};
 use super::timeline::{
     MessagePort, PlanMessage, ReasoningMessage, SubAgentMessage, TextMessage, ToolMessage,
     ToolRecord,
@@ -36,6 +32,10 @@ use crate::agent::{
     AgentDriver, AskUserHandler, ConfirmHandler, ToolCall, ToolResult, TurnError, TurnEvent,
 };
 use crate::json;
+use crate::render::{
+    question_card_json, question_resolved_card_json, ASK_USER_TOOL_NAME, TODO_TOOL_NAME,
+};
+use crate::text::{display_text, parse_json_object, resolve_final_text, text_value};
 
 /// 流式 patch 节拍（秒）：飞书对消息更新有频率限制，不做逐字 patch。
 pub const STREAM_PATCH_INTERVAL_SECONDS: f64 = 1.5;
@@ -1342,7 +1342,7 @@ impl<D: AgentDriver> TaskTimeline<D> {
         self.deltas.push_str(delta);
         self.all_deltas.push_str(delta);
         if self.text_message.is_none() {
-            let joined = super::text::clean_text(&self.deltas);
+            let joined = crate::text::clean_text(&self.deltas);
             if joined.is_empty() {
                 return;
             }
@@ -1407,7 +1407,7 @@ impl<D: AgentDriver> TaskTimeline<D> {
         } else {
             call.name.as_str()
         };
-        let operation = super::render::operation_of(name);
+        let operation = crate::render::operation_of(name);
         if operation == ASK_USER_TOOL_NAME || operation == TODO_TOOL_NAME {
             return;
         }
@@ -1427,7 +1427,7 @@ impl<D: AgentDriver> TaskTimeline<D> {
 
     fn on_tool_result(&mut self, call: &ToolCall, result: &ToolResult) {
         let name = call.name.as_str();
-        let operation = super::render::operation_of(name);
+        let operation = crate::render::operation_of(name);
         if operation == ASK_USER_TOOL_NAME || operation == TODO_TOOL_NAME {
             return;
         }
@@ -1548,7 +1548,7 @@ impl<D: AgentDriver> TaskTimeline<D> {
     }
 
     fn cleaned_deltas(&self) -> String {
-        super::text::clean_text(&self.deltas)
+        crate::text::clean_text(&self.deltas)
     }
 
     fn text_message_created(&self) -> bool {

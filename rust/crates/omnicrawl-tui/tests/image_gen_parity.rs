@@ -55,6 +55,7 @@ impl WebTransport for GenTransport {
             status: *self.status.lock().expect("状态锁"),
             final_url: request.url.clone(),
             body: self.body.lock().expect("响应锁").clone().into_bytes(),
+            headers: Vec::new(),
         })
     }
 }

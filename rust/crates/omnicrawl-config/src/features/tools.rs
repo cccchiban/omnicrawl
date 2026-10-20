@@ -49,7 +49,7 @@ pub const TOOL_SWITCH_LABELS: [(&str, &str); 27] = [
     ("grep", "在文件中搜索文本（grep）"),
     (
         "web_search",
-        "web_search（Bing/DuckDuckGo/Tavily/Exa/Firecrawl/混合搜索）",
+        "web_search（DuckDuckGo/GitHub/arXiv/Hugging Face/Tavily/Exa/Firecrawl/AnySearch/TinyFish/混合搜索）",
     ),
     ("fetcher", "fetcher（浏览器指纹）"),
     ("image_gen", "图像生成（Image API）"),

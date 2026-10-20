@@ -274,15 +274,102 @@ pub fn traffic_keys(suite: CipherSuite, secret: &[u8]) -> Result<TrafficKeys, St
 pub struct KeySchedule {
     suite: CipherSuite,
     early_secret: Vec<u8>,
+    /// 是否用 PSK 构造。`HKDF-Extract(0, 0)` 不是全零，无法从 `early_secret` 反推。
+    resumption: bool,
 }
 
 impl KeySchedule {
     pub fn new(suite: CipherSuite) -> Self {
+        Self::with_psk(suite, None)
+    }
+
+    /// 带 PSK 的构造：会话恢复时 `early_secret = HKDF-Extract(0, PSK)`。
+    ///
+    /// 没有 PSK 时传 `None`，退回全文握手的 `HKDF-Extract(0, 0)`。这两个值一旦用错，
+    /// 后续所有密钥全错——而对称的自家测试看不出来，只有对接真实服务端才会暴露。
+    pub fn with_psk(suite: CipherSuite, psk: Option<&[u8]>) -> Self {
         let zeros = vec![0u8; suite.hash_len()];
+        let ikm = psk.unwrap_or(&zeros);
         Self {
             suite,
-            early_secret: extract(suite, &zeros, &zeros),
+            early_secret: extract(suite, &zeros, ikm),
+            // 必须显式记录：`HKDF-Extract(0, 0)` 的结果本身不是全零，
+            // 因此不能靠比较 `early_secret` 反推是否用了 PSK。
+            resumption: psk.is_some(),
         }
+    }
+
+    /// `early_secret` 本身：派生 binder key 与 client early traffic secret 的起点。
+    pub fn early_secret(&self) -> &[u8] {
+        &self.early_secret
+    }
+
+    /// 这条调度是否基于 PSK（会话恢复）。
+    pub fn is_resumption(&self) -> bool {
+        self.resumption
+    }
+
+    /// `resumption_master_secret`：派发 NewSessionTicket 里 PSK 的根。
+    ///
+    /// 必须在 client Finished 之后调用：上下文是 `Hash(..client Finished)`。
+    /// 这一步用到的 `master_secret` 原先算完就丢，因此 [`ApplicationSecrets`]
+    /// 现在把它带出来。
+    pub fn resumption_master_secret(
+        suite: CipherSuite,
+        master_secret: &[u8],
+        transcript_hash_after_client_finished: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        derive_secret(
+            suite,
+            master_secret,
+            "res master",
+            transcript_hash_after_client_finished,
+        )
+    }
+
+    /// 从 `resumption_master_secret` 与票据 nonce 派生出这条票据的 PSK。
+    ///
+    /// `nonce` 来自 NewSessionTicket；`label` 是 `resumption`。
+    pub fn resumption_psk(
+        suite: CipherSuite,
+        resumption_master_secret: &[u8],
+        nonce: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let prk = hkdf::Prk::new_less_safe(suite.hkdf_algorithm(), resumption_master_secret);
+        let mut out = vec![0u8; suite.hash_len()];
+        expand_label(suite, &prk, "resumption", nonce, &mut out)?;
+        Ok(out)
+    }
+
+    /// 计算 ClientHello 的 PSK binder。
+    ///
+    /// RFC 8446 §4.2.11.2：binder 覆盖的是「**不含 binder 本身**的 ClientHello」的转录哈希，
+    /// 经 `binder_key` 派生后做 Finished 那样的 HMAC。因此调用方必须传入
+    /// 「截断到 binder 之前」的 ClientHello 字节——把完整 CH 传进来会算出错误的值。
+    pub fn psk_binder(
+        suite: CipherSuite,
+        psk: &[u8],
+        truncated_client_hello: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let zeros = vec![0u8; suite.hash_len()];
+        let early_secret = extract(suite, &zeros, psk);
+        let binder_key = derive_secret(
+            suite,
+            &early_secret,
+            "res binder",
+            &empty_transcript_hash(suite),
+        )?;
+        let finished_key = {
+            let prk = hkdf::Prk::new_less_safe(suite.hkdf_algorithm(), &binder_key);
+            let mut out = vec![0u8; suite.hash_len()];
+            expand_label(suite, &prk, "finished", &[], &mut out)?;
+            out
+        };
+        let mut context = digest::Context::new(suite.hash());
+        context.update(truncated_client_hello);
+        let transcript_hash = context.finish().as_ref().to_vec();
+        let key = ring::hmac::Key::new(suite.hkdf_algorithm().hmac_algorithm(), &finished_key);
+        Ok(ring::hmac::sign(&key, &transcript_hash).as_ref().to_vec())
     }
 
     /// 握手阶段密钥（`transcript_hash` 取 CH..SH 的哈希）。
@@ -375,6 +462,8 @@ impl HandshakeSecrets {
                     transcript_hash_after_finished,
                 )?,
             )?,
+            // 会话恢复要在 client Finished 之后再派生 `res master`，因此它不能算完就丢。
+            master_secret,
         })
     }
 }
@@ -386,11 +475,221 @@ pub struct ApplicationSecrets {
     pub server: TrafficKeys,
     /// 导出用主密钥（1.3 的 `exporter_master_secret`）。
     pub exporter_master: TrafficKeys,
+    /// 主密钥本身：派生 `res master` 需要它，因此必须留到 client Finished 之后。
+    pub master_secret: Vec<u8>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC 8448 §3：`res master` 的公式（含上下文是 client Finished 之后的转录哈希）。
+    #[test]
+    fn resumption_master_secret_matches_the_rfc8448_vector() {
+        let master = from_hex(
+            "18df06843d13a08bf2a449844c5f8a478001bc4d4c627984d5a41da8d0402919",
+        );
+        let transcript = from_hex(
+            "209145a96ee8e2a122ff810047cc952684658d6049e86429426db87c54ad143d",
+        );
+        let res = KeySchedule::resumption_master_secret(
+            CipherSuite::Aes128GcmSha256,
+            &master,
+            &transcript,
+        )
+        .expect("派生 res master");
+        assert_eq!(
+            hex(&res),
+            "7df235f2031d2a051287d02b0241b0bfdaf86cc856231f2d5aba46c434ec196c",
+            "res master 必须与 RFC 8448 一致"
+        );
+    }
+
+    /// RFC 8448 §3 的权威向量：从 `res master` 到票据 PSK 的派生必须逐字节吻合。
+    ///
+    /// 这条覆盖的是「第二次握手能不能成功」的关键一环：PSK 算错时第一次连接完全正常，
+    /// 只有第二次被服务端以 decrypt_error(51) 拒绝——排查成本很高，因此必须有外部锚点。
+    #[test]
+    fn resumption_psk_matches_the_rfc8448_vector() {
+        // RFC 8448 §3 的 `resumption_master_secret`。
+        let res_master = from_hex(
+            "7df235f2031d2a051287d02b0241b0bfdaf86cc856231f2d5aba46c434ec196c",
+        );
+        // NewSessionTicket 里的 nonce（2 字节）。
+        let nonce = [0x00u8, 0x00];
+        let psk = KeySchedule::resumption_psk(
+            CipherSuite::Aes128GcmSha256,
+            &res_master,
+            &nonce,
+        )
+        .expect("派生 PSK");
+        assert_eq!(
+            hex(&psk),
+            "4ecd0eb6ec3b4d87f5d6028f922ca4c5851a277fd41311c9e62d2c9492e1c4f3",
+            "PSK 必须与 RFC 8448 一致"
+        );
+    }
+
+    /// RFC 8448 §4 的权威向量：binder 必须逐字节吻合。
+    ///
+    /// 这条是外部权威值，不是自家两端互相印证——自家两端用同一个错误算法也能「通过」，
+    /// 只有对照 RFC 才能发现 binder 算错。真实症状是服务端直接 alert decode_error(50)。
+    #[test]
+    fn psk_binder_matches_the_rfc8448_vector() {
+        // RFC 8448 §4：截断后的 ClientHello（477 字节，长度字段已按 binder 存在写好）。
+        const TRUNCATED_CLIENT_HELLO: &[u8] = &[
+    0x01, 0x00, 0x01, 0xfc, 0x03, 0x03, 0x1b, 0xc3, 0xce, 0xb6, 0xbb, 0xe3, 0x9c, 0xff, 0x93, 0x83,
+    0x55, 0xb5, 0xa5, 0x0a, 0xdb, 0x6d, 0xb2, 0x1b, 0x7a, 0x6a, 0xf6, 0x49, 0xd7, 0xb4, 0xbc, 0x41,
+    0x9d, 0x78, 0x76, 0x48, 0x7d, 0x95, 0x00, 0x00, 0x06, 0x13, 0x01, 0x13, 0x03, 0x13, 0x02, 0x01,
+    0x00, 0x01, 0xcd, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x09, 0x00, 0x00, 0x06, 0x73, 0x65, 0x72, 0x76,
+    0x65, 0x72, 0xff, 0x01, 0x00, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x14, 0x00, 0x12, 0x00, 0x1d, 0x00,
+    0x17, 0x00, 0x18, 0x00, 0x19, 0x01, 0x00, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03, 0x01, 0x04, 0x00,
+    0x33, 0x00, 0x26, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20, 0xe4, 0xff, 0xb6, 0x8a, 0xc0, 0x5f, 0x8d,
+    0x96, 0xc9, 0x9d, 0xa2, 0x66, 0x98, 0x34, 0x6c, 0x6b, 0xe1, 0x64, 0x82, 0xba, 0xdd, 0xda, 0xfe,
+    0x05, 0x1a, 0x66, 0xb4, 0xf1, 0x8d, 0x66, 0x8f, 0x0b, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x2b, 0x00,
+    0x03, 0x02, 0x03, 0x04, 0x00, 0x0d, 0x00, 0x20, 0x00, 0x1e, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03,
+    0x02, 0x03, 0x08, 0x04, 0x08, 0x05, 0x08, 0x06, 0x04, 0x01, 0x05, 0x01, 0x06, 0x01, 0x02, 0x01,
+    0x04, 0x02, 0x05, 0x02, 0x06, 0x02, 0x02, 0x02, 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01, 0x00, 0x1c,
+    0x00, 0x02, 0x40, 0x01, 0x00, 0x15, 0x00, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x29, 0x00, 0xdd, 0x00, 0xb8, 0x00, 0xb2, 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59, 0xee, 0x5f, 0xf7,
+    0xaf, 0x4e, 0xc9, 0x00, 0x00, 0x00, 0x00, 0x26, 0x2a, 0x64, 0x94, 0xdc, 0x48, 0x6d, 0x2c, 0x8a,
+    0x34, 0xcb, 0x33, 0xfa, 0x90, 0xbf, 0x1b, 0x00, 0x70, 0xad, 0x3c, 0x49, 0x88, 0x83, 0xc9, 0x36,
+    0x7c, 0x09, 0xa2, 0xbe, 0x78, 0x5a, 0xbc, 0x55, 0xcd, 0x22, 0x60, 0x97, 0xa3, 0xa9, 0x82, 0x11,
+    0x72, 0x83, 0xf8, 0x2a, 0x03, 0xa1, 0x43, 0xef, 0xd3, 0xff, 0x5d, 0xd3, 0x6d, 0x64, 0xe8, 0x61,
+    0xbe, 0x7f, 0xd6, 0x1d, 0x28, 0x27, 0xdb, 0x27, 0x9c, 0xce, 0x14, 0x50, 0x77, 0xd4, 0x54, 0xa3,
+    0x66, 0x4d, 0x4e, 0x6d, 0xa4, 0xd2, 0x9e, 0xe0, 0x37, 0x25, 0xa6, 0xa4, 0xda, 0xfc, 0xd0, 0xfc,
+    0x67, 0xd2, 0xae, 0xa7, 0x05, 0x29, 0x51, 0x3e, 0x3d, 0xa2, 0x67, 0x7f, 0xa5, 0x90, 0x6c, 0x5b,
+    0x3f, 0x7d, 0x8f, 0x92, 0xf2, 0x28, 0xbd, 0xa4, 0x0d, 0xda, 0x72, 0x14, 0x70, 0xf9, 0xfb, 0xf2,
+    0x97, 0xb5, 0xae, 0xa6, 0x17, 0x64, 0x6f, 0xac, 0x5c, 0x03, 0x27, 0x2e, 0x97, 0x07, 0x27, 0xc6,
+    0x21, 0xa7, 0x91, 0x41, 0xef, 0x5f, 0x7d, 0xe6, 0x50, 0x5e, 0x5b, 0xfb, 0xc3, 0x88, 0xe9, 0x33,
+    0x43, 0x69, 0x40, 0x93, 0x93, 0x4a, 0xe4, 0xd3, 0x57, 0xfa, 0xd6, 0xaa, 0xcb
+        ];
+        // 票据对应的 PSK（RFC 标注为 "IKM"）。
+        const PSK: [u8; 32] = [
+            0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87, 0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c,
+            0xa4, 0xc5, 0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9, 0xe6, 0x2d, 0x2c, 0x94,
+            0x92, 0xe1, 0xc4, 0xf3,
+        ];
+        let binder = KeySchedule::psk_binder(
+            CipherSuite::Aes128GcmSha256,
+            &PSK,
+            TRUNCATED_CLIENT_HELLO,
+        )
+        .expect("计算 binder");
+        assert_eq!(
+            hex(&binder),
+            "3add4fb2d8fdf822a0ca3cf7678ef5e88dae990141c5924d57bb6fa31b9e5f9d",
+            "binder 必须与 RFC 8448 一致"
+        );
+    }
+
+    /// PSK 会改变 `early_secret`，这是会话恢复的地基。
+    #[test]
+    fn psk_changes_the_early_secret() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let without = KeySchedule::with_psk(suite, None);
+        let with = KeySchedule::with_psk(suite, Some(&[0x01; 32]));
+        assert_ne!(without.early_secret(), with.early_secret());
+        assert!(!without.is_resumption());
+        assert!(with.is_resumption());
+    }
+
+    /// 没有 PSK 时必须与旧行为逐字节一致（回归保护）。
+    #[test]
+    fn the_no_psk_path_still_matches_the_rfc_early_secret() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let zeros = vec![0u8; 32];
+        assert_eq!(
+            KeySchedule::new(suite).early_secret(),
+            extract(suite, &zeros, &zeros).as_slice()
+        );
+    }
+
+    /// binder 必须对「截断到 binders 之前」的 CH 计算：多一个字节就完全不同。
+    #[test]
+    fn psk_binder_depends_on_the_exact_truncated_client_hello() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let psk = [0x42u8; 32];
+        let hello = b"\x01\x00\x00\x2fclienthello".as_slice();
+        let first = KeySchedule::psk_binder(suite, &psk, hello).expect("binder");
+        // 确定性：同样的输入必须得到同样的值。
+        assert_eq!(
+            first,
+            KeySchedule::psk_binder(suite, &psk, hello).expect("binder")
+        );
+        assert_eq!(first.len(), 32, "binder 长度等于哈希长度");
+        // 转录里多一个字节就不同。
+        let mut longer = hello.to_vec();
+        longer.push(0x00);
+        assert_ne!(
+            first,
+            KeySchedule::psk_binder(suite, &psk, &longer).expect("binder")
+        );
+        // 换 PSK 也必须不同。
+        assert_ne!(
+            first,
+            KeySchedule::psk_binder(suite, &[0x43u8; 32], hello).expect("binder")
+        );
+    }
+
+    /// `resumption_psk` 按票据 nonce 派生：nonce 不同则 PSK 不同。
+    #[test]
+    fn resumption_psk_is_bound_to_the_ticket_nonce() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let master = [0x11u8; 32];
+        let first = KeySchedule::resumption_psk(suite, &master, b"nonce-a").expect("psk");
+        let second = KeySchedule::resumption_psk(suite, &master, b"nonce-b").expect("psk");
+        assert_eq!(first.len(), 32);
+        assert_ne!(first, second, "nonce 必须参与派生");
+        assert_eq!(
+            first,
+            KeySchedule::resumption_psk(suite, &master, b"nonce-a").expect("psk")
+        );
+    }
+
+    /// `res master` 的上下文是 client Finished 之后的转录哈希。
+    #[test]
+    fn resumption_master_secret_uses_the_client_finished_transcript() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let master = [0x22u8; 32];
+        let first = KeySchedule::resumption_master_secret(suite, &master, &[0xaa; 32])
+            .expect("res master");
+        let second = KeySchedule::resumption_master_secret(suite, &master, &[0xbb; 32])
+            .expect("res master");
+        assert_ne!(first, second);
+    }
+
+    /// 应用密钥必须把 `master_secret` 带出来，否则派生不出 `res master`。
+    #[test]
+    fn application_secrets_expose_the_master_secret() {
+        let suite = CipherSuite::Aes128GcmSha256;
+        let schedule = KeySchedule::new(suite);
+        let shared = [0x33u8; 32];
+        let mut transcript = digest::Context::new(suite.hash());
+        transcript.update(b"ch..sh");
+        let handshake = schedule
+            .handshake_secrets(&shared, transcript.finish().as_ref())
+            .expect("握手密钥");
+        let mut after = digest::Context::new(suite.hash());
+        after.update(b"..server finished");
+        let application = handshake
+            .application_secrets(after.finish().as_ref())
+            .expect("应用密钥");
+        assert_eq!(application.master_secret.len(), 32);
+        assert!(
+            KeySchedule::resumption_master_secret(
+                suite,
+                &application.master_secret,
+                &[0xcc; 32]
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn cipher_suites_map_to_codes_and_algorithms() {

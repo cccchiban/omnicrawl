@@ -70,6 +70,7 @@ pub mod parse;
 pub mod profile;
 pub mod record;
 pub mod session;
+pub mod session_cache;
 pub mod tls12;
 pub mod verify;
 pub mod wire;

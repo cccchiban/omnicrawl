@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::text::split_text;
 use super::upload;
 use crate::http::{with_query, HttpTransport, UreqTransport};
 use crate::json;
+use crate::text::split_text;
 
 /// 飞书开放平台默认域名。
 pub const DEFAULT_BASE_URL: &str = "https://open.feishu.cn";

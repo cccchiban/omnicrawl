@@ -11,6 +11,7 @@ members = [
     "crates/omnicrawl-extensions",
     "crates/omnicrawl-host",
     "crates/omnicrawl-ipc",
+    "crates/omnicrawl-jsdom",
     "crates/omnicrawl-llm",
     "crates/omnicrawl-onejev",
     "crates/omnicrawl-mcp",
@@ -29,9 +30,10 @@ resolver = "2"
 version = "0.0.1"
 edition = "2021"
 # MSRV 由依赖树里最高的那个声明决定，工作区级声明无法只对单个 crate 抬高。
-# 抬到 1.90 的直接原因：图形栈 ratatui-image → icy_sixel → quantette / ordered-float
-# 各自要求 1.90。
-rust-version = "1.90"
+# 抬到 1.91 的直接原因：omnicrawl-jsdom 用 boa_engine 0.22（0.21 解析不了
+# `class A { static false() {} }`，会让现代 SPA 的 bundle 整份失效）。
+# 之前抬到 1.90 的原因：图形栈 ratatui-image → icy_sixel → quantette / ordered-float。
+rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
