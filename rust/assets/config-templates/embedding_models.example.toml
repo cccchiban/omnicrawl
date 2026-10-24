@@ -1,0 +1,31 @@
+# OmniCrawl 向量模型配置（在设置面板「向量模型」页新建渠道后自动生成 embedding_models.toml）
+#
+# 向量模型把一段文本映射成一个定长浮点向量，记忆检索用它做语义召回：先把查询与
+# 候选记忆都换成向量，按余弦相似度排序，再与关键词规则分做倒数排名融合。
+#
+# 全部走云端 OpenAI 兼容接口（POST {base_url}/embeddings），不使用本地模型：
+# 本地推理要多一份模型文件与推理运行时，代价远高于收益。
+#
+# 未配置、未启用或缺凭据时，记忆检索直接退回纯关键词规则排序——这是刻意的兜底，
+# 不是错误：向量召回是纯加速项，不可用不该让检索失败。
+#
+# 密钥请用环境变量（api_key_env）；也可以直接写 api_key，但不要提交到版本库。
+version = 1
+
+# 默认使用的向量渠道 key；留空或指向不存在的渠道时取第一条启用的渠道。
+default_key = "openai-embedding"
+
+[channels.openai-embedding]
+name = "OpenAI 向量"
+# base_url 按 OpenAI 兼容口径填到 /v1，这里只追加 /embeddings。
+base_url = "https://api.openai.com/v1"
+api_key = ""
+api_key_env = "OPENAI_API_KEY"
+model = "text-embedding-3-small"
+# 期望维度；0 表示由服务端决定（不下发 dimensions 字段）。
+# 换模型或改维度后旧向量会自然失效（缓存键带渠道指纹）。
+dimensions = 0
+# 单次请求最多携带的文本条数；候选多时按此分批串行发送。
+batch_size = 64
+timeout_seconds = 30
+enabled = true

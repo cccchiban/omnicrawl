@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use omnicrawl_jsdom::{
-    run_inline_scripts, run_with_sources, HttpRequest, HttpSource, HttpResponse, Profile,
+    run_inline_scripts, run_with_sources, HttpRequest, HttpResponse, HttpSource, Profile,
 };
 
 /// 按路径返回固定 JSON 的桩通道；记录收到的请求供断言。
@@ -45,7 +45,11 @@ impl HttpSource for StubHttp {
 fn json(status: u16, body: &str) -> HttpResponse {
     HttpResponse {
         status,
-        status_text: if status == 200 { "OK".to_string() } else { "Not Found".to_string() },
+        status_text: if status == 200 {
+            "OK".to_string()
+        } else {
+            "Not Found".to_string()
+        },
         headers: vec![(
             "content-type".to_string(),
             "application/json; charset=utf-8".to_string(),
@@ -128,7 +132,11 @@ fn error_status_is_a_response_not_a_rejection() {
     let http = StubHttp::new();
     let outcome = run_with_sources(&html, &profile(), None, Some(&http));
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert!(outcome.text.contains("ok=false status=404"), "{}", outcome.text);
+    assert!(
+        outcome.text.contains("ok=false status=404"),
+        "{}",
+        outcome.text
+    );
 }
 
 /// 通道返回 Err 时是 rejected Promise：页面的 `.catch` 分支要能跑到。
@@ -148,7 +156,10 @@ fn transport_failure_rejects_the_promise() {
     assert!(outcome.text.contains("已进入 catch"), "{}", outcome.text);
     // 失败原因要浮到工具输出：页面常把 reject 静默吞掉。
     assert!(
-        outcome.errors.iter().any(|error| error.contains("fetch 失败")),
+        outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("fetch 失败")),
         "{:?}",
         outcome.errors
     );
@@ -216,7 +227,11 @@ fn xml_http_request_supports_listeners_and_ready_state() {
     let http = StubHttp::new();
     let outcome = run_with_sources(&html, &profile(), None, Some(&http));
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert!(outcome.text.contains("state=4 done=true"), "{}", outcome.text);
+    assert!(
+        outcome.text.contains("state=4 done=true"),
+        "{}",
+        outcome.text
+    );
 }
 
 /// XHR 失败时派发 `onerror`，不抛异常中断脚本。

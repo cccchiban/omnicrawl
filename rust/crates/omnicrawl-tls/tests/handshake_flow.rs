@@ -8,9 +8,7 @@
 //! 是自研协议栈最常见的失败形态。
 
 use omnicrawl_tls::client_hello::{ext, group, pick_grease, suite, ClientHelloSpec};
-use omnicrawl_tls::handshake::{
-    hs, parse_server_hello, take_handshake_messages, X25519Exchange,
-};
+use omnicrawl_tls::handshake::{hs, parse_server_hello, take_handshake_messages, X25519Exchange};
 use omnicrawl_tls::keyschedule::{CipherSuite, KeySchedule, Transcript};
 use omnicrawl_tls::profile::{spec_for, Family};
 use omnicrawl_tls::record::{ContentType, RecordKey};
@@ -101,18 +99,10 @@ fn a_full_handshake_prefix_produces_usable_record_keys() {
         .expect("应当派生握手密钥");
 
     // 6) 拿派生出的密钥真的加解密一条记录：客户端写入、服务端读回。
-    let mut writer = RecordKey::new(
-        suite_enum.aead(),
-        &secrets.client.key,
-        secrets.client.iv,
-    )
-    .expect("客户端记录密钥");
-    let mut reader = RecordKey::new(
-        suite_enum.aead(),
-        &secrets.client.key,
-        secrets.client.iv,
-    )
-    .expect("服务端记录密钥");
+    let mut writer = RecordKey::new(suite_enum.aead(), &secrets.client.key, secrets.client.iv)
+        .expect("客户端记录密钥");
+    let mut reader = RecordKey::new(suite_enum.aead(), &secrets.client.key, secrets.client.iv)
+        .expect("服务端记录密钥");
     let sealed = writer
         .seal(ContentType::Handshake, b"client finished")
         .expect("加密");
@@ -124,18 +114,25 @@ fn a_full_handshake_prefix_produces_usable_record_keys() {
 /// 四个家族的 ClientHello 都能走通同一条链（档案差异不影响后续阶段）。
 #[test]
 fn every_family_reaches_the_same_key_schedule_stage() {
-    for family in [Family::Chrome, Family::Firefox, Family::Safari, Family::Edge] {
+    for family in [
+        Family::Chrome,
+        Family::Firefox,
+        Family::Safari,
+        Family::Edge,
+    ] {
         let exchange = X25519Exchange::generate(&rng()).expect("生成");
-        let spec: ClientHelloSpec = spec_for(family, "example.com", &[(group::X25519, exchange.public_key.clone())]);
+        let spec: ClientHelloSpec = spec_for(
+            family,
+            "example.com",
+            &[(group::X25519, exchange.public_key.clone())],
+        );
         let grease = if family.emits_grease() {
             pick_grease(0x1a)
         } else {
             0
         };
         let session_id = spec.empty_session_id();
-        let encoded = spec
-            .encode(grease, &[0x44; 32], &session_id)
-            .expect("编码");
+        let encoded = spec.encode(grease, &[0x44; 32], &session_id).expect("编码");
         let mut transcript = Transcript::new(CipherSuite::Aes128GcmSha256);
         transcript.push(&encoded);
 
@@ -159,7 +156,11 @@ fn every_family_reaches_the_same_key_schedule_stage() {
 #[test]
 fn grease_values_from_the_profile_are_legal_and_present() {
     let exchange = X25519Exchange::generate(&rng()).expect("生成");
-    let spec = spec_for(Family::Chrome, "example.com", &[(group::X25519, exchange.public_key.clone())]);
+    let spec = spec_for(
+        Family::Chrome,
+        "example.com",
+        &[(group::X25519, exchange.public_key.clone())],
+    );
     for seed in [0u8, 1, 7, 15, 200] {
         let grease = pick_grease(seed);
         assert!(
@@ -167,9 +168,7 @@ fn grease_values_from_the_profile_are_legal_and_present() {
             "{grease:#06x} 必须是 RFC 8701 的合法值"
         );
         let session_id = spec.empty_session_id();
-        let encoded = spec
-            .encode(grease, &[0x55; 32], &session_id)
-            .expect("编码");
+        let encoded = spec.encode(grease, &[0x55; 32], &session_id).expect("编码");
         let needle = grease.to_be_bytes();
         assert!(
             encoded.windows(2).any(|pair| pair == needle),
@@ -182,9 +181,15 @@ fn grease_values_from_the_profile_are_legal_and_present() {
 #[test]
 fn the_grease_placeholder_never_reaches_the_wire() {
     let exchange = X25519Exchange::generate(&rng()).expect("生成");
-    let spec = spec_for(Family::Chrome, "example.com", &[(group::X25519, exchange.public_key.clone())]);
+    let spec = spec_for(
+        Family::Chrome,
+        "example.com",
+        &[(group::X25519, exchange.public_key.clone())],
+    );
     let session_id = spec.empty_session_id();
-    let encoded = spec.encode(pick_grease(3), &[0x66; 32], &session_id).expect("编码");
+    let encoded = spec
+        .encode(pick_grease(3), &[0x66; 32], &session_id)
+        .expect("编码");
     let placeholder = omnicrawl_tls::GREASE_MARK.to_be_bytes();
     assert!(
         !encoded.windows(2).any(|pair| pair == placeholder),

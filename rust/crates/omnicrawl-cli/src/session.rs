@@ -8,7 +8,6 @@
 //! 会立即中止当前端口调用，其余请求照常应答，不阻塞宿主。
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,18 +19,18 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::desensitization::{
     load_desensitization_config, DesensitizationConfig,
 };
+use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_controllers::context_compaction::TokenUsageSample;
 use omnicrawl_controllers::context_compaction::{
     estimate_messages_tokens, RECALL_SESSION_EVIDENCE_TOOL_NAME,
 };
-use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
 use omnicrawl_controllers::tool_args::{public_tool_arguments, TODO_TOOL_NAME};
 use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
+use omnicrawl_controllers::turn::compaction::format_compaction_savings_notice;
 use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
 };
-use omnicrawl_controllers::turn::compaction::format_compaction_savings_notice;
 use omnicrawl_controllers::turn::tool_prune::{
     evicted_event_payload, eviction_measure_payload, prunable_tool, PruneCandidate,
     EVICTED_EVENT_TYPE, EVICTION_MEASURE_EVENT_TYPE,
@@ -47,10 +46,11 @@ use omnicrawl_ipc::bridge::{
     HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
     ModelHookRequest, ModelHookResult, ModelRequest, ModelRequestErrorPayload,
     ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
-    SessionRenameParams, SessionResumeParams, SessionSettingsParams, SessionModelSettings,
+    SessionModelSettings, SessionRenameParams, SessionResumeParams, SessionSettingsParams,
     SubagentEventPayload, SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload,
-    ToolBatch, ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload, TurnCancelParams,
-    TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
+    ToolBatch, ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload, ToolEventPayload,
+    ToolStartedPayload, TurnCancelParams, TurnFinishedPayload, TurnSubmitParams,
+    WorkspaceSwitchParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
@@ -66,15 +66,14 @@ use omnicrawl_llm::{
     ProviderProfile, RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 use omnicrawl_protocol::{
-    conform_tool_names, conversation_from_openai_messages, normalize_call_ids, rotate_tail_call_ids,
-    tool_spec_from_openai_item, GenerationOptions, ModelReply, ModelStreamEvent, ToolNameMap,
-    ToolSpec,
+    conform_tool_names, conversation_from_openai_messages, normalize_call_ids,
+    rotate_tail_call_ids, tool_spec_from_openai_item, GenerationOptions, ModelReply,
+    ModelStreamEvent, ToolNameMap, ToolSpec,
 };
 use serde_json::{json, Map, Value};
 
-use omnicrawl_controllers::subagents::batch::{
-    background_rejection, batch_summary, BACKGROUND_DISABLED_MESSAGE,
-};
+use omnicrawl_controllers::context_compaction::SourceEvent;
+use omnicrawl_controllers::subagents::batch::batch_summary;
 use omnicrawl_controllers::subagents::coordinator::{
     cancelled_payload, failure_payload, json_result_text, task_event_payload,
     terminal_event_payload, top_level_error,
@@ -84,20 +83,16 @@ use omnicrawl_controllers::subagents::coordinator::{
     worktree_control_request, WorktreeControlRequest,
 };
 use omnicrawl_controllers::subagents::orchestration::require_completed_result;
-use omnicrawl_controllers::subagents::tasks::{
-    CancelToken, SubAgentTaskManager, SubAgentTaskSpec, TaskObserver, TaskRunner,
-};
+use omnicrawl_controllers::subagents::tasks::{CancelToken, SubAgentTaskManager};
 use omnicrawl_controllers::subagents::worktrees::{
     artifact_lines, discard_guard, WorktreeArtifacts,
 };
-use omnicrawl_controllers::context_compaction::SourceEvent;
 use omnicrawl_session::{
     evict_tool_call_messages, tool_result_message, user_message_with_images, utc_now,
     SessionListQuery, SessionStore,
 };
 
 use crate::compression::KernelCompressor;
-use crate::turn_summary::{summarize_turn, TurnSummaryRequest};
 use crate::subagent::{PreparedTask, SubAgentExecution, SubAgentRuntime};
 use crate::vision_proxy::KernelVisionProxy;
 
@@ -171,26 +166,6 @@ impl PortFailure {
 }
 
 /// 内核侧的对话连接：帧的收发、请求应答配对与回合状态。
-/// 后台任务借用连接的请求：连接由主循环独占，任务线程只能经这条通道提交。
-enum BackgroundRequest {
-    /// 代跑一批工具（回合外批次）：子任务的工具调用仍由主循环转给宿主。
-    ToolBatch {
-        turn_id: String,
-        calls: Vec<ToolCall>,
-        /// 隔离根：worktree 子任务的工具批次要在自己的工作树里执行。
-        workspace_root: Option<String>,
-        reply: mpsc::SyncSender<Result<Vec<AgentLoopObservation>, String>>,
-    },
-    /// 事件外发：后台任务的流式增量与状态提示也要让宿主看见。
-    Notify(Box<HostEvent>),
-    /// 子代理的模型请求前让主循环代跑 `model.request.before`（插件运行期在宿主侧）。
-    ModelHook {
-        messages: Vec<Value>,
-        model: String,
-        reply: mpsc::SyncSender<Result<Vec<Value>, String>>,
-    },
-}
-
 struct Conn {
     inbound: Receiver<Inbound>,
     out: Box<dyn Write>,
@@ -214,10 +189,7 @@ struct Conn {
     /// `tool_call_evicted` 事件（=标注），真正的剔除留到回合收尾一次性做
     /// （见 [`run_session_tail`]）——这就是用户要的「先标注-后压缩」。
     evict_marks: Rc<RefCell<Vec<String>>>,
-    /// 后台任务借用连接的端口；接收端也在这里，服务方始终是当前正在跑的那条线程。
-    background: mpsc::Sender<BackgroundRequest>,
-    background_receiver: mpsc::Receiver<BackgroundRequest>,
-    /// 后台任务管理器：首次 `action=spawn` 时创建。
+    /// 后台任务管理器：任务表供 `subagent.query` 与工作区切换拦阻查询。
     tasks: Option<SubAgentTaskManager>,
     /// 跨回合复用的模型运行时：按构建键缓存最后一个。
     ///
@@ -552,8 +524,9 @@ impl ReplySource for RemoteModelPort {
             .borrow_mut()
             .request(method::MODEL_REPLY, params)
             .map_err(PortFailure::into_reply_error)?;
-        let reply = serde_json::from_value(value)
-            .map_err(|error| LoopError::ReplySource(format!("宿主返回的模型回复无法解析：{error}")))?;
+        let reply = serde_json::from_value(value).map_err(|error| {
+            LoopError::ReplySource(format!("宿主返回的模型回复无法解析：{error}"))
+        })?;
         remember_active_assistant(&self.active_assistant, &reply);
         Ok(reply)
     }
@@ -622,7 +595,14 @@ impl std::fmt::Debug for RuntimeBuildKey {
             .field("user_agent", &self.user_agent)
             .field("api_key_env", &self.api_key_env)
             .field("context_window_tokens", &self.context_window_tokens)
-            .field("api_key", &if self.api_key.is_empty() { "" } else { "<已隐藏>" })
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    ""
+                } else {
+                    "<已隐藏>"
+                },
+            )
             .field("desensitization", &self.desensitization)
             .finish()
     }
@@ -847,9 +827,10 @@ impl KernelModelPort {
             .map(|session| session.session_id.clone())
             .unwrap_or_default();
         let key = RuntimeBuildKey::of(&self.config, &session_id, &api_key);
-        let cached = self.conn.borrow_mut().model_runtime(&key, || {
-            build_model_runtime_with_key(&self.config, api_key)
-        })?;
+        let cached = self
+            .conn
+            .borrow_mut()
+            .model_runtime(&key, || build_model_runtime_with_key(&self.config, api_key))?;
         *self.runtime.borrow_mut() = Some(Rc::clone(&cached));
         Ok(cached)
     }
@@ -1293,12 +1274,15 @@ struct RemoteTools {
     /// 格子里是本批的 assistant 原文。**`None` 表示这批不落事件**——后台子任务批次走的就是
     /// 这条路，对应 Python 子代理循环里的 `persist_session_events=False`。
     active_assistant: Option<ActiveAssistantSlot>,
-    /// 本回合任务文本：淘汰裁决用它判断「这次调用的结果还有没有用」。
+    /// 本回合任务文本：淘汰裁决与逐批压缩用它判断「这次调用的结果还有没有用」。
     task_hint: String,
     /// **上一批**调用（刚变老的那批）的送审形状；本批开始时若判为无用就整组移出上下文。
     ///
     /// 只保存最近一批：淘汰点因此始终贴着尾部，最新一批（还在被使用）从不被淘汰。
     previous_batch: Vec<PruneCandidate>,
+    /// 与 [`Self::previous_batch`] 同序的事件 ID（`tool_call_requested` / `tool_result`）：
+    /// 逐批工具调用压缩按它精确覆盖上一批，不波及更早的批次。
+    previous_batch_event_ids: Vec<String>,
 }
 
 impl ToolBatchHost for RemoteTools {
@@ -1309,70 +1293,38 @@ impl ToolBatchHost for RemoteTools {
     /// * 最新一批（本批，还没执行）永不送审——它正是被后续步骤使用的「小登」；
     /// * 一组的粒度是「一次调用」：调用项与其 `tool` 结果一起走，协议不会留下半截。
     ///
-    /// 处理方式（用户指定的「先标注-后压缩」）：裁决结果只当场**标注**（落到
-    /// [`EVICTED_EVENT_TYPE`] 事件与本轮账本），**不改写本回合的上下文**；整组剔除统一在
-    /// 回合收尾做（见 `run_session_tail`），且优先于其他工具调用压缩与上下文压缩。
+    /// **两条路径同构**：决策模型淘汰与非决策模型工具调用压缩都是「逐批对刚变老的那一批下判断」，
+    /// 不再有一点汇合到回合收尾的全量压缩。决策优先，失败自动回退：
+    /// * 宿主持有 `tool_call_prune` 能力 → 走裁决；裁决不可用（开关关、无渠道、失败、不可解析）
+    ///   就落到下面的逐批压缩（`evicted_call_ids_for` 返回 `None` 即不可用）；
+    /// * 宿主不持该能力 → 直接走逐批压缩。
     ///
-    /// 宿主未声明能力、上一批为空、裁决不可用（开关关、无渠道、失败、不可解析）都原样保留。
+    /// 处理方式（用户指定的「先标注-后压缩」）：两条路径都只当场**标注**（落到
+    /// [`EVICTED_EVENT_TYPE`] / `tool_call_summary` 事件与本轮账本），**不改写本回合的上下文**；
+    /// 整组剔除统一在回合收尾做（见 `run_session_tail`）。
     fn before_tool_batch(&mut self, _messages: &mut Vec<Value>) -> Result<(), LoopError> {
         if self.previous_batch.is_empty() {
             return Ok(());
         }
         let groups = std::mem::take(&mut self.previous_batch);
+        let event_ids = std::mem::take(&mut self.previous_batch_event_ids);
         let supported = self.conn.borrow().tool_call_prune;
-        if !supported {
-            return Ok(());
-        }
-        let request = ContextPruneRequest {
-            task: self.task_hint.clone(),
-            groups: groups
-                .iter()
-                .map(|group| ContextPruneGroup {
-                    call_id: group.call_id.clone(),
-                    tool: group.tool.clone(),
-                    arguments: group.arguments.clone(),
-                    ok: group.ok,
-                    output: group.output.clone(),
-                })
-                .collect(),
+        let evicted = if supported {
+            self.prune_batch(&groups)?
+        } else {
+            None
         };
-        let params = serde_json::to_value(&request)
-            .expect("context.prune 负载是serde_json::Value字段，必须可序列化");
-        let value = self
-            .conn
-            .borrow_mut()
-            .request(method::CONTEXT_PRUNE, params)
-            .map_err(PortFailure::into_tool_error)?;
-        let result = ContextPruneResult::from_result(&value)
-            .map_err(|error| LoopError::ToolBatch(format!("context.prune 响应无法解析：{error}")))?;
-        if result.evicted_call_ids.is_empty() {
-            return Ok(());
-        }
-        // 「先标注-后压缩」：裁决当刻只落 `tool_call_evicted` 事件（=标注，转录与投影据此
-        // 记住这次判定，重启 `/resume` 后照样生效）并记进本轮账本，**不动本回合的上下文**。
-        // 真正的整组剔除留到回合收尾统一做（`run_session_tail`）——那里它先于其他工具调用
-        // 压缩与上下文压缩；被淘汰的原文因此不会再经由压缩摘要回流。
-        let payload = evicted_event_payload(&result.evicted_call_ids, &groups);
-        if let Some(session) = self.conn.borrow().session.as_ref() {
-            if let Err(detail) = session.append(EVICTED_EVENT_TYPE, payload) {
-                eprintln!("[kernel] 会话写入工具调用淘汰失败：{detail}");
+        match evicted {
+            // 决策模型裁出了无用批次：标注后由回合收尾整组剔除。
+            Some(evicted) if !evicted.is_empty() => {
+                self.mark_evicted(&evicted, &groups);
+                Ok(())
             }
+            // 决策模型可用但一组都没判无用：不再叠一层压缩，本批原样留着。
+            Some(_) => Ok(()),
+            // 裁决不可用（或无该能力）：回退到非决策模型的逐批压缩。
+            None => self.compact_batch(&groups, &event_ids),
         }
-        {
-            let conn = self.conn.borrow();
-            let mut marks = conn.evict_marks.borrow_mut();
-            for call_id in &result.evicted_call_ids {
-                if !marks.contains(call_id) {
-                    marks.push(call_id.clone());
-                }
-            }
-        }
-        eprintln!(
-            "[kernel] 工具调用淘汰标注：{} 组待淘汰（保留 {} 组原文），回合收尾统一处理。",
-            result.evicted_call_ids.len(),
-            groups.len() - result.evicted_call_ids.len()
-        );
-        Ok(())
     }
 
     fn execute_tool_batch(
@@ -1545,33 +1497,217 @@ impl ToolBatchHost for RemoteTools {
             // 淘汰范围在这里定：记忆 / 知识库 / `read` / `grep` 永不进送审（`prunable_tool`）。
             // 放在内核而不是宿主，是为了让这些原文根本不离开本进程——送审负载是出网内容，
             // 「判了也大概率保留」的调用没必要先带出去再请宿主说保留。
-            self.previous_batch = ordered
+            let batch: Vec<&AgentLoopObservation> = ordered
                 .iter()
                 .filter(|observation| prunable_tool(&observation.tool_call.name))
-                .map(prune_candidate_of)
                 .collect();
+            self.previous_batch = batch.iter().map(|item| prune_candidate_of(item)).collect();
+            // 逐批压缩要按事件 ID 精确覆盖这一批：与上面同一口径，否则会把没进概括的
+            // 调用事件一起剔除。
+            let call_ids: Vec<String> =
+                batch.iter().map(|item| item.tool_call.id.clone()).collect();
+            self.previous_batch_event_ids = self.batch_event_ids(&call_ids);
         }
         Ok(ordered)
     }
 }
 
 impl RemoteTools {
+    /// 本批调用对应的事件 ID：从会话事件流里按 `tool_call_id` 过滤。
+    ///
+    /// 事件写入接口不返回 ID，因此这里回读一次事件流；读失败时返回空集合，逐批压缩
+    /// 会因缺少可覆盖事件而跳过（保留原文），不会误删更早批次。
+    fn batch_event_ids(&self, call_ids: &[String]) -> Vec<String> {
+        if call_ids.is_empty() {
+            return Vec::new();
+        }
+        let conn = self.conn.borrow();
+        let Some(session) = conn.session.as_ref() else {
+            return Vec::new();
+        };
+        let events = match session.store.read_active_events(&session.session_id) {
+            Ok(events) => events,
+            Err(error) => {
+                eprintln!(
+                    "[kernel] 读取会话事件失败，跳过逐批工具调用压缩：{}",
+                    error.message()
+                );
+                return Vec::new();
+            }
+        };
+        let source: Vec<SourceEvent> = events
+            .into_iter()
+            .map(|event| SourceEvent {
+                event_id: event.event_id,
+                event_type: event.event_type,
+                payload: Value::Object(event.payload),
+            })
+            .collect();
+        compression_logic::tool_event_ids_for_calls(&source, call_ids)
+    }
+
+    /// 决策模型裁决上一批：返回应予淘汰的调用 ID。
+    ///
+    /// `None` 表示裁决不可用（无渠道、缺凭据、请求失败、响应不可解析），调用方据此回退到
+    /// 非决策模型的逐批压缩；`Some(空)` 表示裁决可用但一组都没判无用。
+    fn prune_batch(&self, groups: &[PruneCandidate]) -> Result<Option<Vec<String>>, LoopError> {
+        let request = ContextPruneRequest {
+            task: self.task_hint.clone(),
+            groups: groups
+                .iter()
+                .map(|group| ContextPruneGroup {
+                    call_id: group.call_id.clone(),
+                    tool: group.tool.clone(),
+                    arguments: group.arguments.clone(),
+                    ok: group.ok,
+                    output: group.output.clone(),
+                })
+                .collect(),
+        };
+        let params = serde_json::to_value(&request)
+            .expect("context.prune 负载是serde_json::Value字段，必须可序列化");
+        let value = self
+            .conn
+            .borrow_mut()
+            .request(method::CONTEXT_PRUNE, params)
+            .map_err(PortFailure::into_tool_error)?;
+        let result = ContextPruneResult::from_result(&value).map_err(|error| {
+            LoopError::ToolBatch(format!("context.prune 响应无法解析：{error}"))
+        })?;
+        // 宿主侧把「裁决不可用」与「全部保留」都回成空列表：协议上没有区分位，因此空列表
+        // 一律按可用处理（不额外压缩），避免在决策渠道正常时又叠一层压缩请求。
+        Ok(Some(result.evicted_call_ids))
+    }
+
+    /// 标注决策模型判为无用的调用：只落事件与账本，不动本回合上下文。
+    ///
+    /// 真正的整组剔除留到回合收尾统一做（`run_session_tail`）——那里它先于工具调用压缩与
+    /// 上下文压缩；被淘汰的原文因此不会再经由压缩摘要回流。
+    fn mark_evicted(&self, evicted: &[String], groups: &[PruneCandidate]) {
+        let payload = evicted_event_payload(evicted, groups);
+        if let Some(session) = self.conn.borrow().session.as_ref() {
+            if let Err(detail) = session.append(EVICTED_EVENT_TYPE, payload) {
+                eprintln!("[kernel] 会话写入工具调用淘汰失败：{detail}");
+            }
+        }
+        {
+            let conn = self.conn.borrow();
+            let mut marks = conn.evict_marks.borrow_mut();
+            for call_id in evicted {
+                if !marks.contains(call_id) {
+                    marks.push(call_id.clone());
+                }
+            }
+        }
+        eprintln!(
+            "[kernel] 工具调用淘汰标注：{} 组待淘汰（保留 {} 组原文），回合收尾统一处理。",
+            evicted.len(),
+            groups.len().saturating_sub(evicted.len())
+        );
+    }
+
+    /// 非决策模型的逐批压缩：把上一批压成一段，落 `tool_call_summary` 标注。
+    ///
+    /// 与决策路径同构——只处理「刚变老的那一批」，压缩点贴着上下文尾部，最新一批不受影响。
+    /// 压缩失败只记日志、保留原文（与淘汰同样 fail-open）。
+    fn compact_batch(
+        &self,
+        groups: &[PruneCandidate],
+        event_ids: &[String],
+    ) -> Result<(), LoopError> {
+        if groups.is_empty() || event_ids.is_empty() {
+            return Ok(());
+        }
+        let model = self.conn.borrow().model.clone();
+        let Some(model) = model else {
+            return Ok(());
+        };
+        // 压缩器不可用（未启用、无压缩模型、缺凭据）时静默跳过：逐批压缩是可选项。
+        let Some(compressor) = KernelCompressor::load(&model) else {
+            return Ok(());
+        };
+        let calls: Vec<compression_logic::TurnCallRecord> = groups
+            .iter()
+            .map(|group| compression_logic::TurnCallRecord {
+                tool: group.tool.clone(),
+                arguments: group.arguments.clone(),
+                ok: group.ok,
+                output: group.output.clone(),
+            })
+            .collect();
+        // 落盘位置与回合末概括同一份（工作区临时目录），概括文本末尾的路径供模型回读原文。
+        let (workspace_root, session_id) = {
+            let conn = self.conn.borrow();
+            match conn.session.as_ref() {
+                Some(session) => (
+                    session.workspace.clone().unwrap_or_default(),
+                    session.session_id.clone(),
+                ),
+                None => (String::new(), String::new()),
+            }
+        };
+        match crate::turn_summary::summarize_batch(
+            &compressor,
+            &calls,
+            &self.task_hint,
+            &workspace_root,
+            &session_id,
+        ) {
+            Some(outcome) => {
+                let payload = json!({
+                    "content": outcome.content,
+                    "covered_event_ids": event_ids,
+                    "archive_path": outcome.archive_path,
+                    "tool_call_count": outcome.tool_calls,
+                    "raw_chars": outcome.raw_chars,
+                    "summary_chars": outcome.summary_chars,
+                    "turn_id": self.turn_id,
+                });
+                if let Some(session) = self.conn.borrow().session.as_ref() {
+                    if let Err(detail) = session.append("tool_call_summary", payload) {
+                        eprintln!("[kernel] 会话写入逐批工具调用压缩失败：{detail}");
+                    }
+                }
+                // 事件已落盘：按投影重建运行期历史，让**下一批**请求真正拿到概括文本。
+                // 少了这一步，压缩只在转录里「看起来」生效，模型仍然收到全文。
+                let mut session = self.conn.borrow_mut().session.take();
+                if let Some(session) = session.as_mut() {
+                    if let Err(detail) = session.reload_history() {
+                        eprintln!("[kernel] 逐批工具调用压缩后重建运行期历史失败：{detail}");
+                    }
+                }
+                self.conn.borrow_mut().session = session;
+                // 会话区计量与回合末压缩同款：一行「已压缩：省 N Token」，
+                // 计量取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行。
+                if let Some(notice) =
+                    compression_logic::saved_tokens_notice(outcome.raw_chars, outcome.summary_chars)
+                {
+                    self.conn
+                        .borrow_mut()
+                        .notify(HostEvent::Notice(MessagePayload { message: notice }));
+                }
+                eprintln!(
+                    "[kernel] 逐批工具调用压缩标注：{} 次调用（{} → {} 字符），回合收尾统一处理。",
+                    outcome.tool_calls, outcome.raw_chars, outcome.summary_chars
+                );
+            }
+            None => {
+                // 压缩失败保留原文：这里不报错，避免把可选的省上下文手段升级成回合失败。
+                eprintln!("[kernel] 逐批工具调用压缩不可用，保留原文。");
+            }
+        }
+        Ok(())
+    }
+
     /// 内核侧工具：命中即本地作答；返回 None 表示交给宿主。
     fn local_tool(&self, call: &ToolCall) -> Option<AgentLoopObservation> {
+        if call.name == crate::computer_use::COMPUTER_USE_TOOL_NAME {
+            let (ok, output) = run_computer_use(&self.conn, &call.arguments);
+            return Some(self.local_observation(call, ok, &output));
+        }
         if call.name == crate::subagent::SUBAGENT_TOOL_NAME {
             let (ok, output) = run_subagent_batch(&self.conn, &call.arguments);
-            return Some(AgentLoopObservation {
-                tool_call: call.clone(),
-                result: ToolResult {
-                    ok,
-                    output: output.clone(),
-                    full_output: output.clone(),
-                    error_code: None,
-                    retryable: false,
-                },
-                message: tool_result_message(&call.name, ok, &output, &call.id),
-                followup_messages: Vec::new(),
-            });
+            return Some(self.local_observation(call, ok, &output));
         }
         if call.name != RECALL_SESSION_EVIDENCE_TOOL_NAME {
             return None;
@@ -1582,19 +1718,299 @@ impl RemoteTools {
             let arguments = Value::Object(call.arguments.clone());
             recall_session_evidence(conn.session.as_ref(), &arguments)
         };
-        Some(AgentLoopObservation {
-            tool_call: call.clone(),
-            result: ToolResult {
-                ok,
-                output: output.clone(),
-                full_output: output.clone(),
-                error_code: None,
-                retryable: false,
-            },
-            message: tool_result_message(&call.name, ok, &output, &call.id),
-            followup_messages: Vec::new(),
-        })
+        Some(self.local_observation(call, ok, &output))
     }
+
+    /// 内核自持工具的观察结果，连同工具生命周期事件一起交出去。
+    ///
+    /// 宿主只从 `tool.started` / `tool.finished` 收口工具卡：内核自己办掉的调用若只返回
+    /// 观察，卡片会一直停在「调用中」，直到回合结束被强制标成「未收到结果」。
+    fn local_observation(&self, call: &ToolCall, ok: bool, output: &str) -> AgentLoopObservation {
+        let result = ToolResult {
+            ok,
+            output: output.to_string(),
+            full_output: output.to_string(),
+            error_code: None,
+            retryable: false,
+        };
+        let mut connection = self.conn.borrow_mut();
+        connection.notify(HostEvent::ToolStarted(ToolStartedPayload {
+            step: 1,
+            call: call.clone(),
+        }));
+        connection.notify(HostEvent::ToolFinished(ToolEventPayload {
+            call: call.clone(),
+            result: result.clone(),
+        }));
+        AgentLoopObservation {
+            tool_call: call.clone(),
+            result,
+            message: tool_result_message(&call.name, ok, output, &call.id),
+            followup_messages: Vec::new(),
+        }
+    }
+}
+
+/// 内核自持的 `computer_use`：把桌面目标交给专职子代理，按时间收敛并回报结果。
+///
+/// 与 `subagent` 的三个差异都落在这里：桌面独占（全程持锁）、不设步数上限（靠
+/// `timeout_seconds`）、子代理可主动停下（`stop_check` 以 `Ok` 结束而非报错）。
+fn run_computer_use(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) -> (bool, String) {
+    let runtime = match crate::computer_use::ComputerUseRuntime::load() {
+        Ok(runtime) => runtime,
+        Err(detail) => return (false, detail),
+    };
+    let (prompt, timeout_seconds) = match runtime.read_prompt(arguments) {
+        Ok(value) => value,
+        Err(detail) => return (false, detail),
+    };
+    let (model_config, parent_tools) = {
+        let borrowed = conn.borrow();
+        let Some(model) = borrowed.model.clone() else {
+            return (
+                false,
+                json_result_text(&top_level_error(
+                    "COMPUTER_USE_MODEL_ERROR",
+                    "内核未持有模型配置，无法执行桌面任务。",
+                )),
+            );
+        };
+        let tools = SubAgentRuntime::parent_tool_names(&model);
+        (model, tools)
+    };
+    let tool_names = crate::computer_use::child_tool_names(&parent_tools);
+    if tool_names.is_empty() {
+        return (
+            false,
+            json_result_text(&top_level_error(
+                "COMPUTER_USE_UNAVAILABLE",
+                "当前工具表没有可用的桌面工具，Computer Use 无法执行。",
+            )),
+        );
+    }
+    // 桌面独占：排队等前一个任务结束，等待时间同样计入本次的时间预算。
+    let started = std::time::Instant::now();
+    let _desktop = crate::computer_use::acquire_desktop();
+    let remaining = timeout_seconds - started.elapsed().as_secs_f64();
+    if remaining <= 1.0 {
+        return (
+            false,
+            json_result_text(&top_level_error(
+                "COMPUTER_USE_TIMEOUT",
+                "等待桌面独占超时，本次任务未开始。",
+            )),
+        );
+    }
+
+    let batch_id = next_subagent_batch_id();
+    let task_id = format!("computer-use-{}", batch_id);
+    let messages = vec![runtime.task_message(&prompt)];
+    let cancel = CancelToken::new();
+    let child_model = child_config(&model_config, &runtime, &tool_names);
+    let runtime = std::sync::Arc::new(runtime);
+
+    // 子回合就地跑：工具批次直接借连接执行，模型请求直连，因此不再需要独立线程。
+    let outcome = run_computer_use_loop(
+        &runtime,
+        child_model,
+        messages,
+        Rc::clone(conn),
+        &cancel,
+        &task_id,
+        &batch_id,
+        remaining,
+    );
+    let cancelled_by_parent = cancel.is_set() && outcome.status == "cancelled";
+    let mut screenshots = outcome.screenshots;
+    for path in crate::computer_use::collect_screenshots(&outcome.tool_outputs) {
+        if !screenshots.iter().any(|item| item == &path) {
+            screenshots.push(path);
+        }
+    }
+    let status = if cancelled_by_parent && outcome.status == "cancelled" {
+        "cancelled".to_string()
+    } else {
+        outcome.status.clone()
+    };
+    let payload = runtime.result_payload(
+        &status,
+        &outcome.summary,
+        &outcome.obstacle,
+        &screenshots,
+        outcome.model_turns,
+        outcome.tool_calls,
+    );
+    // `timeout` / `blocked` 是可用的业务结果，`ok` 只用来表达「调用本身没出错」。
+    let ok = !matches!(status.as_str(), "failed" | "cancelled");
+    (ok, json_result_text(&payload))
+}
+
+/// 跑一个 Computer Use 子回合：与主回合同在一条线程，模型请求直连、工具批次直接借连接。
+#[allow(clippy::too_many_arguments)]
+fn run_computer_use_loop(
+    runtime: &crate::computer_use::ComputerUseRuntime,
+    config: KernelModelConfig,
+    mut messages: Vec<Value>,
+    conn: Rc<RefCell<Conn>>,
+    cancel: &CancelToken,
+    task_id: &str,
+    batch_id: &str,
+    timeout_seconds: f64,
+) -> crate::computer_use::ComputerUseOutcome {
+    let mut model = BackgroundModelPort {
+        config,
+        conn: Rc::clone(&conn),
+        cancel: cancel.clone(),
+        task_id: task_id.to_string(),
+        batch_id: batch_id.to_string(),
+        agent_type: crate::computer_use::COMPUTER_USE_ROLE.to_string(),
+        stream: true,
+        runtime: None,
+        model_turns: 0,
+    };
+    let mut tools = BackgroundTools {
+        conn: Rc::clone(&conn),
+        turn_id: task_id.to_string(),
+        workspace_root: None,
+        batch_id: batch_id.to_string(),
+        agent_type: crate::computer_use::COMPUTER_USE_ROLE.to_string(),
+        stream: true,
+        tool_calls: 0,
+    };
+    let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
+    let cancel_for_check = cancel.clone();
+    let mut cancel_check = move || {
+        if cancel_for_check.is_set() {
+            Err(LoopError::Cancelled("桌面任务已取消。".to_string()))
+        } else {
+            Ok(())
+        }
+    };
+    let guards = LoopGuards {
+        cancel_check: Some(&mut cancel_check),
+        // 子代理判定受阻时以「不再请求工具」自然收尾，回报里带 `status=blocked`；
+        // 额外加停止信号会变成一个没人能触发的死钩子。
+        stop_check: None,
+    };
+    let limits = AgentLoopLimits {
+        // 不设步数上限：单步耗时差异太大，按时间收敛才是有意义的成本边界。
+        max_model_turns: None,
+        max_tool_calls: None,
+        timeout_seconds: Some(timeout_seconds),
+    };
+    let outcome = runner.run(&mut messages, &mut model, &mut tools, limits, guards);
+    let _ = runtime;
+    let tool_outputs = tool_outputs(&messages);
+    // 用量取自模型端口，不取自 `AgentLoopResult`：预算超限与取消走的是 `Err` 分支，
+    // 那里没有结果结构体，若沿用 0 就会把「确实跑了 N 轮」报成「一轮都没跑」。
+    let model_turns = model.model_turns;
+    let tool_calls = tools.tool_calls;
+    match outcome {
+        Ok(result) => {
+            let (status, summary, obstacle, screenshots) =
+                crate::computer_use::parse_child_report(&result.final_text);
+            crate::computer_use::ComputerUseOutcome {
+                status,
+                summary,
+                obstacle,
+                screenshots,
+                model_turns,
+                tool_calls,
+                tool_outputs,
+            }
+        }
+        // 超时不是失败：已完成的操作仍然有效，把已有进度交回去比丢掉更有用。
+        Err(LoopError::BudgetExceeded(message)) => crate::computer_use::ComputerUseOutcome {
+            status: "timeout".to_string(),
+            summary: format!("时间预算用尽，任务未完成：{message}"),
+            obstacle: String::new(),
+            screenshots: Vec::new(),
+            model_turns,
+            tool_calls,
+            tool_outputs,
+        },
+        Err(LoopError::Cancelled(_)) => crate::computer_use::ComputerUseOutcome {
+            status: "cancelled".to_string(),
+            summary: "桌面任务已取消。".to_string(),
+            obstacle: String::new(),
+            screenshots: Vec::new(),
+            model_turns,
+            tool_calls,
+            tool_outputs,
+        },
+        Err(error) => crate::computer_use::ComputerUseOutcome {
+            status: "failed".to_string(),
+            summary: format!("桌面任务中止：{}", error.tag()),
+            obstacle: String::new(),
+            screenshots: Vec::new(),
+            model_turns,
+            tool_calls,
+            tool_outputs,
+        },
+    }
+}
+
+/// 专职子代理的模型配置：换掉系统提示词与模型，工具只留桌面那几件。
+fn child_config(
+    parent: &KernelModelConfig,
+    runtime: &crate::computer_use::ComputerUseRuntime,
+    tool_names: &[String],
+) -> KernelModelConfig {
+    let mut config = parent.clone();
+    config.tools = parent
+        .tools
+        .iter()
+        .filter(|item| {
+            item.pointer("/function/name")
+                .and_then(Value::as_str)
+                .map(|name| tool_names.iter().any(|candidate| candidate == name))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    config.system_prompt = runtime.definition.system_prompt.clone();
+    // 模型优先级：定义文件 < `[computer_use] model`（显式配置优先于角色模板）。
+    let model = runtime
+        .config
+        .effective_model()
+        .map(str::to_string)
+        .or_else(|| {
+            let from_definition = runtime.definition.model.trim();
+            if from_definition.is_empty() || from_definition.eq_ignore_ascii_case("inherit") {
+                None
+            } else {
+                Some(from_definition.to_string())
+            }
+        });
+    if let Some(model) = model {
+        config.model = model;
+    }
+    // 思考强度只覆盖生成选项里的那一项，其余选项沿用主模型通道。
+    if !config.options.is_object() {
+        // `null` 是「没给 options」的正常形状；非对象则说明宿主给错了，按没给处理。
+        config.options = serde_json::json!({});
+    }
+    if let Some(options) = config.options.as_object_mut() {
+        options.insert(
+            "reasoning_effort".to_string(),
+            Value::String(runtime.config.thinking_effort.clone()),
+        );
+    }
+    config
+}
+
+/// 从子回合的消息流里取回工具结果文本：截图路径只能从这里补。
+fn tool_outputs(messages: &[Value]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .filter_map(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 /// 内核自持的 `subagent`：校验 → 准备 → 逐个跑子回合（子模型请求由内核发，子工具批次交宿主）。
@@ -1611,10 +2027,6 @@ fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
     if !runtime.enabled() {
         return (false, runtime.disabled_text());
     }
-    // 后台批次：交给线程池，父回合立刻拿到受理凭据。
-    if arguments.get("action").and_then(Value::as_str) == Some("spawn") {
-        return spawn_subagent_batch(conn, arguments);
-    }
     // 后台任务查询（list / get / cancel）由内核处理：任务表在内核里。
     if matches!(
         arguments.get("action").and_then(Value::as_str),
@@ -1628,16 +2040,6 @@ fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
         Some("list_worktrees") | Some("apply_worktree") | Some("discard_worktree")
     ) {
         return run_worktree_control(arguments);
-    }
-    // 后台批次还没搬进内核：明确拒绝，避免把它当同步批次悄悄跑掉。
-    if arguments.get("action").and_then(Value::as_str) == Some("spawn") {
-        return (
-            false,
-            json_result_text(&top_level_error(
-                "SUBAGENT_BACKGROUND_DISABLED",
-                BACKGROUND_DISABLED_MESSAGE,
-            )),
-        );
     }
     let (model_config, fork_messages) = {
         let borrowed = conn.borrow();
@@ -1696,164 +2098,14 @@ fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
 /// 内核侧的 SubAgent 所有者标识（协议一条连接只服务一个宿主）。
 const SUBAGENT_OWNER_ID: &str = "kernel";
 
-/// `action=spawn`：把任务交给后台线程池；工具批次仍由主循环转给宿主。
-fn spawn_subagent_batch(
-    conn: &Rc<RefCell<Conn>>,
-    arguments: &Map<String, Value>,
-) -> (bool, String) {
-    let runtime = match SubAgentRuntime::load() {
-        Ok(runtime) => runtime,
-        Err(detail) => {
-            return (
-                false,
-                json_result_text(&top_level_error("SUBAGENT_DISABLED", &detail)),
-            )
-        }
-    };
-    if !runtime.enabled() {
-        return (false, runtime.disabled_text());
-    }
-    let fail_fast = arguments.get("fail_fast").and_then(Value::as_bool) == Some(true);
-    if let Some(rejection) = background_rejection(&runtime.config, fail_fast) {
-        return (false, json_result_text(&rejection));
-    }
-    let (model_config, fork_messages, session_id) = {
-        let borrowed = conn.borrow();
-        let Some(model) = borrowed.model.clone() else {
-            return (
-                false,
-                json_result_text(&top_level_error(
-                    "SUBAGENT_MODEL_ERROR",
-                    "内核未持有模型配置，无法执行子任务。",
-                )),
-            );
-        };
-        let history = borrowed
-            .session
-            .as_ref()
-            .map(|session| session.history.clone())
-            .unwrap_or_default();
-        let session_id = borrowed
-            .session
-            .as_ref()
-            .map(|session| session.session_id.clone())
-            .unwrap_or_default();
-        (model, history, session_id)
-    };
-    let parent_tools = SubAgentRuntime::parent_tool_names(&model_config);
-    let batch_id = next_subagent_batch_id();
-    let tasks = match runtime.prepare(arguments, &parent_tools, &batch_id) {
-        Ok(tasks) => tasks,
-        Err((code, message)) => {
-            return (false, json_result_text(&top_level_error(&code, &message)))
-        }
-    };
-    let specs: Vec<SubAgentTaskSpec> = tasks
-        .iter()
-        .map(|task| {
-            SubAgentTaskSpec::new(
-                task.task_id.clone(),
-                task.description.clone(),
-                task.agent_type.clone(),
-                task.batch_id.clone(),
-            )
-        })
-        .collect();
-
-    let runtime = Arc::new(runtime);
-    let prepared: Arc<BTreeMap<String, PreparedTask>> = Arc::new(
-        tasks
-            .iter()
-            .map(|task| (task.task_id.clone(), task.clone()))
-            .collect(),
-    );
-    let fork_messages = Arc::new(fork_messages);
-    let model_config = Arc::new(model_config);
-    let sender = conn.borrow().background.clone();
-    let runner: TaskRunner = {
-        let runtime = Arc::clone(&runtime);
-        let prepared = Arc::clone(&prepared);
-        let fork_messages = Arc::clone(&fork_messages);
-        let model_config = Arc::clone(&model_config);
-        let sender = sender.clone();
-        Arc::new(move |spec, cancel| {
-            let Some(task) = prepared.get(&spec.task_id) else {
-                let mut failure = Map::new();
-                failure.insert("status".to_string(), Value::String("failed".to_string()));
-                return failure;
-            };
-            match run_background_task(
-                &runtime,
-                &model_config,
-                task,
-                &fork_messages,
-                &sender,
-                cancel,
-                None,
-                false,
-            ) {
-                Ok(execution) => runtime
-                    .completed_result(task, &execution)
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-                Err((code, message)) => failure_payload(&task.view(), &code, &message, None)
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            }
-        })
-    };
-    let observer: TaskObserver = {
-        let sender = sender.clone();
-        Arc::new(move |name, payload| {
-            let _ = sender.send(BackgroundRequest::Notify(Box::new(
-                HostEvent::SubagentEvent(SubagentEventPayload {
-                    name: name.to_string(),
-                    payload,
-                }),
-            )));
-        })
-    };
-
-    let mut borrowed = conn.borrow_mut();
-    if borrowed.tasks.is_none() {
-        let retention_seconds = (runtime.config.task_retention_minutes.max(1) as f64) * 60.0;
-        let workers = runtime.config.max_concurrency.max(1) as usize;
-        borrowed.tasks = Some(SubAgentTaskManager::new(retention_seconds, workers));
-    }
-    let Some(manager) = borrowed.tasks.as_ref() else {
-        return (
-            false,
-            json_result_text(&top_level_error(
-                "SUBAGENT_MODEL_ERROR",
-                "后台任务管理器不可用。",
-            )),
-        );
-    };
-    match manager.spawn(
-        SUBAGENT_OWNER_ID,
-        &session_id,
-        &specs,
-        runner,
-        Some(observer),
-    ) {
-        Ok(value) => (true, json_result_text(&value)),
-        Err(error) => (
-            false,
-            json_result_text(&top_level_error("SUBAGENT_LIMIT_EXCEEDED", error.message())),
-        ),
-    }
-}
-
-/// 后台任务的子回合：模型请求直连，工具批次经通道交给主循环。
+/// 子代理的子回合：模型请求直连，工具批次就地借连接执行。
 #[allow(clippy::too_many_arguments)]
 fn run_background_task(
     runtime: &SubAgentRuntime,
     model_config: &KernelModelConfig,
     task: &PreparedTask,
     fork_messages: &[Value],
-    sender: &mpsc::Sender<BackgroundRequest>,
+    conn: &Rc<RefCell<Conn>>,
     cancel: &CancelToken,
     workspace_root: Option<&str>,
     stream_conversation: bool,
@@ -1861,21 +2113,23 @@ fn run_background_task(
     let mut messages = runtime.task_messages(task, fork_messages);
     let mut model = BackgroundModelPort {
         config: runtime.child_model_config(model_config, task),
-        sender: sender.clone(),
+        conn: Rc::clone(conn),
         cancel: cancel.clone(),
         task_id: task.task_id.clone(),
         batch_id: task.batch_id.clone(),
         agent_type: task.agent_type.clone(),
         stream: stream_conversation,
         runtime: None,
+        model_turns: 0,
     };
     let mut tools = BackgroundTools {
-        sender: sender.clone(),
+        conn: Rc::clone(conn),
         turn_id: task.task_id.clone(),
         workspace_root: workspace_root.map(str::to_string),
         batch_id: task.batch_id.clone(),
         agent_type: task.agent_type.clone(),
         stream: stream_conversation,
+        tool_calls: 0,
     };
     let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
     let cancel_for_check = cancel.clone();
@@ -1971,79 +2225,48 @@ fn run_subagent_query(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
     }
 }
 
-/// 同步批次的调度：`max_concurrency` 决定同时在跑几个任务。
+/// 子任务的调度：按顺序一个跑完再跑下一个。
 ///
-/// 子任务的模型请求在各自线程里直连，工具批次经端口回到本线程转发给宿主——本线程在等结果时
-/// 就调用 `drain_background`，所以并发再高也只有一个 `tool.batch` 在途，宿主无需改造。
+/// 子回合与主回合同在一条线程，工具批次直接借连接执行，因此不再需要线程池、
+/// 通道或并发上限：`max_concurrency` 配置保留但不再生效。
 fn run_scheduled_tasks(
     conn: &Rc<RefCell<Conn>>,
     runtime: &Arc<SubAgentRuntime>,
     model_config: &KernelModelConfig,
     tasks: &[PreparedTask],
     fork_messages: &[Value],
-    max_concurrency: i64,
+    _max_concurrency: i64,
     fail_fast: bool,
 ) -> Vec<Value> {
-    let total = tasks.len();
-    let mut results: Vec<Option<Value>> = (0..total).map(|_| None).collect();
-    let concurrency = max_concurrency.max(1) as usize;
-    let sender = conn.borrow().background.clone();
-    let (tx, rx) = mpsc::channel::<(usize, Value)>();
-    let cancels: Vec<CancelToken> = (0..total).map(|_| CancelToken::new()).collect();
-    let mut next = 0usize;
-    let mut running = 0usize;
+    let cancels: Vec<CancelToken> = (0..tasks.len()).map(|_| CancelToken::new()).collect();
+    let mut results: Vec<Option<Value>> = (0..tasks.len()).map(|_| None).collect();
     let mut stopped = false;
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    loop {
+    for (index, task) in tasks.iter().enumerate() {
         if conn.borrow().cancel.load(Ordering::SeqCst) {
-            // 父回合被取消：停止调度，并让在跑的任务尽快收尾。
+            // 父回合被取消：剩下的任务一律不启动，统一走下面的 `cancelled` 分支。
             stopped = true;
-            for cancel in &cancels {
-                cancel.set();
-            }
         }
-        while !stopped && running < concurrency && next < total {
-            let index = next;
-            next += 1;
-            running += 1;
-            let task = tasks[index].clone();
-            let runtime = Arc::clone(runtime);
-            let model_config = model_config.clone();
-            let fork_messages = fork_messages.to_vec();
-            let sender = sender.clone();
-            let cancel = cancels[index].clone();
-            let tx = tx.clone();
-            let workspace =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            thread::spawn(move || {
-                let result = run_task_in_isolation(
-                    &runtime,
-                    &model_config,
-                    &task,
-                    &fork_messages,
-                    &sender,
-                    &cancel,
-                    &workspace,
-                    false,
-                );
-                let _ = tx.send((index, result));
-            });
-        }
-        if running == 0 {
+        if stopped {
             break;
         }
-        match rx.recv_timeout(BACKGROUND_TICK) {
-            Ok((index, result)) => {
-                running -= 1;
-                if fail_fast && result.get("status").and_then(Value::as_str) != Some("completed") {
-                    stopped = true;
-                }
-                results[index] = Some(result);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        let result = run_task_in_isolation(
+            runtime,
+            model_config,
+            task,
+            fork_messages,
+            conn,
+            &cancels[index],
+            &workspace,
+            false,
+            // 同步批次同样开过程流：子代理窗口按批次显示实时对话。
+            true,
+        );
+        if fail_fast && result.get("status").and_then(Value::as_str) != Some("completed") {
+            stopped = true;
         }
-        drain_background(conn);
+        results[index] = Some(result);
     }
 
     results
@@ -2076,20 +2299,24 @@ fn run_scheduled_tasks(
 /// `keep_full_text` 为真时把子 Agent 的收尾文本原样挂进结果的 `full_text`：
 /// `/review` 这类宿主入口要自己解析结构化 JSON 报告，而公开的 `summary` 会按
 /// `result_summary_chars` 截断，截断会直接把 JSON 打碎（与 Python `keep_full_text=True` 同义）。
+///
+/// `stream_conversation` 为真时子回合的过程文本与工具调用另发 `subagent.turn.text` /
+/// `subagent.tool.*` 事件：宿主的子代理窗口靠这条流渲染，与「要不要完整结果」无关。
 #[allow(clippy::too_many_arguments)]
 fn run_task_in_isolation(
     runtime: &SubAgentRuntime,
     model_config: &KernelModelConfig,
     task: &PreparedTask,
     fork_messages: &[Value],
-    sender: &mpsc::Sender<BackgroundRequest>,
+    conn: &Rc<RefCell<Conn>>,
     cancel: &CancelToken,
     workspace: &std::path::Path,
     keep_full_text: bool,
+    stream_conversation: bool,
 ) -> Value {
     let view = task.view();
-    emit_background_event(
-        sender,
+    emit_subagent_event(
+        conn,
         "subagent.task.started",
         task_event_payload(&view, "started"),
     );
@@ -2099,8 +2326,8 @@ fn run_task_in_isolation(
             Err(error) => {
                 let result =
                     failure_payload(&view, "SUBAGENT_WORKTREE_ERROR", error.message(), None);
-                emit_background_event(
-                    sender,
+                emit_subagent_event(
+                    conn,
                     &terminal_event_name(&result),
                     terminal_event_payload(&view, &result),
                 );
@@ -2118,10 +2345,10 @@ fn run_task_in_isolation(
         model_config,
         task,
         fork_messages,
-        sender,
+        conn,
         cancel,
         root.as_deref(),
-        keep_full_text,
+        stream_conversation,
     ) {
         Ok(execution) => {
             let mut result = runtime.completed_result(task, &execution);
@@ -2142,8 +2369,8 @@ fn run_task_in_isolation(
         ),
         None => result,
     };
-    emit_background_event(
-        sender,
+    emit_subagent_event(
+        conn,
         &terminal_event_name(&result),
         terminal_event_payload(&view, &result),
     );
@@ -2157,18 +2384,6 @@ fn terminal_event_name(result: &Value) -> String {
         .unwrap_or("failed");
     format!("subagent.task.{status}")
 }
-
-fn emit_background_event(sender: &mpsc::Sender<BackgroundRequest>, name: &str, payload: Value) {
-    let _ = sender.send(BackgroundRequest::Notify(Box::new(
-        HostEvent::SubagentEvent(SubagentEventPayload {
-            name: name.to_string(),
-            payload,
-        }),
-    )));
-}
-
-/// 主循环在等宿主帧时的轮询间隔：间隙用来服务后台任务借用的连接。
-const BACKGROUND_TICK: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// `fail_fast` 在前序任务失败后写进未调度任务的原因（与 Python 同文案）。
 const FAIL_FAST_STOPPED_MESSAGE: &str = "fail_fast 已在前序任务失败后停止调度该任务。";
@@ -2461,10 +2676,7 @@ impl TurnRunGuard {
     ///
     /// `images` 是随本轮提问粘贴的图片：它们是**用户消息的一部分**，落进转录才能在
     /// `/resume`、重启与压缩投影之后仍然重建出同一条带图的消息。
-    fn user_message_payload(
-        &self,
-        images: &[omnicrawl_ipc::bridge::TurnImageAttachment],
-    ) -> Value {
+    fn user_message_payload(&self, images: &[omnicrawl_ipc::bridge::TurnImageAttachment]) -> Value {
         let mut payload = json!({
             "content": self.user_text,
             "pending_user_text": self.pending_user_text,
@@ -2647,6 +2859,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         active_assistant: Some(active_assistant),
         task_hint: model_text.clone(),
         previous_batch: Vec::new(),
+        previous_batch_event_ids: Vec::new(),
     };
     let build_cancel_check = || {
         let cancel_source = Rc::clone(conn);
@@ -2964,23 +3177,6 @@ fn recover_context_overflow(
 /// 投影会据此剔除原来的逐条 `tool_call_requested` / `tool_result` 并插入概括文本；
 /// 未启用、没有调用或概括失败时什么都不写，上下文保持原样。
 ///
-/// 概括落盘后**重建运行期历史**：投影会据此剔除被概括的逐条工具事件，下一轮请求带的是
-/// 概括文本而不是原始输出。少了这一步，事件只在转录里「看起来」被压缩了，模型仍然收到全文。
-/// 返回压缩后的上下文 Token 估算，供 `turn.finished` 刷新宿主遥测。
-/// 这条工具事件是否属于本轮被淘汰的那次调用。
-///
-/// `tool_call_requested` / `tool_result` / `tool_call_denied` 的载荷都带 `tool_call_id`；
-/// 没有 ID 的旧事件无从对应，按「未淘汰」处理——概括宁可多带一条，也不静默丢内容。
-fn evicted_tool_event(payload: &Value, evicted_calls: &BTreeSet<String>) -> bool {
-    if evicted_calls.is_empty() {
-        return false;
-    }
-    payload
-        .get("tool_call_id")
-        .and_then(Value::as_str)
-        .is_some_and(|call_id| evicted_calls.contains(call_id))
-}
-
 /// 摘要请求复用的前缀：把本轮淘汰标注作用到「最近一次主请求」的快照上。
 ///
 /// 前缀与待压缩窗口必须来自同一份上下文。淘汰在回合收尾**先于**压缩执行，真实的下一轮
@@ -2997,83 +3193,6 @@ fn evicted_prefix(conn: &Rc<RefCell<Conn>>, messages: &[Value]) -> Vec<Value> {
         evict_tool_call_messages(&mut messages, &marks);
     }
     messages
-}
-
-fn summarize_turn_after_turn(
-    conn: &Rc<RefCell<Conn>>,
-    session: &mut KernelSession,
-    task_hint: &str,
-    turn_id: &str,
-) -> Option<i64> {
-    let model = conn.borrow().model.clone();
-    let Some(model) = model else {
-        return None;
-    };
-    let Some(compressor) = KernelCompressor::load(&model) else {
-        return None;
-    };
-    let events = match session.store.read_active_events(&session.session_id) {
-        Ok(events) => events,
-        Err(error) => {
-            eprintln!(
-                "[kernel] 读取会话事件失败，跳过本轮工具调用概括：{}",
-                error.message()
-            );
-            return None;
-        }
-    };
-    // 「淘汰优先于工具调用压缩」：本轮被标注淘汰的调用不进概括——它们已经离开上下文，
-    // 若照旧进概括，原文会顺着概括文本回流（`covered_event_ids` 也不再包含它们）。
-    let evicted_calls: BTreeSet<String> =
-        conn.borrow().evict_marks.borrow().iter().cloned().collect();
-    let source: Vec<SourceEvent> = events
-        .into_iter()
-        .map(|event| SourceEvent {
-            event_id: event.event_id,
-            event_type: event.event_type,
-            payload: Value::Object(event.payload),
-        })
-        .filter(|event| !evicted_tool_event(&event.payload, &evicted_calls))
-        .collect();
-    let request = TurnSummaryRequest {
-        events: &source,
-        task_hint,
-        workspace_root: session.workspace.as_deref().unwrap_or_default(),
-        session_id: &session.session_id,
-    };
-    let Some(outcome) = summarize_turn(&compressor, &request) else {
-        return None;
-    };
-    let payload = json!({
-        "content": outcome.content,
-        "covered_event_ids": outcome.covered_event_ids,
-        "archive_path": outcome.archive_path,
-        "tool_call_count": outcome.tool_calls,
-        "raw_chars": outcome.raw_chars,
-        "summary_chars": outcome.summary_chars,
-        "turn_id": turn_id,
-    });
-    if let Err(detail) = session.append("tool_call_summary", payload) {
-        eprintln!("[kernel] 会话写入工具调用概括失败：{detail}");
-        return None;
-    }
-    // 概括事件已落盘：按投影重建历史，让下一次请求真正拿到压缩后的上下文。
-    if let Err(detail) = session.reload_history() {
-        eprintln!("[kernel] 工具调用压缩后重建运行期历史失败：{detail}");
-        return None;
-    }
-    let post_compaction_context_tokens =
-        post_compaction_context_tokens(conn, session.history.as_slice());
-    // 会话区提示：与上下文压缩一样，在对话流里留一行灰色边界，标明这一轮的逐条工具调用
-    // 已被概括替换。实测计量的字符数取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行；
-    // 没有净省（模型没压小）时不显示，那条边界只会在会话区里制造困惑。
-    if let Some(notice) =
-        compression_logic::saved_tokens_notice(outcome.raw_chars, outcome.summary_chars)
-    {
-        conn.borrow_mut()
-            .notify(HostEvent::Notice(MessagePayload { message: notice }));
-    }
-    post_compaction_context_tokens
 }
 
 /// 回合收尾：落会话事件（用户消息与最终回复）→ 跑一次压缩 → 通知提示并更新运行期历史。
@@ -3148,10 +3267,9 @@ fn run_session_tail(
         ) {
             eprintln!("[kernel] 会话写入工具调用淘汰记账失败：{detail}");
         }
-        conn.borrow_mut()
-            .notify(HostEvent::Notice(MessagePayload {
-                message: format_compaction_savings_notice(saved_tokens),
-            }));
+        conn.borrow_mut().notify(HostEvent::Notice(MessagePayload {
+            message: format_compaction_savings_notice(saved_tokens),
+        }));
         eprintln!(
             "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息，省 {saved_tokens} Token（回合收尾统一处理）。",
             evict_marks.len(),
@@ -3241,25 +3359,18 @@ fn run_session_tail(
                     }
                 }
             }
-            // 阈值触发的压缩已经把整轮工具调用概括过：它写在 `compact_summary` 边界里，
-            // 再写一条 `tool_call_summary` 只会重复。未触发时由这里补上回合末概括。
-            if report.compacted {
-                // 压缩后大小已随 `turn.context_compaction` 发出（它总在 `turn.finished` 之前），
-                // 这里不再重复携带。
-                None
-            } else {
-                // 概括没落地时（没启用、没有调用或概括失败）仍要把淘汰后的上下文大小报给宿主：
-                // 淘汰真的让上下文变小了，遥测不刷新就会停在淘汰前那次的用量上。
-                summarize_turn_after_turn(conn, session, task_hint, turn_id)
-                    .or(eviction_context_tokens)
-            }
+            // 阈值触发的压缩已经把整轮工具调用概括过：它写在 `compact_summary` 边界里。
+            // 工具调用压缩已改为运行中逐批决策（见 `before_tool_batch`），回合收尾不再
+            // 汇合做全量压缩；这里兜底把逐批压缩/淘汰后的上下文大小报给宿主。
+            eviction_context_tokens
+                .or_else(|| post_compaction_context_tokens(conn, session.history.as_slice()))
         }
         Err(detail) => {
             eprintln!("[kernel] 上下文压缩失败，已跳过本回合：{detail}");
             if let Err(detail) = session.reload_history() {
                 eprintln!("[kernel] 重建运行期历史失败：{detail}");
             }
-            summarize_turn_after_turn(conn, session, task_hint, turn_id).or(eviction_context_tokens)
+            eviction_context_tokens
         }
     }
 }
@@ -3339,11 +3450,10 @@ fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
                     .notify(HostEvent::Notice(MessagePayload { message: notice }));
             }
             // 压缩后大小随回执给宿主：显式压缩同样不会有后续模型请求来修正遥测。
-            let post_compaction_context_tokens = conn
-                .borrow()
-                .session
-                .as_ref()
-                .and_then(|session| post_compaction_context_tokens(conn, session.history.as_slice()));
+            let post_compaction_context_tokens =
+                conn.borrow().session.as_ref().and_then(|session| {
+                    post_compaction_context_tokens(conn, session.history.as_slice())
+                });
             conn.borrow_mut().respond(
                 id,
                 json!({
@@ -4024,7 +4134,10 @@ fn handle_workspace_switch(conn: &mut Conn, id: Id, params: &WorkspaceSwitchPara
     if path.is_empty() {
         conn.respond_error(
             id,
-            ErrorObject::new(error_code::INVALID_PARAMS, "workspace.switch 需要非空 path。"),
+            ErrorObject::new(
+                error_code::INVALID_PARAMS,
+                "workspace.switch 需要非空 path。",
+            ),
         );
         return;
     }
@@ -4091,9 +4204,8 @@ fn respond_session_append(conn: &Rc<RefCell<Conn>>, id: Id, params: &SessionAppe
 
 /// 派生单个子 Agent 并等它结束：返回（子 Agent 收尾文本，公开结果）。
 ///
-/// 工具批次仍要回到宿主执行，所以本函数在等待期间必须继续服务后台请求
-/// （与 `run_scheduled_tasks` 同一条 `drain_background` 泵）。宿主侧因此不能同步
-/// 等待本方法的响应，必须保持事件循环可响应。
+/// 子回合在本线程里就地跑，工具批次直接借连接发给宿主，因此调用方会一直阻塞到
+/// 子任务结束——宿主侧不能同步等待本方法的响应，必须保持事件循环可响应。
 fn run_subagent_request(
     conn: &Rc<RefCell<Conn>>,
     agent_type: &str,
@@ -4146,39 +4258,21 @@ fn run_subagent_request(
     })?;
 
     let runtime = Arc::new(runtime);
-    let sender = conn.borrow().background.clone();
     let cancel = CancelToken::new();
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let (tx, rx) = mpsc::channel::<Value>();
-    {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let result = run_task_in_isolation(
-                &runtime,
-                &model_config,
-                &task,
-                &fork_messages,
-                &sender,
-                &cancel,
-                &workspace,
-                // 宿主入口要完整报告：截断摘要会把评审 JSON 打碎。
-                true,
-            );
-            let _ = tx.send(result);
-        });
-    }
-    let result = loop {
-        match rx.recv_timeout(BACKGROUND_TICK) {
-            Ok(value) => break value,
-            Err(mpsc::RecvTimeoutError::Timeout) => drain_background(conn),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err((
-                    "SUBAGENT_MODEL_ERROR".to_string(),
-                    "子任务线程提前结束，没有可用结果。".to_string(),
-                ))
-            }
-        }
-    };
+    let result = run_task_in_isolation(
+        &runtime,
+        &model_config,
+        &task,
+        &fork_messages,
+        conn,
+        &cancel,
+        &workspace,
+        // 宿主入口要完整报告：截断摘要会把评审 JSON 打碎。
+        true,
+        // 评审过程同样进子代理窗口。
+        true,
+    );
     // 结果投影复用协调器的同一条路径：失败描述、全文优先与脱敏在这里一次做对。
     let (ok, summary) = batch_summary(&batch_id, vec![result.clone()]);
     let encoded = json_result_text(&summary);
@@ -4242,7 +4336,6 @@ fn spawn_reader(sender: Sender<Inbound>) {
 pub fn run_stdio() -> Result<(), String> {
     let (sender, receiver) = mpsc::channel::<Inbound>();
     spawn_reader(sender);
-    let (background_sender, background_receiver) = mpsc::channel::<BackgroundRequest>();
 
     let conn = Rc::new(RefCell::new(Conn {
         inbound: receiver,
@@ -4256,8 +4349,6 @@ pub fn run_stdio() -> Result<(), String> {
         tool_call_prune: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
         evict_marks: Rc::new(RefCell::new(Vec::new())),
-        background: background_sender,
-        background_receiver,
         tasks: None,
         runtime_cache: None,
         next_id: 0,
@@ -4269,10 +4360,8 @@ pub fn run_stdio() -> Result<(), String> {
     );
 
     loop {
-        // 后台任务在回合外借用连接：先把积压的请求处理掉，再等宿主的下一条帧。
-        drain_background(&conn);
         // 借用必须在本条语句内结束：dispatch 里还要可变借用同一条连接。
-        let inbound = conn.borrow().inbound.recv_timeout(BACKGROUND_TICK);
+        let inbound = conn.borrow().inbound.recv();
         match inbound {
             Ok(Inbound::Frame(frame)) => {
                 if dispatch(&conn, *frame) {
@@ -4280,24 +4369,10 @@ pub fn run_stdio() -> Result<(), String> {
                 }
             }
             Ok(Inbound::Closed) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(_) => break,
         }
     }
     Ok(())
-}
-
-/// 把积压的后台借用请求处理掉：工具批次转给宿主，事件直接外发。
-///
-/// 跑子任务的线程在等结果时也会调用它——否则子任务的工具批次无人可发，会僵住。
-fn drain_background(conn: &Rc<RefCell<Conn>>) {
-    loop {
-        let request = match conn.borrow().background_receiver.try_recv() {
-            Ok(request) => request,
-            Err(_) => return,
-        };
-        serve_background(conn, request);
-    }
 }
 
 /// 回合进行中（内核自己发模型请求）抽干入站帧：让 `turn.cancel` / `shutdown` 立刻生效。
@@ -4358,49 +4433,13 @@ fn serve_model_hook(
         .map_err(|error| format!("宿主返回的 model.hook 结果无法解析：{error}"))
 }
 
-/// 主循环代后台任务借用一次连接：工具批次转给宿主，事件直接外发。
-fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
-    match request {
-        BackgroundRequest::Notify(event) => conn.borrow_mut().notify(*event),
-        BackgroundRequest::ModelHook {
-            messages,
-            model,
-            reply,
-        } => {
-            let _ = reply.send(serve_model_hook(conn, messages, model));
-        }
-        BackgroundRequest::ToolBatch {
-            turn_id,
-            calls,
-            workspace_root,
-            reply,
-        } => {
-            let mut tools = RemoteTools {
-                conn: Rc::clone(conn),
-                turn_id,
-                workspace_root,
-                vision_model: conn.borrow().model.clone(),
-                undo: None,
-                // 后台子任务批次没有自己的执行清单（run_guard 只看主回合）。
-                todos: None,
-                // 子代理的工具调用不落父会话：Python 在子代理循环里传
-                // `persist_session_events=False`。
-                active_assistant: None,
-                // 后台批次不参与淘汰：它的调用不进父会话，也不该按父会话的历史裁决。
-                task_hint: String::new(),
-                previous_batch: Vec::new(),
-            };
-            let outcome = tools
-                .execute_tool_batch(&calls, 0)
-                .map_err(|error| error.tag().to_string());
-            let _ = reply.send(outcome);
-        }
-    }
-}
-
-/// 后台任务的工具端口：只把批次递给主循环，自己不碰连接。
+/// 子代理的工具端口：直接在主循环线程里执行批次。
+///
+/// 批次不再经通道递回主循环——子回合与主回合同在一条线程，端口自己就能构造
+/// `RemoteTools` 执行，不必等自己。
 struct BackgroundTools {
-    sender: mpsc::Sender<BackgroundRequest>,
+    /// 就地执行用的连接：子回合与主回合同在一条线程，直接借它。
+    conn: Rc<RefCell<Conn>>,
     turn_id: String,
     /// 隔离根：worktree 子任务的工具批次要在自己的工作树里执行。
     workspace_root: Option<String>,
@@ -4409,17 +4448,25 @@ struct BackgroundTools {
     agent_type: String,
     /// 是否流式上报子代理对话（只有 `/review` 这类宿主入口开启）。
     stream: bool,
+    /// 已经执行完的工具调用数：按批次的观察条数累加，覆盖一个批次多个调用的情况。
+    pub tool_calls: usize,
 }
 
 impl BackgroundTools {
     /// 子代理工具事件的身份字段（与 Python 的 `subagent.tool.*` 载荷同形）。
-    fn conversation_payload(&self, tool: &str) -> Value {
+    fn conversation_payload(&self, tool: &str, call_id: &str) -> Value {
         json!({
             "task_id": self.turn_id,
             "batch_id": self.batch_id,
             "agent_type": self.agent_type,
             "tool": tool,
+            "call_id": call_id,
         })
+    }
+
+    /// 子代理事件直接外发：子回合已在主循环线程里，不需要经通道中转。
+    fn emit(&self, name: &str, payload: Value) {
+        emit_subagent_event(&self.conn, name, payload);
     }
 }
 
@@ -4432,61 +4479,65 @@ impl ToolBatchHost for BackgroundTools {
         // 开始事件先发：宿主据此把工具卡挂进子代理会话面板。
         if self.stream {
             for call in calls {
-                let mut payload = self.conversation_payload(&call.name);
+                let mut payload = self.conversation_payload(&call.name, &call.id);
                 if let Some(object) = payload.as_object_mut() {
                     object.insert(
                         "arguments".to_string(),
                         public_tool_arguments(&call.name, &call.arguments),
                     );
                 }
-                emit_background_event(&self.sender, "subagent.tool.started", payload);
+                self.emit("subagent.tool.started", payload);
             }
         }
         let started = std::time::Instant::now();
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(BackgroundRequest::ToolBatch {
+        // 就地执行：子回合与主回合同在一条线程，直接借连接里的工具端口，不经通道。
+        // 子任务的工具调用不落父会话、不参与淘汰、不记 undo，与后台批次同一口径。
+        let observations = {
+            let mut tools = RemoteTools {
+                conn: Rc::clone(&self.conn),
                 turn_id: self.turn_id.clone(),
-                calls: calls.to_vec(),
                 workspace_root: self.workspace_root.clone(),
-                reply,
-            })
-            .map_err(|_| {
-                LoopError::ToolBatch("内核主循环已停止，后台任务无法继续。".to_string())
-            })?;
-        match receiver.recv() {
-            Ok(Ok(observations)) => {
-                let elapsed = started.elapsed().as_secs_f64();
-                if self.stream {
-                    for observation in &observations {
-                        let mut payload = self.conversation_payload(&observation.tool_call.name);
-                        if let Some(object) = payload.as_object_mut() {
-                            let output = if observation.result.full_output.is_empty() {
-                                observation.result.output.clone()
-                            } else {
-                                observation.result.full_output.clone()
-                            };
-                            object.insert("ok".to_string(), Value::Bool(observation.result.ok));
-                            object.insert("output".to_string(), Value::String(output));
-                            object.insert("duration_seconds".to_string(), json!(elapsed));
-                        }
-                        emit_background_event(&self.sender, "subagent.tool.completed", payload);
-                    }
+                vision_model: self.conn.borrow().model.clone(),
+                undo: None,
+                todos: None,
+                active_assistant: None,
+                task_hint: String::new(),
+                previous_batch: Vec::new(),
+                previous_batch_event_ids: Vec::new(),
+            };
+            tools
+                .execute_tool_batch(calls, 0)
+                .map_err(|error| LoopError::ToolBatch(error.tag().to_string()))?
+        };
+        let elapsed = started.elapsed().as_secs_f64();
+        // 工具调用数在这里累加：批次的观察条数就是真正执行过的调用数。
+        self.tool_calls += observations.len();
+        if self.stream {
+            for observation in &observations {
+                let mut payload = self
+                    .conversation_payload(&observation.tool_call.name, &observation.tool_call.id);
+                if let Some(object) = payload.as_object_mut() {
+                    let output = if observation.result.full_output.is_empty() {
+                        observation.result.output.clone()
+                    } else {
+                        observation.result.full_output.clone()
+                    };
+                    object.insert("ok".to_string(), Value::Bool(observation.result.ok));
+                    object.insert("output".to_string(), Value::String(output));
+                    object.insert("duration_seconds".to_string(), json!(elapsed));
                 }
-                Ok(observations)
+                self.emit("subagent.tool.completed", payload);
             }
-            Ok(Err(detail)) => Err(LoopError::ToolBatch(detail)),
-            Err(_) => Err(LoopError::ToolBatch(
-                "后台工具批次没有拿到结果。".to_string(),
-            )),
         }
+        Ok(observations)
     }
 }
 
-/// 后台任务的模型端口：直接发请求，流事件经通道转给主循环。
+/// 子代理的模型端口：直接发请求，事件就地外发。
 struct BackgroundModelPort {
     config: KernelModelConfig,
-    sender: mpsc::Sender<BackgroundRequest>,
+    /// 就地外发事件用的连接：子回合与主回合同在一条线程。
+    conn: Rc<RefCell<Conn>>,
     cancel: CancelToken,
     /// 子代理对话流：任务号、批次号与角色名。
     task_id: String,
@@ -4497,12 +4548,15 @@ struct BackgroundModelPort {
     /// 本任务内的模型运行时：子代理回合同样会「首次请求 + 每次工具观察后再来一次」，
     /// 复用同一实例才能保住出网脱敏的逐消息缓存（每次重建都会把 memo 清空重扫）。
     runtime: Option<Box<dyn ModelRuntime>>,
+    /// 已经发出的模型请求数：预算超限与取消路径也要如实上报，因此在这里自己数。
+    pub model_turns: usize,
 }
 
 impl ReplySource for BackgroundModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
         // 子代理的模型请求同样先过 `model.request.before`（由主循环代跑）。
         self.run_request_hook(messages)?;
+        self.model_turns += 1;
         if self.runtime.is_none() {
             self.runtime = Some(build_model_runtime(&self.config)?);
         }
@@ -4527,7 +4581,7 @@ impl ReplySource for BackgroundModelPort {
             prompt_cache_identity: &identity,
         };
         let mut sink = BackgroundSink {
-            sender: self.sender.clone(),
+            conn: Rc::clone(&self.conn),
             cancel: self.cancel.clone(),
         };
         match runtime.run_turn(&input, &mut sink) {
@@ -4537,8 +4591,8 @@ impl ReplySource for BackgroundModelPort {
                 let reply = to_agent_reply(reply)?;
                 // 与 Python 同规则：只有带工具调用的过程性文本进子代理会话面板。
                 if self.stream && !reply.content.is_empty() && !reply.tool_calls.is_empty() {
-                    emit_background_event(
-                        &self.sender,
+                    emit_subagent_event(
+                        &self.conn,
                         "subagent.turn.text",
                         json!({
                             "task_id": self.task_id,
@@ -4563,78 +4617,63 @@ impl ReplySource for BackgroundModelPort {
 }
 
 impl BackgroundModelPort {
-    /// 请主循环代跑 `model.request.before`，并把（可能被改写的）消息取回。
+    /// `model.request.before`：在子回合所在的线程里直接跑。
+    ///
+    /// 以前这里要把消息经通道递回主循环，因为子回合在别的线程；现在就地在同一线程，
+    /// 直接调 `serve_model_hook` 即可，不必绕一圈。
     fn run_request_hook(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(BackgroundRequest::ModelHook {
-                messages: messages.clone(),
-                model: self.config.model.clone(),
-                reply,
-            })
-            .map_err(|_| {
-                LoopError::ReplySource("内核主循环已停止，子代理无法继续。".to_string())
-            })?;
-        match receiver.recv() {
-            Ok(Ok(rewritten)) => {
+        match serve_model_hook(&self.conn, messages.clone(), self.config.model.clone()) {
+            Ok(rewritten) => {
                 *messages = rewritten;
                 Ok(())
             }
-            Ok(Err(detail)) => {
+            Err(detail) => {
                 if self.cancel.is_set() {
                     Err(LoopError::Cancelled(detail))
                 } else {
                     Err(LoopError::ReplySource(detail))
                 }
             }
-            Err(_) => Err(LoopError::ReplySource(
-                "子代理的模型 Hook 没有拿到结果。".to_string(),
-            )),
         }
     }
 
     /// `model.request.error`：一次子代理模型请求以错误终结时的通知。
     fn notify_model_error(&self, message: &str) {
-        let _ = self.sender.send(BackgroundRequest::Notify(Box::new(
-            HostEvent::ModelRequestError(ModelRequestErrorPayload {
+        self.conn
+            .borrow_mut()
+            .notify(HostEvent::ModelRequestError(ModelRequestErrorPayload {
                 error: message.to_string(),
                 model: self.config.model.clone(),
-            }),
-        )));
+            }));
     }
 
     /// `model.response.after`：一次子代理模型请求成功返回后的观察通知。
     fn notify_model_response(&self, reply: &AgentModelReply) {
-        let _ = self.sender.send(BackgroundRequest::Notify(Box::new(
-            HostEvent::ModelResponseAfter(ModelResponseAfterPayload {
+        self.conn
+            .borrow_mut()
+            .notify(HostEvent::ModelResponseAfter(ModelResponseAfterPayload {
                 model: self.config.model.clone(),
                 content: reply.content.clone(),
                 tool_call_count: reply.tool_calls.len(),
-            }),
-        )));
+            }));
     }
 }
 
-/// 后台任务的流事件出口：文本增量与状态提示转给主循环，其余丢弃。
+/// 子代理的流事件出口：只外发 Provider 告警，正文与思考增量一律丢弃。
+///
+/// 子回合和主回合同在一条连接上，`HostEvent::Delta` / `ReasoningDelta` 会被宿主直接
+/// 追加到主会话的正文与思考段里。子代理的正文已由 `subagent.turn.text` 送进独立窗口，
+/// 这里再发一遍就会让子代理的话混进主代理的回复。
 struct BackgroundSink {
-    sender: mpsc::Sender<BackgroundRequest>,
+    conn: Rc<RefCell<Conn>>,
     cancel: CancelToken,
 }
 
 impl TurnSink for BackgroundSink {
     fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
-        let forwarded = match event {
-            ModelStreamEvent::TextDelta(delta) => {
-                Some(HostEvent::Delta(TextPayload { text: delta.text }))
-            }
-            ModelStreamEvent::ReasoningDelta(delta) => {
-                Some(HostEvent::ReasoningDelta(TextPayload { text: delta.text }))
-            }
-            ModelStreamEvent::ProviderWarning(warning) => Some(provider_warning_event(&warning)),
-            _ => None,
-        };
-        if let Some(event) = forwarded {
-            let _ = self.sender.send(BackgroundRequest::Notify(Box::new(event)));
+        if let ModelStreamEvent::ProviderWarning(warning) = event {
+            let event = provider_warning_event(&warning);
+            self.conn.borrow_mut().notify(event);
         }
         if self.cancel.is_set() {
             SinkFlow::Cancel
@@ -4771,9 +4810,7 @@ mod runtime_selection_tests {
         assert_ne!(
             key,
             RuntimeBuildKey {
-                desensitization: DesensitizationFingerprint(Some(
-                    DesensitizationConfig::default()
-                )),
+                desensitization: DesensitizationFingerprint(Some(DesensitizationConfig::default())),
                 ..key.clone()
             },
             "脱敏配置变了必须重建运行时"
@@ -4783,32 +4820,9 @@ mod runtime_selection_tests {
 
 #[cfg(test)]
 mod session_tests {
-    use super::{cancelled_turn_summary, evicted_tool_event, provider_warning_event};
+    use super::{cancelled_turn_summary, provider_warning_event};
     use omnicrawl_ipc::bridge::HostEvent;
     use omnicrawl_protocol::ProviderWarning;
-    use serde_json::json;
-    use std::collections::BTreeSet;
-
-    /// 「淘汰优先于工具调用压缩」的判定：被淘汰的那次调用的工具事件不进概括输入。
-    #[test]
-    fn evicted_calls_are_filtered_out_of_the_turn_summary_input() {
-        let marks: BTreeSet<String> = ["call-b".to_string()].into_iter().collect();
-        assert!(evicted_tool_event(
-            &json!({"tool_call_id": "call-b", "tool": "read_file"}),
-            &marks
-        ));
-        assert!(!evicted_tool_event(
-            &json!({"tool_call_id": "call-a", "tool": "read_file"}),
-            &marks
-        ));
-        // 没有 ID 的旧事件无从对应，按未淘汰处理：宁可多带一条，也不静默丢内容。
-        assert!(!evicted_tool_event(&json!({"tool": "read_file"}), &marks));
-        // 本回合没有标注时一律不过滤。
-        assert!(!evicted_tool_event(
-            &json!({"tool_call_id": "call-b"}),
-            &BTreeSet::new()
-        ));
-    }
 
     #[test]
     fn cancelled_summary_counts_executed_tools() {
@@ -4822,11 +4836,7 @@ mod session_tests {
         );
         // 同一工具多次：Python 用 `name×次数`；不同工具之间用「，」连接。
         assert_eq!(
-            cancelled_turn_summary(&[
-                "read".to_string(),
-                "bash".to_string(),
-                "read".to_string(),
-            ]),
+            cancelled_turn_summary(&["read".to_string(), "bash".to_string(), "read".to_string(),]),
             "（上一回合被取消，未生成最终回复）已执行工具：read×2，bash"
         );
         assert_eq!(

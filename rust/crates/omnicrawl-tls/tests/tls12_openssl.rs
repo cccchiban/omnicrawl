@@ -119,8 +119,8 @@ fn verify_time() -> UnixTime {
 }
 
 fn connect_12(port: u16, family: Family) -> Connection<TcpStream> {
-    let connection =
-        Connection::connect_to("localhost", port, family, None, TIMEOUT).unwrap_or_else(|error| {
+    let connection = Connection::connect_to("localhost", port, family, None, TIMEOUT)
+        .unwrap_or_else(|error| {
             panic!("TLS 1.2 握手失败：{error}");
         });
     assert_eq!(
@@ -149,7 +149,12 @@ fn a_tls12_only_server_completes_a_handshake_and_serves_http11() {
 #[test]
 #[ignore = "需要本机 openssl 可执行文件"]
 fn all_four_families_negotiate_tls12() {
-    for family in [Family::Chrome, Family::Firefox, Family::Safari, Family::Edge] {
+    for family in [
+        Family::Chrome,
+        Family::Firefox,
+        Family::Safari,
+        Family::Edge,
+    ] {
         let server = start_server(&["-tls1_2"]);
         let mut connection = connect_12(server.port, family);
         let response = connection.get("/").expect("请求应当完成");
@@ -237,11 +242,7 @@ fn an_ecdsa_12_suite_works() {
 #[ignore = "需要本机 openssl 可执行文件"]
 fn chacha20_12_suite_works() {
     // RFC 7905：ChaCha20-Poly1305 不发 explicit nonce，nonce 由固定 IV 异或序号得到。
-    let server = start_server(&[
-        "-tls1_2",
-        "-cipher",
-        "ECDHE-ECDSA-CHACHA20-POLY1305",
-    ]);
+    let server = start_server(&["-tls1_2", "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305"]);
     let mut connection = connect_12(server.port, Family::Chrome);
     let response = connection.get("/").expect("ChaCha20 套件应当可用");
     assert_eq!(response.status, 200);
@@ -265,9 +266,7 @@ fn without_extended_master_secret_the_classic_derivation_is_used() {
     // 「两个 random」派生。若仍按 EMS 算，server Finished 一定校验失败。
     let server = start_server(&["-tls1_2", "-no_ems"]);
     let mut connection = connect_12(server.port, Family::Chrome);
-    let response = connection
-        .get("/")
-        .expect("没有 EMS 时也必须能完成握手");
+    let response = connection.get("/").expect("没有 EMS 时也必须能完成握手");
     assert_eq!(response.status, 200);
 }
 

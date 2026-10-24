@@ -103,10 +103,7 @@ pub fn requested_event_payload(
     let mut payload = Map::new();
     payload.insert("tool".to_string(), Value::from(tool));
     payload.insert("arguments".to_string(), arguments);
-    payload.insert(
-        "tool_call_id".to_string(),
-        Value::from(effective_call_id),
-    );
+    payload.insert("tool_call_id".to_string(), Value::from(effective_call_id));
     // `assistant_fields.get("function_name") or tool_call.function_name or tool_call.name`
     payload.insert(
         "function_name".to_string(),
@@ -312,8 +309,13 @@ mod tests {
                 "function": {"name": "invoke_tool", "arguments": "{\"tool_name\": \"read\"}"},
             }],
         });
-        let payload =
-            requested_event_payload("read", json!({"path": "a"}), "call-2", "read", Some(&message));
+        let payload = requested_event_payload(
+            "read",
+            json!({"path": "a"}),
+            "call-2",
+            "read",
+            Some(&message),
+        );
         assert_eq!(payload["function_name"], "invoke_tool");
         assert_eq!(payload["tool"], "read");
     }

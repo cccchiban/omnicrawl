@@ -230,7 +230,11 @@ impl omnicrawl_host::tools::ChoiceClient for FixedChoice {
     ) -> Result<usize, String> {
         *self.seen.lock().expect("记录未被毒化") = Some((
             request.state.to_string(),
-            request.criteria.iter().map(|(key, _)| key.clone()).collect(),
+            request
+                .criteria
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect(),
         ));
         Ok(self.index)
     }
@@ -511,9 +515,12 @@ fn custody_answers_the_question_without_asking_the_user() {
     };
     let mut events: Vec<HostEvent> = Vec::new();
     subject
-        .submit("问一下", &TurnControl::new(), &mut interactor, &mut |event| {
-            events.push(event)
-        })
+        .submit(
+            "问一下",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |event| events.push(event),
+        )
         .expect("回合应当跑完");
 
     assert!(interactor.asked.is_empty(), "{:?}", interactor.asked);
@@ -521,7 +528,10 @@ fn custody_answers_the_question_without_asking_the_user() {
         ToolBatchResult::from_result(&recorder.result(3)).expect("宿主回的应当是工具批次结果");
     assert_eq!(result.observations.len(), 1);
     assert!(result.observations[0].result.ok);
-    assert_eq!(result.observations[0].result.output, "选项B", "取桩选中的那一项");
+    assert_eq!(
+        result.observations[0].result.output, "选项B",
+        "取桩选中的那一项"
+    );
 
     // 自动作答在会话流里留痕，并带上问题与选中项。
     let notices: Vec<String> = events
@@ -536,10 +546,91 @@ fn custody_answers_the_question_without_asking_the_user() {
     assert!(notices[0].contains("选项B"), "{}", notices[0]);
 
     // 请求上下文带上了提问与用户本回合的请求。
-    let (state, criteria) = seen.lock().expect("记录未被毒化").clone().expect("托管被调用");
+    let (state, criteria) = seen
+        .lock()
+        .expect("记录未被毒化")
+        .clone()
+        .expect("托管被调用");
     assert!(state.contains("选哪个？"), "{state}");
     assert!(state.contains("问一下"), "{state}");
-    assert_eq!(criteria, vec!["o0", "o1"]);
+    assert_eq!(criteria, vec!["o0", "o1", "o2"], "末尾还有自定义作答入口");
+    pipe.close();
+}
+
+/// 决策模型选「我有自己的想法...」时，提问退回给用户自己作答（面板与输入框照旧工作）。
+#[test]
+fn custody_falls_back_to_the_user_when_the_custom_option_wins() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("custody-custom");
+    let seen = Arc::new(Mutex::new(None));
+    let custody = omnicrawl_host::tools::CustodyOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_choice::ChoiceChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            api_key_env: "JEV_API_KEY".to_string(),
+            retry_count: 0,
+        }),
+        masking: None,
+        // 三个候选 = 两个模型选项 + 末尾的自定义作答入口。
+        client: Arc::new(FixedChoice {
+            index: 2,
+            seen: Arc::clone(&seen),
+        }),
+    };
+    let mut subject = runner_with_custody(client, &root, Some(custody));
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(concat!(
+        r#"{"jsonrpc":"2.0","id":3,"method":"tool.batch","params":{"turn_id":"turn-1","step":1,"calls":["#,
+        r#"{"name":"ask_user","arguments":{"question":"给这个分支起个名字？","options":["feature-a","feature-b"],"kind":"select"},"id":"c1","function_name":"ask_user"}]}}"#,
+    ));
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":1,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: Some("我自己起的名字".to_string()),
+        asked: Vec::new(),
+    };
+    let mut events: Vec<HostEvent> = Vec::new();
+    subject
+        .submit(
+            "加个分支",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |event| events.push(event),
+        )
+        .expect("回合应当跑完");
+
+    // 托管先被问过一次，它选了自定义作答入口，于是退回人工提问。
+    let (state, criteria) = seen
+        .lock()
+        .expect("记录未被毒化")
+        .clone()
+        .expect("托管被调用");
+    assert!(state.contains("给这个分支起个名字？"), "{state}");
+    assert_eq!(criteria, vec!["o0", "o1", "o2"]);
+    assert_eq!(
+        interactor.asked,
+        vec!["answer:给这个分支起个名字？".to_string()]
+    );
+    let result =
+        ToolBatchResult::from_result(&recorder.result(3)).expect("宿主回的应当是工具批次结果");
+    assert_eq!(result.observations[0].result.output, "我自己起的名字");
+    // 放回用户作答就不该再报「已自动作答」。
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HostEvent::Notice(_))),
+        "{:?}",
+        events_of(&events)
+    );
     pipe.close();
 }
 
@@ -589,7 +680,11 @@ fn the_suggestion_is_appended_to_the_user_text_sent_to_the_kernel() {
         .expect("回合应当跑完");
 
     // 送审的清单直接来自工具表：进表的工具（含泛化工具）都在其中，说明取描述首句。
-    let (prompt, candidates) = seen.lock().expect("记录未被毒化").clone().expect("建议被调用");
+    let (prompt, candidates) = seen
+        .lock()
+        .expect("记录未被毒化")
+        .clone()
+        .expect("建议被调用");
     assert_eq!(prompt, "帮我把这个任务拆成几路");
     assert!(
         candidates.contains(&"web_search".to_string()),
@@ -748,11 +843,7 @@ fn both_suggestion_kinds_run_concurrently_and_both_land_in_the_user_text() {
         elapsed < delay * 2,
         "两条请求应当并发：耗时 {elapsed:?} 不该接近两倍延迟"
     );
-    assert_eq!(
-        peak.load(Ordering::SeqCst),
-        2,
-        "两条建议请求必须同时在飞"
-    );
+    assert_eq!(peak.load(Ordering::SeqCst), 2, "两条建议请求必须同时在飞");
 
     let submitted = recorder
         .frames()
@@ -821,7 +912,12 @@ fn subagent_suggestion_works_without_tool_suggestion() {
         asked: Vec::new(),
     };
     subject
-        .submit("先探索再计划", &TurnControl::new(), &mut interactor, &mut |_| {})
+        .submit(
+            "先探索再计划",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
         .expect("回合应当跑完");
 
     let submitted = recorder
@@ -881,10 +977,9 @@ fn cancel_sends_turn_cancel_and_reports_cancelled() {
 #[test]
 fn a_turn_after_cancel_runs_shell_commands_again() {
     // 回归：Esc 取消一个回合后继续对话，`bash` 不能再被令牌判成「命令已取消」。
-    let has_bash = omnicrawl_host::tools::command::find_bash_executable(&|name| {
-        std::env::var(name).ok()
-    })
-    .is_some();
+    let has_bash =
+        omnicrawl_host::tools::command::find_bash_executable(&|name| std::env::var(name).ok())
+            .is_some();
     let (client, recorder, pipe) = kernel();
     let root = workspace("cancel-resume");
     let mut subject = runner(client, &root);
@@ -992,9 +1087,8 @@ fn skill_command_swaps_context_and_submits_the_task() {
     .expect("写 SKILL.md");
 
     let env = omnicrawl_config::core::runtime::ConfigEnvironment::new("bundle", "test");
-    let load_prompt = || {
-        PromptRuntime::load(&env, PromptOptions::new(root.clone())).expect("提示词装配应当成功")
-    };
+    let load_prompt =
+        || PromptRuntime::load(&env, PromptOptions::new(root.clone())).expect("提示词装配应当成功");
 
     // ── 命中：上下文换成技能正文，提交的是余下任务 ──
     let (client, recorder, pipe) = kernel();
@@ -1049,7 +1143,10 @@ fn skill_command_swaps_context_and_submits_the_task() {
         .and_then(|frame| frame.params)
         .expect("设置帧带参数");
     let rendered = settings.to_string();
-    assert!(rendered.contains("TURN-SKILL-BODY"), "应下发技能正文：{rendered}");
+    assert!(
+        rendered.contains("TURN-SKILL-BODY"),
+        "应下发技能正文：{rendered}"
+    );
     assert!(
         rendered.contains("<active_skill_instructions"),
         "应使用活动技能块：{rendered}"

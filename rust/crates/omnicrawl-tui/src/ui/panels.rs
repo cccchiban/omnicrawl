@@ -151,10 +151,7 @@ pub fn render_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16)
                         Style::new().fg(Color::Cyan),
                     ),
                     Span::styled(
-                        fit(
-                            crate::host::QUESTION_CUSTOM_LABEL,
-                            inner.saturating_sub(2),
-                        ),
+                        fit(crate::host::QUESTION_CUSTOM_LABEL, inner.saturating_sub(2)),
                         if selected {
                             Style::new().fg(Color::Cyan)
                         } else {

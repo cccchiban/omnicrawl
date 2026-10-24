@@ -10,9 +10,8 @@ use crate::shared::python_round;
 
 use super::ledger::UsageLedger;
 use super::policy::{
-    deterministic_structured_summary, estimate_json_tokens, CompactionBatch,
-    ContextBudgetSnapshot, DefaultContextBudgetManager, MeasureInput, SourceEvent,
-    TokenUsageSample,
+    deterministic_structured_summary, estimate_json_tokens, CompactionBatch, ContextBudgetSnapshot,
+    DefaultContextBudgetManager, MeasureInput, SourceEvent, TokenUsageSample,
 };
 use super::projection::{
     event_to_model_message, latest_final_reply_event, render_summary_markdown, ContextAssembler,

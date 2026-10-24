@@ -6,7 +6,9 @@
 //! 验证码或 JS 挑战即如实报错、不绕过。接口型引擎（Tavily / Exa / Firecrawl / AnySearch / TinyFish）走各自的
 //! JSON 检索接口，凭据取 `[web_search]` 段（见 [`WebSearchOptions`]）。
 //!
-//! `mixed` 是混合搜索：并发查询全部可用渠道，按 URL 去重后合并成一份结果。
+//! `mixed` 是混合搜索：并发查询全部可用渠道，按 URL 去重后合并成一份结果。默认只跑通用渠道
+//! （DuckDuckGo + 已配置凭据的接口型引擎，AnySearch 无凭据也参与）；GitHub / arXiv / Hugging Face
+//! 是垂直站点，需在调用时用 `sources` 参数显式点名才会加入。
 //!
 //! 请求走 [`super::tls_transport::TlsWebTransport`]（omnicrawl-tls 自研栈的浏览器档案），
 //! 与 `fetcher` 同一个「模拟有头浏览器」环境：TLS/HTTP2 指纹与 UA、Client Hints 同源，
@@ -26,11 +28,12 @@ use serde_json::{Map, Value};
 
 use super::decision_search::{apply_order, keyword_coverage_order, RerankOptions, RerankRequest};
 use super::error::{ToolError, ToolOutcome};
+use super::tls_transport::{normalize_impersonate, TlsWebTransport};
 use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, WebErrorKind, WebRequest, WebTransport,
     MAX_REDIRECTS,
 };
-use super::tls_transport::{normalize_impersonate, TlsWebTransport};
+use crate::embedding_client::{semantic_scores, EmbeddingOptions, EmbeddingRequest};
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 10.0;
 /// 单渠道一次取回的候选上限：既是未传 `max_results` 时的默认条数，也是单引擎返回的条数上限。
@@ -55,10 +58,13 @@ state 是事实来源，不要根据候选项自身措辞推测查询；候选�
 /// 混合搜索的引擎名（并发多路 + 去重合并）。
 pub const MIXED_ENGINE: &str = omnicrawl_config::features::web_search::MIXED_WEB_SEARCH_ENGINE;
 
-/// 抓页面型引擎：直接抓公开搜索页并解析，无需凭据。
+/// 综合搜索默认参与的抓页面渠道：只有无需凭据、面向通用的 DuckDuckGo。
 ///
-/// 顺序即混合搜索的请求顺序（也是失败清单的排列顺序）。
-const PAGE_ENGINES: [&str; 4] = ["duckduckgo", "github", "arxiv", "huggingface"];
+/// GitHub / arXiv / Hugging Face 是垂直站点，默认不掺进综合结果，需要调用方用
+/// `sources` 参数显式点名（见 [`OPTIONAL_MIXED_PAGE_ENGINES`]）。
+const DEFAULT_MIXED_PAGE_ENGINES: [&str; 1] = ["duckduckgo"];
+/// 只有显式点名才参与综合搜索的垂直渠道；单独作为引擎使用时不受影响。
+const OPTIONAL_MIXED_PAGE_ENGINES: [&str; 3] = ["github", "arxiv", "huggingface"];
 /// 接口型引擎：一次请求回 JSON 结果，不走页面解析（TinyFish 用 `GET`，其余用 `POST`）。
 ///
 /// Tavily / Exa / Firecrawl / TinyFish 需要各自配置凭据；AnySearch 没有 Key 也能匿名调用，
@@ -161,6 +167,10 @@ pub struct WebSearchOptions {
     pub impersonate: String,
     /// 联网搜索的决策模型排序（`decision_models.toml` 的 `web_search_rerank` 开关）。
     pub rerank: Arc<RerankOptions>,
+    /// 联网搜索的向量模型排序（`decision_models.toml` 的 `web_search_embedding_rerank` 开关）。
+    ///
+    /// 与 `rerank` 并行：两者都启用时优先向量，向量失败回退决策模型，再失败回退关键词。
+    pub embedding: Arc<EmbeddingOptions>,
 }
 
 impl Default for WebSearchOptions {
@@ -185,6 +195,7 @@ impl Default for WebSearchOptions {
             impersonate: super::tls_transport::DEFAULT_IMPERSONATE.to_string(),
             // 缺省即不排序：重排是纯加速项，开关关着时连配置都不读。
             rerank: Arc::new(RerankOptions::default()),
+            embedding: Arc::new(EmbeddingOptions::default()),
         }
     }
 }
@@ -241,6 +252,19 @@ pub fn web_search_options_from_config(
             environment,
             omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH,
         )),
+        // 向量排序与决策模型排序并行装配：各自读自己的开关，互不影响。
+        embedding: Arc::new(
+            crate::embedding_client::embedding_options_from_config(
+                environment,
+                omnicrawl_config::features::decision_model::load_decision_switches(environment, None)
+                    .get(
+                        omnicrawl_config::features::decision_model::
+                            DECISION_SWITCH_WEB_SEARCH_EMBEDDING,
+                    )
+                    .copied()
+                    .unwrap_or(false),
+            ),
+        ),
         ..WebSearchOptions::default()
     }
 }
@@ -592,18 +616,108 @@ fn status_message(status: u16) -> String {
     }
 }
 
-/// 单路排序：把这一路的候选交给决策模型按相关度排序，返回**路内下标**的新顺序。
+/// 联网搜索排序的三级回退顺序：向量模型 → 决策模型 → 本地关键词。
 ///
-/// 「单路」= 一次搜索的一个渠道结果（单引擎调用就是唯一的一路）。返回 `None` 表示本次排序
-/// 不可用（开关没开、候选太少或决策服务失败），调用方保留本地顺序。
+/// 向量与决策模型是**并行的两条独立通路**（各自的开关与运行期互不影响）：两者都启用时
+/// 向量优先，向量不可用再回退决策模型；两条都不可用（含开关关着、失败、候选太少）才回退
+/// 到本地关键词排序。任一级成功即返回，不再尝试后面的级别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RankLane {
+    Vector,
+    Decision,
+    Keyword,
+}
+
+/// 单路排序的执行结果：既给出路内下标顺序，也说明最终由哪一级排出来。
+struct ChannelRanking {
+    order: Vec<usize>,
+    lane: RankLane,
+}
+
+/// 单路排序：按 [`RankLane`] 的顺序逐级尝试，返回**路内下标**的新顺序。
+///
+/// `None` 表示三级都不可用（开关关着、候选太少或各级均失败），调用方保留本地顺序。
 pub fn channel_rerank_order(
     options: &WebSearchOptions,
     state: Value,
     query: &str,
     candidates: &[String],
 ) -> Option<Vec<usize>> {
+    channel_ranking(options, state, query, candidates).map(|ranking| ranking.order)
+}
+
+/// 单路排序的完整结果（含最终采用的级别，便于测试与诊断）。
+fn channel_ranking(
+    options: &WebSearchOptions,
+    state: Value,
+    query: &str,
+    candidates: &[String],
+) -> Option<ChannelRanking> {
+    if candidates.len() <= RERANK_KEEP_PER_CHANNEL {
+        return None;
+    }
+    // 两个排序开关都关着时完全不介入：保留引擎自身顺序，与未引入排序前一致。
+    let vector_ready = options.embedding.active();
+    let decision_ready = options.rerank.active();
+    if !vector_ready && !decision_ready {
+        return None;
+    }
+    // 向量优先：直接采用余弦相似度给出的顺序（向量负责定序，关键词只在前两级都不可用时兜底）。
+    if vector_ready {
+        if let Some(order) = vector_order(options, query, candidates) {
+            return Some(ChannelRanking {
+                order,
+                lane: RankLane::Vector,
+            });
+        }
+        diagnostics::warn("[host] 联网搜索向量排序不可用，改试决策模型排序。");
+    }
+    // 回退决策模型：与向量通路并行，互不影响。
+    if decision_ready {
+        if let Some(order) = decision_order(options, state, query, candidates) {
+            return Some(ChannelRanking {
+                order,
+                lane: RankLane::Decision,
+            });
+        }
+    }
+    // 再回退本地关键词：只在开启了排序却都不可用时兜底。
+    Some(ChannelRanking {
+        order: keyword_coverage_order(query, candidates),
+        lane: RankLane::Keyword,
+    })
+}
+
+/// 向量通路：给查询与候选算向量，返回按余弦相似度降序的路内下标。
+fn vector_order(
+    options: &WebSearchOptions,
+    query: &str,
+    candidates: &[String],
+) -> Option<Vec<usize>> {
+    let embedding = options.embedding.as_ref();
+    let channel = embedding.channel.as_ref()?;
+    let scored = semantic_scores(
+        embedding,
+        EmbeddingRequest {
+            channel,
+            cache: &embedding.cache,
+            client: embedding.client.as_ref(),
+            query,
+            candidates,
+        },
+    )?;
+    Some(scored.into_iter().map(|(index, _)| index).collect())
+}
+
+/// 决策模型通路：把这一路的候选交给决策模型按相关度排序，返回路内下标。
+fn decision_order(
+    options: &WebSearchOptions,
+    state: Value,
+    query: &str,
+    candidates: &[String],
+) -> Option<Vec<usize>> {
     let rerank = options.rerank.as_ref();
-    if !rerank.active() || candidates.len() <= RERANK_KEEP_PER_CHANNEL {
+    if !rerank.active() {
         return None;
     }
     let channel = rerank.channel.as_ref()?;
@@ -628,9 +742,7 @@ pub fn channel_rerank_order(
     let order = match rerank.client.rank(&request) {
         Ok(order) => order,
         Err(error) => {
-            diagnostics::warn(format!(
-                "[host] 联网搜索重排不可用，改用本地排序：{error}"
-            ));
+            diagnostics::warn(format!("[host] 联网搜索重排不可用，改用本地排序：{error}"));
             return None;
         }
     };
@@ -662,20 +774,22 @@ fn reranked_channel<T>(
     items: Vec<T>,
     text_of: impl Fn(&T) -> String,
 ) -> Vec<T> {
-    if !options.rerank.active() || items.len() <= RERANK_KEEP_PER_CHANNEL {
-        return items;
-    }
-    let texts: Vec<String> = items.iter().map(text_of).collect();
+    let texts: Vec<String> = items.iter().map(&text_of).collect();
     let state = serde_json::json!({
         "query": query,
         "language": language,
         "result_count": items.len(),
     });
-    match channel_rerank_order(options, state, query, &texts) {
-        Some(order) => apply_order(items, &order)
-            .into_iter()
-            .take(RERANK_KEEP_PER_CHANNEL)
-            .collect(),
+    match channel_ranking(options, state, query, &texts) {
+        Some(ranking) => {
+            let ordered = apply_order(items, &ranking.order);
+            // 关键词兜底只是圈出候选，没有「取前几条」的依据：条数由调用方的 max_results 决定。
+            if ranking.lane == RankLane::Keyword {
+                ordered
+            } else {
+                ordered.into_iter().take(RERANK_KEEP_PER_CHANNEL).collect()
+            }
+        }
         None => items,
     }
 }
@@ -727,7 +841,15 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
     };
 
     if engine == MIXED_ENGINE {
-        return mixed_search(options, &query, explicit_max_results, language.as_deref());
+        // GitHub / arXiv / Hugging Face 不在综合搜索的默认渠道里：只有 `sources` 点名才加入。
+        let extra_sources = optional_sources(arguments);
+        return mixed_search(
+            options,
+            &query,
+            explicit_max_results,
+            language.as_deref(),
+            &extra_sources,
+        );
     }
 
     if API_ENGINES.contains(&engine.as_str()) {
@@ -740,7 +862,13 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
         return Err(ToolError::new("未找到相关搜索结果（或页面结构无法解析）。"));
     }
     // 排序开启时取排序靠前的若干条；未开启时按 max_results 截断。
-    let results = reranked_channel(options, &query, language.as_deref(), results, candidate_text);
+    let results = reranked_channel(
+        options,
+        &query,
+        language.as_deref(),
+        results,
+        candidate_text,
+    );
     let elapsed = started.elapsed().as_secs_f64();
     Ok(format_results(
         &engine,
@@ -814,8 +942,9 @@ fn channel_results(
 
 /// 混合搜索：并发查询全部可用渠道，按 URL 去重后合并。
 ///
-/// 「可用」= 五个抓页面型渠道，加上已配置凭据的接口型渠道（AnySearch 无凭据也参与）；凭据未配置的
-/// 接口型渠道直接跳过（不是失败）。单路失败只记录在案的失败清单里并继续合并其余渠道，全部失败才报错。
+/// 「可用」= 默认抓页面渠道（DuckDuckGo）、`sources` 点名的垂直渠道，加上已配置凭据的接口型渠道
+/// （AnySearch 无凭据也参与）；凭据未配置的接口型渠道直接跳过（不是失败）。
+/// 单路失败只记录在案的失败清单里并继续合并其余渠道，全部失败才报错。
 ///
 /// 条数语义：每路取 [`MIXED_RESULTS_PER_CHANNEL`] 条（排序开启时由 [`RERANK_KEEP_PER_CHANNEL`] 决定
 /// 每路保留前几条），因此总量随渠道数增长、没有固定总数上限；调用方显式给了 `max_results` 才收窄总数。
@@ -824,8 +953,9 @@ fn mixed_search(
     query: &str,
     max_results: Option<i64>,
     language: Option<&str>,
+    extra_sources: &[&'static str],
 ) -> ToolOutcome {
-    let engines = mixed_engines(options);
+    let engines = mixed_engines(options, extra_sources);
     let started = Instant::now();
     let mut merged: Vec<MergedResult> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
@@ -921,17 +1051,54 @@ fn mixed_search(
     ))
 }
 
-/// 混合搜索参与的路：抓页面型全上，接口型只上有凭据的。
+/// 混合搜索参与的路：默认抓页面渠道 + 显式点名的垂直渠道，接口型只上有凭据的。
 ///
 /// AnySearch 是唯一例外：没有凭据也能匿名检索，因此它始终参与。
-fn mixed_engines(options: &WebSearchOptions) -> Vec<&'static str> {
-    let mut engines: Vec<&'static str> = PAGE_ENGINES.to_vec();
+/// `extra_sources` 是调用方通过 `sources` 参数点名的垂直渠道（GitHub / arXiv / Hugging Face）：
+/// 它们不默认参与综合搜索，点名后按固定顺序插在默认渠道之后。
+fn mixed_engines(options: &WebSearchOptions, extra_sources: &[&'static str]) -> Vec<&'static str> {
+    let mut engines: Vec<&'static str> = DEFAULT_MIXED_PAGE_ENGINES.to_vec();
+    for engine in OPTIONAL_MIXED_PAGE_ENGINES {
+        if extra_sources.contains(&engine) {
+            engines.push(engine);
+        }
+    }
     for engine in API_ENGINES {
         if engine == ANYSEARCH_ENGINE || !options.api_key_for(engine).trim().is_empty() {
             engines.push(engine);
         }
     }
     engines
+}
+
+/// `sources` 参数 → 可参与综合搜索的垂直渠道（去重、按 [`OPTIONAL_MIXED_PAGE_ENGINES`] 顺序）。
+///
+/// 只接受垂直渠道名；别的名字一律忽略而不是报错——`sources` 是「加几路」的开关，
+/// 写错一个名字不该让整次搜索失败。
+fn optional_sources(arguments: &Map<String, Value>) -> Vec<&'static str> {
+    let Some(value) = arguments.get("sources") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    match value {
+        Value::String(text) => names.extend(
+            text.split(|ch: char| ch == ',' || ch.is_whitespace())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_lowercase),
+        ),
+        Value::Array(items) => names.extend(
+            items
+                .iter()
+                .map(|item| scalar_text(item).trim().to_lowercase()),
+        ),
+        other => names.push(scalar_text(other).trim().to_lowercase()),
+    }
+    OPTIONAL_MIXED_PAGE_ENGINES
+        .iter()
+        .copied()
+        .filter(|engine| names.iter().any(|name| name == engine))
+        .collect()
 }
 
 /// 合并中的一条结果：保留首次出现的标题与摘要，记下提供过它的渠道。
@@ -1023,7 +1190,7 @@ fn api_search(
 ) -> ToolOutcome {
     let started = Instant::now();
     // 排序开启时向接口型引擎要更宽的一池候选（本地只负责挑池子），条数由排序与 max_results 定。
-    let pool = if options.rerank.active() {
+    let pool = if options.rerank.active() || options.embedding.active() {
         max_results.max(RERANK_CHANNEL_POOL as i64)
     } else {
         max_results
@@ -1069,10 +1236,7 @@ fn github_api_results(
     let mut headers = options
         .transport
         .navigation_headers(&options.user_agent, None);
-    headers.push((
-        "Authorization".to_string(),
-        format!("Bearer {token}"),
-    ));
+    headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     headers.push((
         "Accept".to_string(),
         "application/vnd.github+json".to_string(),
@@ -1101,7 +1265,8 @@ fn github_api_results(
 /// GitHub 检索接口的状态码文案：401/403 多与 Token 失效或额度耗尽有关，如实指路配置项。
 fn github_status_message(status: u16) -> String {
     match status {
-        401 => "GitHub Token 无效或已过期，请更新 config.toml 的 [web_search] github_token。".to_string(),
+        401 => "GitHub Token 无效或已过期，请更新 config.toml 的 [web_search] github_token。"
+            .to_string(),
         403 | 429 => "GitHub 接口额度已用尽或拒绝了本次请求（HTTP 403/429），\
 可稍后重试，或确认 github_token 是否有效。"
             .to_string(),
@@ -1138,7 +1303,9 @@ fn parse_github_api_results(body: &str) -> Result<Vec<WebSearchResult>, ToolErro
                 .unwrap_or_default()
                 .to_string();
             if let Some(language) = item.get("language").and_then(Value::as_str) {
-                snippet = format!("{snippet} · {language}").trim_start_matches(" · ").to_string();
+                snippet = format!("{snippet} · {language}")
+                    .trim_start_matches(" · ")
+                    .to_string();
             }
             if let Some(stars) = item.get("stargazers_count").and_then(Value::as_i64) {
                 snippet = format!("{snippet} · ★{stars}");
@@ -1206,7 +1373,10 @@ fn api_request(
     if engine == TINYFISH_ENGINE {
         headers = vec![("X-API-Key".to_string(), api_key.to_string())];
         // 接口一次只回一页（默认 10 条），没有条数参数：`max_results` 由调用方在本地截断。
-        let url = build_url(TINYFISH_ENDPOINT, &[("query".to_string(), query.to_string())]);
+        let url = build_url(
+            TINYFISH_ENDPOINT,
+            &[("query".to_string(), query.to_string())],
+        );
         return (url, headers, String::new());
     }
     let payload = match engine {
@@ -1724,8 +1894,14 @@ mod tests {
     fn duckduckgo_endpoint_carries_the_region() {
         let (url, params) = endpoint("duckduckgo", "rust", None);
         assert_eq!(url, "https://html.duckduckgo.com/html/");
-        assert!(params.contains(&("q".to_string(), "rust".to_string())), "{params:?}");
-        assert!(params.contains(&("kl".to_string(), "cn-zh".to_string())), "{params:?}");
+        assert!(
+            params.contains(&("q".to_string(), "rust".to_string())),
+            "{params:?}"
+        );
+        assert!(
+            params.contains(&("kl".to_string(), "cn-zh".to_string())),
+            "{params:?}"
+        );
     }
 
     #[test]
@@ -1823,11 +1999,17 @@ mod tests {
     fn configured_engine_wins_over_the_argument() {
         // 配成 mixed：传什么 engine 都走综合搜索。
         let transport = Arc::new(RouteTransport::new(&[
-            ("duckduckgo.com", r#"<a class="result__a" href="https://a.example">甲</a>"#),
+            (
+                "duckduckgo.com",
+                r#"<a class="result__a" href="https://a.example">甲</a>"#,
+            ),
             ("github.com", EMPTY_PAGE),
             ("arxiv.org", EMPTY_PAGE),
             ("huggingface.co", EMPTY_PAGE),
-            ("api.anysearch.com", r#"{"code":0,"message":"ok","data":{"results":[]}}"#),
+            (
+                "api.anysearch.com",
+                r#"{"code":0,"message":"ok","data":{"results":[]}}"#,
+            ),
         ]));
         let options = WebSearchOptions {
             default_engine: "mixed".to_string(),
@@ -1868,7 +2050,10 @@ mod tests {
         .expect("配置的 arxiv 应当生效");
         assert!(output.starts_with("来源：arxiv｜"), "{output}");
         let requests = single.take_requests();
-        assert!(requests.iter().all(|url| url.contains("arxiv.org")), "{requests:?}");
+        assert!(
+            requests.iter().all(|url| url.contains("arxiv.org")),
+            "{requests:?}"
+        );
     }
 
     #[test]
@@ -1896,9 +2081,12 @@ mod tests {
             "缺少 Firecrawl 的 API Key：请在 config.toml 的 [web_search] 段填写 firecrawl_api_key。"
         );
         assert_eq!(
-            web_search(&engine_options("tinyfish"), &arguments(json!({"query": "x"})))
-                .expect_err("缺 TinyFish 密钥应当被拒绝")
-                .message,
+            web_search(
+                &engine_options("tinyfish"),
+                &arguments(json!({"query": "x"}))
+            )
+            .expect_err("缺 TinyFish 密钥应当被拒绝")
+            .message,
             "缺少 TinyFish 的 API Key：请在 config.toml 的 [web_search] 段填写 tinyfish_api_key。"
         );
         // 只有 Tavily 的密钥时，Exa 仍然缺凭据（各把钥匙不互相顶替）。
@@ -1929,7 +2117,7 @@ mod tests {
             ..route_options(Arc::clone(&anonymous_transport))
         };
         let output = web_search(&anonymous, &arguments(json!({"query": "rust"})))
-        .expect("没有 Key 也应当走匿名通路");
+            .expect("没有 Key 也应当走匿名通路");
         assert!(
             normalize(&output).starts_with("来源：anysearch｜查询：rust"),
             "{output}"
@@ -2056,8 +2244,14 @@ mod tests {
     #[test]
     fn tinyfish_uses_a_get_request_with_the_api_key_header() {
         let (url, headers, payload) = api_request("tinyfish", "rust 工具", 20, "tf-key");
-        assert_eq!(url, "https://api.search.tinyfish.ai/?query=rust+%E5%B7%A5%E5%85%B7");
-        assert_eq!(headers, vec![("X-API-Key".to_string(), "tf-key".to_string())]);
+        assert_eq!(
+            url,
+            "https://api.search.tinyfish.ai/?query=rust+%E5%B7%A5%E5%85%B7"
+        );
+        assert_eq!(
+            headers,
+            vec![("X-API-Key".to_string(), "tf-key".to_string())]
+        );
         assert_eq!(payload, "");
 
         let body = r#"{"query":"rust","results":[
@@ -2097,11 +2291,8 @@ mod tests {
             tinyfish_api_key: "tf-key".to_string(),
             ..WebSearchOptions::default()
         };
-        let output = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect("配了 Key 应当能检索");
+        let output = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect("配了 Key 应当能检索");
         assert!(
             normalize(&output).starts_with("来源：tinyfish｜查询：rust"),
             "{output}"
@@ -2189,8 +2380,7 @@ mod tests {
             r#"{"items":[{"full_name":"rwf2/Rocket","html_url":"https://github.com/rwf2/Rocket"}]}"#,
         )]));
         let options = route_options(Arc::clone(&transport));
-        let results =
-            github_api_results(&options, "rocket", 10).expect("无 Token 不该报错");
+        let results = github_api_results(&options, "rocket", 10).expect("无 Token 不该报错");
         assert!(results.is_empty(), "无 Token 时不走 REST 通路");
         assert!(
             transport.take_requests().is_empty(),
@@ -2251,9 +2441,17 @@ mod tests {
         let limited = github_status_message(429);
         assert!(limited.contains("额度"), "{limited}");
         let error = parse_github_api_results("not json").expect_err("非 JSON 应当报错");
-        assert!(error.message.contains("响应不是合法 JSON"), "{}", error.message);
+        assert!(
+            error.message.contains("响应不是合法 JSON"),
+            "{}",
+            error.message
+        );
         let error = parse_github_api_results(r#"{"total_count":0}"#).expect_err("缺 items");
-        assert!(error.message.contains("缺少 items 数组"), "{}", error.message);
+        assert!(
+            error.message.contains("缺少 items 数组"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -2281,12 +2479,12 @@ mod tests {
     }
 
     #[test]
-    fn mixed_engines_include_page_channels_and_configured_api_channels() {
+    fn mixed_engines_default_to_generic_channels_only() {
         let options = WebSearchOptions::default();
         assert_eq!(
-            mixed_engines(&options),
-            vec!["duckduckgo", "github", "arxiv", "huggingface", "anysearch"],
-            "没有凭据时跑全部无需凭据的抓页面渠道，外加可匿名调用的 anysearch"
+            mixed_engines(&options, &[]),
+            vec!["duckduckgo", "anysearch"],
+            "综合搜索默认只跑通用抓页面渠道，外加可匿名调用的 anysearch；垂直渠道默认不掺进来"
         );
         let configured = WebSearchOptions {
             tavily_api_key: "tvly-x".to_string(),
@@ -2294,16 +2492,8 @@ mod tests {
             ..WebSearchOptions::default()
         };
         assert_eq!(
-            mixed_engines(&configured),
-            vec![
-                "duckduckgo",
-                "github",
-                "arxiv",
-                "huggingface",
-                "tavily",
-                "firecrawl",
-                "anysearch"
-            ],
+            mixed_engines(&configured, &[]),
+            vec!["duckduckgo", "tavily", "firecrawl", "anysearch"],
             "已配凭据的接口型渠道按固定顺序追加，未配的跳过（anysearch 始终在列）"
         );
 
@@ -2313,16 +2503,43 @@ mod tests {
             ..WebSearchOptions::default()
         };
         assert_eq!(
-            mixed_engines(&with_tinyfish),
-            vec![
-                "duckduckgo",
-                "github",
-                "arxiv",
-                "huggingface",
-                "anysearch",
-                "tinyfish"
-            ]
+            mixed_engines(&with_tinyfish, &[]),
+            vec!["duckduckgo", "anysearch", "tinyfish"]
         );
+    }
+
+    #[test]
+    fn vertical_channels_join_mixed_only_when_named() {
+        let options = WebSearchOptions::default();
+        // 点名顺序不影响结果顺序：一律按固定次序排在默认渠道之后。
+        assert_eq!(
+            mixed_engines(&options, &["huggingface", "github"]),
+            vec!["duckduckgo", "github", "huggingface", "anysearch"]
+        );
+        assert_eq!(
+            mixed_engines(&options, &["arxiv"]),
+            vec!["duckduckgo", "arxiv", "anysearch"]
+        );
+        assert_eq!(
+            mixed_engines(&options, &["github", "arxiv", "huggingface"]),
+            vec!["duckduckgo", "github", "arxiv", "huggingface", "anysearch"]
+        );
+    }
+
+    #[test]
+    fn sources_argument_accepts_list_text_and_ignores_unknown_names() {
+        let names =
+            |value: Value| optional_sources(&arguments(json!({"query": "x", "sources": value})));
+        assert_eq!(names(json!(["github"])), vec!["github"]);
+        assert_eq!(names(json!("arxiv, GitHub")), vec!["github", "arxiv"]);
+        assert_eq!(
+            names(json!(["huggingface", "huggingface"])),
+            vec!["huggingface"],
+            "重复点名只加一路"
+        );
+        // 非垂直渠道名与引擎名都不该生效：sources 只管「加哪几路垂直渠道」。
+        assert!(names(json!(["tavily", "duckduckgo", "mixed"])).is_empty());
+        assert!(optional_sources(&arguments(json!({"query": "x"}))).is_empty());
     }
 
     #[test]
@@ -2345,10 +2562,7 @@ mod tests {
                     {"title":"戊","url":"https://e.example","snippet":"摘要戊"}
                 ]}}"#,
             ),
-            // 其余抓页面渠道给「无结果」页面：它们参与（进表头）但不贡献条目。
-            ("github.com", EMPTY_PAGE),
-            ("arxiv.org", EMPTY_PAGE),
-            ("huggingface.co", EMPTY_PAGE),
+            // 其余抓页面渠道不再默认参与；这里只给 duckduckgo 与已经配凭据的接口型渠道路由。
         ]));
         let options = WebSearchOptions {
             tavily_api_key: "tvly-x".to_string(),
@@ -2360,22 +2574,22 @@ mod tests {
         )
         .expect("混合搜索应当成功");
 
-        // 四路抓页面渠道 + 已配凭据的 tavily + 始终参与的 anysearch 都请求了；
-        // 没配凭据的 exa / firecrawl 不请求。
+        // DuckDuckGo + 已配凭据的 tavily + 始终参与的 anysearch 三路请求；
+        // 没配凭据的 exa / firecrawl 不请求，未点名的垂直渠道也不请求。
         let requests = transport.take_requests();
-        assert_eq!(requests.len(), 6, "{requests:?}");
+        assert_eq!(requests.len(), 3, "{requests:?}");
         assert!(requests.iter().any(|url| url.contains("duckduckgo.com")));
-        assert!(requests.iter().any(|url| url.contains("github.com")));
-        assert!(requests.iter().any(|url| url.contains("arxiv.org")));
-        assert!(requests.iter().any(|url| url.contains("huggingface.co")));
         assert!(requests.iter().any(|url| url.contains("api.tavily.com")));
         assert!(requests.iter().any(|url| url.contains("api.anysearch.com")));
+        assert!(!requests.iter().any(|url| url.contains("github.com")));
+        assert!(!requests.iter().any(|url| url.contains("arxiv.org")));
+        assert!(!requests.iter().any(|url| url.contains("huggingface.co")));
         assert!(!requests.iter().any(|url| url.contains("api.exa.ai")));
 
         // `https://a.example/x` 与 `https://a.example/x/` 是同一份：两路合并后来源标注齐全。
         let normalized = normalize(&output);
         assert!(
-            normalized.starts_with("来源：mixed（duckduckgo+github+arxiv+huggingface+tavily+anysearch）｜查询：rust｜用时：{ELAPSED}s｜共 5 条（去重 1 条）"),
+            normalized.starts_with("来源：mixed（duckduckgo+tavily+anysearch）｜查询：rust｜用时：{ELAPSED}s｜共 5 条（去重 1 条）"),
             "{normalized}"
         );
         assert!(
@@ -2411,13 +2625,50 @@ mod tests {
     }
 
     #[test]
+    fn sources_argument_adds_vertical_channels_to_the_request_set() {
+        let transport = Arc::new(RouteTransport::new(&[
+            ("duckduckgo.com", EMPTY_PAGE),
+            ("github.com", EMPTY_PAGE),
+            ("arxiv.org", EMPTY_PAGE),
+            ("huggingface.co", EMPTY_PAGE),
+            (
+                "api.anysearch.com",
+                r#"{"code":0,"message":"ok","data":{"results":[{"title":"甲","url":"https://a.example"}]}}"#,
+            ),
+        ]));
+        let options = mixed_options(Arc::clone(&transport));
+        let output = web_search(
+            &options,
+            &arguments(json!({"query": "rust", "sources": ["arxiv", "github"]})),
+        )
+        .expect("混合搜索应当成功");
+
+        let requests = transport.take_requests();
+        assert!(
+            requests.iter().any(|url| url.contains("github.com")),
+            "点名 github 应当请求它：{requests:?}"
+        );
+        assert!(
+            requests.iter().any(|url| url.contains("arxiv.org")),
+            "点名 arxiv 应当请求它：{requests:?}"
+        );
+        assert!(
+            !requests.iter().any(|url| url.contains("huggingface.co")),
+            "没点名的 huggingface 不参与：{requests:?}"
+        );
+        let normalized = normalize(&output);
+        assert!(
+            normalized.starts_with("来源：mixed（duckduckgo+github+arxiv+anysearch）｜"),
+            "{normalized}"
+        );
+    }
+
+    #[test]
     fn mixed_search_without_max_results_has_no_total_cap() {
         // 两路各 10 条且 URL 全不相同：没有总数上限，合并后应回 20 条（旧实现会压在 50 以内）。
         let ddg: String = (0..10)
             .map(|index| {
-                format!(
-                    r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>"#
-                )
+                format!(r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>"#)
             })
             .collect();
         let anysearch: String = format!(
@@ -2434,11 +2685,8 @@ mod tests {
             ("api.anysearch.com", &anysearch),
         ]));
         let options = mixed_options(transport);
-        let output = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect("混合搜索应当成功");
+        let output =
+            web_search(&options, &arguments(json!({"query": "rust"}))).expect("混合搜索应当成功");
         let normalized = normalize(&output);
         assert!(
             normalized.contains("共 20 条（去重 0 条）"),
@@ -2452,9 +2700,7 @@ mod tests {
         // `max_results` 只收窄总数，不会把每路抬高：duckduckgo 给了 20 条也只取 10 条。
         let ddg: String = (0..20)
             .map(|index| {
-                format!(
-                    r#"<a class="result__a" href="https://ddg.example/{index}">甲{index}</a>"#
-                )
+                format!(r#"<a class="result__a" href="https://ddg.example/{index}">甲{index}</a>"#)
             })
             .collect();
         let transport = Arc::new(RouteTransport::new(&[("duckduckgo.com", &ddg)]));
@@ -2476,9 +2722,7 @@ mod tests {
         // 两路各 10 条：排序开启后每路只留排序靠前的 5 条，合计 10 条（不是 5 条总量）。
         let ddg: String = (0..10)
             .map(|index| {
-                format!(
-                    r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>"#
-                )
+                format!(r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>"#)
             })
             .collect();
         let anysearch: String = format!(
@@ -2499,11 +2743,8 @@ mod tests {
             rerank: rerank_options(client.clone()),
             ..mixed_options(transport)
         };
-        let output = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect("混合搜索应当成功");
+        let output =
+            web_search(&options, &arguments(json!({"query": "rust"}))).expect("混合搜索应当成功");
         let normalized = normalize(&output);
         assert!(
             normalized.contains("共 10 条（去重 0 条）"),
@@ -2513,7 +2754,10 @@ mod tests {
         assert_eq!(client.batches(), vec![10, 10]);
         // 倒序取前五 → 每路的第 9..5 条（对应「甲9」…「甲5」）。
         assert!(normalized.contains("甲9"), "{normalized}");
-        assert!(!normalized.contains("甲4\n"), "第 6 条起被截掉：{normalized}");
+        assert!(
+            !normalized.contains("甲4\n"),
+            "第 6 条起被截掉：{normalized}"
+        );
     }
 
     #[test]
@@ -2547,30 +2791,24 @@ mod tests {
             tavily_api_key: "tvly-x".to_string(),
             ..mixed_options(transport)
         };
-        let output = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect("单路失败不该让整次搜索失败");
+        let output = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect("单路失败不该让整次搜索失败");
         let normalized = normalize(&output);
         assert!(
             normalized.contains("来源：mixed（duckduckgo）｜查询：rust"),
             "{normalized}"
         );
         assert!(
-            normalized.contains("失败渠道：github：无法连接到搜索引擎（网络不可达）。"),
+            normalized.contains("失败渠道：tavily：无法连接到搜索引擎（网络不可达）。"),
             "{normalized}"
         );
-        for engine in ["arxiv", "huggingface"] {
+        // 未点名的垂直渠道默认不参与，因此也不会出现在失败清单里。
+        for engine in ["github", "arxiv", "huggingface"] {
             assert!(
-                normalized.contains(&format!("{engine}：无法连接到搜索引擎（网络不可达）。")),
-                "{engine} 的失败也要如实列出：{normalized}"
+                !normalized.contains(&format!("{engine}：无法连接到搜索引擎（网络不可达）。")),
+                "{engine} 默认不参与综合搜索：{normalized}"
             );
         }
-        assert!(
-            normalized.contains("tavily：无法连接到搜索引擎（网络不可达）。"),
-            "{normalized}"
-        );
         // AnySearch 始终参与，因此它连不上时也会如实出现在失败清单里。
         assert!(
             normalized.contains("anysearch：无法连接到搜索引擎（网络不可达）。"),
@@ -2583,11 +2821,8 @@ mod tests {
     fn mixed_search_fails_only_when_every_channel_fails() {
         let transport = Arc::new(RouteTransport::new(&[]));
         let options = mixed_options(transport);
-        let error = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect_err("全部渠道失败应当报错");
+        let error = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect_err("全部渠道失败应当报错");
         assert!(
             error
                 .message
@@ -2595,32 +2830,30 @@ mod tests {
             "{}",
             error.message
         );
-        assert!(error.message.contains("github："), "{}", error.message);
-        assert!(error.message.contains("huggingface："), "{}", error.message);
+        assert!(error.message.contains("anysearch："), "{}", error.message);
+        assert!(
+            !error.message.contains("github："),
+            "未点名的垂直渠道不该出现在失败清单里：{}",
+            error.message
+        );
     }
 
     #[test]
     fn mixed_search_reports_when_no_channel_has_results() {
-        // 所有抓页面渠道都能打开但一条结果都解析不出来；anysearch 匿名请求返回空列表。
+        // 所有默认渠道都能打开但一条结果都解析不出来；anysearch 匿名请求返回空列表。
         let transport = Arc::new(RouteTransport::new(&[
             ("duckduckgo.com", EMPTY_PAGE),
-            ("github.com", EMPTY_PAGE),
-            ("arxiv.org", EMPTY_PAGE),
-            ("huggingface.co", EMPTY_PAGE),
             (
                 "api.anysearch.com",
                 r#"{"code":0,"message":"success","data":{"results":[]}}"#,
             ),
         ]));
         let options = mixed_options(transport);
-        let error = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect_err("没有任何结果应当报错");
+        let error = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect_err("没有任何结果应当报错");
         assert_eq!(
             error.message,
-            "未找到相关搜索结果（已请求 duckduckgo、github、arxiv、huggingface、anysearch）。"
+            "未找到相关搜索结果（已请求 duckduckgo、anysearch）。"
         );
     }
 
@@ -2638,28 +2871,21 @@ mod tests {
                     {"title":"丙","url":"https://c.example","snippet":"摘要丙"}
                 ]}}"#,
             ),
-            ("github.com", EMPTY_PAGE),
-            ("arxiv.org", EMPTY_PAGE),
-            ("huggingface.co", EMPTY_PAGE),
         ]));
         let options = mixed_options(transport.clone());
-        let output = web_search(
-            &options,
-            &arguments(json!({"query": "rust"})),
-        )
-        .expect("抓页面渠道都该成功");
+        let output =
+            web_search(&options, &arguments(json!({"query": "rust"}))).expect("抓页面渠道都该成功");
         let normalized = normalize(&output);
         assert!(
-            normalized
-                .contains("来源：mixed（duckduckgo+github+arxiv+huggingface+anysearch）"),
+            normalized.contains("来源：mixed（duckduckgo+anysearch）"),
             "{normalized}"
         );
         assert!(!normalized.contains("失败渠道"), "{normalized}");
         let requests = transport.take_requests();
         assert_eq!(
             requests.len(),
-            5,
-            "只请求四个抓页面渠道与 anysearch：{requests:?}"
+            2,
+            "只请求默认渠道与 anysearch：{requests:?}"
         );
         assert!(
             !requests
@@ -2797,8 +3023,8 @@ mod tests {
     }
 
     #[test]
-    fn channel_rerank_falls_back_to_local_order_when_the_service_fails() {
-        // 首个候选是第 0 条 → 桩直接报错：本次排序不可用。
+    fn channel_rerank_falls_back_to_keyword_order_when_the_service_fails() {
+        // 首个候选是第 0 条 → 桩直接报错：决策模型不可用，回退关键词排序。
         let client = StubRerank::new(vec![0]);
         let options = WebSearchOptions {
             rerank: rerank_options(client),
@@ -2806,11 +3032,14 @@ mod tests {
         };
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
         let texts: Vec<String> = items.iter().map(candidate_text).collect();
-        assert!(
-            channel_rerank_order(&options, json!({"query": "rust"}), "rust", &texts).is_none(),
-            "决策服务不可用时交回本地顺序"
+        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("决策模型失败仍应有兜底排序");
+        assert_eq!(
+            ranking.lane,
+            RankLane::Keyword,
+            "决策模型不可用时应回退关键词排序"
         );
-        // 收口退回原顺序，且不截断（没有排序就没有「取前五条」的依据）。
+        // 关键词兜底不截断：条数仍由调用方决定。
         let kept = reranked_channel(&options, "rust", None, items, candidate_text);
         assert_eq!(kept.len(), MIXED_RESULTS_PER_CHANNEL as usize);
         assert_eq!(kept[0].title, "结果0");
@@ -2829,20 +3058,26 @@ mod tests {
             .map(candidate_text)
             .collect();
         assert!(channel_rerank_order(&options, json!({"query": "rust"}), "rust", &few).is_none());
-        // 开关关着时同样不送审。
+        // 开关关着时同样不送审（两个排序开关都关，完全保留引擎顺序）。
         let off = WebSearchOptions::default();
         let many: Vec<String> = results(MIXED_RESULTS_PER_CHANNEL as usize)
             .iter()
             .map(candidate_text)
             .collect();
-        assert!(channel_rerank_order(&off, json!({"query": "rust"}), "rust", &many).is_none());
+        assert!(
+            channel_ranking(&off, json!({"query": "rust"}), "rust", &many).is_none(),
+            "两个排序开关都关着时不介入"
+        );
         // 送审后一条都没问过桩（开关关着）。
         assert!(client.batches().is_empty());
     }
 
     #[test]
     fn reranked_single_engine_keeps_five_and_respects_a_smaller_max_results() {
-        let transport = Arc::new(RouteTransport::new(&[("duckduckgo.com", &duckduckgo_page(50))]));
+        let transport = Arc::new(RouteTransport::new(&[(
+            "duckduckgo.com",
+            &duckduckgo_page(50),
+        )]));
         let client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(client),
@@ -2867,6 +3102,175 @@ mod tests {
         let normalized = normalize(&output);
         assert!(normalized.contains("共 3 条"), "{normalized}");
         assert!(normalized.contains("1. 结果9"), "{normalized}");
+    }
+
+    /// 向量桩：按候选文本查表返回向量，可配置为失败。
+    struct StubEmbedding {
+        vectors: std::collections::HashMap<String, Vec<f32>>,
+        fail: bool,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl StubEmbedding {
+        fn new(vectors: &[(&str, Vec<f32>)]) -> Arc<Self> {
+            Arc::new(Self {
+                vectors: vectors
+                    .iter()
+                    .map(|(text, vector)| (text.to_string(), vector.clone()))
+                    .collect(),
+                fail: false,
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                vectors: std::collections::HashMap::new(),
+                fail: true,
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().expect("记录未被毒化").len()
+        }
+    }
+
+    impl crate::embedding_client::EmbeddingClient for StubEmbedding {
+        fn embed(
+            &self,
+            _channel: &crate::embedding_client::EmbeddingChannel,
+            inputs: &[String],
+        ) -> Result<Vec<Vec<f32>>, String> {
+            self.calls
+                .lock()
+                .expect("记录未被毒化")
+                .push(inputs.to_vec());
+            if self.fail {
+                return Err("桩：向量服务不可用".to_string());
+            }
+            Ok(inputs
+                .iter()
+                .map(|text| {
+                    self.vectors
+                        .get(text)
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.0, 0.0])
+                })
+                .collect())
+        }
+    }
+
+    /// 向量排序运行期：开关与渠道齐备，执行器换成桩。
+    fn embedding_options(client: Arc<StubEmbedding>) -> Arc<EmbeddingOptions> {
+        Arc::new(EmbeddingOptions {
+            enabled: true,
+            channel: Some(crate::embedding_client::EmbeddingChannel {
+                model: "text-embedding-3-small".to_string(),
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key: "sk_test".to_string(),
+                dimensions: 0,
+                batch_size: 64,
+                timeout_seconds: 5,
+            }),
+            cache: Arc::new(crate::embedding_client::EmbeddingCache::default()),
+            client,
+        })
+    }
+
+    /// 候选进向量请求前会被压缩空白（与 `embedding_client::clamp_input` 同口径），
+    /// 桩的键必须按压缩后的文本登记，否则查不到向量。
+    fn collapsed(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// 两条通路都启用时：向量优先，且不再调用决策模型。
+    #[test]
+    fn vector_lane_wins_over_decision_lane_when_both_enabled() {
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        let texts: Vec<String> = items.iter().map(candidate_text).collect();
+        // 「结果1」与查询最接近，应排第一；决策模型的桩会把顺序倒过来，用它的调用判断谁生效。
+        let nearest = collapsed(&texts[1]);
+        let decision_client = StubRerank::new(Vec::new());
+        let embedding_client =
+            StubEmbedding::new(&[("rust", vec![1.0, 0.0]), (nearest.as_str(), vec![1.0, 0.0])]);
+        let options = WebSearchOptions {
+            rerank: rerank_options(decision_client.clone()),
+            embedding: embedding_options(embedding_client.clone()),
+            ..WebSearchOptions::default()
+        };
+        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("两条通路都启用时应当排出来");
+        assert_eq!(ranking.lane, RankLane::Vector, "向量优先");
+        assert!(
+            decision_client.batches().is_empty(),
+            "向量成功时不该再问决策模型"
+        );
+        assert!(embedding_client.call_count() > 0, "向量通路应当被调用");
+        assert_eq!(ranking.order.len(), texts.len(), "每个候选都有名次");
+        assert_eq!(ranking.order[0], 1, "语义最近的「结果1」排第一");
+    }
+
+    /// 向量失败时回退决策模型，且决策模型的名次生效。
+    #[test]
+    fn decision_lane_takes_over_when_vector_fails() {
+        let decision_client = StubRerank::new(Vec::new());
+        let options = WebSearchOptions {
+            rerank: rerank_options(decision_client.clone()),
+            embedding: embedding_options(StubEmbedding::failing()),
+            ..WebSearchOptions::default()
+        };
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        let texts: Vec<String> = items.iter().map(candidate_text).collect();
+        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("向量失败仍应由决策模型排出来");
+        assert_eq!(ranking.lane, RankLane::Decision, "回退到决策模型");
+        assert!(!decision_client.batches().is_empty(), "决策模型应当被调用");
+        // 决策桩把这 10 条倒序返回。
+        assert_eq!(ranking.order[0], 9, "决策模型给出的名次生效");
+    }
+
+    /// 两条通路都失败时回退关键词排序，检索不失败。
+    #[test]
+    fn keyword_lane_is_the_last_resort_when_both_fail() {
+        let options = WebSearchOptions {
+            rerank: rerank_options(StubRerank::new(vec![0])),
+            embedding: embedding_options(StubEmbedding::failing()),
+            ..WebSearchOptions::default()
+        };
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        let texts: Vec<String> = items.iter().map(candidate_text).collect();
+        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("两条通路都失败仍应有兜底");
+        assert_eq!(ranking.lane, RankLane::Keyword, "最终回退关键词排序");
+        // 每条摘要都命中「rust」，覆盖度打平 → 保持引擎原顺序。
+        assert_eq!(ranking.order, (0..texts.len()).collect::<Vec<_>>());
+    }
+
+    /// 只开向量开关时也要取宽候选池（不依赖决策模型开关）。
+    #[test]
+    fn vector_only_search_still_orders_results() {
+        let transport = Arc::new(RouteTransport::new(&[(
+            "duckduckgo.com",
+            &duckduckgo_page(50),
+        )]));
+        // 让第 7 条与查询同一方向：它应被顶到第一。
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        let nearest = collapsed(&candidate_text(&items[7]));
+        let embedding_client =
+            StubEmbedding::new(&[("rust", vec![1.0, 0.0]), (nearest.as_str(), vec![1.0, 0.0])]);
+        let options = WebSearchOptions {
+            embedding: embedding_options(embedding_client),
+            ..route_options(transport)
+        };
+        let output = web_search(&options, &arguments(json!({"query": "rust"})))
+            .expect("向量排序下的搜索应当成功");
+        let normalized = normalize(&output);
+        assert!(normalized.contains("共 5 条"), "{normalized}");
+        assert!(
+            normalized.contains("1. 结果7"),
+            "语义最近者排第一：{normalized}"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；另提供**凭据注入**（`model_credentials_env` / `kernel_credentials_env` / `frame_api_key_env`）——协议帧只带变量名，内核只从环境读密钥，所以 `config.toml` 里的字面 `api_key` 必须由宿主在起内核时补进子进程环境 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效；综合搜索默认只跑 DuckDuckGo 与已配凭据的接口型渠道，GitHub/arXiv/Hugging Face 属垂直站点，需用 `sources` 参数点名才加入）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
@@ -108,6 +108,15 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank`、`MemoryOptions.rerank` 与
 `WebSearchOptions.rerank`）。
 
+联网搜索另有一条**并联**的向量排序通路（`[features] web_search_embedding_rerank`，装配到
+`WebSearchOptions.embedding`，复用 `embedding_client`；配置仍写在 `decision_models.toml`，TUI 把
+它画在「向量模型」页顶部）。它与决策模型排序互不影响，按固定优先级
+逐级尝试（`channel_ranking` 的 `RankLane`）：**向量优先** → 决策模型 → 本地关键词。两者都开启
+时只用向量；向量不可用（未配渠道、无凭据、请求失败）才回退决策模型；两条都不可用时回退
+关键词覆盖度排序，搜索不会失败。只开向量时同样按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；
+一旦落到关键词兜底，条数交回调用方的 `max_results`（兜底只圈候选、没有「取前几条」的依据）。
+两个开关都关着时完全不介入，保留引擎自身顺序。
+
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
   调用方的 `max_results`**，不做固定截断。
@@ -117,6 +126,8 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   总量上限；只有调用方显式给了 `max_results` 才收窄总数。没有分组的中间层，也**没有 25 条上限**
   （旧的分组机制 `RERANK_GROUPS` / `RERANK_GROUP_SIZE` / `RERANK_POOL_LIMIT` / `RERANK_OUTPUT_LIMIT`
   已删除）。单引擎调用就是「唯一一路」，因此排序后同样只回 5 条。
+- **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与）；
+  GitHub / arXiv / Hugging Face 是垂直站点，用 `sources` 参数点名才加进来，单独选它们作引擎时不受影响。
 - **未开启排序时**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条、总量不限（显式
   `max_results` 才收窄）；单引擎与接口型引擎仍按 `max_results` 截断，上限 `MAX_RESULTS_PER_ENGINE`（50）。
 - **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、网络失败、响应不可解析都退回本地
@@ -180,6 +191,9 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   `advisor_replies`（本回合已有的顾问答复，没有时该字段不出现）；问题是一个 `choice` 提问
   （候选项键 `o0`、`o1`…），读回 `answers.<id>.choice` 对应的选项作为答案，缺失时退化取
   `probabilities` 最高的一项。
+- 候选项末尾固定追加一项「我有自己的想法...」（面板自定义作答入口的同款文案）：选它就等于说
+  给定选项都答不上这个问题、要用户自己填答案，托管按不可用处理并退回人工提问。没有这一项时，
+  需要用户手写内容的提问会被决策模型硬选一个示例选项，替用户编出他没写过的答案。
 - **没有选项的提问不托管**：决策模型只能从给定候选项里选，写不出自由文本，因此照旧交给用户。
 - **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都退回人工
   提问，面板照旧停在那里等用户（与检索重排同一语义，和审查通道的 fail-closed 相反）。

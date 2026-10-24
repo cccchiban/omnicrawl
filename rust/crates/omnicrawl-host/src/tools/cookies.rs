@@ -173,7 +173,10 @@ impl CookieJar {
             }
             (Some(index), false) => {
                 let created_at = guard[index].created_at;
-                guard[index] = Cookie { created_at, ..cookie };
+                guard[index] = Cookie {
+                    created_at,
+                    ..cookie
+                };
                 true
             }
             (None, false) => {
@@ -533,7 +536,11 @@ fn parse_http_date(text: &str) -> Option<i64> {
                 day = Some(number);
             } else if year.is_none() {
                 // 两位年份：70 之后算 19xx，其余算 20xx（与 RFC 6265 的提示一致）。
-                year = Some(if number < 70 { 2000 + number } else { 1900 + number });
+                year = Some(if number < 70 {
+                    2000 + number
+                } else {
+                    1900 + number
+                });
             }
         }
     }
@@ -581,7 +588,8 @@ mod tests {
         let jar = CookieJar::new();
         assert!(jar.store("https://example.com/a/b/page", "k=1"));
         assert_eq!(
-            jar.cookie_header("https://example.com/a/b/other").as_deref(),
+            jar.cookie_header("https://example.com/a/b/other")
+                .as_deref(),
             Some("k=1")
         );
         assert_eq!(jar.cookie_header("https://example.com/a/other"), None);
@@ -768,10 +776,7 @@ mod tests {
             "__Host-域=1; Secure; Path=/; Domain=example.com"
         ));
         // Path 不是 `/`：拒收。
-        assert!(!jar.store(
-            "https://example.com/",
-            "__Host-路径=1; Secure; Path=/app"
-        ));
+        assert!(!jar.store("https://example.com/", "__Host-路径=1; Secure; Path=/app"));
         // 缺 Secure：拒收。
         assert!(!jar.store("https://example.com/", "__Host-无安全=1; Path=/"));
         assert_eq!(jar.count(), 1);
@@ -814,14 +819,15 @@ mod tests {
         jar.store("https://example.com/", "sid=1");
         let mut headers = Vec::new();
         apply_header(Some(&jar), "https://example.com/", &mut headers);
-        assert_eq!(
-            headers,
-            vec![("cookie".to_string(), "sid=1".to_string())]
-        );
+        assert_eq!(headers, vec![("cookie".to_string(), "sid=1".to_string())]);
 
         let mut explicit = vec![("Cookie".to_string(), "manual=1".to_string())];
         apply_header(Some(&jar), "https://example.com/", &mut explicit);
-        assert_eq!(explicit.len(), 1, "重复的 Cookie 头会破坏语义：{explicit:?}");
+        assert_eq!(
+            explicit.len(),
+            1,
+            "重复的 Cookie 头会破坏语义：{explicit:?}"
+        );
     }
 
     /// 缺省不写 `SameSite` 就是 `Lax`：跨站的 POST 不该带上它。
@@ -889,10 +895,7 @@ mod tests {
     #[test]
     fn samesite_none_is_sent_cross_site_when_secure() {
         let jar = CookieJar::new();
-        assert!(jar.store(
-            "https://example.com/",
-            "sid=1; SameSite=None; Secure"
-        ));
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=None; Secure"));
         assert_eq!(
             jar.cookie_header_in(
                 "https://example.com/",
@@ -915,14 +918,8 @@ mod tests {
     #[test]
     fn attribute_order_does_not_change_the_none_secure_rule() {
         let jar = CookieJar::new();
-        assert!(jar.store(
-            "https://example.com/",
-            "sid=1; SameSite=None; Secure"
-        ));
-        assert!(jar.store(
-            "https://example.com/",
-            "sid2=1; Secure; SameSite=None"
-        ));
+        assert!(jar.store("https://example.com/", "sid=1; SameSite=None; Secure"));
+        assert!(jar.store("https://example.com/", "sid2=1; Secure; SameSite=None"));
         assert_eq!(jar.count(), 2);
     }
 

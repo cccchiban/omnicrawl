@@ -201,8 +201,8 @@ pub fn verify_raw_signature(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), VerifyError> {
-    let algorithm = tls12_signature_algorithm(scheme)
-        .ok_or(VerifyError::UnsupportedSignatureScheme(scheme))?;
+    let algorithm =
+        tls12_signature_algorithm(scheme).ok_or(VerifyError::UnsupportedSignatureScheme(scheme))?;
     let cert = EndEntityCert::try_from(leaf)
         .map_err(|error| VerifyError::UntrustedCertificate(format!("叶证书无法解析：{error}")))?;
     cert.verify_signature(algorithm, message, signature)

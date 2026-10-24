@@ -44,7 +44,11 @@ fn document_write_is_captured() {
         r#"<html><body><script>document.write('<h1>写出的小标题</h1>');</script></body></html>"#,
     );
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert!(outcome.written.contains("写出的小标题"), "{}", outcome.written);
+    assert!(
+        outcome.written.contains("写出的小标题"),
+        "{}",
+        outcome.written
+    );
     assert!(outcome.text.contains("写出的小标题"), "{}", outcome.text);
 }
 
@@ -58,7 +62,11 @@ fn set_attribute_and_selector_matching() {
         </script></body></html>"#,
     );
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert!(outcome.html.contains("data-state=\"ready\""), "{}", outcome.html);
+    assert!(
+        outcome.html.contains("data-state=\"ready\""),
+        "{}",
+        outcome.html
+    );
     assert!(outcome.text.contains("改过的文本"), "{}", outcome.text);
     assert!(!outcome.text.contains("原文本"), "{}", outcome.text);
 }
@@ -116,7 +124,11 @@ fn script_error_does_not_block_following_scripts() {
         </body></html>"#,
     );
     assert_eq!(outcome.errors.len(), 1);
-    assert!(outcome.text.contains("第二个脚本照常执行"), "{}", outcome.text);
+    assert!(
+        outcome.text.contains("第二个脚本照常执行"),
+        "{}",
+        outcome.text
+    );
 }
 
 #[test]
@@ -133,7 +145,8 @@ fn sandbox_has_no_network_or_timers() {
         </script></body></html>"#,
     );
     assert!(
-        outcome.text
+        outcome
+            .text
             .contains("fetch-stub,timer-shape,storage-shape"),
         "沙箱的形状应齐全且不真正联网：{}",
         outcome.text
@@ -145,7 +158,10 @@ fn plain_page_reports_no_touch() {
     let outcome = run_inline_scripts("<html><body><p>纯静态正文</p></body></html>");
     assert_eq!(outcome.scripts, 0);
     assert!(!outcome.touched);
-    assert!(!touches_dom(&outcome), "没有脚本动过 DOM 时不应判为 JS 拼装页");
+    assert!(
+        !touches_dom(&outcome),
+        "没有脚本动过 DOM 时不应判为 JS 拼装页"
+    );
     assert!(outcome.text.contains("纯静态正文"));
 }
 
@@ -188,7 +204,9 @@ fn react_host_config_primitives_are_available() {
     );
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
     assert!(
-        outcome.html.contains("data-report=\"2|第二段|第一段|第一段|true|true|true|after=1\""),
+        outcome
+            .html
+            .contains("data-report=\"2|第二段|第一段|第一段|true|true|true|after=1\""),
         "树操作结果不符合预期：{}",
         outcome.html
     );
@@ -276,5 +294,9 @@ fn bounding_rect_returns_numeric_fields() {
         </script></body></html>"#,
     );
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert!(outcome.html.contains("data-rect=\"16/0/0\""), "{}", outcome.html);
+    assert!(
+        outcome.html.contains("data-rect=\"16/0/0\""),
+        "{}",
+        outcome.html
+    );
 }

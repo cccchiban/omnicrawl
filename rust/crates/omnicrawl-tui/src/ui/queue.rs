@@ -187,7 +187,10 @@ mod tests {
     #[test]
     fn rendered_rows_keep_terminal_width() {
         let mut state = state();
-        state.queue_pending("一条很长的排队消息需要被截断到行宽之内".to_string(), Vec::new());
+        state.queue_pending(
+            "一条很长的排队消息需要被截断到行宽之内".to_string(),
+            Vec::new(),
+        );
         let width = 30usize;
         let row = rows(&state)
             .into_iter()

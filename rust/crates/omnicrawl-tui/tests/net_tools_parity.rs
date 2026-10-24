@@ -175,8 +175,7 @@ fn web_search_cases_match_python() {
         let mut expected_requests = strings(&case["requests"]);
         expected_requests.sort();
         assert_eq!(
-            requests,
-            expected_requests,
+            requests, expected_requests,
             "请求 URL 不一致：{:?}",
             case["arguments"]
         );

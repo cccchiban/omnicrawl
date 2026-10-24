@@ -218,12 +218,8 @@ fn grep_bundled(
     }
 
     if matched.len() as i64 > max_results {
-        let inline = format_bundled_matches(
-            uri,
-            &lines,
-            &matched[..max_results as usize],
-            context_lines,
-        );
+        let inline =
+            format_bundled_matches(uri, &lines, &matched[..max_results as usize], context_lines);
         let spill: Vec<String> = matched
             .iter()
             .map(|line_no| format!("{uri}:{line_no}: {}", cap_match_line(lines[line_no - 1])))

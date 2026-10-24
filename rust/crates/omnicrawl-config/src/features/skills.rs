@@ -30,10 +30,7 @@ pub fn load_skills_config(
     })
 }
 
-fn string_list_field(
-    section: &crate::toml::Table,
-    name: &str,
-) -> Result<Vec<String>, ConfigError> {
+fn string_list_field(section: &crate::toml::Table, name: &str) -> Result<Vec<String>, ConfigError> {
     match section.get(name) {
         None => Ok(Vec::new()),
         Some(Value::Array(items)) => {

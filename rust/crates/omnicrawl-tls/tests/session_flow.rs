@@ -84,9 +84,7 @@ impl Signer {
     }
 
     fn rsa() -> Self {
-        Self::Rsa2048(
-            ring::signature::RsaKeyPair::from_pkcs8(LEAF_RSA_KEY).expect("加载 RSA 私钥"),
-        )
+        Self::Rsa2048(ring::signature::RsaKeyPair::from_pkcs8(LEAF_RSA_KEY).expect("加载 RSA 私钥"))
     }
 
     /// CertificateVerify 用的签名算法。
@@ -99,7 +97,11 @@ impl Signer {
 
     fn sign(&self, message: &[u8]) -> Vec<u8> {
         match self {
-            Self::EcdsaP256(key) => key.sign(&rng(), message).expect("ECDSA 签名").as_ref().to_vec(),
+            Self::EcdsaP256(key) => key
+                .sign(&rng(), message)
+                .expect("ECDSA 签名")
+                .as_ref()
+                .to_vec(),
             Self::Rsa2048(key) => {
                 let mut signature = vec![0u8; key.public().modulus_len()];
                 key.sign(
@@ -242,7 +244,11 @@ impl FakeServer {
                 payload: payload.to_vec(),
             })
             .expect("解密客户端 Finished");
-        assert_eq!(kind, ContentType::Handshake, "Finished 必须封在握手内层类型里");
+        assert_eq!(
+            kind,
+            ContentType::Handshake,
+            "Finished 必须封在握手内层类型里"
+        );
         self.transcript.push(&plaintext);
         plaintext
     }
@@ -271,12 +277,7 @@ fn handshake_until_wait_finished(
     chain: &[&[u8]],
     signer: Signer,
 ) -> FakeServer {
-    handshake_until_wait_finished_with_suite(
-        client,
-        chain,
-        signer,
-        CipherSuite::Aes128GcmSha256,
-    )
+    handshake_until_wait_finished_with_suite(client, chain, signer, CipherSuite::Aes128GcmSha256)
 }
 
 /// 同上，但指定服务端协商出的套件。
@@ -378,11 +379,16 @@ fn an_ecdsa_certificate_completes_a_full_handshake() {
     assert_eq!(plaintext.len(), 4 + 32, "SHA-256 的 verify_data 是 32 字节");
 
     // 两端各自的应用密钥必须能互通：客户端写、服务端读（用客户端应用密钥）。
-    let sealed = client.seal_application(b"GET / HTTP/1.1\r\n").expect("加密");
+    let sealed = client
+        .seal_application(b"GET / HTTP/1.1\r\n")
+        .expect("加密");
     let secrets = client.application_secrets().expect("应用密钥");
-    let mut server_read =
-        RecordKey::new(CipherSuite::Aes128GcmSha256.aead(), &secrets.client.key, secrets.client.iv)
-            .expect("服务端应用读密钥");
+    let mut server_read = RecordKey::new(
+        CipherSuite::Aes128GcmSha256.aead(),
+        &secrets.client.key,
+        secrets.client.iv,
+    )
+    .expect("服务端应用读密钥");
     let (kind, body) = server_read.open(&sealed).expect("服务端应当能解开");
     assert_eq!(kind, ContentType::ApplicationData);
     assert_eq!(body, b"GET / HTTP/1.1\r\n");
@@ -420,16 +426,26 @@ fn a_sha384_suite_completes_a_full_handshake() {
     let plaintext = server.expect_client_finished(&client_finished);
     assert_eq!(plaintext.len(), 4 + 48, "SHA-384 的 verify_data 是 48 字节");
 
-    let sealed = client.seal_application(b"GET / HTTP/1.1
-").expect("加密");
+    let sealed = client
+        .seal_application(
+            b"GET / HTTP/1.1
+",
+        )
+        .expect("加密");
     let secrets = client.application_secrets().expect("应用密钥");
-    let mut server_read =
-        RecordKey::new(CipherSuite::Aes256GcmSha384.aead(), &secrets.client.key, secrets.client.iv)
-            .expect("服务端应用读密钥");
+    let mut server_read = RecordKey::new(
+        CipherSuite::Aes256GcmSha384.aead(),
+        &secrets.client.key,
+        secrets.client.iv,
+    )
+    .expect("服务端应用读密钥");
     let (kind, body) = server_read.open(&sealed).expect("服务端应当能解开");
     assert_eq!(kind, ContentType::ApplicationData);
-    assert_eq!(body, b"GET / HTTP/1.1
-");
+    assert_eq!(
+        body,
+        b"GET / HTTP/1.1
+"
+    );
 }
 
 #[test]
@@ -560,7 +576,9 @@ fn an_unsupported_signature_scheme_is_reported_distinctly() {
         .expect_err("不支持的算法必须明确报错");
     assert_eq!(
         error,
-        HandshakeError::Verification(omnicrawl_tls::verify::VerifyError::UnsupportedSignatureScheme(0x0603))
+        HandshakeError::Verification(
+            omnicrawl_tls::verify::VerifyError::UnsupportedSignatureScheme(0x0603)
+        )
     );
 }
 
@@ -628,8 +646,7 @@ fn inspect_policy_accepts_a_self_signed_looking_chain() {
     // 因此主机名不匹配也能握手成功——这正是「不能用于传输机密数据」的含义。
     let mut client = ClientHandshake::new(Family::Chrome, "wrong.example");
     assert_eq!(client.policy(), PeerPolicy::Inspect);
-    let mut server =
-        handshake_until_wait_finished(&mut client, &[LEAF_EC_DER], Signer::ecdsa());
+    let mut server = handshake_until_wait_finished(&mut client, &[LEAF_EC_DER], Signer::ecdsa());
     let finished = server.server_finished();
     client
         .feed_record(&omnicrawl_tls::record::Record {

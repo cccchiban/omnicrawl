@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use omnicrawl_protocol::{
     aggregate_stream_events_ref, parse_arguments_object, ModelReply, ModelStreamEvent,
-    ProviderWarning,
-    ReasoningDelta, TextDelta, ToolCallCompleted, ToolCallStarted, UsageReported,
+    ProviderWarning, ReasoningDelta, TextDelta, ToolCallCompleted, ToolCallStarted, UsageReported,
 };
 use serde_json::Value;
 

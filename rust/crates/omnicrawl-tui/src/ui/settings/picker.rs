@@ -39,7 +39,8 @@ pub fn channel_owns_token(channel: &ChannelRow, token: &str) -> bool {
     }
     token == channel.key
         || (!channel.model_id.is_empty() && token == channel.model_id)
-        || (!channel.profile_id.is_empty() && token.starts_with(&format!("{}/", channel.profile_id)))
+        || (!channel.profile_id.is_empty()
+            && token.starts_with(&format!("{}/", channel.profile_id)))
 }
 
 /// 把配置里的模型引用拆成（渠道 key, 模型 ID）。
@@ -283,7 +284,10 @@ mod tests {
         assert!(channel_matches(&row, ""), "空搜索串命中所有渠道");
         assert!(channel_matches(&row, "硅基"), "中文名参与匹配");
         assert!(channel_matches(&row, "channel-2"), "key 参与匹配");
-        assert!(!channel_matches(&row, "anthropic"), "没命中的关键字要过滤掉");
+        assert!(
+            !channel_matches(&row, "anthropic"),
+            "没命中的关键字要过滤掉"
+        );
         assert!(model_matches("Qwen/Qwen3.5-35B-A3B", "qwen"), "大小写无关");
         assert!(!model_matches("Qwen/Qwen3.5-35B-A3B", "llama"));
     }
@@ -335,10 +339,7 @@ mod tests {
             ],
             "渠道自带模型 + 发现结果 + 当前值"
         );
-        assert!(
-            discovery.wants_discovery("channel-2"),
-            "换渠道后要重新发现"
-        );
+        assert!(discovery.wants_discovery("channel-2"), "换渠道后要重新发现");
         assert_eq!(
             discovery.candidates(Some(&rows[1]), ""),
             Vec::<String>::new(),

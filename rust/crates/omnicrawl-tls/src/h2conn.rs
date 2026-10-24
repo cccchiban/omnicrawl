@@ -1293,7 +1293,8 @@ mod tests {
         let feed = connection.feed(&bad).expect("连接不该因此中断");
 
         // 必须回一条 RST_STREAM(FRAME_SIZE_ERROR) 给流 5。
-        let (reset, _) = parse_frame(&feed.outbound, DEFAULT_MAX_FRAME_SIZE).expect("解析 RST_STREAM");
+        let (reset, _) =
+            parse_frame(&feed.outbound, DEFAULT_MAX_FRAME_SIZE).expect("解析 RST_STREAM");
         assert_eq!(
             reset,
             Frame::RstStream {
@@ -1312,9 +1313,7 @@ mod tests {
             }],
         })
         .expect("编码");
-        connection
-            .feed(&settings)
-            .expect("坏帧之后连接必须仍可用");
+        connection.feed(&settings).expect("坏帧之后连接必须仍可用");
         assert_eq!(connection.peer_max_frame_size(), 32_768);
     }
 

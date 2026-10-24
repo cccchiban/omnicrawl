@@ -106,7 +106,10 @@ mod tests {
         let file = root.join("a.png");
         std::fs::write(&file, PNG).expect("写测试图片");
         let text = format!("  {}\r\n", file.to_string_lossy());
-        assert!(read_pasted_image_path(&text, &root).is_some(), "整段只是路径时尾随空白可以忽略");
+        assert!(
+            read_pasted_image_path(&text, &root).is_some(),
+            "整段只是路径时尾随空白可以忽略"
+        );
     }
 
     #[test]

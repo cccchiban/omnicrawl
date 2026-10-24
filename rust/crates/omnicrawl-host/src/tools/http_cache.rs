@@ -49,8 +49,10 @@ pub fn key_for(url: &str, request_headers: &[(String, String)]) -> String {
         None => url,
     };
     match find_header(request_headers, "cookie") {
-        Some(cookie) => format!("{url}
-{cookie}"),
+        Some(cookie) => format!(
+            "{url}
+{cookie}"
+        ),
         None => url.to_string(),
     }
 }
@@ -68,7 +70,14 @@ fn forbids_storage(headers: &[(String, String)]) -> bool {
         .iter()
         .filter(|(key, _)| key.eq_ignore_ascii_case("cache-control"))
         .flat_map(|(_, value)| value.split(','))
-        .any(|token| token.split('=').next().unwrap_or("").trim().eq_ignore_ascii_case("no-store"))
+        .any(|token| {
+            token
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("no-store")
+        })
 }
 
 /// `Vary: *` 表示「响应因每个请求而异」，不可复用。
@@ -251,7 +260,10 @@ mod tests {
             ]),
         );
         apply_conditional(key, "GET", &mut request);
-        assert_eq!(value_of(&request, "if-none-match").as_deref(), Some("\"v1\""));
+        assert_eq!(
+            value_of(&request, "if-none-match").as_deref(),
+            Some("\"v1\"")
+        );
         assert_eq!(
             value_of(&request, "if-modified-since").as_deref(),
             Some("Wed, 21 Oct 2015 07:28:00 GMT")
@@ -300,12 +312,18 @@ mod tests {
             url,
             200,
             b"one",
-            &headers(&[("etag", "\"v1\""), ("last-modified", "Mon, 01 Jan 2024 00:00:00 GMT")]),
+            &headers(&[
+                ("etag", "\"v1\""),
+                ("last-modified", "Mon, 01 Jan 2024 00:00:00 GMT"),
+            ]),
         );
         reuse(url, &headers(&[("etag", "\"v2\"")])).expect("命中");
         let mut request = headers(&[]);
         apply_conditional(url, "GET", &mut request);
-        assert_eq!(value_of(&request, "if-none-match").as_deref(), Some("\"v2\""));
+        assert_eq!(
+            value_of(&request, "if-none-match").as_deref(),
+            Some("\"v2\"")
+        );
         // 换了强验证器之后不该再带时间条件头。
         assert_eq!(value_of(&request, "if-modified-since"), None);
     }

@@ -49,3 +49,22 @@ fn long_lists_are_truncated_to_hundred() {
         "超长列表应当只保留前 {expected} 项"
     );
 }
+
+/// 大文本的脱敏必须是线性时间：工具输出动辄几百 KB，写入转录时每条 `tool_result`
+/// 都会走两遍这条路径。
+///
+/// 曾经的最内层在每个字节位置都截取 32 个字符、转小写、造两个临时串，192 KB 的输出
+/// 要 7 秒，一次会话写入几十条就把界面拖死。这里用 256 KB 的纯文本钉住复杂度：
+/// 线性实现是百毫秒级，退化成「每字符一次分配」就会明显超时。
+#[test]
+fn large_text_redaction_stays_linear() {
+    let text = "输".repeat(128 * 1024);
+    let started = std::time::Instant::now();
+    let redacted = redact_sensitive_text(&text);
+    let elapsed = started.elapsed();
+    assert_eq!(redacted, text, "没有命中任何规则时应当原样返回");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "256 KB 文本脱敏耗时 {elapsed:?}，疑似退化为逐字符分配"
+    );
+}

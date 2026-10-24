@@ -93,7 +93,8 @@ fn rerank_candidate_text(hit: &SkillSearchHit) -> String {
 }
 
 /// 重排指令：只要求按相关度排序，不做其他判断。
-const RERANK_INSTRUCTIONS: &str = "给定 state 里的检索查询与作用域，判断每个候选项与该查询的相关程度；\
+const RERANK_INSTRUCTIONS: &str =
+    "给定 state 里的检索查询与作用域，判断每个候选项与该查询的相关程度；\
 state 是事实来源，不要根据候选项自身措辞推测查询；候选是一批待选 Skill，排在前面表示更该被使用。";
 
 fn hit_value(hit: &SkillSearchHit) -> Value {

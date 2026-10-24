@@ -75,7 +75,6 @@ pub enum Version {
     Tls13,
 }
 
-
 /// 对端身份校验策略。
 ///
 /// `CertificateVerify` 的**签名**校验永远开启，不受这个策略影响：那一步只证明对端持有
@@ -479,10 +478,8 @@ impl ClientHandshake {
             // RFC 8446 §4.1.4：HRR 之后这个 ClientHello 的 key_share 必须只含
             // **一个** KeyShareEntry。Chromium 档案会在首位塞一个 GREASE 占位项，
             // 重发时带着它就会被判 illegal_parameter（Alert 47）。
-            let single = crate::client_hello::key_share(&[(
-                exchange.group,
-                exchange.public_key.clone(),
-            )]);
+            let single =
+                crate::client_hello::key_share(&[(exchange.group, exchange.public_key.clone())]);
             if let Some(slot) = spec
                 .extensions
                 .iter_mut()
@@ -553,7 +550,8 @@ impl ClientHandshake {
         else {
             return;
         };
-        let (Some(suite), Some(application)) = (self.suite, self.application_secrets.as_ref()) else {
+        let (Some(suite), Some(application)) = (self.suite, self.application_secrets.as_ref())
+        else {
             return;
         };
         // `res master` 的上下文是 client Finished 之后的转录哈希。
@@ -693,26 +691,25 @@ impl ClientHandshake {
         }
         // 服务端只能选我们发过的 key_share。首份 ClientHello 同时发了 X25519 与 P-256，
         // 因此这两个组都可能被直接选中（不必经过 HRR）；HRR 之后只剩一个候选。
-        let exchange = if self.exchange.as_ref().map(|inner| inner.group)
-            == Some(parsed.key_share_group)
-        {
-            self.exchange.take()
-        } else if self.p256_exchange.as_ref().map(|inner| inner.group)
-            == Some(parsed.key_share_group)
-        {
-            self.p256_exchange.take()
-        } else {
-            let offered: Vec<String> = [self.exchange.as_ref(), self.p256_exchange.as_ref()]
-                .into_iter()
-                .flatten()
-                .map(|inner| format!("{:#06x}", inner.group))
-                .collect();
-            return Err(HandshakeError::Malformed(format!(
-                "对端选了组 {:#06x}，但我们只为组 {} 发过公钥",
-                parsed.key_share_group,
-                offered.join("、")
-            )));
-        };
+        let exchange =
+            if self.exchange.as_ref().map(|inner| inner.group) == Some(parsed.key_share_group) {
+                self.exchange.take()
+            } else if self.p256_exchange.as_ref().map(|inner| inner.group)
+                == Some(parsed.key_share_group)
+            {
+                self.p256_exchange.take()
+            } else {
+                let offered: Vec<String> = [self.exchange.as_ref(), self.p256_exchange.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .map(|inner| format!("{:#06x}", inner.group))
+                    .collect();
+                return Err(HandshakeError::Malformed(format!(
+                    "对端选了组 {:#06x}，但我们只为组 {} 发过公钥",
+                    parsed.key_share_group,
+                    offered.join("、")
+                )));
+            };
         let exchange = exchange.ok_or(HandshakeError::Missing("ECDHE 密钥对"))?;
         let shared = exchange
             .agree(&parsed.key_share)
@@ -1038,8 +1035,11 @@ impl ClientHandshake {
 
         // 1.2 的 SKE 签名覆盖两个 random 与曲线参数；漏掉 random 会让验签永远失败，
         // 而错误信息只会说「签名不匹配」。
-        let signed =
-            crate::tls12::signed_key_exchange_message(&client_random, &server_random, &parsed.params);
+        let signed = crate::tls12::signed_key_exchange_message(
+            &client_random,
+            &server_random,
+            &parsed.params,
+        );
         crate::verify::verify_raw_signature(&leaf, parsed.scheme, &signed, &parsed.signature)?;
 
         // 1.2 没有 HRR，服务端只能在我们已给出公钥的组里挑。首份 ClientHello 同时发了
@@ -1081,8 +1081,8 @@ impl ClientHandshake {
             .tls12_client_key
             .take()
             .ok_or(HandshakeError::Missing("1.2 的 ECDHE 公钥"))?;
-        let cke =
-            crate::tls12::client_key_exchange_body(&public_key).map_err(HandshakeError::Malformed)?;
+        let cke = crate::tls12::client_key_exchange_body(&public_key)
+            .map_err(HandshakeError::Malformed)?;
 
         let sealed = {
             let state = self.tls12.as_mut().expect("1.2 状态");
@@ -1115,9 +1115,8 @@ impl ClientHandshake {
                 &state.client_random,
                 &state.server_random,
             );
-            state.write_key = Some(
-                RecordKey12::new(state.suite, &block.client).map_err(HandshakeError::Record)?,
-            );
+            state.write_key =
+                Some(RecordKey12::new(state.suite, &block.client).map_err(HandshakeError::Record)?);
 
             // client Finished 覆盖「到 ServerHelloDone 为止」的转录；算出之后才把它
             // 自己推进转录，供随后的 server Finished 校验使用。
@@ -1180,9 +1179,8 @@ impl ClientHandshake {
                 &state.client_random,
                 &state.server_random,
             );
-            state.read_key = Some(
-                RecordKey12::new(state.suite, &block.server).map_err(HandshakeError::Record)?,
-            );
+            state.read_key =
+                Some(RecordKey12::new(state.suite, &block.server).map_err(HandshakeError::Record)?);
         }
         Ok(())
     }
@@ -1709,7 +1707,9 @@ mod tests {
             kind: ContentType::Handshake,
             payload: server_hello_12(0xc013, &[]),
         };
-        let error = handshake.feed_record(&record).expect_err("CBC 套件不受支持");
+        let error = handshake
+            .feed_record(&record)
+            .expect_err("CBC 套件不受支持");
         let text = error.to_string();
         assert!(text.contains("1.2 套件"), "实际文案：{text}");
         assert!(text.contains("0xc013"), "实际文案：{text}");

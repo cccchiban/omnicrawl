@@ -248,7 +248,12 @@ fn install_headers(context: &mut Context) -> JsResult<()> {
             .constructor(true)
             .build();
     let _ = constructor.set(js_string!("prototype"), prototype.clone(), false, context);
-    let _ = prototype.set(js_string!("constructor"), constructor.clone(), false, context);
+    let _ = prototype.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
     context.register_global_property(js_string!("Headers"), constructor, Attribute::all())?;
     context.register_global_property(
         js_string!("__ornHeadersProto"),
@@ -270,7 +275,12 @@ fn install_response(context: &mut Context) -> JsResult<()> {
             .constructor(true)
             .build();
     let _ = constructor.set(js_string!("prototype"), prototype.clone(), false, context);
-    let _ = prototype.set(js_string!("constructor"), constructor.clone(), false, context);
+    let _ = prototype.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
     context.register_global_property(js_string!("Response"), constructor, Attribute::all())?;
     context.register_global_property(
         js_string!("__ornResponseProto"),
@@ -302,7 +312,11 @@ fn install_xhr(context: &mut Context) -> JsResult<()> {
             1,
         )
         .function(native(xhr_add_listener), js_string!("addEventListener"), 2)
-        .function(native(xhr_remove_listener), js_string!("removeEventListener"), 2)
+        .function(
+            native(xhr_remove_listener),
+            js_string!("removeEventListener"),
+            2,
+        )
         .function(native(xhr_dispatch), js_string!("dispatchEvent"), 1)
         .build();
     let ready_states = [
@@ -321,13 +335,26 @@ fn install_xhr(context: &mut Context) -> JsResult<()> {
             .constructor(true)
             .build();
     let _ = constructor.set(js_string!("prototype"), prototype.clone(), false, context);
-    let _ = prototype.set(js_string!("constructor"), constructor.clone(), false, context);
+    let _ = prototype.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
     // 常量同时挂在构造器上：`xhr.readyState === XMLHttpRequest.DONE` 两种写法都要能读到。
     for (name, value) in ready_states {
         let _ = constructor.set(js_string!(name), JsValue::from(value), false, context);
     }
-    context.register_global_property(js_string!("XMLHttpRequest"), constructor, Attribute::all())?;
-    context.register_global_property(js_string!("__ornXhrProto"), prototype, Attribute::READONLY)?;
+    context.register_global_property(
+        js_string!("XMLHttpRequest"),
+        constructor,
+        Attribute::all(),
+    )?;
+    context.register_global_property(
+        js_string!("__ornXhrProto"),
+        prototype,
+        Attribute::READONLY,
+    )?;
     Ok(())
 }
 
@@ -463,7 +490,11 @@ fn response_object(response: &HttpResponse, context: &mut Context) -> JsResult<J
     Ok(object.into())
 }
 
-fn response_construct(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn response_construct(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let proto = context
         .global_object()
         .get(js_string!("__ornResponseProto"), context)
@@ -558,9 +589,7 @@ fn consume_body(this: &JsValue, context: &mut Context) -> String {
 
 /// 用引擎自己的 `JSON.parse`：解析器行为与页面看到的一致，也不必自己写一遍。
 fn json_parse(text: &str, context: &mut Context) -> JsResult<JsValue> {
-    let json = context
-        .global_object()
-        .get(js_string!("JSON"), context)?;
+    let json = context.global_object().get(js_string!("JSON"), context)?;
     let Some(json) = json.as_object() else {
         return Err(JsError::from_opaque(JsValue::from(js_string!(
             "JSON 不可用"
@@ -598,7 +627,11 @@ fn headers_object(pairs: &[(String, String)], context: &mut Context) -> JsResult
     Ok(object.into())
 }
 
-fn store_pairs(object: &JsObject, pairs: &[(String, String)], context: &mut Context) -> JsResult<()> {
+fn store_pairs(
+    object: &JsObject,
+    pairs: &[(String, String)],
+    context: &mut Context,
+) -> JsResult<()> {
     let array = JsArray::new(context)?;
     for (name, value) in pairs {
         let _ = array.push(JsString::from(name.clone()), context);
@@ -695,7 +728,11 @@ fn rewrite_pairs(this: &JsValue, pairs: &[(String, String)], context: &mut Conte
     }
 }
 
-fn headers_construct(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn headers_construct(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let pairs = args
         .first()
         .map(|value| header_pairs(value, context))
@@ -917,7 +954,10 @@ fn xhr_send(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
                 ("readyState", JsValue::from(4)),
                 ("responseText", JsValue::from(JsString::from(text))),
                 ("response", response_value),
-                ("responseURL", JsValue::from(JsString::from(response.url.clone()))),
+                (
+                    "responseURL",
+                    JsValue::from(JsString::from(response.url.clone())),
+                ),
             ];
             for (name, value) in fields {
                 let _ = object.set(js_string!(name), value, false, context);
@@ -958,7 +998,11 @@ fn dispatch_xhr(object: &JsObject, type_name: &str, context: &mut Context) {
             Attribute::all(),
         )
         .property(js_string!("target"), target.clone(), Attribute::all())
-        .property(js_string!("currentTarget"), target.clone(), Attribute::all())
+        .property(
+            js_string!("currentTarget"),
+            target.clone(),
+            Attribute::all(),
+        )
         .build();
     let event_value = JsValue::from(event);
     let handler_name = format!("on{type_name}");
@@ -1065,8 +1109,12 @@ fn same_object(left: &JsValue, right: &JsValue, context: &mut Context) -> bool {
     match (left.as_object(), right.as_object()) {
         (Some(left), Some(right)) => std::ptr::eq(left.as_ref(), right.as_ref()),
         _ => {
-            let left = left.to_string(context).map(|text| text.to_std_string_escaped());
-            let right = right.to_string(context).map(|text| text.to_std_string_escaped());
+            let left = left
+                .to_string(context)
+                .map(|text| text.to_std_string_escaped());
+            let right = right
+                .to_string(context)
+                .map(|text| text.to_std_string_escaped());
             left.is_ok() && left == right
         }
     }

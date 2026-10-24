@@ -62,36 +62,26 @@ struct StubServer {
     auths: Arc<Mutex<Vec<String>>>,
     /// 压缩请求的**到达**时刻（按到达顺序）与它是不是工具段。
     compression_arrivals: Arc<Mutex<Vec<(std::time::Instant, bool)>>>,
-    /// 压缩响应的**写出**时刻（按写出顺序）。
-    compression_responses: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 
 impl StubServer {
     fn spawn() -> Self {
-        Self::spawn_with(Duration::ZERO, false)
+        Self::spawn_with(false)
     }
 
-    /// 两个并发工具调用 + 把**第一个**压缩响应延后 `delay`：用来验证并发压缩
-    /// （第二个压缩请求必须在第一个响应之前到达，否则就是排队跑）。
-    fn spawn_parallel_compressions(delay: Duration) -> Self {
-        Self::spawn_with(delay, true)
-    }
-
-    fn spawn_with(delay: Duration, two_calls: bool) -> Self {
+    fn spawn_with(two_calls: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("无法监听回环端口");
         let addr = listener.local_addr().expect("无法取本地地址");
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let auths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let arrivals: Arc<Mutex<Vec<(std::time::Instant, bool)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let responses: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
         let main_requests: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
         // 一个连接一个线程：并发压缩要求服务端能同时接住多条连接。
         let recorded = Arc::clone(&requests);
         let recorded_auths = Arc::clone(&auths);
         let recorded_arrivals = Arc::clone(&arrivals);
-        let recorded_responses = Arc::clone(&responses);
         let shared_main = Arc::clone(&main_requests);
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -99,7 +89,6 @@ impl StubServer {
                 let recorded = Arc::clone(&recorded);
                 let recorded_auths = Arc::clone(&recorded_auths);
                 let recorded_arrivals = Arc::clone(&recorded_arrivals);
-                let recorded_responses = Arc::clone(&recorded_responses);
                 let shared_main = Arc::clone(&shared_main);
                 thread::spawn(move || {
                     let mut stream = stream;
@@ -113,21 +102,18 @@ impl StubServer {
                         || text_body.contains("你是会话状态压缩器");
                     let is_tool_segment = text_body.contains("<<<TOOL_CALLS_START>>>");
                     let payload = if is_compression {
-                        let index = {
-                            let mut list = recorded_arrivals.lock().expect("记录锁");
-                            list.push((std::time::Instant::now(), is_tool_segment));
-                            list.len()
-                        };
-                        // 只拖住第一条：它必须先是工具段，摘要段才可能在它之后到达。
-                        if index == 1 && !delay.is_zero() {
-                            thread::sleep(delay);
-                        }
+                        recorded_arrivals
+                            .lock()
+                            .expect("记录锁")
+                            .push((std::time::Instant::now(), is_tool_segment));
                         text_stream(COMPRESSED_TEXT)
                     } else {
                         let mut count = shared_main.lock().expect("记录锁");
                         *count += 1;
-                        if *count == 1 {
-                            if two_calls {
+                        // 逐批压缩要「上一批」才触发，因此第 1 批与第 2 批都回工具调用：
+                        // 第 2 批执行前，第 1 批正好变成刚变老的那一批。
+                        if *count <= 2 {
+                            if two_calls && *count == 1 {
                                 two_tool_call_stream()
                             } else {
                                 tool_call_stream("bash", "{\"command\":\"cat big.log\"}")
@@ -143,12 +129,6 @@ impl StubServer {
                     );
                     let _ = stream.write_all(reply.as_bytes());
                     let _ = stream.flush();
-                    if is_compression {
-                        recorded_responses
-                            .lock()
-                            .expect("记录锁")
-                            .push(std::time::Instant::now());
-                    }
                 });
             }
         });
@@ -158,7 +138,6 @@ impl StubServer {
             requests,
             auths,
             compression_arrivals: arrivals,
-            compression_responses: responses,
         }
     }
 
@@ -172,10 +151,6 @@ impl StubServer {
 
     fn compression_arrivals(&self) -> Vec<(std::time::Instant, bool)> {
         self.compression_arrivals.lock().expect("记录锁").clone()
-    }
-
-    fn compression_responses(&self) -> Vec<std::time::Instant> {
-        self.compression_responses.lock().expect("记录锁").clone()
     }
 }
 
@@ -232,10 +207,7 @@ fn read_request(stream: &mut TcpStream) -> (String, String) {
 /// 把配置放到临时 home 的 `~/.OmniCrawl/config.toml` 并返回该 home：
 /// 配置路径不再有环境变量覆盖，隔离只能靠 home。
 fn isolate_home(config_path: &Path) -> PathBuf {
-    let home = config_path
-        .parent()
-        .expect("配置目录")
-        .join("home");
+    let home = config_path.parent().expect("配置目录").join("home");
     let target = home.join(".OmniCrawl");
     std::fs::create_dir_all(&target).expect("建隔离配置目录");
     std::fs::copy(config_path, target.join("config.toml")).expect("复制配置");
@@ -435,14 +407,14 @@ fn write_config(name: &str, base_url: &str, min_chars: usize) -> PathBuf {
     path
 }
 
-/// 压缩链的顺序（用户指定）：工具段先发、非工具段（摘要）后发，两段各出计量行。
+/// 工具调用压缩在**运行过程中**逐批发生，而不是回合收尾一次性全压。
 ///
-/// 这里用「第一条压缩响应被拖住 900ms」的服务端：若内核仍是旧的并发形态，
-/// 第二条请求会在第一条响应之前到达；改成顺序执行后，工具段请求先到、摘要请求后到。
+/// 判据：压缩请求在回合进行中（`turn.finished` 之前）就已到达服务端，且在上一批工具结果
+/// 回来之后、下一批工具请求之前。
 #[test]
-fn tool_segment_runs_before_the_context_compaction() {
-    let server = StubServer::spawn_parallel_compressions(Duration::from_millis(900));
-    let config = write_config("parallel", &server.addr, 100);
+fn tool_compaction_happens_per_batch_during_the_turn() {
+    let server = StubServer::spawn();
+    let config = write_config("per-batch", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
     kernel.initialize(
         model_config(&server),
@@ -457,9 +429,16 @@ fn tool_segment_runs_before_the_context_compaction() {
         "jsonrpc": "2.0", "id": 2, "method": "turn.submit",
         "params": {"turn_id": "turn-1", "user_text": "看两个日志"},
     }));
+    let mut compression_before_finish = 0;
+    let mut saw_second_batch = false;
     loop {
         let frame = kernel.next_frame();
         if frame["method"] == "tool.batch" {
+            // 进入第二批时，压缩请求应当已经发出（第一批刚变老）。
+            if saw_second_batch {
+                compression_before_finish = server.compression_arrivals().len();
+            }
+            saw_second_batch = true;
             let params = frame["params"].clone();
             let id = frame["id"].clone();
             let observations: Vec<Value> = params["calls"]
@@ -476,8 +455,9 @@ fn tool_segment_runs_before_the_context_compaction() {
                     })
                 })
                 .collect();
-            assert_eq!(observations.len(), 2, "一条消息里的两个工具调用打一个批次");
-            kernel.send(json!({"jsonrpc": "2.0", "id": id, "result": {"observations": observations}}));
+            kernel.send(
+                json!({"jsonrpc": "2.0", "id": id, "result": {"observations": observations}}),
+            );
             continue;
         }
         if frame["method"] == "turn.finished" {
@@ -485,33 +465,28 @@ fn tool_segment_runs_before_the_context_compaction() {
         }
     }
 
-    let arrivals = server.compression_arrivals();
-    let responses = server.compression_responses();
     assert!(
-        arrivals.len() >= 2 && responses.len() >= 2,
-        "两段压缩各发一次请求：到达 {arrivals:?} 写出 {responses:?}"
+        compression_before_finish > 0,
+        "压缩必须在回合进行中发出，而不是等收尾：到达 {:?}",
+        server.compression_arrivals()
     );
+    // 第一批有上一次调用送进来了，但这一批本身不参与：逐批语义下每个「刚变老」的批次压一次。
     assert!(
-        arrivals[0].1,
-        "第一条压缩请求是工具段：到达 {arrivals:?}"
-    );
-    assert!(
-        !arrivals[1].1,
-        "第二条压缩请求是上下文压缩摘要：到达 {arrivals:?}"
-    );
-    assert!(
-        responses[0] < arrivals[1].0,
-        "工具段先跑完、摘要段才发出：到达 {arrivals:?} 写出 {responses:?}"
+        saw_second_batch,
+        "应当出现第二批工具调用（逐批压缩需要上一批）"
     );
 }
 
 #[test]
-fn tool_calls_are_summarized_once_after_the_turn() {
-    // 新粒度：批内不再逐条压缩，整轮结束把全部工具调用压成一段注入上下文。
+fn tool_calls_are_summarized_per_batch() {
+    // 逐批粒度：每批工具执行后、下一批开始前对刚变老的那一批概括一次，不再是回合收尾全压。
     let server = StubServer::spawn();
     let config = write_config("enabled", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server), Some(session_config(config.parent().expect("配置目录"))));
+    kernel.initialize(
+        model_config(&server),
+        Some(session_config(config.parent().expect("配置目录"))),
+    );
 
     let long_output = "日志行内容".repeat(200);
     let frames = kernel.run_turn("看一下日志", &long_output);
@@ -526,7 +501,7 @@ fn tool_calls_are_summarized_once_after_the_turn() {
     let compression = bodies
         .iter()
         .find(|body| body.to_string().contains("<<<TOOL_CALLS_START>>>"))
-        .expect("应当发出一次整轮概括请求");
+        .expect("应当发出逐批概括请求");
     let text = compression.to_string();
     assert!(
         text.contains("请把下面这一轮的全部工具调用概括成一段内容。"),
@@ -605,7 +580,9 @@ fn tool_compaction_rebuilds_history_and_reports_the_new_context_size() {
         "应当写入概括事件：{events:?}"
     );
 
-    // 历史确实被重建：再发一轮，请求体里带的是概括文本，不是 200 份原始长输出。
+    // 历史确实被重建：下一轮请求里，第一批工具调用的原文已被概括文本替换。
+    // （逐批语义下只有「刚变老的那一批」被压，最新批次的原文仍在，故这里只断言概括文本
+    // 已经进入请求，且第一批（最后变老前）的原文不再完整出现。）
     let bodies_before = server.bodies().len();
     kernel.run_turn("接着看", &long_output);
     let bodies = server.bodies();
@@ -616,12 +593,13 @@ fn tool_compaction_rebuilds_history_and_reports_the_new_context_size() {
     let text = followup.to_string();
     assert!(
         text.contains(COMPRESSED_TEXT),
-        "下一轮请求应带整轮概括文本：{text}"
+        "下一轮请求应带逐批概括文本：{text}"
     );
+    // 逐批压缩只覆盖「刚变老的那一批」：按批出现次数判断，而不是要求原文彻底消失。
+    let occurrences = text.matches(&long_output).count();
     assert!(
-        !text.contains(&long_output),
-        "被概括的原始长输出不得再进入请求：{} 字符的原文仍在请求体里",
-        long_output.len()
+        occurrences < 2,
+        "至少第一批的原始长输出应已被概括替换，实际仍有 {occurrences} 处原文：{text}"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
@@ -642,7 +620,11 @@ fn group_digits(value: u64) -> String {
 
 /// 读最近一条会话转录的事件类型与载荷。
 fn read_session_events(config: &std::path::Path) -> Vec<Value> {
-    let root = config.parent().expect("配置目录").join(".omnicrawl").join("sessions");
+    let root = config
+        .parent()
+        .expect("配置目录")
+        .join(".omnicrawl")
+        .join("sessions");
     let mut found: Vec<Value> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&root) else {
         return found;
@@ -672,7 +654,10 @@ fn compression_model_key_is_resolved_through_the_profile_connection() {
     let server = StubServer::spawn();
     let config = write_config_with_profile("profile-key", &server.addr, 100);
     let mut kernel = Kernel::spawn(&config);
-    kernel.initialize(model_config(&server), Some(session_config(config.parent().expect("配置目录"))));
+    kernel.initialize(
+        model_config(&server),
+        Some(session_config(config.parent().expect("配置目录"))),
+    );
 
     let long_output = "日志行内容".repeat(200);
     kernel.run_turn("看一下日志", &long_output);

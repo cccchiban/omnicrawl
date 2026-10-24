@@ -41,8 +41,8 @@ pub use error::SessionStoreError;
 pub use event::SessionEvent;
 pub use history::{
     evict_tool_call_messages, evict_tool_calls, project_compaction_boundary_history,
-    project_history_messages, project_session_history, projection_only_event,
-    RawArgumentsProvider, TurnHistoryProjector, PROJECTION_ONLY_EVENT_ID_PREFIX,
+    project_history_messages, project_session_history, projection_only_event, RawArgumentsProvider,
+    TurnHistoryProjector, PROJECTION_ONLY_EVENT_ID_PREFIX,
 };
 pub use index::SessionIndexEntry;
 pub use locking::{

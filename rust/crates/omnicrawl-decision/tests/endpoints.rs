@@ -58,7 +58,11 @@ fn handle_upstream(mut stream: TcpStream, answers: &Value, seen: &Arc<Mutex<Capt
     if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
         return;
     }
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .to_string();
     let mut authorization = String::new();
     let mut length = 0usize;
     loop {
@@ -362,11 +366,7 @@ fn malformed_requests_are_rejected_with_readable_codes() {
     assert_eq!(missing_state.status, 400);
     assert_eq!(missing_state.json()["error"]["code"], "INVALID_REQUEST");
 
-    let bad_options = post(
-        address,
-        "/v1/choice",
-        &json!({"state": {}, "options": []}),
-    );
+    let bad_options = post(address, "/v1/choice", &json!({"state": {}, "options": []}));
     assert_eq!(bad_options.status, 400, "{}", bad_options.body);
     assert!(bad_options.json()["error"]["message"]
         .as_str()
@@ -409,5 +409,9 @@ fn status_reports_channel_without_leaking_credentials() {
     assert_eq!(data["channel"]["model"], "jev-test");
     assert_eq!(data["channel"]["api_key_configured"], true);
     // 凭据本身绝不回传。
-    assert!(!reply.body.contains("jv_test"), "响应里不该出现密钥：{}", reply.body);
+    assert!(
+        !reply.body.contains("jv_test"),
+        "响应里不该出现密钥：{}",
+        reply.body
+    );
 }

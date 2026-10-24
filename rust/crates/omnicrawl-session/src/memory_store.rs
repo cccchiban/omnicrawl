@@ -50,6 +50,11 @@ pub struct MemoryWriteRequest {
     pub related_directories: Vec<String>,
     pub storage_directory: Option<String>,
     pub source_event: Option<String>,
+    /// 这条写入**推翻**了哪些既有记忆（对应 Mem0 的 DELETE）。
+    ///
+    /// 只当新事实与旧记忆冲突时才填：被点名的记忆在本次写入后删除，新事实按新增落盘。
+    /// 为空表示「补充或新增」，不会删除任何既有记忆。
+    pub supersedes: Vec<String>,
 }
 
 pub struct MemoryStore {
@@ -408,9 +413,28 @@ impl MemoryStore {
         let mut records = Vec::new();
         let mut created_paths: Vec<PathBuf> = Vec::new();
         let mut updated_backups: Vec<(PathBuf, Option<String>)> = Vec::new();
+        let mut superseded_ids: Vec<String> = Vec::new();
 
         let outcome = (|| -> Result<(), SessionStoreError> {
-            for (content, storage_directory, related_directories) in &prepared {
+            for (prepared_request, (content, storage_directory, related_directories)) in
+                memories.iter().zip(prepared.iter())
+            {
+                // 被本条写入推翻的旧记忆先收集，落盘成功后再统一删除：删除不可回滚，
+                // 因此只在整个批次都写成功之后执行。
+                for memory_id in &prepared_request.supersedes {
+                    let normalized = memory_id.trim();
+                    if normalized.is_empty() {
+                        continue;
+                    }
+                    if !entries.iter().any(|entry| entry.id == normalized) {
+                        return Err(SessionStoreError::new(format!(
+                            "要取代的记忆不存在：{normalized}"
+                        )));
+                    }
+                    if !superseded_ids.iter().any(|known| known == normalized) {
+                        superseded_ids.push(normalized.to_string());
+                    }
+                }
                 let existing = self.find_duplicate_entry(
                     &entries,
                     content,
@@ -473,8 +497,39 @@ impl MemoryStore {
             return Err(error);
         }
 
+        // 索引已落盘，此时再删被取代的记忆文件；删不掉就让整次写入失败，
+        // 免得正文留在盘上、索引里却已经没有了。
+        if !superseded_ids.is_empty() {
+            self.remove_superseded_entries(&superseded_ids)?;
+        }
+
         self.clean_expired_memories()?;
         Ok(records)
+    }
+
+    /// 删除被新事实推翻的既有记忆（含索引条目），并清理空目录。
+    fn remove_superseded_entries(&self, memory_ids: &[String]) -> Result<(), SessionStoreError> {
+        let mut entries = self.load_entries()?;
+        let mut removed: Vec<String> = Vec::new();
+        entries.retain(|entry| {
+            if memory_ids.iter().any(|memory_id| memory_id == &entry.id) {
+                removed.push(entry.id.clone());
+                if let Ok(path) = self.memory_path(entry) {
+                    if path.is_file() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                false
+            } else {
+                true
+            }
+        });
+        if removed.is_empty() {
+            return Ok(());
+        }
+        self.save_entries(&mut entries)?;
+        self.clean_empty_directories();
+        Ok(())
     }
 
     /// 校验并归一化一条写入请求：正文、存储目录、关联目录。
@@ -834,6 +889,7 @@ pub fn migrate_legacy_memory(
             related_directories: entry.related_directories.clone(),
             storage_directory: Some(entry.storage_directory.clone()),
             source_event: Some("legacy_memory_migration".to_string()),
+            supersedes: Vec::new(),
         });
     }
     let imported_count = requests.len();

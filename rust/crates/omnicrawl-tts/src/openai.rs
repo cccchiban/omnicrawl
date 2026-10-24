@@ -149,7 +149,10 @@ mod tests {
             base_url: "https://tts.example.com/v1/".to_string(),
             ..OpenAiTtsConfig::default()
         };
-        assert_eq!(config.speech_url(), "https://tts.example.com/v1/audio/speech");
+        assert_eq!(
+            config.speech_url(),
+            "https://tts.example.com/v1/audio/speech"
+        );
     }
 
     #[test]
@@ -158,7 +161,9 @@ mod tests {
             api_key: "   ".to_string(),
             ..OpenAiTtsConfig::default()
         };
-        let error = config.synthesize("你好", "alloy").expect_err("缺密钥应当报错");
+        let error = config
+            .synthesize("你好", "alloy")
+            .expect_err("缺密钥应当报错");
         assert!(error.contains("未配置密钥"), "{error}");
     }
 }

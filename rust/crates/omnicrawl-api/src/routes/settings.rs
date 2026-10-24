@@ -104,9 +104,11 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
     let vision = load_vision_configuration(env, None).map_err(invalid_setting)?;
     let image_gen = load_image_gen_configuration(env, None).map_err(invalid_setting)?;
     let tts = load_tts_configuration(env, None).map_err(invalid_setting)?;
-    let tts_cloud_config = tts_cloud::load_tts_cloud_configuration(env, None).map_err(invalid_setting)?;
+    let tts_cloud_config =
+        tts_cloud::load_tts_cloud_configuration(env, None).map_err(invalid_setting)?;
     let tts_api = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
-    let tts_gemini = tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
+    let tts_gemini =
+        tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
     let subagents = load_subagent_config(env, None).map_err(invalid_setting)?;
     let tool_switches = load_tool_switches(env, None).map_err(invalid_setting)?;
     // 与 Python 一致：这三项读不出来时给空载荷，而不是让整个快照失败。
@@ -503,7 +505,8 @@ async fn put_tts(
     let mut general = load_tts_configuration(env, None).map_err(invalid_setting)?;
     let mut cloud = tts_cloud::load_tts_cloud_configuration(env, None).map_err(invalid_setting)?;
     let mut openai = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
-    let mut gemini = tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
+    let mut gemini =
+        tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
 
     if let Some(raw) = provided(&body, "enabled") {
         general.enabled = body_required_bool("enabled", Some(raw))?;
@@ -694,7 +697,8 @@ async fn put_tools(
             applied_runtime = true;
             requires_restart = outcome.requires_restart;
             if requires_restart {
-                detail = Some("工具开关已保存，但当前进程没有可重建的运行器，重启后生效。".to_string());
+                detail =
+                    Some("工具开关已保存，但当前进程没有可重建的运行器，重启后生效。".to_string());
             }
         }
         // 回合在途：磁盘已是新配置，运行期不改。如实回报，不让客户端以为没写成。

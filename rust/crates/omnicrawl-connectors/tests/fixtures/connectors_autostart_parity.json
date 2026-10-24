@@ -18,11 +18,13 @@
     "connector_log_dirname": "logs",
     "platform_names": [
       "Telegram",
-      "飞书"
+      "飞书",
+      "QQ"
     ],
     "platform_modules": [
       "omnicrawl.connectors.telegram",
-      "omnicrawl.connectors.fsapp"
+      "omnicrawl.connectors.fsapp",
+      "omnicrawl.connectors.qqbot"
     ],
     "watch_poll_hint": "Rust 侧监督线程按 0.05s 轮询子进程状态（Python 直接用 wait()）。"
   },
@@ -76,6 +78,10 @@
     {
       "platform": "飞书",
       "filename": "飞书.log"
+    },
+    {
+      "platform": "QQ",
+      "filename": "QQ.log"
     }
   ],
   "log_dir_name": "logs",

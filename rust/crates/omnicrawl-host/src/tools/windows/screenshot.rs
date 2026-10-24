@@ -21,6 +21,10 @@ use super::ffi;
 use super::window::describe_window;
 
 pub const DEFAULT_MAX_DIMENSION: i64 = 2_048;
+/// 操作后确认截图的尺寸上限：只需看清结果，不需要全分辨率。
+const SNAPSHOT_MAX_DIMENSION: i64 = 1_280;
+/// 操作到截图的等待：给界面时间重绘，又不至于让每次点击都明显变慢。
+const SNAPSHOT_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
 const MIN_MODEL_IMAGE_DIMENSION: i64 = 256;
 const MAX_SCREENSHOT_DIMENSION: i64 = 8_192;
 const MAX_SCREENSHOT_SOURCE_PIXELS: i64 = 100_000_000;
@@ -38,40 +42,122 @@ const ALLOWED_KEYS: [&str; 7] = [
     "max_dimension",
 ];
 
-/// 一次截图的产物：给模型的 JSON 文本与视觉附件。
+/// 一次桌面工具的产物：给模型的 JSON 文本与随结果注入的截图。
 #[derive(Debug, Clone, PartialEq)]
-pub struct ScreenshotOutcome {
+pub struct DesktopOutcome {
     pub output: String,
     pub images: Vec<ToolImageAttachment>,
+}
+
+/// 一张落盘截图的两种视图：贴进工具结果的元数据与交给模型的视觉附件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    pub payload: Value,
+    pub attachment: ToolImageAttachment,
+}
+
+/// 操作后确认截图的观察文本：点明这张图来自刚执行的动作，省掉一次专门的截图调用。
+pub fn snapshot_vision_prompt() -> String {
+    "以上是刚才操作之后的当前画面截图；核对效果用它即可，不要为此再调 windows_screenshot。"
+        .to_string()
 }
 
 pub fn windows_screenshot(
     paths: &WorkspacePaths,
     arguments: &Map<String, Value>,
-) -> Result<ScreenshotOutcome, ToolError> {
-    let payload = operation(paths, arguments)?;
-    let path = PathBuf::from(payload["_output_path"].as_str().unwrap_or_default());
-    let bytes = std::fs::read(&path)
-        .map_err(|error| ToolError::new(format!("读取截图文件失败：{error}")))?;
-    let mut visible = payload.clone();
-    if let Value::Object(map) = &mut visible {
-        map.remove("_output_path");
-    }
-    Ok(ScreenshotOutcome {
-        output: python_dumps(&visible, 2),
-        images: vec![ToolImageAttachment {
-            media_type: "image/png".to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            filename: path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            detail: String::new(),
-        }],
+) -> Result<DesktopOutcome, ToolError> {
+    let request = read_request(arguments)?;
+    let snapshot = capture_snapshot(
+        paths,
+        &request.target,
+        &request.bounds,
+        request.max_dimension,
+    )?;
+    Ok(DesktopOutcome {
+        output: python_dumps(&snapshot.payload, 2),
+        images: vec![snapshot.attachment],
     })
 }
 
-fn operation(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Result<Value, ToolError> {
+/// 操作后的确认截图：优先当前前台窗口，没有可用前台窗口时退回整个虚拟桌面。
+pub fn active_window_snapshot(paths: &WorkspacePaths) -> Result<Snapshot, ToolError> {
+    let desktop = virtual_desktop_bounds()?;
+    let foreground = unsafe { ffi::GetForegroundWindow() } as isize;
+    if let Some((bounds, window)) = foreground_window(foreground, &desktop) {
+        let mut snapshot = capture_snapshot(paths, "window", &bounds, SNAPSHOT_MAX_DIMENSION)?;
+        if let Value::Object(map) = &mut snapshot.payload {
+            map.insert("window".to_string(), window);
+        }
+        return Ok(snapshot);
+    }
+    capture_snapshot(paths, "desktop", &desktop, SNAPSHOT_MAX_DIMENSION)
+}
+
+/// 把当前画面挂到一次桌面操作的结果上。
+///
+/// 输入事件已经发出去了：截图失败只能让模型少一张图，不能把成功的操作改判成失败。
+pub fn snapshot_attachments(
+    paths: &WorkspacePaths,
+    payload: &mut Value,
+) -> Vec<ToolImageAttachment> {
+    // 动作发出后界面还要重绘一帧：不等待就会截到动作之前的画面。
+    std::thread::sleep(SNAPSHOT_SETTLE);
+    match active_window_snapshot(paths) {
+        Ok(snapshot) => {
+            if let Value::Object(map) = payload {
+                map.insert("screenshot".to_string(), snapshot.payload);
+            }
+            vec![snapshot.attachment]
+        }
+        Err(error) => {
+            if let Value::Object(map) = payload {
+                map.insert("screenshot_error".to_string(), Value::String(error.message));
+            }
+            Vec::new()
+        }
+    }
+}
+
+/// 前台窗口的可见区域与它的身份：模型据此判断截的是哪个窗口。
+fn foreground_window(
+    handle: isize,
+    desktop: &Map<String, Value>,
+) -> Option<(Map<String, Value>, Value)> {
+    if handle == 0 {
+        return None;
+    }
+    let window = describe_window(handle).ok()?;
+    if !window["is_visible"].as_bool().unwrap_or(false)
+        || window["is_minimized"].as_bool().unwrap_or(false)
+    {
+        return None;
+    }
+    let bounds = &window["bounds"];
+    let window_bounds = bounds_from_xywh(
+        bounds["left"].as_i64().unwrap_or(0),
+        bounds["top"].as_i64().unwrap_or(0),
+        bounds["width"].as_i64().unwrap_or(0),
+        bounds["height"].as_i64().unwrap_or(0),
+    )
+    .ok()?;
+    Some((
+        intersect_bounds(&window_bounds, desktop)?,
+        json!({
+            "window_handle": window["window_handle"],
+            "title": window["title"],
+            "class_name": window["class_name"],
+        }),
+    ))
+}
+
+/// 一次截图请求：目标标签、要截的区域与图片尺寸上限。
+struct CaptureRequest {
+    target: String,
+    bounds: Map<String, Value>,
+    max_dimension: i64,
+}
+
+fn read_request(arguments: &Map<String, Value>) -> Result<CaptureRequest, ToolError> {
     ensure_allowed_keys(arguments, &ALLOWED_KEYS)?;
     let target = read_target(arguments)?;
     let max_dimension = read_bounded_int(
@@ -84,10 +170,11 @@ fn operation(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Result<V
     )?;
     let desktop = virtual_desktop_bounds()?;
 
-    let source_bounds = match target.as_str() {
+    let bounds = match target.as_str() {
         "desktop" => {
-            reject_present_keys(arguments, &["window_handle", "x", "y", "width", "height"])?;
-            desktop.clone()
+            reject_present_keys(arguments, &["window_handle"])?;
+            // 不传区域参数即整个虚拟桌面；传了就当桌面内的裁剪窗口。
+            desktop_region(arguments, &desktop)?
         }
         "region" => {
             reject_present_keys(arguments, &["window_handle"])?;
@@ -124,7 +211,22 @@ fn operation(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Result<V
         }
     };
 
-    validate_screenshot_bounds(&source_bounds, &desktop)?;
+    Ok(CaptureRequest {
+        target,
+        bounds,
+        max_dimension,
+    })
+}
+
+/// 抓一张 PNG 并同时产出结果元数据与视觉附件。
+fn capture_snapshot(
+    paths: &WorkspacePaths,
+    target: &str,
+    source_bounds: &Map<String, Value>,
+    max_dimension: i64,
+) -> Result<Snapshot, ToolError> {
+    let desktop = virtual_desktop_bounds()?;
+    validate_screenshot_bounds(source_bounds, &desktop)?;
     let source_width = source_bounds["width"].as_i64().unwrap_or(0);
     let source_height = source_bounds["height"].as_i64().unwrap_or(0);
     if source_width * source_height > MAX_SCREENSHOT_SOURCE_PIXELS {
@@ -133,36 +235,74 @@ fn operation(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Result<V
         )));
     }
 
-    let output_path = new_screenshot_path(paths, &target)?;
+    let output_path = new_screenshot_path(paths, target)?;
     let (image_width, image_height, byte_count) =
-        match capture_png(&source_bounds, &output_path, max_dimension) {
+        match capture_png(source_bounds, &output_path, max_dimension) {
             Ok(result) => result,
             Err(error) => {
                 let _ = std::fs::remove_file(&output_path);
                 return Err(error);
             }
         };
+    let bytes = std::fs::read(&output_path)
+        .map_err(|error| ToolError::new(format!("读取截图文件失败：{error}")))?;
 
-    Ok(json!({
-        "target": target,
-        "path": display_path(paths, &output_path),
-        "source_bounds": {
-            "left": source_bounds["left"],
-            "top": source_bounds["top"],
-            "right": source_bounds["right"],
-            "bottom": source_bounds["bottom"],
-            "width": source_width,
-            "height": source_height,
+    Ok(Snapshot {
+        payload: json!({
+            "target": target,
+            "path": display_path(paths, &output_path),
+            "source_bounds": {
+                "left": source_bounds["left"],
+                "top": source_bounds["top"],
+                "right": source_bounds["right"],
+                "bottom": source_bounds["bottom"],
+                "width": source_width,
+                "height": source_height,
+            },
+            "image": {
+                "media_type": "image/png",
+                "width": image_width,
+                "height": image_height,
+                "bytes": byte_count,
+                "scaled": image_width != source_width || image_height != source_height,
+            },
+        }),
+        attachment: ToolImageAttachment {
+            media_type: "image/png".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            filename: output_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            detail: String::new(),
         },
-        "image": {
-            "media_type": "image/png",
-            "width": image_width,
-            "height": image_height,
-            "bytes": byte_count,
-            "scaled": image_width != source_width || image_height != source_height,
-        },
-        "_output_path": output_path.to_string_lossy(),
-    }))
+    })
+}
+
+/// `desktop` 目标的可选裁剪区域：缺省的边界与尺寸都取虚拟桌面的边，因此只给 `x`/`y`
+/// 就是从该点裁到右下角，什么都不给就是整屏。
+fn desktop_region(
+    arguments: &Map<String, Value>,
+    desktop: &Map<String, Value>,
+) -> Result<Map<String, Value>, ToolError> {
+    let number = |map: &Map<String, Value>, key: &str| map[key].as_i64().unwrap_or(0);
+    let optional = |key: &str, maximum: i64| -> Result<Option<i64>, ToolError> {
+        match arguments.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(_) => read_bounded_int(arguments, key, 1, 1, maximum, true).map(Some),
+        }
+    };
+    let (x, y) = read_coordinates(arguments, false)?;
+    let width = optional("width", 100_000)?;
+    let height = optional("height", 100_000)?;
+    if x.is_none() && y.is_none() && width.is_none() && height.is_none() {
+        return Ok(desktop.clone());
+    }
+    let left = x.unwrap_or_else(|| number(desktop, "left"));
+    let top = y.unwrap_or_else(|| number(desktop, "top"));
+    let width = width.unwrap_or_else(|| number(desktop, "right") - left);
+    let height = height.unwrap_or_else(|| number(desktop, "bottom") - top);
+    bounds_from_xywh(left, top, width, height)
 }
 
 fn read_target(arguments: &Map<String, Value>) -> Result<String, ToolError> {
@@ -656,10 +796,16 @@ fn bitmap_pixels(bitmap: ffi::Hbitmap, width: i64, height: i64) -> Result<Vec<u8
         return Err(last_error("读取截图像素失败"));
     }
 
+    bgra_to_rgba(&mut buffer);
+    Ok(buffer)
+}
+
+/// BGRA（GDI 32 位 DIB）→ RGBA，并强制不透明。
+fn bgra_to_rgba(buffer: &mut [u8]) {
     for pixel in buffer.chunks_exact_mut(4) {
         pixel.swap(0, 2);
+        pixel[3] = 255;
     }
-    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -702,15 +848,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 操作后的确认截图：既要有可注入的视觉附件，也要在结果里留下路径与区域。
+    #[test]
+    fn operation_snapshot_attaches_image_and_metadata() {
+        let (paths, root) = paths("snapshot");
+        let mut payload = json!({"action": "click", "x": 10, "y": 20});
+        let images = snapshot_attachments(&paths, &mut payload);
+        assert_eq!(images.len(), 1, "成功截图必须带回一张视觉附件");
+        assert_eq!(images[0].media_type, "image/png");
+        assert!(!images[0].data_base64.is_empty());
+
+        let shot = &payload["screenshot"];
+        assert!(payload.get("screenshot_error").is_none(), "{payload}");
+        assert_eq!(shot["image"]["media_type"], "image/png");
+        assert!(
+            shot["target"] == "window" || shot["target"] == "desktop",
+            "只截前台窗口或整屏：{}",
+            shot["target"]
+        );
+        assert!(root
+            .join(shot["path"].as_str().unwrap_or_default())
+            .is_file());
+        assert!(!snapshot_vision_prompt().is_empty());
+
+        // 原字段不被截图覆盖：模型仍能读到自己刚执行的动作。
+        assert_eq!(payload["action"], "click");
+        assert_eq!(payload["x"], 10);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn target_specific_arguments_are_rejected() {
         let (paths, _root) = paths("reject");
         let error = windows_screenshot(
             &paths,
-            &arguments(json!({"target": "desktop", "x": 1, "y": 1})),
+            &arguments(json!({"target": "desktop", "window_handle": "0x1"})),
         )
-        .expect_err("桌面截图不接受坐标");
-        assert_eq!(error.message, "当前截图目标不支持参数：x、y。");
+        .expect_err("桌面截图不接受窗口句柄");
+        assert_eq!(error.message, "当前截图目标不支持参数：window_handle。");
 
         let error = windows_screenshot(&paths, &arguments(json!({"target": "region", "x": 1})))
             .expect_err("区域截图要求成对坐标");
@@ -727,6 +902,54 @@ mod tests {
         let error = windows_screenshot(&paths, &arguments(json!({"target": "region", "x": 0, "y": 0, "width": 10, "height": 10, "max_dimension": 1})))
             .expect_err("越界 max_dimension 应当被拒绝");
         assert_eq!(error.message, "max_dimension 必须在 256 到 8192 之间。");
+    }
+
+    #[test]
+    fn desktop_region_crops_within_the_virtual_desktop() {
+        let desktop = bounds_from_xywh(0, 0, 1_920, 1_080).expect("桌面边界");
+        // 不传任何区域参数：整屏。
+        assert_eq!(
+            desktop_region(&arguments(json!({})), &desktop).unwrap(),
+            desktop
+        );
+
+        // 只给坐标：从这个点裁到桌面右下角。
+        let bounds =
+            desktop_region(&arguments(json!({"x": 100, "y": 50})), &desktop).expect("角标裁剪");
+        assert_eq!(bounds["left"], 100);
+        assert_eq!(bounds["top"], 50);
+        assert_eq!(bounds["width"], 1_820);
+        assert_eq!(bounds["height"], 1_030);
+
+        // 坐标加宽高：严格等于请求的区域。
+        let bounds = desktop_region(
+            &arguments(json!({"x": 10, "y": 20, "width": 300, "height": 200})),
+            &desktop,
+        )
+        .expect("指定区域");
+        assert_eq!(bounds["width"], 300);
+        assert_eq!(bounds["height"], 200);
+        assert_eq!(bounds["right"], 310);
+
+        // 只给宽高：从桌面左上角起裁。
+        let bounds =
+            desktop_region(&arguments(json!({"width": 640, "height": 480})), &desktop).unwrap();
+        assert_eq!(bounds["left"], 0);
+        assert_eq!(bounds["top"], 0);
+        assert_eq!(bounds["width"], 640);
+
+        // 半个坐标是笔误，不能猜。
+        let error =
+            desktop_region(&arguments(json!({"x": 5})), &desktop).expect_err("单给 x 应当被拒绝");
+        assert_eq!(error.message, "x 与 y 必须同时提供。");
+    }
+
+    #[test]
+    fn bgra_to_rgba_forces_opaque_pixels() {
+        // GDI 32 位 DIB 的保留字节为 0，转换后必须变成不透明，否则 PNG 会整张透明。
+        let mut buffer = vec![30u8, 20, 10, 0, 255, 0, 0, 0];
+        bgra_to_rgba(&mut buffer);
+        assert_eq!(buffer, vec![10, 20, 30, 255, 0, 0, 255, 255]);
     }
 
     #[test]

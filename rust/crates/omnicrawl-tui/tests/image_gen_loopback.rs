@@ -13,8 +13,7 @@ use omnicrawl_tui::tools::web_transport::UreqWebTransport;
 
 const IMAGE_JSON: &str = r#"{"data":[{"b64_json":"aGVsbG8=","output_format":"png"}]}"#;
 /// Gemini 的回包形状：图片内联在 `candidates[].content.parts[].inlineData.data`。
-const GEMINI_IMAGE_JSON: &str =
-    r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aGVsbG8="}}]}}]}"#;
+const GEMINI_IMAGE_JSON: &str = r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aGVsbG8="}}]}}]}"#;
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -255,7 +254,10 @@ fn gemini_channel_posts_generate_content_to_a_local_server() {
     assert!(request.header("authorization").is_empty());
 
     let body = String::from_utf8_lossy(&request.body);
-    assert!(body.contains("\"responseModalities\":[\"IMAGE\"]"), "{body}");
+    assert!(
+        body.contains("\"responseModalities\":[\"IMAGE\"]"),
+        "{body}"
+    );
     assert!(body.contains("16:9"), "{body}");
     assert!(body.contains("\"imageSize\":\"2K\""), "{body}");
     assert!(body.contains("一只猫"), "{body}");

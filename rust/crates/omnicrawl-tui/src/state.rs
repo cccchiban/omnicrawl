@@ -4,6 +4,7 @@
 //! 用户输入（输入框与面板）。渲染只读，不修改状态。
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -14,21 +15,21 @@ use omnicrawl_ipc::{HostEvent, Id};
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::conversation::ConversationCache;
-use crate::ui::image_preview::ImagePreviews;
-use omnicrawl_controllers::types::ToolImageAttachment;
-use omnicrawl_ipc::bridge::TurnImageAttachment;
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::{SessionMenuItem, SessionsMenu};
 use crate::ui::fullscreen::random::Rng;
 use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
-use crate::ui::fullscreen::rendering::widgets::{SubAgentConversation, SubAgentProgressTree};
 use crate::ui::fullscreen::status::hud::load_carousel_message_lines;
 use crate::ui::fullscreen::status::indicators as queue;
 use crate::ui::fullscreen::status::indicators::{
     Carousel, CarouselPage, CarouselSource, CarouselTick, CAROUSEL_ANIMATION_FRAME_SECONDS,
 };
 use crate::ui::fullscreen::text::StyledText;
+use crate::ui::image_preview::ImagePreviews;
 use crate::ui::RefreshVersions;
+use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
+use omnicrawl_controllers::types::ToolImageAttachment;
+use omnicrawl_ipc::bridge::TurnImageAttachment;
 
 /// 相邻增量间隔超过这个时长视为待机（工具执行、模型停顿），不计入输出时长。
 const IDLE_GAP: Duration = Duration::from_secs(2);
@@ -98,6 +99,46 @@ impl ToolCard {
             None => self.started.elapsed().as_secs_f64(),
         }
     }
+
+    /// 这张卡上的「立即结束」按钮该结束哪个后台任务；不是运行中的 monitor 卡时 `None`。
+    ///
+    /// 两类卡片都要认：模型调 `monitor` 工具形成的真实工具卡（`call_id` 是内核 id，
+    /// 任务 id 在参数里），以及本地归并出来的 `monitor:<id>` 卡（任务 id 在 `call_id` 里）。
+    /// 参数还在流里时卡片自己的参数是空的，任务 id 只存在于侧信道的半截 JSON 里。
+    pub fn monitor_task_id(&self, streaming: Option<&StreamingTool>) -> Option<String> {
+        if let Some(monitor_id) = self
+            .call_id
+            .strip_prefix("monitor:")
+            .filter(|id| !id.is_empty())
+        {
+            return Some(monitor_id.to_string());
+        }
+        if self.status != ToolStatus::Running || !is_monitor_tool(&self.name) {
+            return None;
+        }
+        [
+            Some(&self.arguments),
+            streaming.map(|entry| &entry.arguments),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|arguments| {
+            arguments
+                .get("monitor_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|monitor_id| !monitor_id.is_empty())
+                .map(str::to_string)
+        })
+    }
+}
+
+/// 这张卡是不是模型调 `monitor` 工具形成的卡（工具名可带命名空间前缀）。
+///
+/// 与 `ui::conversation::is_monitor_card` 同一判据：`monitor` 工具卡与本地归并出来的
+/// `monitor:<id>` 卡都算后台任务卡。
+pub fn is_monitor_tool(name: &str) -> bool {
+    name.rsplit('.').next().unwrap_or(name) == "monitor"
 }
 
 /// 一次工具调用在「参数还在流里」阶段的侧信道状态（按 call_id 索引）。
@@ -166,13 +207,37 @@ pub enum Record {
         message: String,
         retryable: bool,
     },
-    /// 一个 SubAgent 批次的进度树：同批次的任务事件在第 `i` 条记录上原地更新
-    /// （对映 Python 把 `SubAgentProgressTree` 挂进消息区、后续事件复用同一组件）。
-    SubagentTree(SubAgentProgressTree),
-    /// 一个 SubAgent 批次的流式对话面板（`/review` 这类派生评审流程用；
-    /// 对映 Python 的 `_handle_subagent_conversation_event` 把 `SubAgentConversation`
-    /// 按 `batch_id` 挂进消息区）。
-    SubagentConversation(SubAgentConversation),
+    /// 一个 SubAgent 批次在宿主侧的独立窗口受理提示。
+    ///
+    /// 子代理的过程文本与工具调用不再进消息流（它们由 `subagent-window` 子进程渲染），
+    /// 消息流里只留这一行，避免把主会话撑成进度树。
+    SubagentWindow(SubagentWindowNotice),
+}
+
+/// 窗口受理提示：批次号 + 流水文件（用户可据此自己重开窗口）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentWindowNotice {
+    pub batch_id: String,
+    pub stream: String,
+}
+
+impl SubagentWindowNotice {
+    /// 消息流里那一行（渲染成 `· ` 提示行）。
+    pub fn line(&self) -> String {
+        format!(
+            "子代理在独立窗口运行（批次 {}）；流水：{}",
+            self.batch_id, self.stream
+        )
+    }
+}
+
+/// 子代理窗口流水的默认落盘目录：与诊断日志同根（`~/.omnicrawl/logs/subagents`）。
+///
+/// 放在日志目录下是因为它和 `tui.log` 一样是「现场」，任务结束后仍值得回看。
+fn default_subagent_stream_root() -> PathBuf {
+    user_config_dir(&ConfigEnvironment::from_process())
+        .join("logs")
+        .join("subagents")
 }
 
 /// Monitor 任务状态 → 卡片状态：字符串取值与 `MonitorManager` 的快照同源。
@@ -180,7 +245,6 @@ pub enum Record {
 /// `stopped`（被显式终止）归「成功」是因为它同样是终态；用词不精确但原始状态字符串
 /// 仍在卡片正文里（`Monitor · id · stopped`），不必为了措辞新增一个渲染分支。
 /// 距固定帧长的下一帧还有多久：帧号按 `started` 起算，返回值至少 1ms（避免忙等）。
-
 fn frame_delay(now: Instant, started: Instant, frame_seconds: f64) -> Duration {
     let elapsed = now.saturating_duration_since(started).as_secs_f64();
     let frame = (elapsed / frame_seconds).floor() * frame_seconds;
@@ -567,7 +631,11 @@ impl Composer {
             .pastes
             .iter()
             .map(|(placeholder, _)| placeholder.as_str())
-            .chain(self.images.iter().map(|(placeholder, _)| placeholder.as_str()));
+            .chain(
+                self.images
+                    .iter()
+                    .map(|(placeholder, _)| placeholder.as_str()),
+            );
         for placeholder in placeholders {
             let needle: Vec<char> = placeholder.chars().collect();
             if needle.is_empty() || needle.len() > chars.len() {
@@ -707,7 +775,13 @@ impl Composer {
         }
         match self.placeholder_span(self.cursor - 1) {
             // 已在块首则跨出块外一格，否则跳到块首。
-            Some((start, _)) => self.cursor = if self.cursor > start { start } else { start - 1 },
+            Some((start, _)) => {
+                self.cursor = if self.cursor > start {
+                    start
+                } else {
+                    start - 1
+                }
+            }
             None => self.cursor -= 1,
         }
     }
@@ -1085,10 +1159,18 @@ pub struct AppState {
     /// 被点击展开的思考段（按记录下标），对映 Python `ReasoningDisclosure._expanded`。
     /// 下标随记录清空/回滚而变，展开态在那种情况下自然失效（服务端不会回填）。
     pub expanded_reasoning: HashSet<usize>,
-    /// 子代理对话流是否处于开启态（`/review` 运行期间）：事件进流式对话面板
-    /// 而不是进度树，对映 Python 的 `_conversation_stream_active`。
-    pub subagent_stream: bool,
+    /// 一个 SubAgent 批次在宿主侧开的独立窗口（`/review` 与 `subagent` 工具共用）。
+    ///
+    /// 过程文本与工具调用不进消息流：它们由 `subagent-window` 子进程渲染，这里只记一行
+    /// 受理提示（`Record::Notice`），因此主会话不再有进度树。
+    pub subagent_window: crate::subagent_window::SubagentWindows,
+    /// 子代理窗口流水的落盘目录（`~/.omnicrawl/logs/subagents`）。
+    pub subagent_stream_root: PathBuf,
+    /// 用来拉起窗口的可执行文件；`None` 时只落流水、不开窗（测试与无自身路径的场景）。
+    pub subagent_window_exe: Option<PathBuf>,
     batch: Option<host::PendingBatch>,
+    /// 当前批次是否属于子代理回合：为真时不在主会话挂工具卡（只回填结果）。
+    batch_quiet: bool,
     /// 底部单行轮播状态机（对映 Python `_carousel_*`）：遥测 → 工作区路径 → 留言
     /// 三页各 10s 循环，换页时以解密扫描特效过渡。
     carousel: Carousel,
@@ -1168,8 +1250,13 @@ impl AppState {
             pending_queue_expanded: false,
             expanded_tools: HashSet::new(),
             expanded_reasoning: HashSet::new(),
-            subagent_stream: false,
+            subagent_window: crate::subagent_window::SubagentWindows::new(),
+            subagent_stream_root: default_subagent_stream_root(),
+            // 窗口要拉起的可执行文件由宿主在构造后补上：`AppState` 自己猜会拿到测试
+            // 载荷（集成测试里 `current_exe()` 是测试二进制，不是工作台）。
+            subagent_window_exe: None,
             batch: None,
+            batch_quiet: false,
             carousel: Carousel::new(),
             carousel_text: StyledText::new(),
             carousel_since: Instant::now(),
@@ -1439,7 +1526,6 @@ impl AppState {
     /// 每帧的活动计时：回合在跑时状态行 spinner（每 80ms 换帧）与工具卡耗时在变。
     ///
     /// 空闲时什么都不做，三块版本号不变，事件循环因此可以整帧跳过绘制。
-    /// 子代理进度树的耗时由 [`Self::refresh_subagent_trees`] 自己按记录置脏，不在这里重复处理。
     pub fn tick_activity(&mut self) {
         if !self.turn.is_running() {
             return;
@@ -1448,19 +1534,15 @@ impl AppState {
         self.touch_running_tools();
     }
 
-    /// 是否存在需要按帧推进的活动（运行中的工具卡 / 子代理树 / 回合状态行）。
+    /// 是否存在需要按帧推进的活动（运行中的工具卡 / 回合状态行）。
     ///
-    /// 事件循环用它决定等待上限：没有活动就不必按活动帧率唤醒。
+    /// 事件循环用它决定等待上限：没有活动就不必按活动帧率唤醒。子代理的耗时由
+    /// 独立窗口自己推进，主会话这边没有需要刷新的东西。
     pub fn has_running_activity(&self) -> bool {
         self.turn.is_running()
-            || self
-                .records
-                .iter()
-                .any(|record| match record {
-                    Record::Tool(card) => card.status == ToolStatus::Running,
-                    Record::SubagentTree(tree) => tree.is_active(),
-                    _ => false,
-                })
+            || self.records.iter().any(
+                |record| matches!(record, Record::Tool(card) if card.status == ToolStatus::Running),
+            )
     }
 
     /// 下一个动画帧的到期时刻距现在还有多久；没有动画在播时返回 `None`。
@@ -1556,9 +1638,9 @@ impl AppState {
         }
         // 稳态：每帧按最新遥测重建当前页（对映 Python 的 `_carousel_refresh`，
         // 否则 token 计数要在下一次换页才会追上）。
-        let next = self
-            .carousel
-            .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
+        let next =
+            self.carousel
+                .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
         self.set_carousel_text(next);
     }
 
@@ -1598,12 +1680,7 @@ impl AppState {
     }
 
     /// 开始一个回合：用户消息落进消息流，输入框清空，滚动回到底部。
-    pub fn begin_turn(
-        &mut self,
-        turn_id: String,
-        text: String,
-        images: Vec<TurnImageAttachment>,
-    ) {
+    pub fn begin_turn(&mut self, turn_id: String, text: String, images: Vec<TurnImageAttachment>) {
         self.push_user_message(text, images);
         self.turn = TurnState::Running { turn_id };
         self.turn_started = Some(Instant::now());
@@ -1671,7 +1748,8 @@ impl AppState {
     /// 图片跟着一起排队：生成期间粘贴的图片若只留在输入框状态里，回合结束时那条消息
     /// 会悄悄丢掉图片。
     pub fn queue_pending(&mut self, text: String, images: Vec<PendingImage>) {
-        self.pending_inputs.push_back(PendingSubmission { text, images });
+        self.pending_inputs
+            .push_back(PendingSubmission { text, images });
         self.sync_queue_expanded();
         self.touch_composer();
     }
@@ -1932,8 +2010,7 @@ impl AppState {
                 if let Some(index) = self.tool_card_slot(&payload.call.id) {
                     if let Some(Record::Tool(card)) = self.records.get_mut(index) {
                         card.name = payload.call.name.clone();
-                        card.arguments =
-                            serde_json::Value::Object(payload.call.arguments.clone());
+                        card.arguments = serde_json::Value::Object(payload.call.arguments.clone());
                         card.summary = host::summarize_arguments(&payload.call.arguments);
                     }
                     self.touch_record(index);
@@ -2020,6 +2097,83 @@ impl AppState {
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
         self.touch_appended();
+    }
+
+    /// 追加一条子代理过程文本（子代理窗口内的 `assistant` 记录）。
+    pub fn subagent_text(&mut self, text: String) {
+        self.records.push(Record::Assistant(text));
+        self.touch_appended();
+    }
+
+    /// 子代理工具开始：挂一张运行中的工具卡（与主代理的卡片同形）。
+    pub fn subagent_tool_started(
+        &mut self,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    ) {
+        if !call_id.is_empty() && self.tool_card_mut(&call_id).is_some() {
+            return;
+        }
+        let summary =
+            host::summarize_arguments(arguments.as_object().unwrap_or(&serde_json::Map::new()));
+        self.records.push(Record::Tool(ToolCard {
+            call_id,
+            name,
+            summary,
+            arguments,
+            status: ToolStatus::Running,
+            elapsed: None,
+            started: Instant::now(),
+            body: Vec::new(),
+        }));
+        self.touch_appended();
+    }
+
+    /// 子代理工具结束：收口对应卡片的状态、耗时与正文。
+    pub fn subagent_tool_completed(
+        &mut self,
+        call_id: &str,
+        ok: bool,
+        output: &str,
+        seconds: Option<f64>,
+    ) {
+        let Some(index) = self.tool_card_slot(call_id) else {
+            return;
+        };
+        let Some(Record::Tool(card)) = self.records.get_mut(index) else {
+            return;
+        };
+        card.status = if ok {
+            ToolStatus::Ok
+        } else {
+            ToolStatus::Failed
+        };
+        card.elapsed = Some(Duration::from_secs_f64(seconds.unwrap_or(0.0)));
+        card.body = output
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .collect();
+        self.touch_record(index);
+    }
+
+    /// 子代理窗口的运行状态行（画在输入区方框上边框上，与主代理同一位置）。
+    ///
+    /// 只翻转运行态、不重置起始时刻：`turn_started` 是 spinner 的时基，每帧重置会让
+    /// 动画停在第一格。已经处于目标状态时直接返回，避免每帧把输入块置脏。
+    pub fn set_subagent_running(&mut self, running: bool) {
+        if self.turn.is_running() == running {
+            return;
+        }
+        self.turn = if running {
+            TurnState::Running {
+                turn_id: "subagent".to_string(),
+            }
+        } else {
+            TurnState::Idle
+        };
+        self.turn_started = running.then(Instant::now);
+        self.touch_composer();
     }
 
     /// 压缩后刷新遥测：上下文占用与 ↑ 换成压缩后的真实大小，↓/† 清零。
@@ -2375,150 +2529,33 @@ impl AppState {
         self.scroll_to_bottom();
     }
 
-    /// 子任务事件 → 进度树：按 `batch_id` 找树，没有就新开一棵并挂到消息流末尾。
+    /// 子任务事件 → 独立窗口：按 `batch_id` 记账，首次出现时开窗并留一行受理提示。
     ///
-    /// 对映 Python `_handle_subagent_event`：只处理任务状态类事件（子代理对话、工具与
-    /// 文本事件不进树），状态无法识别时同样忽略。载荷字段缺失时按 Python 的 `or` 口径
-    /// 回落（`task_id` → `task`，`batch_id` → `batch-<task_id>`，`description` → `task_id`）。
+    /// 过程文本、工具调用与任务状态都由 `subagent-window` 子进程渲染，主会话不再画进度树；
+    /// 这里只做两件本地的事：把事件转成窗口流水、批次首次出现时往消息流补一条提示。
     fn apply_subagent_event(&mut self, name: &str, payload: &serde_json::Value) {
-        // `/review` 等派生评审流程开启流式态时，整批事件都进会话面板，不再画进度树
-        // （对映 Python `_handle_subagent_event` 顶部的 `_conversation_stream_active` 早退）。
-        if self.subagent_stream {
-            self.apply_subagent_conversation(name, payload);
-            return;
-        }
-        let Some(status) = subagent_status_for_event(name) else {
-            return;
-        };
-        let task_id = payload_text(payload, "task_id").unwrap_or("task");
         let batch_id = payload_text(payload, "batch_id")
             .map(str::to_string)
-            .unwrap_or_else(|| format!("batch-{task_id}"));
-        let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
-        let description = payload_text(payload, "description");
-        // 先定位（必要时新建）这条批次对应的进度树：改完按下标做增量失效。
-        let index = match self.records.iter().rposition(|record| {
-            matches!(record, Record::SubagentTree(tree) if tree.batch_id == batch_id)
-        }) {
-            Some(index) => index,
-            None => {
-                self.records
-                    .push(Record::SubagentTree(SubAgentProgressTree::new(&batch_id)));
-                self.records.len() - 1
-            }
-        };
-        if let Some(Record::SubagentTree(tree)) = self.records.get_mut(index) {
-            tree.update_task(
-                task_id,
-                agent_type,
-                description.unwrap_or(task_id),
-                status,
-                None,
-            );
+            .unwrap_or_else(|| {
+                format!(
+                    "batch-{}",
+                    payload_text(payload, "task_id").unwrap_or("task")
+                )
+            });
+        let opened = self.subagent_window.deliver(
+            &self.subagent_stream_root,
+            self.subagent_window_exe.as_deref(),
+            name,
+            payload,
+        );
+        if let crate::subagent_window::Delivery::Opened { stream } = opened {
+            self.records
+                .push(Record::SubagentWindow(SubagentWindowNotice {
+                    batch_id,
+                    stream: stream.display().to_string(),
+                }));
+            self.touch_appended();
         }
-        self.touch_record(index);
-    }
-
-    /// 子代理对话流事件 → 按批次挂一块流式对话面板。
-    ///
-    /// 对映 Python `_handle_subagent_conversation_event`：首次事件建面板，
-    /// 之后 `turn.text` / `tool.started` / `tool.completed` 逐行追加，
-    /// 任务终态收口面板。只有流式态（`subagent_stream`）下才走这条路径。
-    fn apply_subagent_conversation(&mut self, name: &str, payload: &serde_json::Value) {
-        let task_id = payload_text(payload, "task_id").unwrap_or("task");
-        let batch_id = payload_text(payload, "batch_id")
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("batch-{task_id}"));
-        let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
-        // 定位（必要时新建）这条批次对应的对话面板：改完按下标做增量失效。
-        let index = match self.records.iter().rposition(|record| {
-            matches!(record, Record::SubagentConversation(panel) if panel.batch_id == batch_id)
-        }) {
-            Some(index) => index,
-            None => {
-                self.records
-                    .push(Record::SubagentConversation(SubAgentConversation::new(
-                        &batch_id, agent_type,
-                    )));
-                self.records.len() - 1
-            }
-        };
-        let Some(Record::SubagentConversation(panel)) = self.records.get_mut(index) else {
-            return;
-        };
-        match name {
-            "subagent.turn.text" => {
-                let text = payload
-                    .get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                for line in text.lines() {
-                    if !line.trim().is_empty() {
-                        panel.append(line, "");
-                    }
-                }
-            }
-            "subagent.tool.started" => {
-                let tool = payload_text(payload, "tool").unwrap_or_default();
-                panel.append(
-                    &format!("⌁ {}", subagent_tool_brief(tool, payload.get("arguments"))),
-                    "",
-                );
-            }
-            "subagent.tool.completed" => {
-                let ok = payload
-                    .get("ok")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let suffix = payload
-                    .get("duration_seconds")
-                    .and_then(serde_json::Value::as_f64)
-                    .map(|seconds| format!(" · {seconds:.2}s"))
-                    .unwrap_or_default();
-                panel.append(
-                    &format!("● {}{suffix}", if ok { "成功" } else { "失败" }),
-                    if ok { "green" } else { "red" },
-                );
-                let output = payload
-                    .get("output")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                for line in sample_output_lines(output) {
-                    panel.append(&line, "dim");
-                }
-            }
-            "subagent.task.completed" => panel.finish("✓ 子代理评审完成"),
-            "subagent.task.cancelled" | "subagent.task.approval_cancelled" => {
-                panel.finish("– 子代理评审已取消")
-            }
-            "subagent.task.failed" => panel.finish(&subagent_failure_line(payload)),
-            _ => {}
-        }
-        self.touch_record(index);
-    }
-
-    /// 推进仍活跃的进度树的运行耗时（对映 Python 的耗时 tick）：终态树不再重绘。
-    ///
-    /// 返回是否还有活跃树需要继续 tick；耗时跨过整秒前可见文本不变，而渲染结果
-    /// 相同的刷新由 [`SubAgentProgressTree::refresh_elapsed`] 内部自行跳过重绘。
-    pub fn refresh_subagent_trees(&mut self) -> bool {
-        let mut active = false;
-        let mut changed: Vec<usize> = Vec::new();
-        for (index, record) in self.records.iter_mut().enumerate() {
-            if let Record::SubagentTree(tree) = record {
-                if tree.is_active() {
-                    active = true;
-                    // 耗时跨过整秒前可见文本不变：只有真变了才置脏（缓存因此不被空转刷新打破）。
-                    if tree.refresh_elapsed(None) {
-                        changed.push(index);
-                    }
-                }
-            }
-        }
-        for index in changed {
-            self.touch_record(index);
-        }
-        active
     }
 
     /// 回合失败或取消：状态复位并把原因写进消息流。
@@ -2538,10 +2575,7 @@ impl AppState {
         self.close_running_cards("工具调用在回合结束前未收到结果。");
         // 中途停下的思考不再逐帧铺开：当场补全到已到达的长度，免得停在半句。
         self.settle_reasoning_reveal();
-        self.records.push(Record::Failure {
-            message,
-            retryable,
-        });
+        self.records.push(Record::Failure { message, retryable });
         self.touch_appended();
         self.touch_composer();
     }
@@ -2588,7 +2622,6 @@ impl AppState {
         self.touch_record(index);
         Some(text)
     }
-
 
     /// 是否在消息流里显示思考段（`ui.show_thinking`）。
     ///
@@ -2654,12 +2687,32 @@ impl AppState {
         request_id: Id,
         calls: Vec<omnicrawl_core::ToolCall>,
     ) -> host::BatchStep {
+        self.start_batch_quiet(request_id, calls, false)
+    }
+
+    /// 开始一个子代理批次的工具批次：照旧执行并回填结果，但不在主会话里挂工具卡
+    /// （子代理的过程由它自己的窗口渲染）。
+    pub fn start_subagent_batch(
+        &mut self,
+        request_id: Id,
+        calls: Vec<omnicrawl_core::ToolCall>,
+    ) -> host::BatchStep {
+        self.start_batch_quiet(request_id, calls, true)
+    }
+
+    fn start_batch_quiet(
+        &mut self,
+        request_id: Id,
+        calls: Vec<omnicrawl_core::ToolCall>,
+        quiet: bool,
+    ) -> host::BatchStep {
         let mut batch = host::PendingBatch::new(request_id, calls);
         let step = {
             let mut ctx = self.context();
             batch.advance(&mut ctx)
         };
         self.batch = Some(batch);
+        self.batch_quiet = quiet;
         // 待决面板与任务清单都在输入块里。
         self.touch_composer();
         step
@@ -2802,6 +2855,7 @@ impl AppState {
             return None;
         }
         let batch = self.batch.take()?;
+        self.batch_quiet = false;
         Some(batch.observations(attach_images))
     }
 
@@ -2825,7 +2879,7 @@ impl AppState {
             };
             self.update_tool(call, &result, now);
         }
-        if !timed_out.is_empty() {
+        if !timed_out.is_empty() && !self.batch_quiet {
             self.records.push(Record::Notice(format!(
                 "工具执行超过 {timeout_seconds} 秒未完成，已按超时继续（后台结果会被丢弃）。"
             )));
@@ -2836,6 +2890,7 @@ impl AppState {
     /// 取消当前批次（`Esc`）：批次卸下，已在执行的工具由取消令牌回收。
     pub fn cancel_batch(&mut self) {
         self.batch = None;
+        self.batch_quiet = false;
         self.touch_composer();
     }
 
@@ -2922,6 +2977,10 @@ impl AppState {
                 card.elapsed = None;
                 return;
             }
+        }
+        // 子代理批次：执行照旧，但卡片不属于主代理的会话区。
+        if self.batch_quiet {
+            return;
         }
         self.records.push(Record::Tool(ToolCard {
             call_id: call.id.clone(),
@@ -3025,6 +3084,17 @@ impl AppState {
         self.stop_button_hover.as_deref()
     }
 
+    /// 某张卡上的「立即结束」按钮该结束哪个后台任务；不是运行中的 monitor 卡时 `None`。
+    ///
+    /// 卡片已经不在（回放过的事件流里没有它）时返回 `None`。
+    pub fn monitor_task_id(&self, call_id: &str) -> Option<String> {
+        if let Some(monitor_id) = call_id.strip_prefix("monitor:").filter(|id| !id.is_empty()) {
+            return Some(monitor_id.to_string());
+        }
+        let card = self.tool_card(call_id)?;
+        card.monitor_task_id(self.streaming_tool(call_id))
+    }
+
     /// 记录本轮悬停命中；变化时让受影响的两张卡重算显示行。
     ///
     /// 按钮颜色是随显示行一起烘焙的，所以只 `bump` 重画不够——旧卡要褪回灰色、
@@ -3035,7 +3105,10 @@ impl AppState {
         }
         let previous = self.stop_button_hover.take();
         self.stop_button_hover = call_id;
-        for key in [previous, self.stop_button_hover.clone()].into_iter().flatten() {
+        for key in [previous, self.stop_button_hover.clone()]
+            .into_iter()
+            .flatten()
+        {
             if let Some(index) = self.tool_card_slot(&key) {
                 self.touch_record(index);
             }
@@ -3123,10 +3196,7 @@ fn partial_arguments(text: &str) -> serde_json::Value {
     }
     let trimmed = text.trim_end();
     let quote = '"';
-    let mut candidates = vec![
-        format!("{trimmed}{quote}}}"),
-        format!("{trimmed}}}"),
-    ];
+    let mut candidates = vec![format!("{trimmed}{quote}}}"), format!("{trimmed}}}")];
     if let Some(cut) = last_complete_field(trimmed) {
         // 截到最后一个完整字段：末尾那个逗号要去掉，否则补出来的对象带尾逗号仍然不合法。
         candidates.push(format!(
@@ -3192,7 +3262,9 @@ fn thousands(value: usize) -> String {
 /// 计量取事件自己记下的原始与概括字符数：回放时重算不出来（正文已含落盘说明），
 /// 而实时通知与回放必须显示同一行，否则恢复会话后边界会变样。
 fn replay_compaction_notice(payload: &serde_json::Value) -> Option<String> {
-    let raw = payload.get("raw_chars").and_then(serde_json::Value::as_u64)?;
+    let raw = payload
+        .get("raw_chars")
+        .and_then(serde_json::Value::as_u64)?;
     let summary = payload
         .get("summary_chars")
         .and_then(serde_json::Value::as_u64)?;
@@ -3208,9 +3280,7 @@ fn replay_eviction_notice(payload: &serde_json::Value) -> Option<String> {
     let saved = payload
         .get("saved_tokens")
         .and_then(serde_json::Value::as_i64)?;
-    Some(
-        omnicrawl_controllers::turn::compaction::format_compaction_savings_notice(saved),
-    )
+    Some(omnicrawl_controllers::turn::compaction::format_compaction_savings_notice(saved))
 }
 
 fn body_lines(output: &str) -> Vec<String> {
@@ -3282,6 +3352,22 @@ fn replay_output(payload: &serde_json::Value) -> String {
     "无输出".to_string()
 }
 
+/// 取非空字符串字段；缺失、类型不符或空串都按「未提供」处理（对映 Python 的 `x or 默认值`）。
+fn payload_text<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+/// 子任务状态是否已是终态（独立窗口用它挡住迟到的活动事件）。
+pub fn subagent_status_is_terminal(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "approval_cancelled"
+    )
+}
+
 /// 转录里的 SubAgent 事件类型 → 实时通知名（对映 Python `subagent_event_names`）。
 fn replay_subagent_event_name(event_type: &str) -> Option<&'static str> {
     match event_type {
@@ -3295,127 +3381,6 @@ fn replay_subagent_event_name(event_type: &str) -> Option<&'static str> {
         "subagent_task_approval_cancelled" => Some("subagent.task.approval_cancelled"),
         _ => None,
     }
-}
-
-/// 子任务事件名 → 进度树状态；对映 Python `_handle_subagent_event` 的 `status_by_event`。
-///
-/// 表外事件（`subagent.tool.*`、`subagent.turn.text` 等子代理对话流）不进树。
-fn subagent_status_for_event(name: &str) -> Option<&'static str> {
-    match name {
-        "subagent.task.queued" => Some("queued"),
-        "subagent.task.started" | "subagent.task.running" => Some("running"),
-        "subagent.task.waiting_approval" => Some("waiting_approval"),
-        "subagent.task.completed" => Some("completed"),
-        "subagent.task.failed" => Some("failed"),
-        "subagent.task.cancelled" | "subagent.task.approval_cancelled" => Some("cancelled"),
-        _ => None,
-    }
-}
-
-/// 取非空字符串字段；缺失、类型不符或空串都按「未提供」处理（对映 Python 的 `x or 默认值`）。
-fn payload_text<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-    payload
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-}
-
-/// 把子代理工具调用压成一行摘要（对映 Python `_subagent_tool_brief`）。
-fn subagent_tool_brief(tool_name: &str, arguments: Option<&serde_json::Value>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(serde_json::Value::Object(map)) = arguments {
-        if tool_name == "git" {
-            if let Some(action) = map.get("action").and_then(serde_json::Value::as_str) {
-                if !action.is_empty() {
-                    parts.push(action.to_string());
-                }
-            }
-            if let Some(serde_json::Value::Array(args)) = map.get("args") {
-                parts.extend(args.iter().map(scalar_text));
-            }
-        } else {
-            for key in ["path", "paths", "pattern", "query", "text", "scope"] {
-                match map.get(key) {
-                    Some(serde_json::Value::String(text)) if !text.trim().is_empty() => {
-                        parts.push(text.trim().to_string());
-                        break;
-                    }
-                    Some(serde_json::Value::Array(items)) if !items.is_empty() => {
-                        parts.push(scalar_text(&items[0]));
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    let mut brief = parts.join(" ").trim().to_string();
-    if brief.chars().count() > 60 {
-        brief = brief.chars().take(57).collect::<String>();
-        brief.push_str("...");
-    }
-    if brief.is_empty() {
-        tool_name.to_string()
-    } else {
-        format!("{tool_name} · {brief}")
-    }
-}
-
-/// 对映 Python `str(value)` 的标量取值；容器退化为 JSON 文本。
-fn scalar_text(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Bool(flag) => flag.to_string(),
-        serde_json::Value::Number(number) => number.to_string(),
-        serde_json::Value::Null => String::new(),
-        other => serde_json::to_string(other).unwrap_or_default(),
-    }
-}
-
-/// 工具输出采样：最多五行，超出时保留首尾各两行（对映 Python `_sample_output_lines`）。
-fn sample_output_lines(output: &str) -> Vec<String> {
-    let lines: Vec<String> = output
-        .lines()
-        .map(|line| line.trim_end().to_string())
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    if lines.len() <= 5 {
-        return lines;
-    }
-    let mut sampled: Vec<String> = lines[..2].to_vec();
-    sampled.push("…".to_string());
-    sampled.extend(lines[lines.len() - 2..].iter().cloned());
-    sampled
-}
-
-/// 失败面板的终态行（对映 Python 失败分支的「原因（分类）」拼法）。
-fn subagent_failure_line(payload: &serde_json::Value) -> String {
-    let mut line = "× 子代理评审失败".to_string();
-    let Some(error) = payload.get("error") else {
-        return line;
-    };
-    if let Some(reason) = error.get("message").and_then(serde_json::Value::as_str) {
-        if !reason.trim().is_empty() {
-            line.push_str(&format!("：{reason}"));
-        }
-    }
-    let code = error
-        .get("code")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let category = error
-        .get("diagnostic")
-        .and_then(|diagnostic| diagnostic.get("category"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let labels: Vec<&str> = [code, category]
-        .into_iter()
-        .filter(|label| !label.is_empty())
-        .collect();
-    if !labels.is_empty() {
-        line.push_str(&format!("（{}）", labels.join("，")));
-    }
-    line
 }
 
 /// Token 估算：CJK 字符按 1 token，其他字符按 4 字符 1 token。
@@ -3461,11 +3426,18 @@ mod tests {
     }
 
     fn state() -> AppState {
-        AppState::new(
+        let mut state = AppState::new(
             "demo".to_string(),
             "test-model".to_string(),
             ApprovalMode::Manual,
-        )
+        );
+        // 用例只验流水：目录指到临时区，且不给可执行文件（否则真会弹窗跑起工作台）。
+        // 每次新建一个子目录：用例并行跑，共用目录时清理会互相删掉对方的流水。
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        state.subagent_stream_root =
+            std::env::temp_dir().join(format!("oc-state-subwin-{}-{unique}", std::process::id()));
+        state
     }
 
     #[test]
@@ -3518,7 +3490,9 @@ mod tests {
         state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
         let burst: String = "想".repeat(300);
         state.apply(
-            &HostEvent::ReasoningDelta(TextPayload { text: burst.clone() }),
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: burst.clone(),
+            }),
             now,
         );
 
@@ -3748,6 +3722,58 @@ mod tests {
         assert_eq!(m1.body.len(), 2, "m1 的第二批追加到自己的卡上");
     }
 
+    /// 「立即结束」按钮的两类卡片都要能定位到任务 id。
+    ///
+    /// 真实 `monitor` 工具卡的 `call_id` 是内核 id（如 `call_1`），任务 id 只在参数里；
+    /// 只认 `monitor:` 前缀时按钮画得出来却点不动、也不亮——用户报的正是这个。
+    #[test]
+    fn monitor_task_id_resolves_both_card_shapes() {
+        let mut state = state();
+        // 归并卡：任务 id 在 call_id 里。
+        state.push_monitor_batch("m1", "running", "Monitor · m1 · running".to_string());
+        assert_eq!(state.monitor_task_id("monitor:m1").as_deref(), Some("m1"));
+
+        // 真实工具卡：任务 id 在参数里，工具名可能带命名空间前缀。
+        let mut running = call("call_1", "monitor");
+        running.arguments = json!({"action": "poll", "monitor_id": "m2", "wait_seconds": 30})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        state.begin_tool_run(&running, Instant::now());
+        assert_eq!(state.monitor_task_id("call_1").as_deref(), Some("m2"));
+
+        // 非 monitor 工具、缺 monitor_id、终态卡片都不该给出任务 id。
+        let bash = call("call_2", "bash");
+        state.begin_tool_run(&bash, Instant::now());
+        assert_eq!(state.monitor_task_id("call_2"), None);
+        let mut no_id = call("call_3", "monitor");
+        no_id.arguments = json!({"action": "list"})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        state.begin_tool_run(&no_id, Instant::now());
+        assert_eq!(state.monitor_task_id("call_3"), None);
+        assert_eq!(state.monitor_task_id("monitor:"), None);
+        assert_eq!(state.monitor_task_id("不存在"), None);
+
+        state.finish_tool_run(
+            &running,
+            &ToolResult {
+                ok: true,
+                output: "已返回".to_string(),
+                full_output: String::new(),
+                error_code: None,
+                retryable: false,
+            },
+            Instant::now(),
+        );
+        assert_eq!(
+            state.monitor_task_id("call_1"),
+            None,
+            "跑完的卡片没有按钮，也就不该再给出任务 id"
+        );
+    }
+
     #[test]
     fn stream_rollback_drops_half_streamed_record() {
         let mut state = state();
@@ -3790,10 +3816,7 @@ mod tests {
             "重试提示写在输入框上边框上，必须置脏输入块"
         );
 
-        state.apply(
-            &HostEvent::ProtocolWait,
-            now,
-        );
+        state.apply(&HostEvent::ProtocolWait, now);
         let after_wait = state.refresh_versions();
         assert_eq!(state.status.as_deref(), Some("等待协议…"));
         assert_eq!(after_wait.composer, after_retry.composer + 1);
@@ -3841,7 +3864,10 @@ mod tests {
             }),
             now,
         );
-        assert_eq!(state.status.as_deref(), Some("请求失败，正在自动重试（第2次）"));
+        assert_eq!(
+            state.status.as_deref(),
+            Some("请求失败，正在自动重试（第2次）")
+        );
 
         // 思考增量同理：模型重新动起来就不再是「等待」。
         state.apply(
@@ -3920,7 +3946,7 @@ mod tests {
             &HostEvent::TokenUsage(TokenUsagePayload {
                 input_tokens: 10,
                 output_tokens: 20,
-                cached_input_tokens: 5
+                cached_input_tokens: 5,
             }),
             now,
         );
@@ -3933,8 +3959,14 @@ mod tests {
             }),
             now,
         );
-        assert_eq!(state.telemetry.input_tokens, 12_000, "CTX 与 ↑ 换成压缩后大小");
-        assert_eq!(state.telemetry.output_tokens, 0, "↓ 属于上一次请求，压缩后清零");
+        assert_eq!(
+            state.telemetry.input_tokens, 12_000,
+            "CTX 与 ↑ 换成压缩后大小"
+        );
+        assert_eq!(
+            state.telemetry.output_tokens, 0,
+            "↓ 属于上一次请求，压缩后清零"
+        );
         assert_eq!(state.telemetry.cached_input_tokens, 0, "† 同上");
     }
 
@@ -3948,7 +3980,7 @@ mod tests {
             &HostEvent::TokenUsage(TokenUsagePayload {
                 input_tokens: 10,
                 output_tokens: 20,
-                cached_input_tokens: 5
+                cached_input_tokens: 5,
             }),
             now,
         );
@@ -3979,7 +4011,7 @@ mod tests {
             &HostEvent::TokenUsage(TokenUsagePayload {
                 input_tokens: 10,
                 output_tokens: 20,
-                cached_input_tokens: 5
+                cached_input_tokens: 5,
             }),
             now,
         );
@@ -4039,14 +4071,24 @@ mod tests {
         let mut state = state();
         let now = Instant::now();
         state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
-        state.apply(&HostEvent::Delta(TextPayload { text: "前半".into() }), now);
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "前半".into(),
+            }),
+            now,
+        );
         state.apply(
             &HostEvent::Notice(omnicrawl_ipc::bridge::MessagePayload {
                 message: "检测到 1 处疑似畸形脱敏占位符，已按原样保留。".to_string(),
             }),
             now,
         );
-        state.apply(&HostEvent::Delta(TextPayload { text: "后半".into() }), now);
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "后半".into(),
+            }),
+            now,
+        );
 
         let assistants: Vec<String> = state
             .records
@@ -4137,6 +4179,81 @@ mod tests {
         assert!(state.take_observations(false).is_none());
     }
 
+    /// 子代理批次的调用照旧要执行，但卡片属于子代理窗口：主会话里一张都不该多出来。
+    #[test]
+    fn subagent_batches_never_reach_the_main_conversation() {
+        let mut state = AppState::new(
+            "demo".to_string(),
+            "test-model".to_string(),
+            ApprovalMode::Auto,
+        );
+        let tool_call = call("c1", "bash");
+        let step = state.start_subagent_batch(Id::Number(31), vec![tool_call.clone()]);
+        let jobs = match step {
+            host::BatchStep::Execute(jobs) => jobs,
+            other => panic!("auto 模式应派发执行，实际：{other:?}"),
+        };
+        state.begin_tool_run(&jobs[0].1, Instant::now());
+        assert!(
+            !state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Tool(_))),
+            "子代理的工具卡不该进主会话：{:?}",
+            state.records
+        );
+
+        // 结果照旧回填：批次仍要整批就绪，否则内核会一直等观察。
+        assert!(state.record_tool_result(
+            0,
+            omnicrawl_core::ToolResult {
+                ok: true,
+                output: "输出".to_string(),
+                full_output: "输出".to_string(),
+                error_code: None,
+                retryable: false,
+            },
+            None
+        ));
+        let observations = state.take_observations(false).expect("整批就绪");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].result.output, "输出");
+        assert!(
+            !state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Tool(_))),
+            "回填之后也不该冒出一张卡：{:?}",
+            state.records
+        );
+    }
+
+    /// 安静批次结束（卸下批次）之后，下一次普通批次照旧画卡。
+    #[test]
+    fn quiet_batches_do_not_poison_the_next_batch() {
+        let mut state = AppState::new(
+            "demo".to_string(),
+            "test-model".to_string(),
+            ApprovalMode::Auto,
+        );
+        let _ = state.start_subagent_batch(Id::Number(41), vec![call("c1", "bash")]);
+        state.cancel_batch();
+        let step = state.start_batch(Id::Number(42), vec![call("c2", "bash")]);
+        let jobs = match step {
+            host::BatchStep::Execute(jobs) => jobs,
+            other => panic!("auto 模式应派发执行，实际：{other:?}"),
+        };
+        state.begin_tool_run(&jobs[0].1, Instant::now());
+        assert!(
+            state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Tool(card) if card.call_id == "c2")),
+            "普通批次的卡片要照旧出现：{:?}",
+            state.records
+        );
+    }
+
     #[test]
     fn tool_timeout_reaps_running_cards_and_notes_the_user() {
         let mut state = AppState::new(
@@ -4222,15 +4339,11 @@ mod tests {
     }
 
     #[test]
-    fn subagent_events_fill_one_tree_per_batch() {
+    fn subagent_batch_opens_a_window_and_leaves_one_notice() {
         let mut state = state();
         let now = Instant::now();
         state.apply(
             &subagent_event("subagent.task.queued", "t1", "batch-1"),
-            now,
-        );
-        state.apply(
-            &subagent_event("subagent.task.started", "t1", "batch-1"),
             now,
         );
         state.apply(
@@ -4242,114 +4355,50 @@ mod tests {
             now,
         );
 
-        let trees: Vec<&SubAgentProgressTree> = state
+        // 每个批次只留一行受理提示：不再有进度树，也不会随事件重复追加。
+        let notices: Vec<&SubagentWindowNotice> = state
             .records
             .iter()
             .filter_map(|record| match record {
-                Record::SubagentTree(tree) => Some(tree),
+                Record::SubagentWindow(notice) => Some(notice),
                 _ => None,
             })
             .collect();
-        assert_eq!(trees.len(), 2, "每个 batch_id 一棵树：{:?}", state.records);
-        assert_eq!(trees[0].batch_id, "batch-1");
-        assert!(!trees[0].is_active(), "批次 1 的任务已收口");
-        assert!(trees[1].is_active(), "批次 2 仍是运行中");
-        let rendered = trees[0].render_text(None).plain();
-        assert!(rendered.contains("└─ ✓ "), "终态图标要落在树上：{rendered}");
-        assert!(rendered.contains("· 完成"), "{rendered}");
-        assert!(rendered.contains("1/1 完成"), "{rendered}");
+        assert_eq!(
+            notices.len(),
+            2,
+            "每个 batch_id 开一次窗口：{:?}",
+            state.records
+        );
+        assert_eq!(notices[0].batch_id, "batch-1");
+        assert_eq!(notices[1].batch_id, "batch-2");
+        assert!(notices[0].stream.ends_with("batch-1.jsonl"));
+        assert!(state.subagent_window.has_window("batch-1"));
+
+        // 流水文件按到达顺序记下两次状态。
+        let text = std::fs::read_to_string(&notices[0].stream).expect("流水可读");
+        let statuses: Vec<String> = text
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("每行都是 JSON")["status"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(statuses, vec!["queued", "completed"]);
+        cleanup_state(&state);
     }
 
     #[test]
-    fn subagent_event_falls_back_to_defaults_and_ignores_other_events() {
+    fn conversation_events_join_the_open_window_without_new_records() {
         let mut state = state();
         let now = Instant::now();
-        // 子代理对话/工具事件不进树（对映 Python 的 status_by_event 表外分支）。
-        state.apply(
-            &subagent_event("subagent.tool.started", "t1", "batch-1"),
-            now,
-        );
-        assert!(!state
-            .records
-            .iter()
-            .any(|record| matches!(record, Record::SubagentTree(_))));
-
-        state.apply(
-            &HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
-                name: "subagent.task.queued".to_string(),
-                payload: json!({}),
-            }),
-            now,
-        );
-        match state.records.last() {
-            Some(Record::SubagentTree(tree)) => {
-                assert_eq!(tree.batch_id, "batch-task", "缺字段时回落 batch-<task_id>");
-                let plain = tree.render_text(None).plain();
-                assert!(plain.contains("└─ ○ task  subagent · 等待中"), "{plain}");
-            }
-            other => panic!("应当有一棵进度树，实际：{other:?}"),
-        }
-    }
-
-    #[test]
-    fn terminal_subagent_task_is_not_reopened_by_late_events() {
-        let mut state = state();
-        let now = Instant::now();
-        state.apply(
-            &subagent_event("subagent.task.completed", "t1", "batch-1"),
-            now,
-        );
-        state.apply(
-            &subagent_event("subagent.task.running", "t1", "batch-1"),
-            now,
-        );
-        let tree = match state.records.last() {
-            Some(Record::SubagentTree(tree)) => tree,
-            other => panic!("应当有一棵进度树，实际：{other:?}"),
-        };
-        assert!(
-            tree.render_text(None).plain().contains("└─ ✓ "),
-            "迟到的活动事件不得把已完成节点改回运行中"
-        );
-    }
-
-    #[test]
-    fn active_subagent_trees_refresh_their_elapsed_time() {
-        let mut state = state();
-        state.apply(
-            &subagent_event("subagent.task.running", "t1", "batch-1"),
-            Instant::now(),
-        );
-        assert!(
-            state.refresh_subagent_trees(),
-            "运行中的树每次 tick 都要重算耗时"
-        );
-        state.apply(
-            &subagent_event("subagent.task.completed", "t1", "batch-1"),
-            Instant::now(),
-        );
-        assert!(!state.refresh_subagent_trees(), "终态树不再需要耗时 tick");
-    }
-
-    #[test]
-    fn streaming_subagent_events_fill_conversation_panel() {
-        let mut state = state();
-        state.subagent_stream = true;
-        let now = Instant::now();
-        // 任务开始：建对话面板，不建进度树。
         state.apply(
             &subagent_event("subagent.task.started", "t1", "batch-1"),
             now,
         );
-        assert!(
-            !state
-                .records
-                .iter()
-                .any(|record| matches!(record, Record::SubagentTree(_))),
-            "流式态不画进度树"
-        );
-        assert!(panel_text(&state).contains("子代理对话"));
-
+        let before = state.records.len();
         state.apply(
             &conversation_event(
                 "subagent.turn.text",
@@ -4368,48 +4417,50 @@ mod tests {
             ),
             now,
         );
-        state.apply(
-            &conversation_event(
-                "subagent.tool.completed",
-                "t1",
-                "batch-1",
-                json!({"tool": "read", "ok": true, "output": "文件内容：42", "duration_seconds": 0.5}),
-            ),
-            now,
+        assert_eq!(
+            state.records.len(),
+            before,
+            "过程事件只进窗口，不再往消息流里加记录"
         );
-        let text = panel_text(&state);
-        assert!(text.contains("正在看代码"));
-        assert!(text.contains("⌁ read · a.py"), "工具摘要：{text}");
-        assert!(text.contains("● 成功 · 0.50s"), "工具结果：{text}");
-        assert!(text.contains("文件内容：42"));
-
-        state.apply(
-            &subagent_event("subagent.task.completed", "t1", "batch-1"),
-            now,
-        );
-        assert!(panel_text(&state).contains("✓ 子代理评审完成"));
-        // 收口后迟到的事件被忽略（面板 finish 后 append 无效）。
-        state.apply(
-            &conversation_event(
-                "subagent.turn.text",
-                "t1",
-                "batch-1",
-                json!({"text": "迟到"}),
-            ),
-            now,
-        );
-        assert!(!panel_text(&state).contains("迟到"));
-    }
-
-    fn panel_text(state: &AppState) -> String {
-        state
+        let stream = state
             .records
             .iter()
             .find_map(|record| match record {
-                Record::SubagentConversation(panel) => Some(panel.logical_text()),
+                Record::SubagentWindow(notice) => Some(notice.stream.clone()),
                 _ => None,
             })
-            .unwrap_or_default()
+            .expect("已开窗口");
+        let text = std::fs::read_to_string(stream).expect("流水可读");
+        assert!(text.contains("正在看代码"), "{text}");
+        assert!(text.contains("\"tool\":\"read\""), "{text}");
+        cleanup_state(&state);
+    }
+
+    #[test]
+    fn batch_events_alone_do_not_open_a_window() {
+        let mut state = state();
+        let now = Instant::now();
+        state.apply(
+            &HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+                name: "subagent.batch.created".to_string(),
+                payload: json!({"batch_id": "batch-9", "task_count": 2}),
+            }),
+            now,
+        );
+        assert!(state.records.is_empty(), "{:?}", state.records);
+        assert!(!state.subagent_window.has_window("batch-9"));
+    }
+
+    fn subagent_event(name: &str, task_id: &str, batch_id: &str) -> HostEvent {
+        HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+            name: name.to_string(),
+            payload: json!({
+                "task_id": task_id,
+                "batch_id": batch_id,
+                "agent_type": "reviewer",
+                "description": format!("审查 {task_id}"),
+            }),
+        })
     }
 
     fn conversation_event(
@@ -4434,16 +4485,9 @@ mod tests {
         })
     }
 
-    fn subagent_event(name: &str, task_id: &str, batch_id: &str) -> HostEvent {
-        HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
-            name: name.to_string(),
-            payload: json!({
-                "task_id": task_id,
-                "batch_id": batch_id,
-                "agent_type": "reviewer",
-                "description": format!("审查 {task_id}"),
-            }),
-        })
+    /// 受理提示里带着流水路径：用例跑完把该目录删掉，别在临时目录留垃圾。
+    fn cleanup_state(state: &AppState) {
+        let _ = std::fs::remove_dir_all(&state.subagent_stream_root);
     }
 
     #[test]
@@ -4589,7 +4633,11 @@ mod tests {
             .iter()
             .map(|option| option.command.as_str())
             .collect();
-        assert_eq!(names, vec!["/settings"], "/settings 没有声明参数，不再附参数提示");
+        assert_eq!(
+            names,
+            vec!["/settings"],
+            "/settings 没有声明参数，不再附参数提示"
+        );
         assert_eq!(
             composer.menu_handle_key(MenuKey::Enter),
             MenuAction::Passthrough
@@ -4679,7 +4727,10 @@ mod tests {
         state.begin_turn("t1".to_string(), "看图".to_string(), vec![image.clone()]);
 
         let Some(Record::User(message)) = state.records.first() else {
-            panic!("第一条记录应当是用｛Desensitized:718｝消息：{:?}", state.records);
+            panic!(
+                "第一条记录应当是用｛Desensitized:718｝消息：{:?}",
+                state.records
+            );
         };
         assert_eq!(message.text, "看图");
         assert_eq!(message.images, vec![image]);
@@ -4706,11 +4757,15 @@ mod replay_tests {
     use serde_json::{json, Value};
 
     fn state() -> AppState {
-        AppState::new(
+        let mut state = AppState::new(
             "demo".to_string(),
             "test-model".to_string(),
             ApprovalMode::Manual,
-        )
+        );
+        // 用例只验流水：目录指到临时区，且不给可执行文件（否则真会弹窗跑起工作台）。
+        state.subagent_stream_root =
+            std::env::temp_dir().join(format!("oc-state-subwin-{}", std::process::id()));
+        state
     }
 
     fn event(event_type: &str, payload: Value) -> Value {
@@ -4820,7 +4875,7 @@ mod replay_tests {
         assert!(state
             .records
             .iter()
-            .any(|record| matches!(record, Record::SubagentTree(_))));
+            .any(|record| matches!(record, Record::SubagentWindow(_))));
         assert!(state
             .records
             .iter()
@@ -4921,7 +4976,10 @@ mod replay_tests {
         ]);
 
         assert!(
-            state.records.iter().any(|record| matches!(record, Record::Notice(text)
+            state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Notice(text)
                 if text == "已压缩：省 2,778 Token")),
             "会话区应当出现压缩计量：{:?}",
             state.records
@@ -4966,7 +5024,10 @@ mod replay_tests {
         let mut state = state();
         state.replay_events(&[event("tool_call_summary", json!({"content": "概括"}))]);
         assert!(
-            state.records.iter().all(|record| !matches!(record, Record::Notice(_))),
+            state
+                .records
+                .iter()
+                .all(|record| !matches!(record, Record::Notice(_))),
             "没有 char 计量就不显示提示：{:?}",
             state.records
         );
@@ -4987,7 +5048,10 @@ mod replay_tests {
         )]);
 
         let Some(Record::User(message)) = state.records.first() else {
-            panic!("第一条记录应当是用｛Desensitized:719｝消息：{:?}", state.records);
+            panic!(
+                "第一条记录应当是用｛Desensitized:719｝消息：{:?}",
+                state.records
+            );
         };
         assert_eq!(message.text, "看一下这张图");
         assert_eq!(message.images.len(), 1);
@@ -5304,14 +5368,13 @@ mod history_tests {
     }
 }
 
-
 #[cfg(test)]
 mod streaming_tests {
     use super::*;
-    use serde_json::json;
     use omnicrawl_ipc::bridge::{
         ToolCallArgumentsPayload, ToolCallStartedPayload, ToolOutputCompressionPayload,
     };
+    use serde_json::json;
 
     #[test]
     fn partial_arguments_reads_what_has_arrived() {
@@ -5322,8 +5385,13 @@ mod streaming_tests {
         // 半截：字符串还没闭合、对象也没闭合——已到达的那一段要能取出来。
         let half = partial_arguments(HALF_JSON);
         assert_eq!(half["path"], json!("a.py"));
-        assert_eq!(half["content"], json!("第一
-第二"));
+        assert_eq!(
+            half["content"],
+            json!(
+                "第一
+第二"
+            )
+        );
         // 连值都没开始的半截：只拿到前面的字段。
         let broken = partial_arguments(r#"{"path": "a.py", "cont"#);
         assert_eq!(broken["path"], json!("a.py"));
@@ -5344,7 +5412,11 @@ mod streaming_tests {
 
     #[test]
     fn streaming_card_grows_with_argument_deltas() {
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let now = Instant::now();
         state.apply(
             &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
@@ -5384,7 +5456,11 @@ mod streaming_tests {
 
     #[test]
     fn compression_note_tracks_the_two_phases() {
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let now = Instant::now();
         state.apply(
             &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
@@ -5414,12 +5490,20 @@ mod streaming_tests {
         };
         state.apply(&phase("started", 12_345, 0), now);
         assert_eq!(
-            state.streaming_tool("call-1").unwrap().compression.as_deref(),
+            state
+                .streaming_tool("call-1")
+                .unwrap()
+                .compression
+                .as_deref(),
             Some("正在压缩…")
         );
         state.apply(&phase("finished", 12_345, 1_234), now);
         assert_eq!(
-            state.streaming_tool("call-1").unwrap().compression.as_deref(),
+            state
+                .streaming_tool("call-1")
+                .unwrap()
+                .compression
+                .as_deref(),
             Some("已压缩 12,345 → 1,234 字符")
         );
         // 压缩完成后用**压缩后的正文替换**卡片里的原始输出（用户要求）。
@@ -5438,7 +5522,11 @@ mod streaming_tests {
     fn internal_calls_are_settled_after_the_question_is_answered() {
         // 回归（用户报）：ask_user 由批次推进在宿主内直接定调结果，从不经过执行层，
         // 卡片因此一直停在「调用中」并继续计时。update_todos 同理。
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let call = |name: &str, arguments: serde_json::Value| omnicrawl_core::ToolCall {
             name: name.to_string(),
             arguments: arguments.as_object().cloned().unwrap_or_default(),
@@ -5469,7 +5557,9 @@ mod streaming_tests {
             "提问在回答前不该有终态卡片"
         );
 
-        state.answer_question("继续".to_string()).expect("应当在等提问");
+        state
+            .answer_question("继续".to_string())
+            .expect("应当在等提问");
         assert_eq!(
             state.settle_internal_batch_calls(),
             1,
@@ -5491,7 +5581,11 @@ mod streaming_tests {
     #[test]
     fn compression_failure_note_is_shown_on_the_card() {
         // 用户要求：压缩超时显示「压缩超时」，其他错误显示错误（以前只 eprintln，界面看不到）。
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let now = Instant::now();
         state.apply(
             &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
@@ -5529,7 +5623,11 @@ mod streaming_tests {
     fn a_streamed_call_keeps_one_card_and_gets_finished() {
         // 回归：流式阶段立过卡片后，批次执行**不能**再推一张卡片，
         // 否则流式那张永远停在「调用中」（用户报「工具调用一直不结束」）。
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let now = Instant::now();
         state.apply(
             &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
@@ -5540,7 +5638,10 @@ mod streaming_tests {
         );
         let call = omnicrawl_core::ToolCall {
             name: "bash".to_string(),
-            arguments: json!({"command": "ls"}).as_object().cloned().unwrap_or_default(),
+            arguments: json!({"command": "ls"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             id: "call-1".to_string(),
             function_name: "bash".to_string(),
         };
@@ -5555,7 +5656,10 @@ mod streaming_tests {
             })
             .collect();
         assert_eq!(cards.len(), 1, "同一 call_id 只应有一张卡片");
-        assert!(!state.streaming_tool("call-1").unwrap().streaming, "批次执行后不再是流式态");
+        assert!(
+            !state.streaming_tool("call-1").unwrap().streaming,
+            "批次执行后不再是流式态"
+        );
 
         // 结果回填后卡片进入终态（不会一直是「调用中」）。
         state.finish_tool_run(
@@ -5583,7 +5687,11 @@ mod streaming_tests {
     #[test]
     fn turn_end_closes_cards_still_marked_running() {
         // 回合结束仍停在「调用中」的卡片必须收口（用户报「工具调用一直不结束」）。
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let now = Instant::now();
         state.apply(
             &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
@@ -5613,18 +5721,28 @@ mod streaming_tests {
             other => panic!("应当有工具卡：{other:?}"),
         };
         assert_eq!(card.status, ToolStatus::Failed, "回合结束不能再停在调用中");
-        assert_eq!(card.body, vec!["工具调用在回合结束前未收到结果。".to_string()]);
+        assert_eq!(
+            card.body,
+            vec!["工具调用在回合结束前未收到结果。".to_string()]
+        );
     }
 
     #[test]
     fn batch_waits_for_every_call_before_observations() {
         // 并发工具调用：整批**全部**回填后才打包成观察交给下一轮模型请求。
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         let calls: Vec<omnicrawl_core::ToolCall> = ["call-1", "call-2"]
             .iter()
             .map(|id| omnicrawl_core::ToolCall {
                 name: "read_file".to_string(),
-                arguments: json!({"path": "a.py"}).as_object().cloned().unwrap_or_default(),
+                arguments: json!({"path": "a.py"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
                 id: (*id).to_string(),
                 function_name: "read_file".to_string(),
             })
@@ -5637,10 +5755,21 @@ mod streaming_tests {
             error_code: None,
             retryable: false,
         };
-        assert!(!state.record_tool_result(0, result.clone(), None), "只回填一条时整批未就绪");
-        assert!(state.take_observations(false).is_none(), "未整批回填时不能打包观察");
-        assert!(state.record_tool_result(1, result, None), "两条都回填后整批就绪");
-        let observations = state.take_observations(false).expect("整批就绪后应当能取观察");
+        assert!(
+            !state.record_tool_result(0, result.clone(), None),
+            "只回填一条时整批未就绪"
+        );
+        assert!(
+            state.take_observations(false).is_none(),
+            "未整批回填时不能打包观察"
+        );
+        assert!(
+            state.record_tool_result(1, result, None),
+            "两条都回填后整批就绪"
+        );
+        let observations = state
+            .take_observations(false)
+            .expect("整批就绪后应当能取观察");
         assert_eq!(observations.len(), 2, "观察按模型调用顺序整批产出");
         let _ = &calls;
     }
@@ -5651,7 +5780,11 @@ mod streaming_tests {
     // ---- 三块刷新（会话 / 输入框 / 底部） ------------------------------------------
 
     fn three_block_state() -> AppState {
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         state
     }
@@ -5717,7 +5850,11 @@ mod streaming_tests {
     /// 空闲时 `tick_activity` 什么也不做；回合在跑时它维持 spinner 与活动耗时。
     #[test]
     fn activity_tick_only_runs_while_a_turn_is_in_flight() {
-        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
         // 空闲：一条版本都不动。
         let idle = state.refresh_versions();
         state.tick_activity();
@@ -5728,8 +5865,15 @@ mod streaming_tests {
         let running = state.refresh_versions();
         state.tick_activity();
         let ticked = state.refresh_versions();
-        assert_eq!(ticked.composer, running.composer + 1, "spinner 在输入框上边框");
-        assert_eq!(ticked.conversation, running.conversation, "没有运行中的卡片就不动会话");
+        assert_eq!(
+            ticked.composer,
+            running.composer + 1,
+            "spinner 在输入框上边框"
+        );
+        assert_eq!(
+            ticked.conversation, running.conversation,
+            "没有运行中的卡片就不动会话"
+        );
 
         // 有一张运行中的卡片：它的耗时按帧重算。
         let mut state = three_block_state();

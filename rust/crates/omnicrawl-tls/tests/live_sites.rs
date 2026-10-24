@@ -29,11 +29,7 @@ fn connect(host: &str, family: Family) -> Connection<std::net::TcpStream> {
 
 fn run_get(host: &str, path: &str, family: Family) -> u16 {
     let mut connection = connect(host, family);
-    assert_eq!(
-        connection.alpn(),
-        Some("h2"),
-        "{host} 应当协商出 h2"
-    );
+    assert_eq!(connection.alpn(), Some("h2"), "{host} 应当协商出 h2");
     let response = connection
         .get(path)
         .unwrap_or_else(|error| panic!("向 {host}{path} 发请求失败：{error}"));
@@ -82,7 +78,9 @@ fn a_larger_site_exercises_multiple_records_and_frames() {
         response.body.len()
     );
     assert_eq!(
-        response.header("content-type").map(|value| value.contains("text/html")),
+        response
+            .header("content-type")
+            .map(|value| value.contains("text/html")),
         Some(true),
         "应当是 HTML 页面"
     );
@@ -114,7 +112,12 @@ fn a_redirect_is_reported_as_a_status_and_location() {
 fn every_family_can_complete_a_handshake_against_a_real_server() {
     // 四份档案都要能真的握手成功。这一步同时验证了档案的结构合法性与
     // 服务端对我们这套扩展排列的接受度。
-    for family in [Family::Chrome, Family::Firefox, Family::Safari, Family::Edge] {
+    for family in [
+        Family::Chrome,
+        Family::Firefox,
+        Family::Safari,
+        Family::Edge,
+    ] {
         let mut connection = Connection::connect_to("example.com", 443, family, None, TIMEOUT)
             .unwrap_or_else(|error| panic!("{} 家族握手失败：{error}", family.as_str()));
         assert_eq!(
@@ -158,7 +161,9 @@ fn a_second_request_on_the_same_connection_reuses_the_session() {
 fn a_404_is_reported_as_a_status_not_an_error() {
     // 关键的语义检查：4xx 是「成功拿到了响应」，不是传输失败。
     let mut connection = connect("example.com", Family::Firefox);
-    let response = connection.get("/this-path-does-not-exist-omnicrawl").expect("请求应当完成");
+    let response = connection
+        .get("/this-path-does-not-exist-omnicrawl")
+        .expect("请求应当完成");
     assert!(
         (400..500).contains(&response.status),
         "预期 4xx，实际 {}",
@@ -205,8 +210,9 @@ fn a_tls12_only_site_completes_a_handshake_and_serves_http11() {
     // 百度只支持到 TLS 1.2。这一条曾经断言「必须失败」并只检查报错文案，因为当时
     // 实现只有 1.3；现在 1.2 已经支持，因此改为断言真实可用：
     // 握手走完、版本是 1.2、并且能取到页面。
-    let mut connection = Connection::connect_to("www.baidu.com", 443, Family::Chrome, None, TIMEOUT)
-        .unwrap_or_else(|error| panic!("百度应当能用 TLS 1.2 握手：{error}"));
+    let mut connection =
+        Connection::connect_to("www.baidu.com", 443, Family::Chrome, None, TIMEOUT)
+            .unwrap_or_else(|error| panic!("百度应当能用 TLS 1.2 握手：{error}"));
     assert_eq!(
         connection.version(),
         Some(omnicrawl_tls::session::Version::Tls12),
@@ -233,7 +239,11 @@ fn a_second_tls12_only_site_also_works() {
         "qq.com 的协商结果应当是 1.2"
     );
     let response = connection.get("/").expect("请求应当完成");
-    assert!((200..400).contains(&response.status), "意外的状态码 {}", response.status);
+    assert!(
+        (200..400).contains(&response.status),
+        "意外的状态码 {}",
+        response.status
+    );
 }
 
 #[test]

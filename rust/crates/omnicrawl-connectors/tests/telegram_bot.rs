@@ -104,7 +104,8 @@ impl HttpTransport for MockHttp {
         } else if url.contains("sendMessage") {
             let count = self.messages_created.fetch_add(1, Ordering::SeqCst) + 1;
             json!({"ok": true, "result": {"message_id": count}})
-        } else if url.contains("editMessageText") && self.not_modified_edits.load(Ordering::SeqCst) > 0
+        } else if url.contains("editMessageText")
+            && self.not_modified_edits.load(Ordering::SeqCst) > 0
         {
             // 按需模拟 Telegram 的「内容未修改」：它不是失败，不能被当成编辑失败。
             self.not_modified_edits.fetch_sub(1, Ordering::SeqCst);
@@ -446,7 +447,12 @@ fn empty_reply_still_reports_completion() {
     driver.set_script(json!({"reply": ""}));
     bot.handle_update(&update(11, 7, "不说话"));
     wait_for(5.0, || driver.turns().len() == 1);
-    wait_for(5.0, || http.calls_of("sendMessage") >= 1);
+    // 回执「已收到任务」也会增加 sendMessage 计数，因此等的是兜底文案本身。
+    wait_for(5.0, || {
+        http.bodies()
+            .iter()
+            .any(|body| body.contains("任务完成，无文本输出"))
+    });
     let bodies = http.bodies();
     assert!(
         bodies
@@ -489,7 +495,12 @@ fn startup_publishes_host_command_menu() {
     let requests = http.requests();
     let request = requests
         .iter()
-        .find(|request| request["url"].as_str().unwrap_or("").contains("setMyCommands"))
+        .find(|request| {
+            request["url"]
+                .as_str()
+                .unwrap_or("")
+                .contains("setMyCommands")
+        })
         .expect("应调用 setMyCommands");
     let body = percent_decode(request["body"].as_str().unwrap_or(""));
     assert!(body.contains("sessions"), "{body}");

@@ -90,19 +90,23 @@ fn run_guard_rejects_out_of_range_values() {
 /// 持续运转：续跑次数上限的区间同样在写盘前检查。
 #[test]
 fn run_guard_rejects_out_of_range_followups() {
-    assert_rejected("run-guard-continue", "run_guard.max_auto_followups", |env| {
-        save_run_guard_config(
-            env,
-            &RunGuardConfig {
-                continuation: ContinueConfig {
-                    max_auto_followups: 99,
-                    ..ContinueConfig::default()
+    assert_rejected(
+        "run-guard-continue",
+        "run_guard.max_auto_followups",
+        |env| {
+            save_run_guard_config(
+                env,
+                &RunGuardConfig {
+                    continuation: ContinueConfig {
+                        max_auto_followups: 99,
+                        ..ContinueConfig::default()
+                    },
+                    ..RunGuardConfig::default()
                 },
-                ..RunGuardConfig::default()
-            },
-            None,
-        )
-    });
+                None,
+            )
+        },
+    );
 }
 
 /// 持续运转：合法的边界值仍然写得进去。
@@ -227,31 +231,39 @@ fn agent_workspace_rejects_unknown_cleanup() {
 /// 工具输出压缩：未知思考档位在写盘前被拒。
 #[test]
 fn compression_rejects_unknown_reasoning_effort() {
-    assert_rejected("compression", "tool_output_compression.reasoning_effort", |env| {
-        save_tool_output_compression_config(
-            env,
-            &ToolOutputCompressionConfig {
-                reasoning_effort: "turbo".to_string(),
-                ..ToolOutputCompressionConfig::default()
-            },
-            None,
-        )
-    });
+    assert_rejected(
+        "compression",
+        "tool_output_compression.reasoning_effort",
+        |env| {
+            save_tool_output_compression_config(
+                env,
+                &ToolOutputCompressionConfig {
+                    reasoning_effort: "turbo".to_string(),
+                    ..ToolOutputCompressionConfig::default()
+                },
+                None,
+            )
+        },
+    );
 }
 
 /// 工具输出压缩：非正数预算在写盘前被拒。
 #[test]
 fn compression_rejects_non_positive_budget() {
-    assert_rejected("compression-budget", "tool_output_compression.min_chars", |env| {
-        save_tool_output_compression_config(
-            env,
-            &ToolOutputCompressionConfig {
-                min_chars: 0,
-                ..ToolOutputCompressionConfig::default()
-            },
-            None,
-        )
-    });
+    assert_rejected(
+        "compression-budget",
+        "tool_output_compression.min_chars",
+        |env| {
+            save_tool_output_compression_config(
+                env,
+                &ToolOutputCompressionConfig {
+                    min_chars: 0,
+                    ..ToolOutputCompressionConfig::default()
+                },
+                None,
+            )
+        },
+    );
 }
 
 /// TTS：空输出目录在写盘前被拒。

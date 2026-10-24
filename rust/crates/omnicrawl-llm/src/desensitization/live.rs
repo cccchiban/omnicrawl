@@ -23,8 +23,7 @@ use super::engine::{MaskContext, SensitiveMatcher};
 use super::gitleaks::{load_rules, GitleaksRule};
 use super::middleware::MessageMaskMemo;
 use super::ner::{
-    build_ner_layer, resolve_runtime_model_path, NerExtractorPool, NerLayer,
-    NerLayerOptions,
+    build_ner_layer, resolve_runtime_model_path, NerExtractorPool, NerLayer, NerLayerOptions,
 };
 use super::ner_weights::NerWeights;
 use super::plan_cache::{MaskPlanCache, PlanCacheStats};
@@ -57,11 +56,8 @@ pub fn build_runtime_ner_layer(options: &NerLayerOptions) -> Option<NerLayer> {
         return None;
     }
     let pool = NER_POOL.get_or_init(NerExtractorPool::new);
-    let model_path = resolve_runtime_model_path(
-        Some(options.model_path.as_str()),
-        None,
-        &ner_data_dir(),
-    );
+    let model_path =
+        resolve_runtime_model_path(Some(options.model_path.as_str()), None, &ner_data_dir());
     build_ner_layer(options, pool, &model_path, |path| {
         NerWeights::load(path)
             .ok()

@@ -176,7 +176,11 @@ fn read(env: &ConfigEnvironment, target: Option<Target>) -> ToolOutcome {
         let data = target.load(env).map_err(config_error)?;
         let text = dump_toml_text(&mask(&data));
         if text.trim().is_empty() {
-            blocks.push(format!("{}：{} 为空或不存在。", target.label(), path.display()));
+            blocks.push(format!(
+                "{}：{} 为空或不存在。",
+                target.label(),
+                path.display()
+            ));
         } else {
             blocks.push(format!("{}：{}\n{}", target.label(), path.display(), text));
         }
@@ -223,7 +227,9 @@ fn toml_value(raw: &JsonValue) -> Result<Value, ToolError> {
     if !raw.is_object() && !raw.is_array() {
         return Ok(omnicrawl_config::value::json_to_toml(raw));
     }
-    Ok(Value::Table(omnicrawl_config::value::json_object_to_table(raw)))
+    Ok(Value::Table(omnicrawl_config::value::json_object_to_table(
+        raw,
+    )))
 }
 
 /// 按点分路径写入 TOML 文档；中间层缺失则补齐空表，遇到非表值则报错。
@@ -306,15 +312,21 @@ mod tests {
             )],
         );
         let environment = ConfigEnvironment::new(&root, "windows");
-        let output = config_edit(&environment, &args(json!({"action": "read", "file": "config"})))
-            .expect("读取成功");
+        let output = config_edit(
+            &environment,
+            &args(json!({"action": "read", "file": "config"})),
+        )
+        .expect("读取成功");
         assert!(output.contains("api_key = \"<已隐藏>\""), "{output}");
         assert!(
             output.contains("api_key_env = \"OPENAI_API_KEY\""),
             "环境变量名不是凭据：{output}"
         );
         assert!(output.contains("mode = \"review\""), "{output}");
-        assert!(!output.contains("sk-secret"), "凭据不得出现在输出里：{output}");
+        assert!(
+            !output.contains("sk-secret"),
+            "凭据不得出现在输出里：{output}"
+        );
     }
 
     #[test]
@@ -323,7 +335,10 @@ mod tests {
             "omnicrawl-config-tool-read-all",
             &[
                 ("config.toml", "[approval]\nmode = \"review\"\n"),
-                ("models.toml", "[llm.defaults]\ncontext_window_tokens = 128000\n"),
+                (
+                    "models.toml",
+                    "[llm.defaults]\ncontext_window_tokens = 128000\n",
+                ),
                 ("subagents.toml", "[subagents]\nenabled = false\n"),
                 (
                     "decision_models.toml",
@@ -354,15 +369,24 @@ mod tests {
         let environment = ConfigEnvironment::new(&root, "windows");
         let output = config_edit(
             &environment,
-            &args(json!({"action": "set", "path": "llm.defaults.reasoning_effort", "value": "high"})),
+            &args(
+                json!({"action": "set", "path": "llm.defaults.reasoning_effort", "value": "high"}),
+            ),
         )
         .expect("写入成功");
-        assert_eq!(output, "已更新 config.toml 的 llm.defaults.reasoning_effort：'high'");
+        assert_eq!(
+            output,
+            "已更新 config.toml 的 llm.defaults.reasoning_effort：'high'"
+        );
         let written = read_file(&root, "config.toml");
         assert!(written.contains("reasoning_effort = \"high\""), "{written}");
         // 再读一次能读回刚写的值（读与写是同一份文件）。
-        let read_back = config_edit(&environment, &args(json!({"action": "read"}))).expect("读取成功");
-        assert!(read_back.contains("reasoning_effort = \"high\""), "{read_back}");
+        let read_back =
+            config_edit(&environment, &args(json!({"action": "read"}))).expect("读取成功");
+        assert!(
+            read_back.contains("reasoning_effort = \"high\""),
+            "{read_back}"
+        );
     }
 
     #[test]
@@ -371,14 +395,21 @@ mod tests {
             "omnicrawl-config-tool-targets",
             &[
                 ("config.toml", "[approval]\nmode = \"review\"\n"),
-                ("models.toml", "[llm.defaults]\ncontext_window_tokens = 128000\n"),
+                (
+                    "models.toml",
+                    "[llm.defaults]\ncontext_window_tokens = 128000\n",
+                ),
                 ("subagents.toml", "[subagents]\nenabled = false\n"),
                 ("decision_models.toml", "[features]\nreview = false\n"),
             ],
         );
         let environment = ConfigEnvironment::new(&root, "windows");
         for (file, path, value) in [
-            ("models", "llm.defaults.context_window_tokens", json!(200000)),
+            (
+                "models",
+                "llm.defaults.context_window_tokens",
+                json!(200000),
+            ),
             ("subagents", "subagents.enabled", json!(true)),
             ("decision_models", "features.review", json!(true)),
         ] {
@@ -393,7 +424,10 @@ mod tests {
             );
         }
         // 只改目标文件：其余三份保持原样。
-        assert_eq!(read_file(&root, "config.toml"), "[approval]\nmode = \"review\"\n");
+        assert_eq!(
+            read_file(&root, "config.toml"),
+            "[approval]\nmode = \"review\"\n"
+        );
         assert!(read_file(&root, "models.toml").contains("context_window_tokens = 200000"));
         assert!(read_file(&root, "subagents.toml").contains("enabled = true"));
         assert!(read_file(&root, "decision_models.toml").contains("review = true"));
@@ -429,7 +463,11 @@ mod tests {
             &args(json!({"action": "set", "path": "approval.mode.deep", "value": 1})),
         )
         .expect_err("跨标量写入应当报错");
-        assert!(error.message.contains("配置路径不是对象"), "{}", error.message);
+        assert!(
+            error.message.contains("配置路径不是对象"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -439,10 +477,12 @@ mod tests {
             .expect_err("缺 action 应当报错")
             .message
             .contains("缺少必填字段 action"));
-        assert!(config_edit(&environment, &args(json!({"action": "delete"})))
-            .expect_err("未知 action 应当报错")
-            .message
-            .contains("只支持 read / set"));
+        assert!(
+            config_edit(&environment, &args(json!({"action": "delete"})))
+                .expect_err("未知 action 应当报错")
+                .message
+                .contains("只支持 read / set")
+        );
     }
 
     #[test]

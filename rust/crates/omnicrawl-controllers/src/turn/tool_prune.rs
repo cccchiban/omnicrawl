@@ -324,7 +324,10 @@ mod tests {
             candidate("c1", "grep", ""),
             candidate("c2", "read", ""),
         ];
-        assert_eq!(evicted_call_ids(&groups, &[1, 1, 9]), vec!["c1".to_string()]);
+        assert_eq!(
+            evicted_call_ids(&groups, &[1, 1, 9]),
+            vec!["c1".to_string()]
+        );
         assert!(evicted_call_ids(&groups, &[]).is_empty());
     }
 

@@ -19,4 +19,5 @@ pub mod image_path;
 pub mod monitor;
 pub mod paste;
 pub mod state;
+pub mod subagent_window;
 pub mod ui;

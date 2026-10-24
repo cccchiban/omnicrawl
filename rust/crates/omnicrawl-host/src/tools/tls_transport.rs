@@ -52,13 +52,13 @@ use omnicrawl_tls::session::HandshakeError;
 use omnicrawl_tls::verify::{TrustAnchors, VerifyError};
 use serde_json::Value;
 
+use super::cookies;
+use super::fetch_metadata;
+use super::referrer;
 use super::web_transport::{
     decode_content, resolve_url, UreqWebTransport, WebError, WebErrorKind, WebRequest, WebResponse,
     WebTransport, REDIRECT_STATUSES,
 };
-use super::cookies;
-use super::fetch_metadata;
-use super::referrer;
 
 /// Python `_IMPERSONATE_OPTIONS` 的顺序（`omnicrawl/net/fetcher.py:62`）。
 ///
@@ -363,11 +363,7 @@ fn send_once(
     cookies::apply_header_in(
         request.cookie_jar.as_deref(),
         &request.url,
-        &cookies::RequestContext::new(
-            request.initiator.as_deref(),
-            true,
-            &request.method,
-        ),
+        &cookies::RequestContext::new(request.initiator.as_deref(), true, &request.method),
         &mut headers,
     );
     // `Referer`：值由发起方与策略共同决定（跨源默认只交源）。
@@ -437,11 +433,7 @@ pub(crate) fn client_hint_value(hint: &str, family: &str) -> Option<String> {
 /// 在已编码的头集合上按协商结果补高熵 Client Hints。
 ///
 /// 抽成独立函数是为了能直接断言「最终要发出去的字节」——只测协商状态无法证明头真的发出去了。
-fn apply_negotiated_hints(
-    mut headers: Vec<Header>,
-    url: &str,
-    family: &str,
-) -> Vec<Header> {
+fn apply_negotiated_hints(mut headers: Vec<Header>, url: &str, family: &str) -> Vec<Header> {
     for hint in super::client_hints::hints_for(url) {
         // 声明里可能是 `sec-ch-ua` 这类基础提示；值缺失就跳过，绝不发空头。
         let Some(value) = client_hint_value(&hint, family) else {
@@ -812,7 +804,10 @@ mod tests {
             ("Host".to_string(), "example.com".to_string()),
             ("Connection".to_string(), "keep-alive".to_string()),
             ("Transfer-Encoding".to_string(), "chunked".to_string()),
-            ("Accept-Encoding".to_string(), "gzip, deflate, br".to_string()),
+            (
+                "Accept-Encoding".to_string(),
+                "gzip, deflate, br".to_string(),
+            ),
             ("Upgrade".to_string(), "h2c".to_string()),
             ("Accept".to_string(), "*/*".to_string()),
         ];

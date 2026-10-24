@@ -105,11 +105,7 @@ impl KernelClient {
         Self::spawn_with(program, Some(Box::new(sink)), envs)
     }
 
-    fn spawn_with(
-        program: &Path,
-        sink: Option<StderrSink>,
-        envs: KernelEnv,
-    ) -> io::Result<Self> {
+    fn spawn_with(program: &Path, sink: Option<StderrSink>, envs: KernelEnv) -> io::Result<Self> {
         let stderr = if sink.is_some() {
             Stdio::piped()
         } else {

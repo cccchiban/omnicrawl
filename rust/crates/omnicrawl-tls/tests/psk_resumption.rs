@@ -69,17 +69,16 @@ fn extract_psk(client_hello: &[u8]) -> Option<(Vec<u8>, usize, usize)> {
         let data_start = cursor + 4;
         if kind == ext::PRE_SHARED_KEY {
             // identities<2> : { identity<2> ticket, age<4> } ...
-            let identities_len = u16::from_be_bytes([body[data_start], body[data_start + 1]]) as usize;
+            let identities_len =
+                u16::from_be_bytes([body[data_start], body[data_start + 1]]) as usize;
             let identity_start = data_start + 2;
             let ticket_len =
                 u16::from_be_bytes([body[identity_start], body[identity_start + 1]]) as usize;
             let ticket = body[identity_start + 2..identity_start + 2 + ticket_len].to_vec();
             // binders 紧跟在 identities 之后。
             let binders_start = identity_start + identities_len;
-            let binder_len = u16::from_be_bytes([
-                body[binders_start],
-                body[binders_start + 1],
-            ]) as usize;
+            let binder_len =
+                u16::from_be_bytes([body[binders_start], body[binders_start + 1]]) as usize;
             // binder 数据在 binders 长度字段之后；偏移要换算回整个 hello 的坐标。
             return Some((ticket, 4 + binders_start + 2, binder_len));
         }
@@ -144,8 +143,8 @@ impl PskServer {
         full.push((client_hello.len() & 0xff) as u8);
         full.extend_from_slice(client_hello);
         // **独立复算 binder**：用收到的字节截断，而不是信客户端给的中间值。
-        let expected = KeySchedule::psk_binder(suite, psk, &full[..binder_offset])
-            .expect("服务端计算 binder");
+        let expected =
+            KeySchedule::psk_binder(suite, psk, &full[..binder_offset]).expect("服务端计算 binder");
         let actual = &full[binder_offset..binder_offset + binder_len];
         assert_eq!(
             expected.as_slice(),
@@ -285,7 +284,11 @@ fn psk_resumption_handshake_completes_without_certificates() {
     let plaintext = server.open_client_finished(&payload);
     assert_eq!(plaintext[0], hs::FINISHED);
     assert_eq!(client.state(), State::Connected);
-    assert_eq!(plaintext.len(), 4 + 32, "Finished 是 4 字节头 + 32 字节 verify_data");
+    assert_eq!(
+        plaintext.len(),
+        4 + 32,
+        "Finished 是 4 字节头 + 32 字节 verify_data"
+    );
 }
 
 /// 没有会话时必须退回完整握手（不能因为缺 PSK 就报错）。
@@ -305,14 +308,12 @@ fn without_a_session_the_client_falls_back_to_a_full_handshake() {
 #[test]
 fn a_rejected_psk_falls_back_to_the_certificate_path() {
     let session = a_session();
-    let mut client = ClientHandshake::new(Family::Chrome, "example.com")
-        .with_session(session);
+    let mut client = ClientHandshake::new(Family::Chrome, "example.com").with_session(session);
     let record = client.start(&rng()).expect("生成 ClientHello");
     let hello = extract_handshake_payload(&record, hs::CLIENT_HELLO);
 
     // 服务端的 ServerHello **不带** pre_shared_key：表示拒绝恢复。
-    let server_exchange =
-        omnicrawl_tls::X25519Exchange::generate(&rng()).expect("服务端密钥");
+    let server_exchange = omnicrawl_tls::X25519Exchange::generate(&rng()).expect("服务端密钥");
     // 公钥必须在 `agree` 之前取走：它会消费交换对象。
     let server_public = server_exchange.public_key.clone();
     let client_public = extract_x25519_public(&hello);

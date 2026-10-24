@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
+use omnicrawl_config::core::runtime::{load_config_data, ConfigEnvironment};
+use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
+use omnicrawl_config::value::toml_to_json_object;
 use omnicrawl_connectors::agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, TurnError, TurnEvent, TurnOutcome,
     WorkspaceSwitch,
@@ -19,10 +22,8 @@ use omnicrawl_connectors::feishu::{
     check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot,
 };
 use omnicrawl_connectors::http::{HttpTransport, UreqTransport};
+use omnicrawl_connectors::qqbot::{load_qqbot_config, QqApi, QqBot};
 use omnicrawl_connectors::telegram::{load_telegram_config, TelegramBot};
-use omnicrawl_config::core::runtime::{load_config_data, ConfigEnvironment};
-use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
-use omnicrawl_config::value::toml_to_json_object;
 use omnicrawl_core::{
     AgentLoopLimits, AgentLoopObservation, AgentLoopRunner, AgentModelReply, LoopError, LoopGuards,
     ReplySource, SystemClock, ToolBatchHost, ToolCall, ToolResult,
@@ -66,9 +67,8 @@ impl ModelSettings {
                 .and_then(|llm| non_empty(Some(pick(llm))))
         };
 
-        let model = from_config(|llm| llm.model.clone()).ok_or_else(|| {
-            "连接器模式需要模型名：请在 config.toml 中配置当前模型。".to_string()
-        })?;
+        let model = from_config(|llm| llm.model.clone())
+            .ok_or_else(|| "连接器模式需要模型名：请在 config.toml 中配置当前模型。".to_string())?;
         let api_key = from_config(|llm| llm.api_key.clone()).ok_or_else(|| {
             "连接器模式需要凭据：请在 config.toml 的模型通道里填写 api_key。".to_string()
         })?;
@@ -514,7 +514,10 @@ pub fn run(name: &str) -> Result<(), String> {
     match name {
         "telegram" => run_telegram(),
         "feishu" => run_feishu(),
-        other => Err(format!("未知连接器：{other}；当前支持 telegram、feishu。")),
+        "qqbot" => run_qqbot(),
+        other => Err(format!(
+            "未知连接器：{other}；当前支持 telegram、feishu、qqbot。"
+        )),
     }
 }
 
@@ -555,6 +558,19 @@ fn run_feishu() -> Result<(), String> {
     ));
     eprintln!("[kernel] feishu 连接器已启动，等待平台消息。");
     bot.run().map_err(|error| error.to_string())
+}
+
+fn run_qqbot() -> Result<(), String> {
+    let env = ConfigEnvironment::from_process();
+    let settings = Arc::new(ModelSettings::load(&env)?);
+    let data = connector_config_data(&env);
+    let config = load_qqbot_config(data.get("qqbot"))?;
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    let driver = Arc::new(KernelDriver::new(settings, workspace));
+    let api = Arc::new(QqApi::with_ureq(&config));
+    let bot = Arc::new(QqBot::new(&config, api, Arc::clone(&driver))?);
+    eprintln!("[kernel] qqbot 连接器已启动，等待平台消息（工具不可用，仅对话）。");
+    bot.run()
 }
 
 #[cfg(test)]
@@ -751,7 +767,8 @@ mod tests {
     }
 
     fn write_config(home: &Path, text: &str) {
-        std::fs::write(home.join(".OmniCrawl").join("config.toml"), text).expect("写入 config.toml");
+        std::fs::write(home.join(".OmniCrawl").join("config.toml"), text)
+            .expect("写入 config.toml");
     }
 
     /// `config.toml` + `models.toml` 里配好模型通道（环境变量全空）。
@@ -846,8 +863,7 @@ allowed_user_ids = ["ou_1"]
         );
         let env = ConfigEnvironment::new(home, "windows");
         let data = connector_config_data(&env);
-        let config =
-            load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
+        let config = load_feishu_config(ConfigSource { data: &data }).expect("配置可解析");
 
         assert_eq!(config.app_id, "cli_from_config");
         assert_eq!(config.app_secret, "secret-from-config");

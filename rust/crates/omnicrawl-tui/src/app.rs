@@ -25,34 +25,35 @@ use omnicrawl_commands::slash::{
     WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
 use omnicrawl_commands::SessionSummary;
-use omnicrawl_controllers::turn::skill_command::{
-    parse_skill_command, skill_default_prompt, skill_loaded_status, skill_not_found_message,
-    skill_not_found_status,
-};
-use omnicrawl_extensions::skill::{SkillDiagnostic, SkillMeta};
 use omnicrawl_config::core::runtime::{resolve_config_path, ConfigEnvironment};
-use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
     save_context_window_tokens, save_feature_enabled, save_mcp_config, save_show_thinking,
     save_subagent_setting, McpConfigData, McpPolicyData, McpServerData,
 };
+use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::{
     load_advisor_config, save_advisor_config, AdvisorConfig,
 };
 use omnicrawl_config::features::agent_workspace::{
     load_agent_workspace_config, save_agent_workspace_config, AgentWorkspaceConfig,
 };
-use omnicrawl_config::features::context_compaction::{
-    load_context_compaction_config,
-};
+use omnicrawl_config::features::context_compaction::load_context_compaction_config;
 use omnicrawl_config::features::desensitization::{
     load_desensitization_config, save_desensitization_config, DesensitizationConfig,
 };
 use omnicrawl_config::features::image_gen::{
     load_image_gen_configuration, save_image_gen_configuration, ImageGenConfiguration,
 };
+use omnicrawl_controllers::turn::skill_command::{
+    parse_skill_command, skill_default_prompt, skill_loaded_status, skill_not_found_message,
+    skill_not_found_status,
+};
+use omnicrawl_extensions::skill::{SkillDiagnostic, SkillMeta};
 
+use omnicrawl_config::features::computer_use::{
+    load_computer_use_config, save_computer_use_config, ComputerUseConfig, DEFAULT_THINKING_EFFORT,
+};
 use omnicrawl_config::features::run_guard::{
     load_run_guard_config, save_run_guard_config, RunGuardConfig,
 };
@@ -92,11 +93,27 @@ use omnicrawl_config::models::vision::{
     save_vision_configuration, VisionConfiguration,
 };
 use omnicrawl_controllers::memory::user_data_root;
-use omnicrawl_controllers::settings::{context_compaction_trigger_tokens, kernel_compaction_settings};
+use omnicrawl_controllers::settings::{
+    context_compaction_trigger_tokens, kernel_compaction_settings,
+};
 // `context.prune` 的送审形状在控制层：宿主只负责把它换算成裁决输入并回调用 ID。
-use omnicrawl_controllers::turn::tool_prune::PruneCandidate;
+use omnicrawl_config::features::decision_model::{
+    load_decision_model_configuration, load_decision_switches, load_local_deployment,
+    save_decision_model_configuration, save_decision_switch, save_local_deployment,
+    DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
+    SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES, DECISION_SWITCH_KB_SEARCH,
+    DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH, DECISION_SWITCH_WEB_SEARCH,
+    DECISION_SWITCH_WEB_SEARCH_EMBEDDING, DEFAULT_DECISION_RETRY_COUNT,
+    DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
+    DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
+};
+use omnicrawl_config::features::embedding::{
+    load_embedding_model_configuration, save_embedding_model_configuration, EmbeddingChannelConfig,
+    EmbeddingModelConfiguration,
+};
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
 use omnicrawl_controllers::subagents::tasks::is_terminal;
+use omnicrawl_controllers::turn::tool_prune::PruneCandidate;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_controllers::workspace::{
     pending_worktrees_error, resolve_switch_target, subagent_drain_error, WorktreeRef,
@@ -104,27 +121,10 @@ use omnicrawl_controllers::workspace::{
 use omnicrawl_controllers::AgentError;
 use omnicrawl_core::diagnostics::{self, Level};
 use omnicrawl_core::{ToolCall, ToolResult};
-use omnicrawl_config::features::decision_model::{
-    load_decision_model_configuration, load_decision_switches, load_local_deployment,
-    save_decision_model_configuration, save_decision_switch, save_local_deployment,
-    DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
-    DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
-    DEFAULT_LOCAL_DECISION_CHANNEL_KEY, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
-    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
-    DECISION_SWITCH_WEB_SEARCH, DEFAULT_DECISION_RETRY_COUNT,
-};
 use omnicrawl_host::plugins::PluginHost;
-use omnicrawl_host::tools::evicted_call_ids_for;
-use omnicrawl_onejev::{
-    delete_model as delete_onejev_model, download_model as download_onejev_model,
-    ensure_environment as ensure_onejev_environment, environment_state as onejev_environment_state,
-    find_size as find_onejev_size, model_ready as onejev_model_ready,
-    remove_environment as remove_onejev_env, resolve_root as resolve_onejev_root,
-    LaunchSpec as OneJevLaunchSpec, OneJevServer, ServerState as OneJevServerState, ONEJEV_SIZES,
-};
-use omnicrawl_onejev::paths::model_dir as onejev_model_dir;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::prompt_cache::build_prompt_cache_identity;
+use omnicrawl_host::tools::evicted_call_ids_for;
 use omnicrawl_ipc::{
     bridge::{
         Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
@@ -137,6 +137,14 @@ use omnicrawl_ipc::{
 };
 use omnicrawl_mcp::client::McpClientManager;
 use omnicrawl_mcp::config::{load_mcp_config, valid_server_name};
+use omnicrawl_onejev::paths::model_dir as onejev_model_dir;
+use omnicrawl_onejev::{
+    delete_model as delete_onejev_model, download_model as download_onejev_model,
+    ensure_environment as ensure_onejev_environment, environment_state as onejev_environment_state,
+    find_size as find_onejev_size, model_ready as onejev_model_ready,
+    remove_environment as remove_onejev_env, resolve_root as resolve_onejev_root,
+    LaunchSpec as OneJevLaunchSpec, OneJevServer, ServerState as OneJevServerState, ONEJEV_SIZES,
+};
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
 use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, finalize_subagent_worktrees, IsolationSession,
@@ -158,11 +166,11 @@ use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
     nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
-    DecisionLocalValues, DecisionRow, DecisionSwitchRow, FieldValue, FormKind, McpChange,
-    McpServerDraft, McpServerRow,
-    McpSettingsValues, SettingsChange, SettingsEvent, SettingsState, SettingsValues,
-    SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues,
-    TtsDraft, TtsValues, VisionChange, VisionModelRef, WebSearchRow, SUBAGENT_ADVANCED_SPECS,
+    DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
+    McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SettingsChange, SettingsEvent,
+    SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange,
+    TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
+    WebSearchRow, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 
@@ -325,7 +333,10 @@ fn load_prompt_runtime(
     match PromptRuntime::load(environment, prompt_options) {
         Ok(prompt) => Ok(prompt),
         Err(error) => {
-            report_startup_log(LogLevel::Warning, &format!("系统提示词装配失败，改用命令行给的文本：{error}"));
+            report_startup_log(
+                LogLevel::Warning,
+                &format!("系统提示词装配失败，改用命令行给的文本：{error}"),
+            );
             let mut fallback = PromptOptions::new(workspace.to_path_buf());
             fallback.system_prompt_override = options.system_prompt.clone();
             PromptRuntime::load(environment, fallback)
@@ -472,7 +483,8 @@ pub struct App {
     /// 审查模型不可用（未配模型或凭据）时为 `None`，此时需审查的调用按 fail-closed 拒绝。
     review: Option<omnicrawl_host::review::ReviewOptions>,
     /// 提问托管运行期（`[decision_models.features] ask_user_custody`）：开启后有选项的提问
-    /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
+    /// 交给决策模型自动作答（选中「我有自己的想法...」就退回人工提问）；
+    /// `None` 或不可用时一律退回人工提问（fail-open）。
     custody: Option<omnicrawl_host::tools::CustodyOptions>,
     /// 工具调用淘汰运行期（`[decision_models.features] tool_call_prune`）：开启后「刚变老」
     /// 的那一批调用交决策模型裁决，无用的整组移出上下文；`None` 或不可用时一律保留原文。
@@ -679,8 +691,8 @@ impl App {
         // 记忆开关与 Python 侧同源：`entry.py` 读 `load_feature_enabled("memory", default=True)`，
         // 即缺省开启。此前这里直接走 `RegistryOptions::default()`（`memory_enabled: false`），
         // 导致记忆整组工具永远进不了表，而 Python 侧缺省是进的。
-        let memory_enabled = load_feature_enabled(&environment, "memory", true, None, None)
-            .unwrap_or(true);
+        let memory_enabled =
+            load_feature_enabled(&environment, "memory", true, None, None).unwrap_or(true);
         // `[tools]` 段的禁用开关同样要在构造期装载：此前只在设置面板切换
         // （`apply_tool_switch`）时才赋值，启动路径漏装，配置里关掉的工具重启后照旧进表。
         let disabled_tools = load_disabled_tools(&environment, None).unwrap_or_default();
@@ -700,6 +712,14 @@ impl App {
                     &environment,
                     DECISION_SWITCH_MEMORY_SEARCH,
                 )),
+                // 向量召回：`[memory_embedding] enabled` 开关，默认关闭。
+                embedding: Arc::new(
+                    omnicrawl_host::embedding_client::embedding_options_from_config(
+                        &environment,
+                        load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                            .unwrap_or(false),
+                    ),
+                ),
                 ..MemoryOptions::default()
             },
             // 知识库检索重排：与记忆搜索同一套装配口径。
@@ -740,6 +760,8 @@ impl App {
                 ..AdvisorOptions::default()
             },
             tts: tts_options(workspace),
+            // 只受 `[computer_use] enabled` 约束：普通子代理关掉不影响桌面操作。
+            computer_use: computer_use_enabled(&environment),
             ..RegistryOptions::default()
         };
         let registry = Arc::new(
@@ -759,6 +781,8 @@ impl App {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "omnicrawl".to_string());
         let mut state = AppState::new(project, options.model.clone(), options.approval);
+        // 子代理窗口由工作台自己拉起：可执行文件就是本进程，流水落在用户配置目录下。
+        state.subagent_window_exe = std::env::current_exe().ok();
         state.telemetry.context_window = options.context_window_tokens;
         // 思考显示是纯界面开关：启动期按 `ui.show_thinking` 定初值，设置面板里可即时改。
         state.set_show_thinking(
@@ -776,14 +800,19 @@ impl App {
         let llm = match load_llm_config(&ConfigEnvironment::from_process()) {
             Ok(config) => config,
             Err(error) => {
-                report_startup_log(LogLevel::Warning, &format!("模型配置读取失败，按环境变量默认值启动：{error}"));
+                report_startup_log(
+                    LogLevel::Warning,
+                    &format!("模型配置读取失败，按环境变量默认值启动：{error}"),
+                );
                 LlmConfig::with_environment(&ConfigEnvironment::from_process())
             }
         };
         // 上下文占用段用「CLI 显式值 → 配置」的同一套口径（与发给内核的 handshake 一致）；
         // 只认 CLI 值会出现总量未知的 `0/1 0%`，而且与内核的实际窗口不一致。
         let context_window = effective_context_window(options.context_window_tokens, &llm);
-        state.telemetry.context_window = u64::try_from(context_window).ok().filter(|value| *value > 0);
+        state.telemetry.context_window = u64::try_from(context_window)
+            .ok()
+            .filter(|value| *value > 0);
         // 插件运行期：启动失败只影响插件本身，工作台照常可用。
         // 诊断不再写进对话流（那样会把首屏的欢迎 Logo 顶掉），而是交给启动页日志框：
         // `main.rs` 的 `prepare_startup` 读 [`Self::startup_plugin_lines`] 再写进 splash。
@@ -803,15 +832,21 @@ impl App {
         review_watch.baseline(&environment);
         let approval_from_cli = options.approval_from_cli;
         // 提问托管：与审查、检索重排同源（`[decision_models.features] ask_user_custody`）。
-        let custody = Some(omnicrawl_host::tools::custody_options_from_config(&environment));
+        let custody = Some(omnicrawl_host::tools::custody_options_from_config(
+            &environment,
+        ));
         // 工具调用淘汰：与审查、检索重排同源（`[decision_models.features] tool_call_prune`）。
-        let prune = Some(omnicrawl_host::tools::prune_options_from_config(&environment));
+        let prune = Some(omnicrawl_host::tools::prune_options_from_config(
+            &environment,
+        ));
         // 建议运行期：与审查、检索重排同源（`[decision_models.features] tool_suggestion` 与
         // `subagent_suggestion`；两者独立，可同时开启）。
-        let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(&environment));
-        let subagent_suggest = Some(
-            omnicrawl_host::tools::subagent_suggest_options_from_config(&environment),
-        );
+        let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
+            &environment,
+        ));
+        let subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
+            &environment,
+        ));
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
         state
@@ -1053,8 +1088,9 @@ impl App {
                 Err(error) => {
                     // `unwrap_or_default` 会让模型静默地收不到项目规范 / Skill / 运行环境，
                     // 看起来就像「系统提示词没生效」；装不出来就明说。
-                    self.state
-                        .notice(format!("上下文装配失败：{error}（本轮只发系统提示词与历史）"));
+                    self.state.notice(format!(
+                        "上下文装配失败：{error}（本轮只发系统提示词与历史）"
+                    ));
                     Vec::new()
                 }
             },
@@ -1089,7 +1125,8 @@ impl App {
                 self.llm.request_retry_count.max(1) as u32
             },
         };
-        let context_window = effective_context_window(self.options.context_window_tokens, &self.llm);
+        let context_window =
+            effective_context_window(self.options.context_window_tokens, &self.llm);
         let environment = ConfigEnvironment::from_process();
         // 压缩策略整段下发：读不到配置时降级为「内核默认」，但要明说一声，
         // 否则用户只会看到「模型摘要未通过校验」而不知道策略根本没生效。
@@ -1202,13 +1239,11 @@ impl App {
         self.state.refresh_carousel(now, &reasoning_effort);
     }
 
-    /// 推进活跃子任务进度树的运行耗时（对映 Python 的 80ms 耗时定时器）。
+    /// 推进状态行 spinner 与运行中工具卡的耗时。
     ///
-    /// 只刷新仍有非终态任务的树：批次收口后树的耗时不再变化，不必每帧重算。
-    /// 状态行 spinner 与运行中工具卡的耗时也在这里推进；空闲时两者都不动，
+    /// 子代理的耗时由独立窗口自己推进，主会话这里没有需要刷新的东西；空闲时两者都不动，
     /// 三块版本号不变，事件循环因此能整帧跳过绘制。
     pub fn tick_subagent_trees(&mut self) {
-        self.state.refresh_subagent_trees();
         self.state.tick_activity();
     }
 
@@ -1597,8 +1632,7 @@ impl App {
         let sender = self.prune_sender.clone();
         self.prune_in_flight += 1;
         thread::spawn(move || {
-            let evicted_call_ids =
-                evicted_call_ids_for(&prune, &task, &groups).unwrap_or_default();
+            let evicted_call_ids = evicted_call_ids_for(&prune, &task, &groups).unwrap_or_default();
             let _ = sender.send(PruneTaskResult {
                 id,
                 evicted_call_ids,
@@ -1654,7 +1688,14 @@ impl App {
             }
             _ => None,
         };
-        let step = self.state.start_batch(id.clone(), batch.calls);
+        // 子代理回合的调用不算主代理的动作：照旧执行，但不往主会话挂卡片，否则子代理的
+        // 过程会混进主代理的消息区（它们由子代理独立窗口渲染）。
+        let quiet = host::is_subagent_turn(&batch.turn_id);
+        let step = if quiet {
+            self.state.start_subagent_batch(id.clone(), batch.calls)
+        } else {
+            self.state.start_batch(id.clone(), batch.calls)
+        };
         self.handle_batch_step(id, step);
     }
 
@@ -1752,11 +1793,8 @@ impl App {
         // 托管请求的 state 里带上本回合的提问正文与用户请求。
         self.custody_context.question = panel.prompt.clone();
         let custody = self.custody.as_ref()?;
-        let index = omnicrawl_host::tools::chosen_option(
-            custody,
-            &self.custody_context,
-            &panel.options,
-        )?;
+        let index =
+            omnicrawl_host::tools::chosen_option(custody, &self.custody_context, &panel.options)?;
         let answer = panel.options.get(index)?.clone();
         self.state
             .notice(omnicrawl_host::turn::custody_notice(&panel.prompt, &answer));
@@ -2083,12 +2121,8 @@ impl App {
             return None;
         }
         let relative = (row - area.y) as usize;
-        let line = conversation::line_index(
-            &self.state,
-            area,
-            self.state.scroll_from_bottom,
-            relative,
-        )?;
+        let line =
+            conversation::line_index(&self.state, area, self.state.scroll_from_bottom, relative)?;
         let text = conversation::text_area(area);
         Some((line, usize::from(column.saturating_sub(text.x))))
     }
@@ -2190,7 +2224,8 @@ impl App {
 
     fn drag_scrollbar_to(&mut self, row: u16) {
         let areas = ui::layout(self.viewport, &self.state);
-        if let Some(offset) = conversation::scroll_offset_for_row(&self.state, areas.conversation, row)
+        if let Some(offset) =
+            conversation::scroll_offset_for_row(&self.state, areas.conversation, row)
         {
             self.state.scroll_from_bottom = offset;
         }
@@ -2204,7 +2239,8 @@ impl App {
             self.state.clear_selection();
             return;
         }
-        let width = conversation::text_area(ui::layout(self.viewport, &self.state).conversation).width;
+        let width =
+            conversation::text_area(ui::layout(self.viewport, &self.state).conversation).width;
         let Some(text) = conversation::selection_text(&self.state, width) else {
             self.state.clear_selection();
             return;
@@ -2255,12 +2291,8 @@ impl App {
         let hovered = if self.on_stop_button(area, relative, column) {
             None
         } else {
-            match conversation::hit_test(
-                &self.state,
-                area,
-                self.state.scroll_from_bottom,
-                relative,
-            ) {
+            match conversation::hit_test(&self.state, area, self.state.scroll_from_bottom, relative)
+            {
                 Some(LineHit::RetryTurn { index }) => Some(index),
                 _ => None,
             }
@@ -2287,11 +2319,16 @@ impl App {
     /// 屏幕列是否落在该行「立即结束」按钮的格子里。
     fn on_stop_button(&self, area: Rect, relative: usize, column: u16) -> bool {
         let text = conversation::text_area(area);
-        conversation::stop_button_columns(&self.state, area, self.state.scroll_from_bottom, relative)
-            .is_some_and(|(start, width)| {
-                let column = usize::from(column.saturating_sub(text.x));
-                column >= usize::from(start) && column < usize::from(start) + usize::from(width)
-            })
+        conversation::stop_button_columns(
+            &self.state,
+            area,
+            self.state.scroll_from_bottom,
+            relative,
+        )
+        .is_some_and(|(start, width)| {
+            let column = usize::from(column.saturating_sub(text.x));
+            column >= usize::from(start) && column < usize::from(start) + usize::from(width)
+        })
     }
 
     /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
@@ -2409,9 +2446,11 @@ impl App {
     /// 某一行所属的后台任务卡 `call_id`（只有 monitor 卡才算）。
     fn monitor_call_id_at(&self, area: Rect, relative: usize) -> Option<String> {
         match conversation::hit_test(&self.state, area, self.state.scroll_from_bottom, relative) {
-            Some(LineHit::ToolCard { call_id }) | Some(LineHit::ToolStop { call_id }) => {
-                call_id.starts_with("monitor:").then_some(call_id)
-            }
+            Some(LineHit::ToolCard { call_id }) | Some(LineHit::ToolStop { call_id }) => self
+                .state
+                .monitor_task_id(&call_id)
+                .is_some()
+                .then_some(call_id),
             _ => None,
         }
     }
@@ -2421,10 +2460,10 @@ impl App {
     /// 只提前收口等待，不停任务、不动进程——`monitor` 任务的生死由模型侧的
     /// `action=stop` 决定，界面按钮不该替它做决定。
     fn stop_monitor_poll(&mut self, call_id: &str) {
-        let Some(monitor_id) = call_id.strip_prefix("monitor:") else {
+        let Some(monitor_id) = self.state.monitor_task_id(call_id) else {
             return;
         };
-        let interrupted = self.registry.monitors().interrupt_wait(monitor_id);
+        let interrupted = self.registry.monitors().interrupt_wait(&monitor_id);
         let message = if interrupted {
             format!("已结束 {monitor_id} 的等待，本轮轮询立即返回。")
         } else {
@@ -2630,9 +2669,21 @@ impl App {
                         true
                     }
                     KeyCode::Enter if is_select => {
-                        let answer = match self.state.waiting() {
-                            Some(Waiting::Question(panel)) => panel.answer(),
-                            _ => String::new(),
+                        let custom = match self.state.waiting() {
+                            Some(Waiting::Question(panel)) => panel.is_custom(),
+                            _ => false,
+                        };
+                        // 选中「我有自己的想法...」就是自己作答：答案取输入框，不能用空选项提交。
+                        let answer = if custom {
+                            if self.state.composer.is_empty() {
+                                return true;
+                            }
+                            self.state.composer.take()
+                        } else {
+                            match self.state.waiting() {
+                                Some(Waiting::Question(panel)) => panel.answer(),
+                                _ => String::new(),
+                            }
                         };
                         if let Some(step) = self.answer_pending_question(answer) {
                             self.handle_batch_step(batch_id, step);
@@ -2706,10 +2757,8 @@ impl App {
             return false;
         };
         if !self.vision_route_available() {
-            self.state.show_notice_line(
-                "当前未开启原生视觉，粘贴的图片不会被发送。",
-                Instant::now(),
-            );
+            self.state
+                .show_notice_line("当前未开启原生视觉，粘贴的图片不会被发送。", Instant::now());
             // 已消费这次按键：图片不能进输入框，也不能让 `v` 落进正文。
             return true;
         }
@@ -2733,7 +2782,9 @@ impl App {
         let Some(image) = crate::image_path::read_pasted_image_path(text, &self.workspace) else {
             return false;
         };
-        self.state.composer.insert_image(&image.media_type, image.bytes);
+        self.state
+            .composer
+            .insert_image(&image.media_type, image.bytes);
         self.state.touch_composer();
         true
     }
@@ -2851,13 +2902,12 @@ impl App {
         let prompt = text.clone();
         self.suggest_in_flight += 1;
         thread::spawn(move || {
-            let lines = omnicrawl_host::tools::suggestion_lines(
-                &omnicrawl_host::tools::SuggestionInputs {
+            let lines =
+                omnicrawl_host::tools::suggestion_lines(&omnicrawl_host::tools::SuggestionInputs {
                     tools: (&suggest, &inventory),
                     subagents: (&subagent_suggest, &subagent_roles),
                     user_prompt: &prompt,
-                },
-            );
+                });
             let text = omnicrawl_host::tools::insert_suggestions(&prompt, &lines);
             let _ = sender.send(SuggestTaskResult { text, images });
         });
@@ -3049,13 +3099,6 @@ impl App {
         if result.replay_conversation {
             self.request_session_replay(Vec::new(), None);
         }
-        // 慢命令期间把子代理事件渲染成 │ 对话面板（Python
-        // `_start_slow_command(stream_subagent_conversation=...)`）：延迟执行体在
-        // 本地内联，因此在体的前后开关流式态；体内部的同步内核往返仍会收帧，
-        // 期间到达的子代理事件照 `subagent_stream` 口径进面板。
-        if result.stream_subagent_conversation {
-            self.state.subagent_stream = true;
-        }
         if let Some(run) = result.deferred.take() {
             let deferred = {
                 let agent = TuiHostAgent::new(self);
@@ -3068,12 +3111,10 @@ impl App {
                 self.state.notice(error);
             }
         }
-        if result.stream_subagent_conversation {
-            self.state.subagent_stream = false;
-        }
         // `/approval:*` 一类的命令会把改动写到 config.toml 并当场生效：重取基线，
         // 免得下一帧的热应用把它当外部改动再报一次。
-        self.review_watch.baseline(&ConfigEnvironment::from_process());
+        self.review_watch
+            .baseline(&ConfigEnvironment::from_process());
         if let Some(status) = result.working_status.take() {
             self.state.set_status(Some(status));
         }
@@ -3143,11 +3184,8 @@ impl App {
                 return;
             }
         }
-        self.state.set_status(Some(kind.working_status().to_string()));
-        // `/review` 运行期间子代理事件进流式对话面板（面板按 batch_id 挂进消息流）。
-        if matches!(kind, KernelCommand::Review { .. }) {
-            self.state.subagent_stream = true;
-        }
+        self.state
+            .set_status(Some(kind.working_status().to_string()));
         let id = self.send(command);
         self.pending_commands.insert(id, kind);
     }
@@ -3178,9 +3216,6 @@ impl App {
     fn finish_kernel_command(&mut self, command: KernelCommand, frame: &Frame) {
         // 回执到了就收起状态行：命令已经不在执行中。
         self.state.set_status(None);
-        if matches!(command, KernelCommand::Review { .. }) {
-            self.state.subagent_stream = false;
-        }
         match (&frame.error, &frame.result) {
             (Some(error), _) => {
                 // 回放读不到事件时不把错误摆到消息流：对话视图已经有消息投影可看
@@ -3285,6 +3320,23 @@ impl App {
         let decision_template = decision_row_from_config(&DecisionChannelConfig::default());
         let decision_switches = decision_switch_rows(&load_decision_switches(&environment, None));
         let decision_local = self.decision_local_values(&environment);
+        // 向量模型页的初值：渠道、默认渠道、新建模板与总开关（读不出来就用配置默认值）。
+        let embedding_config =
+            load_embedding_model_configuration(&environment, None).unwrap_or_default();
+        let embedding_rows: Vec<EmbeddingRow> = embedding_config
+            .channels
+            .iter()
+            .map(embedding_row_from_config)
+            .collect();
+        let default_embedding_key = embedding_config.default_key.clone();
+        let embedding_template = embedding_row_from_config(&EmbeddingChannelConfig::default());
+        let embedding_enabled =
+            load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                .unwrap_or(false);
+        let embedding_web_search_rerank = load_decision_switches(&environment, None)
+            .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
+            .copied()
+            .unwrap_or(false);
         let channel_template = default_channel(provider_options()[0], None)
             .map(|channel| channel_row_from_config(&channel))
             .unwrap_or_default();
@@ -3318,6 +3370,13 @@ impl App {
         .with_channels(channel_rows, &default_channel_key, channel_template)
         .with_decision_models(decision_rows, &default_decision_key, decision_template)
         .with_decision_switches(decision_switches)
+        .with_embedding_models(
+            embedding_rows,
+            &default_embedding_key,
+            embedding_template,
+            embedding_enabled,
+            embedding_web_search_rerank,
+        )
         .with_decision_local(decision_local)
         .with_choices(
             &llm.reasoning_effort,
@@ -3343,6 +3402,12 @@ impl App {
             agent_workspace_form_values(&workspace),
         )
         .with_form(FormKind::ImageGen, image_gen_form_values(&image_gen))
+        .with_form(
+            FormKind::ComputerUse,
+            computer_use_form_values(
+                &load_computer_use_config(&environment, None).unwrap_or_default(),
+            ),
+        )
         .with_subagents(subagent_rows(&subagent_config))
         .with_mcp(self.mcp_settings_values(&environment))
         .with_web_search(web_search_row(&environment))
@@ -3373,10 +3438,7 @@ impl App {
     }
 
     /// 决策模型页的渠道列表与默认渠道（读不出来就退回配置默认值）。
-    fn decision_views(
-        &self,
-        environment: &ConfigEnvironment,
-    ) -> (Vec<DecisionRow>, String) {
+    fn decision_views(&self, environment: &ConfigEnvironment) -> (Vec<DecisionRow>, String) {
         match load_decision_model_configuration(environment, None) {
             Ok(configuration) => (
                 configuration
@@ -3490,9 +3552,11 @@ impl App {
                                     ..
                                 }
                             ) {
-                                let configuration =
-                                    load_image_gen_configuration(&ConfigEnvironment::from_process(), None)
-                                        .unwrap_or_default();
+                                let configuration = load_image_gen_configuration(
+                                    &ConfigEnvironment::from_process(),
+                                    None,
+                                )
+                                .unwrap_or_default();
                                 settings.set_image_gen_provider_defaults(
                                     &configuration.provider,
                                     &configuration.base_url,
@@ -3505,7 +3569,8 @@ impl App {
                 }
                 // 面板保存已经把新值应用到运行期，这里重取基线：否则下一帧的热应用会把它
                 // 当成「外部改动」再报一次，并在 --approval 优先时给出误导性提示。
-                self.review_watch.baseline(&ConfigEnvironment::from_process());
+                self.review_watch
+                    .baseline(&ConfigEnvironment::from_process());
             }
             Some(SettingsEvent::DiscoverChannelModels {
                 profile_id,
@@ -3609,6 +3674,12 @@ impl App {
             SettingsChange::DecisionModels { rows, default_key } => {
                 self.apply_decision_models(rows, default_key)?
             }
+            SettingsChange::EmbeddingModels { rows, default_key } => {
+                self.apply_embedding_models(rows, default_key)?
+            }
+            SettingsChange::EmbeddingEnabled { enabled } => {
+                self.apply_embedding_enabled(*enabled)?
+            }
             SettingsChange::DecisionSwitch { key, enabled } => {
                 self.apply_decision_switch(key, *enabled)?
             }
@@ -3661,13 +3732,13 @@ impl App {
                 )
             });
             // `active()` 只表示「已配对话模型」；决策通道不需要它，别据此误报不可用。
-            let usable =
-                self.review.as_ref().is_some_and(|review| review.active()) || decision;
+            let usable = self.review.as_ref().is_some_and(|review| review.active()) || decision;
             if usable {
                 notes.push("审查配置已重新加载".to_string());
             } else {
                 // 与启动路径同一语义：审查运行期不可用时，需审查的调用一律 fail-closed 拒绝。
-                notes.push("审查配置已重新加载，但审查模型不可用，需审查的调用将被拒绝".to_string());
+                notes
+                    .push("审查配置已重新加载，但审查模型不可用，需审查的调用将被拒绝".to_string());
             }
         }
         if let Some(mode) = change.approval_mode.as_deref() {
@@ -3696,7 +3767,9 @@ impl App {
 
     /// 按最新配置重建提问托管运行期（决策渠道或开关变更后调用）。
     fn rebuild_custody(&mut self, environment: &ConfigEnvironment) {
-        self.custody = Some(omnicrawl_host::tools::custody_options_from_config(environment));
+        self.custody = Some(omnicrawl_host::tools::custody_options_from_config(
+            environment,
+        ));
     }
 
     /// 按最新配置重建建议运行期（决策渠道或开关变更后调用）。
@@ -3704,10 +3777,12 @@ impl App {
     /// 建议由宿主在提交前发起（它是唯一握得住「用户这一条原文」的一方），因此只需
     /// 换掉运行期，没有要下发给内核的能力声明。两类建议各有一个开关，一并重建。
     fn rebuild_suggest(&mut self, environment: &ConfigEnvironment) {
-        self.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(environment));
-        self.subagent_suggest = Some(
-            omnicrawl_host::tools::subagent_suggest_options_from_config(environment),
-        );
+        self.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
+            environment,
+        ));
+        self.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
+            environment,
+        ));
     }
 
     /// 按最新配置重建工具调用淘汰运行期（决策渠道或开关变更后调用）。
@@ -3715,7 +3790,9 @@ impl App {
     /// 淘汰由内核发起（它是唯一能看到 `messages` 与其尾部位置的一方），因此这里除了重建运行期，
     /// 还必须把新的能力声明下发给内核：关掉时内核立刻停止发起 `context.prune`。
     fn rebuild_prune(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
-        self.prune = Some(omnicrawl_host::tools::prune_options_from_config(environment));
+        self.prune = Some(omnicrawl_host::tools::prune_options_from_config(
+            environment,
+        ));
         self.push_session_settings_raw(SessionSettingsParams {
             model: Some(Box::new(SessionModelSettings {
                 tool_call_prune: Some(
@@ -3729,6 +3806,96 @@ impl App {
             compaction: None,
         });
         Ok(())
+    }
+
+    // ---------- 向量模型页 ----------
+
+    /// 向量召回总开关：写 `config.toml` 的 `[memory_embedding] enabled`，并立刻重建召回运行期。
+    fn apply_embedding_enabled(&mut self, enabled: bool) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let path = save_feature_enabled(&environment, "memory_embedding", enabled, None, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.rebuild_memory_embedding(&environment);
+        if let Some(settings) = self.settings.as_mut() {
+            settings.set_embedding_enabled(enabled);
+        }
+        Ok(format!(
+            "向量召回：{}，已保存到 {}。",
+            if enabled { "开启" } else { "关闭" },
+            path.display()
+        ))
+    }
+
+    /// 保存整份向量模型配置：`api_key` 留空表示不改动，按 key 从磁盘继承。
+    ///
+    /// 向量渠道同样不下发内核，因此写盘后只重建宿主侧的记忆向量召回运行期。
+    fn apply_embedding_models(
+        &mut self,
+        rows: &[EmbeddingRow],
+        default_key: &str,
+    ) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let previous = load_embedding_model_configuration(&environment, None)
+            .unwrap_or_else(|_| EmbeddingModelConfiguration::default());
+        let mut channels: Vec<EmbeddingChannelConfig> = Vec::new();
+        for row in rows {
+            let mut channel = embedding_config_from_row(row);
+            if channel.api_key.is_empty() {
+                if let Some(existing) = previous
+                    .channels
+                    .iter()
+                    .find(|item| item.key == channel.key)
+                {
+                    channel.api_key = existing.api_key.clone();
+                }
+            }
+            channels.push(channel);
+        }
+        let configuration = EmbeddingModelConfiguration {
+            channels,
+            default_key: default_key.to_string(),
+        };
+        let path = save_embedding_model_configuration(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.rebuild_memory_embedding(&environment);
+        let reloaded =
+            load_embedding_model_configuration(&environment, None).unwrap_or(configuration);
+        let reloaded_enabled =
+            load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                .unwrap_or(false);
+        let reloaded_web_search_rerank = load_decision_switches(&environment, None)
+            .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
+            .copied()
+            .unwrap_or(false);
+        let rows: Vec<EmbeddingRow> = reloaded
+            .channels
+            .iter()
+            .map(embedding_row_from_config)
+            .collect();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.refresh_embedding_models(
+                rows,
+                &reloaded.default_key,
+                reloaded_enabled,
+                reloaded_web_search_rerank,
+                "",
+            );
+        }
+        Ok(format!("向量模型配置已保存到 {}。", path.display()))
+    }
+
+    /// 按当前配置重建记忆的向量召回运行期（保存后本会话即刻生效）。
+    fn rebuild_memory_embedding(&mut self, environment: &ConfigEnvironment) {
+        let enabled = load_feature_enabled(environment, "memory_embedding", false, None, None)
+            .unwrap_or(false);
+        let embedding = Arc::new(
+            omnicrawl_host::embedding_client::embedding_options_from_config(environment, enabled),
+        );
+        let memory = MemoryOptions {
+            embedding,
+            ..self.registry_options.memory.clone()
+        };
+        self.registry_options.memory = memory;
     }
 
     // ---------- 决策模型页（渠道 / 功能开关 / 自部署） ----------
@@ -3771,8 +3938,8 @@ impl App {
         self.rebuild_prune(&environment)?;
         self.rebuild_suggest(&environment);
         self.rebuild_rerank(&environment)?;
-        let reloaded = load_decision_model_configuration(&environment, None)
-            .unwrap_or(configuration);
+        let reloaded =
+            load_decision_model_configuration(&environment, None).unwrap_or(configuration);
         let rows: Vec<DecisionRow> = reloaded
             .channels
             .iter()
@@ -3807,31 +3974,37 @@ impl App {
         ))
     }
 
-    /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份）。
+    /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份），
+    /// 以及联网搜索的向量排序运行期（与决策模型排序并行）。
     fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
-        self.registry_options.memory.rerank = Arc::new(
-            omnicrawl_host::tools::rerank_options_from_config(
+        self.registry_options.memory.rerank =
+            Arc::new(omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_MEMORY_SEARCH,
-            ),
-        );
-        self.registry_options.knowledge_rerank = Arc::new(
-            omnicrawl_host::tools::rerank_options_from_config(
+            ));
+        self.registry_options.knowledge_rerank =
+            Arc::new(omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_KB_SEARCH,
-            ),
-        );
-        self.registry_options.skill_rerank = Arc::new(
-            omnicrawl_host::tools::rerank_options_from_config(
+            ));
+        self.registry_options.skill_rerank =
+            Arc::new(omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_SKILL_SEARCH,
-            ),
-        );
+            ));
         // 联网搜索的排序运行期嵌在搜索选项里，只换这一项：引擎与凭据保持当前值。
-        self.registry_options.web_search.rerank = Arc::new(
-            omnicrawl_host::tools::rerank_options_from_config(
+        self.registry_options.web_search.rerank =
+            Arc::new(omnicrawl_host::tools::rerank_options_from_config(
                 environment,
                 DECISION_SWITCH_WEB_SEARCH,
+            ));
+        self.registry_options.web_search.embedding = Arc::new(
+            omnicrawl_host::embedding_client::embedding_options_from_config(
+                environment,
+                load_decision_switches(environment, None)
+                    .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
+                    .copied()
+                    .unwrap_or(false),
             ),
         );
         self.rebuild_registry()
@@ -3864,8 +4037,8 @@ impl App {
         };
         let path = save_local_deployment(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        let spec_changed = previous.size != configuration.size
-            || previous.device != configuration.device;
+        let spec_changed =
+            previous.size != configuration.size || previous.device != configuration.device;
         let mut note = String::new();
         // 规格变了才动服务：一份服务只能跑一个尺寸，换尺寸必须换进程（停的是本机共享的那份）。
         // 规格没变时什么都不做——服务可能正被别的实例用着，静默重启只会打断它们。
@@ -3960,13 +4133,16 @@ impl App {
 
     /// 一键准备运行环境（venv + torch + qev）：长任务，放后台线程。
     fn start_onejev_environment(&mut self) -> Result<String, String> {
-        self.spawn_onejev_task("准备运行环境", |environment, configuration, progress| {
-            let root = resolve_onejev_root(&environment, &configuration.model_dir);
-            let mut sink = progress.sink();
-            let result = ensure_onejev_environment(&environment, &root, &mut sink)
-                .map(|outcome| outcome.cuda);
-            OneJevTaskResult::Environment(result)
-        })
+        self.spawn_onejev_task(
+            "准备运行环境",
+            |environment, configuration, progress| {
+                let root = resolve_onejev_root(&environment, &configuration.model_dir);
+                let mut sink = progress.sink();
+                let result = ensure_onejev_environment(&environment, &root, &mut sink)
+                    .map(|outcome| outcome.cuda);
+                OneJevTaskResult::Environment(result)
+            },
+        )
     }
 
     /// 删除运行环境（venv），保留权重与下载缓存。
@@ -4156,10 +4332,7 @@ impl App {
                 OneJevServerState::Ready => Ok(outcome.message),
                 _ => Err(outcome.message),
             };
-            let _ = sender.send(OneJevTaskResult::Service {
-                server,
-                result,
-            });
+            let _ = sender.send(OneJevTaskResult::Service { server, result });
         });
         self.refresh_decision_local_with(status.clone());
         Ok(status)
@@ -4450,7 +4623,8 @@ impl App {
         if let Err(error) = self.rebuild_registry() {
             // 磁盘与运行期一起回滚（同 `apply_image_gen_form`）。
             if let Err(rollback) = save_tts_configuration(&environment, &previous_tts, None) {
-                self.state.notice(format!("TTS 设置回滚写盘失败：{rollback}"));
+                self.state
+                    .notice(format!("TTS 设置回滚写盘失败：{rollback}"));
             }
             let _ = save_tts_cloud_configuration(&environment, &previous_cloud, None);
             let _ = save_tts_api_configuration(&environment, &previous_api, None);
@@ -4802,8 +4976,7 @@ impl App {
         let path =
             omnicrawl_config::features::approval::save_approval_mode(&environment, mode, None)
                 .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        let parsed = ApprovalMode::parse(mode)
-            .map_err(|error| format!("设置未完成：{error}"))?;
+        let parsed = ApprovalMode::parse(mode).map_err(|error| format!("设置未完成：{error}"))?;
         // 审批模式是宿主侧执行层的定调依据，本会话即刻生效（不下发内核）。
         self.options.approval = parsed;
         Ok(format!(
@@ -4929,7 +5102,53 @@ impl App {
             FormKind::AgentWorkspace => self.apply_agent_workspace_form(values),
             FormKind::ImageGen => self.apply_image_gen_form(values),
             FormKind::WebSearch => self.apply_web_search_form(values),
+            FormKind::ComputerUse => self.apply_computer_use_form(values),
         }
+    }
+
+    /// Computer Use 设置：写 `config.toml [computer_use]`。
+    ///
+    /// 工具是否进表取决于这个总开关，而执行体读的是工具表里那一份克隆，
+    /// 因此保存后必须重建工具表，否则要等重启才生效。
+    fn apply_computer_use_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration = load_computer_use_config(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 写盘前留一份磁盘原值：重建工具表失败时要把它写回去。
+        let previous = configuration.clone();
+        configuration.enabled = values.first().map(FieldValue::flag).unwrap_or(false);
+        configuration.timeout_seconds = positive_int(values, 1, "单次时间预算（秒）")? as f64;
+        configuration.screenshot_max_dimension = positive_int(values, 2, "截图长边上限")?;
+        configuration.thinking_effort = {
+            let effort = field_text(values, 3).trim().to_string();
+            if effort.is_empty() {
+                DEFAULT_THINKING_EFFORT.to_string()
+            } else {
+                effort
+            }
+        };
+        configuration.model = field_text(values, 4).trim().to_string();
+        let path = save_computer_use_config(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let previous_options = self.registry_options.computer_use;
+        self.registry_options.computer_use = configuration.active();
+        if let Err(error) = self.rebuild_registry() {
+            if let Err(rollback) = save_computer_use_config(&environment, &previous, None) {
+                self.state
+                    .notice(format!("Computer Use 设置回滚写盘失败：{rollback}"));
+            }
+            self.registry_options.computer_use = previous_options;
+            return Err(error);
+        }
+        let state = if configuration.enabled {
+            "已启用"
+        } else {
+            "已关闭"
+        };
+        Ok(format!(
+            "Computer Use {state}，已保存到 {}（本会话即刻生效）。",
+            path.display()
+        ))
     }
 
     /// 顾问设置：写 `config.toml [advisor]`，再用新配置重建顾问工具。
@@ -5401,19 +5620,14 @@ impl App {
         };
         let (registry_options, options, environment, timeout) =
             self.workspace_prepare_inputs(&new_root);
-        let prepared = match prepare_workspace(
-            &environment,
-            &options,
-            &new_root,
-            registry_options,
-            timeout,
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.notify_workspace_switch_error(&new_root, &error);
-                return Err(error);
-            }
-        };
+        let prepared =
+            match prepare_workspace(&environment, &options, &new_root, registry_options, timeout) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.notify_workspace_switch_error(&new_root, &error);
+                    return Err(error);
+                }
+            };
         self.commit_workspace_switch(&new_root, path, prepared)
     }
 
@@ -5433,7 +5647,8 @@ impl App {
             Ok(Some(root)) => root,
             Ok(None) => {
                 let current = self.workspace.clone();
-                self.state.notice(workspace_switch_success_message(&current));
+                self.state
+                    .notice(workspace_switch_success_message(&current));
                 return;
             }
             Err(message) => {
@@ -5460,8 +5675,9 @@ impl App {
                 prepared,
             });
         });
-        self.state
-            .set_status(Some(SlowTaskKind::WorkspaceSwitch.working_status().to_string()));
+        self.state.set_status(Some(
+            SlowTaskKind::WorkspaceSwitch.working_status().to_string(),
+        ));
         self.state
             .notice(WORKSPACE_SWITCH_PENDING_MESSAGE.to_string());
         self.slow_task = Some(SlowTask {
@@ -5527,7 +5743,8 @@ impl App {
                 prepared,
             } => match prepared {
                 Ok(prepared) => {
-                    if let Err(message) = self.commit_workspace_switch(&root, &requested, prepared) {
+                    if let Err(message) = self.commit_workspace_switch(&root, &requested, prepared)
+                    {
                         self.state.notice(message);
                     }
                 }
@@ -5686,9 +5903,11 @@ impl App {
             })),
             compaction: None,
         })));
-        let _ = self.send(Command::WorkspaceSwitch(omnicrawl_ipc::bridge::WorkspaceSwitchParams {
-            path: new_root.to_string_lossy().to_string(),
-        }));
+        let _ = self.send(Command::WorkspaceSwitch(
+            omnicrawl_ipc::bridge::WorkspaceSwitchParams {
+                path: new_root.to_string_lossy().to_string(),
+            },
+        ));
         for line in diagnostics {
             self.state.notice(format!("插件：{line}"));
         }
@@ -5773,7 +5992,9 @@ impl App {
         Ok(items
             .iter()
             .filter(|item| match item.get("repo_root").and_then(Value::as_str) {
-                Some(root) if !root.is_empty() => same_directory(std::path::Path::new(root), &current),
+                Some(root) if !root.is_empty() => {
+                    same_directory(std::path::Path::new(root), &current)
+                }
                 // 元数据缺 repo_root（旧版本）：宁多拦一个，也不让未处理的 worktree 静默丢失。
                 _ => true,
             })
@@ -5961,8 +6182,7 @@ impl App {
         let id = self.kernel.next_id();
         let frame = command.to_frame(id.clone());
         if let Err(error) = self.kernel.send_frame(&frame) {
-            self.state
-                .notice(format!("发送内核命令失败：{error}"));
+            self.state.notice(format!("发送内核命令失败：{error}"));
         }
         id
     }
@@ -6312,10 +6532,8 @@ impl App {
         }
         self.state.set_status(Some("正在重放会话…".to_string()));
         let id = self.send(Command::SessionEvents);
-        self.pending_commands.insert(
-            id,
-            KernelCommand::Replay { fallback, notice },
-        );
+        self.pending_commands
+            .insert(id, KernelCommand::Replay { fallback, notice });
     }
 
     /// 提示历史（`/history`）：只读展示，不注入模型上下文。
@@ -6775,6 +6993,17 @@ fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
     }
 }
 
+/// Computer Use 页的字段初值；顺序与 `COMPUTER_USE_FIELDS` 一致。
+fn computer_use_form_values(config: &ComputerUseConfig) -> Vec<FieldValue> {
+    vec![
+        FieldValue::Flag(config.enabled),
+        FieldValue::Text(config.timeout_seconds.to_string()),
+        FieldValue::Text(config.screenshot_max_dimension.to_string()),
+        FieldValue::Text(config.thinking_effort.clone()),
+        FieldValue::Text(config.model.clone()),
+    ]
+}
+
 /// 图像生成页的字段初值；顺序与 `FormKind::ImageGen` 的字段表一致。
 ///
 /// `api_key` 不进界面：编辑期间按磁盘原值保留，界面只显示凭据的环境变量名。
@@ -6917,9 +7146,13 @@ fn image_gen_options_from(
 }
 
 /// 决策模型功能开关的界面行：标签与顺序取自配置域的开关表，值取配置。
+///
+/// 只收「决策模型」页自己的开关（`SwitchPage::Decision`）；画在向量模型页的开关由
+/// 向量页自己取用，不进这张表。
 fn decision_switch_rows(switches: &DecisionSwitches) -> Vec<DecisionSwitchRow> {
     DECISION_SWITCHES
         .iter()
+        .filter(|spec| spec.page == SwitchPage::Decision)
         .map(|spec| DecisionSwitchRow {
             key: spec.key.to_string(),
             label: spec.label.to_string(),
@@ -6945,6 +7178,37 @@ fn decision_row_from_config(channel: &DecisionChannelConfig) -> DecisionRow {
 }
 
 /// 界面行 → 配置决策渠道（`api_key` 留空表示「不改动」，由调用方按 key 继承）。
+fn embedding_row_from_config(channel: &EmbeddingChannelConfig) -> EmbeddingRow {
+    EmbeddingRow {
+        key: channel.key.clone(),
+        name: channel.name.clone(),
+        base_url: channel.base_url.clone(),
+        // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
+        api_key: channel.api_key.clone(),
+        api_key_env: channel.api_key_env.clone(),
+        model: channel.model.clone(),
+        dimensions: channel.dimensions,
+        timeout_seconds: channel.timeout_seconds,
+        enabled: channel.enabled,
+    }
+}
+
+/// 界面行 → 配置向量渠道（`api_key` 留空表示「不改动」，由调用方按 key 继承）。
+fn embedding_config_from_row(row: &EmbeddingRow) -> EmbeddingChannelConfig {
+    EmbeddingChannelConfig {
+        key: row.key.trim().to_string(),
+        name: row.name.trim().to_string(),
+        base_url: row.base_url.trim().to_string(),
+        api_key: row.api_key.trim().to_string(),
+        api_key_env: row.api_key_env.trim().to_string(),
+        model: row.model.trim().to_string(),
+        dimensions: row.dimensions,
+        batch_size: EmbeddingChannelConfig::default().batch_size,
+        timeout_seconds: row.timeout_seconds,
+        enabled: row.enabled,
+    }
+}
+
 fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConfig {
     DecisionChannelConfig {
         key: row.key.trim().to_string(),
@@ -7363,6 +7627,15 @@ fn subagent_roles() -> Vec<(String, String)> {
         .collect()
 }
 
+/// Computer Use 是否进表：读 `[computer_use] enabled`，与 `[subagents]` 无关。
+///
+/// 读配置失败时按关闭处理：这是可选的桌面能力，配置坏了不该让整张工具表起不来。
+fn computer_use_enabled(environment: &ConfigEnvironment) -> bool {
+    load_computer_use_config(environment, None)
+        .map(|config| config.active())
+        .unwrap_or(false)
+}
+
 /// TTS 工具配置：读 config.toml 的 `[tts]` 与 `[tts_cloud]`，未启用时不给这个工具
 /// （与 Python 一致）。
 fn tts_options(workspace: &Path) -> Option<Arc<TtsOptions>> {
@@ -7661,10 +7934,7 @@ mod tests {
             effective_api_key_env(false, "gemini", "", "OPENAI_API_KEY"),
             "GEMINI_API_KEY"
         );
-        assert_eq!(
-            effective_api_key_env(true, "", "", ""),
-            "OPENAI_API_KEY"
-        );
+        assert_eq!(effective_api_key_env(true, "", "", ""), "OPENAI_API_KEY");
     }
 
     #[test]
@@ -7827,17 +8097,29 @@ mod tests {
         let mut llm = LlmConfig::with_environment(&environment);
         llm.native_vision = None;
         assert!(!effective_native_vision(false, false, &llm), "都没给就是关");
-        assert!(effective_native_vision(false, true, &llm), "命令行开关仍然算数");
+        assert!(
+            effective_native_vision(false, true, &llm),
+            "命令行开关仍然算数"
+        );
 
         llm.native_vision = Some(true);
-        assert!(effective_native_vision(false, false, &llm), "配置开了就用配置");
+        assert!(
+            effective_native_vision(false, false, &llm),
+            "配置开了就用配置"
+        );
 
         // `--base-url` 指外部渠道：跑的是命令行那个模型，配置里的覆盖不跟过来。
         assert!(!effective_native_vision(true, false, &llm));
-        assert!(effective_native_vision(true, true, &llm), "显式开关不受渠道影响");
+        assert!(
+            effective_native_vision(true, true, &llm),
+            "显式开关不受渠道影响"
+        );
 
         llm.native_vision = Some(false);
-        assert!(!effective_native_vision(false, false, &llm), "配置明确关掉就是关");
+        assert!(
+            !effective_native_vision(false, false, &llm),
+            "配置明确关掉就是关"
+        );
     }
 
     #[test]

@@ -221,7 +221,10 @@ impl SourceEvent {
         let mut map = Map::new();
         map.insert("event_id".to_string(), Value::from(self.event_id.clone()));
         map.insert("type".to_string(), Value::from(self.event_type.clone()));
-        map.insert("preview".to_string(), Value::from(self.preview(preview_chars)));
+        map.insert(
+            "preview".to_string(),
+            Value::from(self.preview(preview_chars)),
+        );
         Value::Object(map)
     }
 
@@ -233,7 +236,10 @@ impl SourceEvent {
         let mut map = Map::new();
         map.insert("ref".to_string(), Value::from(reference));
         map.insert("type".to_string(), Value::from(self.event_type.clone()));
-        map.insert("preview".to_string(), Value::from(self.preview(preview_chars)));
+        map.insert(
+            "preview".to_string(),
+            Value::from(self.preview(preview_chars)),
+        );
         Value::Object(map)
     }
 
@@ -265,7 +271,10 @@ fn prompt_payload(payload: &Value) -> Value {
     let summarized: Vec<Value> = images
         .iter()
         .map(|image| {
-            let media_type = image.get("media_type").and_then(Value::as_str).unwrap_or_default();
+            let media_type = image
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let bytes = image
                 .get("data_base64")
                 .and_then(Value::as_str)
@@ -1099,7 +1108,11 @@ mod prompt_payload_tests {
             !serde_json::to_string(&prompt).unwrap().contains("AAAAAAAA"),
             "Base64 原文不该出现在提示里"
         );
-        assert_eq!(prompt["payload"]["content"], Value::from("看图"), "正文照旧");
+        assert_eq!(
+            prompt["payload"]["content"],
+            Value::from("看图"),
+            "正文照旧"
+        );
     }
 
     /// 没有图片的事件原样进提示：这条清洗只针对 `images` 字段。
@@ -1119,7 +1132,10 @@ mod prompt_payload_tests {
         }))
         .to_index_dict(200);
         let preview = index["preview"].as_str().unwrap_or_default();
-        assert!(!preview.contains("ZZZZZZZZ"), "预览里不该有 Base64：{preview}");
+        assert!(
+            !preview.contains("ZZZZZZZZ"),
+            "预览里不该有 Base64：{preview}"
+        );
     }
 }
 
@@ -1170,13 +1186,24 @@ mod eviction_tests {
                 "tool_call_evicted",
                 serde_json::json!({"evicted_call_ids": ["drop"], "evicted_tool_names": ["bash"]}),
             ),
-            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+            event(
+                "a1",
+                "assistant_message",
+                serde_json::json!({"content": "答"}),
+            ),
         ];
         let batch = DefaultContextBudgetManager
             .select_batch(&events)
             .expect("有完整回合");
-        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
-        assert!(ids.contains(&"c1") && ids.contains(&"r1"), "未淘汰的调用保留：{ids:?}");
+        let ids: Vec<&str> = batch
+            .events
+            .iter()
+            .map(|item| item.event_id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"c1") && ids.contains(&"r1"),
+            "未淘汰的调用保留：{ids:?}"
+        );
         assert!(
             !ids.contains(&"c2") && !ids.contains(&"r2"),
             "淘汰调用的请求与结果都必须离开窗口：{ids:?}"
@@ -1190,20 +1217,39 @@ mod eviction_tests {
     fn tool_events_without_call_id_are_kept() {
         let events = vec![
             event("u1", "user_message", serde_json::json!({"content": "问"})),
-            event("c1", "tool_call_requested", serde_json::json!({"tool": "read"})),
-            event("r1", "tool_result", serde_json::json!({"tool": "read", "ok": true})),
+            event(
+                "c1",
+                "tool_call_requested",
+                serde_json::json!({"tool": "read"}),
+            ),
+            event(
+                "r1",
+                "tool_result",
+                serde_json::json!({"tool": "read", "ok": true}),
+            ),
             event(
                 "m1",
                 "tool_call_evicted",
                 serde_json::json!({"evicted_call_ids": ["x"]}),
             ),
-            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+            event(
+                "a1",
+                "assistant_message",
+                serde_json::json!({"content": "答"}),
+            ),
         ];
         let batch = DefaultContextBudgetManager
             .select_batch(&events)
             .expect("有完整回合");
-        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
-        assert!(ids.contains(&"c1") && ids.contains(&"r1"), "无 ID 不参与淘汰：{ids:?}");
+        let ids: Vec<&str> = batch
+            .events
+            .iter()
+            .map(|item| item.event_id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"c1") && ids.contains(&"r1"),
+            "无 ID 不参与淘汰：{ids:?}"
+        );
     }
 
     /// 恢复批次的豁免必须与普通批次同一口径，否则超限恢复会把已淘汰原文捞回来。
@@ -1222,20 +1268,35 @@ mod eviction_tests {
                 "tool_call_evicted",
                 serde_json::json!({"evicted_call_ids": ["drop"]}),
             ),
-            event("u2", "user_message", serde_json::json!({"content": "还没答完"})),
+            event(
+                "u2",
+                "user_message",
+                serde_json::json!({"content": "还没答完"}),
+            ),
         ];
         let batch = DefaultContextBudgetManager
             .select_recovery_batch(&events)
             .expect("最后一条是用户消息时可选");
-        let ids: Vec<&str> = batch.events.iter().map(|item| item.event_id.as_str()).collect();
-        assert!(!ids.contains(&"c1") && !ids.contains(&"r1"), "恢复批次同样剔除：{ids:?}");
+        let ids: Vec<&str> = batch
+            .events
+            .iter()
+            .map(|item| item.event_id.as_str())
+            .collect();
+        assert!(
+            !ids.contains(&"c1") && !ids.contains(&"r1"),
+            "恢复批次同样剔除：{ids:?}"
+        );
     }
 
     /// 确定性兜底产出与模型摘要同形的结构，并覆盖校验关心的三类事实。
     #[test]
     fn deterministic_fallback_covers_the_checked_facts() {
         let events = vec![
-            event("u1", "user_message", serde_json::json!({"content": "目标一"})),
+            event(
+                "u1",
+                "user_message",
+                serde_json::json!({"content": "目标一"}),
+            ),
             event(
                 "c1",
                 "tool_call_requested",
@@ -1259,7 +1320,11 @@ mod eviction_tests {
                 serde_json::json!({"tool": "bash", "tool_call_id": "b1", "ok": false,
                                    "output": "boom"}),
             ),
-            event("a1", "assistant_message", serde_json::json!({"content": "答"})),
+            event(
+                "a1",
+                "assistant_message",
+                serde_json::json!({"content": "答"}),
+            ),
         ];
         let structured = deterministic_structured_summary(&events, None);
         assert_eq!(structured["objective"][0], Value::from("目标一"));
@@ -1295,7 +1360,11 @@ mod eviction_tests {
                 "constraints": [{"text": "不要改公开 API", "source_event_ids": ["old"]}],
             },
         });
-        let events = vec![event("u1", "user_message", serde_json::json!({"content": "继续"}))];
+        let events = vec![event(
+            "u1",
+            "user_message",
+            serde_json::json!({"content": "继续"}),
+        )];
         let structured = deterministic_structured_summary(&events, Some(&previous));
         assert_eq!(
             structured["constraints"][0]["text"],

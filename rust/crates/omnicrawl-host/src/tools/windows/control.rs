@@ -12,11 +12,13 @@ use base64::Engine;
 use omnicrawl_controllers::json::{python_dumps, python_dumps_compact};
 use serde_json::{json, Map, Value};
 
-use super::super::error::{ToolError, ToolOutcome};
+use super::super::error::ToolError;
+use super::super::paths::WorkspacePaths;
 use super::args::{
     ensure_allowed_keys, read_action, read_bounded_int, read_optional_bounded_int,
     read_optional_text, read_window_handle,
 };
+use super::screenshot::{snapshot_attachments, DesktopOutcome};
 
 const MAX_CONTROL_RESULTS: i64 = 100;
 const MAX_CONTROL_TEXT_CHARS: i64 = 8_192;
@@ -59,9 +61,21 @@ const ALLOWED_KEYS: [&str; 9] = [
     "max_results",
 ];
 
-pub fn windows_control(arguments: &Map<String, Value>) -> ToolOutcome {
-    let payload = operation(arguments)?;
-    Ok(python_dumps(&payload, 2))
+pub fn windows_control(
+    paths: &WorkspacePaths,
+    arguments: &Map<String, Value>,
+) -> Result<DesktopOutcome, ToolError> {
+    let mut payload = operation(arguments)?;
+    // 只读的 list 不改画面；其余操作都可能改变界面，附带一张确认截图。
+    let images = if payload["action"] == "list" {
+        Vec::new()
+    } else {
+        snapshot_attachments(paths, &mut payload)
+    };
+    Ok(DesktopOutcome {
+        output: python_dumps(&payload, 2),
+        images,
+    })
 }
 
 fn operation(arguments: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -267,19 +281,25 @@ mod tests {
         value.as_object().cloned().unwrap_or_default()
     }
 
+    /// 参数校验一律在启动 UI Automation 之前失败，路径只用于成功时落确认截图。
+    fn control(value: Value) -> Result<DesktopOutcome, ToolError> {
+        windows_control(
+            &WorkspacePaths::new(std::env::temp_dir()),
+            &arguments(value),
+        )
+    }
+
     #[test]
     fn arguments_are_validated_before_calling_powershell() {
-        let error = windows_control(&arguments(json!({"action": "list"})))
-            .expect_err("缺 window_handle 应当被拒绝");
+        let error = control(json!({"action": "list"})).expect_err("缺 window_handle 应当被拒绝");
         assert_eq!(
             error.message,
-            "window_handle 必须是十进制整数或 0x 开头的十六进制字符串。"
+            "window_handle 缺失：先用 windows_window 的 list 取得句柄。"
         );
 
-        let error = windows_control(&arguments(
-            json!({"action": "list", "window_handle": 42, "control_type": "slider"}),
-        ))
-        .expect_err("不支持的控件类型应当被拒绝");
+        let error =
+            control(json!({"action": "list", "window_handle": 42, "control_type": "slider"}))
+                .expect_err("不支持的控件类型应当被拒绝");
         assert!(
             error
                 .message
@@ -288,23 +308,20 @@ mod tests {
             error.message
         );
 
-        let error = windows_control(&arguments(json!({"action": "invoke", "window_handle": 42})))
+        let error = control(json!({"action": "invoke", "window_handle": 42}))
             .expect_err("缺定位条件应当被拒绝");
         assert_eq!(
             error.message,
             "控件操作必须至少提供 name、automation_id、class_name 或 control_type 之一作为定位条件。"
         );
 
-        let error = windows_control(&arguments(
-            json!({"action": "list", "window_handle": 42, "value": "x"}),
-        ))
-        .expect_err("非 set_value 不支持 value");
+        let error = control(json!({"action": "list", "window_handle": 42, "value": "x"}))
+            .expect_err("非 set_value 不支持 value");
         assert_eq!(error.message, "只有 set_value 操作支持 value 参数。");
 
-        let error = windows_control(&arguments(
-            json!({"action": "set_value", "window_handle": 42, "name": "a", "value": 7}),
-        ))
-        .expect_err("非字符串 value 应当被拒绝");
+        let error =
+            control(json!({"action": "set_value", "window_handle": 42, "name": "a", "value": 7}))
+                .expect_err("非字符串 value 应当被拒绝");
         assert_eq!(error.message, "set_value 的 value 必须是字符串。");
     }
 

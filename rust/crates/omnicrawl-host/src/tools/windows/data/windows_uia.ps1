@@ -31,6 +31,20 @@ function Get-ControlTypeMap {
     }
 }
 
+function ConvertTo-Pixel([double]$Value) {
+    # 无布局元素（尚未完成布局的 View、离屏 RepeatButton 等）的 BoundingRectangle 是
+    # Rect.Empty：X/Y 为 ±∞、Width/Height 为 0。直接 [int][Math]::Round 会抛
+    # “Cannot convert value "∞" to type System.Int32”，把整次控件查询带崩。
+    # 这里统一收敛成 0：坐标不可知就用 0 表示，比让整批结果失败有用。
+    if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) {
+        return 0
+    }
+    $rounded = [Math]::Round($Value)
+    if ($rounded -gt [int]::MaxValue) { return [int]::MaxValue }
+    if ($rounded -lt [int]::MinValue) { return [int]::MinValue }
+    return [int]$rounded
+}
+
 function Get-ElementSummary([System.Windows.Automation.AutomationElement]$Element) {
     $rect = $Element.Current.BoundingRectangle
     $controlTypeName = [string]$Element.Current.ControlType.ProgrammaticName
@@ -47,10 +61,10 @@ function Get-ElementSummary([System.Windows.Automation.AutomationElement]$Elemen
         is_enabled = [bool]$Element.Current.IsEnabled
         is_offscreen = [bool]$Element.Current.IsOffscreen
         bounds = [PSCustomObject]@{
-            left = [int][Math]::Round($rect.X)
-            top = [int][Math]::Round($rect.Y)
-            width = [int][Math]::Round($rect.Width)
-            height = [int][Math]::Round($rect.Height)
+            left = ConvertTo-Pixel $rect.X
+            top = ConvertTo-Pixel $rect.Y
+            width = ConvertTo-Pixel $rect.Width
+            height = ConvertTo-Pixel $rect.Height
         }
     }
 }

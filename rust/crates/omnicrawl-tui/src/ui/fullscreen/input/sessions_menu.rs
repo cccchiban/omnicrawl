@@ -88,7 +88,9 @@ impl SessionsMenu {
         if len <= limit {
             return (0, self.items.len());
         }
-        let start = (self.selection as isize - limit + 1).min(len - limit).max(0) as usize;
+        let start = (self.selection as isize - limit + 1)
+            .min(len - limit)
+            .max(0) as usize;
         (start, start + SESSIONS_MENU_VISIBLE_OPTIONS)
     }
 
@@ -108,10 +110,7 @@ impl SessionsMenu {
             let short_id: String = item.session_id.chars().take(8).collect();
             let marker = if selected { "› " } else { "  " };
             let current = if item.is_current { "*" } else { " " };
-            lines.push(
-                &format!("{marker}{current} {short_id}  "),
-                &style,
-            );
+            lines.push(&format!("{marker}{current} {short_id}  "), &style);
             lines.push(
                 &format!(
                     "{}  {}条  {}",

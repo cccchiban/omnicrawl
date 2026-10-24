@@ -182,10 +182,7 @@ fn command_samples() -> Vec<(&'static str, Value)> {
             method::SESSION_APPEND,
             json!({"role": "assistant", "content": "[评审报告]\n未发现问题。"}),
         ),
-        (
-            method::WORKSPACE_SWITCH,
-            json!({"path": "D:/work/demo"}),
-        ),
+        (method::WORKSPACE_SWITCH, json!({"path": "D:/work/demo"})),
         (method::SHUTDOWN, json!({})),
     ]
 }

@@ -32,7 +32,10 @@ fn gateway_wording_survives_the_mapping() {
         error.message.contains("同一请求不能重复提交相同的 call_id"),
         "上游原话必须保留：{error:?}"
     );
-    assert!(error.message.contains("HTTP 400"), "状态码线索也要保留：{error:?}");
+    assert!(
+        error.message.contains("HTTP 400"),
+        "状态码线索也要保留：{error:?}"
+    );
 }
 
 #[test]

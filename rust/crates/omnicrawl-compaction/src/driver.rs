@@ -3,28 +3,29 @@
 //! 顺序与 Python 一致：测量 → 触发判定 → 摘要 → 归档被压缩窗口 → 落盘压缩事件与摘要 →
 //! 记忆回写与自动召回 → 重建运行期历史 → 生成可见的压缩边界提示。
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use omnicrawl_controllers::context_compaction::{
-    estimate_json_tokens, ContextCompactionService, MeasureInput, SourceEvent, TokenUsageSample,
-};
 use omnicrawl_controllers::compression::{
     collect_assistant_replies, collect_tool_calls, join_tool_and_summary_sections,
     saved_tokens_notice, DualCompactionInput, DualCompactionPort, ToolCompactionInput,
     ToolCompactionPort,
 };
+use omnicrawl_controllers::context_compaction::{
+    estimate_messages_tokens, ContextCompactionService, MeasureInput, SourceEvent, TokenUsageSample,
+};
+use omnicrawl_controllers::context_compaction::{event_to_model_message, latest_final_reply_event};
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_RECOVERY_PROMPT;
 use omnicrawl_controllers::turn::compaction::{
     archive_compacted_event_ids, compaction_memory_requests, compaction_recall_event_payload,
     compaction_recall_hits, compaction_recall_query, compaction_recall_text,
     format_compaction_notice, format_compaction_savings_option, RECALL_MAX_RESULTS,
 };
-use omnicrawl_controllers::context_compaction::{
-    event_to_model_message, latest_final_reply_event,
+use omnicrawl_session::{
+    project_compaction_boundary_history, utc_now, MemoryStore, SessionEvent, SessionStore,
 };
-use omnicrawl_session::{project_compaction_boundary_history, utc_now, MemoryStore, SessionStore};
 
 /// 压缩策略与阈值：对应 Python 的 `config.context_compaction` 加模型上下文窗口。
 #[derive(Debug, Clone)]
@@ -100,7 +101,9 @@ struct ToolSegment {
 /// 逐事件价格账：按模型可见投影计价，供预算测量与范围选择共用。
 ///
 /// 顺序即模型可见顺序；非模型上下文事件（淘汰标注、压缩记账等）不入账。
-fn metered_nodes(events: &[SourceEvent]) -> Vec<omnicrawl_controllers::context_compaction::TokenNode> {
+fn metered_nodes(
+    events: &[SourceEvent],
+) -> Vec<omnicrawl_controllers::context_compaction::TokenNode> {
     events
         .iter()
         .filter(|event| {
@@ -114,14 +117,16 @@ fn metered_nodes(events: &[SourceEvent]) -> Vec<omnicrawl_controllers::context_c
                     | "compact_summary"
             )
         })
-        .map(|event| omnicrawl_controllers::context_compaction::TokenNode {
-            event_id: event.event_id.clone(),
-            event_type: event.event_type.clone(),
-            tokens: omnicrawl_controllers::context_compaction::event_tokens(
-                event,
-                &omnicrawl_controllers::context_compaction::text_tokens,
-            ),
-        })
+        .map(
+            |event| omnicrawl_controllers::context_compaction::TokenNode {
+                event_id: event.event_id.clone(),
+                event_type: event.event_type.clone(),
+                tokens: omnicrawl_controllers::context_compaction::event_tokens(
+                    event,
+                    &omnicrawl_controllers::context_compaction::text_tokens,
+                ),
+            },
+        )
         .collect()
 }
 
@@ -206,7 +211,11 @@ impl CompactionDriver {
     ///
     /// 失败（端口不可用、没有可压调用、请求失败）返回 `None`：拼装退回「只有摘要段」，
     /// 压缩不会因为少了一段而整体失败。
-    fn tool_segment(&self, boundary: &TurnBoundary<'_>, events: &[SourceEvent]) -> Option<ToolSegment> {
+    fn tool_segment(
+        &self,
+        boundary: &TurnBoundary<'_>,
+        events: &[SourceEvent],
+    ) -> Option<ToolSegment> {
         let tools = self.tools.as_ref()?;
         let calls = collect_tool_calls(events);
         if calls.is_empty() {
@@ -283,7 +292,12 @@ impl CompactionDriver {
     /// 链路顺序（用户指定）：决策模型淘汰（已在回合收尾先做过）→ 工具调用压缩 →
     /// 非工具部分交给上下文压缩 → 两段拼接成一条 assistant 消息注入历史。
     pub fn after_turn(&self, boundary: &TurnBoundary<'_>) -> Result<AfterTurnReport, String> {
-        let events = self.source_events(boundary.session_id)?;
+        // 事件流在这里读一次，压缩全链路（测量、摘要、归档、历史重建）共用它。
+        let events = self
+            .store
+            .read_active_events(boundary.session_id)
+            .map_err(|error| error.message().to_string())?;
+        let source_events = to_source_events(&events);
         let measure = MeasureInput {
             system_prompt: boundary.system_prompt.to_string(),
             context_messages: boundary.context_messages.to_vec(),
@@ -297,21 +311,20 @@ impl CompactionDriver {
             usage: boundary.usage,
             provider_input_tokens: std::cmp::max(0, boundary.last_request_input_tokens),
             emergency_context_ratio: self.config.emergency_context_ratio,
-            nodes: metered_nodes(&events),
+            nodes: metered_nodes(&source_events),
         };
         // 工具段必须赶在摘要请求之前发出（用户指定的顺序），因此用一次性槽把它接进
         // 服务层的「决策之后、摘要请求之前」钩子，而不是在 `after_complete_turn` 返回后才压。
-        let segment_slot: std::cell::RefCell<Option<ToolSegment>> =
-            std::cell::RefCell::new(None);
+        let segment_slot: std::cell::RefCell<Option<ToolSegment>> = std::cell::RefCell::new(None);
         let outcome = self
             .service
             .after_complete_turn_with_pre_compaction(
-                &events,
+                &source_events,
                 measure,
                 self.config.reasoning_effort.as_str(),
                 self.config.preserve_exact_evidence,
                 &|| {
-                    *segment_slot.borrow_mut() = self.tool_segment(boundary, &events);
+                    *segment_slot.borrow_mut() = self.tool_segment(boundary, &source_events);
                 },
             )
             .map_err(|error| error.message().to_string())?;
@@ -327,7 +340,7 @@ impl CompactionDriver {
                 .get("trigger_reached")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if !triggered || !self.dual_compaction_history(boundary, &events, &mut report)? {
+            if !triggered || !self.dual_compaction_history(boundary, &source_events, &mut report)? {
                 report.history = None;
             }
             self.append_event(
@@ -361,6 +374,7 @@ impl CompactionDriver {
 
         self.apply_compaction(
             boundary.session_id,
+            &events,
             &compact_payload,
             boundary.history_messages,
             &mut report,
@@ -374,11 +388,14 @@ impl CompactionDriver {
     /// 与回合结束边界的差别只有触发方式；载荷落盘、归档、记忆回写、召回与历史重建共用
     /// [`CompactionDriver::apply_compaction`]，两条路径不会漂移。摘要在 `report.summary`。
     pub fn manual_compact(&self, session_id: &str) -> Result<AfterTurnReport, String> {
-        let events = self.source_events(session_id)?;
+        let events = self
+            .store
+            .read_active_events(session_id)
+            .map_err(|error| error.message().to_string())?;
         let outcome = self
             .service
             .manual_compact(
-                &events,
+                &to_source_events(&events),
                 self.config.target_summary_tokens,
                 self.config.reasoning_effort.as_str(),
                 self.config.preserve_exact_evidence,
@@ -404,7 +421,14 @@ impl CompactionDriver {
             )?;
             return Err(reason);
         };
-        self.apply_compaction(session_id, &compact_payload, &[], &mut report, None)?;
+        self.apply_compaction(
+            session_id,
+            &events,
+            &compact_payload,
+            &[],
+            &mut report,
+            None,
+        )?;
         Ok(report)
     }
 
@@ -418,6 +442,7 @@ impl CompactionDriver {
     fn apply_compaction(
         &self,
         session_id: &str,
+        events: &[SessionEvent],
         compact_payload: &Value,
         history_messages: &[Value],
         report: &mut AfterTurnReport,
@@ -425,7 +450,9 @@ impl CompactionDriver {
     ) -> Result<(), String> {
         let mut payload = compact_payload.as_object().cloned().unwrap_or_default();
         // 归档被压缩窗口的原始事件（二级存储），并把 archive_id 回写事件。
-        if let Some((archive_id, archived_count)) = self.archive_events(session_id, &payload)? {
+        if let Some((archive_id, archived_count)) =
+            self.archive_events(session_id, &payload, events)?
+        {
             payload.insert("archive_id".to_string(), Value::from(archive_id.clone()));
             if let Some(measurement) = report.measurement_payload.as_object_mut() {
                 measurement.insert("archive_id".to_string(), Value::from(archive_id));
@@ -451,7 +478,7 @@ impl CompactionDriver {
         self.append_event(session_id, "compact_summary", &payload)?;
         self.write_memories(&payload);
         let recall_text = self.remember_recall(&payload, session_id);
-        let history = self.rebuild_history(&payload, session_id, recall_text.as_deref())?;
+        let history = self.rebuild_history(&payload, events, recall_text.as_deref());
         let summary_text = payload
             .get("content")
             .and_then(Value::as_str)
@@ -461,7 +488,7 @@ impl CompactionDriver {
             .measurement_payload
             .get("estimated_next_input_tokens")
             .and_then(Value::as_i64)
-            .unwrap_or_else(|| estimate_json_tokens(&Value::Array(history_messages.to_vec())));
+            .unwrap_or_else(|| estimate_messages_tokens(history_messages));
 
         // 两段拼接：摘要边界的第一条消息就是摘要本身，把它的正文换成「工具段 + 摘要段」，
         // 保留窗口与召回注入照旧接在后面（用户要求两段拼成一条 assistant 消息）。
@@ -470,7 +497,10 @@ impl CompactionDriver {
         // 上下文变大——这也是它的计量行不出现的那种情形。
         let segment = segment.filter(|segment| segment.notice.is_some());
         let tool_notice = segment.as_ref().and_then(|segment| segment.notice.clone());
-        let tool_raw_tokens = segment.as_ref().map(|segment| segment.raw_tokens).unwrap_or(0);
+        let tool_raw_tokens = segment
+            .as_ref()
+            .map(|segment| segment.raw_tokens)
+            .unwrap_or(0);
         let history = match segment {
             Some(segment) => match join_tool_and_summary_sections(&segment.text, &summary_text) {
                 Some(joined) => {
@@ -488,7 +518,7 @@ impl CompactionDriver {
             None => history,
         };
         // 非工具段只报自己省下的那一份：从压缩前扣掉工具段原文，两行相加才等于整链净省。
-        let after_tokens = estimate_json_tokens(&Value::Array(history.clone()));
+        let after_tokens = estimate_messages_tokens(&history);
         let summary_saved = (before_tokens - tool_raw_tokens) - after_tokens;
         let mut notices: Vec<String> = Vec::new();
         if let Some(text) = tool_notice {
@@ -513,11 +543,14 @@ impl CompactionDriver {
         session_id: &str,
         previous_history: &[Value],
     ) -> Result<AfterTurnReport, String> {
-        let events = self.source_events(session_id)?;
+        let events = self
+            .store
+            .read_active_events(session_id)
+            .map_err(|error| error.message().to_string())?;
         let outcome = self
             .service
             .recover_from_context_overflow(
-                &events,
+                &to_source_events(&events),
                 self.config.target_summary_tokens,
                 &self.config.reasoning_effort,
                 self.config.preserve_exact_evidence,
@@ -545,7 +578,7 @@ impl CompactionDriver {
         };
 
         let mut payload = compact_payload.as_object().cloned().unwrap_or_default();
-        let archive_id = match self.archive_events(session_id, &payload)? {
+        let archive_id = match self.archive_events(session_id, &payload, &events)? {
             Some((archive_id, _count)) => {
                 payload.insert("archive_id".to_string(), Value::from(archive_id.clone()));
                 archive_id
@@ -576,10 +609,10 @@ impl CompactionDriver {
             &json!({"content": CONTEXT_OVERFLOW_RECOVERY_PROMPT}),
         )?;
 
-        let mut history = self.rebuild_history(&payload, session_id, recall_text.as_deref())?;
+        let mut history = self.rebuild_history(&payload, &events, recall_text.as_deref());
         history.push(json!({"role": "user", "content": CONTEXT_OVERFLOW_RECOVERY_PROMPT}));
-        let before_tokens = estimate_json_tokens(&Value::Array(previous_history.to_vec()));
-        let after_tokens = estimate_json_tokens(&Value::Array(history.clone()));
+        let before_tokens = estimate_messages_tokens(previous_history);
+        let after_tokens = estimate_messages_tokens(&history);
         Ok(AfterTurnReport {
             measurement_payload: Value::Null,
             compacted: true,
@@ -590,21 +623,6 @@ impl CompactionDriver {
             diagnostic: String::new(),
             summary: String::new(),
         })
-    }
-
-    fn source_events(&self, session_id: &str) -> Result<Vec<SourceEvent>, String> {
-        let events = self
-            .store
-            .read_active_events(session_id)
-            .map_err(|error| error.message().to_string())?;
-        Ok(events
-            .into_iter()
-            .map(|event| SourceEvent {
-                event_id: event.event_id.clone(),
-                event_type: event.event_type.clone(),
-                payload: Value::Object(event.payload.clone()),
-            })
-            .collect())
     }
 
     fn append_event(
@@ -621,10 +639,14 @@ impl CompactionDriver {
     }
 
     /// 归档本次被压缩的事件；未启用、没有事件或事件流里找不到目标时返回 None。
+    ///
+    /// `events` 是调用方已经读好的有效事件流：这里不再重读一遍转录（归档多少条就复制多少条，
+    /// 重读等于把整份转录再复制一次），命中判定也改成按集合查。
     fn archive_events(
         &self,
         session_id: &str,
         payload: &Map<String, Value>,
+        events: &[SessionEvent],
     ) -> Result<Option<(String, i64)>, String> {
         let wanted = archive_compacted_event_ids(
             self.config.archive_compacted_events,
@@ -633,22 +655,24 @@ impl CompactionDriver {
         if wanted.is_empty() {
             return Ok(None);
         }
-        let raw: Vec<Value> = self
-            .store
-            .read_active_events(session_id)
-            .map_err(|error| error.message().to_string())?
-            .into_iter()
-            .filter(|event| wanted.contains(&event.event_id))
-            .map(|event| event.to_dict())
-            .collect();
-        if raw.is_empty() {
+        let wanted: BTreeSet<&str> = wanted.iter().map(String::as_str).collect();
+        let archived = events
+            .iter()
+            .filter(|event| wanted.contains(event.event_id.as_str()))
+            .count();
+        if archived == 0 {
             return Ok(None);
         }
+        let raw: Vec<Value> = events
+            .iter()
+            .filter(|event| wanted.contains(event.event_id.as_str()))
+            .map(|event| event.to_dict())
+            .collect();
         let archive_id = self
             .store
             .archive_compacted_events(session_id, &raw, None, utc_now())
             .map_err(|error| error.message().to_string())?;
-        Ok(Some((archive_id, wanted.len() as i64)))
+        Ok(Some((archive_id, archived as i64)))
     }
 
     /// 压缩结果写入当前会话级记忆；失败不影响压缩。
@@ -687,18 +711,16 @@ impl CompactionDriver {
     }
 
     /// 用压缩边界重建运行期历史，并把召回结果紧跟摘要注入。
+    ///
+    /// `events` 是调用方已读好的有效事件流：这里不再重读转录。
     fn rebuild_history(
         &self,
         payload: &Value,
-        session_id: &str,
+        events: &[SessionEvent],
         recall_text: Option<&str>,
-    ) -> Result<Vec<Value>, String> {
-        let events = self
-            .store
-            .read_active_events(session_id)
-            .map_err(|error| error.message().to_string())?;
+    ) -> Vec<Value> {
         let summary = payload.as_object().cloned().unwrap_or_default();
-        let mut history = project_compaction_boundary_history(&summary, &events);
+        let mut history = project_compaction_boundary_history(&summary, events);
         if let Some(text) = recall_text {
             if !history.is_empty() {
                 let mut message = Map::new();
@@ -707,6 +729,18 @@ impl CompactionDriver {
                 history.insert(1, Value::Object(message));
             }
         }
-        Ok(history)
+        history
     }
+}
+
+/// 会话事件 → 压缩链路使用的只读事件视图。
+fn to_source_events(events: &[SessionEvent]) -> Vec<SourceEvent> {
+    events
+        .iter()
+        .map(|event| SourceEvent {
+            event_id: event.event_id.clone(),
+            event_type: event.event_type.clone(),
+            payload: Value::Object(event.payload.clone()),
+        })
+        .collect()
 }

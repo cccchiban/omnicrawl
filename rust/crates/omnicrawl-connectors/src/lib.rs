@@ -1,4 +1,4 @@
-//! 消息平台连接器（Rust 内核）：Telegram Bot 轮询与飞书自建应用长连接。
+//! 消息平台连接器（Rust 内核）：Telegram Bot 轮询、飞书自建应用长连接与 QQ 机器人网关。
 //!
 //! 语义基准是 Python 侧 `omnicrawl/connectors/telegram.py` 与 `omnicrawl/connectors/fsapp.py`：
 //! 配置解析、白名单、文本分段与裁剪、文件接收与分类、命令分发、审批与提问桥、显示映射都在这里；
@@ -8,9 +8,11 @@ pub mod autostart;
 pub mod feishu;
 pub mod http;
 pub mod json;
+pub mod qqbot;
 pub mod render;
 pub mod telegram;
 pub mod text;
+pub mod ws;
 
 pub use agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, ToolCall, ToolResult, TurnError,
@@ -22,5 +24,5 @@ pub use autostart::{
     AutoStartDecision, ConnectorManagerOptions, ConnectorProcessManager, ConnectorSpec,
     OutputTarget, ProcessSpawner, SpawnRequest, StdProcessSpawner, AUTO_START_ENV,
     CONNECTOR_LOG_DIRNAME, CONNECTOR_SUBCOMMAND, DISABLED_VALUES, ENABLED_VALUES, FEISHU_PLATFORM,
-    TELEGRAM_PLATFORM, WATCHER_JOIN_TIMEOUT_SECONDS, WATCH_POLL_SECONDS,
+    QQ_PLATFORM, TELEGRAM_PLATFORM, WATCHER_JOIN_TIMEOUT_SECONDS, WATCH_POLL_SECONDS,
 };

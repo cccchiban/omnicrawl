@@ -323,10 +323,7 @@ mod tests {
         // 超过 1.2 上限的仍然必须拒绝。
         let mut data = vec![23, 0x03, 0x03];
         data.extend_from_slice(&((MAX_CIPHERTEXT_12 + 1) as u16).to_be_bytes());
-        assert!(matches!(
-            parse_record(&data),
-            Err(RecordError::TooLarge(_))
-        ));
+        assert!(matches!(parse_record(&data), Err(RecordError::TooLarge(_))));
     }
 
     #[test]

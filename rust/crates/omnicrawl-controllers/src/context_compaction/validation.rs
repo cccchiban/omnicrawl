@@ -4,6 +4,8 @@
 //! 拒绝三类摘要：不可恢复（旧约束丢失）、无来源（引用了不存在的事件）、把未完成工具链或
 //! 「该记没记」的文件/用户消息写成已完成。
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::{Map, Value};
 
 use super::policy::{estimate_json_tokens, SourceEvent};
@@ -93,6 +95,10 @@ impl SummaryValidator {
         let empty: Vec<SourceEvent> = Vec::new();
         let source_events = input.source_events;
         let _ = &empty;
+        // 来源校验按集合查：每条引用都整表扫一遍事件流，在长会话上是引用数 × 事件数
+        // 的二次方（压缩一旦触发就把这条路走三遍：两次模型尝试 + 兜底）。
+        // 后三个校验按引用取事件正文，也共用这份索引。
+        let event_index = EventIndex::new(source_events);
 
         for field in PLAIN_LIST_FIELDS {
             let value = input.structured.get(field);
@@ -167,11 +173,7 @@ impl SummaryValidator {
                 };
                 let unknown: Vec<&String> = refs
                     .iter()
-                    .filter(|reference| {
-                        !source_events
-                            .iter()
-                            .any(|event| event.event_id == ***reference)
-                    })
+                    .filter(|reference| !event_index.contains(reference))
                     .collect();
                 if !unknown.is_empty() {
                     let joined = unknown
@@ -239,11 +241,7 @@ impl SummaryValidator {
                 };
                 let unknown: Vec<String> = refs
                     .iter()
-                    .filter(|reference| {
-                        !source_events
-                            .iter()
-                            .any(|event| event.event_id == **reference)
-                    })
+                    .filter(|reference| !event_index.contains(reference))
                     .cloned()
                     .collect();
                 if !unknown.is_empty() {
@@ -270,13 +268,13 @@ impl SummaryValidator {
         let normalized_value = Value::Object(normalized.clone());
         validate_previous_constraints(input.previous_summary, &normalized_value, &mut errors);
         if input.preserve_exact_evidence {
-            validate_exact_evidence(&normalized_value, source_events, &mut errors);
+            validate_exact_evidence(&normalized_value, &event_index, &mut errors);
         } else {
             normalized.insert("exact_evidence".to_string(), Value::Array(Vec::new()));
         }
         let normalized_value = Value::Object(normalized.clone());
-        validate_user_messages(&normalized_value, source_events, &mut errors);
-        validate_completed_tool_chains(&normalized_value, source_events, &mut errors);
+        validate_user_messages(&normalized_value, &event_index, &mut errors);
+        validate_completed_tool_chains(&normalized_value, &event_index, &mut errors);
         validate_completeness(
             &normalized_value,
             input.completeness_events.unwrap_or(&empty),
@@ -301,14 +299,37 @@ impl SummaryValidator {
 }
 
 fn dedup_values(values: &[String]) -> Vec<Value> {
-    let mut seen: Vec<Value> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut items: Vec<Value> = Vec::new();
     for value in values {
-        let item = Value::from(value.clone());
-        if !seen.contains(&item) {
-            seen.push(item);
+        if seen.insert(value.as_str()) {
+            items.push(Value::from(value.clone()));
         }
     }
-    seen
+    items
+}
+
+/// 事件流的 ID 索引：引用校验与按引用取事件都走它，避免逐条引用全表扫描。
+struct EventIndex<'a> {
+    events: HashMap<&'a str, &'a SourceEvent>,
+}
+
+impl<'a> EventIndex<'a> {
+    fn new(events: &'a [SourceEvent]) -> Self {
+        let mut index: HashMap<&'a str, &'a SourceEvent> = HashMap::with_capacity(events.len());
+        for event in events {
+            index.entry(event.event_id.as_str()).or_insert(event);
+        }
+        Self { events: index }
+    }
+
+    fn contains(&self, event_id: &str) -> bool {
+        self.events.contains_key(event_id)
+    }
+
+    fn get(&self, event_id: &str) -> Option<&'a SourceEvent> {
+        self.events.get(event_id).copied()
+    }
 }
 
 fn object_text(item: &Value, key: &str) -> String {
@@ -374,7 +395,7 @@ fn validate_previous_constraints(
 
 fn validate_exact_evidence(
     normalized: &Value,
-    source_events: &[SourceEvent],
+    event_index: &EventIndex<'_>,
     errors: &mut Vec<String>,
 ) {
     let Some(items) = normalized.get("exact_evidence").and_then(Value::as_array) else {
@@ -394,10 +415,7 @@ fn validate_exact_evidence(
             .unwrap_or_default();
         let mut source_text = String::new();
         for reference in refs {
-            let Some(event) = source_events
-                .iter()
-                .find(|event| event.event_id == reference)
-            else {
+            let Some(event) = event_index.get(&reference) else {
                 continue;
             };
             for value in string_values(&event.payload) {
@@ -413,7 +431,7 @@ fn validate_exact_evidence(
 
 fn validate_user_messages(
     normalized: &Value,
-    source_events: &[SourceEvent],
+    event_index: &EventIndex<'_>,
     errors: &mut Vec<String>,
 ) {
     let Some(items) = normalized.get("user_messages").and_then(Value::as_array) else {
@@ -436,10 +454,7 @@ fn validate_user_messages(
             continue;
         }
         for reference in refs {
-            let Some(event) = source_events
-                .iter()
-                .find(|event| event.event_id == reference)
-            else {
+            let Some(event) = event_index.get(&reference) else {
                 continue;
             };
             if event.event_type != "user_message" {
@@ -471,14 +486,14 @@ fn validate_completeness(
         return;
     }
     let mut call_events: Vec<&SourceEvent> = Vec::new();
-    let mut result_by_call_id: Vec<(String, &SourceEvent)> = Vec::new();
+    let mut result_by_call_id: HashMap<String, &SourceEvent> = HashMap::new();
     for event in completeness_events {
         if event.event_type == "tool_call_requested" {
             call_events.push(event);
         } else if event.event_type == "tool_result" {
             let call_id = value_text(event.payload.get("tool_call_id").unwrap_or(&Value::Null));
             if !call_id.is_empty() {
-                result_by_call_id.push((call_id, event));
+                result_by_call_id.entry(call_id).or_insert(event);
             }
         }
     }
@@ -489,7 +504,7 @@ fn validate_completeness(
         .and_then(Value::as_array)
         .map(|items| items.iter().collect())
         .unwrap_or_default();
-    let modified_refs: Vec<String> = modified_items
+    let modified_refs: HashSet<String> = modified_items
         .iter()
         .flat_map(|item| {
             item.get("source_event_ids")
@@ -513,11 +528,7 @@ fn validate_completeness(
             continue;
         }
         let call_id = value_text(event.payload.get("tool_call_id").unwrap_or(&Value::Null));
-        let Some(result) = result_by_call_id
-            .iter()
-            .find(|(key, _)| *key == call_id)
-            .map(|(_, event)| *event)
-        else {
+        let Some(result) = result_by_call_id.get(&call_id).copied() else {
             continue;
         };
         if !result
@@ -557,7 +568,7 @@ fn validate_completeness(
     }
 
     // 2) 失败的工具调用必须被 failed_attempts 覆盖（引用调用或结果事件 ID）。
-    let failed_refs: Vec<String> = normalized
+    let failed_refs: HashSet<String> = normalized
         .get("failed_attempts")
         .and_then(Value::as_array)
         .map(|items| {
@@ -579,11 +590,7 @@ fn validate_completeness(
         .unwrap_or_default();
     for event in &call_events {
         let call_id = value_text(event.payload.get("tool_call_id").unwrap_or(&Value::Null));
-        let Some(result) = result_by_call_id
-            .iter()
-            .find(|(key, _)| *key == call_id)
-            .map(|(_, event)| *event)
-        else {
+        let Some(result) = result_by_call_id.get(&call_id).copied() else {
             continue;
         };
         if result
@@ -605,7 +612,7 @@ fn validate_completeness(
     }
 
     // 3) 被压缩窗口内的用户消息必须被 user_messages 原文覆盖（引用事件 ID）。
-    let user_refs: Vec<String> = normalized
+    let user_refs: HashSet<String> = normalized
         .get("user_messages")
         .and_then(Value::as_array)
         .map(|items| {
@@ -646,10 +653,10 @@ fn validate_completeness(
 
 fn validate_completed_tool_chains(
     normalized: &Value,
-    source_events: &[SourceEvent],
+    event_index: &EventIndex<'_>,
     errors: &mut Vec<String>,
 ) {
-    let completed_refs: Vec<String> = normalized
+    let completed_refs: HashSet<String> = normalized
         .get("completed")
         .and_then(Value::as_array)
         .map(|items| {
@@ -670,16 +677,14 @@ fn validate_completed_tool_chains(
                 .collect()
         })
         .unwrap_or_default();
-    let result_call_ids: Vec<String> = source_events
-        .iter()
+    let result_call_ids: HashSet<String> = event_index
+        .events
+        .values()
         .filter(|event| event.event_type == "tool_result")
         .map(|event| value_text(event.payload.get("tool_call_id").unwrap_or(&Value::Null)))
         .collect();
     for reference in completed_refs {
-        let Some(event) = source_events
-            .iter()
-            .find(|event| event.event_id == reference)
-        else {
+        let Some(event) = event_index.get(&reference) else {
             continue;
         };
         if event.event_type != "tool_call_requested" {

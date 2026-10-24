@@ -379,12 +379,7 @@ fn text_field(section: &Table, name: &str, fallback: &str) -> String {
 }
 
 /// Python `int(section.get(name) or default)`。
-fn int_field(
-    section: &Table,
-    name: &str,
-    default: i64,
-    prefix: &str,
-) -> Result<i64, ConfigError> {
+fn int_field(section: &Table, name: &str, default: i64, prefix: &str) -> Result<i64, ConfigError> {
     let Some(value) = section.get(name) else {
         return Ok(default);
     };

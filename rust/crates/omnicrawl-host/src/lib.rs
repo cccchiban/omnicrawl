@@ -16,6 +16,8 @@
 pub mod approval;
 pub mod decision_pipe;
 pub mod decision_wire;
+pub mod embedding_client;
+pub mod embedding_wire;
 pub mod host;
 pub mod kernel;
 pub mod plugins;

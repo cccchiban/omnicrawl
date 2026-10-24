@@ -208,7 +208,9 @@ fn other_host_skips_while_connector_is_running() {
     );
     assert_eq!(
         second.diagnostics(),
-        vec![format!("连接器 {TELEGRAM_PLATFORM} 已有实例在运行，跳过本次自动启动。")],
+        vec![format!(
+            "连接器 {TELEGRAM_PLATFORM} 已有实例在运行，跳过本次自动启动。"
+        )],
         "跳过时应当留下同一条诊断"
     );
 

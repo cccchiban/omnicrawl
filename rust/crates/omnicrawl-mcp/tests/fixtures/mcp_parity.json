@@ -2011,6 +2011,12 @@
        "mimeType": "text/markdown"
       },
       {
+       "uri": "omnicrawl://docs/QQBOT.md",
+       "name": "omnicrawl/docs/QQBOT.md",
+       "description": "随 OmniCrawl 安装包提供的只读技术文档。",
+       "mimeType": "text/markdown"
+      },
+      {
        "uri": "omnicrawl://docs/session_design.md",
        "name": "omnicrawl/docs/session_design.md",
        "description": "随 OmniCrawl 安装包提供的只读技术文档。",
@@ -4829,6 +4835,7 @@
    "FSAPP.md",
    "MCP_USAGE.md",
    "memory_system_design.md",
+   "QQBOT.md",
    "session_design.md",
    "SKILL_INSTALLATION.md",
    "TELEGRAM.md",
@@ -4845,6 +4852,7 @@
    "FSAPP.md": "6accb96dcaca94b5e5e14ef1ecb9823b0afa5cd1308e62e037b311702940544b",
    "MCP_USAGE.md": "90c16c44db331833ea8b0d0152643a44e5c1c7c4b0116b6a0bb9701fa89f680e",
    "memory_system_design.md": "477b9fdc0b5a06034dbffcfd7f0d37051f35b4f71ebb20bcd5fcba2f77af1011",
+   "QQBOT.md": "0ddab217040f33c4e20a788b458ff1cf7f2d4e3268c84be7295b997ea153478c",
    "session_design.md": "0891ac2904094d2548e9abc8bd406c94018a1a75d4e5a92fcf4045a590510575",
    "SKILL_INSTALLATION.md": "e5d56e6133bb2f267c31818449841946f0cabea591fd8313fcf1a2a0223f0b57",
    "TELEGRAM.md": "94bfdc180f3e75e6d3071898caedd6b572f3e54e2fe72c77608c8f98c8ff5c81",

@@ -519,6 +519,14 @@ fn public_windows_desktop_arguments(tool_name: &str, arguments: &Map<String, Val
             public.insert(key.to_string(), value.clone());
         }
     }
+    if let Some(Value::Array(actions)) = arguments.get("actions") {
+        // 顺序动作的每一步都要过同样的投影：元素里的 text 可能含凭据。
+        public.insert("action_count".to_string(), Value::from(actions.len()));
+        public.insert(
+            "actions".to_string(),
+            Value::Array(actions.iter().map(public_input_action).collect()),
+        );
+    }
     if tool_name == "windows_control" {
         if let Some(Value::String(text)) = arguments.get("value") {
             public.insert(
@@ -535,9 +543,48 @@ fn public_windows_desktop_arguments(tool_name: &str, arguments: &Map<String, Val
     Value::Object(public)
 }
 
+/// `windows_input` 的一个顺序动作：只保留结构字段，文本只给长度。
+fn public_input_action(value: &Value) -> Value {
+    const KEYS: [&str; 9] = [
+        "x",
+        "y",
+        "button",
+        "clicks",
+        "hold_ms",
+        "wheel_delta",
+        "key",
+        "keys",
+        "presses",
+    ];
+    let Some(action) = value.as_object() else {
+        return Value::Object(Map::new());
+    };
+    let mut public = Map::new();
+    public.insert(
+        "action".to_string(),
+        Value::from(
+            action
+                .get("action")
+                .map(python_text)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        ),
+    );
+    for key in KEYS {
+        if let Some(value) = action.get(key) {
+            public.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(Value::String(text)) = action.get("text") {
+        public.insert("text_length".to_string(), Value::from(text.chars().count()));
+    }
+    Value::Object(public)
+}
+
 fn normalized_action(action: &str) -> String {
     match action {
-        "run" | "spawn" | "list" | "get" | "cancel" => action.to_string(),
+        "run" | "list" | "get" | "cancel" => action.to_string(),
         _ => "run".to_string(),
     }
 }

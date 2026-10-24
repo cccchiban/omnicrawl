@@ -30,24 +30,19 @@ fn suite() -> CipherSuite {
 }
 
 /// RFC 8448 §3 的 Early Secret：`HKDF-Extract(0, 0)`。
-const EARLY_SECRET: &str =
-    "33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a";
+const EARLY_SECRET: &str = "33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a";
 
 /// RFC 8448 §3 的 ECDHE shared secret。
-const SHARED_SECRET: &str =
-    "8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d";
+const SHARED_SECRET: &str = "8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d";
 
 /// RFC 8448 §3 的 handshake secret。
-const HANDSHAKE_SECRET: &str =
-    "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac";
+const HANDSHAKE_SECRET: &str = "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac";
 
 /// RFC 8448 §3 的 `s hs traffic`。
-const SERVER_HS_TRAFFIC: &str =
-    "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38";
+const SERVER_HS_TRAFFIC: &str = "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38";
 
 /// RFC 8448 §3 的 `c hs traffic`。
-const CLIENT_HS_TRAFFIC: &str =
-    "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21";
+const CLIENT_HS_TRAFFIC: &str = "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21";
 
 /// RFC 8448 §3 的握手阶段转录哈希（CH..SH）。
 const TRANSCRIPT_HASH_CH_SH: &str =
@@ -79,8 +74,8 @@ fn the_empty_transcript_hash_is_the_hash_of_no_messages() {
 fn the_derived_secret_matches_rfc_8448() {
     // RFC 8448 明确给出这条：info 里的 hash 段是 e3b0c442…（空串哈希）。
     let early = hex(EARLY_SECRET);
-    let derived = derive_secret(suite(), &early, "derived", &empty_transcript_hash(suite()))
-        .expect("派生");
+    let derived =
+        derive_secret(suite(), &early, "derived", &empty_transcript_hash(suite())).expect("派生");
     assert_eq!(
         hex("6f2615a108c702c5678f54fc9dbab69716c076189c48250cebeac3576c3611ba"),
         derived,
@@ -91,8 +86,8 @@ fn the_derived_secret_matches_rfc_8448() {
 #[test]
 fn the_handshake_secret_matches_rfc_8448() {
     let early = hex(EARLY_SECRET);
-    let derived = derive_secret(suite(), &early, "derived", &empty_transcript_hash(suite()))
-        .expect("派生");
+    let derived =
+        derive_secret(suite(), &early, "derived", &empty_transcript_hash(suite())).expect("派生");
     let handshake = extract(suite(), &derived, &hex(SHARED_SECRET));
     assert_eq!(hex(HANDSHAKE_SECRET), handshake);
 }
@@ -141,15 +136,11 @@ fn a_real_rfc_8448_encrypted_record_decrypts() {
     assert_eq!(consumed, record_bytes.len());
     assert_eq!(record.kind, ContentType::ApplicationData);
 
-    let mut key = RecordKey::new(
-        suite().aead(),
-        &hex(SERVER_HS_KEY),
-        {
-            let mut iv = [0u8; 12];
-            iv.copy_from_slice(&hex(SERVER_HS_IV));
-            iv
-        },
-    )
+    let mut key = RecordKey::new(suite().aead(), &hex(SERVER_HS_KEY), {
+        let mut iv = [0u8; 12];
+        iv.copy_from_slice(&hex(SERVER_HS_IV));
+        iv
+    })
     .expect("构造记录密钥");
     let (kind, plaintext) = key.open(&record).expect("RFC 的加密记录必须能解开");
     assert_eq!(kind, ContentType::Handshake, "内层类型是握手");
@@ -172,15 +163,11 @@ fn a_tampered_rfc_record_is_rejected() {
     let last = record_bytes.len() - 1;
     record_bytes[last] ^= 0xff;
     let (record, _) = parse_record(&record_bytes).expect("结构仍完整");
-    let mut key = RecordKey::new(
-        suite().aead(),
-        &hex(SERVER_HS_KEY),
-        {
-            let mut iv = [0u8; 12];
-            iv.copy_from_slice(&hex(SERVER_HS_IV));
-            iv
-        },
-    )
+    let mut key = RecordKey::new(suite().aead(), &hex(SERVER_HS_KEY), {
+        let mut iv = [0u8; 12];
+        iv.copy_from_slice(&hex(SERVER_HS_IV));
+        iv
+    })
     .expect("构造记录密钥");
     assert!(key.open(&record).is_err(), "篡改的记录必须被拒绝");
 }

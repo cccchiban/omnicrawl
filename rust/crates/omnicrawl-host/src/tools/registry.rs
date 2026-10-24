@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_controllers::tool_args::{
     mcp_fields, mcp_prompt_arguments_error, mcp_prompt_result, mcp_resource_result,
     mcp_tool_result, normalize_tool_call, tool_validation_error_result, validate_tool_arguments,
@@ -15,7 +16,6 @@ use omnicrawl_controllers::tool_args::{
 use omnicrawl_controllers::tool_catalog::{
     build_agent_tools, McpItemRef, McpToolRef, ToolCatalogOptions, ToolSpec,
 };
-use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_controllers::types::ToolImageAttachment;
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_mcp::client::McpClientManager;
@@ -39,7 +39,7 @@ use super::windows;
 use super::{edit, finding, git, grep, listing, read, read_image, skills, write};
 
 /// 本宿主已实现执行体的工具。
-pub const IMPLEMENTED_TOOLS: [&str; 32] = [
+pub const IMPLEMENTED_TOOLS: [&str; 33] = [
     "read",
     "read_image",
     "write_file",
@@ -72,6 +72,7 @@ pub const IMPLEMENTED_TOOLS: [&str; 32] = [
     "windows_screenshot",
     "advisor",
     "config_edit",
+    "computer_use",
 ];
 /// 内核自持的工具：声明进表，执行体在本宿主（`update_todos` / `ask_user` / `pause_work`）。
 pub const META_RUNNERS: [&str; 3] = ["update_todos", "ask_user", "pause_work"];
@@ -99,6 +100,8 @@ pub const IMAGE_RUNNERS: [&str; 1] = ["image_gen"];
 pub const TTS_RUNNERS: [&str; 1] = ["tts"];
 /// 顾问工具：只有显式启用并选中顾问模型时才进表（与 Python 的 AdvisorConfig 一致）。
 pub const ADVISOR_RUNNER: &str = "advisor";
+/// Computer Use 工具：由内核自持执行，只受 `[computer_use] enabled` 约束。
+pub const COMPUTER_USE_RUNNER: &str = "computer_use";
 /// Windows 桌面工具：整组注册或整组不注册（与 Python 的组规则一致）。
 pub const WINDOWS_RUNNERS: [&str; 5] = [
     "windows_window",
@@ -162,6 +165,8 @@ pub struct RegistryOptions {
     pub tts: Option<Arc<TtsOptions>>,
     /// 顾问运行期配置（未启用时 advisor 不进表）。
     pub advisor: AdvisorOptions,
+    /// Computer Use 是否进表：只受 `[computer_use] enabled` 约束，与 `[subagents]` 无关。
+    pub computer_use: bool,
     /// MCP 管理器：已发现的工具/资源/Prompt 进表，执行体走这个句柄。
     pub mcp: Option<Arc<McpClientManager>>,
     /// 复用既有的后台任务管理器：工具表重建时正在跑的后台命令不能被丢掉。
@@ -237,6 +242,11 @@ impl ToolRegistry {
         // 角色为空时不进表，避免模型看到一个必然失败的入口。
         if !options.subagent_roles.is_empty() {
             available.push("subagent".to_string());
+        }
+        // `computer_use` 同样由内核自持（子回合需要模型运行时），只受自己的开关约束：
+        // 它不受 `[subagents] enabled` 影响，关掉普通子代理不该连坐关掉桌面操作。
+        if options.computer_use {
+            available.push(COMPUTER_USE_RUNNER.to_string());
         }
         let available_refs: Vec<&str> = available.iter().map(String::as_str).collect();
         // MCP 能力来自管理器的注册表快照：工具直接以 `server.tool` 进表，资源与 Prompt
@@ -511,12 +521,26 @@ impl ToolRegistry {
                 ..ToolExecution::default()
             });
         }
-        if name == "windows_screenshot" {
-            return Some(match windows::windows_screenshot(&self.paths, &arguments) {
+        if matches!(
+            name.as_str(),
+            "windows_screenshot" | "windows_input" | "windows_control" | "windows_window"
+        ) {
+            let outcome = match name.as_str() {
+                "windows_screenshot" => windows::windows_screenshot(&self.paths, &arguments),
+                "windows_input" => windows::windows_input(&self.paths, &arguments),
+                "windows_control" => windows::windows_control(&self.paths, &arguments),
+                _ => windows::windows_window(&self.paths, &arguments),
+            };
+            // 操作类工具自带确认截图：点明它来自刚才的动作，别让模型以为还要再截一次。
+            return Some(match outcome {
                 Ok(outcome) => ToolExecution {
+                    vision_prompt: if name == "windows_screenshot" || outcome.images.is_empty() {
+                        String::new()
+                    } else {
+                        windows::snapshot_vision_prompt()
+                    },
                     result: text_success(outcome.output),
                     images: outcome.images,
-                    vision_prompt: String::new(),
                 },
                 Err(error) => ToolExecution {
                     result: text_failure(&error),
@@ -591,9 +615,6 @@ impl ToolRegistry {
                 Some(tts) => tts.tts_synthesize(&arguments),
                 None => text_failure(&ToolError::new("TTS 未启用。")),
             },
-            "windows_window" => outcome_result(windows::windows_window(&arguments)),
-            "windows_control" => outcome_result(windows::windows_control(&arguments)),
-            "windows_input" => outcome_result(windows::windows_input(&arguments)),
             "windows_clipboard" => outcome_result(windows::windows_clipboard(&arguments)),
             "advisor" => outcome_result(advisor::advisor(&self.advisor, &arguments)),
             "config_edit" => outcome_result(config_tool::config_edit(&self.config_env, &arguments)),
@@ -762,8 +783,14 @@ mod tests {
         };
         let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
         let names = declared_names(&registry);
-        assert!(!names.contains("powershell"), "关掉的工具不得进表：{names:?}");
-        assert!(!names.contains("web_search"), "关掉的工具不得进表：{names:?}");
+        assert!(
+            !names.contains("powershell"),
+            "关掉的工具不得进表：{names:?}"
+        );
+        assert!(
+            !names.contains("web_search"),
+            "关掉的工具不得进表：{names:?}"
+        );
         assert!(names.contains("read"), "其余工具照旧进表：{names:?}");
     }
 
@@ -856,13 +883,16 @@ mode = \"review\"
             ))
             .expect("宿主认识这个工具");
         assert!(written.ok, "{}", written.output);
-        let text = std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml"))
-            .expect("读回配置");
+        let text =
+            std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml")).expect("读回配置");
         assert!(
             text.contains("[memory]") && text.contains("enabled = true"),
             "新段应当写进去：{text}"
         );
-        assert!(text.contains("mode = \"review\""), "其余配置段必须保留：{text}");
+        assert!(
+            text.contains("mode = \"review\""),
+            "其余配置段必须保留：{text}"
+        );
 
         // 显式 file 落到对应文件，且不碰主配置。
         let models = registry
@@ -878,8 +908,8 @@ mode = \"review\"
             models_text.contains("context_window_tokens = 200000"),
             "{models_text}"
         );
-        let config_text = std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml"))
-            .expect("读回配置");
+        let config_text =
+            std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml")).expect("读回配置");
         assert!(
             !config_text.contains("context_window_tokens"),
             "写 models.toml 不得污染 config.toml：{config_text}"
@@ -1009,6 +1039,34 @@ mode = \"review\"
         );
     }
 
+    /// `computer_use` 只受自己的开关控制：普通子代理关闭时它照样进表，且不会把
+    /// `subagent` 一起带出来（注册条件看的是角色清单，不是总开关）。
+    #[test]
+    fn computer_use_registers_independently_from_subagents() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-computer-use");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+
+        // 桌面开、子代理关：只有 computer_use，且不出现 subagent。
+        let options = RegistryOptions {
+            computer_use: true,
+            subagent_roles: Vec::new(),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(names.contains("computer_use"), "{names:?}");
+        assert!(!names.contains("subagent"), "{names:?}");
+
+        // 桌面关：不进表。
+        let options = RegistryOptions {
+            computer_use: false,
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+        assert!(!declared_names(&registry).contains("computer_use"));
+    }
+
     #[test]
     fn tts_tool_registers_only_when_enabled() {
         let (disabled, _root) = registry("tts-disabled");
@@ -1109,10 +1167,17 @@ mode = \"review\"
         let registry =
             ToolRegistry::new(&root, &RegistryOptions::default(), 360).expect("工具表应当构建成功");
         let found = registry
-            .execute(&call("skill_search", json!({"scope": "project", "query": "demo"})))
+            .execute(&call(
+                "skill_search",
+                json!({"scope": "project", "query": "demo"}),
+            ))
             .expect("skill_search 应当被本宿主处理");
         assert!(found.ok, "{}", found.output);
-        assert!(found.output.contains("\"name\": \"demo\""), "{}", found.output);
+        assert!(
+            found.output.contains("\"name\": \"demo\""),
+            "{}",
+            found.output
+        );
         assert!(
             found.output.contains("\"scope\": \"project\""),
             "{}",
@@ -1282,6 +1347,31 @@ mode = \"review\"
             .expect("read 应当被本宿主处理");
         assert!(plain.images.is_empty());
         assert!(plain.vision_prompt.is_empty());
+    }
+
+    /// 桌面操作工具的确认截图必须走宿主同一条视觉附件通路，否则模型仍然看不到画面。
+    #[test]
+    fn windows_input_returns_a_snapshot_through_the_registry() {
+        let (registry, root) = registry("windows-snapshot");
+        // release 未按下时幂等：不产生任何输入事件，却能覆盖「操作后截图」这条通路。
+        let execution = registry
+            .execute_with_vision(&call("windows_input", json!({"action": "release"})))
+            .expect("windows_input 应当被本宿主处理");
+        assert!(execution.result.ok, "{}", execution.result.output);
+        assert!(
+            execution.result.output.contains("\"screenshot\""),
+            "结果里要有截图的路径与区域：{}",
+            execution.result.output
+        );
+        assert_eq!(execution.images.len(), 1, "确认截图应当作为视觉附件交出去");
+        assert_eq!(execution.images[0].media_type, "image/png");
+        assert!(execution.images[0].filename.ends_with(".png"));
+        assert!(
+            execution.vision_prompt.contains("windows_screenshot"),
+            "提示词要拦掉多余的补截：{}",
+            execution.vision_prompt
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -144,7 +144,12 @@ fn status_line_follows_retry_and_streaming() {
         "重试提示要立刻画到状态行上：{lines:?}"
     );
 
-    state.apply(&HostEvent::Delta(TextPayload { text: "答复".into() }), now);
+    state.apply(
+        &HostEvent::Delta(TextPayload {
+            text: "答复".into(),
+        }),
+        now,
+    );
     let lines = screen(&state, 80, 14);
     assert!(
         lines[status_top(&lines)].contains("正在调用"),
@@ -171,10 +176,17 @@ fn input_group_is_boxed_and_the_status_sits_on_its_top_border() {
         "状态行就是输入区方框的上边框：{:?}",
         lines[top]
     );
-    assert!(lines[top].contains("[ ESC ]"), "运行中仍带 ESC 提示：{:?}", lines[top]);
+    assert!(
+        lines[top].contains("[ ESC ]"),
+        "运行中仍带 ESC 提示：{:?}",
+        lines[top]
+    );
     // 会话流里不再有状态行：状态只出现这一次（方框边框上那次）。
     assert_eq!(
-        lines.iter().filter(|line| line.contains("正在调用")).count(),
+        lines
+            .iter()
+            .filter(|line| line.contains("正在调用"))
+            .count(),
         1,
         "状态只应出现在方框边框上：{lines:?}"
     );
@@ -311,10 +323,7 @@ fn long_composer_input_shows_a_scrollbar() {
         state.composer.newline();
     }
     let lines = screen(&state, 80, 16);
-    let bar = lines
-        .iter()
-        .filter(|line| line.contains('█'))
-        .count();
+    let bar = lines.iter().filter(|line| line.contains('█')).count();
     assert!(bar > 0, "输入超长时右侧要有细线滚动条：{lines:?}");
 }
 
@@ -403,7 +412,8 @@ fn command_menu_renders_directly_above_the_composer() {
 }
 
 /// 1x1 红点 PNG（与 `image_preview` / `conversation` 单测用的是同一样本）。
-const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+const PNG_1X1: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 /// 界面上一张 read_image 卡片：走真实的附件登记入口，等后台解码落定。
 fn read_image_state() -> AppState {
@@ -431,9 +441,8 @@ fn read_image_state() -> AppState {
             call: call.clone(),
             result: ToolResult {
                 ok: true,
-                output:
-                    "{\"path\":\"shot.png\",\"media_type\":\"image/png\",\"bytes\":12}"
-                        .to_string(),
+                output: "{\"path\":\"shot.png\",\"media_type\":\"image/png\",\"bytes\":12}"
+                    .to_string(),
                 full_output: String::new(),
                 error_code: None,
                 retryable: false,
@@ -492,8 +501,10 @@ fn a_read_image_card_paints_the_thumbnail_and_drops_the_json_payload() {
         "缩略图应当画进 {rows} 行占位格，实得 {painted} 个着色格"
     );
 
-    let text = screen(&state, 80, 30).join("
-");
+    let text = screen(&state, 80, 30).join(
+        "
+",
+    );
     assert!(
         !text.contains("media_type"),
         "read_image 的 JSON 载荷应当让位给图片：{text}"
@@ -520,14 +531,41 @@ fn an_image_tool_without_attachments_keeps_its_payload() {
         serde_json::json!({"path": "shot.png", "prompt": "描述"}),
     );
     state.apply(
-        &HostEvent::ToolStarted(ToolStartedPayload {
-            step: 1,
-            call,
-        }),
+        &HostEvent::ToolStarted(ToolStartedPayload { step: 1, call }),
         now,
     );
-    let text = screen(&state, 80, 30).join("
-");
+    let text = screen(&state, 80, 30).join(
+        "
+",
+    );
     assert!(!text.contains("正在准备图片"), "{text}");
     assert!(text.contains("read_image"), "{text}");
+}
+
+#[test]
+fn subagent_window_page_matches_the_main_agent_layout() {
+    // 子代理窗口复用主代理那套页面：会话区（过程文本 + 工具卡）、输入区方框、
+    // 底部 HUD 都要出现，状态行里写的是批次与任务进度。
+    let mut state = AppState::new("子代理".to_string(), String::new(), ApprovalMode::Auto);
+    state.subagent_text("先看一眼仓库结构".to_string());
+    state.subagent_tool_started(
+        "c1".to_string(),
+        "read".to_string(),
+        serde_json::json!({"path": "src/lib.rs"}),
+    );
+    state.subagent_tool_completed("c1", true, "pub mod ui;", Some(0.12));
+    state.set_subagent_running(true);
+    state.set_status(Some("子代理 · batch-1 · 0/1".to_string()));
+
+    let lines = screen(&state, 80, 24);
+    let text = lines.join("\n");
+    // 会话区：过程文本与工具卡（与主代理同一套渲染，卡片默认折叠只显标题行）。
+    assert!(text.contains("先看一眼仓库结构"), "{text}");
+    assert!(text.contains("read src/lib.rs"), "{text}");
+    assert!(text.contains("✓ 成功"), "{text}");
+    // 输入区方框：主代理的圆角框与占位文案。
+    assert!(text.contains('╭'), "缺少输入区方框：{text}");
+    assert!(text.contains("输入消息或"), "缺少占位文案：{text}");
+    // 状态行写在方框上边框上。
+    assert!(text.contains("子代理 · batch-1"), "{text}");
 }

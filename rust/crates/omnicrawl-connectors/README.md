@@ -24,6 +24,7 @@ src/
 ├── json.rs                 # Python json.dumps 等价序列化（卡片与提示负载的字节形状）
 ├── text.rs                 # 平台无关：内部标签清理、脱敏、分段与正文定型（两侧共用）
 ├── render.rs               # 平台无关：工具摘要/正文、变更预览、计划与子任务文本、卡片 JSON
+├── ws.rs                   # 平台无关：WebSocket 握手、帧编解码、TLS 建连与 SHA-1（飞书与 QQ 共用）
 ├── telegram/
 │   ├── config.rs           # 环境变量 > [telegram] 段的配置解析与校验
 │   ├── format.rs           # 文本分段、流式裁剪与收尾计划（按字符计）
@@ -40,8 +41,18 @@ src/
     ├── inbox.rs            # 持久入站队列：pending 落盘与重放、done 去重与紧凑化、纯内存降级
     ├── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息（卡片）
     ├── api.rs              # 开放接口：租户令牌缓存、消息创建/更新、资源下载、长连接端点
-    ├── ws.rs               # 长连接：pbbp2 帧编解码、WebSocket 握手与帧收发、重连退避
+    ├── ws.rs               # 飞书长连接：pbbp2 帧编解码、LongConnection 与重连退避（帧与 TLS 走 crate::ws）
     └── bot.rs              # 事件接入、命令分发、任务时间线装配、审批与提问桥、长连接主循环
+└── qqbot/
+    ├── config.rs           # [qqbot] 段解析、校验与诊断（Secret 掩码）
+    ├── api.rs              # AccessToken 缓存、网关地址、被动回复（文本/Markdown/富媒体）、上传、下载
+    ├── gateway.rs          # QQ 网关 op 语义：Hello → Identify/Resume、心跳、Dispatch 解析
+    ├── bind.rs             # 扫码绑定：create_bind_task → 二维码 → poll_bind_result → AES-256-GCM
+    ├── dispatch.rs         # 事件解析与路由：单聊/群聊/频道、白名单、命令分类（复用 telegram 那份）
+    ├── files.rs            # 附件分类与落盘命名（扩展名规则与 Telegram 同源）
+    ├── markdown.rs         # Markdown 适用范围与正文规整（代码块→引用、表格→列表）
+    ├── media.rs            # [FILE:] → 富媒体：file_type 判定、5MB 上限、标记剥离
+    └── bot.rs              # 回复额度（中间 ≤4、总 ≤5）、时间线装配、审批与提问桥、网关主循环
 ```
 
 ## 显示口径（两个连接器一致）
@@ -135,3 +146,46 @@ cd rust && cargo test -p omnicrawl-connectors
 - Telegram 的 HTTP 错误文案无法逐字复刻 `requests` 的异常文本，`TelegramApiError::Network`
   只保证分类与中文前缀一致；飞书侧同理（`FeishuApiError::Transport`）。
 - 飞书 `_prewarm_agent`（Agent 预热线程）：宿主构建好 Agent 后交给连接器即可，不再单独预热。
+
+## QQ 机器人（`qqbot/`）
+
+对齐 QQ 开放平台 API v2（`https://bot.qq.com/wiki/agent-qqbot/` 与
+`https://bot.q.qq.com/wiki/develop/api-v2/`）：鉴权用 `AppID + AppSecret` 换 AccessToken
+（7200 秒，提前 5 分钟续期），事件走 **WebSocket 网关**（`GET /gateway` → `op=10 Hello`
+→ `op=2 Identify` / `op=6 Resume` → `op=0 Dispatch`），不占本地端口、不需公网地址。
+
+**平台形态决定了显示方式**，这与 Telegram/飞书不同：2025-04 起 QQ 关闭了主动消息，
+所有下发都必须是对某条入站消息的被动回复（携带它的 `msg_id`），同一条入站消息只有
+**5 次回复额度**（单聊 60 分钟、群聊 5 分钟），且**消息不能编辑**。因此：
+
+- 没有流式预览：正文段在「工具调用」这个模型 pass 边界封口成一条 `◇ …` 消息；
+- 工具调用/执行计划/子任务进度合并成少数几条进度消息，而不是每条一个；工具调用每次
+  只占一行 `● 摘要 · ✓ 成功`，**工具输出不下发**（输出属于内部过程）；
+- **中间过程（回执 + 正文段 + 进度 + 思考）最多 4 条**，第 5 条固定留给最终回答；
+  `ReplyHandle::reserve` 在每次下发前预扣额度（中间额度与总额度），中间额度用满后
+  `can_send_intermediate` 转 false，过程内容一律不再下发，一直攒到最终文本；
+  已发过的正文段收尾时不重发（`remaining_after` 只补剩余部分）。
+
+消息类型按内容自动选择（`msg_type` 决定哪个字段生效）：
+
+- 纯文本（`msg_type=0`，`content`）：默认；
+- Markdown（`msg_type=2`，`markdown.content`）：单聊/群聊且正文含平台支持的语法。
+  频道场景需内邀开通，一律走纯文本。平台不认的写法在 `markdown.rs` 里**就地规整**
+  而不是整条降级：围栏代码块→块引用、表格→列表项、`###`→`##`、列表前补空行、
+  `* `→`- `、嵌套缩进统一 4 空格、行内反引号去掉、非公网图片退化成文字；被拒时
+  自动按纯文本重发一次（同样占额度）；
+- 富媒体（`msg_type=7`，`media.file_info`）：回复里的 `[FILE:路径]` 先
+  `POST /v2/{users|groups}/{openid}/files`（`srv_send_msg=false`）拿 `file_info` 再发。
+  按扩展名给 `file_type`（png/jpg→1、mp4→2、silk/mp3/wav→3、其余→4），二进制直传
+  上限 5MB；文件读不到或超限时不下发富媒体、正文保留 `[FILE:…]` 路径（`media.rs`）。
+
+摘要与正文的生成规则仍与另外两个连接器、TUI 共用 `src/render.rs` 一份实现。
+`tests/qqbot_bot.rs` 用桩件钉住这些约束：正文段与工具段分离、三次工具调用合并成一条、
+多 pass 长任务总下发条数 ≤ 5 且中间恰好停在 4 条、Markdown 走 `msg_type=2`、
+图片标记经上传后按 `msg_type=7` 发出、未授权零请求、审批/提问桥、附件落到 `.agent_tmp/images`。
+
+扫码绑定（`bind.rs`）照官方 `@tencent-connect/qqbot-connector` 的流程实现：
+`lite/create_bind_task` 由本地生成 32 字节随机 key（base64），扫码完成后平台回
+`bot_encrypt_secret = base64(nonce[12] || ciphertext || tag[16])`，本地用 AES-256-GCM
+解出 AppSecret——Secret 不经第三方。CLI 入口是 `omnicrawl-host connector qqbot --bind`，
+写回 `config.toml` 时保留其它段（`omnicrawl-api/src/qqbind.rs`）。

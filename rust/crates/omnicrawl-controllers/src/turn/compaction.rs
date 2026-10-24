@@ -145,6 +145,7 @@ pub fn compaction_memory_requests(compact_payload: &Value) -> Vec<MemoryWriteReq
             ],
             storage_directory: Some(PROJECT_CONTEXT_DIRECTORY.to_string()),
             source_event: Some(COMPACTION_MEMORY_SOURCE_EVENT.to_string()),
+            supersedes: Vec::new(),
         });
     }
     if !task_content.is_empty() {
@@ -156,6 +157,7 @@ pub fn compaction_memory_requests(compact_payload: &Value) -> Vec<MemoryWriteReq
             ],
             storage_directory: Some(TASK_HISTORY_DIRECTORY.to_string()),
             source_event: Some(COMPACTION_MEMORY_SOURCE_EVENT.to_string()),
+            supersedes: Vec::new(),
         });
     }
     requests

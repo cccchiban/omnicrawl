@@ -38,7 +38,9 @@
 运行期一致），整批执行且输出预算/视觉/压缩处理过之后写 `tool_result`（`output` 取展示全文、
 `model_output` 是模型可见输出，超长输出的 artifact 化与 `output_sha256` / `storage` 由会话存储补齐），
 宿主拒绝的调用另写 `tool_call_denied`。协议原文（`arguments_json`）只在内存投影里，绝不落盘；
-子代理内部的工具调用不落父会话（对映 Python 的 `persist_session_events=False`）。
+子代理内部的工具调用不落父会话（对映 Python 的 `persist_session_events=False`），且**只**以
+`subagent.turn.text` / `subagent.tool.*` 进子代理窗口：子回合的正文与思考增量不走 `turn.delta` /
+`turn.reasoning_delta`，否则子代理的话会混进主代理的回复。
 
 内核自己持有会话时，`recall_session_evidence` 由内核本地作答（不发给宿主）：它按最后一个有效摘要的
 授权读取转录事件与 `archive/compacted/` 归档，artifact 正文经会话 artifact 区读取，返回紧凑 JSON 信封。
@@ -140,19 +142,21 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
   随 `tool_call_eviction` 事件落盘（与裁决当刻的标注事件 `tool_call_evicted` 分开）。
 
 **压缩链的顺序**（用户指定）：决策模型淘汰（回合收尾先做，见 `session::run_session_tail`）→
-工具调用压缩（`KernelToolCompaction`，整轮工具调用压成一段并落盘原文）→ 非工具部分交给上下文压缩
-（结构化摘要，输入窗口不变）→ 两段拼成**一条** assistant 消息注入历史（工具段在前、摘要段在后，
-`join_tool_and_summary_sections`），压缩触发前最后一段模型输出仍原样保留。工具段由服务层的
-「决策之后、摘要请求之前」钩子（`after_complete_turn_with_pre_compaction`）发出，因此它先于摘要请求；
-未触发压缩的回合不发这一段，一次模型请求都不会多。
+非工具部分交给上下文压缩（结构化摘要，输入窗口不变）→ 两段拼成**一条** assistant 消息注入历史
+（淘汰/压缩标注在前、摘要段在后）。
+
+**工具调用压缩的触发时机（与淘汰同构）**：两者都在回合**运行过程中逐批**决策——每批工具执行后、
+下一批开始前，内核把「刚变老的那一批」交出去判断一次，而不是等回合结束把所有工具调用一股脑压掉。
+宿主声明了 `tool_call_prune` 能力时先走决策模型裁决（`drop` 的整组标注淘汰）；裁决不可用
+（开关关、无渠道、缺凭据、请求失败、响应不可解析）则自动回退到非决策模型的工具调用压缩——
+同样只针对这一批，落 `tool_call_summary` 标注并按 `covered_event_ids` 精确覆盖。
+压缩点因此始终贴着上下文尾部，最新一批（仍在被使用）从不参与。逐批压缩不可用时整段跳过，
+一次多余的模型请求都不发。
 
 **压缩期间的状态行**：摘要请求是压缩路径上唯一的秒级操作，而阈值触发的压缩挂在回合收尾
 （`turn.finished` 之前），那一刻状态行已经没什么可显示——不报进度的话，这几秒钟界面上
 看不出正在压缩。内核因此在**确定要压缩、请求发出之前**发一条 `turn.status`
-（`上下文压缩中…`），三条路径都覆盖：结构化摘要与显式 `/compact` 由
-`ContextCompactionService::with_progress` 触发；工具段绕过服务层，由
-`CompactionDriver::with_progress` 在 `tool_segment` 里直接触发（双段端口保留但当前不接，
-其 `dual_compaction_history` 同样自带一次进度）。
+（`上下文压缩中…`），由 `ContextCompactionService::with_progress` 触发。
 未触发压缩的回合不发（状态行不该在什么都没干时写「压缩中」），TUI 侧显式 `/compact` 用同一份
 文案，因此状态行不会在两种说法之间跳。
 

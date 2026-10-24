@@ -92,11 +92,18 @@ async fn serve() -> ExitCode {
 async fn status() -> ExitCode {
     let environment = ConfigEnvironment::from_process();
     let settings = load_settings(&environment);
-    println!("配置：{}", omnicrawl_config::core::runtime::default_decision_models_path(&environment).display());
+    println!(
+        "配置：{}",
+        omnicrawl_config::core::runtime::default_decision_models_path(&environment).display()
+    );
     println!("监听：{}", settings.address());
     println!(
         "接口：{}",
-        if settings.api.enabled { "已启用" } else { "未启用" }
+        if settings.api.enabled {
+            "已启用"
+        } else {
+            "未启用"
+        }
     );
     println!("鉴权：无（仅回环地址，本机任意程序均可调用）");
     match settings.channel.as_ref() {

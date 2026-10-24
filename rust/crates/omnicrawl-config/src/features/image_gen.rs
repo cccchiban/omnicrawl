@@ -124,7 +124,8 @@ impl ImageGenConfiguration {
         let aspect_ratio = self.aspect_ratio.trim().to_string();
         let image_size = self.image_size.trim().to_uppercase();
         if provider == "gemini" {
-            if !aspect_ratio.is_empty() && !IMAGE_GEN_ASPECT_RATIOS.contains(&aspect_ratio.as_str()) {
+            if !aspect_ratio.is_empty() && !IMAGE_GEN_ASPECT_RATIOS.contains(&aspect_ratio.as_str())
+            {
                 return Err(ConfigError::new(format!(
                     "image_gen.aspect_ratio 仅支持 {}。",
                     IMAGE_GEN_ASPECT_RATIOS.join("、")

@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value};
 use crate::bundled::{
     bundled_doc_names, bundled_doc_uri, read_bundled_doc, BUNDLED_DOC_URI_PREFIX,
 };
-use crate::jsonrpc::{encode_frame, read_frame, FrameKind, McpClientError};
+use crate::jsonrpc::{encode_message, read_message, FrameKind, Framing, McpClientError};
 
 /// 与 Python 侧 `MAX_FILE_READ_CHARS` 一致：单份只读文档的上限。
 pub const MAX_FILE_READ_CHARS: usize = 200_000;
@@ -154,22 +154,28 @@ impl LocalMcpServer {
     }
 
     /// 运行 stdio JSON-RPC 循环直到 stdin 关闭。
+    ///
+    /// 读方向和写方向都跟着对端的风格走：外部客户端（如 Claude Desktop）用换行分隔
+    /// JSON，本仓库旧客户端用 `Content-Length`，两条路径都必须能用。
     pub fn run_stdio(&self) -> std::io::Result<()> {
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
         let mut stdout = std::io::stdout().lock();
         loop {
-            let message = match read_frame(&mut reader, FrameKind::Request, String::new) {
-                Ok(Some(message)) => message,
-                Ok(None) => return Ok(()),
-                Err(error) => {
-                    // 帧坏了没法回一个合法的 JSON-RPC 响应：写到 stderr 便于诊断，继续读取。
-                    eprintln!("[mcp-server] {}", error.message());
-                    return Ok(());
-                }
-            };
+            let (message, framing) =
+                match read_message(&mut reader, FrameKind::Request, String::new) {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => return Ok(()),
+                    Err(error) => {
+                        // 帧坏了没法回一个合法的 JSON-RPC 响应：写到 stderr 便于诊断，继续读取。
+                        eprintln!("[mcp-server] {}", error.message());
+                        return Ok(());
+                    }
+                };
+            // 回包沿用本条请求的分帧风格：外部客户端（如 Claude Desktop）用换行分隔 JSON，
+            // 本仓库旧客户端用 Content-Length，两者都必须能用。
             if let Some(response) = self.handle_message(&message) {
-                stdout.write_all(&encode_frame(&response))?;
+                stdout.write_all(&encode_message(&response, framing))?;
                 stdout.flush()?;
             }
         }
@@ -551,11 +557,11 @@ fn normalize(path: &Path) -> PathBuf {
     result
 }
 
-/// 读取 stdin 一帧（供二进制入口与集成测试共用）。
+/// 读取 stdin 一条消息（供二进制入口与集成测试共用），同时返回对端的分帧风格。
 pub fn read_request(
     reader: &mut impl BufRead,
-) -> Result<Option<Map<String, Value>>, McpClientError> {
-    read_frame(reader, FrameKind::Request, String::new)
+) -> Result<Option<(Map<String, Value>, Framing)>, McpClientError> {
+    read_message(reader, FrameKind::Request, String::new)
 }
 
 #[cfg(test)]

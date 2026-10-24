@@ -16,8 +16,7 @@ use omnicrawl_controllers::subagents::coordinator::{
     validate_arguments, worktree_control_request, FailureFacts, PreparedTaskView,
 };
 use omnicrawl_controllers::subagents::definitions::{
-    locate_builtin_directory_from, parse_agent_definition, AgentDefinition,
-    AgentDefinitionRegistry,
+    locate_builtin_directory_from, parse_agent_definition, AgentDefinition, AgentDefinitionRegistry,
 };
 use omnicrawl_controllers::subagents::execution::{SubAgentExecutionContext, FORK_BOILERPLATE};
 use omnicrawl_controllers::subagents::recovery::{
@@ -277,7 +276,11 @@ fn builtin_directory_locates_the_shipped_templates() {
         locate_builtin_directory_from(&executable).expect("仓库检出里应能找到内置角色目录");
     assert_eq!(
         located,
-        repo_root().join("rust").join("assets").join("templates").join("subagents"),
+        repo_root()
+            .join("rust")
+            .join("assets")
+            .join("templates")
+            .join("subagents"),
         "应命中仓库检出里的随包模板目录"
     );
     assert!(located.join("explore.md").is_file(), "内置角色定义应齐全");
@@ -324,7 +327,10 @@ fn builtin_roles_are_discovered_without_any_user_definition() {
         "内置角色应全部被发现"
     );
     assert!(
-        registry.list_all().iter().all(|item| item.source == "builtin"),
+        registry
+            .list_all()
+            .iter()
+            .all(|item| item.source == "builtin"),
         "来源应记成内置层"
     );
     std::fs::remove_dir_all(&paths.root).ok();

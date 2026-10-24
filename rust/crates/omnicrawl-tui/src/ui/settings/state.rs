@@ -14,6 +14,9 @@ use omnicrawl_config::features::approval::{
     approval_mode_label, normalize_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
 };
+use omnicrawl_config::features::decision_model::{
+    DECISION_SWITCHES, DECISION_SWITCH_WEB_SEARCH_EMBEDDING,
+};
 use omnicrawl_config::models::channels::{protocols_for_provider, provider_options};
 use omnicrawl_onejev::ProgressSnapshot;
 use ratatui::layout::Rect;
@@ -55,6 +58,8 @@ pub enum Pane {
     Vision,
     /// 结构化决策模型：决策渠道列表 + 单条决策渠道表单。
     DecisionModels,
+    /// 向量模型：向量渠道列表 + 单条向量渠道表单。
+    EmbeddingModels,
     /// 单选页：一个下拉候选，选中即保存。
     Choice(ChoiceKind),
     /// 表单页：若干字段 + `Ctrl+S` 保存。
@@ -70,12 +75,14 @@ impl Pane {
         match key {
             "model_management" => Self::ModelManagement,
             "decision_models" => Self::DecisionModels,
+            "embedding_models" => Self::EmbeddingModels,
             "advisor" => Self::Form(FormKind::Advisor),
             "tool_output_compression" => Self::Form(FormKind::ToolOutputCompression),
             "desensitization" => Self::Form(FormKind::Desensitization),
             "run_guard" => Self::Form(FormKind::RunGuard),
             "agent_workspace" => Self::Form(FormKind::AgentWorkspace),
             "image_gen" => Self::Form(FormKind::ImageGen),
+            "computer_use" => Self::Form(FormKind::ComputerUse),
             "tools" => Self::Tools,
             "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
@@ -520,6 +527,132 @@ impl DecisionForm {
     }
 }
 
+/// 一条向量渠道（对应 `embedding_models.toml` 的 `channels.<key>`）。
+///
+/// 比决策渠道少一个「请求方式」：向量接口只有 OpenAI 兼容一种形状，全部走云端。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EmbeddingRow {
+    pub key: String,
+    pub name: String,
+    pub base_url: String,
+    /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时写回，界面从不渲染明文。
+    pub api_key: String,
+    pub api_key_env: String,
+    pub model: String,
+    /// 期望维度；0 表示由服务端决定。
+    pub dimensions: i64,
+    pub timeout_seconds: i64,
+    pub enabled: bool,
+}
+
+/// 向量渠道表单的字段顺序（与渲染、`Tab` 顺序一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingField {
+    Name,
+    BaseUrl,
+    ApiKey,
+    ApiKeyEnv,
+    ModelId,
+    Dimensions,
+    TimeoutSeconds,
+    Enabled,
+}
+
+impl EmbeddingField {
+    pub const ORDER: [EmbeddingField; 8] = [
+        EmbeddingField::Name,
+        EmbeddingField::BaseUrl,
+        EmbeddingField::ApiKey,
+        EmbeddingField::ApiKeyEnv,
+        EmbeddingField::ModelId,
+        EmbeddingField::Dimensions,
+        EmbeddingField::TimeoutSeconds,
+        EmbeddingField::Enabled,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "渠道名称",
+            Self::BaseUrl => "Base URL",
+            Self::ApiKey => "API Key",
+            Self::ApiKeyEnv => "API Key 环境变量",
+            Self::ModelId => "模型 ID",
+            Self::Dimensions => "向量维度",
+            Self::TimeoutSeconds => "超时秒数",
+            Self::Enabled => "启用",
+        }
+    }
+
+    /// 文本字段（可进入编辑态）；开关不是。
+    pub fn is_text(self) -> bool {
+        !matches!(self, Self::Enabled)
+    }
+
+    fn index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0)
+    }
+}
+
+/// 向量渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
+#[derive(Debug, Clone)]
+struct EmbeddingForm {
+    row: EmbeddingRow,
+    field: EmbeddingField,
+    input: Option<Composer>,
+    /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
+    index: Option<usize>,
+    is_new: bool,
+}
+
+impl EmbeddingForm {
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.input = Some(embedding_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
+}
+
+/// 向量模型页：顶部开关行（向量召回 + 联网搜索向量排序）+ 渠道列表 + 单条渠道表单。
+#[derive(Debug, Clone)]
+struct EmbeddingModelsState {
+    rows: Vec<EmbeddingRow>,
+    default_key: String,
+    /// 顶部总开关：`config.toml` 的 `[memory_embedding] enabled`。
+    enabled: bool,
+    /// 联网搜索走向量模型排序的开关（`decision_models.toml` 的 `[features]`）。
+    web_search_rerank: bool,
+    /// 行游标：开关区在前，渠道随后。
+    selected: usize,
+    form: Option<EmbeddingForm>,
+    /// 「新建」用的模板（宿主从配置的默认向量渠道生成）。
+    template: EmbeddingRow,
+    status: String,
+}
+
+impl EmbeddingModelsState {
+    /// 向量召回总开关占第 0 行。
+    const MEMORY_SWITCH_ROW: usize = 0;
+    /// 联网搜索向量排序占第 1 行。
+    const WEB_SEARCH_SWITCH_ROW: usize = 1;
+    /// 开关行数：渠道从这一行开始。
+    const SWITCH_ROWS: usize = 2;
+
+    fn channel_index(selected: usize) -> Option<usize> {
+        selected.checked_sub(Self::SWITCH_ROWS)
+    }
+
+    fn total_rows(&self) -> usize {
+        Self::SWITCH_ROWS + self.rows.len()
+    }
+}
+
 /// 决策模型页的「功能开关」分区标题（开关行画在渠道列表下方）。
 pub const DECISION_SWITCH_SECTION: &str = "功能开关";
 
@@ -950,6 +1083,14 @@ pub struct SettingsValues {
     pub decision_channels: Vec<DecisionRow>,
     pub default_decision_key: String,
     pub decision_template: DecisionRow,
+    /// 向量模型页的初始列表、默认渠道与「新建」模板。
+    pub embedding_channels: Vec<EmbeddingRow>,
+    pub default_embedding_key: String,
+    pub embedding_template: EmbeddingRow,
+    /// 向量召回总开关（`config.toml` 的 `[memory_embedding] enabled`）。
+    pub embedding_enabled: bool,
+    /// 联网搜索走向量模型排序的开关（`decision_models.toml` 的 `[features]`）。
+    pub embedding_web_search_rerank: bool,
     /// 决策模型页下方那一组功能开关的当前值（键与顺序取自配置域的开关表）。
     pub decision_switches: Vec<DecisionSwitchRow>,
     /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
@@ -998,6 +1139,11 @@ impl SettingsValues {
             decision_channels: Vec::new(),
             default_decision_key: String::new(),
             decision_template: DecisionRow::default(),
+            embedding_channels: Vec::new(),
+            default_embedding_key: String::new(),
+            embedding_template: EmbeddingRow::default(),
+            embedding_enabled: false,
+            embedding_web_search_rerank: false,
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
             show_thinking: true,
@@ -1061,6 +1207,31 @@ impl SettingsValues {
     /// 覆盖决策模型页下方的功能开关（未显式给出时按配置域的默认值铺一行一组开关）。
     pub fn with_decision_switches(mut self, switches: Vec<DecisionSwitchRow>) -> Self {
         self.decision_switches = switches;
+        self
+    }
+
+    /// 覆盖向量模型页的初始列表、默认渠道、「新建」模板与两条开关。
+    pub fn with_embedding_models(
+        mut self,
+        channels: Vec<EmbeddingRow>,
+        default_key: &str,
+        template: EmbeddingRow,
+        enabled: bool,
+        web_search_rerank: bool,
+    ) -> Self {
+        let fallback = channels
+            .first()
+            .map(|row| row.key.clone())
+            .unwrap_or_default();
+        self.default_embedding_key = if default_key.trim().is_empty() {
+            fallback
+        } else {
+            default_key.to_string()
+        };
+        self.embedding_channels = channels;
+        self.embedding_template = template;
+        self.embedding_enabled = enabled;
+        self.embedding_web_search_rerank = web_search_rerank;
         self
     }
 
@@ -1242,6 +1413,13 @@ pub enum SettingsChange {
         rows: Vec<DecisionRow>,
         default_key: String,
     },
+    /// 保存整份向量模型配置（向量渠道列表 + 默认渠道 key）。
+    EmbeddingModels {
+        rows: Vec<EmbeddingRow>,
+        default_key: String,
+    },
+    /// 向量模型页顶部的总开关（`config.toml` 的 `[memory_embedding] enabled`）。
+    EmbeddingEnabled { enabled: bool },
     /// 决策模型页的一个功能开关（键取自配置域的开关表）。
     DecisionSwitch { key: String, enabled: bool },
     /// 决策模型页的自部署分区：写尺寸/设备、准备环境、下载/删除尺寸、切渠道、启停服务。
@@ -1828,6 +2006,8 @@ const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
+const EMBEDDING_LIST_HINT: &str = "↑↓ 选择  Enter/→ 编辑渠道或切换开关  N 新建  D 删除  Esc 返回";
+const EMBEDDING_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  Ctrl+S 保存  Esc 返回列表";
 
 /// 图像生成页 `provider` 字段的下标（隐藏字段的判定依据，与 `form.rs` 的字段表对齐）。
 const IMAGE_GEN_PROVIDER_INDEX: usize = 1;
@@ -2383,6 +2563,7 @@ pub struct SettingsState {
     choices: ChoicesState,
     model_management: ModelManagementState,
     decision_models: DecisionModelsState,
+    embedding_models: EmbeddingModelsState,
     /// 每个表单页一份草稿，下标与 `FormKind::index` 一致。
     forms: Vec<FormState>,
     /// 每个表单页一份模型发现状态，下标与 `FormKind::index` 一致（不带模型选择的页留空）。
@@ -2463,6 +2644,16 @@ impl SettingsState {
                 form: None,
                 template: values.decision_template,
                 status: DECISION_LIST_HINT.to_string(),
+            },
+            embedding_models: EmbeddingModelsState {
+                rows: values.embedding_channels,
+                default_key: values.default_embedding_key,
+                enabled: values.embedding_enabled,
+                web_search_rerank: values.embedding_web_search_rerank,
+                selected: 0,
+                form: None,
+                template: values.embedding_template,
+                status: EMBEDDING_LIST_HINT.to_string(),
             },
             forms: form_states(values.form_values),
             model_discoveries: FORM_KINDS.iter().map(|_| ModelDiscovery::new()).collect(),
@@ -2649,6 +2840,21 @@ impl SettingsState {
                     let target = index.min(self.decision_row_count().saturating_sub(1));
                     let already = self.decision_models.selected == target;
                     self.decision_models.selected = target;
+                    already
+                }
+            }
+            Pane::EmbeddingModels => {
+                if let Some(form) = self.embedding_models.form.as_mut() {
+                    let Some(field) = EmbeddingField::ORDER.get(index).copied() else {
+                        return false;
+                    };
+                    let already = form.field == field;
+                    form.field = field;
+                    already
+                } else {
+                    let target = index.min(self.embedding_models.total_rows().saturating_sub(1));
+                    let already = self.embedding_models.selected == target;
+                    self.embedding_models.selected = target;
                     already
                 }
             }
@@ -2987,6 +3193,7 @@ impl SettingsState {
             Pane::Vision => &self.vision.status,
             Pane::ModelManagement => &self.model_management.status,
             Pane::DecisionModels => &self.decision_models.status,
+            Pane::EmbeddingModels => &self.embedding_models.status,
             Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
@@ -3021,6 +3228,13 @@ impl SettingsState {
                     DECISION_FORM_HINT
                 } else {
                     DECISION_LIST_HINT
+                }
+            }
+            Pane::EmbeddingModels => {
+                if self.embedding_models.form.is_some() {
+                    EMBEDDING_FORM_HINT
+                } else {
+                    EMBEDDING_LIST_HINT
                 }
             }
             // Python 的单选面板只有下拉与状态行，没有提示行。
@@ -3079,6 +3293,12 @@ impl SettingsState {
                 .as_mut()
                 .map(|form| form.paste(text))
                 .unwrap_or(false),
+            Pane::EmbeddingModels => self
+                .embedding_models
+                .form
+                .as_mut()
+                .map(|form| form.paste(text))
+                .unwrap_or(false),
             Pane::Mcp => self
                 .mcp
                 .editor
@@ -3130,6 +3350,7 @@ impl SettingsState {
             Pane::Vision => self.handle_vision_key(key),
             Pane::ModelManagement => self.handle_model_management_key(key),
             Pane::DecisionModels => self.handle_decision_models_key(key),
+            Pane::EmbeddingModels => self.handle_embedding_models_key(key),
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
@@ -3363,9 +3584,34 @@ impl SettingsState {
         self.model_discoveries.get(kind.index())
     }
 
+    /// 该表单页的「模型」字段草稿值；页面没有渠道字段时渠道取当前生效的那条。
+    ///
+    /// 「渠道 + 模型」两列只有在同页并存时才成对（工具输出压缩、顾问设置）。桌面操作页
+    /// 只有「桌面模型」一列，渠道按当前生效渠道算——否则下面所有候选都会退化成空，
+    /// 下拉展开后什么也看不到。
+    fn model_selection_draft(&self, kind: FormKind) -> Option<(String, String)> {
+        if let Some(draft) = self.model_draft(kind) {
+            return Some(draft);
+        }
+        let form = self.forms.get(kind.index())?;
+        let model_index = form
+            .specs()
+            .iter()
+            .position(|spec| matches!(spec.kind, FieldKind::ModelId))?;
+        let channel = {
+            let current = self.model_management.model_key.trim();
+            if current.is_empty() {
+                self.model_management.default_key.trim().to_string()
+            } else {
+                current.to_string()
+            }
+        };
+        Some((channel, form.value(model_index)?.text().to_string()))
+    }
+
     /// 某个表单页当前选中的渠道记录。
     fn selected_model_channel(&self, kind: FormKind) -> Option<&ChannelRow> {
-        let (channel, _) = self.model_draft(kind)?;
+        let (channel, _) = self.model_selection_draft(kind)?;
         self.model_management
             .rows
             .iter()
@@ -3374,7 +3620,7 @@ impl SettingsState {
 
     /// 模型下拉的候选：渠道自带模型 + 该渠道的发现结果 + 当前值。
     pub fn model_candidates_for(&self, kind: FormKind) -> Vec<String> {
-        let Some((_, model)) = self.model_draft(kind) else {
+        let Some((_, model)) = self.model_selection_draft(kind) else {
             return Vec::new();
         };
         let channel = self.selected_model_channel(kind);
@@ -3398,7 +3644,7 @@ impl SettingsState {
     /// 需要时请宿主发现「当前渠道」的可用模型；不需要时返回 `None`。
     fn ensure_model_discovery(&mut self, index: usize) -> Option<SettingsEvent> {
         let kind = self.form()?.kind();
-        let (channel_key, _) = self.model_draft(kind)?;
+        let (channel_key, _) = self.model_selection_draft(kind)?;
         if channel_key.trim().is_empty() {
             return None;
         }
@@ -4077,6 +4323,7 @@ impl SettingsState {
             | Pane::Subagents
             | Pane::ModelManagement
             | Pane::DecisionModels
+            | Pane::EmbeddingModels
             | Pane::Vision
             | Pane::Tts
             | Pane::Pending => None,
@@ -5218,9 +5465,270 @@ impl SettingsState {
         }))
     }
 
+    // ---------- 向量模型页 ----------
+
+    fn handle_embedding_models_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        if self.embedding_models.form.is_some() {
+            return self.handle_embedding_form_key(key);
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_embedding_row(-1);
+                None
+            }
+            KeyCode::Down => {
+                self.move_embedding_row(1);
+                None
+            }
+            // 开关行选中时 Enter/空格/→ 翻转并立刻写盘；渠道行才进表单。
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => {
+                match self.embedding_models.selected {
+                    EmbeddingModelsState::MEMORY_SWITCH_ROW => self.toggle_embedding_switch(),
+                    EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW => {
+                        self.toggle_embedding_web_search_switch()
+                    }
+                    _ => {
+                        self.edit_embedding_channel();
+                        None
+                    }
+                }
+            }
+            KeyCode::Left | KeyCode::Esc => {
+                self.back_to_list();
+                None
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.new_embedding_channel();
+                None
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.delete_embedding_channel();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 总开关行：就地翻转并交给宿主写盘（选中即保存，与决策页的开关同口径）。
+    fn toggle_embedding_switch(&mut self) -> Option<SettingsEvent> {
+        Some(SettingsEvent::Apply(SettingsChange::EmbeddingEnabled {
+            enabled: !self.embedding_models.enabled,
+        }))
+    }
+
+    /// 联网搜索向量排序行：与决策页的功能开关同一口径（选中即保存）。
+    fn toggle_embedding_web_search_switch(&mut self) -> Option<SettingsEvent> {
+        Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch {
+            key: DECISION_SWITCH_WEB_SEARCH_EMBEDDING.to_string(),
+            enabled: !self.embedding_models.web_search_rerank,
+        }))
+    }
+
+    fn handle_embedding_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let input_active = self
+            .embedding_models
+            .form
+            .as_ref()
+            .map(|form| form.input.is_some())
+            .unwrap_or(false);
+        if input_active {
+            return self.handle_embedding_input_key(key);
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_embedding_field(-1);
+                None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.move_embedding_field(1);
+                None
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_embedding_field(),
+            KeyCode::Esc | KeyCode::Left => {
+                self.leave_embedding_form();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_embedding_input_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let form = self.embedding_models.form.as_mut()?;
+        let field = form.field;
+        let composer = form.input.as_mut()?;
+        match key {
+            KeyCode::Enter => {
+                let value = composer.take();
+                form.input = None;
+                set_embedding_field(&mut form.row, field, value);
+            }
+            KeyCode::Esc => form.input = None,
+            KeyCode::Char(character) => composer.insert(&character.to_string()),
+            KeyCode::Backspace => composer.backspace(),
+            KeyCode::Delete => composer.delete(),
+            KeyCode::Left => composer.move_left(),
+            KeyCode::Right => composer.move_right(),
+            KeyCode::Home => composer.move_home(),
+            KeyCode::End => composer.move_end(),
+            _ => {}
+        }
+        None
+    }
+
+    /// 行游标移动：第 0 行是总开关，之后依次是渠道。
+    fn move_embedding_row(&mut self, delta: isize) {
+        let count = self.embedding_models.total_rows() as isize;
+        if count <= 0 {
+            return;
+        }
+        let current = self.embedding_models.selected as isize;
+        self.embedding_models.selected = (current + delta).rem_euclid(count) as usize;
+    }
+
+    fn edit_embedding_channel(&mut self) {
+        let Some(index) = EmbeddingModelsState::channel_index(self.embedding_models.selected)
+        else {
+            return;
+        };
+        let Some(row) = self.embedding_models.rows.get(index).cloned() else {
+            self.embedding_models.status = "还没有向量渠道可编辑；按 N 新建一条。".to_string();
+            return;
+        };
+        self.embedding_models.status =
+            format!("正在编辑向量渠道 {}；Ctrl+S 保存，Esc 返回列表。", row.key);
+        self.embedding_models.form = Some(EmbeddingForm {
+            row,
+            field: EmbeddingField::Name,
+            input: None,
+            is_new: false,
+            index: Some(index),
+        });
+    }
+
+    /// 新建向量渠道：草稿只在表单里，`Ctrl+S` 才落进列表（`Esc` 直接丢弃）。
+    fn new_embedding_channel(&mut self) {
+        let mut row = self.embedding_models.template.clone();
+        let base = if row.key.trim().is_empty() {
+            "向量渠道".to_string()
+        } else {
+            row.key.trim().to_string()
+        };
+        let mut candidate = base.clone();
+        let mut index = 2;
+        while self
+            .embedding_models
+            .rows
+            .iter()
+            .any(|item| item.key == candidate)
+        {
+            candidate = format!("{base}{index}");
+            index += 1;
+        }
+        row.key = candidate.clone();
+        if row.name.trim().is_empty() {
+            row.name = candidate.clone();
+        }
+        self.embedding_models.status = "新建向量渠道；填好后按 Ctrl+S 保存，Esc 放弃。".to_string();
+        self.embedding_models.form = Some(EmbeddingForm {
+            row,
+            field: EmbeddingField::Name,
+            input: None,
+            is_new: true,
+            index: None,
+        });
+    }
+
+    fn delete_embedding_channel(&mut self) {
+        let Some(index) = EmbeddingModelsState::channel_index(self.embedding_models.selected)
+        else {
+            self.embedding_models.status = "开关行不可删除；把游标移到渠道行再按 D。".to_string();
+            return;
+        };
+        if self.embedding_models.rows.len() <= 1 {
+            self.embedding_models.status = "至少要保留一个向量渠道。".to_string();
+            return;
+        }
+        let removed = self.embedding_models.rows.remove(index);
+        // 删完可能落到「只剩开关」的位置，游标要收回合法范围。
+        let last = self.embedding_models.total_rows().saturating_sub(1);
+        self.embedding_models.selected = self.embedding_models.selected.min(last);
+        if self.embedding_models.default_key == removed.key {
+            self.embedding_models.default_key = pick_default_embedding_channel(
+                &self.embedding_models.rows,
+                &self.embedding_models.default_key,
+            );
+        }
+        self.embedding_models.status =
+            format!("已删除向量渠道 {}；Ctrl+S 保存后才会写盘。", removed.key);
+    }
+
+    fn move_embedding_field(&mut self, delta: isize) {
+        let Some(form) = self.embedding_models.form.as_mut() else {
+            return;
+        };
+        let count = EmbeddingField::ORDER.len() as isize;
+        let current = form.field.index() as isize;
+        let next = (current + delta).rem_euclid(count) as usize;
+        form.field = EmbeddingField::ORDER[next];
+    }
+
+    fn activate_embedding_field(&mut self) -> Option<SettingsEvent> {
+        let Some(form) = self.embedding_models.form.as_mut() else {
+            return None;
+        };
+        match form.field {
+            EmbeddingField::Enabled => form.row.enabled = !form.row.enabled,
+            field => {
+                form.input = Some(embedding_input_composer(&form.row, field));
+            }
+        }
+        None
+    }
+
+    fn leave_embedding_form(&mut self) {
+        let drafting = self
+            .embedding_models
+            .form
+            .as_ref()
+            .map(|form| form.is_new)
+            .unwrap_or(false);
+        self.embedding_models.form = None;
+        self.embedding_models.status = if drafting {
+            "已放弃新建向量渠道（未写盘）。".to_string()
+        } else {
+            "已返回向量渠道列表（未保存的改动已丢弃）。".to_string()
+        };
+    }
+
+    fn save_embedding_channels(&mut self) -> Option<SettingsEvent> {
+        let form = self.embedding_models.form.clone()?;
+        let mut rows = self.embedding_models.rows.clone();
+        match form.index {
+            Some(index) if index < rows.len() => rows[index] = form.row.clone(),
+            _ => rows.push(form.row.clone()),
+        }
+        if let Err(message) = validate_embedding_rows(&rows) {
+            self.embedding_models.status = message;
+            return None;
+        }
+        let default_key = pick_default_embedding_channel(&rows, &self.embedding_models.default_key);
+        self.embedding_models.status = "正在保存向量模型配置…".to_string();
+        self.embedding_models.rows = rows.clone();
+        self.embedding_models.default_key = default_key.clone();
+        self.embedding_models.form = None;
+        Some(SettingsEvent::Apply(SettingsChange::EmbeddingModels {
+            rows,
+            default_key,
+        }))
+    }
+
     /// `Ctrl` 组合键：渠道表单与表单页的保存都走 `Ctrl+S`。
     pub fn handle_ctrl_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match self.pane {
+            Pane::EmbeddingModels if self.embedding_models.form.is_some() => match key {
+                KeyCode::Char('s') | KeyCode::Char('S') => self.save_embedding_channels(),
+                _ => None,
+            },
             Pane::ModelManagement if self.model_management.form.is_some() => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_channels(),
                 _ => None,
@@ -5305,6 +5813,20 @@ impl SettingsState {
                 self.decision_models.form = None;
                 self.decision_models.status = message;
             }
+            SettingsChange::EmbeddingModels { rows, default_key } => {
+                self.embedding_models.rows = rows.clone();
+                self.embedding_models.default_key = default_key.clone();
+                self.embedding_models.selected = self
+                    .embedding_models
+                    .selected
+                    .min(self.embedding_models.total_rows().saturating_sub(1));
+                self.embedding_models.form = None;
+                self.embedding_models.status = message;
+            }
+            SettingsChange::EmbeddingEnabled { enabled } => {
+                self.embedding_models.enabled = *enabled;
+                self.embedding_models.status = message;
+            }
             SettingsChange::DecisionLocal(change) => {
                 match change {
                     DecisionLocalChange::Save { size, device } => {
@@ -5340,7 +5862,15 @@ impl SettingsState {
                 {
                     row.enabled = *enabled;
                 }
-                self.decision_models.status = message;
+                if key == DECISION_SWITCH_WEB_SEARCH_EMBEDDING {
+                    self.embedding_models.web_search_rerank = *enabled;
+                }
+                // 该开关现在画在向量页，状态行跟着焦点所在页走。
+                if self.pane == Pane::EmbeddingModels {
+                    self.embedding_models.status = message;
+                } else {
+                    self.decision_models.status = message;
+                }
             }
             SettingsChange::Model { key } => {
                 self.model_management.model_key = key.clone();
@@ -5527,6 +6057,7 @@ impl SettingsState {
             Pane::ModelManagement => self.model_management.status = message,
             // 决策页同理：保留表单。
             Pane::DecisionModels => self.decision_models.status = message,
+            Pane::EmbeddingModels => self.embedding_models.status = message,
             Pane::Choice(kind) => self.choices.status[kind.index()] = message,
             // 表单页失败时同样保留草稿。
             Pane::Form(_) => {
@@ -5551,6 +6082,12 @@ impl SettingsState {
             | SettingsChange::DecisionSwitch { .. }
             | SettingsChange::DecisionLocal(_) => {
                 self.decision_models.status.push_str(note);
+                if self.pane == Pane::EmbeddingModels {
+                    self.embedding_models.status.push_str(note);
+                }
+            }
+            SettingsChange::EmbeddingModels { .. } | SettingsChange::EmbeddingEnabled { .. } => {
+                self.embedding_models.status.push_str(note);
             }
             SettingsChange::Model { .. }
             | SettingsChange::ContextWindow { .. }
@@ -5772,6 +6309,90 @@ impl SettingsState {
         })
     }
 
+    /// 宿主回填：向量模型页的状态变化（保存失败时的提示等）。
+    pub fn refresh_embedding_models(
+        &mut self,
+        rows: Vec<EmbeddingRow>,
+        default_key: &str,
+        enabled: bool,
+        web_search_rerank: bool,
+        message: &str,
+    ) {
+        self.embedding_models.rows = rows;
+        self.embedding_models.enabled = enabled;
+        self.embedding_models.web_search_rerank = web_search_rerank;
+        if !default_key.trim().is_empty() {
+            self.embedding_models.default_key = default_key.trim().to_string();
+        }
+        let last = self.embedding_models.total_rows().saturating_sub(1);
+        if self.embedding_models.selected > last {
+            self.embedding_models.selected = last;
+        }
+        if !message.trim().is_empty() {
+            self.embedding_models.status = message.trim().to_string();
+        }
+    }
+
+    /// 宿主回填：顶部总开关的现值（开关翻转由状态层先画，再以磁盘结果为准）。
+    pub fn set_embedding_enabled(&mut self, enabled: bool) {
+        self.embedding_models.enabled = enabled;
+    }
+
+    pub fn embedding_rows(&self) -> &[EmbeddingRow] {
+        &self.embedding_models.rows
+    }
+
+    /// 顶部总开关的当前值（渲染层用）。
+    pub fn embedding_enabled(&self) -> bool {
+        self.embedding_models.enabled
+    }
+
+    /// 联网搜索走向量模型排序的当前值（渲染层用）。
+    pub fn embedding_web_search_rerank(&self) -> bool {
+        self.embedding_models.web_search_rerank
+    }
+
+    /// 行游标是否停在开关区（向量召回 / 联网搜索向量排序）。
+    pub fn embedding_switch_selected(&self) -> bool {
+        self.embedding_models.selected < EmbeddingModelsState::SWITCH_ROWS
+    }
+
+    /// 游标在开关区时的行号（0 向量召回、1 联网搜索向量排序）。
+    pub fn embedding_switch_row(&self) -> usize {
+        self.embedding_models.selected
+    }
+
+    /// 联网搜索向量排序开关的文案：与决策模型页的开关同源。
+    pub fn embedding_web_search_label() -> &'static str {
+        DECISION_SWITCHES
+            .iter()
+            .find(|spec| spec.key == DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
+            .map(|spec| spec.label)
+            .unwrap_or("联网搜索使用向量模型排序")
+    }
+
+    /// 选中的**渠道**下标；游标停在总开关时为 `None`。
+    pub fn embedding_selected(&self) -> Option<usize> {
+        EmbeddingModelsState::channel_index(self.embedding_models.selected)
+            .filter(|index| *index < self.embedding_models.rows.len())
+    }
+
+    pub fn embedding_default_key(&self) -> &str {
+        &self.embedding_models.default_key
+    }
+
+    /// 正在编辑的向量渠道（渲染层用）；不在表单时为 `None`。
+    pub fn embedding_form(&self) -> Option<EmbeddingFormView<'_>> {
+        let form = self.embedding_models.form.as_ref()?;
+        Some(EmbeddingFormView {
+            row: &form.row,
+            field: form.field,
+            input: form.input.as_ref(),
+            dropdown: None,
+            is_new: form.is_new,
+        })
+    }
+
     /// 宿主回填：自部署分区的状态变化（下载完成 / 环境就绪 / 服务启停 / 任务进度）。
     ///
     /// 只覆盖分区的只读值，不动当前选中的行与渠道列表；`message` 非空时同时更新状态行，
@@ -5800,6 +6421,105 @@ impl SettingsState {
         self.decision_models.rows = rows;
         self.decision_models.form = None;
     }
+}
+
+/// 向量渠道表单的只读视图（渲染层用）。
+pub struct EmbeddingFormView<'a> {
+    pub row: &'a EmbeddingRow,
+    pub field: EmbeddingField,
+    /// 正在编辑的文本字段缓冲（非空表示处于输入态）。
+    pub input: Option<&'a Composer>,
+    /// 与决策表单同形，但向量页没有枚举字段，恒为 `None`。
+    pub dropdown: Option<&'a DecisionDropdown>,
+    pub is_new: bool,
+}
+
+/// 向量表单字段的当前显示值。
+pub fn embedding_field_value(row: &EmbeddingRow, field: EmbeddingField) -> String {
+    match field {
+        EmbeddingField::Name => row.name.clone(),
+        EmbeddingField::BaseUrl => row.base_url.clone(),
+        // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码（与渠道页同款）。
+        EmbeddingField::ApiKey => mask_api_key(&row.api_key),
+        EmbeddingField::ApiKeyEnv => row.api_key_env.clone(),
+        EmbeddingField::ModelId => row.model.clone(),
+        EmbeddingField::Dimensions => {
+            if row.dimensions > 0 {
+                row.dimensions.to_string()
+            } else {
+                "由服务端决定".to_string()
+            }
+        }
+        EmbeddingField::TimeoutSeconds => row.timeout_seconds.to_string(),
+        EmbeddingField::Enabled => {
+            if row.enabled {
+                "开启".to_string()
+            } else {
+                "关闭".to_string()
+            }
+        }
+    }
+}
+
+/// 向量表单某字段的输入缓冲初值（凭据从空开始）。
+fn embedding_input_composer(row: &EmbeddingRow, field: EmbeddingField) -> Composer {
+    let mut composer = Composer::default();
+    if field != EmbeddingField::ApiKey {
+        composer.insert(&embedding_field_value(row, field));
+    }
+    composer
+}
+
+/// 把表单值写回向量渠道记录。
+fn set_embedding_field(row: &mut EmbeddingRow, field: EmbeddingField, value: String) {
+    match field {
+        EmbeddingField::Name => row.name = value,
+        EmbeddingField::BaseUrl => row.base_url = value.trim().to_string(),
+        // 留空 = 不改动（与渠道页、决策页同一套口径，避免误触把磁盘上的密钥抹掉）。
+        EmbeddingField::ApiKey => {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                row.api_key = trimmed.to_string();
+            }
+        }
+        EmbeddingField::ApiKeyEnv => row.api_key_env = value.trim().to_string(),
+        EmbeddingField::ModelId => row.model = value.trim().to_string(),
+        // 「由服务端决定」这类非数字输入按 0 处理（0 即不下发 dimensions）。
+        EmbeddingField::Dimensions => {
+            row.dimensions = value.trim().parse::<i64>().unwrap_or(0).max(0);
+        }
+        EmbeddingField::TimeoutSeconds => {
+            if let Ok(seconds) = value.trim().parse::<i64>() {
+                row.timeout_seconds = seconds.max(1);
+            }
+        }
+        EmbeddingField::Enabled => row.enabled = value == "开启",
+    }
+}
+
+/// 保存前的本地校验：至少一条、key 唯一、地址与模型非空。
+fn validate_embedding_rows(rows: &[EmbeddingRow]) -> Result<(), String> {
+    if rows.is_empty() {
+        return Err("至少要保留一个向量渠道。".to_string());
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for row in rows {
+        let key = row.key.trim();
+        if key.is_empty() {
+            return Err("向量渠道 key 不能为空。".to_string());
+        }
+        if seen.contains(&key) {
+            return Err(format!("向量渠道 key 重复：{key}。"));
+        }
+        seen.push(key);
+        if row.base_url.trim().is_empty() {
+            return Err(format!("向量渠道 {key} 的 Base URL 不能为空。"));
+        }
+        if row.model.trim().is_empty() {
+            return Err(format!("向量渠道 {key} 的模型 ID 不能为空。"));
+        }
+    }
+    Ok(())
 }
 
 /// 决策渠道表单的只读视图（渲染层用）。
@@ -5900,6 +6620,17 @@ fn validate_decision_rows(rows: &[DecisionRow]) -> Result<(), String> {
 
 /// 挑默认决策渠道：原来的那条还在且启用就沿用，否则取第一条启用的。
 fn pick_default_decision_channel(rows: &[DecisionRow], current: &str) -> String {
+    if let Some(row) = rows.iter().find(|row| row.key == current && row.enabled) {
+        return row.key.clone();
+    }
+    rows.iter()
+        .find(|row| row.enabled)
+        .or_else(|| rows.first())
+        .map(|row| row.key.clone())
+        .unwrap_or_default()
+}
+
+fn pick_default_embedding_channel(rows: &[EmbeddingRow], current: &str) -> String {
     if let Some(row) = rows.iter().find(|row| row.key == current && row.enabled) {
         return row.key.clone();
     }
@@ -6050,6 +6781,115 @@ mod tests {
         SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()))
     }
 
+    fn embedding_row(key: &str, enabled: bool) -> EmbeddingRow {
+        EmbeddingRow {
+            key: key.to_string(),
+            name: key.to_string(),
+            base_url: "https://example.invalid/v1".to_string(),
+            api_key: String::new(),
+            api_key_env: "EMBEDDING_API_KEY".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 0,
+            timeout_seconds: 30,
+            enabled,
+        }
+    }
+
+    fn embedding_state(enabled: bool) -> SettingsState {
+        let mut state = state();
+        state.embedding_models = EmbeddingModelsState {
+            rows: vec![embedding_row("first", true), embedding_row("second", true)],
+            default_key: "first".to_string(),
+            enabled,
+            web_search_rerank: false,
+            selected: 0,
+            form: None,
+            template: EmbeddingRow::default(),
+            status: String::new(),
+        };
+        // 让按键直接落到向量页（与用户进入该页后的状态一致）。
+        state.pane = Pane::EmbeddingModels;
+        state.focus = Focus::Pane;
+        state
+    }
+
+    /// 第 0 行是向量召回总开关：Enter 翻转并交宿主写盘，不动渠道。
+    #[test]
+    fn embedding_top_row_toggles_the_switch() {
+        let mut state = embedding_state(false);
+        assert!(state.embedding_switch_selected());
+        assert_eq!(
+            state.embedding_selected(),
+            None,
+            "游标在开关上时没有选中渠道"
+        );
+
+        let event = state.handle_key(KeyCode::Enter);
+        match event {
+            Some(SettingsEvent::Apply(SettingsChange::EmbeddingEnabled { enabled })) => {
+                assert!(enabled, "关闭时回车应当请求开启");
+            }
+            other => panic!("应当请求翻转总开关，实际：{other:?}"),
+        }
+    }
+
+    /// 第 1 行是联网搜索向量排序开关：Enter 产出与决策页同形的开关变更。
+    #[test]
+    fn embedding_web_search_row_toggles_the_decision_switch() {
+        let mut state = embedding_state(true);
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.embedding_switch_row(),
+            EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW
+        );
+        let event = state.handle_key(KeyCode::Enter);
+        match event {
+            Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch { key, enabled })) => {
+                assert_eq!(key, DECISION_SWITCH_WEB_SEARCH_EMBEDDING);
+                assert!(enabled);
+            }
+            other => panic!("应当请求翻转联网搜索向量排序，实际：{other:?}"),
+        }
+    }
+
+    /// 上下移动跨越两条开关与渠道，且不会停在越界位置。
+    #[test]
+    fn embedding_cursor_walks_switch_then_channels() {
+        let mut state = embedding_state(true);
+        assert!(state.embedding_switch_selected());
+
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.embedding_switch_row(),
+            EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW
+        );
+        assert_eq!(state.embedding_selected(), None);
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.embedding_selected(),
+            Some(0),
+            "下移两格应选中第一条渠道"
+        );
+        state.handle_key(KeyCode::Down);
+        assert_eq!(state.embedding_selected(), Some(1));
+        // 再下移回到顶部开关（环形）。
+        state.handle_key(KeyCode::Down);
+        assert!(state.embedding_switch_selected());
+        assert_eq!(state.embedding_switch_row(), 0);
+        // 上移一格又到最后一条渠道。
+        state.handle_key(KeyCode::Up);
+        assert_eq!(state.embedding_selected(), Some(1));
+    }
+
+    /// 游标在开关上时 D 不删渠道。
+    #[test]
+    fn embedding_delete_is_ignored_on_switch_row() {
+        let mut state = embedding_state(true);
+        state.handle_key(KeyCode::Char('d'));
+        assert_eq!(state.embedding_rows().len(), 2, "开关行上的 D 不该删除渠道");
+        assert!(state.embedding_switch_selected());
+    }
+
     /// 单选页的初始值：推理强度 medium、思考显示开启、记忆开启、插件关闭。
     fn choice_state() -> SettingsState {
         SettingsState::new(
@@ -6128,13 +6968,16 @@ mod tests {
         goto(&mut state, "tools");
         assert_eq!(state.selected_key(), "tools");
         assert_eq!(state.pane(), Pane::Tools);
-        // 上翻依次经过「工具输出压缩」「顾问设置」「结构化决策模型」到「模型管理」。
+        // 上翻依次经过「工具输出压缩」「顾问设置」「向量模型」「结构化决策模型」到「模型管理」。
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "tool_output_compression");
         assert_eq!(state.pane(), Pane::Form(FormKind::ToolOutputCompression));
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "advisor");
         assert_eq!(state.pane(), Pane::Form(FormKind::Advisor));
+        state.handle_key(KeyCode::Up);
+        assert_eq!(state.selected_key(), "embedding_models");
+        assert_eq!(state.pane(), Pane::EmbeddingModels);
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "decision_models");
         assert_eq!(state.pane(), Pane::DecisionModels);
@@ -8298,5 +9141,43 @@ mod tests {
 
         assert!(!state.paste("sk-leaked"), "左栏没有输入框，不该接收");
         assert!(state.channel_form().is_none(), "也不该顺手打开表单");
+    }
+
+    #[test]
+    fn computer_use_model_field_opens_dropdown_with_candidates() {
+        // 桌面操作页只有「桌面模型」一列、没有渠道列：候选按当前生效渠道给，
+        // 不能因为缺渠道字段就退化成空列表——那会让回车看起来毫无反应。
+        let mut state = model_management_state();
+        goto(&mut state, "computer_use");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.pane(), Pane::Form(FormKind::ComputerUse));
+        assert_eq!(state.form_field_count(), 5);
+
+        // 字段顺序：启用 / 时间预算 / 截图上限 / 思考强度 / 桌面模型。
+        for _ in 0..4 {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(
+            state
+                .form()
+                .and_then(|form| form.field(form.focused()))
+                .map(|spec| spec.kind),
+            Some(FieldKind::ModelId)
+        );
+
+        state.handle_key(KeyCode::Enter);
+        let dropdown = state.dropdown().expect("回车应展开模型候选");
+        assert_eq!(dropdown.field, DropdownField::Form(4));
+        let options = state.dropdown_options();
+        assert!(
+            !options.is_empty(),
+            "候选不能为空，否则浮层不渲染、回车看着没反应"
+        );
+        assert!(
+            options
+                .iter()
+                .any(|(_, value)| matches!(value, OptionValue::Text(model) if model == "gpt-5.2")),
+            "当前渠道自带模型应在候选里：{options:?}"
+        );
     }
 }

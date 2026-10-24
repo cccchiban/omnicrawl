@@ -101,7 +101,12 @@ impl LaunchSpec {
         Self {
             root: root.to_path_buf(),
             model_dir: paths::model_dir(root, size.repo_id),
-            model_name: size.repo_id.rsplit('/').next().unwrap_or(size.key).to_string(),
+            model_name: size
+                .repo_id
+                .rsplit('/')
+                .next()
+                .unwrap_or(size.key)
+                .to_string(),
             device: resolve_device(device, root),
             endpoint: omnicrawl_config::features::decision_model::onejev_endpoint_for_root(root),
             worker_path: paths::worker_script_path(),
@@ -458,7 +463,9 @@ impl OneJevServer {
                     .as_ref()
                     .map(|spec| spec.model_name.clone())
                     .unwrap_or_default();
-                progress(&format!("正在加载权重并绑定端口（{name}，已等待 {waited} 秒）…"));
+                progress(&format!(
+                    "正在加载权重并绑定端口（{name}，已等待 {waited} 秒）…"
+                ));
             }
             std::thread::sleep(Duration::from_millis(READY_POLL_MILLIS));
         }
@@ -560,8 +567,16 @@ pub fn read_pid(root: &Path) -> Option<u32> {
 pub fn read_pid_record(root: &Path) -> Option<(u32, String)> {
     let text = std::fs::read_to_string(paths::server_pid_path(root)).ok()?;
     let mut lines = text.lines();
-    let pid = lines.next()?.trim().parse::<u32>().ok().filter(|pid| *pid > 0)?;
-    let model = lines.next().map(|line| line.trim().to_string()).unwrap_or_default();
+    let pid = lines
+        .next()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0)?;
+    let model = lines
+        .next()
+        .map(|line| line.trim().to_string())
+        .unwrap_or_default();
     Some((pid, model))
 }
 
@@ -687,7 +702,11 @@ mod tests {
         // 「Torch not compiled with CUDA enabled」崩在加载权重这一步。
         assert_eq!(spec.device, "cpu", "探测不出 CUDA 时按 CPU 落地");
         assert_eq!(spec.model_name, "OneJev-0.8B");
-        assert_eq!(spec.model_argument(), "OneJev-0.8B", "权重不在本机时退仓库名");
+        assert_eq!(
+            spec.model_argument(),
+            "OneJev-0.8B",
+            "权重不在本机时退仓库名"
+        );
         std::fs::create_dir_all(spec.model_dir.clone()).expect("建权重目录");
         assert_eq!(
             spec.model_argument(),
@@ -742,7 +761,10 @@ mod tests {
         let spec = LaunchSpec::new(&root, &ONEJEV_SIZES[0], "cpu");
         // 环境未就绪 + 权重缺失：必须给出可操作提示，且不起进程。
         let outcome = server.start(spec, false, 1);
-        assert!(matches!(outcome.state, ServerState::Failed(_) | ServerState::Stopped));
+        assert!(matches!(
+            outcome.state,
+            ServerState::Failed(_) | ServerState::Stopped
+        ));
         assert!(!outcome.message.is_empty());
     }
 
@@ -764,8 +786,11 @@ mod tests {
         assert_eq!(running_model(&root).as_deref(), Some("OneJev-0.8B"));
 
         // 进程已退出的记录要顺手清掉，否则别的实例会一直误判「服务正在启动」。
-        std::fs::write(crate::paths::server_pid_path(&root), "4294967295\nOneJev-4B\n")
-            .expect("写死记录");
+        std::fs::write(
+            crate::paths::server_pid_path(&root),
+            "4294967295\nOneJev-4B\n",
+        )
+        .expect("写死记录");
         assert_eq!(live_pid(&root), None);
         assert_eq!(read_pid(&root), None, "过期记录应被清理");
 

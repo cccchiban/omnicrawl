@@ -34,6 +34,20 @@ pub const STANDARD_WRITE_TOOL_NAMES: [&str; 4] = ["write_file", "Edit_file", "ba
 
 /// 任务级允许的字段。
 pub const TASK_FIELDS: [&str; 4] = ["description", "prompt", "subagent_type", "context"];
+
+/// 只由专属入口驱动的角色：`computer_use` 等自持工具自己创建子回合，
+/// 因此这些角色既不进 `subagent` 的 `subagent_type` 枚举，也不能被显式指定。
+///
+/// 判据只能是这里，不能靠 `[subagents] enabled`：注册 `subagent` 工具看的是角色清单非空，
+/// 若把专属角色混进清单，普通子代理关闭时也会冒出 `subagent` 工具。
+pub const RESERVED_ROLE_NAMES: [&str; 1] = ["computer-use"];
+
+/// 该角色是否由专属入口独占。
+pub fn is_reserved_role(name: &str) -> bool {
+    let normalized = name.trim().to_lowercase();
+    RESERVED_ROLE_NAMES.contains(&normalized.as_str())
+}
+
 /// 顶层允许的字段。
 pub const TOP_LEVEL_FIELDS: [&str; 10] = [
     "action",
@@ -150,6 +164,7 @@ pub fn available_agent_types(
     registry
         .list_all()
         .iter()
+        .filter(|definition| !is_reserved_role(&definition.name))
         .filter(|definition| unsupported_definition_reason(definition, config).is_empty())
         .map(|definition| definition.name.clone())
         .collect()
@@ -332,13 +347,10 @@ pub fn validate_arguments(
             ),
         ));
     }
-    if !matches!(
-        object.get("action").and_then(Value::as_str),
-        Some("run") | Some("spawn")
-    ) {
+    if !matches!(object.get("action").and_then(Value::as_str), Some("run")) {
         return Some((
             "SUBAGENT_PERMISSION_DENIED".to_string(),
-            "仅支持 action=run 或 action=spawn。".to_string(),
+            "仅支持 action=run。".to_string(),
         ));
     }
     let Some(tasks) = object.get("tasks").and_then(Value::as_array) else {
@@ -436,6 +448,14 @@ pub fn validate_arguments(
             ));
         }
         let normalized = agent_type.unwrap_or_default().trim().to_lowercase();
+        // 专属角色只能由它自己的工具创建子回合，显式指定要给出明确原因，
+        // 而不是让它变成「未找到定义」那种含糊的提示。
+        if is_reserved_role(&normalized) {
+            return Some((
+                "AGENT_TYPE_RESERVED".to_string(),
+                format!("{normalized} 由专属工具驱动，不能通过 subagent 调用。"),
+            ));
+        }
         let Some(definition) = registry.get(&normalized) else {
             let available = available_agent_types(config, registry).join(", ");
             let available = if available.is_empty() {

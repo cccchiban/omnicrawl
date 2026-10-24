@@ -88,8 +88,7 @@ pub fn conform_tool_names(tools: &[ToolSpec]) -> (Vec<ToolSpec>, ToolNameMap) {
     for tool in tools {
         let wire = unique_wire_name(&tool.name, &mut used);
         if wire != tool.name {
-            map.wire_to_internal
-                .insert(wire.clone(), tool.name.clone());
+            map.wire_to_internal.insert(wire.clone(), tool.name.clone());
             map.internal_to_wire.insert(tool.name.clone(), wire.clone());
         }
         out.push(ToolSpec::new(
@@ -156,7 +155,11 @@ mod tests {
     use crate::message::ToolCallBlock;
 
     fn spec(name: &str) -> ToolSpec {
-        ToolSpec::new(name, "说明", json!({"type": "object"}).as_object().cloned().unwrap())
+        ToolSpec::new(
+            name,
+            "说明",
+            json!({"type": "object"}).as_object().cloned().unwrap(),
+        )
     }
 
     #[test]
@@ -174,11 +177,18 @@ mod tests {
     #[test]
     fn long_names_are_truncated_to_the_provider_limit() {
         let long = "a".repeat(200);
-        assert_eq!(sanitize_tool_name(&long).chars().count(), MAX_TOOL_NAME_CHARS);
+        assert_eq!(
+            sanitize_tool_name(&long).chars().count(),
+            MAX_TOOL_NAME_CHARS
+        );
         // 超长名字撞名后也要保持在上限内。
         let (tools, map) = conform_tool_names(&[spec(&long), spec(&format!("{long}b"))]);
         for tool in &tools {
-            assert!(tool.name.chars().count() <= MAX_TOOL_NAME_CHARS, "{}", tool.name);
+            assert!(
+                tool.name.chars().count() <= MAX_TOOL_NAME_CHARS,
+                "{}",
+                tool.name
+            );
         }
         assert_ne!(tools[0].name, tools[1].name);
         assert_eq!(map.internal(&tools[1].name), format!("{long}b"));
@@ -239,7 +249,10 @@ mod tests {
         map.restore_reply(&mut reply);
         assert_eq!(reply.tool_calls[0].name, "fathom.search");
         assert_eq!(reply.tool_calls[0].call_id, "call-1");
-        assert_eq!(reply.tool_calls[0].arguments.get("query"), Some(&json!("x")));
+        assert_eq!(
+            reply.tool_calls[0].arguments.get("query"),
+            Some(&json!("x"))
+        );
         match &reply.assistant_message.blocks[0] {
             MessageBlock::ToolCall(call) => assert_eq!(call.name, "fathom.search"),
             other => panic!("应当仍是工具调用块：{other:?}"),

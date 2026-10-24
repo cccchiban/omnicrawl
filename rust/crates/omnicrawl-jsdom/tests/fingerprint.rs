@@ -19,7 +19,10 @@ fn probe(script: &str) -> String {
 
 #[test]
 fn navigator_identity_matches_chrome_profile() {
-    assert_eq!(probe("return navigator.userAgent;"), Profile::for_family("chrome").user_agent);
+    assert_eq!(
+        probe("return navigator.userAgent;"),
+        Profile::for_family("chrome").user_agent
+    );
     assert_eq!(probe("return navigator.webdriver;"), "false");
     assert_eq!(probe("return navigator.platform;"), "Win32");
     assert_eq!(probe("return navigator.vendor;"), "Google Inc.");
@@ -65,7 +68,12 @@ fn firefox_profile_has_no_chrome_objects() {
         ].join('|');
         </script></body></html>"#;
     let outcome = run_with_profile(html, &Profile::for_family("firefox"));
-    assert_eq!(outcome.text.trim(), "undefined|undefined|true", "{}", outcome.text);
+    assert_eq!(
+        outcome.text.trim(),
+        "undefined|undefined|true",
+        "{}",
+        outcome.text
+    );
 }
 
 #[test]
@@ -74,7 +82,9 @@ fn screen_and_window_metrics_are_consistent() {
     assert_eq!(probe("return screen.height;"), "864");
     // 有头窗口：可用高度小于物理高度，视口小于窗口。
     assert!(probe("return screen.availHeight < screen.height;").starts_with("true"));
-    assert!(probe("return window.innerHeight < window.outerHeight;").trim().starts_with("true"));
+    assert!(probe("return window.innerHeight < window.outerHeight;")
+        .trim()
+        .starts_with("true"));
     assert_eq!(probe("return window.devicePixelRatio;"), "1");
 }
 
@@ -168,7 +178,9 @@ fn network_apis_exist_but_always_fail() {
         </script></body></html>"#,
     );
     assert!(
-        outcome.text.contains("fetch-callable,xhr=function,ws=function"),
+        outcome
+            .text
+            .contains("fetch-callable,xhr=function,ws=function"),
         "网络 API 应存在且可调用：{}",
         outcome.text
     );
@@ -190,4 +202,3 @@ fn console_and_event_target_exist() {
         "1"
     );
 }
-

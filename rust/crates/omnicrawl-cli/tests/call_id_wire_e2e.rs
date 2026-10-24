@@ -9,11 +9,11 @@
 //! ② 改写只发生在线上的那份副本，会话转录里仍是网关原样的 id（淘汰标注、历史投影不被污染）；
 //! ③ 网关明确判过「重复提交相同 call_id」时，重试前会轮换尾部一批的 id（不再原样重发）。
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -291,8 +291,7 @@ fn model_config(server: &StubServer) -> Value {
 }
 
 fn temp_root(name: &str) -> PathBuf {
-    let root =
-        std::env::temp_dir().join(format!("omnicrawl-callid-{}-{name}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("omnicrawl-callid-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("无法建临时会话根");
     root
@@ -325,7 +324,10 @@ fn ids_of(body: &Value) -> (Vec<String>, Vec<String>) {
 fn assert_protocol_valid(body: &Value, context: &str) {
     let (calls, results) = ids_of(body);
     let unique = |ids: &[String]| ids.iter().collect::<BTreeSet<_>>().len() == ids.len();
-    assert!(unique(&calls), "{context}：assistant 侧 call_id 必须唯一：{calls:?}");
+    assert!(
+        unique(&calls),
+        "{context}：assistant 侧 call_id 必须唯一：{calls:?}"
+    );
     assert!(
         unique(&results),
         "{context}：tool 侧 tool_call_id 必须唯一：{results:?}"
@@ -336,7 +338,10 @@ fn assert_protocol_valid(body: &Value, context: &str) {
     );
     let call_set: BTreeSet<&String> = calls.iter().collect();
     let result_set: BTreeSet<&String> = results.iter().collect();
-    assert_eq!(call_set, result_set, "{context}：调用与结果必须逐一双向配对");
+    assert_eq!(
+        call_set, result_set,
+        "{context}：调用与结果必须逐一双向配对"
+    );
 }
 
 /// 会话转录的全部文本（递归收集 jsonl）。
@@ -364,8 +369,16 @@ fn collect_jsonl(directory: &Path, sink: &mut String) {
 fn repeated_call_id_within_one_request_is_repaired_before_sending() {
     // 两次工具调用都用同一个 id：网关按「请求内序号」发 id 时就是这个形状。
     let server = StubServer::spawn(vec![
-        Reply::Raw(tool_call_stream("call-dup", "read_file", "{\"path\":\"a.txt\"}")),
-        Reply::Raw(tool_call_stream("call-dup", "read_file", "{\"path\":\"b.txt\"}")),
+        Reply::Raw(tool_call_stream(
+            "call-dup",
+            "read_file",
+            "{\"path\":\"a.txt\"}",
+        )),
+        Reply::Raw(tool_call_stream(
+            "call-dup",
+            "read_file",
+            "{\"path\":\"b.txt\"}",
+        )),
         Reply::Text(FINAL_TEXT.to_string()),
     ]);
     let root = temp_root("repair");
@@ -373,11 +386,11 @@ fn repeated_call_id_within_one_request_is_repaired_before_sending() {
     kernel.initialize(model_config(&server), &root);
     let frames = kernel.run_turn("读两个文件");
 
-    let finished = frames
-        .last()
-        .expect("至少有一个 turn.finished 帧")
-        .clone();
-    assert_eq!(finished["method"], "turn.finished", "本回合应当正常完成：{frames:?}");
+    let finished = frames.last().expect("至少有一个 turn.finished 帧").clone();
+    assert_eq!(
+        finished["method"], "turn.finished",
+        "本回合应当正常完成：{frames:?}"
+    );
     assert_eq!(finished["params"]["final_text"], FINAL_TEXT);
 
     let bodies = server.bodies();
@@ -430,7 +443,11 @@ fn repeated_call_id_within_one_request_is_repaired_before_sending() {
 fn tool_state_rejection_rotates_tail_ids_before_retrying() {
     // 序列：一个工具批次 → 网关以 400 判「重复提交相同 call_id」→ 重试（此时应轮换 id）→ 成功。
     let server = StubServer::spawn(vec![
-        Reply::Raw(tool_call_stream("call-tail", "read_file", "{\"path\":\"a.txt\"}")),
+        Reply::Raw(tool_call_stream(
+            "call-tail",
+            "read_file",
+            "{\"path\":\"a.txt\"}",
+        )),
         Reply::Status(400, "同一请求不能重复提交相同的 call_id".to_string()),
         Reply::Text(FINAL_TEXT.to_string()),
     ]);
@@ -460,11 +477,7 @@ fn tool_state_rejection_rotates_tail_ids_before_retrying() {
         vec!["call-tail".to_string()],
         "重试前必须轮换尾部 id，否则等于把同一份提交再发一遍"
     );
-    assert_eq!(
-        calls.len(),
-        1,
-        "只轮换尾部批次，不引入新消息：{calls:?}"
-    );
+    assert_eq!(calls.len(), 1, "只轮换尾部批次，不引入新消息：{calls:?}");
     assert_eq!(results, calls, "轮换后两侧仍然逐一双向配对");
     assert_protocol_valid(&bodies[2], "重试请求");
     assert!(

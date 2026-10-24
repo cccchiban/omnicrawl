@@ -121,8 +121,9 @@ impl StubServer {
                     _ => (200, "text/event-stream"),
                 };
                 let body = match script.get(index) {
-                    Some(Reply::Status(_, message)) => json!({ "error": { "message": message } })
-                        .to_string(),
+                    Some(Reply::Status(_, message)) => {
+                        json!({ "error": { "message": message } }).to_string()
+                    }
                     _ => body,
                 };
                 let reply = format!(
@@ -135,9 +136,11 @@ impl StubServer {
                     // 切点必须落在事件边界上：按字节对半切会切在 JSON 中间，宿主直到补完才看得到
                     // 第一个 `turn.delta`，取消就必然晚于流结束（这条用例会稳定失败）。
                     let split = body
-                        .find("
+                        .find(
+                            "
 
-")
+",
+                        )
                         .map(|index| index + 2)
                         .unwrap_or(body.len() / 2);
                     let head = format!(
@@ -522,7 +525,8 @@ fn session_id(root: &Path) -> String {
         .filter_map(|entry| {
             let path = entry.path();
             if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
-                path.file_stem().map(|stem| stem.to_string_lossy().to_string())
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
             } else {
                 None
             }
@@ -556,8 +560,15 @@ fn kernel_records_the_tool_call_and_its_result_in_the_session() {
     assert_eq!(payload["tool"], "read_file");
     assert_eq!(payload["tool_call_id"], "call-1");
     assert_eq!(payload["function_name"], "read_file");
-    assert_eq!(payload["arguments"], json!({"path": "a.txt"}), "参数走公开投影");
-    assert_eq!(payload["assistant_content"], "先读文件。", "带回本批 assistant 原文");
+    assert_eq!(
+        payload["arguments"],
+        json!({"path": "a.txt"}),
+        "参数走公开投影"
+    );
+    assert_eq!(
+        payload["assistant_content"], "先读文件。",
+        "带回本批 assistant 原文"
+    );
     assert!(
         payload.get("arguments_json").is_none(),
         "协议原文（可能含密钥）不落盘：{payload}"
@@ -620,7 +631,11 @@ fn resumed_session_carries_the_tool_events_into_the_model_context() {
         .filter_map(|message| message["tool_calls"].as_array().cloned())
         .flatten()
         .collect();
-    assert_eq!(calls.len(), 1, "恢复后模型应看到上一轮的 tool_calls：{messages:?}");
+    assert_eq!(
+        calls.len(),
+        1,
+        "恢复后模型应看到上一轮的 tool_calls：{messages:?}"
+    );
     assert_eq!(calls[0]["function"]["name"], "read_file");
     assert_eq!(calls[0]["id"], "call-1");
     let tool_message = messages
@@ -799,7 +814,9 @@ fn failed_turn_still_leaves_context_for_the_next_turn() {
     // 下一轮的模型请求里必须带上失败那轮的任务文本：上下文真的继承了。
     let finished = run_followup_turn(&mut kernel, "turn-2", "第二句");
     assert!(
-        finished.iter().any(|frame| frame["method"] == json!("turn.finished")),
+        finished
+            .iter()
+            .any(|frame| frame["method"] == json!("turn.finished")),
         "第二句应当正常完成：{finished:?}"
     );
     let body = server.bodies().last().cloned().expect("第二次请求体");
@@ -912,13 +929,15 @@ fn cancelled_turn_is_recorded_and_the_next_turn_keeps_the_context() {
     );
 }
 
-
 #[test]
 fn tool_call_arguments_stream_to_the_host() {
     // 模型流里工具调用的参数要逐段转给宿主（宿主据此增量渲染卡片）：
     // 内核侧新增 `turn.tool_call_started` / `turn.tool_call_arguments` 两条通知。
     let stream = tool_call_stream("read_file", r#"{"path": "a.txt"}"#);
-    let server = StubServer::spawn(vec![Reply::Raw(stream), Reply::Text(FINAL_TEXT.to_string())]);
+    let server = StubServer::spawn(vec![
+        Reply::Raw(stream),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
     let root = temp_root("tool-call-stream");
     let mut kernel = Kernel::spawn();
     kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
@@ -936,9 +955,7 @@ fn tool_call_arguments_stream_to_the_host() {
         if let Some(method) = frame.get("method").and_then(|value| value.as_str()) {
             methods.push(method.to_string());
             if method == "turn.tool_call_arguments" {
-                arguments.push_str(
-                    frame["params"]["delta"].as_str().unwrap_or_default(),
-                );
+                arguments.push_str(frame["params"]["delta"].as_str().unwrap_or_default());
             }
             if method == "turn.finished" {
                 break;
@@ -954,14 +971,21 @@ fn tool_call_arguments_stream_to_the_host() {
         }
     }
     assert!(
-        methods.iter().any(|method| method == "turn.tool_call_started"),
+        methods
+            .iter()
+            .any(|method| method == "turn.tool_call_started"),
         "应当收到工具调用开始通知：{methods:?}"
     );
     assert!(
-        methods.iter().any(|method| method == "turn.tool_call_arguments"),
+        methods
+            .iter()
+            .any(|method| method == "turn.tool_call_arguments"),
         "应当收到工具调用参数增量：{methods:?}"
     );
-    assert_eq!(arguments, r#"{"path": "a.txt"}"#, "参数增量拼起来应当等于模型给的那份");
+    assert_eq!(
+        arguments, r#"{"path": "a.txt"}"#,
+        "参数增量拼起来应当等于模型给的那份"
+    );
 }
 
 /// 同一回合里的两个并发工具调用：内核必须等**整批**都回来才发下一次模型请求。
@@ -1003,7 +1027,10 @@ data: [DONE]
         let frame = kernel.next_frame();
         if frame.get("method") == Some(&json!("tool.batch")) {
             batches += 1;
-            let calls = frame["params"]["calls"].as_array().cloned().unwrap_or_default();
+            let calls = frame["params"]["calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             calls_in_batch = calls.len();
             // 一次性回答整批两条观察（顺序与模型调用一致）。
             let observations: Vec<Value> = calls
@@ -1033,8 +1060,18 @@ data: [DONE]
     assert_eq!(calls_in_batch, 2, "批次里应当有两条调用");
     // 第二次模型请求（下一轮）里必须同时带上两条工具结果——证明内核是等整批回来才继续的。
     let bodies = server.bodies();
-    assert_eq!(bodies.len(), 2, "整个回合只应有两次模型请求：首轮 + 拿到整批后的下一轮");
+    assert_eq!(
+        bodies.len(),
+        2,
+        "整个回合只应有两次模型请求：首轮 + 拿到整批后的下一轮"
+    );
     let follow_up = bodies.last().cloned().unwrap_or_default().to_string();
-    assert!(follow_up.contains("call-1"), "下一轮请求带上了第一条结果：{follow_up}");
-    assert!(follow_up.contains("call-2"), "下一轮请求带上了第二条结果：{follow_up}");
+    assert!(
+        follow_up.contains("call-1"),
+        "下一轮请求带上了第一条结果：{follow_up}"
+    );
+    assert!(
+        follow_up.contains("call-2"),
+        "下一轮请求带上了第二条结果：{follow_up}"
+    );
 }

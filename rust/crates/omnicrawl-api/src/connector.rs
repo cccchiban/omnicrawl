@@ -32,8 +32,11 @@ use omnicrawl_connectors::agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, ToolCall, TurnError, TurnEvent,
     TurnOutcome, WorkspaceSwitch,
 };
-use omnicrawl_connectors::feishu::{check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot};
+use omnicrawl_connectors::feishu::{
+    check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot,
+};
 use omnicrawl_connectors::http::{HttpTransport, UreqTransport};
+use omnicrawl_connectors::qqbot::{load_qqbot_config, QqApi, QqBot};
 use omnicrawl_connectors::telegram::{load_telegram_config, TelegramBot};
 
 use crate::service::{
@@ -50,10 +53,22 @@ pub(crate) const ROLLBACK_EVENT: &str = "assistant.rollback";
 
 /// 启动指定平台的连接器并阻塞到它退出。
 pub fn run(platform: &str) -> Result<(), String> {
+    run_with_args(platform, &[])
+}
+
+/// 带附加参数启动连接器：`qqbot --bind` 走扫码绑定，其余参数忽略。
+pub fn run_with_args(platform: &str, args: &[String]) -> Result<(), String> {
+    if platform == "qqbot" && args.iter().any(|arg| arg == "--bind" || arg == "-b") {
+        crate::qqbind::run_bind().map(|_outcome| ())?;
+        return Ok(());
+    }
     match platform {
         "telegram" => run_telegram(),
         "feishu" => run_feishu(),
-        other => Err(format!("未知连接器：{other}；当前支持 telegram、feishu。")),
+        "qqbot" => run_qqbot(),
+        other => Err(format!(
+            "未知连接器：{other}；当前支持 telegram、feishu、qqbot。"
+        )),
     }
 }
 
@@ -91,6 +106,33 @@ fn run_feishu() -> Result<(), String> {
     ));
     eprintln!("[connector] feishu 连接器已在宿主进程内启动（真实工具表与会话）。");
     let outcome = bot.run().map_err(|error| error.to_string());
+    driver.shutdown();
+    outcome
+}
+
+fn run_qqbot() -> Result<(), String> {
+    let env = ConfigEnvironment::from_process();
+    let data = crate::service::connector_config_data(&env);
+    let config = load_qqbot_config(data.get("qqbot"))?;
+    if omnicrawl_connectors::qqbot::check_config(&config)
+        .get("ready")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(concat!(
+            "QQ 机器人连接器还没有就绪：请在 config.toml 的 [qqbot] 段填写 app_id 与 app_secret",
+            "（可先用 `omnicrawl-host connector qqbot --bind` 扫码获取）。"
+        )
+        .to_string());
+    }
+    let driver = Arc::new(HostConnectorDriver::start(&env)?);
+    let api = Arc::new(QqApi::with_ureq(&config));
+    let bot = Arc::new(QqBot::new(&config, api, Arc::clone(&driver))?);
+    eprintln!(
+        "[connector] qqbot 连接器已在宿主进程内启动（真实工具表与会话，平台 {}）。",
+        if config.sandbox { "沙箱" } else { "正式" }
+    );
+    let outcome = bot.run();
     driver.shutdown();
     outcome
 }
@@ -133,17 +175,11 @@ impl HostConnectorDriver {
     }
 
     fn confirm_handler(&self) -> Option<Arc<dyn ConfirmHandler>> {
-        self.confirm
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+        self.confirm.lock().ok().and_then(|slot| slot.clone())
     }
 
     fn ask_user_handler(&self) -> Option<Arc<dyn AskUserHandler>> {
-        self.ask_user
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+        self.ask_user.lock().ok().and_then(|slot| slot.clone())
     }
 
     fn set_current_run(&self, run_id: &str) {
@@ -386,11 +422,7 @@ impl AgentDriver for HostConnectorDriver {
             .collect()
     }
 
-    fn run_turn(
-        &self,
-        text: &str,
-        events: &mut dyn FnMut(TurnEvent),
-    ) -> Result<String, TurnError> {
+    fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError> {
         let outcome = self.drive_turn(text, events)?;
         events(TurnEvent::Finished(TurnOutcome {
             final_text: outcome.clone(),
@@ -624,9 +656,8 @@ impl CommandAgent for ServiceCommandAgent {
     }
 
     fn llm_config(&self) -> LlmConfig {
-        load_llm_config(&self.service.environment()).unwrap_or_else(|_| {
-            LlmConfig::with_environment(&ConfigEnvironment::from_process())
-        })
+        load_llm_config(&self.service.environment())
+            .unwrap_or_else(|_| LlmConfig::with_environment(&ConfigEnvironment::from_process()))
     }
 
     fn set_model(
@@ -656,9 +687,9 @@ impl CommandAgent for ServiceCommandAgent {
     }
 
     fn switch_workspace(&self, path: &str) -> Result<PathBuf, AgentError> {
-        let root = PathBuf::from(path)
-            .canonicalize()
-            .map_err(|error| AgentError::new(format!("工作区不存在或不是目录：{path}（{error}）")))?;
+        let root = PathBuf::from(path).canonicalize().map_err(|error| {
+            AgentError::new(format!("工作区不存在或不是目录：{path}（{error}）"))
+        })?;
         let session_id = self.service.current_session_id();
         self.service
             .switch_session(&session_id, Some(&root))
@@ -718,7 +749,10 @@ impl CommandAgent for ServiceCommandAgent {
                             .get("circuitOpen")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
-                        dev_mode: item.get("devMode").and_then(Value::as_bool).unwrap_or(false),
+                        dev_mode: item
+                            .get("devMode")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                         handlers: item
                             .get("handlers")
                             .and_then(Value::as_array)
@@ -881,7 +915,10 @@ mod tests {
         }));
         assert_eq!(call.name, "read");
         assert_eq!(call.id.as_deref(), Some("call-1"));
-        assert_eq!(call.arguments.get("path").and_then(Value::as_str), Some("README.md"));
+        assert_eq!(
+            call.arguments.get("path").and_then(Value::as_str),
+            Some("README.md")
+        );
         // 缺字段时给安全默认值，不让投影 panic。
         let missing = tool_call_from(&json!({}));
         assert_eq!(missing.name, "?");

@@ -1408,6 +1408,84 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_polls_honour_each_call_s_own_wait_seconds() {
+        let Some((shell, sleeping)) = sleeping_shell() else {
+            eprintln!("跳过：本机既没有 Git Bash 也没有 PowerShell");
+            return;
+        };
+        let manager = MonitorManager::new(root("wait-each-call"));
+        let monitor_id = start(&manager, shell, &sleeping);
+        let cursor = manager
+            .run(&args(json!({"action": "poll", "monitor_id": monitor_id})))
+            .expect("首次轮询")
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("下一游标："))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("输出里有下一游标");
+
+        // 第一轮等 1 秒。
+        let begun = Instant::now();
+        let first = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 1,
+            })))
+            .expect("第一轮长轮询")
+            .output;
+        let first_elapsed = begun.elapsed();
+        assert!(
+            first.contains("等待：已等待 1 秒，期间无新增输出。"),
+            "{first}"
+        );
+
+        // 第二轮只等 0 秒：必须立刻返回，不能沿用上一轮的时长。
+        let begun = Instant::now();
+        let second = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 0,
+            })))
+            .expect("第二轮轮询")
+            .output;
+        let second_elapsed = begun.elapsed();
+        assert!(
+            second_elapsed < first_elapsed,
+            "第二轮 wait_seconds=0 应当比第一轮快，实际 first={first_elapsed:?} second={second_elapsed:?}"
+        );
+        assert!(
+            !second.contains("等待：已等待 0 秒"),
+            "wait_seconds=0 不该报等待：{second}"
+        );
+
+        // 第三轮等 2 秒：时长必须按本次给的 2 秒算。
+        let begun = Instant::now();
+        let third = manager
+            .run(&args(json!({
+                "action": "poll",
+                "monitor_id": monitor_id,
+                "cursor": cursor,
+                "wait_seconds": 2,
+            })))
+            .expect("第三轮长轮询")
+            .output;
+        let third_elapsed = begun.elapsed();
+        assert!(
+            third.contains("等待：已等待 2 秒，期间无新增输出。"),
+            "第三轮应当按 2 秒计：{third}"
+        );
+        assert!(
+            third_elapsed >= Duration::from_secs(2),
+            "第三轮应当等满 2 秒，实际 {third_elapsed:?}"
+        );
+        let _ = manager.run(&args(json!({"action": "stop", "monitor_id": monitor_id})));
+    }
+
+    #[test]
     fn poll_wait_seconds_falls_back_to_deadline_without_output() {
         let Some((shell, sleeping)) = sleeping_shell() else {
             eprintln!("跳过：本机既没有 Git Bash 也没有 PowerShell");
@@ -1435,7 +1513,10 @@ mod tests {
             .expect("长轮询")
             .output;
         let elapsed = begun.elapsed();
-        assert!(elapsed >= Duration::from_secs(1), "应当等满，实际 {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_secs(1),
+            "应当等满，实际 {elapsed:?}"
+        );
         assert!(
             output.contains("等待：已等待 1 秒，期间无新增输出。"),
             "{output}"
@@ -1534,7 +1615,10 @@ mod tests {
             .run(&args(json!({"action": "list"})))
             .expect("列表")
             .output;
-        assert!(listed.contains(&format!("- {monitor_id}：running")), "{listed}");
+        assert!(
+            listed.contains(&format!("- {monitor_id}：running")),
+            "{listed}"
+        );
         let _ = manager.run(&args(json!({"action": "stop", "monitor_id": monitor_id})));
     }
 

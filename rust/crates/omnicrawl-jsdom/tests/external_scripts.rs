@@ -93,7 +93,11 @@ fn loader_failure_does_not_block_other_scripts() {
     let outcome = run_with_scripts(&html, &Profile::for_family("chrome"), Some(&loader));
     assert!(outcome.text.contains("内联照跑"), "{}", outcome.text);
     assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
-    assert!(outcome.errors[0].contains("取数失败"), "{:?}", outcome.errors);
+    assert!(
+        outcome.errors[0].contains("取数失败"),
+        "{:?}",
+        outcome.errors
+    );
 }
 
 /// 不给加载器时外链一律跳过：旧入口的命令保持完全不变。
@@ -119,4 +123,23 @@ fn non_http_src_is_ignored() {
     let outcome = run_with_scripts(&html, &Profile::for_family("chrome"), Some(&loader));
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
     assert_eq!(outcome.scripts, 1);
+}
+
+/// 模块脚本里带 `import` 时必须报脚本错误，而不是让解释器在链接阶段 panic。
+#[test]
+fn module_script_with_import_reports_error_instead_of_panicking() {
+    let html = page(r#"<script type="module">import "./dep.js";window.__m = 1;</script>"#);
+    let outcome = run_with_scripts(&html, &Profile::for_family("chrome"), None);
+    assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+}
+
+/// 没有 `import` 的模块脚本照常执行：顶层声明不污染全局，但仍能写 DOM。
+#[test]
+fn module_script_without_import_runs() {
+    let html = page(
+        r#"<script type="module">const text = '模块正文';document.getElementById('out').textContent = text;</script>"#,
+    );
+    let outcome = run_inline_scripts(&html);
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    assert!(outcome.text.contains("模块正文"), "{}", outcome.text);
 }

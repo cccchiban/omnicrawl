@@ -82,6 +82,8 @@ pub enum Parsed {
     Run(Box<Options>),
     Help(String),
     Version(String),
+    /// 子代理独立窗口进程：只跟随一个流水文件，不连内核。
+    SubagentWindow(PathBuf),
 }
 
 pub const USAGE: &str = "\
@@ -127,6 +129,19 @@ fn parse_with(
     configured_model: &dyn Fn() -> Result<String, String>,
     configured_approval: &dyn Fn() -> Result<ApprovalMode, String>,
 ) -> Result<Parsed, String> {
+    // 窗口子命令最先认：它不连内核、不需要模型/审批等任何其它参数，缺了也没关系。
+    if let Some(position) = args
+        .iter()
+        .position(|arg| arg == crate::subagent_window::WINDOW_FLAG)
+    {
+        let Some(stream) = args.get(position + 1) else {
+            return Err(format!(
+                "{} 需要一个流水文件路径",
+                crate::subagent_window::WINDOW_FLAG
+            ));
+        };
+        return Ok(Parsed::SubagentWindow(PathBuf::from(stream)));
+    }
     let mut kernel: Option<PathBuf> = None;
     let mut model: Option<String> = None;
     let mut base_url: Option<String> = None;
@@ -473,12 +488,9 @@ mod tests {
             .iter()
             .map(|value| value.to_string())
             .collect();
-        let error = parse_with(
-            &args,
-            Path::new("C:/tools"),
-            &no_configured_model,
-            &|| Err("approval.mode 仅支持 manual, auto, review，当前值：x。".to_string()),
-        )
+        let error = parse_with(&args, Path::new("C:/tools"), &no_configured_model, &|| {
+            Err("approval.mode 仅支持 manual, auto, review，当前值：x。".to_string())
+        })
         .expect_err("审批模式读不出来时应当报错，不静默降级");
         assert!(error.contains("审批模式"), "实际：{error}");
         assert!(error.contains("approval.mode"), "实际：{error}");
@@ -563,5 +575,18 @@ mod tests {
                 .as_deref(),
             Some(Path::new("C:/sessions"))
         );
+    }
+
+    /// 窗口子命令不要求模型/审批等任何其它参数：它不连内核。
+    #[test]
+    fn subagent_window_flag_stands_alone() {
+        let parsed = parse_with(
+            &["--subagent-window".to_string(), "a.jsonl".to_string()],
+            Path::new("."),
+            &|| Err("没有配置".to_string()),
+            &|| Err("没有配置".to_string()),
+        )
+        .expect("窗口子命令应当解析成功");
+        assert_eq!(parsed, Parsed::SubagentWindow(PathBuf::from("a.jsonl")));
     }
 }

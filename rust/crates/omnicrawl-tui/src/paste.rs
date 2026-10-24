@@ -216,7 +216,12 @@ impl PasteTracker {
     /// 投喂一批新按键（已按帧归并），返回处置结果。
     ///
     /// `clipboard` 是调用方读到的系统剪贴板文本；读不到时传 `None`，退回形状判定。
-    pub fn feed(&mut self, keys: &[KeyEvent], clipboard: Option<&str>, now: Instant) -> PasteOutcome {
+    pub fn feed(
+        &mut self,
+        keys: &[KeyEvent],
+        clipboard: Option<&str>,
+        now: Instant,
+    ) -> PasteOutcome {
         // 空批次没有任何可判定的内容：保持现状（已有挂起就继续挂着）。
         if keys.is_empty() {
             return if self.is_pending() {
@@ -237,7 +242,9 @@ impl PasteTracker {
             }
             if is_pending_clipboard_prefix(&text, clipboard) {
                 // 只有前缀变长才算「还在来」，避免同一批反复刷新计时把超时推远。
-                let length = normalize_stream_text(strip_stream_control_prefix(&text)).chars().count();
+                let length = normalize_stream_text(strip_stream_control_prefix(&text))
+                    .chars()
+                    .count();
                 if self.pending_since.is_none() || length > self.pending_length {
                     self.pending_since = Some(now);
                     self.pending_length = length;
@@ -359,8 +366,14 @@ mod tests {
         assert!(is_pending_clipboard_prefix("第一行\n", "第一行\n第二行"));
         assert!(is_pending_clipboard_prefix("第一行\n第", "第一行\n第二行"));
         // 已经完整（或多出内容）：不再挂起。
-        assert!(!is_pending_clipboard_prefix("第一行\n第二行", "第一行\n第二行"));
-        assert!(!is_pending_clipboard_prefix("第一行\n第二行\n第三", "第一行\n第二行"));
+        assert!(!is_pending_clipboard_prefix(
+            "第一行\n第二行",
+            "第一行\n第二行"
+        ));
+        assert!(!is_pending_clipboard_prefix(
+            "第一行\n第二行\n第三",
+            "第一行\n第二行"
+        ));
     }
 
     #[test]
@@ -412,7 +425,11 @@ mod tests {
 
     #[test]
     fn editing_keys_fall_back_to_the_normal_path() {
-        let events = vec![key(KeyCode::Char('a')), key(KeyCode::Up), key(KeyCode::Char('b'))];
+        let events = vec![
+            key(KeyCode::Char('a')),
+            key(KeyCode::Up),
+            key(KeyCode::Char('b')),
+        ];
         assert!(burst_text(&events).is_none());
         assert!(!looks_like_paste_shape(&events));
     }

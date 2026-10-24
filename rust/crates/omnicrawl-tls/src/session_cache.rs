@@ -47,7 +47,10 @@ impl Session {
     /// RFC 8446 §4.2.11.1：客户端上报「毫秒」年龄再与 `ticket_age_add` 相加取模 2^32。
     /// 单位是毫秒，不是秒——用错单位会被服务端判为票据无效。
     pub fn obfuscated_age(&self, now: i64) -> u32 {
-        let elapsed_ms = now.saturating_sub(self.issued_at).max(0).saturating_mul(1000);
+        let elapsed_ms = now
+            .saturating_sub(self.issued_at)
+            .max(0)
+            .saturating_mul(1000);
         (elapsed_ms as u32).wrapping_add(self.ticket_age_add)
     }
 }

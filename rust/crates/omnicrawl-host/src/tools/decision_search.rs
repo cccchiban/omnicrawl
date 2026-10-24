@@ -184,10 +184,7 @@ pub fn reranked_order(
 
     // 送审名单：本地关键词覆盖排序后的前 N 条；此处的下标都是池内下标。
     let coverage = keyword_coverage_order(query, candidates);
-    let selected: Vec<usize> = coverage
-        .into_iter()
-        .take(RERANK_CANDIDATE_LIMIT)
-        .collect();
+    let selected: Vec<usize> = coverage.into_iter().take(RERANK_CANDIDATE_LIMIT).collect();
 
     // 各批的排序结果（池内下标）：跨批置信度不可比，因此只保留批内名次，合并时轮转取用。
     let mut per_batch: Vec<Vec<usize>> = Vec::new();
@@ -367,8 +364,8 @@ impl RerankClient for DecisionRerankClient {
                 }
             }),
         );
-        let body_text = serde_json::to_string(&body)
-            .map_err(|error| format!("构造重排请求失败：{error}"))?;
+        let body_text =
+            serde_json::to_string(&body).map_err(|error| format!("构造重排请求失败：{error}"))?;
         // 脱敏旁路：屏蔽失败即放弃本次重排（不外发原文），与「失败一律 fail-open」一致。
         let body_text = match request.masking {
             Some(masking) => {
@@ -611,7 +608,10 @@ mod tests {
     fn keywords_are_split_by_whitespace_and_punctuation() {
         let keywords = split_keywords("检索重排，候选池/超时 timeout: 改造");
         for expected in ["检索重排", "候选池", "超时", "timeout", "改造"] {
-            assert!(keywords.contains(expected), "缺关键词 {expected}：{keywords:?}");
+            assert!(
+                keywords.contains(expected),
+                "缺关键词 {expected}：{keywords:?}"
+            );
         }
         assert_eq!(keywords.len(), 5, "标点只作分隔，不产出空词：{keywords:?}");
     }
@@ -766,7 +766,9 @@ mod tests {
                         .and_then(|content| serde_json::from_str::<Value>(content).ok())
                         .unwrap_or(Value::Null)
                 };
-                let question = inner.get("questions").and_then(|value| value.get(QUESTION_ID));
+                let question = inner
+                    .get("questions")
+                    .and_then(|value| value.get(QUESTION_ID));
                 {
                     let mut record = CapturedRerankRequest::default();
                     record.path = path;

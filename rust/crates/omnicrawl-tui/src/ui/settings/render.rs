@@ -16,16 +16,17 @@ use ratatui::Frame;
 use super::hit::HitAction;
 use super::picker::window_bounds;
 use super::state::{
-    ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, Focus,
-    ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
-    DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
-    TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET, TOOLS_WEB_SEARCH_LABEL, TOOLS_WEB_SEARCH_ROW,
+    ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, EmbeddingField,
+    Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
+    DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
+    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET, TOOLS_WEB_SEARCH_LABEL,
+    TOOLS_WEB_SEARCH_ROW,
 };
-use super::{channel_field_value, decision_field_value, row_label};
-use crate::ui::fullscreen::terminal::theme;
+use super::{channel_field_value, decision_field_value, embedding_field_value, row_label};
 use crate::ui::display_width;
-use omnicrawl_config::models::channels::{protocol_label, provider_label};
+use crate::ui::fullscreen::terminal::theme;
 use helpers::{fit, left_column_width, window_offset};
+use omnicrawl_config::models::channels::{protocol_label, provider_label};
 
 /// 左栏的期望宽度（对映 CSS 的 `width: 30`）。
 const LEFT_COLUMN_WIDTH: u16 = 30;
@@ -240,6 +241,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::Vision => render_vision(frame, body, state, focused),
         Pane::ModelManagement => render_model_management(frame, body, state, focused),
         Pane::DecisionModels => render_decision_models(frame, body, state, focused),
+        Pane::EmbeddingModels => render_embedding_models(frame, body, state, focused),
         Pane::Choice(_) => render_choice(frame, body, state, focused),
         Pane::Form(_) => render_form(frame, body, state, focused),
         Pane::Tts => render_tts(frame, body, state, focused),
@@ -395,6 +397,185 @@ fn model_window_start(owners: &[Option<usize>], selected: usize, height: usize) 
     decision_window_start_owners(owners, selected, height)
 }
 
+/// 向量模型页：表单态画字段，列表态画向量渠道行。
+fn render_embedding_models(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    match state.embedding_form() {
+        Some(form) => render_embedding_form(frame, area, state, form),
+        None => render_embedding_list(frame, area, state, focused),
+    }
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(4),
+        height: area.height.min(4),
+        ..area
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+/// 向量渠道列表：与决策渠道列表同款两行行式，开关行画在渠道之上（没有功能开关分区
+/// 与自部署分区），其中「联网搜索使用向量模型排序」来自决策模型的功能开关表。
+///
+/// ```text
+/// › [ ] 启用向量召回
+///   [ ] 联网搜索使用向量模型排序
+///   [x] OpenAI 向量 [默认]
+///       text-embedding-3-small  https://api.openai.com/v1
+/// ```
+fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let rows = state.embedding_rows();
+    let reserved = 4u16.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let selected = state.embedding_selected();
+    let switch_selected = state.embedding_switch_selected();
+
+    let switches = [
+        ("启用向量召回", state.embedding_enabled()),
+        (
+            SettingsState::embedding_web_search_label(),
+            state.embedding_web_search_rerank(),
+        ),
+    ];
+    let mut entries: Vec<(Line<'static>, Option<usize>)> = Vec::new();
+    for (row, (label, enabled)) in switches.iter().enumerate() {
+        let current = switch_selected && state.embedding_switch_row() == row;
+        entries.push((
+            Line::styled(
+                fit(
+                    &format!(
+                        "{} [{}] {label}",
+                        if current { "›" } else { " " },
+                        if *enabled { "x" } else { " " }
+                    ),
+                    area.width as usize,
+                ),
+                if current && focused {
+                    theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+                } else {
+                    theme::rich_style(theme::TEXT_SECONDARY)
+                },
+            ),
+            Some(row),
+        ));
+    }
+    // 行号沿用页面游标：开关区在前，渠道从开关行数开始。
+    let channel_selected = selected.map(|index| index + switches.len());
+    if rows.is_empty() {
+        entries.push((
+            Line::styled(
+                fit("尚无向量渠道，按 N 新建第一条渠道。", area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED),
+            ),
+            None,
+        ));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let absolute = index + switches.len();
+        let line_style = if Some(absolute) == channel_selected && focused {
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            theme::rich_style(theme::TEXT_SECONDARY)
+        };
+        let checked = if row.enabled { "x" } else { " " };
+        let default_mark = if state.embedding_default_key() == row.key {
+            " [默认]"
+        } else {
+            ""
+        };
+        entries.push((
+            Line::styled(
+                format!(
+                    "{} [{checked}] {}{default_mark}",
+                    if Some(absolute) == channel_selected {
+                        "›"
+                    } else {
+                        " "
+                    },
+                    row.name
+                ),
+                line_style,
+            ),
+            Some(absolute),
+        ));
+        entries.push((
+            Line::styled(format!("    {}  {}", row.model, row.base_url), line_style),
+            Some(absolute),
+        ));
+    }
+
+    let cursor = if switch_selected {
+        state.embedding_switch_row()
+    } else {
+        channel_selected.unwrap_or(0)
+    };
+    let owners: Vec<Option<usize>> = entries.iter().map(|(_, owner)| *owner).collect();
+    let start = decision_window_start_owners(&owners, cursor, list_height);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (line, owner) in entries.into_iter().skip(start).take(list_height) {
+        if let Some(owner) = owner {
+            state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(owner));
+        }
+        lines.push(line);
+    }
+
+    Paragraph::new(lines).render(
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.min(list_height.max(1) as u16),
+            ..area
+        },
+        frame.buffer_mut(),
+    );
+}
+
+/// 向量渠道表单：字段一行一个，与决策表单同款（没有枚举候选）。
+fn render_embedding_form(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SettingsState,
+    form: super::state::EmbeddingFormView<'_>,
+) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, field) in EmbeddingField::ORDER.iter().copied().enumerate() {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
+        let is_current = field == form.field;
+        let marker = if is_current { "›" } else { " " };
+        let editing = is_current && form.input.is_some();
+        let value = if editing {
+            form.input
+                .and_then(|composer| composer.wrapped_lines(area.width.saturating_sub(20)).pop())
+                .map(|text| format!("{text}▌"))
+                .unwrap_or_default()
+        } else {
+            embedding_field_value(form.row, field)
+        };
+        let label = format!("{marker} {}：", field.label());
+        lines.push(Line::from(vec![
+            Span::styled(label, theme::rich_style(theme::TEXT_MUTED)),
+            Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+        ]));
+    }
+    if form.is_new {
+        lines.push(Line::styled(
+            fit("  （新建，Ctrl+S 后写入配置）", area.width as usize),
+            theme::rich_style(theme::TEXT_MUTED),
+        ));
+    }
+    let visible = area.height.saturating_sub(4) as usize;
+    let offset = window_offset(lines.len(), visible.max(1), 0);
+    let shown: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(offset)
+        .take(visible.max(1))
+        .collect();
+    Paragraph::new(shown).render(area, frame.buffer_mut());
+}
+
 /// 结构化决策模型页：表单态画字段，列表态画决策渠道行。
 fn render_decision_models(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     match state.decision_form() {
@@ -528,7 +709,11 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
                 theme::rich_style(theme::TEXT_SECONDARY)
             };
             let text = if row.value.is_empty() {
-                format!("{} {}", if absolute == selected { "›" } else { " " }, row.label)
+                format!(
+                    "{} {}",
+                    if absolute == selected { "›" } else { " " },
+                    row.label
+                )
             } else {
                 format!(
                     "{} {}：{}",
@@ -537,7 +722,10 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
                     row.value
                 )
             };
-            entries.push((Line::styled(fit(&text, area.width as usize), line_style), Some(absolute)));
+            entries.push((
+                Line::styled(fit(&text, area.width as usize), line_style),
+                Some(absolute),
+            ));
             // 进度条独占一行画在进度行下方：行宽受限时按比例吃满可用列。
             if row.bar {
                 let detail = if row.progress_detail.is_empty() {
@@ -608,7 +796,11 @@ fn progress_bar_text(ratio: Option<f64>, width: usize, phase: usize) -> String {
             let mut text = String::new();
             for column in 0..width {
                 let inside = column < offset && column + slider >= offset;
-                text.push_str(if inside { PROGRESS_FILLED } else { PROGRESS_EMPTY });
+                text.push_str(if inside {
+                    PROGRESS_FILLED
+                } else {
+                    PROGRESS_EMPTY
+                });
             }
             text
         }
@@ -680,7 +872,11 @@ fn render_decision_form(
                 format!("{} ▼（↑↓ 选择）", decision_field_value(form.row, field))
             }
             (false, _) => {
-                let suffix = if field == DecisionField::Mode { " ▼" } else { "" };
+                let suffix = if field == DecisionField::Mode {
+                    " ▼"
+                } else {
+                    ""
+                };
                 format!("{}{suffix}", decision_field_value(form.row, field))
             }
         };
@@ -976,14 +1172,21 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, _focused: b
     let rows_area = form_rows_area(area, 0);
     let rows = state.form_rows();
     let visible = rows_area.height.max(1) as usize;
-    let offset = window_offset(state.form_focus_position(), state.form_field_count(), visible);
+    let offset = window_offset(
+        state.form_focus_position(),
+        state.form_field_count(),
+        visible,
+    );
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
         .map(|(index, row)| {
-            state.record_hit(row_hit(rows_area, index - offset), HitAction::PaneRow(index));
+            state.record_hit(
+                row_hit(rows_area, index - offset),
+                HitAction::PaneRow(index),
+            );
             let marker = if row.focused { "›" } else { " " };
             let value = if row.has_menu {
                 format!("{} ▼", row.value)
@@ -1060,7 +1263,10 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             HitAction::PaneRow(TOOLS_APPROVAL_ROW),
         );
         lines.push(Line::from(vec![Span::styled(
-            approval_row_text(state, state.tool_selected() == TOOLS_APPROVAL_ROW && focused),
+            approval_row_text(
+                state,
+                state.tool_selected() == TOOLS_APPROVAL_ROW && focused,
+            ),
             if state.tool_selected() == TOOLS_APPROVAL_ROW && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
@@ -1075,7 +1281,10 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             HitAction::PaneRow(TOOLS_WEB_SEARCH_ROW),
         );
         lines.push(Line::from(vec![Span::styled(
-            web_search_row_text(state, state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused),
+            web_search_row_text(
+                state,
+                state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused,
+            ),
             if state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
@@ -1464,7 +1673,10 @@ fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: boo
         } else {
             format!("{marker} {}：{}", row.label, row.value)
         };
-        entries.push((Line::styled(fit(&text, area.width as usize), style), row.index));
+        entries.push((
+            Line::styled(fit(&text, area.width as usize), style),
+            row.index,
+        ));
     }
     let owners: Vec<Option<usize>> = entries.iter().map(|(_, owner)| Some(*owner)).collect();
     let offset = decision_window_start_owners(&owners, state.tts_focused_index(), list_height);

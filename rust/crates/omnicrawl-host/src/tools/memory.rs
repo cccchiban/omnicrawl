@@ -23,10 +23,9 @@ use omnicrawl_session::memory_store::{
 };
 use serde_json::{json, Map, Value};
 
-use super::decision_search::{
-    apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT,
-};
+use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
+use crate::embedding_client::{fuse_rankings, semantic_scores, EmbeddingOptions, EmbeddingRequest};
 
 /// 三个作用域各自的开关与目录；会话级还需要当前会话 ID。
 #[derive(Debug, Clone, Default)]
@@ -41,6 +40,8 @@ pub struct MemoryOptions {
     pub session_enabled: bool,
     /// 搜索重排（`decision_models.toml` 的 `memory_search_rerank` 开关）；未开启时走本地排序。
     pub rerank: Arc<RerankOptions>,
+    /// 向量召回（`config.toml` 的 `[memory_embedding]`）；未启用时只用本地规则打分。
+    pub embedding: Arc<EmbeddingOptions>,
 }
 
 impl MemoryOptions {
@@ -152,7 +153,10 @@ fn rerank_candidate_text(result: &MemorySearchResult) -> String {
         parts.push(format!("存储目录：{}", result.storage_directory));
     }
     if !result.related_directories.is_empty() {
-        parts.push(format!("关联目录：{}", result.related_directories.join("、")));
+        parts.push(format!(
+            "关联目录：{}",
+            result.related_directories.join("、")
+        ));
     }
     parts.join("\n")
 }
@@ -167,7 +171,8 @@ fn record_value(record: &MemoryRecord) -> Value {
 }
 
 /// 重排指令：只要求按相关度排序，不做其他判断。
-const RERANK_INSTRUCTIONS: &str = "给定 state 里的检索查询与调用意图，判断每个候选项与查询的相关程度；\
+const RERANK_INSTRUCTIONS: &str =
+    "给定 state 里的检索查询与调用意图，判断每个候选项与查询的相关程度；\
 state 是事实来源，不要根据候选项自身措辞推测查询。";
 
 pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) -> ToolOutcome {
@@ -187,15 +192,42 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
         .map(Value::String)
         .collect();
     let max_results = read_limited_int(arguments, "max_results", 5, 20) as u32;
-    // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
-    let pool = if options.rerank.active() {
+    // 重排或向量召回开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序由
+    // 向量相似度与规则分（或决策模型）决定。
+    let wide_pool = options.rerank.active() || options.embedding.active();
+    let pool = if wide_pool {
         max_results.max(RERANK_POOL_LIMIT as u32)
     } else {
         max_results
     };
-    let mut results = store
+    let results = store
         .search(&query, &candidates, pool)
         .map_err(store_error)?;
+
+    // 混合重排：本地规则分给出初序，向量召回给出语义序，按倒数排名融合两路。
+    // 向量不可用（未配置、无凭据、失败、候选不足）时 kept 初序不变，退化成纯粹规则排序。
+    let mut ranked: Vec<MemorySearchResult> = results;
+    if options.embedding.active() {
+        let texts: Vec<String> = ranked.iter().map(rerank_candidate_text).collect();
+        if let Some(channel) = options.embedding.channel.as_ref() {
+            if let Some(scored) = semantic_scores(
+                options.embedding.as_ref(),
+                EmbeddingRequest {
+                    channel,
+                    cache: &options.embedding.cache,
+                    client: options.embedding.client.as_ref(),
+                    query: &query,
+                    candidates: &texts,
+                },
+            ) {
+                let rule_order: Vec<usize> = (0..ranked.len()).collect();
+                let semantic_order: Vec<usize> =
+                    scored.into_iter().map(|(index, _)| index).collect();
+                ranked = apply_order(ranked, &fuse_rankings(&rule_order, &semantic_order));
+            }
+        }
+    }
+
     if options.rerank.active() {
         let state = json!({
             "scope": scope.as_str(),
@@ -203,7 +235,7 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
             "reason": reason,
             "candidate_directories": candidates,
         });
-        let texts: Vec<String> = results.iter().map(rerank_candidate_text).collect();
+        let texts: Vec<String> = ranked.iter().map(rerank_candidate_text).collect();
         if let Some(order) = reranked_order(
             options.rerank.as_ref(),
             state,
@@ -211,9 +243,10 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
             &query,
             &texts,
         ) {
-            results = apply_order(results, &order);
+            ranked = apply_order(ranked, &order);
         }
     }
+    let mut results = ranked;
     results.truncate(max_results as usize);
     Ok(python_dumps(
         &Value::Array(results.iter().map(search_result_value).collect()),
@@ -303,6 +336,28 @@ pub fn memory_write(options: &MemoryOptions, arguments: &Map<String, Value>) -> 
             related_directories,
             storage_directory: optional_string(memory, "storage_directory", number)?,
             source_event: optional_string(memory, "source_event", number)?,
+            supersedes: match memory.get("supersedes") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(entries)) => {
+                    if !entries.iter().all(Value::is_string) {
+                        return Err(ToolError::new(format!(
+                            "第 {number} 条记忆 supersedes 必须是字符串列表。"
+                        )));
+                    }
+                    entries
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                }
+                Some(_) => {
+                    return Err(ToolError::new(format!(
+                        "第 {number} 条记忆 supersedes 必须是字符串列表。"
+                    )))
+                }
+            },
         });
     }
 
@@ -481,7 +536,10 @@ mod tests {
         }
     }
 
-    fn rerank_options(order: Vec<usize>, seen: Arc<std::sync::Mutex<Vec<String>>>) -> RerankOptions {
+    fn rerank_options(
+        order: Vec<usize>,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> RerankOptions {
         use super::super::decision_search::RerankChannel;
         RerankOptions {
             enabled: true,
@@ -513,9 +571,7 @@ mod tests {
             )
             .expect("写入应当成功");
             let records: Value = serde_json::from_str(&record).expect("写入结果是 JSON");
-            written.push(
-                records[0]["id"].as_str().unwrap_or_default().to_string(),
-            );
+            written.push(records[0]["id"].as_str().unwrap_or_default().to_string());
         }
 
         // 先取一次本地顺序作为基准。

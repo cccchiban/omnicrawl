@@ -3,7 +3,7 @@
 //! 已搬：定义解析与来源发现、worktree 的判定面、orchestration 的判定/投影面、
 //! 只读命令策略，以及**任务生命周期本体**（`tasks.rs` 的 `SubAgentTaskManager`：
 //! 提交/查询/取消、回收恢复、保留期清理）。
-//! 留在宿主：模型运行时引导与线程池（`omnicrawl-cli/src/subagent.rs`）、
+//! 留在宿主：模型运行时引导（`omnicrawl-cli/src/subagent.rs`，子回合在回合内同步执行）、
 //! worktree 的 git 操作（`omnicrawl-cli/src/worktree.rs`）、Session 落盘与事件观察者转发。
 
 pub mod batch;

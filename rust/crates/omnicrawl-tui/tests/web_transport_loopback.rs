@@ -212,10 +212,7 @@ fn serve_session() -> (String, Arc<Mutex<Vec<(String, String)>>>) {
                         .unwrap_or_default();
                 }
             }
-            captured
-                .lock()
-                .expect("头锁")
-                .push((path.clone(), cookie));
+            captured.lock().expect("头锁").push((path.clone(), cookie));
 
             let response = match path.as_str() {
                 "/login" => "HTTP/1.1 302 Found\r\nLocation: /home\r\nSet-Cookie: sid=abc; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
@@ -273,10 +270,7 @@ fn serve_cross_site() -> (String, Arc<Mutex<Vec<(String, String)>>>) {
                         .unwrap_or_default();
                 }
             }
-            captured
-                .lock()
-                .expect("头锁")
-                .push((path.clone(), cookie));
+            captured.lock().expect("头锁").push((path.clone(), cookie));
 
             let response = match path.as_str() {
                 // 跨站：跳到另一个回环 IP。
@@ -336,7 +330,8 @@ fn samesite_is_enforced_across_a_cross_site_redirect() {
     // 跨站：新罐，避免上一轮的 cookie 混进来。
     let (base, seen) = serve_cross_site();
     let cross_options = options();
-    fetcher::fetcher(&cross_options, &arguments(&format!("{base}/cross"))).expect("跨站跳转应当成功");
+    fetcher::fetcher(&cross_options, &arguments(&format!("{base}/cross")))
+        .expect("跨站跳转应当成功");
     let cross_target = seen
         .lock()
         .expect("头锁")
@@ -388,10 +383,7 @@ fn serve_referer() -> (String, Arc<Mutex<Vec<(String, String)>>>) {
                         .unwrap_or_default();
                 }
             }
-            captured
-                .lock()
-                .expect("头锁")
-                .push((path.clone(), referer));
+            captured.lock().expect("头锁").push((path.clone(), referer));
 
             let response = match path.as_str() {
                 "/start" => format!(
@@ -473,8 +465,7 @@ fn serve_fetch_metadata() -> (String, Arc<Mutex<Vec<(String, String, String, Str
     // 每跳记录 (路径, site, dest, mode)。
     let listener = TcpListener::bind("0.0.0.0:0").expect("绑定本地端口");
     let port = listener.local_addr().expect("本地地址").port();
-    let seen: Arc<Mutex<Vec<(String, String, String, String)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<(String, String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -583,8 +574,8 @@ fn cookies_set_on_a_redirect_are_replayed_on_the_next_hop_and_request() {
     let options = options();
 
     // 一次抓取内的重定向：/login 下发的 cookie 必须带到 /home。
-    let login = fetcher::fetcher(&options, &arguments(&format!("{base}/login")))
-        .expect("登录跳转应当成功");
+    let login =
+        fetcher::fetcher(&options, &arguments(&format!("{base}/login"))).expect("登录跳转应当成功");
     assert!(login.contains(&format!("最终地址: {base}/home")), "{login}");
 
     // 跨请求：同一个罐（`FetcherOptions` 里那份）在后续抓取里继续生效。

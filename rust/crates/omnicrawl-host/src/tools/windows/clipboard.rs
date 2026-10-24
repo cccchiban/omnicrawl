@@ -151,7 +151,11 @@ fn read_clipboard_file_path_locked() -> Option<String> {
         String::from_utf16(&units).ok()
     } else {
         let rest = &bytes[offset..];
-        let text: Vec<u8> = rest.iter().take_while(|byte| **byte != 0).copied().collect();
+        let text: Vec<u8> = rest
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .copied()
+            .collect();
         if text.is_empty() {
             return None;
         }
@@ -293,7 +297,11 @@ fn dib_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
             rgba.push(pixel[0]);
             // 24 位没有 alpha 通道，按不透明处理；32 位里 0 常见于「未填 alpha」的截图工具，
             // 照原样保留会让整张图看起来全透明，因此 0 也当不透明。
-            rgba.push(if channels == 4 && pixel[3] != 0 { pixel[3] } else { 255 });
+            rgba.push(if channels == 4 && pixel[3] != 0 {
+                pixel[3]
+            } else {
+                255
+            });
         }
     }
 
@@ -458,7 +466,13 @@ mod tests {
         let blue_rgba = [0u8, 0, 255, 255];
         for top_down in [false, true] {
             for v5 in [false, true] {
-                let raw = dib(2, 2, &[red_bgra, red_bgra, blue_bgra, blue_bgra], top_down, v5);
+                let raw = dib(
+                    2,
+                    2,
+                    &[red_bgra, red_bgra, blue_bgra, blue_bgra],
+                    top_down,
+                    v5,
+                );
                 let png = dib_to_png(&raw)
                     .unwrap_or_else(|| panic!("top_down={top_down} v5={v5} 应当能解码"));
                 let (width, height, rgba) = decode_png(&png);
@@ -498,7 +512,11 @@ mod tests {
         with_masks.extend_from_slice(&raw[40..]);
         let png = dib_to_png(&with_masks).expect("掩码正确时应当能解码");
         let (width, _, rgba) = decode_png(&png);
-        assert_eq!(pixel(&rgba, width, 0, 0), [255, 0, 0, 255], "BGRA 的纯红解出 RGBA 纯红");
+        assert_eq!(
+            pixel(&rgba, width, 0, 0),
+            [255, 0, 0, 255],
+            "BGRA 的纯红解出 RGBA 纯红"
+        );
 
         // 非 BGRA 掩码（ARGB）：宁可当「不是图片」，也不要把颜色猜错。
         let mut argb = with_masks.clone();

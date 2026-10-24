@@ -102,7 +102,12 @@ mod tests {
         }
     }
 
-    fn observation(call: ToolCall, ok: bool, output: &str, full_output: &str) -> AgentLoopObservation {
+    fn observation(
+        call: ToolCall,
+        ok: bool,
+        output: &str,
+        full_output: &str,
+    ) -> AgentLoopObservation {
         AgentLoopObservation {
             message: json!({"role": "tool", "tool_call_id": &call.id, "content": output}),
             tool_call: call,
@@ -126,7 +131,11 @@ mod tests {
         let store = SessionStore::open(&root);
         store.ensure().expect("会话根应当就绪");
         let session_id = store
-            .start_session(&root.to_string_lossy(), "工具事件测试", omnicrawl_session::utc_now())
+            .start_session(
+                &root.to_string_lossy(),
+                "工具事件测试",
+                omnicrawl_session::utc_now(),
+            )
             .expect("应当能建会话")
             .session_id;
         (root, store, session_id)
@@ -158,7 +167,12 @@ mod tests {
         );
         assert_eq!(
             record_results(
-                &[observation(call("read_file", "call-1"), true, "预览", "全文")],
+                &[observation(
+                    call("read_file", "call-1"),
+                    true,
+                    "预览",
+                    "全文"
+                )],
                 &store,
                 &session_id
             ),
@@ -174,7 +188,10 @@ mod tests {
         assert_eq!(requested.payload["tool_call_id"], "call-1");
         assert_eq!(requested.payload["function_name"], "read_file");
         assert_eq!(requested.payload["assistant_content"], "先读一下文件。");
-        assert_eq!(requested.payload["assistant_reasoning_content"], "先看内容再回答。");
+        assert_eq!(
+            requested.payload["assistant_reasoning_content"],
+            "先看内容再回答。"
+        );
         assert_eq!(requested.payload["arguments"], json!({"path": "a.py"}));
         // 协议原文（可能含明文密钥）不落盘。
         assert!(requested.payload.get("arguments_json").is_none());
@@ -184,7 +201,10 @@ mod tests {
             .find(|event| event.event_type == "tool_result")
             .expect("应当有 tool_result 事件");
         assert_eq!(result.payload["output"], "全文", "output 取展示全文");
-        assert_eq!(result.payload["model_output"], "预览", "model_output 是模型可见输出");
+        assert_eq!(
+            result.payload["model_output"], "预览",
+            "model_output 是模型可见输出"
+        );
         assert_eq!(result.payload["ui_artifact"], json!({}));
         // 哈希、体积与存放位置由会话存储补齐（与 Python 转录同键集）。
         assert_eq!(result.payload["storage"], "inline");
@@ -193,7 +213,8 @@ mod tests {
 
         // 恢复投影：两条事件折回成「assistant tool_calls + tool 结果」协议消息，
         // 重启后（/resume）模型才看得到上一轮真正调用过什么。
-        let history = project_session_history(&store.read_active_events(&session_id).expect("有效事件"));
+        let history =
+            project_session_history(&store.read_active_events(&session_id).expect("有效事件"));
         let calls: Vec<Value> = history
             .iter()
             .filter_map(|(_, message)| message.get("tool_calls").and_then(Value::as_array).cloned())
@@ -223,7 +244,12 @@ mod tests {
         let long_output = "x".repeat(omnicrawl_session::TOOL_RESULT_INLINE_OUTPUT_CHARS + 100);
         assert_eq!(
             record_results(
-                &[observation(call("grep", "call-2"), true, &long_output, &long_output)],
+                &[observation(
+                    call("grep", "call-2"),
+                    true,
+                    &long_output,
+                    &long_output
+                )],
                 &store,
                 &session_id
             ),
@@ -236,7 +262,10 @@ mod tests {
             .find(|event| event.event_type == "tool_result")
             .expect("应当有 tool_result 事件")
             .payload;
-        assert_eq!(result["storage"], "artifact", "超长输出落 artifact：{result:?}");
+        assert_eq!(
+            result["storage"], "artifact",
+            "超长输出落 artifact：{result:?}"
+        );
         assert!(result["artifact_path"].is_string(), "应带 artifact 路径");
         assert!(result["output_preview"].is_string(), "应带头部预览");
         assert_eq!(result["output_size_chars"], long_output.chars().count());

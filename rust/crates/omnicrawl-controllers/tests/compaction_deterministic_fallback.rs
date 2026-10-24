@@ -71,7 +71,9 @@ struct FailingModel;
 
 impl SummaryModelCall for FailingModel {
     fn call(&self, _messages: &[Value]) -> Result<SummaryModelResponse, SummaryGenerationError> {
-        Err(SummaryGenerationError::new("摘要模型请求失败：upstream 503"))
+        Err(SummaryGenerationError::new(
+            "摘要模型请求失败：upstream 503",
+        ))
     }
 }
 
@@ -112,7 +114,8 @@ impl SummaryCompactorPort for GoodCompactor {
 }
 
 fn service_with_model(model: Box<dyn SummaryModelCall>) -> ContextCompactionService {
-    let compactor = ModelSummaryCompactor::new(model, SUMMARY_PROMPT, 64_000).expect("压缩器可构造");
+    let compactor =
+        ModelSummaryCompactor::new(model, SUMMARY_PROMPT, 64_000).expect("压缩器可构造");
     ContextCompactionService::new()
         .with_compactor(Box::new(compactor))
         .with_deterministic_fallback(true)

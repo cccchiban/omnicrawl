@@ -71,12 +71,8 @@ impl Suite12 {
 
     pub fn aead(&self) -> &'static aead::Algorithm {
         match self {
-            Self::EcdheEcdsaAes128GcmSha256 | Self::EcdheRsaAes128GcmSha256 => {
-                &aead::AES_128_GCM
-            }
-            Self::EcdheEcdsaAes256GcmSha384 | Self::EcdheRsaAes256GcmSha384 => {
-                &aead::AES_256_GCM
-            }
+            Self::EcdheEcdsaAes128GcmSha256 | Self::EcdheRsaAes128GcmSha256 => &aead::AES_128_GCM,
+            Self::EcdheEcdsaAes256GcmSha384 | Self::EcdheRsaAes256GcmSha384 => &aead::AES_256_GCM,
             Self::EcdheEcdsaChacha20Sha256 | Self::EcdheRsaChacha20Sha256 => {
                 &aead::CHACHA20_POLY1305
             }
@@ -236,7 +232,13 @@ pub fn extended_master_secret(
     session_hash: &[u8],
 ) -> [u8; MASTER_LEN] {
     let mut master = [0u8; MASTER_LEN];
-    prf(hash, pre_master, "extended master secret", session_hash, &mut master);
+    prf(
+        hash,
+        pre_master,
+        "extended master secret",
+        session_hash,
+        &mut master,
+    );
     master
 }
 
@@ -525,8 +527,9 @@ pub fn parse_certificate_chain(body: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let mut offset = 0;
     let mut chain = Vec::new();
     while offset + 3 <= list.len() {
-        let len =
-            ((list[offset] as usize) << 16) | ((list[offset + 1] as usize) << 8) | list[offset + 2] as usize;
+        let len = ((list[offset] as usize) << 16)
+            | ((list[offset + 1] as usize) << 8)
+            | list[offset + 2] as usize;
         offset += 3;
         if offset + len > list.len() {
             return Err("Certificate 链中某张证书截断".to_string());
@@ -603,8 +606,20 @@ mod tests {
     fn sha384_prf_differs_from_sha256() {
         let mut sha256 = [0u8; 48];
         let mut sha384 = [0u8; 48];
-        prf(PrfHash::Sha256, b"secret", "master secret", b"seed", &mut sha256);
-        prf(PrfHash::Sha384, b"secret", "master secret", b"seed", &mut sha384);
+        prf(
+            PrfHash::Sha256,
+            b"secret",
+            "master secret",
+            b"seed",
+            &mut sha256,
+        );
+        prf(
+            PrfHash::Sha384,
+            b"secret",
+            "master secret",
+            b"seed",
+            &mut sha384,
+        );
         assert_ne!(sha256, sha384);
     }
 
@@ -645,10 +660,16 @@ mod tests {
         };
         let mut sender = RecordKey12::new(suite, &traffic).expect("密钥");
         let mut receiver = RecordKey12::new(suite, &traffic).expect("密钥");
-        let sealed = sender.seal(ContentType::Handshake, b"finished").expect("加密");
+        let sealed = sender
+            .seal(ContentType::Handshake, b"finished")
+            .expect("加密");
         assert_eq!(sealed.kind, ContentType::Handshake, "1.2 保留真实记录类型");
         assert_eq!(sealed.payload.len(), 8 + 8 + 16);
-        assert_eq!(&sealed.payload[..8], &0u64.to_be_bytes(), "首条记录的显式 nonce 是 0");
+        assert_eq!(
+            &sealed.payload[..8],
+            &0u64.to_be_bytes(),
+            "首条记录的显式 nonce 是 0"
+        );
         let plaintext = receiver.open(&sealed).expect("解密");
         assert_eq!(plaintext, b"finished");
         assert_eq!(sender.sequence(), 1);
@@ -664,7 +685,9 @@ mod tests {
         };
         let mut sender = RecordKey12::new(suite, &traffic).expect("密钥");
         let mut receiver = RecordKey12::new(suite, &traffic).expect("密钥");
-        let sealed = sender.seal(ContentType::ApplicationData, b"body").expect("加密");
+        let sealed = sender
+            .seal(ContentType::ApplicationData, b"body")
+            .expect("加密");
         assert_eq!(sealed.payload.len(), 4 + 16, "没有显式 nonce");
         assert_eq!(receiver.open(&sealed).expect("解密"), b"body");
     }
@@ -678,7 +701,9 @@ mod tests {
         };
         let mut sender = RecordKey12::new(suite, &traffic).expect("密钥");
         let mut receiver = RecordKey12::new(suite, &traffic).expect("密钥");
-        let mut sealed = sender.seal(ContentType::ApplicationData, b"payload").expect("加密");
+        let mut sealed = sender
+            .seal(ContentType::ApplicationData, b"payload")
+            .expect("加密");
         sealed.payload[10] ^= 0xff;
         assert!(receiver.open(&sealed).is_err(), "篡改必须被拒绝");
     }
@@ -694,7 +719,9 @@ mod tests {
         };
         let mut sender = RecordKey12::new(suite, &traffic).expect("密钥");
         let mut receiver = RecordKey12::new(suite, &traffic).expect("密钥");
-        let sealed = sender.seal(ContentType::Handshake, b"payload").expect("加密");
+        let sealed = sender
+            .seal(ContentType::Handshake, b"payload")
+            .expect("加密");
         let forged = Record {
             kind: ContentType::ApplicationData,
             payload: sealed.payload,
@@ -720,7 +747,11 @@ mod tests {
         assert_eq!(parsed.point, point);
         assert_eq!(parsed.scheme, 0x0403);
         assert_eq!(parsed.signature, vec![0xaa, 0xbb, 0xcc]);
-        assert_eq!(parsed.params.len(), 4 + point.len(), "被签名的部分不含签名算法");
+        assert_eq!(
+            parsed.params.len(),
+            4 + point.len(),
+            "被签名的部分不含签名算法"
+        );
     }
 
     #[test]
@@ -762,8 +793,10 @@ mod tests {
 
     #[test]
     fn finished_is_twelve_bytes_and_depends_on_the_label() {
-        let client = finished_verify_data(PrfHash::Sha256, &[0x11; 48], "client finished", &[0x22; 32]);
-        let server = finished_verify_data(PrfHash::Sha256, &[0x11; 48], "server finished", &[0x22; 32]);
+        let client =
+            finished_verify_data(PrfHash::Sha256, &[0x11; 48], "client finished", &[0x22; 32]);
+        let server =
+            finished_verify_data(PrfHash::Sha256, &[0x11; 48], "server finished", &[0x22; 32]);
         assert_eq!(client.len(), FINISHED_LEN);
         assert_ne!(client, server);
     }

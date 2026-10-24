@@ -16,6 +16,16 @@ pub type Hgdiobj = *mut c_void;
 
 pub const SW_RESTORE: c_int = 9;
 
+/// `SetWindowPos` 的 `hWndInsertAfter` 伪句柄：临时置顶再撤销时用。
+pub const HWND_TOPMOST: Hwnd = 0xFFFF_FFFF_FFFF_FFFF_usize as Hwnd;
+pub const HWND_NOTOPMOST: Hwnd = 0xFFFF_FFFF_FFFF_FFFE_usize as Hwnd;
+pub const SWP_NOSIZE: u32 = 0x0001;
+pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_SHOWWINDOW: u32 = 0x0040;
+
+/// `VK_MENU`（ALT）：模拟一次按键让 Windows 认为本进程刚收到用户输入。
+pub const VK_MENU: u16 = 0x12;
+
 pub const CF_UNICODETEXT: u32 = 13;
 pub const CF_DIB: u32 = 8;
 pub const CF_DIBV5: u32 = 17;
@@ -35,6 +45,11 @@ pub const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
 pub const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
 pub const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
 pub const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
+/// 侧键（前进/后退）的按下与松开：具体是哪个键由 `mouse_data` 的 `XBUTTON*` 决定。
+pub const MOUSEEVENTF_XDOWN: u32 = 0x0080;
+pub const MOUSEEVENTF_XUP: u32 = 0x0100;
+pub const XBUTTON1: u32 = 0x0001;
+pub const XBUTTON2: u32 = 0x0002;
 pub const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 pub const MOUSEEVENTF_VIRTUALDESK: u32 = 0x4000;
 pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
@@ -146,6 +161,18 @@ unsafe extern "system" {
     pub fn GetClassNameW(hwnd: Hwnd, buffer: *mut u16, max_count: c_int) -> c_int;
     pub fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     pub fn GetForegroundWindow() -> Hwnd;
+    pub fn GetCurrentThreadId() -> u32;
+    pub fn AttachThreadInput(attach: u32, attach_to: u32, should_attach: Bool) -> Bool;
+    pub fn BringWindowToTop(hwnd: Hwnd) -> Bool;
+    pub fn SetWindowPos(
+        hwnd: Hwnd,
+        insert_after: Hwnd,
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        flags: u32,
+    ) -> Bool;
     pub fn ShowWindow(hwnd: Hwnd, command: c_int) -> Bool;
     pub fn SetForegroundWindow(hwnd: Hwnd) -> Bool;
     pub fn SendInput(count: u32, inputs: *const Input, size: c_int) -> u32;

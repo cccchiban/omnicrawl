@@ -132,7 +132,8 @@ pub fn ensure_environment(
         });
     }
 
-    std::fs::create_dir_all(root).map_err(|error| format!("创建 {} 失败：{error}", root.display()))?;
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("创建 {} 失败：{error}", root.display()))?;
 
     if !python.is_file() {
         progress(
@@ -184,7 +185,11 @@ pub fn ensure_environment(
         let mut on_line = |line: &str| progress(line, 2, INSTALL_STEPS);
         run_command(&mut pip, "安装 torch", Some(&log), &mut on_line)?;
 
-        progress(&format!("3/{INSTALL_STEPS} 安装 qev（OneJev 官方服务）…"), 3, INSTALL_STEPS);
+        progress(
+            &format!("3/{INSTALL_STEPS} 安装 qev（OneJev 官方服务）…"),
+            3,
+            INSTALL_STEPS,
+        );
         let spec = "qev[torch] @ git+https://github.com/OmniJev/OneJev.git";
         let log = paths::install_log_dir(root).join("3-qev.log");
         let mut pip = pip_command(&python);
@@ -441,7 +446,10 @@ fn run_command(
 fn failure_reason(stderr_text: &str, stdout_lines: &[String]) -> String {
     let mut error_lines: Vec<&str> = Vec::new();
     let mut exception_line: Option<&str> = None;
-    for line in stderr_text.lines().chain(stdout_lines.iter().map(|s| s.as_str())) {
+    for line in stderr_text
+        .lines()
+        .chain(stdout_lines.iter().map(|s| s.as_str()))
+    {
         let text = line.trim();
         if text.is_empty() {
             continue;
@@ -493,7 +501,11 @@ fn is_exception_line(line: &str) -> bool {
 }
 
 /// 把一次子进程的完整输出写进日志文件（stdout 与 stderr 分节，便于排查）。
-fn write_install_log(path: &Path, stdout_lines: &[String], stderr_text: &str) -> std::io::Result<()> {
+fn write_install_log(
+    path: &Path,
+    stdout_lines: &[String],
+    stderr_text: &str,
+) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -530,10 +542,7 @@ impl<R: Read> LineStream<R> {
 
     fn next_line(&mut self) -> Option<String> {
         loop {
-            if let Some(index) = self
-                .pending
-                .find(['\n', '\r'])
-            {
+            if let Some(index) = self.pending.find(['\n', '\r']) {
                 let rest = self.pending.split_off(index + 1);
                 let mut line = std::mem::replace(&mut self.pending, rest);
                 line.truncate(index);
@@ -631,7 +640,9 @@ mod tests {
             return; // 本机没有可用解释器时跳过（不是失败）。
         };
         let mut command = launcher.command();
-        command.arg("-c").arg("import sys; print(sys.version_info[0])");
+        command
+            .arg("-c")
+            .arg("import sys; print(sys.version_info[0])");
         let output = command
             .output()
             .unwrap_or_else(|error| panic!("{} 起不来：{error}", launcher.display()));
@@ -642,7 +653,9 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout).trim().starts_with('3'),
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .starts_with('3'),
             "应报出主版本"
         );
     }
@@ -667,7 +680,10 @@ mod tests {
         std::fs::write(model.join("config.json"), b"{}").expect("放个权重文件");
         std::fs::create_dir_all(paths::hf_cache_dir(&root)).expect("建缓存目录");
 
-        assert!(remove_environment(&root).expect("删除应当成功"), "有 venv 时应报告已删");
+        assert!(
+            remove_environment(&root).expect("删除应当成功"),
+            "有 venv 时应报告已删"
+        );
         assert!(!paths::venv_dir(&root).exists(), "venv 应被删掉");
         assert!(model.is_dir(), "权重必须保留");
         assert!(paths::hf_cache_dir(&root).is_dir(), "下载缓存必须保留");
@@ -690,7 +706,8 @@ mod tests {
     #[test]
     fn line_stream_splits_on_carriage_returns() {
         // pip 的进度条只用 `\r` 刷新，必须能切出中间态。
-        let mut stream = LineStream::new(Cursor::new(b"a\rDownloading 10%\rDownloading 90%\n"), 400);
+        let mut stream =
+            LineStream::new(Cursor::new(b"a\rDownloading 10%\rDownloading 90%\n"), 400);
         assert_eq!(stream.next_line().as_deref(), Some("a"));
         assert_eq!(stream.next_line().as_deref(), Some("Downloading 10%"));
         assert_eq!(stream.next_line().as_deref(), Some("Downloading 90%"));
@@ -752,7 +769,13 @@ ERROR: No matching distribution found for torch
     #[test]
     fn failure_reason_reads_stdout_when_stderr_is_empty() {
         // 有些失败只有 stdout 有内容。
-        let reason = failure_reason("", &["Collecting torch".to_string(), "ERROR: 目标不可达".to_string()]);
+        let reason = failure_reason(
+            "",
+            &[
+                "Collecting torch".to_string(),
+                "ERROR: 目标不可达".to_string(),
+            ],
+        );
         assert!(reason.contains("目标不可达"), "{reason}");
     }
 
@@ -769,21 +792,23 @@ ERROR: No matching distribution found for torch
         ));
         assert!(!is_exception_line("    return self._handle_target_dir("));
         assert!(!is_exception_line("with self._error_catcher():"));
-        assert!(is_exception_line("urllib3.exceptions.ProtocolError: Connection broken"));
-        assert!(is_exception_line("ConnectionResetError: [WinError 10054] 远程主机强迫关闭"));
-        assert!(is_exception_line("pip._vendor.urllib3.exceptions.ReadTimeoutError: x"));
+        assert!(is_exception_line(
+            "urllib3.exceptions.ProtocolError: Connection broken"
+        ));
+        assert!(is_exception_line(
+            "ConnectionResetError: [WinError 10054] 远程主机强迫关闭"
+        ));
+        assert!(is_exception_line(
+            "pip._vendor.urllib3.exceptions.ReadTimeoutError: x"
+        ));
     }
 
     #[test]
     fn install_log_records_both_streams() {
         let path = std::env::temp_dir().join(format!("oc-onejev-log-{}.log", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        write_install_log(
-            &path,
-            &["Downloading torch".to_string()],
-            "ERROR: boom\n",
-        )
-        .expect("写日志");
+        write_install_log(&path, &["Downloading torch".to_string()], "ERROR: boom\n")
+            .expect("写日志");
         let text = std::fs::read_to_string(&path).expect("读回日志");
         assert!(text.contains("=== stdout ==="), "{text}");
         assert!(text.contains("Downloading torch"), "{text}");
@@ -823,17 +848,17 @@ ERROR: No matching distribution found for torch
             error.contains("urllib3.exceptions.ProtocolError"),
             "文案要点出真正原因：{error}"
         );
-        assert!(
-            !error.contains("_error_catcher"),
-            "不该是中间帧：{error}"
-        );
+        assert!(!error.contains("_error_catcher"), "不该是中间帧：{error}");
         assert!(
             error.contains(&log.display().to_string()) || error.contains("完整日志"),
             "文案要给出完整日志路径：{error}"
         );
         let text = std::fs::read_to_string(&log).expect("日志应落盘");
         assert!(text.contains("Collecting torch"), "{text}");
-        assert!(text.contains("_error_catcher"), "日志里保留完整 traceback：{text}");
+        assert!(
+            text.contains("_error_catcher"),
+            "日志里保留完整 traceback：{text}"
+        );
         let _ = std::fs::remove_file(&log);
     }
 }

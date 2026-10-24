@@ -18,7 +18,9 @@ use boa_engine::builtins::object::OrdinaryObject;
 use boa_engine::object::builtins::{JsArray, JsPromise};
 use boa_engine::object::{FunctionObjectBuilder, ObjectInitializer};
 use boa_engine::property::{Attribute, PropertyKey};
-use boa_engine::{js_string, Context, JsError, JsObject, JsResult, JsString, JsValue, NativeFunction};
+use boa_engine::{
+    js_string, Context, JsError, JsObject, JsResult, JsString, JsValue, NativeFunction,
+};
 
 use crate::fingerprint::Profile;
 
@@ -96,7 +98,8 @@ fn install_task_and_clone(context: &mut Context) {
     // `queueMicrotask`：同步执行。沙箱没有真实事件循环，但回调里往往是
     // 「渲染 + 再发一次请求」，同步跑完正是我们想要的结果。
     let microtask = NativeFunction::from_fn_ptr(run_callback_now).to_js_function(context.realm());
-    let _ = context.register_global_property(js_string!("queueMicrotask"), microtask, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("queueMicrotask"), microtask, Attribute::all());
 
     // `reportError`：埋点与错误边界会调用；不记录只吞掉。
     let report = NativeFunction::from_fn_ptr(noop).to_js_function(context.realm());
@@ -105,23 +108,35 @@ fn install_task_and_clone(context: &mut Context) {
     // `structuredClone`：深层复制。boa 无内置实现，用 JSON 往返近似——
     // 对「配置对象深拷贝」这类用途足够，函数与循环引用会退化为浅引用。
     let clone = NativeFunction::from_fn_ptr(structured_clone).to_js_function(context.realm());
-    let _ = context.register_global_property(js_string!("structuredClone"), clone, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("structuredClone"), clone, Attribute::all());
 
     // `btoa` / `atob`：base64 编解码，埋点上报与图标内联常见。
     for (name, function) in [
-        ("btoa", NativeFunction::from_fn_ptr(btoa).to_js_function(context.realm())),
-        ("atob", NativeFunction::from_fn_ptr(atob).to_js_function(context.realm())),
+        (
+            "btoa",
+            NativeFunction::from_fn_ptr(btoa).to_js_function(context.realm()),
+        ),
+        (
+            "atob",
+            NativeFunction::from_fn_ptr(atob).to_js_function(context.realm()),
+        ),
     ] {
         let _ = context.register_global_property(JsString::from(name), function, Attribute::all());
     }
 
     // `getComputedStyle`：返回带常用属性的样式对象。页面常读 `display`/`visibility`。
     let computed = NativeFunction::from_fn_ptr(get_computed_style).to_js_function(context.realm());
-    let _ = context.register_global_property(js_string!("getComputedStyle"), computed, Attribute::all());
+    let _ = context.register_global_property(
+        js_string!("getComputedStyle"),
+        computed,
+        Attribute::all(),
+    );
 
     // `getSelection`：编辑器与「选中文本」逻辑会调用，返回带常用方法的对象。
     let selection = NativeFunction::from_fn_ptr(get_selection).to_js_function(context.realm());
-    let _ = context.register_global_property(js_string!("getSelection"), selection, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("getSelection"), selection, Attribute::all());
 
     // `customElements`：Web Components 注册表。`define` 只登记，不参与渲染。
     let registry = ObjectInitializer::new(context)
@@ -130,7 +145,8 @@ fn install_task_and_clone(context: &mut Context) {
         .function(native(custom_elements_get), js_string!("get"), 1)
         .function(native(noop), js_string!("whenDefined"), 1)
         .build();
-    let _ = context.register_global_property(js_string!("customElements"), registry, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("customElements"), registry, Attribute::all());
 }
 
 fn run_callback_now(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -170,11 +186,7 @@ fn structured_clone(_this: &JsValue, args: &[JsValue], context: &mut Context) ->
         return Ok(value.clone());
     }
     restore
-        .call(
-            &JsValue::undefined(),
-            &[encoded],
-            context,
-        )
+        .call(&JsValue::undefined(), &[encoded], context)
         .or(Ok(value.clone()))
 }
 
@@ -188,7 +200,9 @@ fn btoa(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    Ok(JsValue::from(JsString::from(base64_encode(text.as_bytes()))))
+    Ok(JsValue::from(JsString::from(base64_encode(
+        text.as_bytes(),
+    ))))
 }
 
 fn atob(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -257,17 +271,33 @@ fn base64_decode(text: &str) -> Vec<u8> {
     out
 }
 
-fn get_computed_style(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn get_computed_style(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     // 没有布局引擎：给出「元素可见」这一最常见前提下的取值。
     // `display: none` 的判定依赖真实样式表，沙箱里做不到，这一点在文档中声明。
     Ok(ObjectInitializer::new(context)
         .property(js_string!("display"), js_string!("block"), Attribute::all())
-        .property(js_string!("visibility"), js_string!("visible"), Attribute::all())
+        .property(
+            js_string!("visibility"),
+            js_string!("visible"),
+            Attribute::all(),
+        )
         .property(js_string!("opacity"), js_string!("1"), Attribute::all())
-        .property(js_string!("position"), js_string!("static"), Attribute::all())
+        .property(
+            js_string!("position"),
+            js_string!("static"),
+            Attribute::all(),
+        )
         .property(js_string!("height"), js_string!("0px"), Attribute::all())
         .property(js_string!("width"), js_string!("0px"), Attribute::all())
-        .property(js_string!("overflow"), js_string!("visible"), Attribute::all())
+        .property(
+            js_string!("overflow"),
+            js_string!("visible"),
+            Attribute::all(),
+        )
         .function(native(noop), js_string!("getPropertyValue"), 1)
         .build()
         .into())
@@ -278,7 +308,11 @@ fn get_selection(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> J
     Ok(ObjectInitializer::new(context)
         .property(js_string!("rangeCount"), JsValue::from(0), Attribute::all())
         .property(js_string!("type"), js_string!("None"), Attribute::all())
-        .property(js_string!("isCollapsed"), JsValue::from(true), Attribute::all())
+        .property(
+            js_string!("isCollapsed"),
+            JsValue::from(true),
+            Attribute::all(),
+        )
         .function(native(text_returning_empty), js_string!("toString"), 0)
         .function(native(noop), js_string!("removeAllRanges"), 0)
         .function(native(noop), js_string!("addRange"), 1)
@@ -288,30 +322,46 @@ fn get_selection(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> J
         .into())
 }
 
-fn text_returning_empty(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn text_returning_empty(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(JsValue::from(js_string!("")))
 }
 
-fn custom_elements_get(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn custom_elements_get(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(JsValue::undefined())
 }
 
 fn install_event_target(context: &mut Context) {
     let prototype = ObjectInitializer::new(context)
         .function(native(et_add_listener), js_string!("addEventListener"), 2)
-        .function(native(et_remove_listener), js_string!("removeEventListener"), 2)
+        .function(
+            native(et_remove_listener),
+            js_string!("removeEventListener"),
+            2,
+        )
         .function(native(et_dispatch), js_string!("dispatchEvent"), 1)
         .build();
-    let constructor = boa_engine::object::FunctionObjectBuilder::new(
-        context.realm(),
-        native(et_construct),
-    )
-    .name(js_string!("EventTarget"))
-    .constructor(true)
-    .build();
+    let constructor =
+        boa_engine::object::FunctionObjectBuilder::new(context.realm(), native(et_construct))
+            .name(js_string!("EventTarget"))
+            .constructor(true)
+            .build();
     let _ = constructor.set(js_string!("prototype"), prototype.clone(), false, context);
-    let _ = prototype.set(js_string!("constructor"), constructor.clone(), false, context);
-    let _ = context.register_global_property(js_string!("EventTarget"), constructor, Attribute::all());
+    let _ = prototype.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
+    let _ =
+        context.register_global_property(js_string!("EventTarget"), constructor, Attribute::all());
     let _ = context.register_global_property(
         js_string!("__ornEventTargetProto"),
         prototype,
@@ -343,7 +393,11 @@ fn et_add_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
     Ok(JsValue::undefined())
 }
 
-fn et_remove_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn et_remove_listener(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let Some(object) = this.as_object() else {
         return Ok(JsValue::undefined());
     };
@@ -397,19 +451,55 @@ fn install_navigator(context: &mut Context, profile: &Profile) -> JsResult<()> {
     let plugins = build_plugins(context)?;
 
     let navigator = ObjectInitializer::new(context)
-        .property(js_string!("userAgent"), JsString::from(profile.user_agent.clone()), Attribute::all())
-        .property(js_string!("appVersion"), JsString::from(profile.app_version.clone()), Attribute::all())
-        .property(js_string!("appName"), js_string!("Netscape"), Attribute::all())
-        .property(js_string!("appCodeName"), js_string!("Mozilla"), Attribute::all())
+        .property(
+            js_string!("userAgent"),
+            JsString::from(profile.user_agent.clone()),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("appVersion"),
+            JsString::from(profile.app_version.clone()),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("appName"),
+            js_string!("Netscape"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("appCodeName"),
+            js_string!("Mozilla"),
+            Attribute::all(),
+        )
         .property(js_string!("product"), js_string!("Gecko"), Attribute::all())
-        .property(js_string!("productSub"), js_string!("20030107"), Attribute::all())
-        .property(js_string!("vendor"), js_string!(profile.vendor), Attribute::all())
+        .property(
+            js_string!("productSub"),
+            js_string!("20030107"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("vendor"),
+            js_string!(profile.vendor),
+            Attribute::all(),
+        )
         .property(js_string!("vendorSub"), js_string!(""), Attribute::all())
-        .property(js_string!("platform"), js_string!(profile.platform), Attribute::all())
-        .property(js_string!("language"), js_string!(profile.locale), Attribute::all())
+        .property(
+            js_string!("platform"),
+            js_string!(profile.platform),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("language"),
+            js_string!(profile.locale),
+            Attribute::all(),
+        )
         .property(js_string!("languages"), languages, Attribute::all())
         .property(js_string!("onLine"), JsValue::from(true), Attribute::all())
-        .property(js_string!("cookieEnabled"), JsValue::from(true), Attribute::all())
+        .property(
+            js_string!("cookieEnabled"),
+            JsValue::from(true),
+            Attribute::all(),
+        )
         .property(js_string!("doNotTrack"), JsValue::null(), Attribute::all())
         .property(
             js_string!("hardwareConcurrency"),
@@ -421,10 +511,22 @@ fn install_navigator(context: &mut Context, profile: &Profile) -> JsResult<()> {
             JsValue::from(profile.device_memory),
             Attribute::all(),
         )
-        .property(js_string!("maxTouchPoints"), JsValue::from(0), Attribute::all())
+        .property(
+            js_string!("maxTouchPoints"),
+            JsValue::from(0),
+            Attribute::all(),
+        )
         // 自动化痕迹：真实有头浏览器为 false。
-        .property(js_string!("webdriver"), JsValue::from(false), Attribute::all())
-        .property(js_string!("pdfViewerEnabled"), JsValue::from(true), Attribute::all())
+        .property(
+            js_string!("webdriver"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("pdfViewerEnabled"),
+            JsValue::from(true),
+            Attribute::all(),
+        )
         .property(js_string!("plugins"), plugins, Attribute::all())
         .property(js_string!("mimeTypes"), mime_types, Attribute::all())
         .build();
@@ -434,22 +536,46 @@ fn install_navigator(context: &mut Context, profile: &Profile) -> JsResult<()> {
         for (name, version) in profile.brands() {
             let brand = ObjectInitializer::new(context)
                 .property(js_string!("brand"), JsString::from(name), Attribute::all())
-                .property(js_string!("version"), JsString::from(version), Attribute::all())
+                .property(
+                    js_string!("version"),
+                    JsString::from(version),
+                    Attribute::all(),
+                )
                 .build();
             brands.push(brand, context)?;
         }
         // 嵌套初始化器必须先在独立语句里建好：`ObjectInitializer` 持有 `&mut Context`。
         let high_entropy = ObjectInitializer::new(context)
-            .property(js_string!("platformVersion"), js_string!(profile.platform_version), Attribute::all())
-            .property(js_string!("uaFullVersion"), js_string!(profile.full_version), Attribute::all())
+            .property(
+                js_string!("platformVersion"),
+                js_string!(profile.platform_version),
+                Attribute::all(),
+            )
+            .property(
+                js_string!("uaFullVersion"),
+                js_string!(profile.full_version),
+                Attribute::all(),
+            )
             .build();
         let ua_data = ObjectInitializer::new(context)
             .property(js_string!("brands"), brands, Attribute::all())
             .property(js_string!("mobile"), JsValue::from(false), Attribute::all())
-            .property(js_string!("platform"), js_string!(profile.ch_platform), Attribute::all())
-            .function(native(uad_high_entropy), js_string!("getHighEntropyValues"), 1)
+            .property(
+                js_string!("platform"),
+                js_string!(profile.ch_platform),
+                Attribute::all(),
+            )
+            .function(
+                native(uad_high_entropy),
+                js_string!("getHighEntropyValues"),
+                1,
+            )
             .function(native(uad_to_json), js_string!("toJSON"), 0)
-            .property(js_string!("__ornHighEntropy"), high_entropy, Attribute::READONLY)
+            .property(
+                js_string!("__ornHighEntropy"),
+                high_entropy,
+                Attribute::READONLY,
+            )
             .build();
         navigator.set(js_string!("userAgentData"), ua_data, false, context)?;
     }
@@ -461,9 +587,17 @@ fn install_navigator(context: &mut Context, profile: &Profile) -> JsResult<()> {
     navigator.set(js_string!("permissions"), permissions, false, context)?;
     let connection = ObjectInitializer::new(context)
         .property(js_string!("downlink"), JsValue::from(10), Attribute::all())
-        .property(js_string!("effectiveType"), js_string!("4g"), Attribute::all())
+        .property(
+            js_string!("effectiveType"),
+            js_string!("4g"),
+            Attribute::all(),
+        )
         .property(js_string!("rtt"), JsValue::from(50), Attribute::all())
-        .property(js_string!("saveData"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("saveData"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .property(js_string!("onchange"), JsValue::null(), Attribute::all())
         .build();
     navigator.set(js_string!("connection"), connection, false, context)?;
@@ -519,7 +653,11 @@ fn uad_high_entropy(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     result.property(js_string!("mobile"), JsValue::from(false), Attribute::all());
     result.property(js_string!("platform"), platform_value, Attribute::all());
     if requested.iter().any(|name| name == "architecture") {
-        result.property(js_string!("architecture"), js_string!("x86"), Attribute::all());
+        result.property(
+            js_string!("architecture"),
+            js_string!("x86"),
+            Attribute::all(),
+        );
     }
     if requested.iter().any(|name| name == "bitness") {
         result.property(js_string!("bitness"), js_string!("64"), Attribute::all());
@@ -528,13 +666,25 @@ fn uad_high_entropy(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         result.property(js_string!("model"), js_string!(""), Attribute::all());
     }
     if requested.iter().any(|name| name == "platformVersion") {
-        result.property(js_string!("platformVersion"), platform_version_value, Attribute::all());
+        result.property(
+            js_string!("platformVersion"),
+            platform_version_value,
+            Attribute::all(),
+        );
     }
     if requested.iter().any(|name| name == "uaFullVersion") {
-        result.property(js_string!("uaFullVersion"), ua_full_version_value, Attribute::all());
+        result.property(
+            js_string!("uaFullVersion"),
+            ua_full_version_value,
+            Attribute::all(),
+        );
     }
     if requested.iter().any(|name| name == "fullVersionList") {
-        result.property(js_string!("fullVersionList"), brands_value, Attribute::all());
+        result.property(
+            js_string!("fullVersionList"),
+            brands_value,
+            Attribute::all(),
+        );
     }
     if requested.iter().any(|name| name == "wow64") {
         result.property(js_string!("wow64"), JsValue::from(false), Attribute::all());
@@ -561,9 +711,17 @@ fn uad_to_json(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsRe
 /// `plugins` 是五项同源 PDF 插件（Chromium 系固定形状）。
 fn build_mime_types(context: &mut Context) -> JsResult<JsValue> {
     let entry = ObjectInitializer::new(context)
-        .property(js_string!("type"), js_string!("application/pdf"), Attribute::all())
+        .property(
+            js_string!("type"),
+            js_string!("application/pdf"),
+            Attribute::all(),
+        )
         .property(js_string!("suffixes"), js_string!("pdf"), Attribute::all())
-        .property(js_string!("description"), js_string!("Portable Document Format"), Attribute::all())
+        .property(
+            js_string!("description"),
+            js_string!("Portable Document Format"),
+            Attribute::all(),
+        )
         .build();
     let array = JsArray::new(context)?;
     let _ = array.push(entry.clone(), context);
@@ -585,8 +743,16 @@ fn build_plugins(context: &mut Context) -> JsResult<JsValue> {
     for name in names {
         let entry = ObjectInitializer::new(context)
             .property(js_string!("name"), js_string!(name), Attribute::all())
-            .property(js_string!("filename"), js_string!("internal-pdf-viewer"), Attribute::all())
-            .property(js_string!("description"), js_string!("Portable Document Format"), Attribute::all())
+            .property(
+                js_string!("filename"),
+                js_string!("internal-pdf-viewer"),
+                Attribute::all(),
+            )
+            .property(
+                js_string!("description"),
+                js_string!("Portable Document Format"),
+                Attribute::all(),
+            )
             .property(js_string!("length"), JsValue::from(1), Attribute::all())
             .build();
         let _ = array.push(entry, context);
@@ -596,21 +762,45 @@ fn build_plugins(context: &mut Context) -> JsResult<JsValue> {
 
 fn install_screen(context: &mut Context, profile: &Profile) {
     let orientation = ObjectInitializer::new(context)
-        .property(js_string!("type"), js_string!("landscape-primary"), Attribute::all())
+        .property(
+            js_string!("type"),
+            js_string!("landscape-primary"),
+            Attribute::all(),
+        )
         .property(js_string!("angle"), JsValue::from(0), Attribute::all())
         .build();
     let screen = ObjectInitializer::new(context)
-        .property(js_string!("width"), JsValue::from(profile.width), Attribute::all())
-        .property(js_string!("height"), JsValue::from(profile.height), Attribute::all())
-        .property(js_string!("availWidth"), JsValue::from(profile.width), Attribute::all())
+        .property(
+            js_string!("width"),
+            JsValue::from(profile.width),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("height"),
+            JsValue::from(profile.height),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("availWidth"),
+            JsValue::from(profile.width),
+            Attribute::all(),
+        )
         // 任务栏占位：有头窗口的 availHeight 一定小于 height。
         .property(
             js_string!("availHeight"),
             JsValue::from(profile.height.saturating_sub(40)),
             Attribute::all(),
         )
-        .property(js_string!("colorDepth"), JsValue::from(24), Attribute::all())
-        .property(js_string!("pixelDepth"), JsValue::from(24), Attribute::all())
+        .property(
+            js_string!("colorDepth"),
+            JsValue::from(24),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("pixelDepth"),
+            JsValue::from(24),
+            Attribute::all(),
+        )
         .property(js_string!("availLeft"), JsValue::from(0), Attribute::all())
         .property(js_string!("availTop"), JsValue::from(0), Attribute::all())
         .property(js_string!("orientation"), orientation, Attribute::all())
@@ -645,9 +835,11 @@ fn install_window_metrics(context: &mut Context, profile: &Profile) {
                 .configurable(true)
                 .build()
         };
-        let _ = context
-            .global_object()
-            .define_property_or_throw(JsString::from(name), descriptor(), context);
+        let _ = context.global_object().define_property_or_throw(
+            JsString::from(name),
+            descriptor(),
+            context,
+        );
         // `window` 是单独创建的对象（持 `document` 访问器），不是全局对象的别名，
         // 因此同一批度量必须再挂一份，否则 `window.innerWidth` 读不到。
         if let Some(window) = context
@@ -670,7 +862,12 @@ fn install_window_metrics(context: &mut Context, profile: &Profile) {
         .ok()
         .and_then(|value| value.as_object())
     {
-        let _ = window.set(js_string!("devicePixelRatio"), JsValue::from(1), false, context);
+        let _ = window.set(
+            js_string!("devicePixelRatio"),
+            JsValue::from(1),
+            false,
+            context,
+        );
     }
 }
 
@@ -678,13 +875,37 @@ fn install_location(context: &mut Context, profile: &Profile) {
     // 指向真实抓取地址：写死成 example.com 是页面一眼能看出的破绽。
     let (origin, protocol, host, pathname) = split_url(&profile.href);
     let location = ObjectInitializer::new(context)
-        .property(js_string!("href"), JsString::from(profile.href.clone()), Attribute::all())
-        .property(js_string!("origin"), JsString::from(origin), Attribute::all())
-        .property(js_string!("protocol"), JsString::from(protocol), Attribute::all())
-        .property(js_string!("host"), JsString::from(host.clone()), Attribute::all())
-        .property(js_string!("hostname"), JsString::from(host), Attribute::all())
+        .property(
+            js_string!("href"),
+            JsString::from(profile.href.clone()),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("origin"),
+            JsString::from(origin),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("protocol"),
+            JsString::from(protocol),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("host"),
+            JsString::from(host.clone()),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("hostname"),
+            JsString::from(host),
+            Attribute::all(),
+        )
         .property(js_string!("port"), js_string!(""), Attribute::all())
-        .property(js_string!("pathname"), JsString::from(pathname), Attribute::all())
+        .property(
+            js_string!("pathname"),
+            JsString::from(pathname),
+            Attribute::all(),
+        )
         .property(js_string!("search"), js_string!(""), Attribute::all())
         .property(js_string!("hash"), js_string!(""), Attribute::all())
         .function(native(noop), js_string!("assign"), 1)
@@ -698,7 +919,11 @@ fn install_history(context: &mut Context) {
     let history = ObjectInitializer::new(context)
         .property(js_string!("length"), JsValue::from(1), Attribute::all())
         .property(js_string!("state"), JsValue::null(), Attribute::all())
-        .property(js_string!("scrollRestoration"), js_string!("auto"), Attribute::all())
+        .property(
+            js_string!("scrollRestoration"),
+            js_string!("auto"),
+            Attribute::all(),
+        )
         .function(native(noop), js_string!("pushState"), 3)
         .function(native(noop), js_string!("replaceState"), 3)
         .function(native(noop), js_string!("back"), 0)
@@ -716,7 +941,8 @@ fn install_performance(context: &mut Context) {
         .function(native(perf_timing), js_string!("getEntriesByType"), 1)
         .property(js_string!("timeOrigin"), JsValue::from(0), Attribute::all())
         .build();
-    let _ = context.register_global_property(js_string!("performance"), performance, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("performance"), performance, Attribute::all());
 }
 
 fn perf_now(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
@@ -746,17 +972,45 @@ fn install_chrome(context: &mut Context, profile: &Profile) {
         .property(js_string!("PlatformArch"), platform_arch, Attribute::all())
         .build();
     let install_state = ObjectInitializer::new(context)
-        .property(js_string!("DISABLED"), js_string!("disabled"), Attribute::all())
-        .property(js_string!("INSTALLED"), js_string!("installed"), Attribute::all())
-        .property(js_string!("NOT_INSTALLED"), js_string!("not_installed"), Attribute::all())
+        .property(
+            js_string!("DISABLED"),
+            js_string!("disabled"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("INSTALLED"),
+            js_string!("installed"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("NOT_INSTALLED"),
+            js_string!("not_installed"),
+            Attribute::all(),
+        )
         .build();
     let running_state = ObjectInitializer::new(context)
-        .property(js_string!("CANNOT_RUN"), js_string!("cannot_run"), Attribute::all())
-        .property(js_string!("READY_TO_RUN"), js_string!("ready_to_run"), Attribute::all())
-        .property(js_string!("RUNNING"), js_string!("running"), Attribute::all())
+        .property(
+            js_string!("CANNOT_RUN"),
+            js_string!("cannot_run"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("READY_TO_RUN"),
+            js_string!("ready_to_run"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("RUNNING"),
+            js_string!("running"),
+            Attribute::all(),
+        )
         .build();
     let app = ObjectInitializer::new(context)
-        .property(js_string!("isInstalled"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("isInstalled"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .function(native(noop), js_string!("getDetails"), 0)
         .function(native(noop), js_string!("getIsInstalled"), 0)
         .property(js_string!("InstallState"), install_state, Attribute::all())
@@ -768,7 +1022,8 @@ fn install_chrome(context: &mut Context, profile: &Profile) {
         .function(native(noop), js_string!("csi"), 0)
         .function(native(noop), js_string!("loadTimes"), 0)
         .build();
-    let _ = context.register_global_property(js_string!("chrome"), chrome.clone(), Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("chrome"), chrome.clone(), Attribute::all());
     // `window` 是独立对象，探测器走 `window.chrome` 时也要能读到。
     if let Some(window) = context
         .global_object()
@@ -795,7 +1050,11 @@ fn perm_query(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
         .map(|text| text.to_std_string_escaped())
         .unwrap_or_default();
     // 通知是唯一「默认拒绝」的常见权限；其余按已授权处理，与有头浏览器一致。
-    let state = if name == "notifications" { "default" } else { "granted" };
+    let state = if name == "notifications" {
+        "default"
+    } else {
+        "granted"
+    };
     let result = ObjectInitializer::new(context)
         .property(js_string!("state"), js_string!(state), Attribute::all())
         .property(js_string!("name"), JsString::from(name), Attribute::all())
@@ -807,7 +1066,11 @@ fn perm_query(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
 fn install_webgl(context: &mut Context) {
     let prototype = ObjectInitializer::new(context)
         .function(native(webgl_get_parameter), js_string!("getParameter"), 1)
-        .function(native(webgl_extensions), js_string!("getSupportedExtensions"), 0)
+        .function(
+            native(webgl_extensions),
+            js_string!("getSupportedExtensions"),
+            0,
+        )
         .function(native(webgl_extensions), js_string!("getExtension"), 1)
         .build();
     let constructor = constructible(context, &prototype, "WebGLRenderingContext");
@@ -821,10 +1084,13 @@ fn install_webgl(context: &mut Context) {
         prototype,
         Attribute::READONLY,
     );
-
 }
 
-fn webgl_get_parameter(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn webgl_get_parameter(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let parameter = args
         .first()
         .and_then(|value| value.to_number(context).ok())
@@ -854,7 +1120,11 @@ fn webgl_get_parameter(_this: &JsValue, args: &[JsValue], context: &mut Context)
     Ok(value)
 }
 
-fn webgl_extensions(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn webgl_extensions(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let names = [
         "ANGLE_instanced_arrays",
         "EXT_blend_minmax",
@@ -904,9 +1174,19 @@ fn install_canvas(context: &mut Context) {
 
 /// 没有光栅化引擎：给全透明像素。形状与真实 `ImageData` 一致（`data/width/height`），
 /// 因此「读取是否成功」这类探测能通过；像素哈希与真机不同，这一点在文档里如实声明。
-fn canvas_get_image_data(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let width = args.get(2).and_then(|value| value.to_number(context).ok()).unwrap_or(0.0);
-    let height = args.get(3).and_then(|value| value.to_number(context).ok()).unwrap_or(0.0);
+fn canvas_get_image_data(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let width = args
+        .get(2)
+        .and_then(|value| value.to_number(context).ok())
+        .unwrap_or(0.0);
+    let height = args
+        .get(3)
+        .and_then(|value| value.to_number(context).ok())
+        .unwrap_or(0.0);
     let length = (width * height * 4.0).max(0.0) as usize;
     let data = boa_engine::object::builtins::JsUint8ClampedArray::from_iter(
         std::iter::repeat(0u8).take(length),
@@ -915,12 +1195,20 @@ fn canvas_get_image_data(_this: &JsValue, args: &[JsValue], context: &mut Contex
     Ok(ObjectInitializer::new(context)
         .property(js_string!("data"), data, Attribute::all())
         .property(js_string!("width"), JsValue::from(width), Attribute::all())
-        .property(js_string!("height"), JsValue::from(height), Attribute::all())
+        .property(
+            js_string!("height"),
+            JsValue::from(height),
+            Attribute::all(),
+        )
         .build()
         .into())
 }
 
-fn canvas_to_data_url(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn canvas_to_data_url(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     // 1x1 透明 PNG：真实数据而不是空串，`url.length` 类校验不会误判。
     Ok(JsValue::from(js_string!(
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -939,17 +1227,24 @@ fn install_intl(context: &mut Context, profile: &Profile) {
         return;
     }
     let date_time_format_proto = ObjectInitializer::new(context)
-        .function(native(dtf_resolved_options), js_string!("resolvedOptions"), 0)
+        .function(
+            native(dtf_resolved_options),
+            js_string!("resolvedOptions"),
+            0,
+        )
         .function(native(noop), js_string!("format"), 1)
         .build();
-    let date_time_format = boa_engine::object::FunctionObjectBuilder::new(
-        context.realm(),
-        native(dtf_construct),
-    )
-    .name(js_string!("DateTimeFormat"))
-    .constructor(true)
-    .build();
-    let _ = date_time_format.set(js_string!("prototype"), date_time_format_proto.clone(), false, context);
+    let date_time_format =
+        boa_engine::object::FunctionObjectBuilder::new(context.realm(), native(dtf_construct))
+            .name(js_string!("DateTimeFormat"))
+            .constructor(true)
+            .build();
+    let _ = date_time_format.set(
+        js_string!("prototype"),
+        date_time_format_proto.clone(),
+        false,
+        context,
+    );
     let _ = date_time_format_proto.set(
         js_string!("constructor"),
         date_time_format.clone(),
@@ -962,10 +1257,18 @@ fn install_intl(context: &mut Context, profile: &Profile) {
         Attribute::READONLY,
     );
     let intl = ObjectInitializer::new(context)
-        .property(js_string!("DateTimeFormat"), date_time_format, Attribute::all())
+        .property(
+            js_string!("DateTimeFormat"),
+            date_time_format,
+            Attribute::all(),
+        )
         .function(native(noop), js_string!("NumberFormat"), 0)
         .function(native(noop), js_string!("Collator"), 0)
-        .property(js_string!("locale"), js_string!(profile.locale), Attribute::all())
+        .property(
+            js_string!("locale"),
+            js_string!(profile.locale),
+            Attribute::all(),
+        )
         .build();
     let _ = context.register_global_property(js_string!("Intl"), intl, Attribute::all());
 }
@@ -980,12 +1283,28 @@ fn dtf_construct(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> J
     Ok(JsObject::from_proto_and_data(proto, boa_engine::builtins::object::OrdinaryObject).into())
 }
 
-fn dtf_resolved_options(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn dtf_resolved_options(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(ObjectInitializer::new(context)
         .property(js_string!("locale"), js_string!("zh-CN"), Attribute::all())
-        .property(js_string!("calendar"), js_string!("gregory"), Attribute::all())
-        .property(js_string!("numberingSystem"), js_string!("latn"), Attribute::all())
-        .property(js_string!("timeZone"), js_string!("Asia/Shanghai"), Attribute::all())
+        .property(
+            js_string!("calendar"),
+            js_string!("gregory"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("numberingSystem"),
+            js_string!("latn"),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("timeZone"),
+            js_string!("Asia/Shanghai"),
+            Attribute::all(),
+        )
         .build()
         .into())
 }
@@ -1006,7 +1325,12 @@ fn install_url(context: &mut Context) {
             .constructor(true)
             .build();
     let _ = constructor.set(js_string!("prototype"), prototype.clone(), false, context);
-    let _ = prototype.set(js_string!("constructor"), constructor.clone(), false, context);
+    let _ = prototype.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
     // `URL.createObjectURL` / `revokeObjectURL` 在埋点与懒加载里常见。
     for name in ["createObjectURL", "revokeObjectURL"] {
         let _ = constructor.set(
@@ -1026,13 +1350,19 @@ fn install_url(context: &mut Context) {
 
 fn url_object_url(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     // 不做真实对象 URL：返回一个形状合法的字符串，调用方只当作标识使用。
-    Ok(JsValue::from(js_string!("blob:https://localhost/00000000-0000-4000-8000-000000000000")))
+    Ok(JsValue::from(js_string!(
+        "blob:https://localhost/00000000-0000-4000-8000-000000000000"
+    )))
 }
 
 fn url_parse(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let raw = args
         .first()
-        .map(|value| value.to_string(context).map(|text| text.to_std_string_escaped()))
+        .map(|value| {
+            value
+                .to_string(context)
+                .map(|text| text.to_std_string_escaped())
+        })
         .transpose()?
         .unwrap_or_default();
     // 第二个参数是基准地址：相对路径要拼上去，否则 router 解析出来的都是相对串。
@@ -1139,17 +1469,29 @@ fn install_text_codec(context: &mut Context) {
     let encoder = ObjectInitializer::new(context)
         .function(native(text_encode), js_string!("encode"), 1)
         .function(native(text_encode_into), js_string!("encodeInto"), 2)
-        .property(js_string!("encoding"), js_string!("utf-8"), Attribute::all())
+        .property(
+            js_string!("encoding"),
+            js_string!("utf-8"),
+            Attribute::all(),
+        )
         .build();
     // 必须是可 `new` 的构造器：`new TextEncoder().encode(...)` 是最常见写法。
-    let constructor =
-        boa_engine::object::FunctionObjectBuilder::new(context.realm(), native(text_encoder_construct))
-            .name(js_string!("TextEncoder"))
-            .constructor(true)
-            .build();
+    let constructor = boa_engine::object::FunctionObjectBuilder::new(
+        context.realm(),
+        native(text_encoder_construct),
+    )
+    .name(js_string!("TextEncoder"))
+    .constructor(true)
+    .build();
     let _ = constructor.set(js_string!("prototype"), encoder.clone(), false, context);
-    let _ = encoder.set(js_string!("constructor"), constructor.clone(), false, context);
-    let _ = context.register_global_property(js_string!("TextEncoder"), constructor, Attribute::all());
+    let _ = encoder.set(
+        js_string!("constructor"),
+        constructor.clone(),
+        false,
+        context,
+    );
+    let _ =
+        context.register_global_property(js_string!("TextEncoder"), constructor, Attribute::all());
     let _ = context.register_global_property(
         js_string!("__ornTextEncoderProto"),
         encoder,
@@ -1157,7 +1499,11 @@ fn install_text_codec(context: &mut Context) {
     );
 }
 
-fn text_encoder_construct(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn text_encoder_construct(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let _ = this;
     let proto = context
         .global_object()
@@ -1168,11 +1514,7 @@ fn text_encoder_construct(this: &JsValue, _args: &[JsValue], context: &mut Conte
 }
 
 /// `encodeInto`：把编码结果写进调用方给的 `Uint8Array`，返回 `{read, written}`。
-fn text_encode_into(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn text_encode_into(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let source = args
         .first()
         .map(|value| {
@@ -1201,7 +1543,11 @@ fn text_encode_into(
     }
     Ok(ObjectInitializer::new(context)
         .property(js_string!("read"), JsValue::from(written), Attribute::all())
-        .property(js_string!("written"), JsValue::from(written), Attribute::all())
+        .property(
+            js_string!("written"),
+            JsValue::from(written),
+            Attribute::all(),
+        )
         .build()
         .into())
 }
@@ -1216,7 +1562,11 @@ fn text_encode_into(
 /// 这里刻意不用固定常量：页面常检查两次调用结果是否相同。
 fn install_crypto(context: &mut Context) {
     let crypto = ObjectInitializer::new(context)
-        .function(native(crypto_get_random_values), js_string!("getRandomValues"), 1)
+        .function(
+            native(crypto_get_random_values),
+            js_string!("getRandomValues"),
+            1,
+        )
         .function(native(crypto_random_uuid), js_string!("randomUUID"), 0)
         .build();
     let _ = context.register_global_property(js_string!("crypto"), crypto, Attribute::all());
@@ -1248,12 +1598,21 @@ fn crypto_get_random_values(
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
-        let _ = object.set(index as u64, JsValue::from((state & 0xff) as u32), false, context);
+        let _ = object.set(
+            index as u64,
+            JsValue::from((state & 0xff) as u32),
+            false,
+            context,
+        );
     }
     Ok(target)
 }
 
-fn crypto_random_uuid(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn crypto_random_uuid(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let mut state = next_entropy();
     let mut bytes = [0u8; 16];
     for byte in bytes.iter_mut() {
@@ -1291,11 +1650,14 @@ fn next_entropy() -> u64 {
     nanos ^ (count.wrapping_mul(0x9e37_79b9_7f4a_7c15)) | 1
 }
 
-
 fn text_encode(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let text = args
         .first()
-        .map(|value| value.to_string(context).map(|text| text.to_std_string_escaped()))
+        .map(|value| {
+            value
+                .to_string(context)
+                .map(|text| text.to_std_string_escaped())
+        })
         .transpose()?
         .unwrap_or_default();
     let bytes = text.into_bytes();
@@ -1371,14 +1733,27 @@ fn storage_key(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> Js
 /// 没有 DSP：给稳定的噪声底，形状正确、值恒定。
 fn install_audio(context: &mut Context) {
     let analyser = ObjectInitializer::new(context)
-        .function(native(analyser_float_data), js_string!("getFloatFrequencyData"), 1)
-        .function(native(analyser_byte_data), js_string!("getByteFrequencyData"), 1)
+        .function(
+            native(analyser_float_data),
+            js_string!("getFloatFrequencyData"),
+            1,
+        )
+        .function(
+            native(analyser_byte_data),
+            js_string!("getByteFrequencyData"),
+            1,
+        )
         .build();
     let constructor = constructible(context, &analyser, "AnalyserNode");
-    let _ = context.register_global_property(js_string!("AnalyserNode"), constructor, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("AnalyserNode"), constructor, Attribute::all());
 }
 
-fn analyser_float_data(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn analyser_float_data(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     if let Some(array) = args.first().and_then(|value| value.as_object()) {
         let length = array
             .get(js_string!("length"), context)
@@ -1394,7 +1769,11 @@ fn analyser_float_data(_this: &JsValue, args: &[JsValue], context: &mut Context)
     Ok(JsValue::undefined())
 }
 
-fn analyser_byte_data(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn analyser_byte_data(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     if let Some(array) = args.first().and_then(|value| value.as_object()) {
         let length = array
             .get(js_string!("length"), context)
@@ -1416,11 +1795,20 @@ fn install_speech(context: &mut Context) {
         .function(native(noop), js_string!("cancel"), 0)
         .function(native(noop), js_string!("pause"), 0)
         .function(native(noop), js_string!("resume"), 0)
-        .property(js_string!("speaking"), JsValue::from(false), Attribute::all())
-        .property(js_string!("pending"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("speaking"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("pending"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .property(js_string!("paused"), JsValue::from(false), Attribute::all())
         .build();
-    let _ = context.register_global_property(js_string!("speechSynthesis"), speech, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("speechSynthesis"), speech, Attribute::all());
 }
 
 fn speech_voices(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -1433,8 +1821,16 @@ fn speech_voices(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> J
         let voice = ObjectInitializer::new(context)
             .property(js_string!("name"), js_string!(name), Attribute::all())
             .property(js_string!("lang"), js_string!(lang), Attribute::all())
-            .property(js_string!("localService"), JsValue::from(true), Attribute::all())
-            .property(js_string!("default"), JsValue::from(name.starts_with("Microsoft Huihui")), Attribute::all())
+            .property(
+                js_string!("localService"),
+                JsValue::from(true),
+                Attribute::all(),
+            )
+            .property(
+                js_string!("default"),
+                JsValue::from(name.starts_with("Microsoft Huihui")),
+                Attribute::all(),
+            )
             .property(js_string!("voiceURI"), js_string!(name), Attribute::all())
             .build();
         array.push(voice, context)?;
@@ -1453,8 +1849,8 @@ fn speech_voices(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> J
 /// 后续代码正常执行。沙箱仍然不持有任何网络能力。
 fn install_network_stubs(context: &mut Context) {
     for name in ["fetch", "XMLHttpRequest", "WebSocket", "EventSource"] {
-        let function = NativeFunction::from_fn_ptr(network_unavailable)
-            .to_js_function(context.realm());
+        let function =
+            NativeFunction::from_fn_ptr(network_unavailable).to_js_function(context.realm());
         let _ = context.register_global_property(JsString::from(name), function, Attribute::all());
     }
 }
@@ -1464,14 +1860,14 @@ fn install_network_stubs(context: &mut Context) {
 /// boa 未启用 `intl` feature（需要 ICU），这三个方法会抛「Function Unimplemented」。
 /// 页面脚本用它们拼时间字符串，不补就会在渲染时间那一栏时中断整段脚本。
 fn install_date_formatting(context: &mut Context) {
-    for name in [
-        "toLocaleString",
-        "toLocaleDateString",
-        "toLocaleTimeString",
-    ] {
+    for name in ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"] {
         let function =
             NativeFunction::from_fn_ptr(date_locale_string).to_js_function(context.realm());
-        let _ = context.register_global_property(JsString::from(format!("__ornDate_{name}")), function, Attribute::READONLY);
+        let _ = context.register_global_property(
+            JsString::from(format!("__ornDate_{name}")),
+            function,
+            Attribute::READONLY,
+        );
     }
     // 真正挂到原型上需要先拿到 Date 构造器的 prototype。
     if let Some(prototype) = context
@@ -1486,20 +1882,20 @@ fn install_date_formatting(context: &mut Context) {
                 .and_then(|value| value.as_object())
         })
     {
-        for name in [
-            "toLocaleString",
-            "toLocaleDateString",
-            "toLocaleTimeString",
-        ] {
-            let function = NativeFunction::from_fn_ptr(date_locale_string)
-                .to_js_function(context.realm());
+        for name in ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"] {
+            let function =
+                NativeFunction::from_fn_ptr(date_locale_string).to_js_function(context.realm());
             let _ = prototype.set(JsString::from(name), function, false, context);
         }
     }
 }
 
 /// 固定格式的本地时间：`YYYY/MM/DD HH:MM:SS`（Windows 中文环境下的 Chrome 形态）。
-fn date_locale_string(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn date_locale_string(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let millis = this
         .as_object()
         .and_then(|object| object.get(js_string!("__ornTime"), context).ok())
@@ -1516,7 +1912,11 @@ fn document_noop(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> 
 }
 
 /// 返回 rejected Promise：页面脚本的 `.catch` 分支会正常走到。
-fn network_unavailable(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn network_unavailable(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     // `from_opaque` 把任意 JS 值包装成错误载荷：reject 原因仍是那个字符串。
     let message = JsValue::from(JsString::from(
         "Network access is not available in this sandbox",
@@ -1535,22 +1935,52 @@ fn install_document_state(context: &mut Context, profile: &Profile) {
         return;
     };
     let (origin, _protocol, _host, _pathname) = split_url(&profile.href);
-    let _ = document.set(js_string!("URL"), JsString::from(profile.href.clone()), false, context);
-    let _ = document.set(js_string!("documentURI"), JsString::from(profile.href.clone()), false, context);
+    let _ = document.set(
+        js_string!("URL"),
+        JsString::from(profile.href.clone()),
+        false,
+        context,
+    );
+    let _ = document.set(
+        js_string!("documentURI"),
+        JsString::from(profile.href.clone()),
+        false,
+        context,
+    );
     let _ = document.set(js_string!("referrer"), js_string!(""), false, context);
     let _ = document.set(js_string!("origin"), JsString::from(origin), false, context);
     // 抓到的页面在真实浏览器里已经加载完毕，因此一定是 complete。
-    let _ = document.set(js_string!("readyState"), js_string!("complete"), false, context);
+    let _ = document.set(
+        js_string!("readyState"),
+        js_string!("complete"),
+        false,
+        context,
+    );
     let _ = document.set(js_string!("hidden"), JsValue::from(false), false, context);
-    let _ = document.set(js_string!("visibilityState"), js_string!("visible"), false, context);
+    let _ = document.set(
+        js_string!("visibilityState"),
+        js_string!("visible"),
+        false,
+        context,
+    );
     let _ = document.set(js_string!("cookie"), js_string!(""), false, context);
-    let _ = document.set(js_string!("characterSet"), js_string!("UTF-8"), false, context);
-    let _ = document.set(js_string!("compatMode"), js_string!("CSS1Compat"), false, context);
+    let _ = document.set(
+        js_string!("characterSet"),
+        js_string!("UTF-8"),
+        false,
+        context,
+    );
+    let _ = document.set(
+        js_string!("compatMode"),
+        js_string!("CSS1Compat"),
+        false,
+        context,
+    );
 
     // 事件构造与默认视图：fullscreen polyfill 等库会直接调用它们。
     for name in ["createEvent", "createEventObject"] {
-        let function = NativeFunction::from_fn_ptr(document_create_event)
-            .to_js_function(context.realm());
+        let function =
+            NativeFunction::from_fn_ptr(document_create_event).to_js_function(context.realm());
         let _ = document.set(JsString::from(name), function, false, context);
     }
     // `document` 不是全局对象，`EventTarget` 的方法必须显式挂上：
@@ -1568,8 +1998,18 @@ fn install_document_state(context: &mut Context, profile: &Profile) {
         }
     }
     // Fullscreen API：polyfill 会读这些名字判断「支持与否」，字段缺失会让它走进异常分支。
-    let _ = document.set(js_string!("fullscreenEnabled"), JsValue::from(true), false, context);
-    let _ = document.set(js_string!("fullscreenElement"), JsValue::null(), false, context);
+    let _ = document.set(
+        js_string!("fullscreenEnabled"),
+        JsValue::from(true),
+        false,
+        context,
+    );
+    let _ = document.set(
+        js_string!("fullscreenElement"),
+        JsValue::null(),
+        false,
+        context,
+    );
     for name in ["exitFullscreen", "webkitExitFullscreen"] {
         let function = NativeFunction::from_fn_ptr(document_noop).to_js_function(context.realm());
         let _ = document.set(JsString::from(name), function, false, context);
@@ -1595,11 +2035,27 @@ fn document_create_event(
 ) -> JsResult<JsValue> {
     Ok(ObjectInitializer::new(context)
         .property(js_string!("type"), js_string!(""), Attribute::all())
-        .property(js_string!("bubbles"), JsValue::from(false), Attribute::all())
-        .property(js_string!("cancelable"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("bubbles"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("cancelable"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .property(js_string!("target"), JsValue::null(), Attribute::all())
-        .property(js_string!("currentTarget"), JsValue::null(), Attribute::all())
-        .property(js_string!("defaultPrevented"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("currentTarget"),
+            JsValue::null(),
+            Attribute::all(),
+        )
+        .property(
+            js_string!("defaultPrevented"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .property(js_string!("timeStamp"), JsValue::from(0), Attribute::all())
         .function(native(event_init), js_string!("initEvent"), 3)
         .function(native(noop), js_string!("preventDefault"), 0)
@@ -1615,11 +2071,26 @@ fn event_init(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
         return Ok(JsValue::undefined());
     };
     let type_name = args_string(args, 0, context);
-    let _ = event.set(js_string!("type"), JsString::from(type_name), false, context);
+    let _ = event.set(
+        js_string!("type"),
+        JsString::from(type_name),
+        false,
+        context,
+    );
     let bubbles = args.get(1).map(|value| value.to_boolean()).unwrap_or(false);
-    let _ = event.set(js_string!("bubbles"), JsValue::from(bubbles), false, context);
+    let _ = event.set(
+        js_string!("bubbles"),
+        JsValue::from(bubbles),
+        false,
+        context,
+    );
     let cancelable = args.get(2).map(|value| value.to_boolean()).unwrap_or(false);
-    let _ = event.set(js_string!("cancelable"), JsValue::from(cancelable), false, context);
+    let _ = event.set(
+        js_string!("cancelable"),
+        JsValue::from(cancelable),
+        false,
+        context,
+    );
     Ok(JsValue::undefined())
 }
 
@@ -1657,16 +2128,8 @@ fn install_window_identity(context: &mut Context) {
         );
         // `window.matchMedia` 已由 install_window_metrics 提供；这里只补事件相关。
     }
-    let _ = context.register_global_property(
-        js_string!("self"),
-        window.clone(),
-        Attribute::all(),
-    );
-    let _ = context.register_global_property(
-        js_string!("top"),
-        window.clone(),
-        Attribute::all(),
-    );
+    let _ = context.register_global_property(js_string!("self"), window.clone(), Attribute::all());
+    let _ = context.register_global_property(js_string!("top"), window.clone(), Attribute::all());
     let _ = context.register_global_property(js_string!("parent"), window, Attribute::all());
     let _ = context.register_global_property(
         js_string!("closed"),
@@ -1782,8 +2245,14 @@ fn install_dom_interfaces(context: &mut Context) {
         // polyfill 会做 `"supports" in HTMLScriptElement` 之类的特性探测：
         // 把常用静态成员直接挂在构造器上，避免 `in` 的右操作数取到 undefined。
         let _ = constructor.set(js_string!("supports"), JsValue::from(false), false, context);
-        let _ = constructor.set(js_string!("from"), native(noop).to_js_function(context.realm()), false, context);
-        let _ = context.register_global_property(JsString::from(name), constructor, Attribute::all());
+        let _ = constructor.set(
+            js_string!("from"),
+            native(noop).to_js_function(context.realm()),
+            false,
+            context,
+        );
+        let _ =
+            context.register_global_property(JsString::from(name), constructor, Attribute::all());
     }
     // 观察者要有真实可用的 `observe` / `disconnect` / `unobserve`：页面常在构造后立刻调它们。
     for name in ["MutationObserver", "ResizeObserver", "IntersectionObserver"] {
@@ -1886,7 +2355,12 @@ fn install_events(context: &mut Context) {
         let prototype = ObjectInitializer::new(context).build();
         let constructor = ctor_with_proto(context, &prototype, name);
         // `Event.prototype.preventDefault` / `stopPropagation` 会被框架无条件调用。
-        for method in ["preventDefault", "stopPropagation", "stopImmediatePropagation", "composedPath"] {
+        for method in [
+            "preventDefault",
+            "stopPropagation",
+            "stopImmediatePropagation",
+            "composedPath",
+        ] {
             let _ = prototype.set(
                 JsString::from(method),
                 native(noop).to_js_function(context.realm()),
@@ -1894,7 +2368,8 @@ fn install_events(context: &mut Context) {
                 context,
             );
         }
-        let _ = context.register_global_property(JsString::from(name), constructor, Attribute::all());
+        let _ =
+            context.register_global_property(JsString::from(name), constructor, Attribute::all());
     }
 }
 
@@ -1950,7 +2425,11 @@ fn event_construct(_this: &JsValue, args: &[JsValue], context: &mut Context) -> 
             },
             Attribute::all(),
         )
-        .property(js_string!("defaultPrevented"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("defaultPrevented"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .build()
         .into())
 }
@@ -1964,7 +2443,10 @@ fn parse_query(text: &str, context: &mut Context) -> Vec<(String, String)> {
             Some((name, value)) => (name, value),
             None => (piece, ""),
         };
-        pairs.push((percent_decode(name, context), percent_decode(value, context)));
+        pairs.push((
+            percent_decode(name, context),
+            percent_decode(value, context),
+        ));
     }
     pairs
 }
@@ -1999,7 +2481,10 @@ fn usp_pairs(this: &JsValue, context: &mut Context) -> Vec<(String, String)> {
     let Ok(store) = object.get(js_string!("__ornParams"), context) else {
         return Vec::new();
     };
-    let Some(store) = store.as_object().and_then(|object| JsArray::from_object(object).ok()) else {
+    let Some(store) = store
+        .as_object()
+        .and_then(|object| JsArray::from_object(object).ok())
+    else {
         return Vec::new();
     };
     let length = store.length(context).unwrap_or(0) as usize;
@@ -2075,7 +2560,10 @@ fn url_search_params_construct(
                         let Ok(item) = source.get(key.clone(), context) else {
                             continue;
                         };
-                        if let Some(array) = item.as_object().and_then(|object| JsArray::from_object(object).ok()) {
+                        if let Some(array) = item
+                            .as_object()
+                            .and_then(|object| JsArray::from_object(object).ok())
+                        {
                             for index in 0..array.length(context).unwrap_or(0) {
                                 let text = array
                                     .at(index as i64, context)
@@ -2194,8 +2682,18 @@ fn encode_query(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*'
-            | b'\'' | b'(' | b')' => out.push(byte as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(byte as char),
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{byte:02X}")),
         }
@@ -2250,12 +2748,17 @@ fn install_message_channel(context: &mut Context) {
     let port_proto = ObjectInitializer::new(context)
         .function(native(mc_post_message), js_string!("postMessage"), 1)
         .function(native(mc_add_listener), js_string!("addEventListener"), 2)
-        .function(native(mc_remove_listener), js_string!("removeEventListener"), 2)
+        .function(
+            native(mc_remove_listener),
+            js_string!("removeEventListener"),
+            2,
+        )
         .function(native(noop), js_string!("start"), 0)
         .function(native(noop), js_string!("close"), 0)
         .build();
     let port_ctor = ctor_with_proto(context, &port_proto, "MessagePort");
-    let _ = context.register_global_property(js_string!("MessagePort"), port_ctor, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("MessagePort"), port_ctor, Attribute::all());
 
     let channel_ctor =
         FunctionObjectBuilder::new(context.realm(), native(message_channel_construct))
@@ -2263,8 +2766,18 @@ fn install_message_channel(context: &mut Context) {
             .length(0)
             .constructor(true)
             .build();
-    let _ = channel_ctor.set(js_string!("prototype"), channel_proto.clone(), false, context);
-    let _ = channel_proto.set(js_string!("constructor"), channel_ctor.clone(), false, context);
+    let _ = channel_ctor.set(
+        js_string!("prototype"),
+        channel_proto.clone(),
+        false,
+        context,
+    );
+    let _ = channel_proto.set(
+        js_string!("constructor"),
+        channel_ctor.clone(),
+        false,
+        context,
+    );
     let _ = context.register_global_property(
         js_string!("MessageChannel"),
         channel_ctor,
@@ -2272,7 +2785,11 @@ fn install_message_channel(context: &mut Context) {
     );
 }
 
-fn message_channel_construct(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn message_channel_construct(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let _ = this;
     let channel_proto = context
         .global_object()
@@ -2317,7 +2834,9 @@ fn mc_post_message(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
     let Some(object) = this.as_object() else {
         return Ok(JsValue::undefined());
     };
-    let peer = object.get(js_string!("__ornPeer"), context).unwrap_or(JsValue::undefined());
+    let peer = object
+        .get(js_string!("__ornPeer"), context)
+        .unwrap_or(JsValue::undefined());
     let Some(peer_object) = peer.as_object() else {
         return Ok(JsValue::undefined());
     };
@@ -2348,7 +2867,9 @@ fn mc_post_message(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
                     .and_then(|value| value.to_string(context).ok())
                     .map(|text| text.to_std_string_escaped())
                     .unwrap_or_default();
-                let function = array.at(index as i64 + 1, context).unwrap_or(JsValue::undefined());
+                let function = array
+                    .at(index as i64 + 1, context)
+                    .unwrap_or(JsValue::undefined());
                 if kind == "message" {
                     if let Some(function) = function.as_object().filter(JsObject::is_callable) {
                         handlers.push(function);
@@ -2400,7 +2921,12 @@ fn mc_add_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
         Some(array) => array,
         None => {
             let array = JsArray::new(context)?;
-            let _ = object.set(js_string!("__ornPortListeners"), array.clone(), false, context);
+            let _ = object.set(
+                js_string!("__ornPortListeners"),
+                array.clone(),
+                false,
+                context,
+            );
             array
         }
     };
@@ -2409,7 +2935,11 @@ fn mc_add_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
     Ok(JsValue::undefined())
 }
 
-fn mc_remove_listener(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn mc_remove_listener(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(JsValue::undefined())
 }
 
@@ -2445,7 +2975,8 @@ fn install_parsers_and_blobs(context: &mut Context) {
         .build();
     let _ = usp_ctor.set(js_string!("prototype"), usp_proto.clone(), false, context);
     let _ = usp_proto.set(js_string!("constructor"), usp_ctor.clone(), false, context);
-    let _ = context.register_global_property(js_string!("URLSearchParams"), usp_ctor, Attribute::all());
+    let _ =
+        context.register_global_property(js_string!("URLSearchParams"), usp_ctor, Attribute::all());
     // 构造时靠它找原型：原生构造函数拿不到 `new.target`，只能登记一份。
     let _ = context.register_global_property(
         js_string!("__ornUspProto"),
@@ -2480,11 +3011,16 @@ fn install_parsers_and_blobs(context: &mut Context) {
             .function(native(observer_empty_array), js_string!("getAll"), 0)
             .property(js_string!("size"), JsValue::from(0), Attribute::all())
             .property(js_string!("type"), js_string!(""), Attribute::all())
-            .property(js_string!("aborted"), JsValue::from(false), Attribute::all())
+            .property(
+                js_string!("aborted"),
+                JsValue::from(false),
+                Attribute::all(),
+            )
             .property(js_string!("result"), JsValue::null(), Attribute::all())
             .build();
         let constructor = constructible(context, &prototype, name);
-        let _ = context.register_global_property(JsString::from(name), constructor, Attribute::all());
+        let _ =
+            context.register_global_property(JsString::from(name), constructor, Attribute::all());
     }
 }
 
@@ -2509,11 +3045,7 @@ fn simple_construct(this: &JsValue, _args: &[JsValue], context: &mut Context) ->
 ///
 /// 原生函数拿不到自己的 `prototype`，只能在调用前后由这层包装提供。
 /// 包装体是每次构造都要走的薄壳，成本可以忽略。
-fn ctor_with_proto(
-    context: &mut Context,
-    prototype: &JsObject,
-    name: &str,
-) -> JsObject {
+fn ctor_with_proto(context: &mut Context, prototype: &JsObject, name: &str) -> JsObject {
     let prototype_for_call = prototype.clone();
     let function = boa_engine::object::FunctionObjectBuilder::new(
         context.realm(),
@@ -2537,7 +3069,11 @@ fn ctor_with_proto(
     function.into()
 }
 
-fn dom_parser_parse(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn dom_parser_parse(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     // 返回 `document` 本身：调用方通常只要 `querySelector` / `body` 这些成员。
     Ok(context
         .global_object()
@@ -2577,15 +3113,18 @@ fn install_misc(context: &mut Context) {
 }
 
 /// 定时器与动画帧共用的函数签名：`fn(&JsValue, &[JsValue], &mut Context)`。
-type NativeWrapper =
-    for<'a> fn(&'a JsValue, &'a [JsValue], &'a mut Context) -> JsResult<JsValue>;
+type NativeWrapper = for<'a> fn(&'a JsValue, &'a [JsValue], &'a mut Context) -> JsResult<JsValue>;
 
 /// `setTimeout` 家族：只登记回调，**不睡眠**。
 ///
 /// 真实延迟对抓取毫无意义（工具不会等三秒），但页面脚本常把「主逻辑」放在
 /// `setTimeout(fn, 0)` 里——指纹探测脚本正是如此。因此这里的行为是：
 /// 回调进队列，等本批脚本全部求值结束后由 [`flush_timers_once`] 立即跑一轮。
-fn timer_set_timeout(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn timer_set_timeout(
+    _this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     let Some(callback) = args.first().and_then(|value| value.as_object()) else {
         return Ok(JsValue::undefined());
     };
@@ -2630,13 +3169,10 @@ pub(crate) fn flush_timers_once(context: &mut Context) -> bool {
     }
     for timer in batch {
         // 回调抛错只记录，不影响其余回调与后续脚本（与浏览器一致）。
-        let _ = timer
-            .callback
-            .call(&timer.this_value, &timer.args, context);
+        let _ = timer.callback.call(&timer.this_value, &timer.args, context);
     }
     true
 }
-
 
 struct PendingTimer {
     id: u64,
@@ -2656,7 +3192,11 @@ thread_local! {
 fn mm_query(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let query = args_string(args, 0, context);
     Ok(ObjectInitializer::new(context)
-        .property(js_string!("matches"), JsValue::from(false), Attribute::all())
+        .property(
+            js_string!("matches"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
         .property(js_string!("media"), JsString::from(query), Attribute::all())
         .property(js_string!("onchange"), JsValue::null(), Attribute::all())
         .function(native(noop), js_string!("addListener"), 1)

@@ -252,9 +252,7 @@ pub fn policy_from_response(current: Policy, headers: &[(String, String)]) -> Po
     headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case("referrer-policy"))
-        .fold(current, |accumulated, (_, value)| {
-            adopt(accumulated, value)
-        })
+        .fold(current, |accumulated, (_, value)| adopt(accumulated, value))
 }
 
 #[cfg(test)]
@@ -282,8 +280,12 @@ mod tests {
     #[test]
     fn cross_origin_sends_only_the_origin() {
         assert_eq!(
-            referer_for(Policy::DEFAULT, "https://example.com/a/b?q=1", "https://other.com/x")
-                .as_deref(),
+            referer_for(
+                Policy::DEFAULT,
+                "https://example.com/a/b?q=1",
+                "https://other.com/x"
+            )
+            .as_deref(),
             Some("https://example.com")
         );
     }
@@ -306,7 +308,11 @@ mod tests {
     #[test]
     fn https_to_http_sends_nothing_under_the_default_policy() {
         assert_eq!(
-            referer_for(Policy::DEFAULT, "https://example.com/a", "http://example.com/b"),
+            referer_for(
+                Policy::DEFAULT,
+                "https://example.com/a",
+                "http://example.com/b"
+            ),
             None
         );
     }
@@ -328,12 +334,20 @@ mod tests {
     #[test]
     fn strict_origin_drops_the_path_across_sites_and_blocks_downgrade() {
         assert_eq!(
-            referer_for(Policy::StrictOrigin, "https://example.com/a?q=1", "https://other.com/")
-                .as_deref(),
+            referer_for(
+                Policy::StrictOrigin,
+                "https://example.com/a?q=1",
+                "https://other.com/"
+            )
+            .as_deref(),
             Some("https://example.com")
         );
         assert_eq!(
-            referer_for(Policy::StrictOrigin, "https://example.com/a", "http://other.com/"),
+            referer_for(
+                Policy::StrictOrigin,
+                "https://example.com/a",
+                "http://other.com/"
+            ),
             None
         );
     }
@@ -341,15 +355,27 @@ mod tests {
     #[test]
     fn no_referrer_and_same_origin_behave_as_documented() {
         assert_eq!(
-            referer_for(Policy::NoReferrer, "https://example.com/a", "https://example.com/b"),
+            referer_for(
+                Policy::NoReferrer,
+                "https://example.com/a",
+                "https://example.com/b"
+            ),
             None
         );
         assert_eq!(
-            referer_for(Policy::SameOrigin, "https://example.com/a?q=1", "https://other.com/"),
+            referer_for(
+                Policy::SameOrigin,
+                "https://example.com/a?q=1",
+                "https://other.com/"
+            ),
             None
         );
         assert_eq!(
-            referer_for(Policy::SameOrigin, "https://example.com/a?q=1", "https://example.com/"),
+            referer_for(
+                Policy::SameOrigin,
+                "https://example.com/a?q=1",
+                "https://example.com/"
+            ),
             Some("https://example.com/a?q=1".to_string())
         );
     }
@@ -358,13 +384,21 @@ mod tests {
     #[test]
     fn default_ports_are_omitted_but_custom_ports_are_kept() {
         assert_eq!(
-            referer_for(Policy::Origin, "https://example.com:443/a", "https://other.com/")
-                .as_deref(),
+            referer_for(
+                Policy::Origin,
+                "https://example.com:443/a",
+                "https://other.com/"
+            )
+            .as_deref(),
             Some("https://example.com")
         );
         assert_eq!(
-            referer_for(Policy::Origin, "https://example.com:8443/a", "https://other.com/")
-                .as_deref(),
+            referer_for(
+                Policy::Origin,
+                "https://example.com:8443/a",
+                "https://other.com/"
+            )
+            .as_deref(),
             Some("https://example.com:8443")
         );
     }
@@ -395,7 +429,11 @@ mod tests {
             Policy::parse("strict-origin, origin"),
             Some(Policy::StrictOrigin)
         );
-        assert_eq!(Policy::parse("unsafe-url"), None, "不实现会泄露全 URL 的策略");
+        assert_eq!(
+            Policy::parse("unsafe-url"),
+            None,
+            "不实现会泄露全 URL 的策略"
+        );
         assert_eq!(Policy::parse(""), None);
         assert_eq!(Policy::parse("bogus"), None);
     }
@@ -448,8 +486,12 @@ mod tests {
         }
         // 同源情形的实际差异：`strict-origin` 只发源，默认策略发完整 URL。
         assert_eq!(
-            referer_for(Policy::StrictOrigin, "https://example.com/a?q=1", "https://example.com/b")
-                .as_deref(),
+            referer_for(
+                Policy::StrictOrigin,
+                "https://example.com/a?q=1",
+                "https://example.com/b"
+            )
+            .as_deref(),
             Some("https://example.com")
         );
     }

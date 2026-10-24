@@ -624,7 +624,10 @@ pub fn locate_builtin_directory_from(executable: &Path) -> Option<PathBuf> {
         if candidate.is_dir() {
             return Some(candidate);
         }
-        let candidate = directory.join("omnicrawl").join("templates").join("subagents");
+        let candidate = directory
+            .join("omnicrawl")
+            .join("templates")
+            .join("subagents");
         if candidate.is_dir() {
             return Some(candidate);
         }

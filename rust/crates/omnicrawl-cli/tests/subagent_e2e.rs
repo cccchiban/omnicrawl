@@ -46,62 +46,15 @@ enum Reply {
     AlwaysText(String),
 }
 
-/// 请求来自哪一侧：父回合还是子代理回合。
-///
-/// 判据是请求体里第一条 system 消息的内容——父回合用宿主拼的系统提示（`你是主助手。`），
-/// 子回合用角色定义里的系统提示（含「子代理」）。按内容分流是必须的：`action=spawn`
-/// 的后台子任务与父回合并发发请求，若仍按 TCP 连接到达顺序派发脚本，子任务会抢走
-/// 本该给父回合的那一帧，断言就会随机失败（见 `background_spawn_*` 的回归说明）。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Lane {
-    /// 主回合的请求。
-    Parent,
-    /// 子代理回合的请求。
-    Child,
-}
-
-impl Lane {
-    /// 按首条 system 消息判断请求来源。
-    fn of(request: &str) -> Self {
-        let system = serde_json::from_str::<Value>(request)
-            .ok()
-            .and_then(|value| {
-                value["messages"].as_array().and_then(|messages| {
-                    messages
-                        .iter()
-                        .find(|message| message["role"] == "system")
-                        .and_then(|message| message["content"].as_str())
-                        .map(str::to_string)
-                })
-            })
-            .unwrap_or_default();
-        if system.contains("子代理") {
-            Lane::Child
-        } else {
-            Lane::Parent
-        }
-    }
-}
-
-/// 本机回环测试脚本：
-/// - `Sequential`: 按连接到达序号推进，供 `action=run` 的顺序用例沿用（完全对齐旧语义）；
-/// - `Lanes`: 按请求来源（父/子）分流，供 `action=spawn` 并发用例解耦两端请求。
+/// 本机回环测试脚本：按连接到达序号推进。
 #[derive(Clone)]
 enum Script {
     Sequential(Vec<Reply>),
-    Lanes {
-        parent: Vec<Reply>,
-        child: Vec<Reply>,
-    },
 }
 
 impl Script {
     fn sequential(steps: Vec<Reply>) -> Self {
         Script::Sequential(steps)
-    }
-
-    fn lanes(parent: Vec<Reply>, child: Vec<Reply>) -> Self {
-        Script::Lanes { parent, child }
     }
 }
 
@@ -160,7 +113,6 @@ impl StubServer {
 
         thread::spawn(move || {
             let global_cursor = Arc::new(Mutex::new(0usize));
-            let lane_cursors = Arc::new(Mutex::new((0usize, 0usize)));
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let raw = read_request(&mut stream);
@@ -172,21 +124,6 @@ impl StubServer {
                         let mut guard = global_cursor.lock().expect("全局游标锁");
                         let index = *guard;
                         *guard += 1;
-                        build_reply(steps.get(index), steps, &raw)
-                    }
-                    Script::Lanes { parent, child } => {
-                        let lane = Lane::of(&raw);
-                        let steps = match lane {
-                            Lane::Parent => parent,
-                            Lane::Child => child,
-                        };
-                        let mut guard = lane_cursors.lock().expect("泳道游标锁");
-                        let slot = match lane {
-                            Lane::Parent => &mut guard.0,
-                            Lane::Child => &mut guard.1,
-                        };
-                        let index = *slot;
-                        *slot += 1;
                         build_reply(steps.get(index), steps, &raw)
                     }
                 };
@@ -408,29 +345,6 @@ impl Host {
         if frame.get("method").is_some() {
             self.events.push(frame.clone());
         }
-    }
-
-    /// 收到某条通知就返回；期间照常服务工具批次。
-    fn wait_for_notification(&mut self, needle: &str, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            let Ok(line) = self.lines.recv_timeout(Duration::from_millis(200)) else {
-                continue;
-            };
-            let frame: Value = serde_json::from_str(&line).expect("帧是合法 JSON");
-            if frame.get("method").and_then(Value::as_str) == Some("subagent.event")
-                && frame
-                    .get("params")
-                    .and_then(|params| params.get("name"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name.contains(needle))
-            {
-                self.events.push(frame);
-                return true;
-            }
-            self.handle_side_frame(&frame);
-        }
-        false
     }
 
     /// 提交一回合并收集通知，直到 `turn.finished` 与响应都到齐。
@@ -670,6 +584,53 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     assert_eq!(created.len(), 1, "应有批次创建事件");
     assert_eq!(started.len(), 1, "应有任务开始事件");
     assert_eq!(completed.len(), 1, "应有任务完成事件");
+
+    // 4b. 子回合的正文只走 `subagent.turn.text`，绝不能以 `turn.delta` 外发：宿主会把
+    //     `turn.delta` 直接追加到主代理的回复里，那样子代理的话就混进主代理的消息区。
+    let deltas = host.notifications("turn.delta", None);
+    let streamed = deltas
+        .iter()
+        .map(|frame| {
+            frame
+                .get("params")
+                .and_then(|params| params.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })
+        .collect::<String>();
+    assert!(
+        !streamed.contains(CHILD_TEXT),
+        "子代理正文不该出现在主会话的流式增量里：{streamed}"
+    );
+    assert!(
+        streamed.contains(PARENT_TEXT),
+        "主代理正文照旧要走 turn.delta：{streamed}"
+    );
+
+    // 5. `subagent` 工具批次的子回合也开过程流：宿主的子代理窗口靠它渲染，
+    //    因此工具调用必须与子任务号/批次号一起报出来（不再只有 `/review` 才有）。
+    let tool_started = host.notifications("subagent.event", Some("subagent.tool.started"));
+    let tool_completed = host.notifications("subagent.event", Some("subagent.tool.completed"));
+    assert_eq!(tool_started.len(), 1, "应有子代理工具开始事件");
+    assert_eq!(tool_completed.len(), 1, "应有子代理工具完成事件");
+    let payload = &tool_started[0]["params"]["payload"];
+    assert_eq!(payload["tool"], "read");
+    assert!(
+        payload["batch_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "工具事件要带批次号：{payload}"
+    );
+    assert!(
+        payload["task_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("task-")),
+        "工具事件要带子任务号：{payload}"
+    );
+    assert_eq!(
+        tool_completed[0]["params"]["payload"]["ok"],
+        Value::Bool(true)
+    );
 
     // 6. 工具事件只记父回合那一次 `subagent` 调用：子代理内部的 `read` 不落父会话
     //    （父子共用一个会话根，落盘的若出现 `read` 就说明开关没生效）。
@@ -960,94 +921,6 @@ max_tasks_per_batch = 1
 }
 
 #[test]
-fn background_spawn_runs_after_turn_and_is_queryable() {
-    let spawn_arguments = json!({
-        "action": "spawn",
-        "tasks": [{
-            "description": "后台看代码",
-            "prompt": "读一下 a.py",
-            "subagent_type": "review",
-        }],
-    })
-    .to_string();
-    let list_arguments = json!({"action": "list"}).to_string();
-    // 双泳道脚本：后台子任务与父回合会并发发请求，必须按来源分流，否则子任务的
-    // 连接会插在父回合两次请求之间、吃掉本该给父回合的那一帧（旧实现的间歇性失败）。
-    // 父泳道：受理 spawn → 收尾 → 第二回合查 list → 收尾。
-    // 子泳道：调 read → 收尾。
-    let server = StubServer::spawn_script(Script::lanes(
-        vec![
-            ok_stream(tool_call_stream("subagent", &spawn_arguments)),
-            ok_stream(text_stream(PARENT_TEXT)),
-            ok_stream(tool_call_stream("subagent", &list_arguments)),
-            ok_stream(text_stream(PARENT_TEXT)),
-        ],
-        vec![
-            ok_stream(tool_call_stream("read", "{\"path\":\"a.py\"}")),
-            ok_stream(text_stream(CHILD_TEXT)),
-        ],
-    ));
-    let (root, workspace, agents, config) = prepare_root(
-        "bg",
-        "[subagents]\nenabled = true\nallow_background = true\nmax_concurrency = 1\nmax_tasks_per_batch = 1\n",
-    );
-
-    let mut host = Host::start(&workspace, &agents, &config);
-    handshake(
-        &mut host,
-        &server,
-        json!([
-            {"type": "function", "function": {"name": "read"}},
-            {"type": "function", "function": {"name": "subagent"}}
-        ]),
-        None,
-    );
-
-    // 回合 1：父回合受理后台任务后立刻收尾，不等子任务。
-    let first = host.run_turn("后台看代码");
-    assert_eq!(first.len(), 1, "应恰好收到一次 turn.finished");
-    assert_eq!(
-        first[0]["params"]["final_text"].as_str().unwrap(),
-        PARENT_TEXT,
-        "父回合应直接收尾而不是等后台任务"
-    );
-
-    // 等后台任务收尾；期间它的工具批次仍要有人接。
-    assert!(
-        host.wait_for_notification("completed", WAIT),
-        "后台任务应发出收尾事件；批次={:?}",
-        host.batches
-    );
-
-    // 后台任务的工具批次用子任务号发出（不占父回合的 id）。
-    assert!(
-        host.batches.iter().any(|(turn_id, names, _)| {
-            turn_id.starts_with("task-") && names.iter().any(|name| name == "read")
-        }),
-        "后台任务的工具批次应以子任务号发出：{:?}",
-        host.batches
-    );
-
-    // 回合 2：模型查后台任务，观察里应能看到完成态与摘要。
-    let second = host.run_turn("看看后台任务");
-    host.shutdown();
-    assert_eq!(second.len(), 1, "第二个回合也应收尾");
-
-    let requests = server.requests.lock().expect("请求锁").clone();
-    let last = requests
-        .last()
-        .map(|item| serde_json::to_string(item).unwrap_or_default())
-        .unwrap_or_default();
-    assert!(last.contains("completed"), "查询结果里应是完成态：{last}");
-    assert!(
-        last.contains(CHILD_TEXT),
-        "后台任务的摘要应回给父回合：{last}"
-    );
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
 fn max_concurrency_runs_tasks_in_parallel() {
     let tool_arguments = json!({
         "action": "run",
@@ -1108,6 +981,142 @@ max_tasks_per_batch = 2
     assert!(
         parent_payload.matches("task-").count() >= 2,
         "两条结果应带各自的子任务号：{parent_payload}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `computer_use` 的端到端验收：主回合调用它 → 内核跑专职子代理 → 折回主回合。
+///
+/// 判据：
+/// 1. `computer_use` 不占宿主批次（宿主收到的每批都没有它）；
+/// 2. 子代理内部的桌面工具调用走宿主，`turn_id` 带 `computer-use-` 前缀（免审批据）；
+/// 3. 子代理的 system 提示是专职定义那份，工具面被收窄到桌面工具；
+/// 4. 子代理收尾 JSON 里的 `blocked` 被投影成 `status=blocked` 而非错误；
+/// 5. 它不受 `[subagents] enabled` 管辖：这里 `subagents` 是关闭的。
+#[test]
+fn computer_use_runs_dedicated_subagent_without_subagents_switch() {
+    // 子代理总开关关闭，但 computer_use 打开：桌面能力应当照常可用。
+    let root =
+        std::env::temp_dir().join(format!("omnicrawl-computer-use-e2e-{}", std::process::id()));
+    let workspace = root.join("ws");
+    let home = root.join("home");
+    let agents = home.join(".OmniCrawl").join("agents");
+    std::fs::create_dir_all(&workspace).expect("建工作区");
+    std::fs::create_dir_all(&agents).expect("建定义目录");
+    // 专职定义：这里自己写一份，避免依赖二进制旁是否有模板目录。
+    std::fs::write(
+        agents.join("computer-use.md"),
+        "---\nname: computer-use\ndescription: 桌面操作\nmodel: stub-child\npermissionMode: standard\nisolation: shared\n---\n你是桌面操作子代理。\n",
+    )
+    .expect("写专职定义");
+    std::fs::write(
+        home.join(".OmniCrawl").join("subagents.toml"),
+        "[subagents]\nenabled = false\n",
+    )
+    .expect("写子代理配置（关闭）");
+    std::fs::write(
+        home.join(".OmniCrawl").join("config.toml"),
+        "[computer_use]\nenabled = true\ntimeout_seconds = 120\n",
+    )
+    .expect("写 computer_use 配置");
+
+    let child_report = "{\"status\": \"blocked\", \"summary\": \"找不到保存按钮\", \
+                        \"obstacle\": \"窗口高度不足\", \"screenshots\": [\"shot.png\"]}";
+    let server = StubServer::spawn(vec![
+        ok_stream(tool_call_stream(
+            "computer_use",
+            "{\"prompt\":\"在记事本里保存文件\",\"timeout_seconds\":60}",
+        )),
+        ok_stream(tool_call_stream(
+            "windows_input",
+            "{\"action\":\"click\",\"x\":10,\"y\":20}",
+        )),
+        ok_stream(text_stream(child_report)),
+        ok_stream(text_stream(PARENT_TEXT)),
+    ]);
+
+    let mut host = Host::start(&workspace, &agents, &home.join(".OmniCrawl"));
+    handshake(
+        &mut host,
+        &server,
+        json!([
+            {"type": "function", "function": {"name": "windows_input"}},
+            {"type": "function", "function": {"name": "windows_screenshot"}},
+            {"type": "function", "function": {"name": "computer_use"}}
+        ]),
+        None,
+    );
+
+    let finished = host.run_turn("帮我点一下保存");
+    host.shutdown();
+
+    assert_eq!(finished.len(), 1, "应恰好收到一次 turn.finished");
+    assert_eq!(
+        finished[0]["params"]["final_text"].as_str().unwrap(),
+        PARENT_TEXT
+    );
+
+    // 1. computer_use 由内核自持，绝不进宿主批次。
+    for (turn_id, names, _root) in &host.batches {
+        assert!(
+            !names.iter().any(|name| name == "computer_use"),
+            "computer_use 不该出现在宿主批次里：{turn_id} {names:?}"
+        );
+    }
+
+    // 2. 子代理的桌面调用走宿主，turn_id 带专用前缀（免审批的依据）。
+    assert!(
+        host.batches
+            .iter()
+            .any(|(turn_id, names, _)| turn_id.starts_with("computer-use-")
+                && names.iter().any(|name| name == "windows_input")),
+        "子代理的 windows_input 应以 computer-use- 前缀落到宿主：{:?}",
+        host.batches
+    );
+
+    let requests = server.requests.lock().expect("请求锁").clone();
+    // 3. 子回合的请求带专职提示词，且工具面收窄。
+    let child_request = requests
+        .iter()
+        .find(|value| {
+            serde_json::to_string(value)
+                .unwrap_or_default()
+                .contains("你是桌面操作子代理")
+        })
+        .expect("应当存在一次带专职系统提示的子回合请求")
+        .clone();
+    let child_text = serde_json::to_string(&child_request).unwrap_or_default();
+    assert!(
+        !child_text.contains("\"computer_use\""),
+        "子代理工具面不该包含 computer_use 本身：{child_text}"
+    );
+    assert!(
+        child_text.contains("windows_input"),
+        "子代理工具面应包含桌面工具：{child_text}"
+    );
+    assert!(
+        child_text.contains("stub-child"),
+        "定义里的模型应当生效：{child_text}"
+    );
+
+    // 4. blocked 是业务结果而非错误：父回合的观察里必须看得到 summary 与截图路径。
+    let parent_text = serde_json::to_string(&requests[requests.len() - 1]).unwrap_or_default();
+    assert!(
+        parent_text.contains("blocked"),
+        "父回合应看到 blocked 状态：{parent_text}"
+    );
+    assert!(
+        parent_text.contains("找不到保存按钮"),
+        "父回合应看到 summary：{parent_text}"
+    );
+    assert!(
+        parent_text.contains("窗口高度不足"),
+        "父回合应看到阻塞点：{parent_text}"
+    );
+    assert!(
+        parent_text.contains("shot.png"),
+        "父回合应看到截图路径：{parent_text}"
     );
 
     let _ = std::fs::remove_dir_all(&root);

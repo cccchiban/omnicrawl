@@ -75,7 +75,8 @@ fn seeded_summaries(data: &Value) -> Vec<String> {
         .unwrap_or_default();
     if let Some(cases) = data["cases"].as_array() {
         for case in cases {
-            if case["tool"].as_str() != Some("memory_write") || !case["ok"].as_bool().unwrap_or(false)
+            if case["tool"].as_str() != Some("memory_write")
+                || !case["ok"].as_bool().unwrap_or(false)
             {
                 continue;
             }
@@ -193,7 +194,9 @@ fn memory_tools_match_python() {
                         if !known {
                             // 边界外的同分项：只要它的 summary 出现在数据集的 seed 里即可。
                             assert!(
-                                seeded_summaries(&data).iter().any(|s| s == &summary_of(item)),
+                                seeded_summaries(&data)
+                                    .iter()
+                                    .any(|s| s == &summary_of(item)),
                                 "用例 {tool} {:?}：出现未知条目 {item}",
                                 case["arguments"]
                             );
@@ -208,7 +211,11 @@ fn memory_tools_match_python() {
                     let mut wanted_items = parse_array_items(expected);
                     actual_items.sort();
                     wanted_items.sort();
-                    assert_eq!(actual_items, wanted_items, "用例 {tool} {:?}", case["arguments"]);
+                    assert_eq!(
+                        actual_items, wanted_items,
+                        "用例 {tool} {:?}",
+                        case["arguments"]
+                    );
                     continue;
                 }
                 assert_eq!(

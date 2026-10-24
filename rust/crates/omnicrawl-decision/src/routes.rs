@@ -32,7 +32,10 @@ const MAX_CANDIDATES: usize = 64;
 ///
 /// 脱敏旁路按 `[desensitization]` 装配（与工具调用审查、检索重排、提问托管同源）；
 /// 装配失败时由下游中止请求——本接口是出站请求的发起方，绝不外发未脱敏的原文。
-pub fn runtime_from_config(channel: &DecisionReviewOptions, environment: &ConfigEnvironment) -> DecisionContext {
+pub fn runtime_from_config(
+    channel: &DecisionReviewOptions,
+    environment: &ConfigEnvironment,
+) -> DecisionContext {
     let masking: Option<Arc<ReviewMasking>> = masking_from_config(environment).map(Arc::new);
     DecisionContext {
         channel: channel.clone(),
@@ -63,16 +66,20 @@ fn upstream_error(error: UpstreamError) -> ApiError {
 }
 
 /// `POST /v1/decide`：`{state, questions, timeout_seconds?}` → `{answers, raw}`。
-pub async fn decide(State(state): State<AppState>, body: Json<Value>) -> Result<Json<Value>, ApiError> {
+pub async fn decide(
+    State(state): State<AppState>,
+    body: Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     let context = state.context()?.clone();
     let body = body.0;
     let payload = require_object(&body, "state")?;
     let questions = require_object(&body, "questions")?;
     let context = with_timeout(&context, optional_number(&body, "timeout_seconds")?);
-    let outcome = tokio::task::spawn_blocking(move || upstream_decide(&context, &payload, &questions))
-        .await
-        .map_err(join_error)?
-        .map_err(upstream_error)?;
+    let outcome =
+        tokio::task::spawn_blocking(move || upstream_decide(&context, &payload, &questions))
+            .await
+            .map_err(join_error)?
+            .map_err(upstream_error)?;
     Ok(data(json!({
         "answers": outcome.answers,
         "raw": outcome.raw,
@@ -80,7 +87,10 @@ pub async fn decide(State(state): State<AppState>, body: Json<Value>) -> Result<
 }
 
 /// `POST /v1/choice`：从候选项里选一个，回 `{index, answers}`。
-pub async fn choice(State(state): State<AppState>, body: Json<Value>) -> Result<Json<Value>, ApiError> {
+pub async fn choice(
+    State(state): State<AppState>,
+    body: Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     let context = state.context()?.clone();
     let body = body.0;
     let payload = require_object(&body, "state")?;
@@ -101,7 +111,10 @@ pub async fn choice(State(state): State<AppState>, body: Json<Value>) -> Result<
 }
 
 /// `POST /v1/rank`：按相关度重排候选项，回 `{order, count}`（`order` 是输入下标的新顺序）。
-pub async fn rank(State(state): State<AppState>, body: Json<Value>) -> Result<Json<Value>, ApiError> {
+pub async fn rank(
+    State(state): State<AppState>,
+    body: Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     let context = state.context()?.clone();
     let body = body.0;
     let payload = require_object(&body, "state")?;
@@ -110,13 +123,7 @@ pub async fn rank(State(state): State<AppState>, body: Json<Value>) -> Result<Js
     let question_id = question_id(&body)?;
     let context = with_timeout(&context, optional_number(&body, "timeout_seconds")?);
     let order = tokio::task::spawn_blocking(move || {
-        upstream_rank(
-            &context,
-            &payload,
-            &instructions,
-            &candidates,
-            &question_id,
-        )
+        upstream_rank(&context, &payload, &instructions, &candidates, &question_id)
     })
     .await
     .map_err(join_error)?
@@ -126,19 +133,21 @@ pub async fn rank(State(state): State<AppState>, body: Json<Value>) -> Result<Js
 }
 
 /// `POST /v1/review`：判定一份待审查负载，回 `{approved, reason, detail, confidence}`。
-pub async fn review(State(state): State<AppState>, body: Json<Value>) -> Result<Json<Value>, ApiError> {
+pub async fn review(
+    State(state): State<AppState>,
+    body: Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     let context = state.context()?.clone();
     let body = body.0;
     let payload = require_object(&body, "payload")?;
     // 缺省 fail-closed：脱敏不可用时拒绝判定（与工具调用审查同一语义）。
     let fail_closed = optional_bool(&body, "fail_closed")?.unwrap_or(true);
     let context = with_timeout(&context, optional_number(&body, "timeout_seconds")?);
-    let verdict = tokio::task::spawn_blocking(move || {
-        upstream_review(&context, &payload, fail_closed)
-    })
-    .await
-    .map_err(join_error)?
-    .map_err(upstream_error)?;
+    let verdict =
+        tokio::task::spawn_blocking(move || upstream_review(&context, &payload, fail_closed))
+            .await
+            .map_err(join_error)?
+            .map_err(upstream_error)?;
     let mut result = Map::new();
     result.insert("approved".to_string(), Value::Bool(verdict.approved));
     result.insert(

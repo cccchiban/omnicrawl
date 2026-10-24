@@ -47,7 +47,9 @@
    `created_at == 0` 视为无时间信息，跳过该层）；
 3. fail-closed 变更检查：`git status --porcelain` 非空即保留；
 4. worktree / subagent 模式再加一层：主隔离区看 `origin..HEAD` 是否有未推送 commit，
-   SubAgent 看 `base_ref..HEAD` 是否有未审查的新提交——未推送 / 未审查的提交可能仍是唯一副本。
+   SubAgent 看 `base_ref..HEAD` 是否有未审查的新提交。这类提交可能仍是唯一副本，因此按
+   **最后一次提交时间**算期限：距最后一次提交满 `DEFAULT_SWEEP_MAX_AGE_SECONDS`（一个月）
+   仍无新提交才放行自动清理，期间产生新提交即自然续期；读不到提交时间则保留（fail-closed）。
 
 启动清扫（`sweep_expired_isolation_sessions`）只处理 `cleanup_on_exit=auto` 的会话；
 `apply_on_exit=true` 的会话先尝试延迟收尾（apply 回主工作区）再走门禁；SubAgent 的成果
@@ -96,8 +98,9 @@ cd rust && cargo test -p omnicrawl-workspace
 需要真跑 `git` 的部分由 `tests/isolation_git_roundtrip.rs` 覆盖（真仓库 + 真 worktree）：
 worktree 往返（改动不穿透主工作区 → 第三层门禁拦截 → apply 回主工作区 → 门禁放行 → 清理并
 删元数据）、复用（从元数据恢复 `base_ref` 与 `created_at`，且不重建目录）、local 模式镜像
-（排除 `.git`）、`finalize_isolation_session` 的摘要文案与 `keep` 策略。环境里没有可用的
-`git` 时整组跳过并打印原因，不把环境差异判成失败。
+（排除 `.git`）、`finalize_isolation_session` 的摘要文案与 `keep` 策略、SubAgent 未审查提交
+的一个月期限（刚提交保留 / 满月放行 / 期限跟最后一次提交续期）、启动清扫端到端回收。环境里
+没有可用的 `git` 时整组跳过并打印原因，不把环境差异判成失败。
 
 ## 尚未移植 / 尚未接线
 

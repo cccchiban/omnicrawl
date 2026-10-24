@@ -132,7 +132,10 @@ fn extra_path_accepts_single_markdown_file() {
 fn missing_extra_path_is_reported() {
     let workspace = temp_dir("missing-path-ws");
     let mut manager = SkillManager::new();
-    manager.discover(Some(workspace.as_path()), &["no-such-skill-dir".to_string()]);
+    manager.discover(
+        Some(workspace.as_path()),
+        &["no-such-skill-dir".to_string()],
+    );
     assert!(
         manager
             .diagnostics()
@@ -147,14 +150,16 @@ fn missing_extra_path_is_reported() {
 /// 折叠块标量（`>-`）：多行折成一行，空行分段。
 #[test]
 fn frontmatter_folds_block_scalar() {
-    let content =
-        "---\nname: demo\ndescription: >-\n  第一行\n  第二行\n\n  另一段\n---\n\n正文\n";
+    let content = "---\nname: demo\ndescription: >-\n  第一行\n  第二行\n\n  另一段\n---\n\n正文\n";
     let (frontmatter, body) = parse_frontmatter(content);
     assert_eq!(
         frontmatter.get("description").and_then(Value::as_str),
         Some("第一行 第二行\n另一段")
     );
-    assert_eq!(frontmatter.get("name").and_then(Value::as_str), Some("demo"));
+    assert_eq!(
+        frontmatter.get("name").and_then(Value::as_str),
+        Some("demo")
+    );
     assert_eq!(body, "正文");
 }
 

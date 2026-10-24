@@ -79,7 +79,10 @@ impl StyledText {
 
     /// 字符总数（不拼整串）。
     pub fn plain_chars(&self) -> usize {
-        self.spans.iter().map(|span| span.text.chars().count()).sum()
+        self.spans
+            .iter()
+            .map(|span| span.text.chars().count())
+            .sum()
     }
 
     pub fn spans(&self) -> &[StyledSpan] {

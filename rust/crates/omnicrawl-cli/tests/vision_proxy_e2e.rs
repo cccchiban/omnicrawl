@@ -137,10 +137,7 @@ fn read_request(stream: &mut TcpStream) -> String {
 /// 把配置放到临时 home 的 `~/.OmniCrawl/config.toml` 并返回该 home：
 /// 配置路径不再有环境变量覆盖，隔离只能靠 home。
 fn isolate_home(config_path: &Path) -> PathBuf {
-    let home = config_path
-        .parent()
-        .expect("配置目录")
-        .join("home");
+    let home = config_path.parent().expect("配置目录").join("home");
     let target = home.join(".OmniCrawl");
     std::fs::create_dir_all(&target).expect("建隔离配置目录");
     std::fs::copy(config_path, target.join("config.toml")).expect("复制配置");

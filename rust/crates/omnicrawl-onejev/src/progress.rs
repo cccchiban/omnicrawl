@@ -113,9 +113,7 @@ impl ProgressHandle {
     pub fn bytes_sink(&self) -> impl FnMut(u64, u64) + 'static {
         let handle = self.clone();
         move |done: u64, total: u64| {
-            let stage = handle
-                .snapshot()
-                .stage;
+            let stage = handle.snapshot().stage;
             handle.write(stage, done, total, ProgressUnit::Bytes)
         }
     }

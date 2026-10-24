@@ -160,8 +160,16 @@ mod tests {
             "TestBot/1.0",
         )
         .expect_err("应当拒绝");
-        assert!(error.message.contains("Disallow: /search"), "{}", error.message);
-        assert!(error.message.contains("不会抓取该地址"), "{}", error.message);
+        assert!(
+            error.message.contains("Disallow: /search"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("不会抓取该地址"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

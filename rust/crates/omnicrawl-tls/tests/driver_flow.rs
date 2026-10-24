@@ -45,9 +45,7 @@ impl Pipe {
             })
         });
         let (server_side, _) = listener.accept().expect("接受连接");
-        server_side
-            .set_nodelay(true)
-            .expect("禁用 Nagle");
+        server_side.set_nodelay(true).expect("禁用 Nagle");
         // 给两端都设读超时：死锁时宁可失败也不要挂住 CI。
         server_side
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
@@ -254,9 +252,12 @@ impl ServerTls {
         cv_body.extend_from_slice(&signature);
         server.send_handshake(stream, hs::CERTIFICATE_VERIFY, &cv_body);
 
-        let verify_data =
-            omnicrawl_tls::verify::finished_verify_data(suite, &server.handshake_secret, &server.transcript)
-                .expect("服务端 Finished");
+        let verify_data = omnicrawl_tls::verify::finished_verify_data(
+            suite,
+            &server.handshake_secret,
+            &server.transcript,
+        )
+        .expect("服务端 Finished");
         let finished = handshake_msg(hs::FINISHED, &verify_data);
         server.write_record(stream, &finished);
         server.transcript.push(&finished);
@@ -460,7 +461,11 @@ fn serve(stream: &mut std::net::TcpStream, mut respond: impl FnMut(u32, &[Header
         if !preface_skipped {
             // 前言必须在进入 `plain` **之前**剥掉：留在里面会让 parse_frame
             // 永远从 "PRI " 开始，一个帧都解析不出来。
-            let skip = if chunk.starts_with(b"PRI * HTTP/2.0") { 24 } else { 0 };
+            let skip = if chunk.starts_with(b"PRI * HTTP/2.0") {
+                24
+            } else {
+                0
+            };
             preface_skipped = true;
             plain.extend_from_slice(&chunk[skip..]);
         } else {
@@ -468,7 +473,6 @@ fn serve(stream: &mut std::net::TcpStream, mut respond: impl FnMut(u32, &[Header
         }
     }
 }
-
 
 fn build_response(encoder: &mut Encoder, stream_id: u32, status: &str, body: &[u8]) -> Vec<u8> {
     let headers = vec![
@@ -543,8 +547,8 @@ fn requests_on_the_same_connection_reuse_the_session() {
         });
     });
 
-    let mut connection = Connection::connect(client_side, Family::Firefox, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Firefox, "example.com", None).expect("握手");
     let first = connection.get("/one").expect("第一个请求");
     assert_eq!(first.body, b"response #1");
     let second = connection.get("/two").expect("第二个请求");
@@ -566,8 +570,8 @@ fn a_large_response_body_is_reassembled_across_records() {
         });
     });
 
-    let mut connection = Connection::connect(client_side, Family::Safari, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Safari, "example.com", None).expect("握手");
     let response = connection.get("/big").expect("请求");
     assert_eq!(response.status, 200);
     assert_eq!(response.body.len(), expected.len(), "长度必须一致");
@@ -592,8 +596,8 @@ fn a_post_with_a_body_reaches_the_server() {
         });
     });
 
-    let mut connection = Connection::connect(client_side, Family::Chrome, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Chrome, "example.com", None).expect("握手");
     let response = connection
         .request("POST", "/submit", Some(b"payload"))
         .expect("POST 应当成功");
@@ -771,8 +775,8 @@ fn a_goaway_together_with_the_response_does_not_lose_the_response() {
         let _ = std::io::Read::read(&mut server_side, &mut sink);
     });
 
-    let mut connection = Connection::connect(client_side, Family::Chrome, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Chrome, "example.com", None).expect("握手");
     let response = connection.get("/").expect("GOAWAY 不该吞掉已完成的流");
     assert_eq!(response.status, 200);
     assert_eq!(response.body, b"body survives goaway");
@@ -821,12 +825,15 @@ fn a_goaway_that_excludes_the_stream_is_an_error() {
         let _ = std::io::Read::read(&mut server_side, &mut sink);
     });
 
-    let mut connection = Connection::connect(client_side, Family::Chrome, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Chrome, "example.com", None).expect("握手");
     match connection.get("/") {
         Err(DriverError::BadResponse(detail)) => {
             assert!(detail.contains("GOAWAY"), "{detail}");
-            assert!(detail.contains("nothing processed"), "debug 载荷要带上：{detail}");
+            assert!(
+                detail.contains("nothing processed"),
+                "debug 载荷要带上：{detail}"
+            );
         }
         other => panic!("应当报 GOAWAY 错误，得到 {other:?}"),
     }
@@ -927,7 +934,10 @@ fn a_server_reset_mid_request_surfaces_as_an_error() {
     let result = connection.get("/");
     match result {
         Err(DriverError::BadResponse(detail)) => {
-            assert!(detail.contains("重置") || detail.contains("GOAWAY"), "{detail}")
+            assert!(
+                detail.contains("重置") || detail.contains("GOAWAY"),
+                "{detail}"
+            )
         }
         Err(other) => panic!("应当是响应错误，得到 {other:?}"),
         Ok(_) => panic!("被重置的流不该返回成功"),
@@ -984,8 +994,8 @@ fn settings_from_the_server_change_the_local_frame_limit() {
         }
     });
 
-    let mut connection = Connection::connect(client_side, Family::Chrome, "example.com", None)
-        .expect("握手");
+    let mut connection =
+        Connection::connect(client_side, Family::Chrome, "example.com", None).expect("握手");
     let response: Response = connection.get("/").expect("请求");
     assert_eq!(response.status, 200);
     assert_eq!(response.body, b"after settings");

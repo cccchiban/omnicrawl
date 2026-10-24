@@ -5,8 +5,9 @@
 //! `agent_isolation` 的元数据格式落盘（`sw-<key>.json`），供人工/清扫识别残留。
 //!
 //! 与 Python 的差异（有意为之）：**不做复用**——目录已存在时直接报错，让父 Agent 看到残留，
-//! 而不是靠文件系统校验去猜它是否可用；共享注册表（多进程 in-use 保护）也没搬，
-//! 因此崩溃残留不会被启动清扫自动回收。
+//! 而不是靠文件系统校验去猜它是否可用；共享注册表（多进程 in-use 保护）也没搬。
+//! 残留回收靠宿主的启动清扫：元数据里的 `cleanup_on_exit=auto` 让它进入清扫范围，产出提交
+//! 在隔离分支上，满 `DEFAULT_SWEEP_MAX_AGE_SECONDS`（一个月）无新提交后才被回收。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

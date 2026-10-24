@@ -149,10 +149,16 @@ fn dotted_mcp_tool_names_are_conformed_on_the_wire() {
     );
 
     // 与主请求发的是同一组线上名：工具块逐字相同，前缀缓存不会被改写。
-    let declared: Vec<_> = tools.iter().filter_map(tool_spec_from_openai_item).collect();
+    let declared: Vec<_> = tools
+        .iter()
+        .filter_map(tool_spec_from_openai_item)
+        .collect();
     let (expected, _) = conform_tool_names(&declared);
     let expected: Vec<String> = expected.into_iter().map(|tool| tool.name).collect();
-    assert_eq!(request.tool_names, expected, "摘要请求的工具名必须与主请求同源");
+    assert_eq!(
+        request.tool_names, expected,
+        "摘要请求的工具名必须与主请求同源"
+    );
 }
 
 #[test]

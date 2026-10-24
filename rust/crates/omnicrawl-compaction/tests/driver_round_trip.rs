@@ -220,3 +220,121 @@ fn below_threshold_only_records_measurement() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 长会话来一次压缩：归档、计数、历史重建共用同一次事件读取。
+///
+/// 这条用例盯的是「一次压缩把整份转录读好几遍」的老问题：长会话里每次读取都是
+/// 一整份转录外加一次深拷贝，压缩一触发就把峰值内存抬到转录体积的几倍。
+#[test]
+fn a_long_session_compacts_without_rereading_the_transcript_for_each_step() {
+    let root = temp_root("long-session");
+    let store = Arc::new(SessionStore::open(&root));
+    store.ensure().expect("建目录");
+    let created = store
+        .start_session("/workspace", "长会话", utc_now())
+        .expect("建会话");
+    let session_id = created.session_id;
+
+    // 六轮完整回合，每轮都带一段体积可观（约 192 KB）的工具输出。
+    let big = "输".repeat(64 * 1024);
+    let mut ids: Vec<String> = Vec::new();
+    for round in 0..6 {
+        let events: Vec<(&str, Value)> = vec![
+            (
+                "user_message",
+                json!({"content": format!("第 {round} 轮：把仓库整理一下")}),
+            ),
+            (
+                "tool_call_requested",
+                json!({"tool": "bash", "tool_call_id": format!("c{round}"), "arguments": {"command": "ls"}}),
+            ),
+            (
+                "tool_result",
+                json!({"tool": "bash", "tool_call_id": format!("c{round}"), "ok": true, "output": big}),
+            ),
+            (
+                "assistant_message",
+                json!({"content": format!("第 {round} 轮完成")}),
+            ),
+        ];
+        for (event_type, payload) in events {
+            let payload = payload.as_object().cloned().expect("载荷是对象");
+            let event = store
+                .append_event(&session_id, event_type, payload, None, utc_now())
+                .expect("追加事件");
+            ids.push(event.event_id);
+        }
+    }
+
+    // 每个回合 4 条事件：user / tool_call_requested / tool_result / assistant。
+    // 摘要必须逐条覆盖窗口内的用户消息与失败调用，否则校验会整份拒绝。
+    let user_messages: Vec<Value> = (0..6)
+        .map(|round| {
+            json!({
+                "text": format!("第 {round} 轮：把仓库整理一下"),
+                "source_event_ids": [ids[round * 4].clone()],
+            })
+        })
+        .collect();
+    let last_user = ids[0].clone();
+    let first_assistant = ids[3].clone();
+    let first_call = ids[1].clone();
+    let first_result = ids[2].clone();
+    let mut structured = structured_summary(&[
+        last_user.clone(),
+        first_assistant.clone(),
+        first_call.clone(),
+        last_user.clone(),
+        last_user.clone(),
+        first_result.clone(),
+    ]);
+    structured["user_messages"] = Value::Array(user_messages);
+    structured["exact_evidence"] = json!([{
+        "text": "第 0 轮：把仓库整理一下",
+        "source_event_ids": [ids[0].clone()],
+    }]);
+    let service =
+        ContextCompactionService::new().with_compactor(Box::new(FakeCompactor { structured }));
+    let driver = CompactionDriver::new(
+        Arc::clone(&store),
+        service,
+        CompactionConfig {
+            trigger_context_tokens: 1,
+            ..CompactionConfig::default()
+        },
+    );
+    let history = vec![json!({"role": "user", "content": "把仓库整理一下"})];
+    let report = driver
+        .after_turn(&TurnBoundary {
+            session_id: &session_id,
+            system_prompt: "系统提示词",
+            context_messages: &[],
+            history_messages: &history,
+            tool_schemas: &[],
+            usage: TokenUsageSample::new(100, 20, 50).expect("用量非负"),
+            last_request_input_tokens: 0,
+            workspace_root: "/workspace",
+            task_hint: "整理仓库",
+        })
+        .expect("压缩不抛错");
+
+    assert!(report.compacted, "达到阈值应当压缩：{}", report.diagnostic);
+    // 归档条数与测量里上报的条数必须一致：两者都来自同一次事件读取。
+    let measurement = &report.measurement_payload;
+    let archived_count = measurement["archived_event_count"]
+        .as_i64()
+        .expect("归档条数应随测量载荷上报");
+    assert_eq!(archived_count, 24, "六轮完整回合的 24 条事件全部归档");
+    let archived = store.read_compacted_events(&session_id).expect("读归档");
+    assert_eq!(
+        archived.len() as i64,
+        archived_count,
+        "归档文件里的条数要与上报一致"
+    );
+    assert!(
+        !report.history.as_ref().expect("压缩后给出历史").is_empty(),
+        "压缩后历史不能为空"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}

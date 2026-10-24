@@ -6,8 +6,8 @@
 mod approval_audit;
 mod compaction;
 mod compression;
+mod computer_use;
 mod connector;
-mod dual_compaction;
 mod output_budget;
 mod session;
 mod settings;
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
 
     if let Some(index) = args.iter().position(|arg| arg == "--connector") {
         let Some(name) = args.get(index + 1) else {
-            eprintln!("用法：omnicrawl --connector <telegram>");
+            eprintln!("用法：omnicrawl --connector <telegram|feishu|qqbot>");
             return ExitCode::FAILURE;
         };
         return match connector::run(name) {
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         println!(
             "用法：omnicrawl [--version] [--connector <name>]\n\n\
              在 stdin/stdout 上用 NDJSON 协议 v1 与宿主通信。协议见 rust/docs/protocol-v1.md。\n\
-             --connector <name>：在进程内启动消息平台连接器（当前支持 telegram），不再走 stdio 协议。"
+             --connector <name>：在进程内启动消息平台连接器（telegram / feishu / qqbot），不再走 stdio 协议。"
         );
         return ExitCode::SUCCESS;
     }

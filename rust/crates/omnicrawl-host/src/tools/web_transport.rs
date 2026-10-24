@@ -128,9 +128,8 @@ fn decode_one_encoding(body: Vec<u8>, encoding: &str) -> Result<Vec<u8>, WebErro
 
 fn inflate_brotli(body: &[u8]) -> Result<Vec<u8>, WebError> {
     let mut out = Vec::new();
-    brotli::BrotliDecompress(&mut std::io::Cursor::new(body), &mut out).map_err(|error| {
-        WebError::new(WebErrorKind::Other, format!("brotli 解压失败：{error}"))
-    })?;
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(body), &mut out)
+        .map_err(|error| WebError::new(WebErrorKind::Other, format!("brotli 解压失败：{error}")))?;
     Ok(out)
 }
 
@@ -142,9 +141,7 @@ fn inflate_gzip(body: &[u8]) -> Result<Vec<u8>, WebError> {
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(body)
         .read_to_end(&mut out)
-        .map_err(|error| {
-            WebError::new(WebErrorKind::Other, format!("gzip 解压失败：{error}"))
-        })?;
+        .map_err(|error| WebError::new(WebErrorKind::Other, format!("gzip 解压失败：{error}")))?;
     Ok(out)
 }
 
@@ -160,7 +157,9 @@ fn inflate_deflate(body: &[u8]) -> Result<Vec<u8>, WebError> {
     out.clear();
     flate2::read::DeflateDecoder::new(body)
         .read_to_end(&mut out)
-        .map_err(|error| WebError::new(WebErrorKind::Other, format!("deflate 解压失败：{error}")))?;
+        .map_err(|error| {
+            WebError::new(WebErrorKind::Other, format!("deflate 解压失败：{error}"))
+        })?;
     Ok(out)
 }
 
@@ -865,8 +864,7 @@ mod tests {
 
     fn gzip(text: &str) -> Vec<u8> {
         use std::io::Write;
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(text.as_bytes()).expect("压缩");
         encoder.finish().expect("收尾")
     }
@@ -915,7 +913,10 @@ mod tests {
     #[test]
     fn a_plain_body_is_passed_through() {
         let payload = "<html>纯文本</html>".as_bytes().to_vec();
-        assert_eq!(decode_content(payload.clone(), None).expect("原样"), payload);
+        assert_eq!(
+            decode_content(payload.clone(), None).expect("原样"),
+            payload
+        );
         assert_eq!(
             decode_content(payload.clone(), Some("identity")).expect("原样"),
             payload
@@ -933,15 +934,14 @@ mod tests {
     fn chained_encodings_are_restored_in_reverse_order() {
         // 先 gzip 再 gzip：声明顺序是「编码顺序」，还原必须逆序。
         let payload = "多层编码";
-        let decoded = decode_content(gzip_bytes(gzip(payload)), Some("gzip, gzip"))
-            .expect("应当逐层解压");
+        let decoded =
+            decode_content(gzip_bytes(gzip(payload)), Some("gzip, gzip")).expect("应当逐层解压");
         assert_eq!(String::from_utf8(decoded).expect("UTF-8"), payload);
     }
 
     fn gzip_bytes(bytes: Vec<u8>) -> Vec<u8> {
         use std::io::Write;
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&bytes).expect("压缩");
         encoder.finish().expect("收尾")
     }

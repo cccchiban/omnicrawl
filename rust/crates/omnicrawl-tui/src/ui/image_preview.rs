@@ -306,7 +306,10 @@ mod tests {
         let source: DynamicImage =
             image::ImageBuffer::from_pixel(2000, 1000, image::Rgba([1u8, 2, 3, 255])).into();
         assert_eq!((source.width(), source.height()), (2000, 1000));
-        assert_eq!((source.thumbnail(MAX_SOURCE_EDGE, MAX_SOURCE_EDGE).width()), MAX_SOURCE_EDGE);
+        assert_eq!(
+            (source.thumbnail(MAX_SOURCE_EDGE, MAX_SOURCE_EDGE).width()),
+            MAX_SOURCE_EDGE
+        );
     }
 
     #[test]

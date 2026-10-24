@@ -190,8 +190,15 @@ mod tests {
         // 数值抄自 crossterm 0.29 `event/sys/windows.rs` 的 ENABLE_MOUSE_MODE。
         const EXPECTED: u32 = 0x0010 | 0x0080 | 0x0008;
         let required = required_input_mode(0x0001 | 0x0040); // 任意「被重置」的当前值
-        assert_eq!(required, EXPECTED, "目标值必须等于 crossterm 的鼠标捕获模式");
-        assert_eq!(required & 0x0200, 0, "不得要求 VT 输入位（crossterm 会覆盖掉它）");
+        assert_eq!(
+            required, EXPECTED,
+            "目标值必须等于 crossterm 的鼠标捕获模式"
+        );
+        assert_eq!(
+            required & 0x0200,
+            0,
+            "不得要求 VT 输入位（crossterm 会覆盖掉它）"
+        );
         assert_eq!(required & 0x0001, 0, "处理输入必须关闭");
         assert_eq!(required & 0x0004, 0, "回显必须关闭");
         assert_eq!(required & 0x0002, 0, "行输入必须关闭");
@@ -203,7 +210,11 @@ mod tests {
     #[cfg(windows)]
     fn already_healthy_mode_is_not_touched() {
         let healthy = required_input_mode(0x0200);
-        assert_eq!(required_input_mode(healthy), healthy, "已健康的模式是自愈不动点");
+        assert_eq!(
+            required_input_mode(healthy),
+            healthy,
+            "已健康的模式是自愈不动点"
+        );
         assert_eq!(healthy, 0x0098, "健康值就是 crossterm 鼠标捕获后的值");
     }
 
@@ -217,7 +228,11 @@ mod tests {
         const CLEARED: u32 = 0x0003;
         const VT: u32 = 0x0004;
         assert_eq!(required_output_mode(CLEARED), CLEARED | VT);
-        assert_eq!(required_output_mode(CLEARED | VT), CLEARED | VT, "已含 VT 位时是不动点");
+        assert_eq!(
+            required_output_mode(CLEARED | VT),
+            CLEARED | VT,
+            "已含 VT 位时是不动点"
+        );
     }
 
     /// 非 Windows 平台没有可恢复的模式。

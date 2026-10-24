@@ -260,11 +260,7 @@ pub fn load_llm_config(env: &ConfigEnvironment) -> Result<LlmConfig, ConfigError
         api_key: read_required_config_text(&section, "api_key")?,
         base_url: read_required_config_text(&section, "base_url")?,
         model: read_required_config_text(&section, "model")?,
-        thinking_type: read_optional_config_text(
-            &section,
-            "thinking_type",
-            DEFAULT_THINKING_TYPE,
-        )?,
+        thinking_type: read_optional_config_text(&section, "thinking_type", DEFAULT_THINKING_TYPE)?,
         reasoning_effort: read_optional_config_text(
             &section,
             "reasoning_effort",
@@ -351,7 +347,9 @@ pub fn save_active_model_ref(
 /// 必填文本：只读配置项。
 pub fn read_required_config_text(section: &Table, key: &str) -> Result<String, ConfigError> {
     let missing = || {
-        ConfigError::new(format!("缺少配置 llm.{key}，请在配置文件中填写 llm.{key}。"))
+        ConfigError::new(format!(
+            "缺少配置 llm.{key}，请在配置文件中填写 llm.{key}。"
+        ))
     };
     match section.get(key) {
         None => Err(missing()),

@@ -42,7 +42,9 @@ fn charset_from_content_type(content_type: &str) -> Option<String> {
         if !name.trim().eq_ignore_ascii_case("charset") {
             return None;
         }
-        let value = value.trim().trim_matches(|character| character == '"' || character == '\'');
+        let value = value
+            .trim()
+            .trim_matches(|character| character == '"' || character == '\'');
         if value.is_empty() {
             None
         } else {
@@ -58,7 +60,10 @@ fn charset_from_meta(body: &[u8]) -> Option<String> {
     let head = String::from_utf8_lossy(prefix).to_ascii_lowercase();
     for tag_start in find_all(&head, "<meta") {
         let rest = &head[tag_start..];
-        let end = rest.find('>').map(|offset| offset + 1).unwrap_or(rest.len());
+        let end = rest
+            .find('>')
+            .map(|offset| offset + 1)
+            .unwrap_or(rest.len());
         let attributes = parse_attributes(&rest[..end]);
         // `<meta charset="gbk">` 这种直接写法。
         if let Some(value) = attribute(&attributes, "charset") {
@@ -67,8 +72,8 @@ fn charset_from_meta(body: &[u8]) -> Option<String> {
             }
         }
         // `<meta http-equiv="content-type" content="text/html; charset=gbk">` 这种老写法。
-        if let Some(value) = attribute(&attributes, "content")
-            .and_then(|content| charset_from_content_type(content))
+        if let Some(value) =
+            attribute(&attributes, "content").and_then(|content| charset_from_content_type(content))
         {
             return Some(value);
         }
@@ -216,7 +221,10 @@ mod tests {
     #[test]
     fn naive_utf8_lossy_would_corrupt_gbk() {
         let corrupted = String::from_utf8_lossy(ZHONG_WEN_GBK);
-        assert!(corrupted.contains('\u{FFFD}'), "前提：UTF-8 强解确实会破坏 GBK");
+        assert!(
+            corrupted.contains('\u{FFFD}'),
+            "前提：UTF-8 强解确实会破坏 GBK"
+        );
         let (text, _) = decode_body(ZHONG_WEN_GBK, Some("text/html; charset=gbk"));
         assert!(!text.contains('\u{FFFD}'));
     }

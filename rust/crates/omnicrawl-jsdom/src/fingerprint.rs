@@ -109,13 +109,19 @@ AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36{edge_suffix}",
                         edge_suffix = if edge { " Edg/145.0.0.0" } else { "" },
                     ),
-                    app_version: format!("5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                    app_version: format!(
+                        "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36{edge_suffix}",
-                        edge_suffix = if edge { " Edg/145.0.0.0" } else { "" }),
+                        edge_suffix = if edge { " Edg/145.0.0.0" } else { "" }
+                    ),
                     vendor: "Google Inc.",
                     platform: "Win32",
                     brand_version: "145",
-                    brand_name: if edge { "Microsoft Edge" } else { "Google Chrome" },
+                    brand_name: if edge {
+                        "Microsoft Edge"
+                    } else {
+                        "Google Chrome"
+                    },
                     ch_platform: "Windows",
                     platform_version: "19.0.0",
                     full_version: "145.0.0.0",
@@ -208,7 +214,10 @@ mod tests {
         for family in ["firefox", "safari"] {
             let profile = Profile::for_family(family);
             assert!(!profile.chrome_object, "{family} 不应有 window.chrome");
-            assert!(!profile.user_agent.contains("Chrome/"), "{family} 不应自称 Chrome");
+            assert!(
+                !profile.user_agent.contains("Chrome/"),
+                "{family} 不应自称 Chrome"
+            );
         }
     }
 }

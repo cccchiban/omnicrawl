@@ -27,10 +27,10 @@ pub use env::{
     ensure_environment, environment_state, remove_environment, system_python, EnvironmentState,
     InstallOutcome, InstallProgress, PythonLauncher,
 };
-pub use progress::{human_bytes, ProgressHandle, ProgressSnapshot, ProgressUnit};
 pub use paths::{default_root, resolve_root};
+pub use progress::{human_bytes, ProgressHandle, ProgressSnapshot, ProgressUnit};
 pub use server::{
-    read_pid, read_pid_record, running_model, service_ready, LaunchSpec, OneJevServer, ServerOutcome,
-    ServerState, DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    read_pid, read_pid_record, running_model, service_ready, LaunchSpec, OneJevServer,
+    ServerOutcome, ServerState, DEFAULT_HEALTH_TIMEOUT_SECONDS,
 };
 pub use sizes::{find_size, size_labels, OneJevSize, ONEJEV_SIZES};

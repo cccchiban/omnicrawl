@@ -91,7 +91,8 @@ pub fn download_model(
             total_bytes: size.total_bytes,
         });
     }
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
 
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -156,7 +157,8 @@ pub fn delete_model(root: &Path, size: &OneJevSize) -> Result<bool, String> {
     if !dir.exists() {
         return Ok(false);
     }
-    std::fs::remove_dir_all(&dir).map_err(|error| format!("删除 {} 失败：{error}", dir.display()))?;
+    std::fs::remove_dir_all(&dir)
+        .map_err(|error| format!("删除 {} 失败：{error}", dir.display()))?;
     Ok(true)
 }
 
@@ -191,7 +193,11 @@ fn list_repo_files(agent: &ureq::Agent, repo_id: &str) -> Result<Vec<RepoFile>, 
         let size = row
             .get("size")
             .and_then(Value::as_u64)
-            .or_else(|| row.get("lfs").and_then(|lfs| lfs.get("size")).and_then(Value::as_u64))
+            .or_else(|| {
+                row.get("lfs")
+                    .and_then(|lfs| lfs.get("size"))
+                    .and_then(Value::as_u64)
+            })
             .unwrap_or(0);
         files.push(RepoFile {
             path: path.to_string(),
@@ -234,7 +240,9 @@ fn open_body(
     } else {
         request
     };
-    let response = request.call().map_err(|error| format!("请求失败：{error}"))?;
+    let response = request
+        .call()
+        .map_err(|error| format!("请求失败：{error}"))?;
     let status = response.status().as_u16();
     if status >= 400 {
         return Err(format!("HTTP {status}：{url}"));
@@ -362,13 +370,18 @@ fn download_file_once(
         let _ = std::fs::remove_file(&part);
         resume_from = 0;
     }
-    let (status, confirmed_start, mut reader) = open_body(agent, url, BODY_TIMEOUT_SECONDS, resume_from)?;
+    let (status, confirmed_start, mut reader) =
+        open_body(agent, url, BODY_TIMEOUT_SECONDS, resume_from)?;
     let mut received = 0u64;
     let append = match (resume_from, status) {
         // 服务端按 Range 返回 206 且起点吻合，才能从断点追加。
         (0, _) => false,
         (offset, 206) if confirmed_start == Some(offset) => true,
-        (offset, 206) => return Err(format!("续传起点不符（本地 {offset}，服务端 {confirmed_start:?}）")),
+        (offset, 206) => {
+            return Err(format!(
+                "续传起点不符（本地 {offset}，服务端 {confirmed_start:?}）"
+            ))
+        }
         // 服务端不支持续传（回了 200 全量），丢掉本地半成品从头写。
         _ => {
             let _ = std::fs::remove_file(&part);
@@ -416,7 +429,9 @@ fn download_file_once(
         return Err(format!("读取响应失败（已收到 {written} 字节）：{error}"));
     }
     if expected_size > 0 && written != expected_size {
-        return Err(format!("下载字节数不符（得到 {written}，期望 {expected_size}）"));
+        return Err(format!(
+            "下载字节数不符（得到 {written}，期望 {expected_size}）"
+        ));
     }
     std::fs::rename(&part, destination).map_err(|error| format!("{error}"))?;
     Ok(())
@@ -429,17 +444,20 @@ mod tests {
 
     #[test]
     fn patterns_take_weights_and_text_files_only() {
-        assert!(matches_allow_patterns(
-            "model.safetensors",
-            &ALLOW_PATTERNS
-        ));
+        assert!(matches_allow_patterns("model.safetensors", &ALLOW_PATTERNS));
         assert!(matches_allow_patterns(
             "model-00001-of-00002.safetensors",
             &ALLOW_PATTERNS
         ));
         assert!(matches_allow_patterns("config.json", &ALLOW_PATTERNS));
-        assert!(matches_allow_patterns("chat_template.jinja", &ALLOW_PATTERNS));
-        assert!(!matches_allow_patterns("assets/banner.svg", &ALLOW_PATTERNS));
+        assert!(matches_allow_patterns(
+            "chat_template.jinja",
+            &ALLOW_PATTERNS
+        ));
+        assert!(!matches_allow_patterns(
+            "assets/banner.svg",
+            &ALLOW_PATTERNS
+        ));
         assert!(!matches_allow_patterns("README.md", &ALLOW_PATTERNS));
     }
 

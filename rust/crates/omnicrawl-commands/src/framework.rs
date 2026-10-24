@@ -105,6 +105,8 @@ pub enum Channel {
     Tui,
     Telegram,
     Feishu,
+    /// QQ 机器人（单聊 / 群聊 / 频道）。
+    Qqbot,
     /// 飞书自建应用入口。
     Fsapp,
     /// 其他远程通道。
@@ -120,6 +122,7 @@ impl Channel {
             "tui" => Channel::Tui,
             "telegram" => Channel::Telegram,
             "feishu" => Channel::Feishu,
+            "qqbot" => Channel::Qqbot,
             "fsapp" => Channel::Fsapp,
             "remote" => Channel::Remote,
             other => Channel::Other(other.to_string()),
@@ -131,19 +134,20 @@ impl Channel {
             Channel::Tui => "tui",
             Channel::Telegram => "telegram",
             Channel::Feishu => "feishu",
+            Channel::Qqbot => "qqbot",
             Channel::Fsapp => "fsapp",
             Channel::Remote => "remote",
             Channel::Other(other) => other.as_str(),
         }
     }
 
-    /// 是否来自远程连接器（飞书 / Telegram）。
+    /// 是否来自远程连接器（Telegram / 飞书 / QQ 机器人）。
     ///
     /// 远程入口不得绕过工具审批，也不支持退出、设置面板这类本地交互。
     pub fn is_remote(&self) -> bool {
         matches!(
             self,
-            Channel::Telegram | Channel::Feishu | Channel::Fsapp | Channel::Remote
+            Channel::Telegram | Channel::Feishu | Channel::Qqbot | Channel::Fsapp | Channel::Remote
         )
     }
 }
@@ -340,7 +344,7 @@ pub struct CommandContext<'a> {
 }
 
 impl CommandContext<'_> {
-    /// 是否来自远程连接器（飞书 / Telegram）。
+    /// 是否来自远程连接器（Telegram / 飞书 / QQ 机器人）。
     pub fn is_remote(&self) -> bool {
         self.channel.is_remote()
     }
@@ -916,6 +920,7 @@ mod tests {
     #[test]
     fn remote_flag_reflects_channel() {
         assert!(Channel::parse("telegram").is_remote());
+        assert!(Channel::parse("qqbot").is_remote());
         assert!(Channel::parse("fsapp").is_remote());
         assert!(!Channel::parse("tui").is_remote());
         assert!(!Channel::Other("web".to_string()).is_remote());

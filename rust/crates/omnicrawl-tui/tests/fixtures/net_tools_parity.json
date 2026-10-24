@@ -220,34 +220,19 @@
             "html": "{\"code\":0,\"message\":\"success\",\"data\":{\"results\":[{\"title\":\"甲的另一份\",\"url\":\"https://a.example/x\",\"snippet\":\"来自 anysearch\"},{\"title\":\"乙\",\"url\":\"https://b.example/\",\"snippet\":\"只在 anysearch\"}]}}"
           },
           {
-            "match": "github.com",
-            "html": "<html><body><p>没有结果块。</p></body></html>"
-          },
-          {
-            "match": "arxiv.org",
-            "html": "<html><body><p>没有结果块。</p></body></html>"
-          },
-          {
-            "match": "huggingface.co",
-            "html": "<html><body><p>没有结果块。</p></body></html>"
-          },
-          {
             "match": "api.search.tinyfish.ai",
             "html": "{\"query\":\"rust\",\"results\":[{\"title\":\"己\",\"url\":\"https://f.example\",\"snippet\":\"摘要己\"}]}"
           }
         ],
         "requests": [
           "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh",
-          "https://github.com/search?q=rust&type=repositories",
-          "https://arxiv.org/search/?searchtype=all&query=rust",
-          "https://huggingface.co/models?search=rust",
           "https://api.tavily.com/search",
           "https://api.firecrawl.dev/v1/search",
           "https://api.anysearch.com/v1/search",
           "https://api.search.tinyfish.ai/?query=rust"
         ],
         "ok": true,
-        "output": "来源：mixed（duckduckgo+github+arxiv+huggingface+tavily+firecrawl+anysearch+tinyfish）｜查询：rust｜用时：{ELAPSED}s｜共 3 条（去重 1 条）\n1. 甲\n   https://a.example/x/\n   来自 anysearch\n   来源：duckduckgo+anysearch\n2. 丙\n   https://c.example\n3. 丁\n   https://d.example\n   摘要丁",
+        "output": "来源：mixed（duckduckgo+tavily+firecrawl+anysearch+tinyfish）｜查询：rust｜用时：{ELAPSED}s｜共 3 条（去重 1 条）\n1. 甲\n   https://a.example/x/\n   来自 anysearch\n   来源：duckduckgo+anysearch\n2. 丙\n   https://c.example\n3. 丁\n   https://d.example\n   摘要丁",
         "engine": "mixed"
       },
       {

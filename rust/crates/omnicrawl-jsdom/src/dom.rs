@@ -169,7 +169,10 @@ impl Dom {
         if parent == child || self.is_ancestor(child, parent) {
             return;
         }
-        if !matches!(self.nodes.get(parent).map(|node| &node.kind), Some(Kind::Element { .. }) | Some(Kind::Document)) {
+        if !matches!(
+            self.nodes.get(parent).map(|node| &node.kind),
+            Some(Kind::Element { .. }) | Some(Kind::Document)
+        ) {
             return;
         }
         self.detach(child);
@@ -364,8 +367,7 @@ impl Dom {
     }
 
     pub(crate) fn first_element_named(&self, tag: &str) -> Option<usize> {
-        (0..self.nodes.len())
-            .find(|index| self.tag(*index).is_some_and(|name| name == tag))
+        (0..self.nodes.len()).find(|index| self.tag(*index).is_some_and(|name| name == tag))
     }
 
     fn has_element(&self, tag: &str) -> bool {
@@ -672,7 +674,9 @@ fn parse_compound(token: &str) -> Option<Compound> {
 
 fn text_run_len(text: &str) -> usize {
     text.char_indices()
-        .find(|(_, character)| !(character.is_ascii_alphanumeric() || *character == '-' || *character == '_'))
+        .find(|(_, character)| {
+            !(character.is_ascii_alphanumeric() || *character == '-' || *character == '_')
+        })
         .map(|(index, _)| index)
         .unwrap_or(text.len())
 }

@@ -646,14 +646,9 @@ fn shutdown_writes_session_closed_event() {
 #[test]
 fn workspace_switch_appends_event_and_keeps_history() {
     let root = temp_root("workspace-switch");
-    let base = std::env::temp_dir().join(format!(
-        "omnicrawl-switch-base-{}",
-        std::process::id()
-    ));
-    let target = std::env::temp_dir().join(format!(
-        "omnicrawl-switch-target-{}",
-        std::process::id()
-    ));
+    let base = std::env::temp_dir().join(format!("omnicrawl-switch-base-{}", std::process::id()));
+    let target =
+        std::env::temp_dir().join(format!("omnicrawl-switch-target-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let _ = std::fs::remove_dir_all(&target);
     std::fs::create_dir_all(&base).expect("无法建初始工作区");
@@ -669,18 +664,17 @@ fn workspace_switch_appends_event_and_keeps_history() {
     assert_eq!(final_text(&frames), FIRST_REPLY);
 
     // 切换：应答给出 from/to，且 `switched` 为真。
-    let result = kernel.request_ok(
-        3,
-        "workspace.switch",
-        json!({"path": root_param(&target)}),
-    );
+    let result = kernel.request_ok(3, "workspace.switch", json!({"path": root_param(&target)}));
     assert_eq!(result["switched"], true, "切换应生效：{result}");
     assert_eq!(result["to"], root_param(&target));
 
     let transcript = root.join("sessions").join(format!("{session_id}.jsonl"));
     let all = events(&transcript);
     let last = all.last().expect("转录至少有 session_started");
-    assert_eq!(last["type"], "workspace_switched", "切换后应多一条事件：{last}");
+    assert_eq!(
+        last["type"], "workspace_switched",
+        "切换后应多一条事件：{last}"
+    );
     assert_eq!(last["payload"]["from"], result["from"]);
     assert_eq!(last["payload"]["to"], root_param(&target));
 
@@ -694,24 +688,13 @@ fn workspace_switch_appends_event_and_keeps_history() {
 
     // 指向同一目录：不再重复写事件。
     let before = event_types(&transcript);
-    let again = kernel.request_ok(
-        4,
-        "workspace.switch",
-        json!({"path": root_param(&target)}),
-    );
+    let again = kernel.request_ok(4, "workspace.switch", json!({"path": root_param(&target)}));
     assert_eq!(again["switched"], false, "同目录切换不算切换：{again}");
-    assert_eq!(
-        event_types(&transcript),
-        before,
-        "同目录切换不应再写事件"
-    );
+    assert_eq!(event_types(&transcript), before, "同目录切换不应再写事件");
 
     // 空 path 是无效请求，且不落任何事件。
     let empty = kernel.request(5, "workspace.switch", json!({"path": "  "}));
-    assert!(
-        empty.get("error").is_some(),
-        "空 path 应当被拒绝：{empty}"
-    );
+    assert!(empty.get("error").is_some(), "空 path 应当被拒绝：{empty}");
     assert_eq!(event_types(&transcript), before, "被拒绝的切换不应写事件");
 
     kernel.shutdown();
@@ -753,10 +736,8 @@ fn shutdown_discards_empty_placeholder_session() {
 fn session_events_returns_the_active_transcript() {
     let root = temp_root("session-events");
     // 绑定工作区：`turn.undo` 要按工作区快照回滚副作用，未绑定会被拒绝。
-    let workspace = std::env::temp_dir().join(format!(
-        "omnicrawl-events-ws-{}",
-        std::process::id()
-    ));
+    let workspace =
+        std::env::temp_dir().join(format!("omnicrawl-events-ws-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&workspace);
     let mut kernel = Kernel::spawn();
     kernel.initialize(json!({
@@ -805,10 +786,16 @@ fn subagent_query_lists_worktrees_from_the_managed_root() {
     kernel.initialize(json!({"root": root_param(&root)}));
 
     let result = kernel.request_ok(3, "subagent.query", json!({"action": "list_worktrees"}));
-    assert_eq!(result["unavailable"], false, "worktree 清单不依赖任务表：{result}");
+    assert_eq!(
+        result["unavailable"], false,
+        "worktree 清单不依赖任务表：{result}"
+    );
     let worktrees = result["worktrees"].as_array().expect("worktrees 是数组");
     // 隔离的 HOME 下托管根是空的：清单为空，但字段必须在。
-    assert!(worktrees.is_empty(), "隔离 HOME 下不该有 worktree：{worktrees:?}");
+    assert!(
+        worktrees.is_empty(),
+        "隔离 HOME 下不该有 worktree：{worktrees:?}"
+    );
 
     // 认不出的动作要报错并点出可选值（宿主拼错 action 时不该静默成功）。
     let response = kernel.request(4, "subagent.query", json!({"action": "nope"}));

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use omnicrawl_jsdom::{run_with_scripts, Profile, ScriptSource};
 
-use omnicrawl_host::tools::web_transport::{WebRequest, WebTransport, UreqWebTransport};
+use omnicrawl_host::tools::web_transport::{UreqWebTransport, WebRequest, WebTransport};
 
 /// 极简加载器：用 ureq 通路取脚本（不涉及 omnicrawl-tls 的指纹细节，够验证执行链）。
 struct LiveLoader {
@@ -38,7 +38,10 @@ impl ScriptSource for LiveLoader {
             return Err(format!("HTTP {}", response.status));
         }
         let text = response.text();
-        self.cache.lock().unwrap().insert(url.to_string(), text.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), text.clone());
         self.loaded.lock().unwrap().push(url.to_string());
         Ok(text)
     }

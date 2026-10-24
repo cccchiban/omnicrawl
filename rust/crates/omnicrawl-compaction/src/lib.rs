@@ -11,6 +11,4 @@ pub mod dual;
 
 pub use adapter::{SummaryAdapterSettings, SummaryModelAdapter};
 pub use driver::{AfterTurnReport, CompactionConfig, CompactionDriver, TurnBoundary};
-pub use dual::{
-    raw_chars, render_raw_archive, write_raw_archive, RawToolCall, AGENT_TEMP_DIR,
-};
+pub use dual::{raw_chars, render_raw_archive, write_raw_archive, RawToolCall, AGENT_TEMP_DIR};

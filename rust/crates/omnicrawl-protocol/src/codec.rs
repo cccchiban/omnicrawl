@@ -660,14 +660,14 @@ mod call_id_tests {
         ];
         let report = normalize_call_ids(&mut messages);
         let (calls, results) = ids(&messages);
-        assert_eq!(calls, vec!["call_0", "call_dedup1"], "后出现的重复 id 要改名");
+        assert_eq!(
+            calls,
+            vec!["call_0", "call_dedup1"],
+            "后出现的重复 id 要改名"
+        );
         assert_eq!(results, vec!["call_0", "call_dedup1"], "结果按同一张表改名");
         assert!(
-            calls
-                .iter()
-                .collect::<BTreeSet<_>>()
-                .len()
-                == calls.len()
+            calls.iter().collect::<BTreeSet<_>>().len() == calls.len()
                 && results.iter().collect::<BTreeSet<_>>().len() == results.len(),
             "改名后两侧都必须唯一：{calls:?} / {results:?}"
         );

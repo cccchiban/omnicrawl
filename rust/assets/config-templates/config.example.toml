@@ -195,6 +195,21 @@ auto_retry_errors = ["SERVICE_UNAVAILABLE"]
 enabled = true
 max_auto_followups = 3
 
+# 桌面操作（Computer Use）：让模型通过截图观察窗口，并用鼠标键盘完成 GUI 任务。
+# 由专职子代理执行，与 [subagents] 总开关互相独立；每次任务占用整个桌面，因此并发恒为 1。
+# 本功能按时间收敛（不限制步数），无人工审核：破坏性动作由子代理先回报确认。
+[computer_use]
+enabled = false
+# 专用子代理使用的模型；留空或 inherit 表示继承主模型。
+model = ""
+# 单次 computer_use 调用的时间预算（秒），超时会把已完成进度返回给模型。
+timeout_seconds = 600
+# 截图长边上限：同时决定坐标换算比例，越小越省 Token。
+screenshot_max_dimension = 1024
+# 专用子代理的思考强度：low / medium / high / xhigh / max。
+# 桌面任务靠看画面、点控件收敛，深推理换不回转得动的操作，默认 low。
+thinking_effort = "low"
+
 [context_compaction]
 # 上下文压缩是 Agent 的基础能力。触发阈值（Token）也可在运行设置面板按当前
 # 模型上下文窗口的百分比设置（5% 步进）：trigger_context_tokens = 上下文窗口 × 百分比。
@@ -292,6 +307,7 @@ enabled = false
 # enabled = false
 # max_depth = 1
 # max_concurrency = 2
+# 保留以兼容既有配置；子代理已改为回合内同步串行执行，本项与 allow_background 均不再生效。
 # max_tasks_per_batch = 4
 # default_timeout_seconds = 3600
 # model_request_concurrency = 2

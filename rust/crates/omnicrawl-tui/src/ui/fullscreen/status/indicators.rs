@@ -433,7 +433,11 @@ mod tests {
         assert!(text.plain().contains("t/s"));
         assert!(text.plain().contains("MAN"));
         // 工作区并进遥测行尾，不再单独占一页。
-        assert!(text.plain().contains("⁕ 工作区 D:/work"), "{}", text.plain());
+        assert!(
+            text.plain().contains("⁕ 工作区 D:/work"),
+            "{}",
+            text.plain()
+        );
         let _ = &mut lines_holder;
     }
 

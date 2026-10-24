@@ -29,7 +29,9 @@ use omnicrawl_config::models::model_catalog::{
     CatalogRequest, DiscoveryCache, ModelOption, MODEL_LIST_TIMEOUT_SECONDS,
 };
 use omnicrawl_controllers::memory::user_data_root;
-use omnicrawl_controllers::settings::{context_compaction_trigger_tokens, kernel_compaction_settings};
+use omnicrawl_controllers::settings::{
+    context_compaction_trigger_tokens, kernel_compaction_settings,
+};
 use omnicrawl_controllers::tool_args::public_tool_arguments;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_extensions::skill::SkillManager;
@@ -41,8 +43,8 @@ use omnicrawl_host::tools::monitor::{MonitorManager, MonitorPollView, MonitorTas
 use omnicrawl_host::tools::{MemoryOptions, RegistryOptions};
 use omnicrawl_host::turn::{Interactor, RunnerOptions, TurnControl, TurnError, TurnRunner};
 use omnicrawl_ipc::bridge::{
-    HostEvent, KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, SessionModelSettings,
-    SessionSettingsParams, SubagentEventPayload,
+    HostEvent, KernelCompactionConfig, KernelModelConfig, KernelSessionConfig,
+    SessionModelSettings, SessionSettingsParams, SubagentEventPayload,
 };
 use omnicrawl_mcp::client::McpClientManager;
 use omnicrawl_session::redaction::redact_sensitive_values;
@@ -335,14 +337,15 @@ impl AgentService {
             &options.model.provider,
             &options.model.api_key_env,
         );
-        let client = KernelClient::spawn_with_stderr_env(kernel_program, credentials, move |line| {
-            if let Some(session_id) = parse_session_ready(line) {
-                if let Ok(mut guard) = slot.lock() {
-                    *guard = session_id;
+        let client =
+            KernelClient::spawn_with_stderr_env(kernel_program, credentials, move |line| {
+                if let Some(session_id) = parse_session_ready(line) {
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = session_id;
+                    }
                 }
-            }
-        })
-        .map_err(|error| format!("启动内核进程失败：{error}"))?;
+            })
+            .map_err(|error| format!("启动内核进程失败：{error}"))?;
 
         let mut runner =
             TurnRunner::new(client, runner_options(&options), &options.registry_options)?;
@@ -1307,8 +1310,7 @@ fn options_from_process_profile(
     let approval = load_approval_mode(env, None)
         .map_err(|error| error.to_string())
         .and_then(|mode| {
-            runtime_approval_mode(&mode)
-                .ok_or_else(|| format!("approval.mode 取值非法：{mode}"))
+            runtime_approval_mode(&mode).ok_or_else(|| format!("approval.mode 取值非法：{mode}"))
         })?;
     let system_prompt = if llm.system_prompt.trim().is_empty() {
         DEFAULT_SYSTEM_PROMPT.to_string()
@@ -1383,6 +1385,12 @@ fn options_from_process_profile(
             env,
             DECISION_SWITCH_MEMORY_SEARCH,
         )),
+        embedding: Arc::new(
+            omnicrawl_host::embedding_client::embedding_options_from_config(
+                env,
+                load_feature_enabled(env, "memory_embedding", false, None, None).unwrap_or(false),
+            ),
+        ),
         ..MemoryOptions::default()
     };
     // 知识库检索重排：与 TUI 同源，按 `[decision_models.features] kb_search_rerank` 装配。
@@ -1395,8 +1403,7 @@ fn options_from_process_profile(
     );
     // 工具开关（`[tools]` 段）同样在启动期装载：若这里不装，`config.toml` 里关掉的
     // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
-    options.registry_options.disabled_tools =
-        load_disabled_tools(env, None).unwrap_or_default();
+    options.registry_options.disabled_tools = load_disabled_tools(env, None).unwrap_or_default();
     // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 duckduckgo +
     // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl/anysearch/tinyfish 与各自的 API Key 全部
     // 失效，工具会一直报「来源：duckduckgo」（与 TUI 同源，见 `web_search_options_from_config`）。
@@ -1405,8 +1412,7 @@ fn options_from_process_profile(
         omnicrawl_host::tools::web_search_options_from_config(env);
     // 图像生成同理：默认选项是「未启用 + 无凭据」，不装的话 `[image_gen]` 里配好的服务商、
     // 接口地址、模型与明文 api_key 全部失效（与 TUI 同源，见 `image_gen_options_from_config`）。
-    options.registry_options.image_gen =
-        omnicrawl_host::tools::image_gen_options_from_config(env);
+    options.registry_options.image_gen = omnicrawl_host::tools::image_gen_options_from_config(env);
     options.monitors = Some(monitors);
     // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
     options.plugins = Some(Arc::new(PluginHost::from_environment(
@@ -1422,7 +1428,9 @@ fn options_from_process_profile(
     options.prune = Some(omnicrawl_host::tools::prune_options_from_config(env));
     // 建议：与 TUI 同源（`[decision_models.features] tool_suggestion` 与 `subagent_suggestion`）。
     options.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(env));
-    options.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(env));
+    options.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
+        env,
+    ));
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
@@ -1528,7 +1536,10 @@ fn session_config_defaults(
 }
 
 /// 窗口变化后要下发的压缩阈值：只带这两个字段，其余字段由内核保留现值。
-fn window_compaction_settings(options: &ServiceOptions, window: i64) -> Option<KernelCompactionConfig> {
+fn window_compaction_settings(
+    options: &ServiceOptions,
+    window: i64,
+) -> Option<KernelCompactionConfig> {
     let config = load_context_compaction_config(&options.env, None).ok()?;
     let percent = config.trigger_context_percent?;
     Some(KernelCompactionConfig {
@@ -1554,13 +1565,10 @@ fn build_prompt_runtime(
     options.workspace_detection_summary = detect_project_context(env, None).detection_summary();
     options.system_prompt_override = None;
     // 顾问准则只在顾问真正可用（已启用且未命中黑名单）时追加，与 Python 同判据。
-    let advisor = omnicrawl_config::features::advisor::load_advisor_config(env, None)
-        .unwrap_or_default();
+    let advisor =
+        omnicrawl_config::features::advisor::load_advisor_config(env, None).unwrap_or_default();
     options.advisor_active = advisor.enabled;
-    options.advisor_blacklisted = advisor
-        .disabled_for_models
-        .iter()
-        .any(|name| name == model);
+    options.advisor_blacklisted = advisor.disabled_for_models.iter().any(|name| name == model);
     match PromptRuntime::load(env, options) {
         Ok(runtime) => Some(Arc::new(runtime)),
         Err(error) => {
@@ -1851,17 +1859,15 @@ impl AgentService {
             &self.options.model.provider,
             &self.options.model.api_key_env,
         );
-        let client = KernelClient::spawn_with_stderr_env(
-            &spawner.program,
-            credentials,
-            move |line| {
-            if let Some(found) = parse_session_ready(line) {
-                if let Ok(mut guard) = slot.lock() {
-                    *guard = found;
+        let client =
+            KernelClient::spawn_with_stderr_env(&spawner.program, credentials, move |line| {
+                if let Some(found) = parse_session_ready(line) {
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = found;
+                    }
                 }
-            }
-        })
-        .map_err(|error| kernel_restart_failed(format!("启动内核进程失败：{error}")))?;
+            })
+            .map_err(|error| kernel_restart_failed(format!("启动内核进程失败：{error}")))?;
         let mut runner = TurnRunner::new(client, spawner.runner.clone(), &spawner.registry_options)
             .map_err(kernel_restart_failed)?;
         runner
@@ -2011,8 +2017,9 @@ impl AgentService {
         options.workspace_detection_summary =
             detect_project_context(&self.options.env, None).detection_summary();
         options.system_prompt_override = None;
-        let advisor = omnicrawl_config::features::advisor::load_advisor_config(&self.options.env, None)
-            .unwrap_or_default();
+        let advisor =
+            omnicrawl_config::features::advisor::load_advisor_config(&self.options.env, None)
+                .unwrap_or_default();
         options.advisor_active = advisor.enabled;
         options.advisor_blacklisted = advisor
             .disabled_for_models
@@ -2044,14 +2051,18 @@ impl AgentService {
         advisor.enabled = config.enabled && !config.model_key.trim().is_empty();
         advisor.effort = config.effort.clone();
         advisor.disabled_for_models = config.disabled_for_models.clone();
-        match omnicrawl_config::models::channels::load_channel_configuration(&environment, None, None)
-            .ok()
-            .and_then(|channels| {
-                channels
-                    .channels
-                    .into_iter()
-                    .find(|channel| channel.key == config.model_key)
-            }) {
+        match omnicrawl_config::models::channels::load_channel_configuration(
+            &environment,
+            None,
+            None,
+        )
+        .ok()
+        .and_then(|channels| {
+            channels
+                .channels
+                .into_iter()
+                .find(|channel| channel.key == config.model_key)
+        }) {
             Some(channel) => {
                 advisor.model = channel.model_id.clone();
                 advisor.base_url = if channel.base_url.trim().is_empty() {
@@ -2558,11 +2569,11 @@ impl AgentService {
     /// 加锁顺序固定为 runner → spawner（与 [`Self::reload_registry_options`] 一致），
     /// 因此持 runner 锁时调用它安全，不会与另一条路径构成死锁对。
     fn current_registry_options(&self) -> RegistryOptions {
-        let from_spawner = self
-            .spawner
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|spawner| spawner.registry_options.clone()));
+        let from_spawner = self.spawner.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .map(|spawner| spawner.registry_options.clone())
+        });
         from_spawner.unwrap_or_else(|| self.options.registry_options.clone())
     }
 
@@ -2999,10 +3010,8 @@ mod tests {
 
     /// 隔离出一个「读不到用户配置」的家目录：走的就是 `[context_compaction]` / `[memory]` 的默认值。
     fn isolated_environment(label: &str) -> ConfigEnvironment {
-        let home = std::env::temp_dir().join(format!(
-            "omnicrawl-api-{label}-{}",
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("omnicrawl-api-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("临时主目录");
         ConfigEnvironment::new(home, std::env::consts::OS.to_string())
     }
@@ -3034,7 +3043,11 @@ model = "test-model"
         let registry = omnicrawl_host::tools::ToolRegistry::new(
             workspace,
             &options.registry_options,
-            options.model.request_timeout_seconds.map(|v| v as i64).unwrap_or(600),
+            options
+                .model
+                .request_timeout_seconds
+                .map(|v| v as i64)
+                .unwrap_or(600),
         )
         .expect("工具表应能构建");
         let names: Vec<String> = registry
@@ -3077,7 +3090,11 @@ model = "test-model"
         let env = ConfigEnvironment::new(home.clone(), std::env::consts::OS.to_string());
         let options = connector_options_from_process(&env).expect("连接器选项应能装配");
         assert!(
-            options.isolation.lock().map(|slot| slot.is_none()).unwrap_or(false),
+            options
+                .isolation
+                .lock()
+                .map(|slot| slot.is_none())
+                .unwrap_or(false),
             "连接器宿主不应创建隔离工作区"
         );
     }

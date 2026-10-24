@@ -1,7 +1,8 @@
-//! 压缩旁路调用：工具输出压缩与模型回复压缩两段请求都走主模型渠道。
+//! 压缩旁路调用：工具输出的逐批概括走主模型渠道。
 //!
-//! 两段压缩只在**阈值触发**时并发发起（见 `crate::dual_compaction`）：工具输出压缩把窗口里的
-//! 工具调用压成一段，模型回复压缩把窗口里的助手回复压成一段，拼起来接在系统提示词之后。
+//! 触发时机是**回合运行过程中**：每批工具执行后，下一批开始前对「刚变老的那一批」发起一次
+//! 概括（见 `ToolBatchHost::before_tool_batch`），与决策模型的工具调用淘汰同构——由模型在
+//! 运行中逐批决策，而不是等回合结束把所有工具调用一股脑压掉。
 //!
 //! 模型连接沿用内核 `initialize.model` 给的那条（与 `subagent::child_model_config` 同一做法），
 //! 只把 model 名换成 `[tool_output_compression].model_key`（未设置时即主模型）；请求是旁路调用：
@@ -67,7 +68,8 @@ fn resolve_compression_model(
     model: &KernelModelConfig,
     selection: &str,
 ) -> (KernelModelConfig, String, String) {
-    let resolved = load_llm_config(env).and_then(|base| apply_model_selection(env, &base, selection));
+    let resolved =
+        load_llm_config(env).and_then(|base| apply_model_selection(env, &base, selection));
     if let Ok(resolved) = resolved {
         if !resolved.model.trim().is_empty() && !resolved.base_url.trim().is_empty() {
             let mut child = model.clone(); // 超时/思考开关等旁路参数沿用主模型通道
@@ -148,16 +150,10 @@ impl KernelCompressor {
         })
     }
 
-    /// 双段压缩统一使用 Low 思考深度（用户要求），其余参数沿用主模型通道。
-    pub fn with_low_reasoning(mut self) -> Self {
-        self.job.options.reasoning_effort = "low".to_string();
-        self
-    }
-
-    /// 回合结束的整轮概括：把本轮全部工具调用压成一段正文，原文另存文件。
+    /// 概括一批工具调用成一段正文，原文另存文件。
     ///
-    /// 与逐条压缩的差别只有粒度：一次请求覆盖整轮全部调用（不再按工具名与长度筛），
-    /// 结果由调用方写进上下文替换原来的逐条请求与结果。失败一律返回 `Err`，调用方保留原文。
+    /// 逐批决策路径（`ToolBatchHost::before_tool_batch`）每批调用一次：范围是「刚变老的那一批」，
+    /// 不是整轮全部调用。失败一律返回 `Err`，调用方保留原文。
     pub fn summarize_turn(
         &self,
         calls: &[compression_logic::TurnCallRecord],
@@ -215,57 +211,6 @@ impl KernelCompressor {
         let text = compression_logic::clean_reply_text(reply.content.as_str());
         if text.is_empty() {
             return Err("概括模型返回了空文本。".to_string());
-        }
-        Ok(compression_logic::bound_text(
-            &text,
-            self.job.max_output_chars,
-        ))
-    }
-
-    /// 阈值触发的模型回复压缩：把历史里的助手回复压成一段正文。
-    ///
-    /// 与工具调用压缩**并发**发起（由调用方各起一个线程），因此这里只做单次请求；
-    /// 失败一律返回 `Err`，调用方回退为不注入该段文本。
-    pub fn compact_replies(&self, replies: &[String], task_hint: &str) -> Result<String, String> {
-        if replies.is_empty() {
-            return Err("没有可压缩的模型回复。".to_string());
-        }
-        let runtime = build_model_runtime_with_key(&self.job.config, self.job.api_key.clone())
-            .map_err(|error| error.message().to_string())?;
-        let joined = replies.join("
-
-");
-        let bounded = compression_logic::sample_output(&joined, self.job.max_input_chars);
-        let messages = compression_logic::build_reply_compaction_messages(&[bounded], task_hint);
-        let conversation: Vec<ConversationMessage> = conversation_from_openai_messages(&messages);
-        let identity: BTreeMap<String, String> = BTreeMap::from([
-            (
-                "scope".to_string(),
-                "omnicrawl-tool-output-compression".to_string(),
-            ),
-            ("profile".to_string(), self.job.profile.clone()),
-            ("model".to_string(), self.job.model.clone()),
-        ]);
-        let system_prompt = compression_logic::reply_compaction_system_prompt();
-        let input = ChatRequestInput {
-            model: &self.job.model,
-            system_prompt: &system_prompt,
-            messages: &conversation,
-            tools: &[],
-            options: &self.job.options,
-            profile_request_timeout_seconds: self.job.timeout_seconds,
-            prompt_cache_capable: false,
-            prompt_cache_identity: &identity,
-        };
-        let reply = runtime
-            .run_turn(&input, &mut DiscardSink)
-            .map_err(|error| error.message.clone())?;
-        if !reply.tool_calls.is_empty() {
-            return Err("回复压缩模型返回了工具调用。".to_string());
-        }
-        let text = compression_logic::clean_reply_text(reply.content.as_str());
-        if text.is_empty() {
-            return Err("回复压缩模型返回了空文本。".to_string());
         }
         Ok(compression_logic::bound_text(
             &text,

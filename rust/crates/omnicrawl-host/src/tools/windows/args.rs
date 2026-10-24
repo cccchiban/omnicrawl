@@ -145,36 +145,63 @@ pub fn read_optional_bounded_int(
     }
 }
 
-/// `window_handle`：接受十进制整数或 `0x` 前缀的十六进制字符串。
+/// `window_handle`：接受十进制整数或十六进制字符串（`0x` 前缀可省略）。
 pub fn read_window_handle(arguments: &Map<String, Value>) -> Result<isize, ToolError> {
-    const INVALID: &str = "window_handle 必须是十进制整数或 0x 开头的十六进制字符串。";
     let value = arguments.get("window_handle");
-    let handle = match value {
-        None | Some(Value::Null) | Some(Value::Bool(_)) => return Err(ToolError::new(INVALID)),
-        Some(Value::Number(number)) => number
+    let raw = match value {
+        None | Some(Value::Null) => {
+            return Err(ToolError::new(
+                "window_handle 缺失：先用 windows_window 的 list 取得句柄。",
+            ))
+        }
+        Some(Value::Bool(_)) => {
+            return Err(ToolError::new(
+                "window_handle 必须是整数或十六进制字符串，不能是布尔值。",
+            ))
+        }
+        Some(value) => value,
+    };
+    let handle = match raw {
+        Value::Number(number) => number
             .as_i64()
             .or_else(|| number.as_f64().map(|item| item.trunc() as i64)),
-        Some(Value::String(text)) => parse_handle_text(text.trim()),
+        Value::String(text) => parse_handle_text(text.trim()),
         _ => None,
     };
     let Some(handle) = handle else {
-        return Err(ToolError::new(INVALID));
+        return Err(ToolError::new(format!(
+            "window_handle 无法解析：{}。请传十进制整数或十六进制字符串（如 0x000000000003099C 或 3099C）。",
+            argument_text(Some(raw))
+        )));
     };
     if handle <= 0 {
-        return Err(ToolError::new("window_handle 必须是正整数。"));
+        return Err(ToolError::new(format!(
+            "window_handle 必须是正整数，当前为 {}。",
+            argument_text(Some(raw))
+        )));
     }
     Ok(handle as isize)
 }
 
+/// 句柄文本：`0x`/`0X` 前缀按十六进制；纯十进制按十进制；含十六进制字母时按十六进制。
+///
+/// 第三种情况是模型的实际写法：它常把 `0x000000000003099C` 简写成 `3099C`。
+/// 这种串里必然含 a-f，不可能是十进制，按十六进制解释才是它想表达的意思。
 fn parse_handle_text(text: &str) -> Option<i64> {
-    let stripped = text.trim();
-    match stripped
-        .strip_prefix("0x")
-        .or_else(|| stripped.strip_prefix("0X"))
-    {
-        Some(hex) => i64::from_str_radix(hex, 16).ok(),
-        None => stripped.parse::<i64>().ok(),
+    if text.is_empty() {
+        return None;
     }
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    if text.chars().all(|ch| ch.is_ascii_digit()) {
+        return text.parse::<i64>().ok();
+    }
+    // 只剩「带十六进制字母且无前缀」这一种可能：`u`/`l` 之类后缀一律不接受。
+    if text.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return i64::from_str_radix(text, 16).ok();
+    }
+    None
 }
 
 /// `x`/`y`：必须成对出现；`required` 为真时缺一不可。

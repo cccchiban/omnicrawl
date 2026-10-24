@@ -39,5 +39,5 @@ pub use engine::{
     RunOutcome, ScriptKind, ScriptRef, ScriptSource, LOOP_ITERATION_LIMIT, MAX_DOM_NODES,
     MAX_INLINE_SCRIPTS, MAX_SCRIPT_BYTES,
 };
-pub use fetch_api::{HttpRequest, HttpSource, HttpResponse, MAX_RESPONSE_BYTES};
+pub use fetch_api::{HttpRequest, HttpResponse, HttpSource, MAX_RESPONSE_BYTES};
 pub use fingerprint::Profile;

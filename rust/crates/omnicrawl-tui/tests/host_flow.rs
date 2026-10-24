@@ -145,7 +145,12 @@ impl Harness {
     }
 
     fn start_with_timeout(script: &str, approval: ApprovalMode, tool_timeout_seconds: i64) -> Self {
-        Self::start_with_prompt(script, approval, tool_timeout_seconds, options(approval).system_prompt)
+        Self::start_with_prompt(
+            script,
+            approval,
+            tool_timeout_seconds,
+            options(approval).system_prompt,
+        )
     }
 
     /// 指定 system prompt 覆盖值的版本：`None` 表示不给 `--system-prompt`，
@@ -373,6 +378,32 @@ fn handshake_submits_turn_and_answers_tool_batch() {
     );
 }
 
+/// 子代理回合的工具批次照旧要执行并回填，但不许在主会话留下工具卡。
+#[test]
+fn subagent_turn_batches_stay_out_of_the_main_conversation() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(&tool_batch(
+        21,
+        "{\"turn_id\":\"task-000000000001\",\"step\":1,\"calls\":[{\"name\":\"read\",\"arguments\":{\"path\":\"a.py\"},\"id\":\"c1\",\"function_name\":\"read\"}]}",
+    ));
+
+    let response = harness.expect_response(21);
+    let observations = &response.result.expect("响应应带 result")["observations"];
+    assert_eq!(observations.as_array().map(Vec::len), Some(1));
+    assert_eq!(observations[0]["result"]["ok"], true, "{observations}");
+    assert!(
+        !harness
+            .app
+            .state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Tool(_))),
+        "子代理的工具卡不该混进主会话：{:?}",
+        harness.app.state.records
+    );
+}
+
 /// manual 模式只对 shell 命令与 git 写操作弹确认：文件与搜索类工具直接执行。
 #[test]
 fn manual_mode_runs_file_and_search_tools_without_approval() {
@@ -445,9 +476,12 @@ fn denial_reports_denied_and_kernel_close_keeps_the_scene_for_a_keypress() {
         harness.app.state.records
     );
     assert!(
-        harness.app.state.records.iter().any(
-            |record| matches!(record, Record::Notice(text) if text.contains("--resume"))
-        ),
+        harness
+            .app
+            .state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Notice(text) if text.contains("--resume"))),
         "应给出恢复会话的指引：{:?}",
         harness.app.state.records
     );
@@ -455,7 +489,10 @@ fn denial_reports_denied_and_kernel_close_keeps_the_scene_for_a_keypress() {
     let before = harness.frames().len();
     harness.press(KeyCode::Char('x'));
     harness.app.drain_frames();
-    assert!(harness.app.state.composer.text().is_empty(), "输入框应被冻住");
+    assert!(
+        harness.app.state.composer.text().is_empty(),
+        "输入框应被冻住"
+    );
     assert_eq!(harness.frames().len(), before, "内核已退出，不该再发帧");
     // 一次按键放行退出。
     harness.press(KeyCode::Enter);
@@ -527,6 +564,37 @@ fn select_question_uses_arrow_keys_and_answers_with_option() {
     let response = harness.expect_response(6);
     let observations = &response.result.expect("响应应带 result")["observations"];
     assert_eq!(observations[0]["result"]["output"], "B");
+}
+
+/// 选中「我有自己的想法...」时答案取输入框（不是空选项，也不是面板上的固定文案）。
+#[test]
+fn custom_question_row_answers_with_the_composer_text() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(&tool_batch(
+        7,
+        "{\"turn_id\":\"t1\",\"step\":1,\"calls\":[{\"name\":\"ask_user\",\"arguments\":{\"question\":\"给这个分支起个名字？\",\"kind\":\"select\",\"options\":[\"feature-a\",\"feature-b\"]},\"id\":\"c4\",\"function_name\":\"ask_user\"}]}",
+    ));
+    harness.expect_ready(
+        |app| matches!(app.state.waiting(), Some(Waiting::Question(_))),
+        "应停在提问面板",
+    );
+
+    // 输入框空着就选中自定义入口按回车：不该提交空答案。
+    harness.press(KeyCode::Down);
+    harness.press(KeyCode::Down);
+    harness.press(KeyCode::Enter);
+    assert!(
+        matches!(harness.app.state.waiting(), Some(Waiting::Question(_))),
+        "输入框为空时不该作答"
+    );
+
+    harness.app.state.composer.insert("我自己起的名字");
+    harness.press(KeyCode::Enter);
+    let response = harness.expect_response(7);
+    let observations = &response.result.expect("响应应带 result")["observations"];
+    assert_eq!(observations[0]["result"]["ok"], true);
+    assert_eq!(observations[0]["result"]["output"], "我自己起的名字");
 }
 
 /// 慢工具不能把回合挂死：超过批次截止时间后宿主必须按超时回观察。
@@ -670,7 +738,11 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
     harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
 
     // 提一条普通提问：建议在后台跑，UI 线程不该等它。
-    harness.app.state.composer.set_text("查一下这个库的最新版本");
+    harness
+        .app
+        .state
+        .composer
+        .set_text("查一下这个库的最新版本");
     let started = Instant::now();
     harness.press(KeyCode::Enter);
     let elapsed = started.elapsed();
@@ -849,7 +921,10 @@ fn composer_click_places_the_caret_and_drag_copies_the_selection() {
         area.x + 3,
         area.y,
     ));
-    assert_eq!(harness.app.state.composer.cursor_position(area.width), (0, 3));
+    assert_eq!(
+        harness.app.state.composer.cursor_position(area.width),
+        (0, 3)
+    );
     harness.app.handle_event(mouse(
         MouseEventKind::Up(MouseButton::Left),
         area.x + 3,
@@ -895,7 +970,10 @@ fn composer_click_places_the_caret_and_drag_copies_the_selection() {
         );
     } else {
         // 没有可用剪切板（无桌面会话）时保留高亮并明说失败，是既有行为，不当失败。
-        assert!(notice.contains("复制失败"), "提示行应说明复制失败：{notice}");
+        assert!(
+            notice.contains("复制失败"),
+            "提示行应说明复制失败：{notice}"
+        );
     }
 }
 
@@ -1130,9 +1208,7 @@ fn slash_prefix_opens_menu_and_tab_completes() {
     // 与 Python 一致，`open_settings` 分支不再追加「打开设置面板」这类纯提醒。
     harness.press(KeyCode::Enter);
     assert!(
-        notices(&harness)
-            .iter()
-            .all(|text| text != "打开设置面板"),
+        notices(&harness).iter().all(|text| text != "打开设置面板"),
         "/settings 不应再追加提醒消息：{:?}",
         notices(&harness)
     );
@@ -1314,10 +1390,8 @@ fn no_subagents(method: &str, params: &Value, id: i64) -> Option<String> {
 }
 
 fn switch_target() -> PathBuf {
-    let target = std::env::temp_dir().join(format!(
-        "omnicrawl-tui-ws-switch-{}",
-        std::process::id()
-    ));
+    let target =
+        std::env::temp_dir().join(format!("omnicrawl-tui-ws-switch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&target);
     std::fs::create_dir_all(&target).expect("建切换目标目录");
     target
@@ -1777,10 +1851,7 @@ fn advisor_command_path_toggles_the_advisor_tool() {
         .app
         .command_apply_advisor_config(&AdvisorConfig::default())
         .expect("先关闭顾问");
-    assert!(
-        !has_advisor(&harness),
-        "未选模型时 advisor 不应进表"
-    );
+    assert!(!has_advisor(&harness), "未选模型时 advisor 不应进表");
 
     // `/advisor <model_key>` 落地时调用的就是这个入口。
     harness
@@ -1931,8 +2002,7 @@ fn handshake_carries_system_prompt_and_context_messages() {
 /// `rust/assets/templates/system_prompt.md` 永远不生效——模型收到的 system 只有那一句话。
 #[test]
 fn handshake_falls_back_to_the_template_without_an_explicit_prompt() {
-    let mut harness =
-        Harness::start_with_prompt(HANDSHAKE, ApprovalMode::Manual, 120, None);
+    let mut harness = Harness::start_with_prompt(HANDSHAKE, ApprovalMode::Manual, 120, None);
     harness.app.handshake().expect("握手应当成功");
     let initialize = harness
         .frames()
@@ -1961,7 +2031,9 @@ fn handshake_falls_back_to_the_template_without_an_explicit_prompt() {
         json!("2026-06-22.top-level-tools-v1")
     );
     assert!(
-        identity["system_prompt_hash"].as_str().is_some_and(|hash| hash.len() == 64),
+        identity["system_prompt_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64),
         "system_prompt_hash 应是 sha256：{identity}"
     );
 }
@@ -2128,10 +2200,7 @@ fn composer_up_down_browses_sent_messages_and_restores_the_draft() {
             "{{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{{\"turn_id\":\"{turn_id}\",\
              \"final_text\":\"\",\"reasoning\":\"\",\"model_turns\":1,\"tool_calls\":0,\"paused\":false}}}}\n"
         ));
-        harness.expect_ready(
-            |app| !app.state.turn.is_running(),
-            "回合应当收尾",
-        );
+        harness.expect_ready(|app| !app.state.turn.is_running(), "回合应当收尾");
     }
     let submitted: Vec<String> = harness
         .frames()
@@ -2205,10 +2274,7 @@ fn command_menu_keeps_arrow_keys_and_commands_are_not_recorded() {
         !harness.app.state.composer.is_browsing_history(),
         "按键应由命令菜单消费，不能落到历史回看"
     );
-    assert_eq!(
-        harness.app.state.scroll_from_bottom, 0,
-        "也不该同时滚会话"
-    );
+    assert_eq!(harness.app.state.scroll_from_bottom, 0, "也不该同时滚会话");
 
     // 收起菜单后回看：只有那条非命令消息。
     harness.app.state.composer.clear();
@@ -2221,7 +2287,6 @@ fn command_menu_keeps_arrow_keys_and_commands_are_not_recorded() {
         "斜杠命令不进历史，所以上键到此为止"
     );
 }
-
 
 /// 用户报的场景：模型重试之后，输入框上边框的状态显示不再自动刷新。
 ///
@@ -2252,8 +2317,12 @@ fn retry_status_reaches_the_status_line_and_steps_aside() {
     );
 
     // 模型重新出内容：提示让位回运行态（默认文案由回合态给出）。
-    harness.send("{\"jsonrpc\":\"2.0\",\"method\":\"turn.delta\",\"params\":{\"text\":\"答复\"}}\n");
-    harness.expect_ready(|app| app.state.status.is_none(), "模型重新出内容后提示应当让位");
+    harness
+        .send("{\"jsonrpc\":\"2.0\",\"method\":\"turn.delta\",\"params\":{\"text\":\"答复\"}}\n");
+    harness.expect_ready(
+        |app| app.state.status.is_none(),
+        "模型重新出内容后提示应当让位",
+    );
     assert!(harness.app.needs_redraw(), "让位同样要重画");
 
     // 回合结束：状态行收起。
@@ -2441,5 +2510,87 @@ fn pasting_into_an_open_settings_panel_reaches_the_editing_field() {
         harness.app.state.composer.text(),
         "草稿",
         "设置面板打开时粘贴不能落到主输入框"
+    );
+}
+
+/// 「立即结束」按钮：真实 `monitor` 工具卡（`call_id` 是内核 id、任务 id 在参数里）
+/// 也必须能悬停点亮、点击生效。
+///
+/// 回归的对象：悬停与点击都要求 `call_id` 以 `monitor:` 开头，而模型调 `monitor` 工具
+/// 形成的卡片拿到的是内核 id——按钮画得出来，鼠标放上去却不变色、点了也没有任何反应。
+#[test]
+fn stop_button_on_a_monitor_tool_call_brightens_and_interrupts_the_wait() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+
+    let now = Instant::now();
+    harness
+        .app
+        .state
+        .begin_turn("turn-1".to_string(), "等后台任务".to_string(), Vec::new());
+    harness.app.state.apply(
+        &omnicrawl_ipc::bridge::HostEvent::ToolStarted(omnicrawl_ipc::bridge::ToolStartedPayload {
+            step: 1,
+            call: omnicrawl_core::ToolCall {
+                name: "monitor".to_string(),
+                arguments: json!({
+                    "action": "poll",
+                    "monitor_id": "monitor-probe",
+                    "wait_seconds": 60
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+                id: "call_probe".to_string(),
+                function_name: "monitor".to_string(),
+            },
+        }),
+        now,
+    );
+
+    let viewport = Rect::new(0, 0, 100, 30);
+    let conversation = omnicrawl_tui::ui::layout(viewport, &harness.app.state).conversation;
+    let text = omnicrawl_tui::ui::conversation::text_area(conversation);
+    let (row, (start, width)) = (0..conversation.height as usize)
+        .find_map(|row| {
+            omnicrawl_tui::ui::conversation::stop_button_columns(
+                &harness.app.state,
+                conversation,
+                harness.app.state.scroll_from_bottom,
+                row,
+            )
+            .map(|button| (row, button))
+        })
+        .expect("运行中的 monitor 工具卡应当画出「立即结束」按钮");
+    let column = text.x + start + width / 2;
+
+    // 悬停：按钮归属的卡片被记下来，渲染层据此把它染成淡黄色。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Moved,
+        column,
+        conversation.y + row as u16,
+    ));
+    assert_eq!(
+        harness.app.state.stop_button_hover(),
+        Some("call_probe"),
+        "鼠标移到「立即结束」上要把这张卡记成悬停，否则按钮不会变淡黄"
+    );
+
+    // 点击：走到打断等待这一步（这里没有在等的任务，回一句「无事可做」也是命中了的证据）。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        conversation.y + row as u16,
+    ));
+    let notice = harness
+        .app
+        .state
+        .notice_line_text(Instant::now())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        notice.contains("monitor-probe"),
+        "点「立即结束」应当针对参数里的任务 id 动作：{notice:?}"
     );
 }

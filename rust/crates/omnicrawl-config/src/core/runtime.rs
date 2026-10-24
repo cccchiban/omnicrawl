@@ -20,6 +20,7 @@ pub const DEFAULT_CONFIG_FILENAME: &str = "config.toml";
 pub const DEFAULT_MODELS_FILENAME: &str = "models.toml";
 pub const DEFAULT_SUBAGENTS_FILENAME: &str = "subagents.toml";
 pub const DEFAULT_DECISION_MODELS_FILENAME: &str = "decision_models.toml";
+pub const DEFAULT_EMBEDDING_MODELS_FILENAME: &str = "embedding_models.toml";
 pub const GLOBAL_AGENTS_FILENAME: &str = "AGENTS.md";
 pub const USER_CONFIG_DIRNAME: &str = ".OmniCrawl";
 
@@ -218,6 +219,11 @@ pub fn default_decision_models_path(env: &ConfigEnvironment) -> PathBuf {
     user_config_dir(env).join(DEFAULT_DECISION_MODELS_FILENAME)
 }
 
+/// 用户默认向量模型配置路径。
+pub fn default_embedding_models_path(env: &ConfigEnvironment) -> PathBuf {
+    user_config_dir(env).join(DEFAULT_EMBEDDING_MODELS_FILENAME)
+}
+
 /// 显式路径优先；否则始终使用用户目录配置。
 pub fn resolve_config_path(
     env: &ConfigEnvironment,
@@ -239,7 +245,12 @@ pub fn resolve_subagents_path(
     env: &ConfigEnvironment,
     subagents_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
-    resolve_path(env, subagents_path, DEFAULT_SUBAGENTS_FILENAME, "子代理设置")
+    resolve_path(
+        env,
+        subagents_path,
+        DEFAULT_SUBAGENTS_FILENAME,
+        "子代理设置",
+    )
 }
 
 /// 显式路径优先；否则始终使用用户目录配置。
@@ -287,6 +298,27 @@ pub fn resolve_decision_models_write_path(
     decision_models_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
     resolve_decision_models_path(env, decision_models_path)
+}
+
+/// 显式路径优先；否则始终使用用户目录配置。
+pub fn resolve_embedding_models_path(
+    env: &ConfigEnvironment,
+    embedding_models_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    resolve_path(
+        env,
+        embedding_models_path,
+        DEFAULT_EMBEDDING_MODELS_FILENAME,
+        "向量模型配置",
+    )
+}
+
+/// 解析向量模型配置写入路径；未显式指定时始终写入用户目录。
+pub fn resolve_embedding_models_write_path(
+    env: &ConfigEnvironment,
+    embedding_models_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    resolve_embedding_models_path(env, embedding_models_path)
 }
 
 fn resolve_path(

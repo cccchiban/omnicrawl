@@ -40,8 +40,9 @@ use crate::slug::{is_safe_slug, validate_slug, SlugSafetyError, DEFAULT_MAX_LENG
 pub const WORKTREES_DIRNAME: &str = "agent-worktrees";
 /// 完整门禁下的保留期（秒）：隔离区创建后未满此时间不清理。
 pub const MIN_KEEP_SECONDS: f64 = 3600.0;
-/// 启动清扫保留期（秒）：孤儿/过期隔离区超过该时长才会被启动扫描回收。
-pub const DEFAULT_SWEEP_MAX_AGE_SECONDS: f64 = 7.0 * 24.0 * 3600.0;
+/// 自动清理期限（秒，一个月）：隔离区创建满该时长才会被启动清扫处理；SubAgent 的
+/// 未审查提交也按「最后一次提交」算同一个期限，有新提交就自然续期。
+pub const DEFAULT_SWEEP_MAX_AGE_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 /// 环境脚本的超时（秒）。
 pub const ENV_SCRIPT_TIMEOUT_SECONDS: u64 = 1800;
 /// 冲突 patch 文件名模板里的实例 ID 前缀。
@@ -982,12 +983,30 @@ pub fn unmerged_conflicts(diff: &str, repo_root: &Path) -> Vec<String> {
 /// 第一层：只清理标记为临时的隔离区（目录名以 `aw-` / `sw-` 开头）。
 /// 第二层：跳过当前使用中（`in_use` 实例 ID）与未过期（未到保留期）的隔离区。
 /// 第三层：fail-closed 变更检查——目录内有未提交/未跟踪改动则不删。
-/// 第四层：有未推送远端 commit（本地领先 origin）也不删。
+/// 第四层：有未推送远端 commit（本地领先 origin）也不删；但期限按最后一次提交时间算，
+/// 满 `DEFAULT_SWEEP_MAX_AGE_SECONDS` 仍无新提交时放行。
 pub fn cleanup_eligible(
     session: &IsolationSession,
     in_use: Option<&HashSet<String>>,
     now: Option<f64>,
     remote_ref: &str,
+) -> (bool, String) {
+    cleanup_eligible_with_age(
+        session,
+        in_use,
+        now,
+        remote_ref,
+        DEFAULT_SWEEP_MAX_AGE_SECONDS,
+    )
+}
+
+/// 带显式期限的门禁判定：启动清扫传入自己的 `max_age_seconds`，保证与第二层同一口径。
+fn cleanup_eligible_with_age(
+    session: &IsolationSession,
+    in_use: Option<&HashSet<String>>,
+    now: Option<f64>,
+    remote_ref: &str,
+    max_age_seconds: f64,
 ) -> (bool, String) {
     let now = now.unwrap_or_else(now_seconds);
 
@@ -1021,7 +1040,9 @@ pub fn cleanup_eligible(
             return (false, "隔离区存在未提交改动".to_string());
         }
 
-        // 第四层：未推送远端 / 未审查的新提交也不删。
+        // 第四层：未推送远端 / 未审查的新提交也不删——但它们可能仍是唯一副本，
+        // 因此按「最后一次提交时间」算期限：距最后一次提交满 max_age_seconds 才放行，
+        // 期间只要产生新提交就自然续期。读不到时间（fail-closed）则保留。
         if !remote_ref.is_empty() {
             let base = if session.base_ref.is_empty() {
                 "HEAD".to_string()
@@ -1047,12 +1068,42 @@ pub fn cleanup_eligible(
                 Err(_) => String::new(),
             };
             if !ahead.is_empty() && ahead != "0" {
-                return (false, keep_reason.to_string());
+                let remaining = last_commit_idle_seconds(&session.worktree_path, &range, now);
+                match remaining {
+                    Some(idle) if idle < max_age_seconds => {
+                        let left = (max_age_seconds - idle) as i64;
+                        return (
+                            false,
+                            format!("{keep_reason}，且距最后一次提交未满期限（还需 {left}s）"),
+                        );
+                    }
+                    // 满期限仍无新提交：视为已放弃的残留，放行自动清理。
+                    Some(_) => {}
+                    None => return (false, format!("{keep_reason}，且无法读取最后一次提交时间")),
+                }
             }
         }
     }
 
     (true, "可安全清理".to_string())
+}
+
+/// 范围内最后一次提交距 `now` 的秒数（取 `range` 内提交时间最大值）。
+///
+/// 用 `git log --format=%ct` 取提交者时间；范围为空或读不到时间时返回 `None`（fail-closed）。
+fn last_commit_idle_seconds(worktree_path: &Path, range: &str, now: f64) -> Option<f64> {
+    let result = run_git(&["log", "--format=%ct", range, "--"], worktree_path, false).ok()?;
+    if result.code != 0 {
+        return None;
+    }
+    let latest = result
+        .stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .fold(None::<f64>, |acc, item| {
+            Some(acc.map_or(item, |old| old.max(item)))
+        })?;
+    Some((now - latest).max(0.0))
 }
 
 /// 清理隔离区目录（四层门禁 + worktree 移除 + 元数据删除）。
@@ -1452,17 +1503,19 @@ pub fn sweep_expired_isolation_sessions(options: SweepOptions) -> IsolationSweep
         }
 
         // 延迟收尾之后仍必须四层门禁全过才能安全自动清理。
-        let (eligible, reason) = cleanup_eligible(
+        let (eligible, reason) = cleanup_eligible_with_age(
             &session,
             Some(&guarded),
             Some(now),
             options.remote_ref.as_str(),
+            options.max_age_seconds,
         );
         if !eligible {
             kept.push((instance_id, reason));
             continue;
         }
-        let (removed_ok, remove_reason) = cleanup_isolation_session(&session, Some(&guarded), true, None);
+        let (removed_ok, remove_reason) =
+            cleanup_isolation_session(&session, Some(&guarded), true, None);
         if removed_ok {
             removed.push(instance_id);
         } else {

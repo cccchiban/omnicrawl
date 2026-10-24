@@ -323,6 +323,11 @@ mod tests {
                     "--connector".to_string(),
                     "feishu".to_string()
                 ],
+                vec![
+                    "C:/bin/omnicrawl.exe".to_string(),
+                    "--connector".to_string(),
+                    "qqbot".to_string()
+                ],
             ]
         );
     }
@@ -363,6 +368,11 @@ mod tests {
                     host.to_string_lossy().to_string(),
                     "connector".to_string(),
                     "feishu".to_string()
+                ],
+                vec![
+                    host.to_string_lossy().to_string(),
+                    "connector".to_string(),
+                    "qqbot".to_string()
                 ],
             ]
         );

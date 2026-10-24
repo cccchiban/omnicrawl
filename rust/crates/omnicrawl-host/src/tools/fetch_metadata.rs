@@ -241,8 +241,11 @@ mod tests {
     /// 解析不出发起方时按跨站处理：宁可让服务端更谨慎。
     #[test]
     fn an_unparseable_initiator_is_cross_site() {
-        let metadata =
-            FetchMetadata::compute(Purpose::Navigation, Some("not a url"), "https://example.com/");
+        let metadata = FetchMetadata::compute(
+            Purpose::Navigation,
+            Some("not a url"),
+            "https://example.com/",
+        );
         assert_eq!(metadata.site, "cross-site");
     }
 

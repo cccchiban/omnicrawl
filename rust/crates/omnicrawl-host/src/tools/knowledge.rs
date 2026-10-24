@@ -11,9 +11,7 @@ use omnicrawl_controllers::json::{python_dumps, python_number_text};
 use omnicrawl_controllers::tool_args::{read_limited_int, read_optional_string_list};
 use serde_json::{json, Map, Value};
 
-use super::decision_search::{
-    apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT,
-};
+use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
 use super::paths::resolve_lenient;
 
@@ -963,7 +961,8 @@ fn rerank_candidate_text(hit: &SearchHit) -> String {
 }
 
 /// 重排指令：只要求按相关度排序，不做其他判断。
-const RERANK_INSTRUCTIONS: &str = "给定 state 里的检索查询与过滤条件，判断每个候选项与查询的相关程度；\
+const RERANK_INSTRUCTIONS: &str =
+    "给定 state 里的检索查询与过滤条件，判断每个候选项与查询的相关程度；\
 state 是事实来源，不要根据候选项自身措辞推测查询。";
 
 pub fn kb_search(
@@ -1304,12 +1303,8 @@ mod tests {
             channel: None,
             ..RerankOptions::default()
         };
-        let hits = kb_search(
-            &base,
-            &options,
-            &arguments(json!({"query": "检索回退"})),
-        )
-        .expect("检索不该因为重排不可用而失败");
+        let hits = kb_search(&base, &options, &arguments(json!({"query": "检索回退"})))
+            .expect("检索不该因为重排不可用而失败");
         let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
         assert_eq!(parsed.as_array().map(Vec::len), Some(1), "{hits}");
     }

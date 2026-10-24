@@ -20,7 +20,7 @@ use omnicrawl_connectors::autostart::{
     auto_start_decision, child_environment, default_connector_specs, start_configured_connectors,
     ConnectorManagerOptions, ConnectorProcessManager, ConnectorSpec, OutputTarget, ProcessSpawner,
     SpawnRequest, AUTO_START_ENV, CONNECTOR_LOG_DIRNAME, CONNECTOR_SUBCOMMAND, DISABLED_VALUES,
-    ENABLED_VALUES, FEISHU_PLATFORM, TELEGRAM_PLATFORM,
+    ENABLED_VALUES, FEISHU_PLATFORM, QQ_PLATFORM, TELEGRAM_PLATFORM,
 };
 use omnicrawl_workspace::process_control::{ManagedProcess, ProcessState};
 use serde_json::Value;
@@ -173,6 +173,8 @@ impl Drop for TempDir {
 fn expected_subcommand(dataset_module: &str) -> String {
     if dataset_module.ends_with("telegram") {
         "telegram".to_string()
+    } else if dataset_module.ends_with("qqbot") {
+        "qqbot".to_string()
     } else {
         "feishu".to_string()
     }
@@ -199,12 +201,12 @@ fn constants_match_python() {
     assert_eq!(enabled, strings_of(constants, "enabled_values"));
 
     let names = strings_of(constants, "platform_names");
-    assert_eq!(names, vec![TELEGRAM_PLATFORM, FEISHU_PLATFORM]);
+    assert_eq!(names, vec![TELEGRAM_PLATFORM, FEISHU_PLATFORM, QQ_PLATFORM]);
     let modules = strings_of(constants, "platform_modules");
-    assert_eq!(modules.len(), 2, "数据集应当记录两个平台模块作为参考");
+    assert_eq!(modules.len(), 3, "数据集应当记录三个平台模块作为参考");
 
     let specs = default_connector_specs("/tmp/omnicrawl-connector");
-    assert_eq!(specs.len(), 2);
+    assert_eq!(specs.len(), 3);
     for (index, spec) in specs.iter().enumerate() {
         assert_eq!(spec.name, names[index]);
         // Python 是 `[python, "-m", <模块>]`，Rust 是 `[宿主程序, connector, <平台>]`：
@@ -256,10 +258,7 @@ fn auto_start_decisions_match_python() {
         }
         let decision = auto_start_decision(&env);
         // 环境变量开关已移除：注入任何取值都不改变结论，也不再告警。
-        assert!(
-            decision.enabled,
-            "自动启动恒为启用：{raw:?}"
-        );
+        assert!(decision.enabled, "自动启动恒为启用：{raw:?}");
         assert!(
             decision.warning.is_none(),
             "不再有环境变量开关，也就没有告警：{raw:?}"
@@ -316,10 +315,7 @@ fn child_environment_matches_python() {
                     .as_str()
                     .expect("环境变量值")
                     .replace(';', if cfg!(windows) { ";" } else { ":" });
-                (
-                    pair[0].as_str().expect("环境变量名").to_string(),
-                    value,
-                )
+                (pair[0].as_str().expect("环境变量名").to_string(), value)
             })
             .collect();
         assert_eq!(actual, expected, "子进程环境不一致：{name}");

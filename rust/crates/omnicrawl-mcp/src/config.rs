@@ -414,7 +414,6 @@ fn hostname_of(netloc: &str) -> String {
     }
 }
 
-
 fn read_bool_field(
     section: &Table,
     key: &str,

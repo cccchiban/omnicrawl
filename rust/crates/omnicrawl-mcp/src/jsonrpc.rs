@@ -103,6 +103,16 @@ impl From<McpClientError> for McpCallError {
     }
 }
 
+/// 分帧风格。
+///
+/// MCP 规范的 stdio 传输是换行分隔 JSON，`Content-Length` 分帧来自 LSP 习惯、在部分
+/// 实现（含本仓库早期版本）中仍在用，因此读方向两种都接受，写方向按对端风格回包。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    ContentLength,
+    LineDelimited,
+}
+
 /// 编码一帧：`Content-Length: N\r\n\r\n` + JSON 正文（UTF-8）。
 pub fn encode_frame(message: &Value) -> Vec<u8> {
     let body = python_dumps_compact(message);
@@ -111,7 +121,64 @@ pub fn encode_frame(message: &Value) -> Vec<u8> {
     frame
 }
 
-/// 读一帧 JSON-RPC 消息（`Content-Length` 分帧）。
+/// 编码一帧换行分隔 JSON：正文是单行紧凑 JSON，末尾一个 `\n`。
+pub fn encode_line_frame(message: &Value) -> Vec<u8> {
+    let mut frame = python_dumps_compact(message).into_bytes();
+    frame.push(b'\n');
+    frame
+}
+
+/// 按指定风格编码一条消息。
+pub fn encode_message(message: &Value, framing: Framing) -> Vec<u8> {
+    match framing {
+        Framing::ContentLength => encode_frame(message),
+        Framing::LineDelimited => encode_line_frame(message),
+    }
+}
+
+/// 自适应读取一条消息，返回消息与识别到的分帧风格。
+///
+/// 先读首行：`Content-Length` 开头走帧头 + 定长正文，其余按换行分隔 JSON 解析。
+pub fn read_message(
+    reader: &mut impl std::io::BufRead,
+    kind: FrameKind,
+    stderr_preview: impl FnOnce() -> String,
+) -> Result<Option<(Map<String, Value>, Framing)>, McpClientError> {
+    let Some(first) = read_non_empty_line(reader)? else {
+        return match eof(kind, stderr_preview)? {
+            Some(message) => Ok(Some((message, Framing::LineDelimited))),
+            None => Ok(None),
+        };
+    };
+    if !looks_like_content_length(&first) {
+        // 换行分隔 JSON：首行即整条消息。
+        return parse_payload(&first, kind).map(|message| Some((message, Framing::LineDelimited)));
+    }
+    let mut header = first;
+    loop {
+        let Some(line) = read_line(reader)? else {
+            return Err(McpClientError::new(format!(
+                "MCP {}头不完整。",
+                kind.label()
+            )));
+        };
+        if line == b"\r\n" || line == b"\n" {
+            break;
+        }
+        header.extend_from_slice(&line);
+        if header.len() > MAX_FRAME_HEADER_BYTES {
+            return Err(McpClientError::new(format!(
+                "MCP {}头超过 {MAX_FRAME_HEADER_BYTES} 字节。",
+                kind.label()
+            )));
+        }
+    }
+    let content_length = parse_content_length(&header, kind)?;
+    let message = read_sized_payload(reader, content_length, kind)?;
+    Ok(Some((message, Framing::ContentLength)))
+}
+
+/// 读一条 JSON-RPC 消息，只接受 `Content-Length` 分帧。
 ///
 /// 客户端方向：读到 EOF 视为错误（附上子进程 stderr 尾部便于诊断）；本地 Server
 /// 方向：读到 EOF 视为正常收尾（返回 `None`）。
@@ -122,26 +189,9 @@ pub fn read_frame(
 ) -> Result<Option<Map<String, Value>>, McpClientError> {
     let mut header: Vec<u8> = Vec::new();
     loop {
-        let mut line: Vec<u8> = Vec::new();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|error| McpClientError::new(format!("读取 MCP 帧失败：{error}")))?;
-        if read == 0 {
-            return match kind {
-                FrameKind::Request => Ok(None),
-                FrameKind::Response => {
-                    let stderr = stderr_preview();
-                    let suffix = if stderr.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" stderr: {stderr}")
-                    };
-                    Err(McpClientError::new(format!(
-                        "MCP Server 已退出或关闭 stdout。{suffix}"
-                    )))
-                }
-            };
-        }
+        let Some(line) = read_line(reader)? else {
+            return eof(kind, stderr_preview);
+        };
         if line == b"\r\n" || line == b"\n" {
             break;
         }
@@ -155,12 +205,85 @@ pub fn read_frame(
     }
 
     let content_length = parse_content_length(&header, kind)?;
+    read_sized_payload(reader, content_length, kind).map(Some)
+}
+
+/// 读一行（含行尾换行符）；EOF 返回 `None`。
+fn read_line(reader: &mut impl std::io::BufRead) -> Result<Option<Vec<u8>>, McpClientError> {
+    let mut line: Vec<u8> = Vec::new();
+    let read = reader
+        .read_until(b'\n', &mut line)
+        .map_err(|error| McpClientError::new(format!("读取 MCP 帧失败：{error}")))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line))
+}
+
+/// 读一条非空行：跳过空白行，EOF 返回 `None`。
+///
+/// 换行分隔 JSON 的相邻消息之间可能有空行，跳过比报错更宽容。
+fn read_non_empty_line(
+    reader: &mut impl std::io::BufRead,
+) -> Result<Option<Vec<u8>>, McpClientError> {
+    loop {
+        let Some(line) = read_line(reader)? else {
+            return Ok(None);
+        };
+        if line == b"\r\n" || line == b"\n" {
+            continue;
+        }
+        return Ok(Some(line));
+    }
+}
+
+/// 已读到 EOF：客户端方向视为错误，本地 Server 方向视为正常结束。
+fn eof(
+    kind: FrameKind,
+    stderr_preview: impl FnOnce() -> String,
+) -> Result<Option<Map<String, Value>>, McpClientError> {
+    match kind {
+        FrameKind::Request => Ok(None),
+        FrameKind::Response => {
+            let stderr = stderr_preview();
+            let suffix = if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(" stderr: {stderr}")
+            };
+            Err(McpClientError::new(format!(
+                "MCP Server 已退出或关闭 stdout。{suffix}"
+            )))
+        }
+    }
+}
+
+/// 首行是否像 `Content-Length` 帧头（容忍前导空白与大小写）。
+fn looks_like_content_length(line: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(line);
+    let trimmed = text.trim_start();
+    let Some((key, _)) = trimmed.split_once(':') else {
+        return false;
+    };
+    key.trim().eq_ignore_ascii_case("content-length")
+}
+
+/// 按 `Content-Length` 读定长正文。
+fn read_sized_payload(
+    reader: &mut impl std::io::BufRead,
+    content_length: usize,
+    kind: FrameKind,
+) -> Result<Map<String, Value>, McpClientError> {
     let mut body = vec![0u8; content_length];
     reader
         .read_exact(&mut body)
         .map_err(|_| McpClientError::new(format!("MCP {}体长度不完整。", kind.label())))?;
+    parse_payload(&body, kind)
+}
 
-    let text = String::from_utf8_lossy(&body);
+/// 正文 → JSON 对象。
+fn parse_payload(body: &[u8], kind: FrameKind) -> Result<Map<String, Value>, McpClientError> {
+    let text = String::from_utf8_lossy(body);
     let payload: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(error) => {
@@ -171,7 +294,7 @@ pub fn read_frame(
         }
     };
     match payload {
-        Value::Object(map) => Ok(Some(map)),
+        Value::Object(map) => Ok(map),
         _ => Err(McpClientError::new(format!(
             "MCP {}必须是 JSON 对象。",
             kind.label()
@@ -439,6 +562,46 @@ mod tests {
             text,
             format!("Content-Length: {}\r\n\r\n{body}", body.len())
         );
+    }
+
+    #[test]
+    fn line_framing_round_trips_and_detects_style() {
+        let message = json!({"jsonrpc": "2.0", "id": 7, "result": {}});
+
+        let line = encode_line_frame(&message);
+        assert_eq!(
+            String::from_utf8(line.clone()),
+            Ok("{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n".to_string())
+        );
+
+        let mut reader = std::io::BufReader::new(&line[..]);
+        let (parsed, framing) = read_message(&mut reader, FrameKind::Response, String::new)
+            .unwrap()
+            .unwrap();
+        assert_eq!(framing, Framing::LineDelimited);
+        assert_eq!(Value::Object(parsed), message);
+
+        // 空行应当被跳过，不应打断后续消息。
+        let mut two = b"\r\n\n".to_vec();
+        two.extend_from_slice(&line);
+        let mut reader = std::io::BufReader::new(&two[..]);
+        let (parsed, framing) = read_message(&mut reader, FrameKind::Response, String::new)
+            .unwrap()
+            .unwrap();
+        assert_eq!(framing, Framing::LineDelimited);
+        assert_eq!(Value::Object(parsed), message);
+    }
+
+    #[test]
+    fn content_length_framing_is_still_readable() {
+        let message = json!({"jsonrpc": "2.0", "id": 3, "result": {}});
+        let frame = encode_message(&message, Framing::ContentLength);
+        let mut reader = std::io::BufReader::new(&frame[..]);
+        let (parsed, framing) = read_message(&mut reader, FrameKind::Response, String::new)
+            .unwrap()
+            .unwrap();
+        assert_eq!(framing, Framing::ContentLength);
+        assert_eq!(Value::Object(parsed), message);
     }
 
     #[test]

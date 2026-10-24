@@ -640,9 +640,7 @@ fn eq_ignore_ascii_case_width(text: &str, expected: &str) -> bool {
 fn normalize_ascii_width(character: char) -> char {
     match character {
         '\u{3000}' => ' ',
-        '\u{ff01}'..='\u{ff5e}' => {
-            char::from_u32(character as u32 - 0xfee0).unwrap_or(character)
-        }
+        '\u{ff01}'..='\u{ff5e}' => char::from_u32(character as u32 - 0xfee0).unwrap_or(character),
         other => other,
     }
 }
@@ -656,7 +654,10 @@ fn match_placeholder(characters: &[char], index: usize) -> Option<(usize, u64)> 
         return None;
     }
     cursor = skip_whitespace(characters, cursor + PLACEHOLDER_MARKER.len());
-    match characters.get(cursor).map(|value| normalize_ascii_width(*value)) {
+    match characters
+        .get(cursor)
+        .map(|value| normalize_ascii_width(*value))
+    {
         Some(':') => cursor += 1,
         _ => return None,
     }

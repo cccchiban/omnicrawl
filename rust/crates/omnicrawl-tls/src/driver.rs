@@ -832,9 +832,9 @@ impl<S: Transport> Connection<S> {
                     match self.read_app() {
                         Ok(()) => {}
                         Err(DriverError::Eof) => break,
-                        Err(DriverError::Handshake(HandshakeError::Alert {
-                            level: 1, ..
-                        })) => break,
+                        Err(DriverError::Handshake(HandshakeError::Alert { level: 1, .. })) => {
+                            break
+                        }
                         Err(error) => return Err(error),
                     }
                 }

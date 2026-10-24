@@ -350,13 +350,7 @@ pub fn build_reply_compaction_messages(replies: &[String], task_hint: &str) -> V
     let body = replies
         .iter()
         .enumerate()
-        .map(|(index, reply)| {
-            format!(
-                "### 第 {} 条回复\n{}",
-                index + 1,
-                reply.trim()
-            )
-        })
+        .map(|(index, reply)| format!("### 第 {} 条回复\n{}", index + 1, reply.trim()))
         .collect::<Vec<String>>()
         .join("\n\n");
     let content = format!(
@@ -543,6 +537,34 @@ pub fn tool_event_ids(events: &[SourceEvent]) -> Vec<String> {
         .collect()
 }
 
+/// 指定调用集合相关的工具事件 ID（请求 / 结果 / 拒绝），按发生顺序。
+///
+/// 逐批压缩用它精确覆盖「刚变老的那一批」：只剔除这些调用自己的事件，更早的批次
+/// 与最新一批都不受影响，压缩点因此始终贴着上下文尾部。
+pub fn tool_event_ids_for_calls(events: &[SourceEvent], call_ids: &[String]) -> Vec<String> {
+    if call_ids.is_empty() {
+        return Vec::new();
+    }
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "tool_call_requested" | "tool_result" | "tool_call_denied"
+            )
+        })
+        .filter(|event| {
+            event
+                .payload
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .map(|call_id| call_ids.iter().any(|item| item == call_id))
+                .unwrap_or(false)
+        })
+        .map(|event| event.event_id.clone())
+        .collect()
+}
+
 /// 工具结果的模型可见正文：与投影同一优先级。
 fn result_output_text(payload: &Value) -> String {
     for key in ["model_output", "output_preview", "output"] {
@@ -610,9 +632,21 @@ mod dual_compaction_tests {
     #[test]
     fn tool_calls_pair_with_results_and_keep_orphans() {
         let events = vec![
-            event("e1", "tool_call_requested", json!({"tool": "bash", "tool_call_id": "c1"})),
-            event("e2", "tool_result", json!({"tool": "bash", "tool_call_id": "c1", "ok": true, "output": "done"})),
-            event("e3", "tool_call_requested", json!({"tool": "grep", "tool_call_id": "c2"})),
+            event(
+                "e1",
+                "tool_call_requested",
+                json!({"tool": "bash", "tool_call_id": "c1"}),
+            ),
+            event(
+                "e2",
+                "tool_result",
+                json!({"tool": "bash", "tool_call_id": "c1", "ok": true, "output": "done"}),
+            ),
+            event(
+                "e3",
+                "tool_call_requested",
+                json!({"tool": "grep", "tool_call_id": "c2"}),
+            ),
             event("e4", "assistant_message", json!({"content": "回复"})),
         ];
         let calls = collect_tool_calls(&events);

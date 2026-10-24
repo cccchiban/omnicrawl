@@ -16,6 +16,7 @@ pub mod connector;
 pub mod error;
 pub mod model_discovery;
 pub mod openapi;
+pub mod qqbind;
 pub mod routes;
 pub mod runs;
 pub mod service;

@@ -502,6 +502,21 @@ fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Value>)
 
     if tool_name == "windows_input" {
         let action = string_field(arguments, "action");
+        if let Some(Value::Array(actions)) = arguments.get("actions") {
+            // 顺序动作只报每一步的动作名：文本已经只留长度。
+            let names: Vec<&str> = actions
+                .iter()
+                .map(|item| item.get("action").and_then(Value::as_str).unwrap_or(""))
+                .collect();
+            return truncate_for_display(
+                &format!(
+                    "操作：{} 个动作，依次：{}",
+                    actions.len(),
+                    names.join(" → ")
+                ),
+                240,
+            );
+        }
         let mut detail = format!("操作：{action}");
         if has_argument(arguments, "x") && has_argument(arguments, "y") {
             detail.push_str(&format!(
@@ -555,17 +570,14 @@ fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Value>)
                 python_str(&arguments["window_handle"])
             ));
         }
-        if ["x", "y", "width", "height"]
+        // 桌面目标允许只给部分区域参数（缺的按桌面边补齐），因此逐个展示已有的键。
+        let region: Vec<String> = ["x", "y", "width", "height"]
             .iter()
-            .all(|key| has_argument(arguments, key))
-        {
-            detail.push_str(&format!(
-                "，区域：({}, {}) {}×{}",
-                python_str(&arguments["x"]),
-                python_str(&arguments["y"]),
-                python_str(&arguments["width"]),
-                python_str(&arguments["height"])
-            ));
+            .filter(|key| has_argument(arguments, key))
+            .map(|key| format!("{key}={}", python_str(&arguments[*key])))
+            .collect();
+        if !region.is_empty() {
+            detail.push_str(&format!("，区域：{}", region.join(" ")));
         }
         if has_argument(arguments, "max_dimension") {
             detail.push_str(&format!(
@@ -2344,7 +2356,10 @@ mod tests {
         ]);
         let text = format_skills_list(&agent);
         assert!(text.contains("发现诊断 2 条："), "{text}");
-        assert!(text.contains("[!] Skill 路径不存在（D:\\missing-skills）"), "{text}");
+        assert!(
+            text.contains("[!] Skill 路径不存在（D:\\missing-skills）"),
+            "{text}"
+        );
         assert!(text.contains("[!] Skill 名称 \"demo\" 冲突"), "{text}");
     }
 

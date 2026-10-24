@@ -21,6 +21,13 @@ use crate::tools::ToolRegistry;
 pub const TODO_TOOL: &str = "update_todos";
 pub const ASK_USER_TOOL: &str = "ask_user";
 pub const PAUSE_WORK_TOOL: &str = "pause_work";
+pub const COMPUTER_USE_TOOL: &str = "computer_use";
+/// Computer Use 子回合的 `turn_id` 前缀：这批调用一律免审。
+///
+/// 子代理批次是无人值守的，一旦停在审批面板就等于永久卡死；而 Computer Use 的产品约定
+/// 就是「无审核」。因此在批次入口按前缀把审批模式收成 `auto`，而不是指望每个桌面工具
+/// 恰好都不落在 `Confirm` / `Review` 分支里。
+pub const COMPUTER_USE_TURN_PREFIX: &str = "computer-use-";
 
 /// 工具没有可用执行器时的错误码，与内核连接器模式同名。
 pub const TOOL_UNAVAILABLE: &str = "tool_unavailable";
@@ -101,7 +108,10 @@ impl QuestionPanel {
         if self.is_custom() {
             QUESTION_CUSTOM_LABEL
         } else {
-            self.options.get(self.selected).map(String::as_str).unwrap_or("")
+            self.options
+                .get(self.selected)
+                .map(String::as_str)
+                .unwrap_or("")
         }
     }
 
@@ -428,7 +438,29 @@ pub fn approval_required(mode: ApprovalMode, tool: &str, arguments: &Map<String,
 }
 
 pub fn is_self_hosted(tool: &str) -> bool {
-    matches!(tool, TODO_TOOL | ASK_USER_TOOL | PAUSE_WORK_TOOL)
+    matches!(
+        tool,
+        TODO_TOOL | ASK_USER_TOOL | PAUSE_WORK_TOOL | COMPUTER_USE_TOOL
+    )
+}
+
+/// 该批次是否属于 Computer Use 子回合（`turn_id` 带专用前缀）。
+///
+/// 这批调用的审批一律按 `auto` 处理：子代理无人值守，停等就是死锁。
+pub fn is_computer_use_turn(turn_id: &str) -> bool {
+    turn_id.starts_with(COMPUTER_USE_TURN_PREFIX)
+}
+
+/// 普通子代理子回合的 `turn_id` 前缀（内核按 `task-<序号>` 给子任务编号）。
+pub const SUBAGENT_TURN_PREFIX: &str = "task-";
+
+/// 该批次是否属于子代理子回合（普通子任务或 Computer Use）。
+///
+/// 子代理的过程由独立窗口渲染（`subagent.tool.*` / `subagent.turn.text`）。这些批次的
+/// 工具调用不算主代理的动作，宿主据此不把它们画进主会话，否则子代理的工具卡会混进
+/// 主代理的消息区。
+pub fn is_subagent_turn(turn_id: &str) -> bool {
+    turn_id.starts_with(SUBAGENT_TURN_PREFIX) || is_computer_use_turn(turn_id)
 }
 
 /// 工具结果 → 循环观察：`message` 是回填给模型的原始 tool 消息。
@@ -657,6 +689,51 @@ mod tests {
         assert!(observations[0].result.ok);
         assert!(observations[0].result.output.contains("2 项"));
         assert_eq!(observations[1].tool_call.name, PAUSE_WORK_TOOL);
+    }
+
+    #[test]
+    fn computer_use_and_desktop_tools_never_wait_for_approval() {
+        let mut todos = Vec::new();
+        let mut paused = false;
+        // Computer Use 是「无审核」能力：manual 与 review 两种模式下都直接放行，
+        // 否则无人值守的子代理批次会停在审批面板上永久卡死。
+        for mode in [ApprovalMode::Manual, ApprovalMode::Review] {
+            let mut ctx = context(mode, &mut todos, &mut paused);
+            for quiet in [
+                call(COMPUTER_USE_TOOL, json!({"prompt": "点确定"})),
+                call("windows_input", json!({"action": "click", "x": 1, "y": 1})),
+                call("windows_screenshot", json!({"target": "desktop"})),
+            ] {
+                assert!(
+                    !needs_confirmation(&ctx, &quiet),
+                    "{} 在 {mode:?} 下不该要求人工确认",
+                    quiet.name
+                );
+                let mut batch = PendingBatch::new(Id::Number(30), vec![quiet.clone()]);
+                assert_eq!(
+                    batch.advance(&mut ctx),
+                    BatchStep::Execute(vec![(0, quiet.clone())]),
+                    "{} 在 {mode:?} 下应当直接执行",
+                    quiet.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn computer_use_turn_is_recognised_by_prefix() {
+        assert!(is_computer_use_turn("computer-use-batch-000000000001"));
+        assert!(!is_computer_use_turn("task-000000000001"));
+        assert!(!is_computer_use_turn("turn-0"));
+    }
+
+    /// 子代理回合（普通子任务与 Computer Use）的批次不进主会话；主代理的 `turn-N` 不受影响。
+    #[test]
+    fn subagent_turns_are_recognised_by_prefix() {
+        assert!(is_subagent_turn("task-000000000001"));
+        assert!(is_subagent_turn("computer-use-batch-000000000001"));
+        assert!(!is_subagent_turn("turn-0"));
+        assert!(!is_subagent_turn(""));
     }
 
     #[test]

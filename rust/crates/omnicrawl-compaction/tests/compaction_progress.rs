@@ -8,13 +8,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use omnicrawl_compaction::{CompactionConfig, CompactionDriver, TurnBoundary};
-use omnicrawl_controllers::context_compaction::{
-    CompactionBatch, ContextCompactionService, ModelSummaryResult, SummaryCompactorPort,
-    SummaryGenerationError, TokenUsageSample,
-};
 use omnicrawl_controllers::compression::{
     DualCompactionInput, DualCompactionOutput, DualCompactionPort, ToolCompactionInput,
     ToolCompactionOutput, ToolCompactionPort,
+};
+use omnicrawl_controllers::context_compaction::{
+    CompactionBatch, ContextCompactionService, ModelSummaryResult, SummaryCompactorPort,
+    SummaryGenerationError, TokenUsageSample,
 };
 use omnicrawl_session::{utc_now, SessionStore};
 use serde_json::{json, Value};
@@ -128,10 +128,7 @@ fn structured_summary(ids: &[String]) -> Value {
     })
 }
 
-fn boundary<'a>(
-    session_id: &'a str,
-    history: &'a [Value],
-) -> TurnBoundary<'a> {
+fn boundary<'a>(session_id: &'a str, history: &'a [Value]) -> TurnBoundary<'a> {
     TurnBoundary {
         session_id,
         system_prompt: "系统提示词",

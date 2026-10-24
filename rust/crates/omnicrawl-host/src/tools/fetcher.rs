@@ -19,8 +19,8 @@ use regex::Regex;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde_json::{Map, Value};
 
-use super::error::{ToolError, ToolOutcome};
 use super::cookies::{CookieJar, SharedJar};
+use super::error::{ToolError, ToolOutcome};
 use super::web_search::{clamp_float, clamp_int, strip_tags, truncate};
 use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind, WebRequest,
@@ -294,7 +294,10 @@ fn fetch_one_inner(
 
 /// 正文短到不像「抓到了内容」时返回 `true`：用于决定是否值得再跑一次脚本重建。
 fn is_thin_text(text: &str) -> bool {
-    text.chars().filter(|character| !character.is_whitespace()).count() < THIN_TEXT_THRESHOLD
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .count()
+        < THIN_TEXT_THRESHOLD
 }
 
 /// 用本地 JS 沙箱重建正文；脚本没动过 DOM 或重建后仍无内容时返回 `None`（保持原样）。
@@ -334,7 +337,8 @@ fn rebuild_with_scripts(
         tls_session_cache: options.tls_session_cache.clone(),
         page_url: page_url.to_string(),
     };
-    let outcome = omnicrawl_jsdom::run_with_sources(html_text, &profile, Some(&loader), Some(&fetcher));
+    let outcome =
+        omnicrawl_jsdom::run_with_sources(html_text, &profile, Some(&loader), Some(&fetcher));
     if !omnicrawl_jsdom::touches_dom(&outcome) {
         return None;
     }
@@ -478,7 +482,8 @@ impl omnicrawl_jsdom::HttpSource for HttpFetcher<'_> {
         web.purpose = super::fetch_metadata::Purpose::Api;
         // 脚本显式设置的头覆盖默认值：页面自己知道该发什么（如 `content-type`）。
         for (name, value) in &request.headers {
-            web.headers.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+            web.headers
+                .retain(|(key, _)| !key.eq_ignore_ascii_case(name));
             web.headers.push((name.clone(), value.clone()));
         }
 
@@ -865,7 +870,8 @@ mod tests {
 
     #[test]
     fn rebuild_gives_up_when_scripts_do_not_touch_the_dom() {
-        let html = "<html><body><div id=\"app\"></div><script>var unused = 1 + 1;</script></body></html>";
+        let html =
+            "<html><body><div id=\"app\"></div><script>var unused = 1 + 1;</script></body></html>";
         assert!(
             rebuild_with_scripts(
                 html,
@@ -882,10 +888,19 @@ mod tests {
 
     #[test]
     fn same_site_uses_the_registrable_domain() {
-        assert!(same_site("https://blog.example.com/a", "https://blog.example.com/api/x"));
+        assert!(same_site(
+            "https://blog.example.com/a",
+            "https://blog.example.com/api/x"
+        ));
         // 子域与裸域同站：登录态接口常在裸域上。
-        assert!(same_site("https://blog.example.com/a", "https://example.com/api/x"));
-        assert!(!same_site("https://example.com/a", "https://evil.com/api/x"));
+        assert!(same_site(
+            "https://blog.example.com/a",
+            "https://example.com/api/x"
+        ));
+        assert!(!same_site(
+            "https://example.com/a",
+            "https://evil.com/api/x"
+        ));
         // 两级后缀不能把 a.co.uk 与 b.co.uk 判成同站。
         assert!(!same_site("https://a.co.uk/", "https://b.co.uk/"));
         assert!(same_site("https://www.a.co.uk/", "https://api.a.co.uk/x"));
@@ -901,7 +916,13 @@ mod tests {
         // 传输层用一个必定失败的桩：跨站请求必须在到达它之前就被拒。
         struct PanicTransport;
         impl WebTransport for PanicTransport {
-            fn send(&self, _request: &WebRequest) -> Result<super::super::web_transport::WebResponse, super::super::web_transport::WebError> {
+            fn send(
+                &self,
+                _request: &WebRequest,
+            ) -> Result<
+                super::super::web_transport::WebResponse,
+                super::super::web_transport::WebError,
+            > {
                 panic!("跨站请求不应到达传输层");
             }
         }

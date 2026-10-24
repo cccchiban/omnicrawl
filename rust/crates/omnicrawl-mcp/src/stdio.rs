@@ -23,8 +23,8 @@ use serde_json::{Map, Value};
 use crate::client::{DiscoveredCapabilities, McpConnection};
 use crate::config::McpServerConfig;
 use crate::jsonrpc::{
-    capability_declared, encode_frame, json_rpc_failure_message, list_capability_pages, read_frame,
-    FrameKind, McpCallError, McpClientError,
+    capability_declared, encode_line_frame, json_rpc_failure_message, list_capability_pages,
+    read_message, FrameKind, McpCallError, McpClientError,
 };
 
 /// 与 Python 客户端一致的协议版本。
@@ -358,7 +358,9 @@ impl StdioMcpConnection {
     }
 
     fn send_message(&self, message: &Map<String, Value>) -> Result<(), McpClientError> {
-        let frame = encode_frame(&Value::Object(message.clone()));
+        // MCP 规范的 stdio 分帧是换行分隔 JSON，与 Content-Length 帧的语义一致，
+        // 只是长度前缀换成行分隔；主流 Server（含官方 SDK）只认这一种。
+        let frame = encode_line_frame(&Value::Object(message.clone()));
         let mut state = self.lock(&self.process);
         if state.child.is_none() {
             return Err(McpClientError::new("MCP Server 尚未启动。"));
@@ -387,8 +389,18 @@ impl StdioMcpConnection {
                     "MCP Server 响应超时，连接已回收：{}",
                     self.server.name
                 ));
+                // 子进程自己的 stderr 往往直接指明原因（未启用、分帧不兼容等），
+                // 不带上就只能看到一句超时。
+                let stderr = {
+                    let preview = self.shared.stderr_preview();
+                    if preview.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" stderr: {preview}")
+                    }
+                };
                 Err(McpClientError::new(format!(
-                    "MCP 请求超过 {} 秒：{}",
+                    "MCP 请求超过 {} 秒：{}{stderr}",
                     self.server.timeout_seconds, self.server.name
                 ))
                 .into())
@@ -498,9 +510,9 @@ fn read_stdout_loop(shared: Arc<Shared>, stdout: ChildStdout) {
     let mut reader = BufReader::new(stdout);
     loop {
         let preview = || shared.stderr_preview();
-        let outcome = read_frame(&mut reader, FrameKind::Response, preview);
+        let outcome = read_message(&mut reader, FrameKind::Response, preview);
         let message = match outcome {
-            Ok(Some(message)) => message,
+            Ok(Some((message, _framing))) => message,
             Ok(None) => return,
             Err(error) => {
                 // Python `_as_mcp_client_error`：非协议错误补上 Server 名便于多 Server 定位。
@@ -522,7 +534,15 @@ fn read_stdout_loop(shared: Arc<Shared>, stdout: ChildStdout) {
             continue;
         }
         let Some(request_id) = message.get("id").and_then(|value| value.as_u64()) else {
-            continue;
+            // 无 id 的响应是 Server 拒收我方请求的报错（如分帧不兼容）：当成协议错误上报，
+            // 否则调用方会一直等到超时，把可诊断的错误降级成一句「请求超时」。
+            let text = json_rpc_failure_message(&message, "（无 id 响应）");
+            shared.push_stderr(&format!("[client] {text}"));
+            shared.fail_pending(McpClientError::new(format!(
+                "MCP Server {} 返回无法匹配的响应：{text}",
+                shared.server_name
+            )));
+            return;
         };
         shared.dispatch(request_id, message);
     }

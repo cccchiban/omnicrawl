@@ -97,7 +97,10 @@ fn connect_pipe(endpoint: &str, timeout: std::time::Duration) -> Result<std::fs:
 
 /// 连接 Unix 域套接字。
 #[cfg(not(windows))]
-fn connect_socket(endpoint: &str, timeout: std::time::Duration) -> Result<std::os::unix::net::UnixStream, String> {
+fn connect_socket(
+    endpoint: &str,
+    timeout: std::time::Duration,
+) -> Result<std::os::unix::net::UnixStream, String> {
     let stream = std::os::unix::net::UnixStream::connect(endpoint).map_err(|error| {
         format!("连接本地决策服务失败（{endpoint}）：{error}。服务可能未启动。")
     })?;

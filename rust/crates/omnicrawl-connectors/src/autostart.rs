@@ -47,6 +47,7 @@ use omnicrawl_workspace::process_control::{
 use omnicrawl_workspace::resolve_path;
 
 use crate::feishu::config::{load_feishu_config, ConfigSource};
+use crate::qqbot::config::load_qqbot_config;
 use crate::telegram::config::load_telegram_config;
 
 /// 默认自动启动；设置为 0/false/no/off 可在需要单独运行连接器或排障时关闭。
@@ -63,6 +64,8 @@ pub const CONNECTOR_LOG_DIRNAME: &str = "logs";
 pub const TELEGRAM_PLATFORM: &str = "Telegram";
 /// 飞书平台的显示名。
 pub const FEISHU_PLATFORM: &str = "飞书";
+/// QQ 机器人平台的显示名。
+pub const QQ_PLATFORM: &str = "QQ";
 /// 缺省子命令：`<当前可执行文件> connector telegram|feishu`。
 pub const CONNECTOR_SUBCOMMAND: &str = "connector";
 /// 监督线程观察子进程退出的轮询间隔（秒）。
@@ -93,7 +96,7 @@ impl ConnectorSpec {
     }
 }
 
-/// 缺省的两个平台：Telegram 与飞书，都走「当前可执行文件 + `connector <平台>`」。
+/// 缺省的三个平台：Telegram、飞书与 QQ，都走「当前可执行文件 + `connector <平台>`」。
 pub fn default_connector_specs(program: impl Into<PathBuf>) -> Vec<ConnectorSpec> {
     let program = program.into();
     vec![
@@ -104,8 +107,13 @@ pub fn default_connector_specs(program: impl Into<PathBuf>) -> Vec<ConnectorSpec
         ),
         ConnectorSpec::new(
             FEISHU_PLATFORM,
-            program,
+            program.clone(),
             vec![CONNECTOR_SUBCOMMAND.to_string(), "feishu".to_string()],
+        ),
+        ConnectorSpec::new(
+            QQ_PLATFORM,
+            program,
+            vec![CONNECTOR_SUBCOMMAND.to_string(), "qqbot".to_string()],
         ),
     ]
 }
@@ -451,7 +459,7 @@ impl ConnectorProcessManager {
         }
         if !decision.enabled {
             self.record(format!(
-                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM}自动启动。"
+                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM}/{QQ_PLATFORM} 自动启动。"
             ));
             return Vec::new();
         }
@@ -709,6 +717,19 @@ impl ConnectorProcessManager {
                     Err(error) => {
                         self.record(format!(
                             "检查飞书自动启动配置失败，跳过该连接器：{}",
+                            safe_error_text(&error)
+                        ));
+                        false
+                    }
+                }
+            } else if spec.name == QQ_PLATFORM {
+                match load_qqbot_config(data.get("qqbot")) {
+                    Ok(config) => {
+                        !config.app_id.trim().is_empty() && !config.app_secret.trim().is_empty()
+                    }
+                    Err(error) => {
+                        self.record(format!(
+                            "检查 QQ 机器人自动启动配置失败，跳过该连接器：{}",
                             safe_error_text(&error)
                         ));
                         false

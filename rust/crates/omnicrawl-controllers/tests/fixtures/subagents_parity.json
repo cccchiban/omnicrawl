@@ -2066,7 +2066,7 @@
         "error": null
       },
       {
-        "label": "合法 spawn",
+        "label": "spawn 已移除",
         "config": "default",
         "arguments": {
           "action": "spawn",
@@ -2078,7 +2078,10 @@
             }
           ]
         },
-        "result": null,
+        "result": [
+          "SUBAGENT_PERMISSION_DENIED",
+          "仅支持 action=run。"
+        ],
         "error": null
       },
       {
@@ -2096,7 +2099,7 @@
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
-          "仅支持 action=run 或 action=spawn。"
+          "仅支持 action=run。"
         ],
         "error": null
       },
@@ -2114,7 +2117,7 @@
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
-          "仅支持 action=run 或 action=spawn。"
+          "仅支持 action=run。"
         ],
         "error": null
       },

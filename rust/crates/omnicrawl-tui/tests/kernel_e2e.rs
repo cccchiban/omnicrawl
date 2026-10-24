@@ -124,7 +124,12 @@ fn kernel_binary() -> Option<PathBuf> {
     }
     roots
         .into_iter()
-        .flat_map(|root| [root.join("release").join(&name), root.join("debug").join(&name)])
+        .flat_map(|root| {
+            [
+                root.join("release").join(&name),
+                root.join("debug").join(&name),
+            ]
+        })
         .find(|path| path.is_file())
 }
 
@@ -214,11 +219,7 @@ fn real_kernel_streams_a_turn_into_the_ui() {
     assert!(!app.quit, "正常结束时不该被判成内核异常退出");
     // 回合结束通知与助手正文是两条独立事件：正文可能先到，复位事件还在队列里。
     // 这里等它落地，而不是要求两者在同一批 drain_frames 里出现。
-    assert!(
-        settled,
-        "回合结束通知应把界面复位：{:?}",
-        app.state.turn
-    );
+    assert!(settled, "回合结束通知应把界面复位：{:?}", app.state.turn);
     assert!(
         app.state
             .records
@@ -780,10 +781,9 @@ fn real_kernel_undoes_the_last_turn_from_slash_command() {
 
     // 1) `/undo` 没有变成用户消息，也就没进模型上下文。
     assert!(
-        !app.state
-            .records
-            .iter()
-            .any(|record| matches!(record, Record::User(message) if message.text.contains("/undo"))),
+        !app.state.records.iter().any(
+            |record| matches!(record, Record::User(message) if message.text.contains("/undo"))
+        ),
         "`/undo` 不该进模型对话：{:?}",
         app.state.records
     );
@@ -807,7 +807,10 @@ fn real_kernel_loads_skill_body_for_the_turn() {
     };
     let workspace = workspace_dir("skill");
     // 项目级 Skill：正文里带一句只可能来自 SKILL.md 的标记。
-    let skill_dir = workspace.join(".omnicrawl").join("skills").join("e2e-skill");
+    let skill_dir = workspace
+        .join(".omnicrawl")
+        .join("skills")
+        .join("e2e-skill");
     std::fs::create_dir_all(&skill_dir).expect("建 skill 目录");
     std::fs::write(
         skill_dir.join("SKILL.md"),
@@ -871,10 +874,9 @@ fn real_kernel_loads_skill_body_for_the_turn() {
     );
     // 2) 用户消息是余下任务，`/skill:` 原文不进模型。
     assert!(
-        !app.state
-            .records
-            .iter()
-            .any(|record| matches!(record, Record::User(message) if message.text.contains("/skill:"))),
+        !app.state.records.iter().any(
+            |record| matches!(record, Record::User(message) if message.text.contains("/skill:"))
+        ),
         "`/skill:` 原文不该进对话：{:?}",
         app.state.records
     );
@@ -882,9 +884,7 @@ fn real_kernel_loads_skill_body_for_the_turn() {
     let request = server
         .bodies()
         .into_iter()
-        .find(|body| {
-            body.to_string().contains("做点事")
-        })
+        .find(|body| body.to_string().contains("做点事"))
         .expect("应有一次携带任务的模型请求");
     let rendered = request.to_string();
     assert!(

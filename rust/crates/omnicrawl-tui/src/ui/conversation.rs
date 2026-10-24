@@ -23,8 +23,8 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use super::{display_width, fit, truncate_styled, wrap_display};
 use crate::state::{AppState, Record, ToolCard, ToolStatus, UserRecord};
+use crate::ui::fullscreen::rendering::widgets;
 use crate::ui::fullscreen::rendering::{latex, markdown, tool_diff};
-use crate::ui::fullscreen::rendering::widgets::{self, SubAgentConversation, SubAgentProgressTree};
 use crate::ui::fullscreen::terminal::theme;
 use crate::ui::fullscreen::text::StyledText;
 use crate::ui::image_preview;
@@ -188,10 +188,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         .lines
         .into_iter()
         .enumerate()
-        .map(|(offset, rendered)| match selection_columns(state, start + offset) {
-            Some((from, to)) => highlight_columns(rendered.line, from, to),
-            None => rendered.line,
-        })
+        .map(
+            |(offset, rendered)| match selection_columns(state, start + offset) {
+                Some((from, to)) => highlight_columns(rendered.line, from, to),
+                None => rendered.line,
+            },
+        )
         .collect();
     frame.render_widget(Paragraph::new(window), text);
     // 图片必须画在文本之后：占位行是空白格，先铺白再把图片写进同一批格子。
@@ -223,7 +225,10 @@ fn image_blocks(lines: &[DisplayLine]) -> Vec<VisibleImageBlock> {
             continue;
         };
         let top = row as i32 - i32::from(image.offset);
-        match blocks.iter_mut().find(|block| block.call_id == image.call_id) {
+        match blocks
+            .iter_mut()
+            .find(|block| block.call_id == image.call_id)
+        {
             // 同一块的多行只认最靠上的那个推算值：块顶在所有行上算出来都一样。
             Some(block) => block.top = block.top.min(top),
             None => blocks.push(VisibleImageBlock {
@@ -363,7 +368,11 @@ pub fn selection_text(state: &AppState, width: u16) -> Option<String> {
     for (offset, line) in lines.iter().enumerate() {
         let index = start_line + offset;
         let from = if index == start_line { start_col } else { 0 };
-        let to = if index == last { end_col.max(1) } else { usize::MAX };
+        let to = if index == last {
+            end_col.max(1)
+        } else {
+            usize::MAX
+        };
         parts.push(slice_columns(&line.line, from, to));
     }
     while parts.first().is_some_and(|line| line.trim().is_empty()) {
@@ -430,12 +439,13 @@ pub const CONVERSATION_MAX_LINES: usize = 2000;
 
 /// 会话区显示行的**分块增量缓存**（性能核心）。
 ///
-/// 每条记录渲染出的显示行单独存一块，块与 `AppState::records` 的前缀一一对应；
+/// 每条记录渲染出的显示行单独存一块，块与 `AppState::records` 的一段连续下标一一对应；
 /// 只有被打上脏标记的记录之后的部分才会重算。于是：
 ///
 /// - 流式追加正文只重算**最后一条记录**，而不是每次增量都重排整段会话；
 /// - 帧渲染、鼠标命中、选区抽取与滚动条计算共用同一份行，不再各自重建；
-/// - 2000 行上限只在取窗口时剪裁，不复制整份行。
+/// - 2000 行上限只在取窗口时剪裁，不复制整份行；
+/// - 缓存本身也按行数封顶：只保留窗口够得到的那一段，历史再长也不涨内存。
 ///
 /// 缓存装在 `AppState` 里（`RefCell`）是因为渲染路径只拿得到 `&AppState`，
 /// 与 `runtime_esc_area` 用 `Cell` 是同一思路。
@@ -445,13 +455,17 @@ pub struct ConversationCache {
     width: u16,
     /// 缓存的是「空会话首屏的欢迎 Logo」还是记录流：两者是两套内容，切换时整块重算。
     empty: bool,
-    /// 块 i = 记录 i 的显示行（含它前面那条分隔空行）；空会话时只有一块 Logo。
+    /// 块 i = 记录 `first_index + i` 的显示行（含它前面那条分隔空行）；空会话时只有一块 Logo。
     chunks: Vec<Vec<DisplayLine>>,
-    /// 块 i 的起始显示行号（未截断的行号空间）。
+    /// 块 i 的起始显示行号（未截断的绝对行号）。
     starts: Vec<usize>,
+    /// `chunks[0]` 对应哪一条记录。历史被裁掉前缀后，块与记录仍按下标对齐。
+    first_index: usize,
+    /// `chunks[0]` 的绝对起始显示行号（含已被裁掉的头部行）。
+    base_line: usize,
     /// 未截断的总显示行数（记录流含末尾那条空行）。
     total: usize,
-    /// 还需要重算的起始块下标；等于 `chunks.len()` 时缓存是干净的。
+    /// 还需要重算的起始记录下标（绝对下标）；等于 `first_index + chunks.len()` 时缓存是干净的。
     dirty_from: usize,
     /// 已重算的记录块数（**只给测试**：钉住「流式只重算最后一条」的性能约定）。
     #[cfg(test)]
@@ -513,6 +527,16 @@ impl ConversationCache {
         out
     }
 
+    /// 丢掉缓存已覆盖的记录（宽度变化、记录被清空时用）。
+    fn reset_blocks(&mut self) {
+        self.chunks.clear();
+        self.starts.clear();
+        self.first_index = 0;
+        self.base_line = 0;
+        self.total = 0;
+        self.dirty_from = 0;
+    }
+
     /// 把缓存同步到 `state.records` 的当前内容；只重算脏掉的块。
     fn sync(&mut self, state: &AppState, width: u16) {
         let width = width.max(1);
@@ -520,10 +544,7 @@ impl ConversationCache {
         if self.width != width || self.empty != empty {
             self.width = width;
             self.empty = empty;
-            self.chunks.clear();
-            self.starts.clear();
-            self.total = 0;
-            self.dirty_from = 0;
+            self.reset_blocks();
         }
         if empty {
             // 空会话首屏只画欢迎 Logo：内容只随入场动画变化（由 `mark_all_dirty` 触发重算）。
@@ -542,30 +563,54 @@ impl ConversationCache {
             }
             return;
         }
+        // 整块失效（重放 / 全局开关）：被裁掉的前缀行数也可能变了，
+        // 连前缀一起重算，缓存行号与真实内容才继续对齐。
+        if self.dirty_from < self.first_index {
+            self.reset_blocks();
+        }
+        let records_len = state.records.len();
+        // 记录少到连缓存已裁掉的前缀都覆盖不住了：前缀行数随之变化，整块重算。
+        if records_len < self.first_index {
+            self.reset_blocks();
+        }
+        let clean_end = self.first_index + self.chunks.len();
         // 记录被回滚 / 重放而变少：多出来的块丢掉，并从新的尾部起重算。
-        if self.chunks.len() > state.records.len() {
-            self.chunks.truncate(state.records.len());
-            self.starts.truncate(state.records.len());
+        if clean_end > records_len {
+            let keep = records_len.saturating_sub(self.first_index);
+            self.chunks.truncate(keep);
+            self.starts.truncate(keep);
             // 尾部被砍掉时 `total` 必须跟着收：此时 `dirty_from` 可能已经是「干净」的，
             // 下面的早退分支不会再重算它。
-            self.total = self
-                .chunks
-                .last()
-                .map(|chunk| self.starts[self.chunks.len() - 1] + chunk.len())
-                .unwrap_or(0)
-                + 1;
+            self.total = match self.chunks.last() {
+                Some(chunk) => self.starts[self.chunks.len() - 1] + chunk.len(),
+                None => self.base_line,
+            } + 1;
+            // 脏点只夹到新尾部之内：`mark_all_dirty` 置的 0 必须保留（整块都要重算）。
+            self.dirty_from = self.dirty_from.min(self.first_index + keep);
         }
-        self.dirty_from = self.dirty_from.min(self.chunks.len());
-        if self.dirty_from == self.chunks.len() && self.chunks.len() == state.records.len() {
+        // 脏点早于缓存起点（整块失效）：旧前缀的行数可能已经变了，
+        // 连前缀一起重算，缓存行号与真实内容才继续对齐。
+        let mut cursor = if self.dirty_from < self.first_index {
+            self.first_index = 0;
+            self.base_line = 0;
+            self.chunks.clear();
+            self.starts.clear();
+            self.dirty_from = 0;
+            0
+        } else {
+            let truncate_to = self.dirty_from - self.first_index;
+            self.chunks.truncate(truncate_to);
+            self.starts.truncate(truncate_to);
+            match truncate_to.checked_sub(1) {
+                Some(last) => self.starts[last] + self.chunks[last].len(),
+                None => self.base_line,
+            }
+        };
+        // 早退：缓存已覆盖到记录尾部、也没有待重算的块。
+        if self.dirty_from >= records_len && self.first_index + self.chunks.len() == records_len {
             return;
         }
-        self.chunks.truncate(self.dirty_from);
-        self.starts.truncate(self.dirty_from);
-        let mut cursor = match self.dirty_from {
-            0 => 0,
-            last => self.starts[last - 1] + self.chunks[last - 1].len(),
-        };
-        for index in self.dirty_from..state.records.len() {
+        for index in self.dirty_from..records_len {
             let chunk = record_lines(state, index, width);
             #[cfg(test)]
             {
@@ -577,7 +622,37 @@ impl ConversationCache {
         }
         // 记录流末尾还有一条空行（对映 Python 消息流段落之间的留白）。
         self.total = cursor + 1;
-        self.dirty_from = state.records.len();
+        self.dirty_from = records_len;
+        self.trim_prefix();
+    }
+
+    /// 丢掉窗口再也够不到的前缀块。
+    ///
+    /// 可见窗口只会落在最后 [`CONVERSATION_MAX_LINES`] 行里，因此更早的块对渲染没有任何
+    /// 贡献；历史越长（压缩前后的长会话尤其明显），这些块就会一路把内存堆上去。
+    /// 保留量按 2 倍上限计，避免每帧都裁剪。
+    fn trim_prefix(&mut self) {
+        let budget = CONVERSATION_MAX_LINES * 2;
+        let keep_from = self.total.saturating_sub(CONVERSATION_MAX_LINES);
+        let mut drop_count = 0usize;
+        while drop_count < self.chunks.len() {
+            let chunk_end = self.starts[drop_count] + self.chunks[drop_count].len();
+            // 与保留区相交的块不能丢；总行数已回到预算内也不必再丢。
+            if chunk_end > keep_from || self.total - self.starts[drop_count] <= budget {
+                break;
+            }
+            drop_count += 1;
+        }
+        if drop_count == 0 {
+            return;
+        }
+        self.chunks.drain(..drop_count);
+        self.starts.drain(..drop_count);
+        self.first_index += drop_count;
+        self.base_line = self.starts.first().copied().unwrap_or(self.total);
+        if self.dirty_from < self.first_index {
+            self.dirty_from = self.first_index;
+        }
     }
 }
 
@@ -605,7 +680,9 @@ fn cache_of(state: &AppState, width: u16) -> Ref<'_, ConversationCache> {
 /// 图片与标题/正文左对齐（不额外缩进），因此这个宽度比卡片文字窄一格；占位块的行数
 /// 与 [`render_image_block`] 的横坐标都从它推出来，两处必须同源。
 fn image_width(width: u16) -> u16 {
-    width.saturating_sub(display_width(MESSAGE_PAD) as u16).max(1)
+    width
+        .saturating_sub(display_width(MESSAGE_PAD) as u16)
+        .max(1)
 }
 
 /// 全部记录的显示行（已按宽度折行，并应用 2000 行上限）。
@@ -679,9 +756,8 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
             push_failure(&mut lines, message, *retryable, index, width, state)
         }
         Record::Tool(card) => push_tool(&mut lines, card, width, state),
-        Record::SubagentTree(tree) => push_subagent_tree(&mut lines, tree),
-        Record::SubagentConversation(panel) => {
-            push_subagent_conversation(&mut lines, panel, width)
+        Record::SubagentWindow(notice) => {
+            push_prefixed(&mut lines, "· ", &notice.line(), width, Color::DarkGray)
         }
     }
     lines
@@ -870,7 +946,11 @@ pub fn hit_test(
     if index >= end {
         return None;
     }
-    cache.visible_slice(index, index + 1).into_iter().next()?.hit
+    cache
+        .visible_slice(index, index + 1)
+        .into_iter()
+        .next()?
+        .hit
 }
 
 /// 会话区第 `row` 行（区内相对行号）上「立即结束」按钮占的列区间；那行没有按钮时 `None`。
@@ -929,10 +1009,7 @@ pub fn collapsed_body(
     if tool_diff::is_file_change_tool(tool_name) || parts.len() <= TOOL_BODY_LIMIT {
         return (parts, 0, Vec::new());
     }
-    let effective: Vec<&StyledText> = parts
-        .iter()
-        .filter(|line| !line.is_blank())
-        .collect();
+    let effective: Vec<&StyledText> = parts.iter().filter(|line| !line.is_blank()).collect();
     if effective.len() <= TOOL_BODY_LIMIT {
         return (parts, 0, Vec::new());
     }
@@ -1027,7 +1104,10 @@ fn push_user_images(
         return;
     }
     for offset in 0..rows {
-        lines.push(DisplayLine::user_image_placeholder(&message.image_key, offset));
+        lines.push(DisplayLine::user_image_placeholder(
+            &message.image_key,
+            offset,
+        ));
     }
 }
 
@@ -1134,36 +1214,6 @@ fn push_failure(
     ));
 }
 
-/// 消息内边距 + 一行富文本（子任务树与子代理会话面板用）。
-fn padded_styled(text: &StyledText) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = vec![Span::raw(MESSAGE_PAD.to_string())];
-    spans.extend(text.to_spans());
-    Line::from(spans)
-}
-
-/// 子任务进度树：直接铺开对映层构造好的富文本（每行自带图标与状态的取色）。
-///
-/// Python 侧 `SubAgentProgressTree` 是 `Static`，高度随行数自适应；这里同样不折行，
-/// 超宽部分按 ratatui 默认行为裁断。耗时按最近一次刷新的时刻落定（由每一帧的
-/// [`AppState::refresh_subagent_trees`] 推进），因此渲染本身保持只读。
-fn push_subagent_tree(lines: &mut Vec<DisplayLine>, tree: &SubAgentProgressTree) {
-    for line in tree.render_text(None).split_lines() {
-        lines.push(DisplayLine::plain(padded_styled(&line)));
-    }
-}
-
-/// 子代理流式对话面板：`│` 包裹的会话面板按可用宽度换行。
-fn push_subagent_conversation(
-    lines: &mut Vec<DisplayLine>,
-    panel: &SubAgentConversation,
-    width: usize,
-) {
-    let body = width.saturating_sub(display_width(MESSAGE_PAD)).max(1);
-    for line in panel.render_text(body).split_lines() {
-        lines.push(DisplayLine::plain(padded_styled(&line)));
-    }
-}
-
 /// 思考段：暗背景 + 灰前景 + 斜体（对映 CSS `.reasoning-message`），折叠态只显示最新
 /// [`REASONING_TAIL`] 行（对映 `ReasoningDisclosure.COLLAPSED_HEIGHT`），点击切换展开。
 ///
@@ -1267,11 +1317,11 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 标题超宽时**换行**（不再用省略号截断），续行缩进到参数起始列——也就是
     // `● bash ls -la` 里 `ls` 所在的那一列，参数列表能对齐着读。
     let rows = tool_title_rows(&title, width);
-    // 运行中的后台任务卡在标题行右侧挂一个「立即结束」按钮。
-    let button_row = if running && is_monitor_card(card) {
-        stop_button_slot(&rows, width)
-    } else {
-        None
+    // 运行中的后台任务卡在标题行右侧挂一个「立即结束」按钮：判据与悬停/点击完全同一套
+    // （`ToolCard::monitor_task_id`），否则会出现「按钮画得出来却既不亮也点不动」。
+    let button_row = match card.monitor_task_id(streaming) {
+        Some(_) if running => stop_button_slot(&rows, width),
+        _ => None,
     };
     let hovered = state.stop_button_hover() == Some(card.call_id.as_str());
     for (index, row) in rows.into_iter().enumerate() {
@@ -1279,21 +1329,21 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
             call_id: card.call_id.clone(),
         };
         lines.push(match button_row.filter(|(slot, _)| *slot == index) {
-            Some((_, button)) => DisplayLine::with_button(
-                attach_stop_button(row, button, hovered),
-                hit,
-                button,
-            ),
+            Some((_, button)) => {
+                DisplayLine::with_button(attach_stop_button(row, button, hovered), hit, button)
+            }
             None => DisplayLine::with_hit(row, hit),
         });
     }
 
     // 压缩提示：灰色一行，画在工具结果上方；**工具调用完成后才显示**（用户要求），
     // 压缩进行中先不打扰，跑完连同「已压缩 a → b 字符」一起出现。
-    if let Some((note, failed)) = streaming
-        .filter(|_| !running)
-        .and_then(|entry| entry.compression.as_deref().map(|note| (note, entry.compression_failed)))
-    {
+    if let Some((note, failed)) = streaming.filter(|_| !running).and_then(|entry| {
+        entry
+            .compression
+            .as_deref()
+            .map(|note| (note, entry.compression_failed))
+    }) {
         // 正常计量提示是灰的；压缩超时/失败用红色，别的错误情况一眼能看到（用户要求）。
         let style = if failed {
             theme::ACCENT_RED
@@ -1431,14 +1481,6 @@ fn tool_title_rows(title: &StyledText, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// 这张卡是不是后台任务（monitor）卡。
-///
-/// `push_monitor_batch` 建的卡用 `monitor:<id>` 作 `call_id` 并把工具名写成 `monitor`；
-/// 两者任一命中即算——回放历史事件时 `call_id` 可能为空，只能靠名字认。
-fn is_monitor_card(card: &ToolCard) -> bool {
-    card.name == "monitor" || card.call_id.starts_with("monitor:")
-}
-
 /// 「立即结束」按钮该落在哪一行、占哪几列；窗口太窄放不下时返回 `None`。
 ///
 /// 按钮贴右缘（宽度已扣掉滚动条），选**最后一行**标题：多行标题时按钮落在最下面那行，
@@ -1471,7 +1513,9 @@ fn attach_stop_button(row: Line<'static>, button: (u16, u16), hovered: bool) -> 
     };
     let mut spans: Vec<Span<'static>> = row.spans;
     let used = display_width(&text_of_line(&Line::from(spans.clone())));
-    let pad = usize::from(button.0).saturating_sub(used).max(STOP_BUTTON_GAP);
+    let pad = usize::from(button.0)
+        .saturating_sub(used)
+        .max(STOP_BUTTON_GAP);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(STOP_BUTTON.to_string(), style));
     Line::from(spans)
@@ -1583,7 +1627,8 @@ fn split_gutter_prefix(
 ) -> Option<(Vec<Span<'static>>, Vec<Span<'static>>)> {
     static GUTTER_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let number = spans.first()?;
-    let pattern = GUTTER_RE.get_or_init(|| regex::Regex::new(r"^\s*\d+ │ $").expect("旁注行号正则"));
+    let pattern =
+        GUTTER_RE.get_or_init(|| regex::Regex::new(r"^\s*\d+ │ $").expect("旁注行号正则"));
     if !pattern.is_match(number.content.as_ref()) {
         return None;
     }
@@ -1681,7 +1726,10 @@ mod tests {
         );
         state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
         let status = runtime_status(&state, 60).expect("运行中应当有状态行");
-        assert_eq!(status.spans.first().map(|span| span.content.as_ref()), Some(" "));
+        assert_eq!(
+            status.spans.first().map(|span| span.content.as_ref()),
+            Some(" ")
+        );
         let text_span = &status.spans[1];
         assert_eq!(text_span.style.fg, Some(Color::White), "状态文字要白色");
         let last = status.spans.last().expect("要有 ESC 提示");
@@ -1704,12 +1752,19 @@ mod tests {
 
     #[test]
     fn assistant_body_renders_markdown_and_latex() {
-        let (_state, display) = assistant_lines("# 标题\n\n普通 **加粗** 与 `code`，还有 $E=mc^2$。\n");
+        let (_state, display) =
+            assistant_lines("# 标题\n\n普通 **加粗** 与 `code`，还有 $E=mc^2$。\n");
         let rendered = plain(&display);
         let joined = rendered.join("\n");
-        assert!(joined.contains("◇ 标题"), "首行标题要带前缀且去掉 `#`：{rendered:?}");
+        assert!(
+            joined.contains("◇ 标题"),
+            "首行标题要带前缀且去掉 `#`：{rendered:?}"
+        );
         assert!(!joined.contains("**"), "加粗标记应被渲染掉：{rendered:?}");
-        assert!(joined.contains("E=mc²"), "LaTeX 应归一成 Unicode：{rendered:?}");
+        assert!(
+            joined.contains("E=mc²"),
+            "LaTeX 应归一成 Unicode：{rendered:?}"
+        );
         assert!(joined.contains("code"), "行内代码正文保留：{rendered:?}");
         // 真的套上了样式（不是只把标记删掉）。
         assert!(
@@ -1820,7 +1875,10 @@ mod tests {
         let same = highlight_columns(Line::from(vec![Span::raw("abc")]), 3, 3);
         assert_eq!(same.spans.len(), 1);
         assert_eq!(same.spans[0].content.to_string(), "abc");
-        assert!(!same.spans[0].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(!same.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED));
     }
 
     /// 起一个带正文的工具卡（`read` 之外的工具才有正文）。
@@ -1916,14 +1974,18 @@ mod tests {
         // 跑完的后台任务卡不再有按钮。
         state.push_monitor_batch("m1", "completed", "Monitor · m1 · completed".to_string());
         assert!(
-            display_lines(&state, 60).iter().all(|line| line.button.is_none()),
+            display_lines(&state, 60)
+                .iter()
+                .all(|line| line.button.is_none()),
             "终态的后台任务卡不该留按钮"
         );
 
         // 普通工具卡也没有按钮。
         let state = state_with_tool(true, 3);
         assert!(
-            display_lines(&state, 60).iter().all(|line| line.button.is_none()),
+            display_lines(&state, 60)
+                .iter()
+                .all(|line| line.button.is_none()),
             "普通工具卡不该有「立即结束」按钮"
         );
     }
@@ -1938,12 +2000,108 @@ mod tests {
         );
         // 窗口窄到放不下标题 + 间隙 + 按钮：宁可不画，也不压着标题文字。
         assert!(
-            display_lines(&state, 12).iter().all(|line| line.button.is_none()),
+            display_lines(&state, 12)
+                .iter()
+                .all(|line| line.button.is_none()),
             "太窄时不该画按钮"
         );
         assert!(
-            display_lines(&state, 60).iter().any(|line| line.button.is_some()),
+            display_lines(&state, 60)
+                .iter()
+                .any(|line| line.button.is_some()),
             "够宽时要画出来"
+        );
+    }
+
+    #[test]
+    fn stop_button_columns_match_the_rendered_button_span() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.push_monitor_batch(
+            "m1",
+            "running",
+            "Monitor · m1 · running\n[stdout] ready".to_string(),
+        );
+        let area = Rect::new(0, 0, 60, 20);
+        let text = text_area(area);
+        let display = display_lines(&state, text.width);
+
+        // 渲染出的按钮起始列（相对行首），由 span 宽度累加得出。
+        let (row_index, (hit_start, rendered_start)) = display
+            .iter()
+            .enumerate()
+            .find_map(|(index, line)| {
+                line.button.map(|(start, _)| {
+                    let mut column = 0usize;
+                    for span in line.line.spans.iter().take(line.line.spans.len() - 1) {
+                        column += display_width(span.content.as_ref());
+                    }
+                    (index, (start, column as u16))
+                })
+            })
+            .expect("运行中的后台任务卡要有按钮");
+
+        // 命中判定用的列区间必须与真正画出来的位置一致，否则悬停与点击都会偏。
+        let hit_box =
+            stop_button_columns(&state, area, 0, row_index).expect("同一行要能取到按钮列区间");
+        assert_eq!(
+            hit_box.0, rendered_start,
+            "命中区间的起始列必须等于按钮实际起始列"
+        );
+        assert_eq!(hit_box.0, hit_start, "登记值与渲染值也必须一致");
+        let button_width = display_width("[立即结束]") as u16;
+        assert_eq!(hit_box.1, button_width, "区间宽度必须等于按钮显示宽度");
+    }
+
+    /// 真实 `monitor` 工具卡（`call_id` 是内核 id、任务 id 在参数里）同样要画按钮，
+    /// 并登记命中区间——否则按钮画得出来却既不亮也点不动。
+    #[test]
+    fn monitor_tool_call_card_gets_a_clickable_stop_button() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "等后台任务".to_string(), Vec::new());
+        let call = omnicrawl_core::ToolCall {
+            name: "monitor".to_string(),
+            arguments: serde_json::json!({
+                "action": "poll",
+                "monitor_id": "monitor-3d74984d0f37",
+                "wait_seconds": 60
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            id: "call_9".to_string(),
+            function_name: "monitor".to_string(),
+        };
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::bridge::HostEvent::ToolStarted(
+                omnicrawl_ipc::bridge::ToolStartedPayload {
+                    step: 1,
+                    call: call.clone(),
+                },
+            ),
+            now,
+        );
+
+        let display = display_lines(&state, 100);
+        let row = display
+            .iter()
+            .find(|line| line.button.is_some())
+            .expect("运行中的 monitor 工具卡要有「立即结束」按钮");
+        assert!(text_of(&row.line).ends_with("[立即结束]"));
+        // 命中区间与按钮实际列一致，悬停与点击才有落点。
+        let area = Rect::new(0, 0, 100, 20);
+        let (index, _) = display
+            .iter()
+            .enumerate()
+            .find_map(|(index, line)| line.button.map(|_| (index, ())))
+            .expect("按钮行");
+        let hit_box = stop_button_columns(&state, area, 0, index).expect("按钮列区间");
+        assert_eq!(hit_box.1, display_width("[立即结束]") as u16);
+
+        // 按钮归属的任务 id 由参数决定，供点击时打断对应的等待。
+        assert_eq!(
+            state.monitor_task_id("call_9").as_deref(),
+            Some("monitor-3d74984d0f37")
         );
     }
 
@@ -1958,7 +2116,11 @@ mod tests {
             .iter()
             .find(|line| matches!(line.hit, Some(LineHit::RetryTurn { .. })))
             .expect("可重试的失败提示要有「重试」按钮");
-        assert!(text_of(&row.line).contains("[ 重试 ]"), "{:?}", text_of(&row.line));
+        assert!(
+            text_of(&row.line).contains("[ 重试 ]"),
+            "{:?}",
+            text_of(&row.line)
+        );
         assert_eq!(
             row.line.spans.last().map(|span| span.style.fg),
             Some(Some(Color::Blue)),
@@ -2145,8 +2307,11 @@ mod tests {
     }
 
     #[test]
-    fn subagent_tree_record_renders_one_line_per_task() {
+    fn subagent_window_record_renders_one_notice_line() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        // 不拉真窗口：用例只验消息流里那一行提示。
+        state.subagent_stream_root =
+            std::env::temp_dir().join(format!("oc-conv-subwin-{}", std::process::id()));
         state.apply(
             &omnicrawl_ipc::bridge::HostEvent::SubagentEvent(
                 omnicrawl_ipc::bridge::SubagentEventPayload {
@@ -2161,28 +2326,20 @@ mod tests {
             ),
             Instant::now(),
         );
-        let rendered = plain(&display_lines(&state, 40));
-        let header = rendered
+        // 宽度留够：提示行带着完整流水路径，折行会切断文件名。
+        let rendered = plain(&display_lines(&state, 200));
+        let line = rendered
             .iter()
-            .find(|line| line.contains("子任务进度"))
-            .expect("应有进度树标题");
-        assert!(header.contains("0/1 完成"), "{header}");
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.trim_start().starts_with("└─ ● ")),
-            "运行中任务一行一项：{rendered:?}"
-        );
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.contains("审查改动") && line.contains("· 运行中")),
-            "{rendered:?}"
-        );
-        // 进度树不参与点击命中（Python 侧无交互动画）。
-        assert!(display_lines(&state, 40)
+            .find(|line| line.contains("子代理在独立窗口运行"))
+            .unwrap_or_else(|| panic!("应有窗口受理提示：{rendered:?}"));
+        assert!(line.contains("batch-1"), "{line}");
+        assert!(line.contains("batch-1.jsonl"), "{line}");
+        // 主会话不再画进度树，也不接受点击命中。
+        assert!(!rendered.iter().any(|line| line.contains("子任务进度")));
+        assert!(display_lines(&state, 200)
             .iter()
             .all(|line| line.hit.is_none()));
+        let _ = std::fs::remove_dir_all(&state.subagent_stream_root);
     }
 
     /// 显现截断只影响渲染：`visible` 之内的文字会画出来，未显现的部分不会提前出现。
@@ -2214,7 +2371,10 @@ mod tests {
             .map(|line| line.trim().to_string())
             .collect::<Vec<_>>()
             .join("");
-        assert!(full_text.contains(text), "全量渲染应当包含整段文字：{full_text:?}");
+        assert!(
+            full_text.contains(text),
+            "全量渲染应当包含整段文字：{full_text:?}"
+        );
         assert!(
             plain(&full)[0].contains("一二三"),
             "全量结果以同一前缀开头：{:?}",
@@ -2393,7 +2553,10 @@ mod tests {
         };
         state.apply(
             &omnicrawl_ipc::bridge::HostEvent::ToolStarted(
-                omnicrawl_ipc::bridge::ToolStartedPayload { step: 1, call: call.clone() },
+                omnicrawl_ipc::bridge::ToolStartedPayload {
+                    step: 1,
+                    call: call.clone(),
+                },
             ),
             now,
         );
@@ -2444,7 +2607,8 @@ mod tests {
     #[test]
     fn read_body_is_hidden_and_file_change_body_is_not() {
         // read 的正文由对映层直接隐藏（正文为空，不保留提示行）。
-        let read = state_with_named_tool("read", json!({"path": "a.py"}), "文件正文不应出现在对话里");
+        let read =
+            state_with_named_tool("read", json!({"path": "a.py"}), "文件正文不应出现在对话里");
         let rendered = plain(&display_lines(&read, 80));
         assert!(
             !rendered.iter().any(|line| line.contains("文件正文")),
@@ -2576,8 +2740,9 @@ mod tests {
     #[test]
     fn a_window_that_starts_inside_the_image_block_still_finds_the_block_top() {
         // 滚到块中间：窗口里看不到首行，块顶必须由「所见行号 − 块内偏移」反推出来。
-        let lines: Vec<DisplayLine> =
-            (0..4).map(|offset| DisplayLine::image_placeholder("c1", offset)).collect();
+        let lines: Vec<DisplayLine> = (0..4)
+            .map(|offset| DisplayLine::image_placeholder("c1", offset))
+            .collect();
         let blocks = image_blocks(&lines);
         assert_eq!(blocks.len(), 1, "同一块的多行要合成一块");
         assert_eq!(blocks[0].call_id, "c1");
@@ -2592,8 +2757,9 @@ mod tests {
 
     #[test]
     fn two_image_blocks_in_one_window_stay_separate() {
-        let mut lines: Vec<DisplayLine> =
-            (0..2).map(|offset| DisplayLine::image_placeholder("a", offset)).collect();
+        let mut lines: Vec<DisplayLine> = (0..2)
+            .map(|offset| DisplayLine::image_placeholder("a", offset))
+            .collect();
         lines.push(DisplayLine::plain(Line::raw("")));
         lines.extend((0..3).map(|offset| DisplayLine::image_placeholder("b", offset)));
         let blocks = image_blocks(&lines);
@@ -2633,10 +2799,7 @@ mod tests {
         let long = "甲".repeat(60);
         let state = state_with_named_tool("bash", json!({"command": "echo"}), &long);
         let rendered = plain(&display_lines(&state, 40));
-        let body: Vec<&String> = rendered
-            .iter()
-            .filter(|line| line.contains('甲'))
-            .collect();
+        let body: Vec<&String> = rendered.iter().filter(|line| line.contains('甲')).collect();
         assert!(body.len() > 1, "超宽正文应折行：{body:?}");
         let joined: String = body.iter().map(|line| line.trim().to_string()).collect();
         assert_eq!(joined, long, "折行不应丢字：{body:?}");
@@ -2665,10 +2828,7 @@ mod tests {
             .position(|ch| ch == '│')
             .expect("旁注行号带竖线");
         // 该变更行的显示行（首行 + 续行）：内容列必须一致，且都落在行号右边。
-        let rows: Vec<&String> = rendered
-            .iter()
-            .filter(|line| line.contains('乙'))
-            .collect();
+        let rows: Vec<&String> = rendered.iter().filter(|line| line.contains('乙')).collect();
         assert!(rows.len() > 1, "长行应当折行：{rendered:?}");
         let columns: Vec<usize> = rows
             .iter()
@@ -2813,7 +2973,10 @@ mod tests {
             .position(|row| row.contains("bash"))
             .unwrap_or_else(|| panic!("应当有工具卡标题：{rows:?}"));
         let first = &rows[title];
-        assert!(first.starts_with(" ● bash "), "首行带状态点与工具名：{first:?}");
+        assert!(
+            first.starts_with(" ● bash "),
+            "首行带状态点与工具名：{first:?}"
+        );
         assert!(!first.contains('…'), "不再用省略号截断：{first:?}");
         // 注意用显示宽度而不是字符下标：状态点 `●` 占两列。
         let argument_column = display_width(
@@ -2828,7 +2991,10 @@ mod tests {
             indent, argument_column,
             "续行缩进要对齐到参数起始列：{rows:?}"
         );
-        assert!(second.trim_start().starts_with('/'), "续行接着参数文本：{second:?}");
+        assert!(
+            second.trim_start().starts_with('/'),
+            "续行接着参数文本：{second:?}"
+        );
     }
 
     // ---- 分块增量缓存：正确性与增量性 --------------------------------------------
@@ -2911,9 +3077,9 @@ mod tests {
     #[test]
     fn cache_matches_a_full_rebuild_across_every_mutation() {
         use omnicrawl_ipc::bridge::{
-            HostEvent, SubagentEventPayload, TextPayload, TodoUpdatePayload, ToolCallArgumentsPayload,
-            ToolCallStartedPayload, ToolEventPayload, ToolOutputCompressionPayload,
-            ToolStartedPayload,
+            HostEvent, SubagentEventPayload, TextPayload, TodoUpdatePayload,
+            ToolCallArgumentsPayload, ToolCallStartedPayload, ToolEventPayload,
+            ToolOutputCompressionPayload, ToolStartedPayload,
         };
         let now = Instant::now();
         let width = 64u16;
@@ -2929,7 +3095,9 @@ mod tests {
         for step in 0..6 {
             if state.logo.is_playing() {
                 state.touch_conversation();
-                state.logo.tick(now + std::time::Duration::from_millis(40 * step));
+                state
+                    .logo
+                    .tick(now + std::time::Duration::from_millis(40 * step));
             }
             assert_cache_matches(&state, width, "Logo 动画");
         }
@@ -3118,7 +3286,7 @@ mod tests {
         );
         assert_cache_matches(&state, width, "任务清单更新");
 
-        // 子任务进度树：同一个批次反复更新（含耗时刷新）。
+        // 子代理：首个事件开窗口并在消息流留一行受理提示，后续事件只进流水。
         for (name, status) in [
             ("subagent.task.queued", "queued"),
             ("subagent.task.started", "running"),
@@ -3137,19 +3305,13 @@ mod tests {
                 }),
                 now,
             );
-            assert_cache_matches(&state, width, "子任务进度树");
+            assert_cache_matches(&state, width, "子代理窗口受理提示");
         }
-        state.refresh_subagent_trees();
-        assert_cache_matches(&state, width, "进度树耗时刷新");
-
-        // 子代理流式对话面板。
-        state.subagent_stream = true;
+        // 过程事件只进窗口流水，消息流不再变化。
         for name in [
-            "subagent.task.queued",
             "subagent.turn.text",
             "subagent.tool.started",
             "subagent.tool.completed",
-            "subagent.task.completed",
         ] {
             state.apply(
                 &HostEvent::SubagentEvent(SubagentEventPayload {
@@ -3168,9 +3330,8 @@ mod tests {
                 }),
                 now,
             );
-            assert_cache_matches(&state, width, "子代理对话面板");
+            assert_cache_matches(&state, width, "子代理窗口受理提示");
         }
-        state.subagent_stream = false;
 
         // 活跃卡片的活动耗时：每帧重算也不允许跑偏。
         state.apply(
@@ -3216,13 +3377,20 @@ mod tests {
         assert_cache_matches(&state, width, "回合结束");
 
         // 流回滚会把最后一条正文整段抽掉。
-        state.apply(&HostEvent::Delta(TextPayload { text: "半截".to_string() }), now);
+        state.apply(
+            &HostEvent::Delta(TextPayload {
+                text: "半截".to_string(),
+            }),
+            now,
+        );
         assert_cache_matches(&state, width, "回滚前补一段正文");
         state.apply(&HostEvent::StreamRollback, now);
         assert_cache_matches(&state, width, "流回滚");
 
         // 直接改 `records`（宿主里也有这样的写法）：缓存要靠长度自己发现追加。
-        state.records.push(Record::Assistant("直接压进去的正文".to_string()));
+        state
+            .records
+            .push(Record::Assistant("直接压进去的正文".to_string()));
         assert_cache_matches(&state, width, "直接追加记录");
         // 直接截断（不经过任何打脏 API）：行数与总长都要跟着收。
         state.records.truncate(2);
@@ -3233,10 +3401,13 @@ mod tests {
         assert_cache_matches(&state, width, "回合失败");
 
         // 回放历史 / 回放事件（整体重建）。
-        state.replay_history(&[json!({"role": "user", "content": "历史里的问题"}), json!({
-            "role": "assistant",
-            "content": "历史里的回答"
-        })]);
+        state.replay_history(&[
+            json!({"role": "user", "content": "历史里的问题"}),
+            json!({
+                "role": "assistant",
+                "content": "历史里的回答"
+            }),
+        ]);
         assert_cache_matches(&state, width, "回放历史");
         state.replay_events(&[
             json!({"type": "user_message", "payload": {"content": "事件里的问题"}}),
@@ -3263,7 +3434,11 @@ mod tests {
         state.touch_conversation();
         let _ = display_lines(&state, 60);
         let baseline = cache_rebuilds(&state);
-        assert_eq!(baseline, state.records.len(), "首次渲染把每条记录各算了一遍");
+        assert_eq!(
+            baseline,
+            state.records.len(),
+            "首次渲染把每条记录各算了一遍"
+        );
 
         // 内容没变时反复取行/取窗口：一次都不该重算。
         for _ in 0..50 {
@@ -3297,6 +3472,92 @@ mod tests {
         let before = cache_rebuilds(&state);
         let _ = display_lines(&state, 41);
         assert_eq!(cache_rebuilds(&state) - before, state.records.len());
+    }
+
+    /// 缓存自身也按行数封顶：历史再长，常驻的显示行不会一路涨上去。
+    ///
+    /// 2000 行上限以前只作用在取窗口这一步，`chunks` 仍与全部记录一一对应，于是
+    /// 长会话（压缩前后的历史尤其长）会把每一行渲染结果一直留在内存里。
+    #[test]
+    fn cached_lines_stay_bounded_no_matter_how_long_the_history_is() {
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        for index in 0..20_000 {
+            state.records.push(Record::Notice(format!("第 {index} 行")));
+        }
+        state.touch_conversation();
+        let window = visible_window(&state, 80, 12, 0);
+        assert_eq!(window.total, CONVERSATION_MAX_LINES);
+
+        let cache = state.conversation_cache().borrow();
+        let cached_lines: usize = cache.chunks.iter().map(Vec::len).sum();
+        assert!(
+            cached_lines <= CONVERSATION_MAX_LINES * 2,
+            "常驻显示行应受 2 倍上限约束，实际 {cached_lines}"
+        );
+        assert!(
+            cache.chunks.len() < state.records.len(),
+            "前缀块应已释放：{} / {}",
+            cache.chunks.len(),
+            state.records.len()
+        );
+        drop(cache);
+
+        // 裁掉前缀之后缓存仍与全量重算逐行一致（含贴底与滚到顶两种窗口）。
+        assert_cache_matches(&state, 80, "两万行历史");
+        let top = visible_window(&state, 80, 12, usize::MAX);
+        assert!(
+            text_of(&top.lines[0].line)
+                .ends_with(&format!("第 {} 行", 20_000 - CONVERSATION_MAX_LINES / 2)),
+            "滚到顶仍是 2000 行可见区的第一行：{:?}",
+            text_of(&top.lines[0].line)
+        );
+    }
+
+    /// 缓存裁掉前缀后继续追加记录：新记录按绝对下标对齐，不会错位或重复渲染。
+    #[test]
+    fn appending_after_a_prefix_trim_keeps_records_aligned() {
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        for index in 0..6000 {
+            state.records.push(Record::Notice(format!("第 {index} 行")));
+        }
+        state.touch_conversation();
+        assert_cache_matches(&state, 80, "裁剪后");
+        let before = cache_rebuilds(&state);
+
+        // 追加一条：只重算这一条（不因为前缀已被丢掉而整块重来）。
+        state.notice("追加".to_string());
+        assert_cache_matches(&state, 80, "追加后");
+        assert_eq!(
+            cache_rebuilds(&state) - before,
+            1,
+            "追加只应重算新增的那一条记录"
+        );
+
+        // 流式增量同样只碰最后一条。
+        state.begin_turn("t2".to_string(), "又一个问题".to_string(), Vec::new());
+        let after_turn = cache_rebuilds(&state);
+        for _ in 0..5 {
+            state.apply(
+                &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                    text: "片".to_string(),
+                }),
+                Instant::now(),
+            );
+            assert_cache_matches(&state, 80, "流式追加");
+        }
+        assert_eq!(
+            cache_rebuilds(&state) - after_turn,
+            6,
+            "每片正文只重算最后一条记录（另有回合开始时的那条用户消息）"
+        );
     }
 
     /// 可见窗口只复制屏幕上那几行：返回的行数就是窗口高，与总行数无关。
@@ -3373,5 +3634,4 @@ mod scrollbar_tests {
         let short = state_with_lines(2);
         assert_eq!(scroll_offset_for_row(&short, area, 0), Some(0));
     }
-
 }

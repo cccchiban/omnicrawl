@@ -183,7 +183,10 @@ fn resolve_paths_match_python() {
             (Ok(path), Some(expected)) => {
                 let actual = path_text(&path);
                 let expected = expected.as_str().unwrap();
-                assert!(cmp_path(&actual, expected), "用例：{name}：{actual} != {expected}");
+                assert!(
+                    cmp_path(&actual, expected),
+                    "用例：{name}：{actual} != {expected}"
+                );
             }
             (Err(error), _) => {
                 assert_eq!(

@@ -390,7 +390,7 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   此后不会再发模型请求，`turn.token_usage` 会一直停在压缩前那次的用量上。内核在两条压缩路径上
   把这个数发给宿主，宿主据此把上下文占用刷成压缩后的真实大小：
   `turn.context_compaction`（阈值/溢出触发的上下文压缩，只有 `trigger_reached` 的回合才发）与
-  `turn.finished`（回合末的整轮工具调用压缩）。`session.compact`（显式 `/compact`）的响应里带同名字段。
+  `turn.finished`（回合内发生过逐批工具调用压缩或淘汰时，随收尾一并发）。`session.compact`（显式 `/compact`）的响应里带同名字段。
   字段缺失表示该回合没有压缩（或算不出稳定上下文），宿主保持现有遥测不动。
 - **宿主发出**（宿主执行 `tool.batch` 时自行产生）：`tool.started` / `tool.finished` / `tool.output_update`，
   以及 `todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
@@ -414,17 +414,18 @@ Markdown 定义；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`，两侧取同一份
 四层发现结果。
 
-`subagent` 的执行方式：`action=run` 按 `max_concurrency` 并发跑子任务，`action=spawn` 交给内核的
-后台线程池、父回合立刻收尾，`list` / `get` / `cancel` 用来查这些后台任务；`fail_fast` 在前序任务
-失败后停止调度，未跑的任务落成 `cancelled`。**并发对宿主是透明的**——所有子任务的工具批次都由内核
-汇总后**串行**发出，任一时刻只有一个 `tool.batch` 在途，宿主不必支持多批次并存；后台任务的工具批次
-发生在回合之外，`turn_id` 用子任务号。
+`subagent` 的执行方式：`action=run` 在回合内**同步串行**跑子任务——一个跑完再跑下一个，
+父回合阻塞到全部结束，`max_concurrency` 配置保留但不再生效；`fail_fast` 在前序任务失败后停止
+调度，未跑的任务落成 `cancelled`。子任务与主回合同在一条线程，工具批次直接由内核转发宿主，
+任一时刻只有一个 `tool.batch` 在途，`turn_id` 用子任务号。`list` / `get` / `cancel` 仍可用：
+任务表只用于查询与工作区切换前的拦阻。
 
 `isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），
 并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent` 的
 `list_worktrees` / `apply_worktree` / `discard_worktree` 审查处理（`discard` 默认受变更保护，
 需要 `force=true` 才能丢掉未应用的改动）。已知差异：不做目录复用（残留目录会明确报错），
-也没接共享注册表，因此崩溃残留不会被启动清扫自动回收。
+也没接共享注册表。残留回收依赖宿主的启动清扫：满一个月（`DEFAULT_SWEEP_MAX_AGE_SECONDS`）
+且最后一次提交也满一个月没有新提交时自动清理（期限按最后一次提交续期）。
 
 ## 尚未实现
 

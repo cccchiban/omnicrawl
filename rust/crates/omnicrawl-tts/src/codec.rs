@@ -17,10 +17,7 @@ impl AudioPayload {
         match self {
             AudioPayload::Wav => {
                 if !looks_like_wav(bytes) {
-                    return Err(format!(
-                        "响应不是 WAV 音频：{}",
-                        preview(bytes)
-                    ));
+                    return Err(format!("响应不是 WAV 音频：{}", preview(bytes)));
                 }
                 read_wav_bytes(bytes)
             }
@@ -71,9 +68,11 @@ mod tests {
     #[test]
     fn pcm16_decodes_to_normalized_samples() {
         let bytes = [0x00, 0x00, 0xff, 0x7f, 0x00, 0x80];
-        let (waveform, rate) = AudioPayload::Pcm16 { sample_rate: 24_000 }
-            .decode(&bytes)
-            .expect("解码应当成功");
+        let (waveform, rate) = AudioPayload::Pcm16 {
+            sample_rate: 24_000,
+        }
+        .decode(&bytes)
+        .expect("解码应当成功");
         assert_eq!(rate, 24_000);
         assert_eq!(waveform.len(), 1);
         assert_eq!(waveform[0][0], 0.0);
@@ -83,9 +82,11 @@ mod tests {
 
     #[test]
     fn odd_pcm_length_is_rejected() {
-        let error = AudioPayload::Pcm16 { sample_rate: 24_000 }
-            .decode(&[0x00, 0x01, 0x02])
-            .expect_err("奇数长度应当报错");
+        let error = AudioPayload::Pcm16 {
+            sample_rate: 24_000,
+        }
+        .decode(&[0x00, 0x01, 0x02])
+        .expect_err("奇数长度应当报错");
         assert!(error.contains("不是偶数"), "{error}");
     }
 

@@ -197,6 +197,24 @@ const ADVISOR_FIELDS: [FieldSpec; 4] = [
     FieldSpec::model_id("顾问模型"),
 ];
 
+/// Computer Use 页的字段；顺序与 `app.rs` 读值时的下标一一对应。
+const COMPUTER_USE_FIELDS: [FieldSpec; 5] = [
+    FieldSpec::flag("启用"),
+    FieldSpec::int("单次时间预算（秒）"),
+    FieldSpec::int("截图长边上限"),
+    FieldSpec::enumerated("思考强度", &COMPUTER_USE_THINKING_OPTIONS),
+    FieldSpec::model_id("桌面模型"),
+];
+
+/// Computer Use 页的思考强度候选：文案与推理强度页一致，取值来自配置域。
+const COMPUTER_USE_THINKING_OPTIONS: [(&str, &str); 5] = [
+    ("低", "low"),
+    ("中", "medium"),
+    ("高", "high"),
+    ("超高", "xhigh"),
+    ("最大", "max"),
+];
+
 /// 工具输出压缩页的字段；顺序与 `app.rs` 读值时的下标一一对应。
 const COMPRESSION_FIELDS: [FieldSpec; 9] = [
     FieldSpec::flag("启用"),
@@ -416,10 +434,12 @@ pub enum FormKind {
     ImageGen,
     /// 联网搜索：引擎 + Tavily/Exa/Firecrawl/AnySearch/TinyFish 凭据。
     WebSearch,
+    /// Computer Use：总开关 + 时间预算 + 截图上限 + 桌面模型。
+    ComputerUse,
 }
 
 /// 全部表单页，下标与 [`FormKind::index`] 一致。
-pub const FORM_KINDS: [FormKind; 7] = [
+pub const FORM_KINDS: [FormKind; 8] = [
     FormKind::Advisor,
     FormKind::ToolOutputCompression,
     FormKind::Desensitization,
@@ -427,6 +447,7 @@ pub const FORM_KINDS: [FormKind; 7] = [
     FormKind::AgentWorkspace,
     FormKind::ImageGen,
     FormKind::WebSearch,
+    FormKind::ComputerUse,
 ];
 
 impl FormKind {
@@ -439,6 +460,7 @@ impl FormKind {
             Self::AgentWorkspace => 4,
             Self::ImageGen => 5,
             Self::WebSearch => 6,
+            Self::ComputerUse => 7,
         }
     }
 
@@ -451,6 +473,7 @@ impl FormKind {
             Self::AgentWorkspace => &AGENT_WORKSPACE_FIELDS,
             Self::ImageGen => &IMAGE_GEN_FIELDS,
             Self::WebSearch => &WEB_SEARCH_FIELDS,
+            Self::ComputerUse => &COMPUTER_USE_FIELDS,
         }
     }
 }

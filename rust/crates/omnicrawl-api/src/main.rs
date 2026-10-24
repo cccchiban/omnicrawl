@@ -19,8 +19,9 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 async fn main() -> ExitCode {
     // 连接器模式在最前面分流：它不需要 API 配置（监听地址与令牌），也不起 HTTP 服务，
     // 只在宿主进程内驱动一个消息平台连接器。由 `omnicrawl-host` 路由到这里。
-    if let Some(platform) = connector_platform(&std::env::args().collect::<Vec<String>>()) {
-        return match omnicrawl_api::connector::run(&platform) {
+    if let Some((platform, extra)) = connector_platform(&std::env::args().collect::<Vec<String>>())
+    {
+        return match omnicrawl_api::connector::run_with_args(&platform, &extra) {
             Ok(()) => ExitCode::SUCCESS,
             Err(detail) => {
                 eprintln!("[connector] 连接器异常结束：{detail}");
@@ -106,14 +107,17 @@ fn is_worker_child(environment: &ConfigEnvironment) -> bool {
 ///
 /// 两种写法都认：宿主（`omnicrawl-host`）用 `connector <平台>` 拉起本二进制，而用户直接
 /// 敲 `omnicrawl-api connector telegram` 时也是同一条路径。缺平台名按用法错误处理。
-fn connector_platform(args: &[String]) -> Option<String> {
+fn connector_platform(args: &[String]) -> Option<(String, Vec<String>)> {
     let index = args
         .iter()
         .position(|arg| arg == "connector" || arg == "--connector")?;
     match args.get(index + 1) {
-        Some(platform) if !platform.trim().is_empty() => Some(platform.trim().to_string()),
+        Some(platform) if !platform.trim().is_empty() => Some((
+            platform.trim().to_string(),
+            args.iter().skip(index + 2).cloned().collect(),
+        )),
         _ => {
-            eprintln!("用法：omnicrawl-api connector <telegram|feishu>");
+            eprintln!("用法：omnicrawl-api connector <telegram|feishu|qqbot>");
             std::process::exit(2);
         }
     }

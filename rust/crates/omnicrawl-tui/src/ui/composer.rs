@@ -135,19 +135,24 @@ pub fn render_box(frame: &mut Frame, area: Rect, state: &AppState) {
     let status = super::conversation::runtime_status(state, inner_width);
     let spans = status.as_ref().map(|status| status.spans.clone());
     let has_status = spans.as_ref().is_some_and(|spans| !spans.is_empty());
-    frame.render_widget(box_block(has_status.then_some(spans.unwrap_or_default())), area);
+    frame.render_widget(
+        box_block(has_status.then_some(spans.unwrap_or_default())),
+        area,
+    );
     // 记下 `[ ESC ]` 的屏幕矩形：鼠标悬停转淡黄、点击等价于按键盘 Esc。
     // ratatui 的 `title_top` 从左角之后一格开始画，所以列偏移要再 +1。
-    let esc = status.and_then(|status| status.esc).and_then(|(offset, width)| {
-        let x = area.x.saturating_add(BORDER).saturating_add(offset);
-        let right = area.right().saturating_sub(BORDER);
-        (width > 0 && x.saturating_add(width) <= right).then_some(Rect {
-            x,
-            y: area.y,
-            width,
-            height: 1,
-        })
-    });
+    let esc = status
+        .and_then(|status| status.esc)
+        .and_then(|(offset, width)| {
+            let x = area.x.saturating_add(BORDER).saturating_add(offset);
+            let right = area.right().saturating_sub(BORDER);
+            (width > 0 && x.saturating_add(width) <= right).then_some(Rect {
+                x,
+                y: area.y,
+                width,
+                height: 1,
+            })
+        });
     state.set_runtime_esc_area(esc);
 }
 

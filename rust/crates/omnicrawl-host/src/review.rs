@@ -93,7 +93,9 @@ pub fn review_options_from_config(
 /// 开关打开但没有可用决策渠道（未配置或全部关闭）时返回 [`ReviewChannel::DecisionMissing`]，
 /// 由审查层 fail-closed 拒绝——与「决策模型审查不可用时拒绝该次调用」的约定一致。
 fn review_channel(environment: &ConfigEnvironment) -> ReviewChannel {
-    use omnicrawl_config::features::decision_model::{load_decision_switches, DECISION_SWITCH_TOOL_REVIEW};
+    use omnicrawl_config::features::decision_model::{
+        load_decision_switches, DECISION_SWITCH_TOOL_REVIEW,
+    };
     let switches = load_decision_switches(environment, None);
     if !switches
         .get(DECISION_SWITCH_TOOL_REVIEW)
@@ -309,7 +311,8 @@ const USER_AGENT: &str = "omnicrawl-review/0.0.1";
 const DECISION_REVIEW_QUESTION_ID: &str = "tool_call_verdict";
 const DECISION_REVIEW_APPROVE: &str = "approve";
 const DECISION_REVIEW_REJECT: &str = "reject";
-const DECISION_REVIEW_INSTRUCTIONS: &str = "待审查的工具调用（JSON 见 state）应当被批准执行还是拒绝执行？\
+const DECISION_REVIEW_INSTRUCTIONS: &str =
+    "待审查的工具调用（JSON 见 state）应当被批准执行还是拒绝执行？\
 只针对 state 里的 tool / description / arguments / user_intent_summary / ask_user_qa 判断：\
 删除类操作的目标必须明确且在任务范围内；从网络下载脚本或代码后直接执行一律拒绝；\
 高风险 Git 操作（push、rebase、merge、pull、clean、reset --hard、强制推送、删除分支或标签等）\
@@ -760,7 +763,9 @@ pub fn decision_post_masked(
                 if fail_closed {
                     return Err(MASKING_FAIL_CLOSED_REASON.to_string());
                 }
-                return Err(format!("脱敏不可用，已中止本次决策请求（不外发原文）：{error}"));
+                return Err(format!(
+                    "脱敏不可用，已中止本次决策请求（不外发原文）：{error}"
+                ));
             }
         },
         None => None,
@@ -940,10 +945,7 @@ fn truncate_for_reason(text: &str) -> String {
 }
 
 /// 对话模型通道：一次单轮补全 + `{"approve": ...}` JSON 解析（Python 原语义）。
-fn review_with_chat(
-    options: &ReviewOptions,
-    request: &ReviewRequest<'_>,
-) -> Result<(), String> {
+fn review_with_chat(options: &ReviewOptions, request: &ReviewRequest<'_>) -> Result<(), String> {
     if !options.active() {
         return Err(review_request_failed_reason(
             "审查模型不可用：未配置审查模型（approval.review_model 或主模型为空）。",
@@ -1050,7 +1052,11 @@ mod tests {
         let mut watch = ReviewConfigWatch::new();
         watch.baseline(&environment);
         let now = Instant::now();
-        assert_eq!(watch.poll_at(&environment, now), None, "刚对齐基线不应报变更");
+        assert_eq!(
+            watch.poll_at(&environment, now),
+            None,
+            "刚对齐基线不应报变更"
+        );
 
         save_approval_mode(&environment, "auto", None).expect("写入审批模式");
         let changed = watch
@@ -1071,7 +1077,10 @@ mod tests {
         );
 
         // 最小间隔内不重复问文件系统：刚查过就直接按上一份结果回。
-        assert_eq!(watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 3), None);
+        assert_eq!(
+            watch.poll_at(&environment, now + REVIEW_WATCH_INTERVAL * 3),
+            None
+        );
 
         // 文件被写过但生效值没变（同一个模式再存一遍），不算变更。
         save_approval_mode(&environment, "auto", None).expect("重复写入同一模式");
@@ -1412,9 +1421,9 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
             let port = listener.local_addr().expect("本地地址").port();
             let choice = Arc::new(std::sync::Mutex::new("approve".to_string()));
-            let reason = Arc::new(std::sync::Mutex::new(
-                format!("{DECISION_REVIEW_REASON_KEY_PREFIX}0"),
-            ));
+            let reason = Arc::new(std::sync::Mutex::new(format!(
+                "{DECISION_REVIEW_REASON_KEY_PREFIX}0"
+            )));
             let captured = Arc::new(std::sync::Mutex::new(CapturedDecisionRequest::default()));
             let seen_choice = Arc::clone(&choice);
             let seen_reason = Arc::clone(&reason);

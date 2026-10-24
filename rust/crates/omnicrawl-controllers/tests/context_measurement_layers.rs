@@ -15,7 +15,10 @@ use serde_json::{json, Value};
 const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 fn image_message(payload_repeat: usize) -> Value {
-    let data = format!("data:image/png;base64,{}", PNG_BASE64.repeat(payload_repeat));
+    let data = format!(
+        "data:image/png;base64,{}",
+        PNG_BASE64.repeat(payload_repeat)
+    );
     json!({
         "role": "user",
         "content": [
@@ -57,10 +60,7 @@ fn the_same_estimate_is_used_for_display_and_for_measurement() {
     let system = "系统提示词";
     let context = vec![json!({"role": "user", "content": "项目规范"})];
     let tools = vec![json!({"type": "function", "function": {"name": "bash"}})];
-    let history = vec![
-        json!({"role": "user", "content": "你好"}),
-        image_message(3),
-    ];
+    let history = vec![json!({"role": "user", "content": "你好"}), image_message(3)];
     let display = conversation_tokens(system, &context, &tools, &history, &text_tokens);
 
     let manager = DefaultContextBudgetManager;
@@ -111,7 +111,10 @@ fn provider_usage_never_lowers_the_pressure() {
         Some(MeasurementBaseline::Estimated(7_000)),
         "偏小的供应商数字不应被采信"
     );
-    assert!(snapshot.trigger_reached, "真实压力已过阈值，不能被低估成未触发");
+    assert!(
+        snapshot.trigger_reached,
+        "真实压力已过阈值，不能被低估成未触发"
+    );
     assert_eq!(snapshot.post_turn_context_tokens, 7_000);
 }
 

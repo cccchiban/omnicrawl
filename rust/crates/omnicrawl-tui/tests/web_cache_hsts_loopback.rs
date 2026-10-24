@@ -322,14 +322,17 @@ ETag: \"p1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
     let options = options();
 
     // 第一次经 /login 拿到 cookie 并落到 /private（这次会写入缓存）。
-    let first = fetcher::fetcher(&options, &arguments(&format!("{base}/login")))
-        .expect("登录跳转应当成功");
+    let first =
+        fetcher::fetcher(&options, &arguments(&format!("{base}/login"))).expect("登录跳转应当成功");
     assert!(first.contains("状态: 200"), "{first}");
 
     // 第二次带着同一个 cookie 直接抓 /private：必须带上验证器并命中 304。
     let second =
         fetcher::fetcher(&options, &arguments(&format!("{base}/private"))).expect("协商应当成功");
-    assert!(second.contains("标题: 缓存页"), "304 必须还原正文：{second}");
+    assert!(
+        second.contains("标题: 缓存页"),
+        "304 必须还原正文：{second}"
+    );
 
     let validators = sent_validators.lock().expect("头锁").clone();
     assert_eq!(
@@ -338,7 +341,6 @@ ETag: \"p1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
         "带 cookie 的请求也必须带上缓存里的验证器：{validators:?}"
     );
 }
-
 
 /// 一次响应在**同一跳**里既下发 cookie、又给验证器时，也必须能协商。
 ///

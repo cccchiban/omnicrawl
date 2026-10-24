@@ -319,8 +319,9 @@ fn gemini(
             &body,
             timeout(options.timeout_seconds),
         );
-        let response = request_api(options, request)
-            .map_err(|failure| ToolError::new(format!("图像生成请求失败：{}", failure.message())))?;
+        let response = request_api(options, request).map_err(|failure| {
+            ToolError::new(format!("图像生成请求失败：{}", failure.message()))
+        })?;
         let bytes = gemini_image_bytes(&response.text())?;
         let target = resolve_target_path(options, output_path, "gen", index as usize, "png");
         write_bytes(&target, &bytes)?;
@@ -387,8 +388,12 @@ fn gemini_request_body(
 
 /// 取 `candidates[0].content.parts[].inlineData.data`：一轮可能分多个 part，按序拼接。
 fn gemini_image_bytes(body: &str) -> Result<Vec<u8>, ToolError> {
-    let value: Value = serde_json::from_str(body)
-        .map_err(|error| ToolError::new(format!("解析 Gemini 响应失败：{error}：{}", summarize(body))))?;
+    let value: Value = serde_json::from_str(body).map_err(|error| {
+        ToolError::new(format!(
+            "解析 Gemini 响应失败：{error}：{}",
+            summarize(body)
+        ))
+    })?;
     let parts = value
         .get("candidates")
         .and_then(Value::as_array)
@@ -409,7 +414,9 @@ fn gemini_image_bytes(body: &str) -> Result<Vec<u8>, ToolError> {
         };
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|error| ToolError::new(format!("Gemini 返回的图片 base64 解码失败：{error}")))?;
+            .map_err(|error| {
+                ToolError::new(format!("Gemini 返回的图片 base64 解码失败：{error}"))
+            })?;
         bytes.extend_from_slice(&decoded);
     }
     if bytes.is_empty() {
@@ -716,9 +723,7 @@ fn unique_suffix() -> u128 {
 /// 只到秒会撞名：连续两次生成（同一轮对话里文生图接图生图）常落在同一秒，
 /// 后一次直接覆盖前一次的图片。
 fn timestamp() -> String {
-    chrono::Local::now()
-        .format("%Y%m%d_%H%M%S_%3f")
-        .to_string()
+    chrono::Local::now().format("%Y%m%d_%H%M%S_%3f").to_string()
 }
 
 fn timeout(seconds: f64) -> Duration {

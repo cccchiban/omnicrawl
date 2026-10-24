@@ -1,14 +1,18 @@
 //! `windows_window`：枚举顶层窗口、读取窗口详情与前台激活。
+//!
+//! 激活会换掉前台画面，因此那一次调用附带一张截图；`list` / `get` 是只读的，不带图。
 
 use omnicrawl_controllers::json::python_dumps;
 use serde_json::{json, Map, Value};
 
-use super::super::error::{ToolError, ToolOutcome};
+use super::super::error::ToolError;
+use super::super::paths::WorkspacePaths;
 use super::args::{
     ensure_allowed_keys, last_error, read_action, read_bool, read_bounded_int, read_optional_text,
     read_window_handle,
 };
 use super::ffi;
+use super::screenshot::{snapshot_attachments, DesktopOutcome};
 
 const MAX_WINDOW_RESULTS: i64 = 100;
 
@@ -22,9 +26,20 @@ const ALLOWED_KEYS: [&str; 7] = [
     "max_results",
 ];
 
-pub fn windows_window(arguments: &Map<String, Value>) -> ToolOutcome {
-    let payload = operation(arguments)?;
-    Ok(python_dumps(&payload, 2))
+pub fn windows_window(
+    paths: &WorkspacePaths,
+    arguments: &Map<String, Value>,
+) -> Result<DesktopOutcome, ToolError> {
+    let mut payload = operation(arguments)?;
+    let images = if payload["action"] == "activate" {
+        snapshot_attachments(paths, &mut payload)
+    } else {
+        Vec::new()
+    };
+    Ok(DesktopOutcome {
+        output: python_dumps(&payload, 2),
+        images,
+    })
 }
 
 fn operation(arguments: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -185,13 +200,97 @@ fn activate_window(handle: isize) -> Result<(), ToolError> {
     if unsafe { ffi::IsIconic(hwnd) } != 0 {
         unsafe { ffi::ShowWindow(hwnd, ffi::SW_RESTORE) };
     }
-    if unsafe { ffi::SetForegroundWindow(hwnd) } == 0 {
-        // 不使用 AttachThreadInput 等绕过焦点保护的技巧，保留 Windows 的用户前台控制权。
-        return Err(ToolError::new(
-            "Windows 拒绝将目标窗口置于前台；请由用户手动切换窗口后再重试。",
-        ));
+    if unsafe { ffi::SetForegroundWindow(hwnd) } != 0 {
+        return Ok(());
     }
-    Ok(())
+    // 拒绝不是错误：Windows 只在「调用方就是前台线程」时才直接放行 `SetForegroundWindow`，
+    // 后台进程（本工具几乎总是）必然被挡。此时按官方允许的三条路径依次尝试，
+    // 都能在不抢用户前台控制权的前提下把窗口带到前面。
+    if foreground_by_attach(hwnd) {
+        return Ok(());
+    }
+    if foreground_by_switch(hwnd) {
+        return Ok(());
+    }
+    if foreground_by_temp_topmost(hwnd) {
+        return Ok(());
+    }
+    Err(ToolError::new(
+        "Windows 拒绝将目标窗口置于前台；请由用户手动切换窗口后再重试。",
+    ))
+}
+
+/// 附着到当前前台线程的输入队列后再调用 `SetForegroundWindow`。
+///
+/// 这是 `SetForegroundWindow` 的官方放行条件之一：调用线程与前台线程共享输入队列时
+/// 会被视为「用户正在操作的应用」。只临时附着、调用完立刻解除，不改变焦点归属。
+fn foreground_by_attach(hwnd: ffi::Hwnd) -> bool {
+    let foreground = unsafe { ffi::GetForegroundWindow() };
+    if foreground.is_null() {
+        return false;
+    }
+    let foreground_thread =
+        unsafe { ffi::GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
+    let target_thread = unsafe { ffi::GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+    if foreground_thread == 0 || target_thread == 0 || foreground_thread == target_thread {
+        return false;
+    }
+    let current_thread = unsafe { ffi::GetCurrentThreadId() };
+    if current_thread == foreground_thread {
+        return false;
+    }
+    if unsafe { ffi::AttachThreadInput(current_thread, foreground_thread, 1) } == 0 {
+        return false;
+    }
+    unsafe { ffi::BringWindowToTop(hwnd) };
+    let raised = unsafe { ffi::SetForegroundWindow(hwnd) } != 0;
+    unsafe { ffi::AttachThreadInput(current_thread, foreground_thread, 0) };
+    raised
+}
+
+/// 模拟一次 `ALT` 按键：Windows 借此把本进程视为「刚有用户输入」，从而放行前台切换。
+fn foreground_by_switch(hwnd: ffi::Hwnd) -> bool {
+    press_alt();
+    if unsafe { ffi::SetForegroundWindow(hwnd) } != 0 {
+        return true;
+    }
+    press_alt();
+    false
+}
+
+fn press_alt() {
+    let make = |flags: u32| ffi::Input {
+        kind: ffi::INPUT_KEYBOARD,
+        data: ffi::InputUnion {
+            keyboard: ffi::KeyboardInput {
+                virtual_key: ffi::VK_MENU,
+                scan_code: 0,
+                flags,
+                time: 0,
+                extra_info: 0,
+            },
+        },
+    };
+    let mut inputs = [make(0), make(ffi::KEYEVENTF_KEYUP)];
+    unsafe {
+        ffi::SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<ffi::Input>() as i32,
+        )
+    };
+}
+
+/// 临时置顶再撤销：置顶会把窗口强制提到最前，撤销后层级恢复原样。
+fn foreground_by_temp_topmost(hwnd: ffi::Hwnd) -> bool {
+    let flags = ffi::SWP_NOMOVE | ffi::SWP_NOSIZE | ffi::SWP_SHOWWINDOW;
+    if unsafe { ffi::SetWindowPos(hwnd, ffi::HWND_TOPMOST, 0, 0, 0, 0, flags) } == 0 {
+        return false;
+    }
+    unsafe { ffi::SetForegroundWindow(hwnd) };
+    unsafe { ffi::SetWindowPos(hwnd, ffi::HWND_NOTOPMOST, 0, 0, 0, 0, flags) };
+    // 置顶那一步已经把窗口提到最前，键盘焦点拿不到也能让后续点击落到它身上。
+    true
 }
 
 #[cfg(test)]
@@ -202,11 +301,19 @@ mod tests {
         value.as_object().cloned().unwrap_or_default()
     }
 
+    /// 只断言参数校验与窗口元数据：路径只用于激活成功后落确认截图。
+    fn window(value: Value) -> Result<DesktopOutcome, ToolError> {
+        windows_window(
+            &WorkspacePaths::new(std::env::temp_dir()),
+            &arguments(value),
+        )
+    }
+
     #[test]
     fn list_reports_windows_on_this_desktop() {
-        let output = windows_window(&arguments(json!({"action": "list", "max_results": 5})))
-            .expect("枚举应当成功");
-        let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
+        let outcome = window(json!({"action": "list", "max_results": 5})).expect("枚举应当成功");
+        let parsed: Value = serde_json::from_str(&outcome.output).expect("结果是 JSON");
+        assert!(outcome.images.is_empty(), "list 是只读的，不该带截图");
         assert_eq!(parsed["action"], "list");
         assert!(parsed["matched_count"].as_i64().unwrap_or(0) >= 0);
         assert!(parsed["windows"].is_array());
@@ -214,23 +321,42 @@ mod tests {
 
     #[test]
     fn unsupported_keys_and_actions_are_rejected() {
-        let error = windows_window(&arguments(json!({"action": "list", "oops": 1})))
-            .expect_err("多余参数应当被拒绝");
+        let error = window(json!({"action": "list", "oops": 1})).expect_err("多余参数应当被拒绝");
         assert_eq!(error.message, "不支持的参数：oops。");
 
-        let error = windows_window(&arguments(json!({"action": "close"})))
-            .expect_err("不支持的 action 应当被拒绝");
+        let error = window(json!({"action": "close"})).expect_err("不支持的 action 应当被拒绝");
         assert_eq!(
             error.message,
             "action 不支持：close。可用值：activate、get、list。"
         );
 
-        let error = windows_window(&arguments(json!({"action": "get", "window_handle": "zz"})))
+        let error = window(json!({"action": "get", "window_handle": "zz"}))
             .expect_err("非法句柄应当被拒绝");
-        assert_eq!(
-            error.message,
-            "window_handle 必须是十进制整数或 0x 开头的十六进制字符串。"
+        assert!(
+            error.message.starts_with("window_handle 无法解析：zz。"),
+            "{}",
+            error.message
         );
+    }
+
+    #[test]
+    fn handles_accept_hex_without_prefix() {
+        let bare = read_window_handle(&arguments(json!({"window_handle": "3099C"})))
+            .expect("无前缀十六进制应当被接受");
+        assert_eq!(bare, 0x3099C);
+        let prefixed = read_window_handle(&arguments(json!({"window_handle": "0x3099C"})))
+            .expect("带前缀十六进制应当被接受");
+        assert_eq!(prefixed, 0x3099C);
+        let decimal = read_window_handle(&arguments(json!({"window_handle": 199068})))
+            .expect("十进制整数应当被接受");
+        assert_eq!(decimal, 199068);
+        // 纯数字串按十进制解释：`3099C` 之外不能是十六进制。
+        let digits = read_window_handle(&arguments(json!({"window_handle": "12345"})))
+            .expect("纯数字串应当被接受");
+        assert_eq!(digits, 12345);
+        assert!(read_window_handle(&arguments(json!({"window_handle": "0x"}))).is_err());
+        assert!(read_window_handle(&arguments(json!({"window_handle": 0}))).is_err());
+        assert!(read_window_handle(&arguments(json!({"window_handle": true}))).is_err());
     }
 
     #[test]

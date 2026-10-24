@@ -93,13 +93,7 @@ fn the_truncated_prefix_keeps_the_final_lengths() {
     let random = [0x33u8; 32];
     let session_id = spec.empty_session_id();
     let (hello, binder_offset, binder_len) = spec
-        .encode_with_psk(
-            0x0a0a,
-            &random,
-            &session_id,
-            &[(b"ticket".to_vec(), 0)],
-            32,
-        )
+        .encode_with_psk(0x0a0a, &random, &session_id, &[(b"ticket".to_vec(), 0)], 32)
         .expect("编码");
 
     let truncated = &hello[..binder_offset];
@@ -111,26 +105,16 @@ fn the_truncated_prefix_keeps_the_final_lengths() {
         "截断应去掉 binders 长度前缀 + binder 数据"
     );
     // 截断后的握手体长度字段仍是「完整」的值——这正是规范要求的形式。
-    let declared =
-        ((hello[1] as usize) << 16) | ((hello[2] as usize) << 8) | hello[3] as usize;
+    let declared = ((hello[1] as usize) << 16) | ((hello[2] as usize) << 8) | hello[3] as usize;
     assert_eq!(declared, hello.len() - 4, "长度字段按完整 CH 声明");
-    assert!(
-        truncated.len() < 4 + declared,
-        "截断后应当比声明的体长度短"
-    );
+    assert!(truncated.len() < 4 + declared, "截断后应当比声明的体长度短");
 }
 
 /// 空 identities 应当被拒绝：没有票据就没有可恢复的东西。
 #[test]
 fn empty_identities_are_rejected() {
     let spec = new_hello();
-    let error = spec.encode_with_psk(
-        0x0a0a,
-        &[0u8; 32],
-        &spec.empty_session_id(),
-        &[],
-        32,
-    );
+    let error = spec.encode_with_psk(0x0a0a, &[0u8; 32], &spec.empty_session_id(), &[], 32);
     assert!(error.is_err(), "空 identities 不该编出合法 CH");
 }
 

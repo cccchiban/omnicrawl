@@ -150,7 +150,10 @@ fn retryable_failure(error: &str) -> bool {
 fn http_status_of(error: &str) -> Option<u16> {
     error
         .split_once("HTTP ")
-        .and_then(|(_, rest)| rest.split(|character: char| !character.is_ascii_digit()).next())
+        .and_then(|(_, rest)| {
+            rest.split(|character: char| !character.is_ascii_digit())
+                .next()
+        })
         .and_then(|digits| digits.parse().ok())
 }
 
@@ -320,12 +323,7 @@ pub fn parse_ranking_order(
             .and_then(Value::as_str)
             .and_then(|key| option_index_with(prefix, key))
             .filter(|index| *index < count)
-            .ok_or_else(|| {
-                format!(
-                    "决策模型未返回可用的候选项排序：{}",
-                    truncate(text.trim())
-                )
-            })?;
+            .ok_or_else(|| format!("决策模型未返回可用的候选项排序：{}", truncate(text.trim())))?;
         ranked.push((1.0, winner));
     }
     ranked.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
@@ -358,7 +356,10 @@ pub fn choice_question(instructions: &str, criteria: Map<String, Value>) -> Valu
 /// 决策只是判个大小，不需要整段正文；调用方各自的上限不同（候选项 400、上下文 1200），
 /// 因此上限由调用方给，收敛规则收在这里。
 pub fn collapse_text(text: &str, limit: usize) -> String {
-    truncate_to(&text.split_whitespace().collect::<Vec<_>>().join(" "), limit)
+    truncate_to(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        limit,
+    )
 }
 
 /// 剥掉模型偶尔带上的 Markdown 代码围栏（```json ... ```）。
@@ -523,7 +524,10 @@ mod tests {
         assert!(!retryable_failure("决策服务返回 HTTP 401：未授权"));
         // 连接失败一类没有状态码，按可重试处理。
         assert!(retryable_failure("连接被拒绝：connection refused"));
-        assert_eq!(http_status_of("决策服务返回 HTTP 503：上游暂时不可用"), Some(503));
+        assert_eq!(
+            http_status_of("决策服务返回 HTTP 503：上游暂时不可用"),
+            Some(503)
+        );
         assert_eq!(http_status_of("连接被拒绝：connection refused"), None);
     }
 
@@ -656,7 +660,10 @@ mod tests {
             "answers": {"pick": {"type": "choice", "choice": "o2", "confidence": 0.8}}
         })
         .to_string();
-        assert_eq!(parse_choice_index(JEV, &text, "pick", 3, "o").expect("可解析"), 2);
+        assert_eq!(
+            parse_choice_index(JEV, &text, "pick", 3, "o").expect("可解析"),
+            2
+        );
 
         // 前缀不匹配的键不算数（重排的 `c0` 与托管的 `o0` 各自独立）。
         assert!(parse_choice_index(JEV, &text, "pick", 3, "c").is_err());
@@ -682,7 +689,8 @@ mod tests {
         assert!(parse_choice_index(JEV, &empty, "pick", 2, "o").is_err());
         // 越界或未知键一律忽略；全都取不到时按不可用处理。
         let out_of_range =
-            json!({"answers": {"pick": {"choice": "o9", "probabilities": {"o9": 0.9}}}}).to_string();
+            json!({"answers": {"pick": {"choice": "o9", "probabilities": {"o9": 0.9}}}})
+                .to_string();
         assert!(parse_choice_index(JEV, &out_of_range, "pick", 2, "o").is_err());
     }
 

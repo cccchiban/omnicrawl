@@ -76,7 +76,8 @@ const TOOL_REQUIREMENTS: &str = "本次只会用到下列工具中的一部分�
 ///
 /// 子代理天生「贵」：每个角色都是一次带独立上下文的子回合，因此只有能拆成独立子任务、
 /// 或需要隔离视角核查与隔离改动的活才该判为用得到；一次问答、小改动、串行依赖的活都判为用不到。
-const SUBAGENT_REQUIREMENTS: &str = "本次只会用到下列子代理中的一个或几个，请逐个判断：判定概率 ≥0.5 表示本次任务\
+const SUBAGENT_REQUIREMENTS: &str =
+    "本次只会用到下列子代理中的一个或几个，请逐个判断：判定概率 ≥0.5 表示本次任务\
   适合交给该子代理，<0.5 表示不需要。每个子代理都是一次开销明显高于你自己动手的独立子回合，\
   因此只有能拆成相互独立、可并行推进的子任务，或需要隔离视角核查、需要隔离改动时才算用得到；\
   单步问答、小改动、串行依赖的活，以及你自己直接做更省事的任务，一律判为用不到。";
@@ -317,7 +318,10 @@ pub fn tool_summary(description: &str) -> String {
     let body = description.trim();
     let body = body.strip_prefix("是什么：").unwrap_or(body);
     let first_sentence = body.split(['。', '；', '！']).next().unwrap_or(body);
-    let collapsed = first_sentence.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = first_sentence
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let characters: Vec<char> = collapsed.chars().collect();
     if characters.len() <= CANDIDATE_SUMMARY_MAX_CHARS {
         return collapsed;
@@ -626,7 +630,12 @@ pub fn suggestion_lines(inputs: &SuggestionInputs<'_>) -> Vec<String> {
     let tools_candidates = tool_candidates.to_vec();
     let subagent_candidates = subagent_candidates.to_vec();
     let tools_task = thread::spawn(move || {
-        suggested_names(SuggestKind::Tools, &tools_options, &tools_candidates, &prompt)
+        suggested_names(
+            SuggestKind::Tools,
+            &tools_options,
+            &tools_candidates,
+            &prompt,
+        )
     });
     // 子代理这一条留在本线程跑：两条同时在飞，总耗时取较大者而不是相加。
     let subagents = suggested_names(
@@ -709,11 +718,20 @@ mod tests {
     /// 说明取描述首句并截断：够分辨用途，又不至于随工具数线性撑大请求。
     #[test]
     fn summaries_come_from_the_description_first_sentence() {
-        assert_eq!(tool_summary("是什么：搜索公开网页。怎么做：要发现 URL 时用。"), "搜索公开网页");
+        assert_eq!(
+            tool_summary("是什么：搜索公开网页。怎么做：要发现 URL 时用。"),
+            "搜索公开网页"
+        );
         // 「是什么：」前缀剥掉，首句按句号/分号/叹号切。
-        assert_eq!(tool_summary("是什么：读取本机图片；不读别的。"), "读取本机图片");
+        assert_eq!(
+            tool_summary("是什么：读取本机图片；不读别的。"),
+            "读取本机图片"
+        );
         // 单行空白压成一个空格。
-        assert_eq!(tool_summary("是什么：抓取\n   网页\n正文。"), "抓取 网页 正文");
+        assert_eq!(
+            tool_summary("是什么：抓取\n   网页\n正文。"),
+            "抓取 网页 正文"
+        );
         // 超长截断到上限并加省略号。
         let long = tool_summary(&format!(
             "是什么：{}。",
@@ -722,7 +740,10 @@ mod tests {
         assert_eq!(long.chars().count(), CANDIDATE_SUMMARY_MAX_CHARS + 1);
         assert!(long.ends_with('…'));
         // 没有「是什么：」前缀的描述照旧取首句。
-        assert_eq!(tool_summary("调度子代理。支持同步/后台任务。"), "调度子代理");
+        assert_eq!(
+            tool_summary("调度子代理。支持同步/后台任务。"),
+            "调度子代理"
+        );
     }
 
     /// 候选直接照工具表生成：进表的都送审，不需要任何人工清单。
@@ -730,7 +751,10 @@ mod tests {
     fn candidates_follow_the_tool_table() {
         let listed = suggest_candidates(&inventory(&["subagent", "bash", "read"]));
         assert_eq!(
-            listed.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            listed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
             vec!["subagent", "bash", "read"]
         );
         assert_eq!(listed[0].1, "subagent 的说明");
@@ -742,7 +766,10 @@ mod tests {
     fn subagent_candidates_follow_the_roles() {
         let listed = subagent_candidates(&roles());
         assert_eq!(
-            listed.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            listed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
             vec!["explore", "plan"]
         );
         assert_eq!(listed[0].1, "快速只读探索代码");
@@ -755,17 +782,21 @@ mod tests {
         let questions = suggest_questions(SuggestKind::Tools, &candidates());
         let instructions = questions["t0"]["instructions"].as_str().unwrap_or_default();
         assert!(instructions.contains("subagent"), "{instructions}");
-        assert!(instructions.contains("0.5"), "阈值要告知决策模型：{instructions}");
+        assert!(
+            instructions.contains("0.5"),
+            "阈值要告知决策模型：{instructions}"
+        );
         assert!(
             instructions.contains("通用工具"),
             "泛化工具的分量差别要写清：{instructions}"
         );
-        assert!(TOOL_REQUIREMENTS.contains("专用工具"), "{TOOL_REQUIREMENTS}");
+        assert!(
+            TOOL_REQUIREMENTS.contains("专用工具"),
+            "{TOOL_REQUIREMENTS}"
+        );
 
         let subagent = suggest_questions(SuggestKind::Subagents, &roles());
-        let instructions = subagent["t0"]["instructions"]
-            .as_str()
-            .unwrap_or_default();
+        let instructions = subagent["t0"]["instructions"].as_str().unwrap_or_default();
         assert!(instructions.contains("子代理 explore"), "{instructions}");
         assert!(instructions.contains("0.5"), "{instructions}");
         assert!(
@@ -822,7 +853,8 @@ mod tests {
         })
         .to_string();
         assert_eq!(
-            parse_suggestions(SuggestKind::Tools, &on_the_line, JEV, &candidates()).expect("可解析"),
+            parse_suggestions(SuggestKind::Tools, &on_the_line, JEV, &candidates())
+                .expect("可解析"),
             vec!["subagent"]
         );
 
@@ -862,9 +894,11 @@ mod tests {
             }
         })
         .to_string();
-        assert!(parse_suggestions(SuggestKind::Tools, &text, JEV, &candidates())
-            .expect("可解析")
-            .is_empty());
+        assert!(
+            parse_suggestions(SuggestKind::Tools, &text, JEV, &candidates())
+                .expect("可解析")
+                .is_empty()
+        );
 
         // 子代理口径只认自己的兜底提问：`no_tool` 过阈值不该影响它。
         let subagent_fallback = json!({
@@ -892,9 +926,11 @@ mod tests {
             }
         })
         .to_string();
-        assert!(parse_suggestions(SuggestKind::Tools, &text, JEV, &candidates())
-            .expect("可解析")
-            .is_empty());
+        assert!(
+            parse_suggestions(SuggestKind::Tools, &text, JEV, &candidates())
+                .expect("可解析")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -906,10 +942,13 @@ mod tests {
             "answers": {"t0": {"type": "noul"}, "no_tool": {"type": "noul"}}
         })
         .to_string();
-        assert!(
-            parse_suggestions(SuggestKind::Tools, &without_probabilities, JEV, &candidates())
-                .is_err()
-        );
+        assert!(parse_suggestions(
+            SuggestKind::Tools,
+            &without_probabilities,
+            JEV,
+            &candidates()
+        )
+        .is_err());
     }
 
     /// 对话补全方式：答案包在 `choices[0].message.content` 里，判定共用同一段代码。
@@ -999,7 +1038,10 @@ mod tests {
         // 正文中间提到前缀不该被剥：只有末尾连续的建议行才算。
         assert_eq!(
             split_suggestion("当前请求建议使用子代理：explore。\n后面还有正文"),
-            ("当前请求建议使用子代理：explore。\n后面还有正文".to_string(), None)
+            (
+                "当前请求建议使用子代理：explore。\n后面还有正文".to_string(),
+                None
+            )
         );
     }
 
@@ -1040,7 +1082,9 @@ mod tests {
             questions[SuggestKind::Tools.fallback_question_id()]["type"],
             "noul"
         );
-        assert!(questions.get(SuggestKind::Subagents.fallback_question_id()).is_none());
+        assert!(questions
+            .get(SuggestKind::Subagents.fallback_question_id())
+            .is_none());
 
         let subagents = suggest_questions(SuggestKind::Subagents, &roles());
         assert_eq!(subagents["t0"]["type"], "noul");
@@ -1090,9 +1134,17 @@ mod tests {
             "三个候选 + 一个兜底提问"
         );
         // 工具表里的工具全部送审，说明取描述首句。
-        assert!(captured.state.contains("\"subagent\""), "{}", captured.state);
+        assert!(
+            captured.state.contains("\"subagent\""),
+            "{}",
+            captured.state
+        );
         assert!(captured.state.contains("\"read\""), "{}", captured.state);
-        assert!(captured.state.contains("subagent 的说明"), "{}", captured.state);
+        assert!(
+            captured.state.contains("subagent 的说明"),
+            "{}",
+            captured.state
+        );
         assert!(
             captured.state.contains("帮我把这个任务拆成几路并行"),
             "{}",
@@ -1115,7 +1167,11 @@ mod tests {
 
         let captured = cassette.captured();
         let captured = captured.first().expect("应当收到一次请求");
-        assert!(captured.state.contains("\"subagents\""), "{}", captured.state);
+        assert!(
+            captured.state.contains("\"subagents\""),
+            "{}",
+            captured.state
+        );
         assert!(captured.state.contains("explore"), "{}", captured.state);
         assert!(
             !captured.state.contains("\"tools\""),
@@ -1324,7 +1380,8 @@ mod tests {
                                 "no_tool": {"type": "noul", "noul": 0.05},
                             })
                         };
-                        let payload = json!({"model": "jev-1.13.0", "answers": answers}).to_string();
+                        let payload =
+                            json!({"model": "jev-1.13.0", "answers": answers}).to_string();
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             payload.len(),

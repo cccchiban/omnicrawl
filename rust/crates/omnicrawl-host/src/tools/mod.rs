@@ -13,15 +13,15 @@
 pub mod advisor;
 pub mod arguments;
 pub mod charset;
+pub mod client_hints;
 pub mod command;
 pub mod config_tool;
 pub mod cookies;
-pub mod declarations;
 pub mod decision_choice;
-pub mod client_hints;
 pub mod decision_prune;
 pub mod decision_search;
 pub mod decision_suggest;
+pub mod declarations;
 pub mod edit;
 pub mod error;
 pub mod fetch_metadata;
@@ -39,21 +39,22 @@ pub mod monitor;
 pub mod paths;
 pub mod read;
 pub mod read_image;
-pub mod registry;
 pub mod referrer;
+pub mod registry;
 pub mod robots;
 pub mod robots_cache;
 pub mod sample;
 pub mod search_common;
 pub mod skills;
+pub mod tls_transport;
 pub mod tts;
 pub mod web_search;
-pub mod tls_transport;
 pub mod web_transport;
 pub mod windows;
 pub mod write;
 
 pub use advisor::AdvisorOptions;
+pub use cookies::{CookieJar, SharedJar};
 pub use decision_choice::{
     chosen_option, custody_options_from_config, ChoiceClient, CustodyContext, CustodyOptions,
 };
@@ -67,7 +68,6 @@ pub use decision_suggest::{
     SuggestionInputs,
 };
 pub use error::{ToolError, ToolOutcome};
-pub use cookies::{CookieJar, SharedJar};
 pub use fetcher::FetcherOptions;
 pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;
@@ -75,7 +75,7 @@ pub use memory::MemoryOptions;
 pub use monitor::MonitorManager;
 pub use paths::WorkspacePaths;
 pub use registry::{RegistryOptions, ToolRegistry, IMPLEMENTED_TOOLS};
+pub use tls_transport::TlsWebTransport;
 pub use tts::{tts_backend, TtsOptions};
 pub use web_search::{web_search_options_from_config, WebSearchOptions};
 pub use web_transport::{WebError, WebErrorKind, WebRequest, WebResponse, WebTransport};
-pub use tls_transport::TlsWebTransport;

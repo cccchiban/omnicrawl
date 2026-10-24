@@ -88,7 +88,10 @@ impl Robots {
                 "allow" | "disallow" => {
                     let Some(group) = current.as_mut() else {
                         // 规则出现在任何 user-agent 之前：按 RFC 计入 `*` 组。
-                        if groups.iter().all(|item| !item.agents.iter().any(|a| a == "*")) {
+                        if groups
+                            .iter()
+                            .all(|item| !item.agents.iter().any(|a| a == "*"))
+                        {
                             groups.push(Group {
                                 agents: vec!["*".to_string()],
                                 rules: Vec::new(),

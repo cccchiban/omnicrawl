@@ -106,7 +106,9 @@ impl TtsOptions {
     /// 回合朗读的落盘路径：与工具产物分开命名，并用序号避开同秒内的覆盖。
     fn reply_output_path(&self) -> PathBuf {
         let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let index = self.reply_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let index = self
+            .reply_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.output_directory()
             .join(format!("reply_{stamp}_{index}.wav"))
     }
@@ -248,7 +250,11 @@ mod tests {
     #[test]
     fn absolute_output_dir_is_not_joined_with_workspace() {
         // 用平台原生的绝对路径：Windows 上盘符（`D:/...`）才算绝对，POSIX 上要以 `/` 开头。
-        let absolute = if cfg!(windows) { "D:/tts-out" } else { "/tts-out" };
+        let absolute = if cfg!(windows) {
+            "D:/tts-out"
+        } else {
+            "/tts-out"
+        };
         let configuration = TtsConfiguration {
             enabled: true,
             output_dir: absolute.to_string(),
@@ -302,7 +308,15 @@ mod tests {
         ]));
         // 没有真实网络，合成会失败；关键是它没把未知参数当成文本或路径。
         assert!(!result.ok);
-        assert!(!result.output.contains("unknown_option"), "{}", result.output);
-        assert!(!result.output.contains("text 不能为空"), "{}", result.output);
+        assert!(
+            !result.output.contains("unknown_option"),
+            "{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("text 不能为空"),
+            "{}",
+            result.output
+        );
     }
 }

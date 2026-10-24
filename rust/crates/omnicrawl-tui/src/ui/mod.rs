@@ -138,11 +138,7 @@ pub(crate) fn notice_line_height(state: &AppState) -> u16 {
 }
 
 /// 渲染一帧：设置面板打开时铺满整屏（对映 Python 的 `SettingsScreen` 模态页）。
-pub fn render(
-    frame: &mut Frame,
-    state: &AppState,
-    settings: Option<&settings::SettingsState>,
-) {
+pub fn render(frame: &mut Frame, state: &AppState, settings: Option<&settings::SettingsState>) {
     if let Some(settings) = settings {
         settings::render::render(frame, frame.area(), settings);
         return;

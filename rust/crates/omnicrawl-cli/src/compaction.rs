@@ -306,12 +306,8 @@ fn build_driver(
     if let Some(callback) = on_start {
         driver = driver.with_progress(callback);
     }
-    if let Some(compressor) = crate::compression::KernelCompressor::load(model) {
-        // 工具段压缩用 Low 思考深度（用户要求），与逐条路径的配置无关。
-        driver = driver.with_tool_compaction(Box::new(
-            crate::dual_compaction::KernelToolCompaction::new(compressor.with_low_reasoning()),
-        ));
-    }
+    // 工具调用压缩已改为运行中逐批决策（见 `ToolBatchHost::before_tool_batch`）：
+    // 这里不再接入「回合收尾整轮全压」的端口，非工具部分仍由上下文压缩承担。
     if let Some(root) = session.memory_root.as_ref() {
         if let Ok(path) = session_memory_root(root, &session.session_id) {
             driver = driver.with_memory(MemoryStore::open(path));

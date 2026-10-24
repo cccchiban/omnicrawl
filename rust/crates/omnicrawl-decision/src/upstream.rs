@@ -160,7 +160,9 @@ pub fn decide_choice(
     question_id: &str,
 ) -> Result<ChoiceOutcome, UpstreamError> {
     if options.is_empty() {
-        return Err(UpstreamError::invalid_request("choice 至少需要一个候选项。"));
+        return Err(UpstreamError::invalid_request(
+            "choice 至少需要一个候选项。",
+        ));
     }
     let criteria = labeled_criteria(options, option_key, instructions);
     let questions = json!({ question_id: choice_question(instructions, criteria) });

@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use omnicrawl_config::features::agent_workspace::AgentWorkspaceConfig;
 use omnicrawl_workspace::agent_isolation::{
     apply_isolation_changes, cleanup_eligible, cleanup_isolation_session, create_isolation_session,
-    finalize_isolation_session, read_isolation_metadata, IsolationOptions, MIN_KEEP_SECONDS,
+    finalize_isolation_session, read_isolation_metadata, sweep_expired_isolation_sessions,
+    IsolationOptions, IsolationSession, SweepOptions, DEFAULT_SWEEP_MAX_AGE_SECONDS,
+    MIN_KEEP_SECONDS,
 };
 use omnicrawl_workspace::resolve_path;
 use serde_json::Value;
@@ -57,6 +59,27 @@ fn git(dir: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// 带提交时间环境变量跑 git（构造「很久以前提交过」的残留）。
+fn git_at(dir: &Path, args: &[&str], timestamp: &str) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_DATE", timestamp)
+        .env("GIT_COMMITTER_DATE", timestamp)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default()
+}
+
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -92,6 +115,14 @@ fn worktree_config() -> AgentWorkspaceConfig {
         copy_dirs: Vec::new(),
         env_scripts: Vec::new(),
         ..AgentWorkspaceConfig::default()
+    }
+}
+
+/// SubAgent 视角的会话：目录与分支复用主隔离区的，只把 mode 换成 `subagent`。
+fn as_subagent(session: &IsolationSession) -> IsolationSession {
+    IsolationSession {
+        mode: "subagent".to_string(),
+        ..session.clone()
     }
 }
 
@@ -320,4 +351,204 @@ fn finalize_reports_apply_and_keep_policy() {
 
     let (removed, reason) = cleanup_isolation_session(&session, None, true, None);
     assert!(removed, "收尾后强制清理失败：{reason}");
+}
+
+/// SubAgent 产出以提交形式留在隔离分支上：未满一个月保留，满一个月无新提交才清理。
+#[test]
+fn subagent_unreviewed_commit_kept_until_one_month_idle() {
+    if !git_available() {
+        eprintln!("跳过：环境里没有可用的 git");
+        return;
+    }
+    let root = TempDir::new("subidle");
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("创建仓库目录");
+    if !init_repo(&repo) {
+        eprintln!("跳过：git init 失败");
+        return;
+    }
+    let worktrees = root.path().join("worktrees");
+    let session = create_isolation_session(
+        IsolationOptions::new(repo.clone())
+            .with_instance_id("subidle")
+            .with_config(worktree_config())
+            .with_worktrees_root(worktrees.clone()),
+    )
+    .expect("创建隔离区");
+
+    // 模拟 collect_artifacts：产出提交到隔离分支。
+    std::fs::write(session.worktree_path.join("out.txt"), "done\n").expect("写入产出");
+    assert!(git(&session.worktree_path, &["add", "-A"]), "git add 失败");
+    assert!(
+        git(
+            &session.worktree_path,
+            &["commit", "-q", "-m", "subagent output"]
+        ),
+        "git commit 失败"
+    );
+    let sub = as_subagent(&session);
+
+    // 刚提交完：仍保留（未审查的产出可能是唯一副本）。
+    let soon = session.created_at + MIN_KEEP_SECONDS + 1.0;
+    let (eligible, reason) = cleanup_eligible(&sub, None, Some(soon), "origin");
+    assert!(!eligible, "未审查的提交不应立刻清理");
+    assert!(
+        reason.contains("未审查") && reason.contains("还需"),
+        "原因应说明未审查且未满期限：{reason}"
+    );
+
+    // 满一个月没有新提交：放行自动清理。
+    let month_later = soon + DEFAULT_SWEEP_MAX_AGE_SECONDS;
+    let (eligible, reason) = cleanup_eligible(&sub, None, Some(month_later), "origin");
+    assert!(eligible, "满一个月无新提交应放行：{reason}");
+
+    let (removed, reason) = cleanup_isolation_session(&sub, None, false, Some(month_later));
+    assert!(removed, "清理失败：{reason}");
+}
+
+/// 期限按「最后一次提交」算：早先的老提交不能提前把有近期提交的隔离区判成过期。
+#[test]
+fn subagent_deadline_follows_latest_commit() {
+    if !git_available() {
+        eprintln!("跳过：环境里没有可用的 git");
+        return;
+    }
+    let root = TempDir::new("subrenew");
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("创建仓库目录");
+    if !init_repo(&repo) {
+        eprintln!("跳过：git init 失败");
+        return;
+    }
+    let worktrees = root.path().join("worktrees");
+    let session = create_isolation_session(
+        IsolationOptions::new(repo.clone())
+            .with_instance_id("subrenew")
+            .with_config(worktree_config())
+            .with_worktrees_root(worktrees.clone()),
+    )
+    .expect("创建隔离区");
+
+    // 一个很老的首个产出提交，再补一个刚刚的提交。
+    std::fs::write(session.worktree_path.join("old.txt"), "old\n").expect("写入 old");
+    assert!(git(&session.worktree_path, &["add", "-A"]), "git add 失败");
+    assert!(
+        git_at(
+            &session.worktree_path,
+            &["commit", "-q", "-m", "old output"],
+            "2001-01-01T00:00:00",
+        ),
+        "提交老产出失败"
+    );
+    std::fs::write(session.worktree_path.join("new.txt"), "new\n").expect("写入 new");
+    assert!(git(&session.worktree_path, &["add", "-A"]), "git add 失败");
+    assert!(
+        git(
+            &session.worktree_path,
+            &["commit", "-q", "-m", "new output"]
+        ),
+        "提交新产出失败"
+    );
+
+    let sub = as_subagent(&session);
+    let (eligible, reason) =
+        cleanup_eligible(&sub, None, Some(session.created_at + 7200.0), "origin");
+    assert!(
+        !eligible,
+        "最新提交刚刚发生，期限应从它起算而不是老提交：{reason}"
+    );
+    assert!(reason.contains("未审查"), "原因应说明未审查：{reason}");
+
+    let (removed, reason) = cleanup_isolation_session(&sub, None, true, None);
+    assert!(removed, "强制清理失败：{reason}");
+}
+
+/// 启动清扫端到端：sw- 残留满一个月且无新提交时被回收，目录与元数据一起删除。
+#[test]
+fn sweep_reclaims_idle_subagent_worktree_after_one_month() {
+    if !git_available() {
+        eprintln!("跳过：环境里没有可用的 git");
+        return;
+    }
+    let root = TempDir::new("sweep");
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("创建仓库目录");
+    if !init_repo(&repo) {
+        eprintln!("跳过：git init 失败");
+        return;
+    }
+    let worktrees = root.path().join("worktrees");
+    std::fs::create_dir_all(&worktrees).expect("创建托管根");
+    let base = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let worktree_path = worktrees.join("sw-task01");
+    assert!(
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "omnicrawl/subagent/task01",
+                worktree_path.to_string_lossy().as_ref(),
+                base.as_str(),
+            ],
+        ),
+        "git worktree add 失败"
+    );
+    // 子任务产出：35 天前提交过，之后无人过问。
+    std::fs::write(worktree_path.join("out.txt"), "done\n").expect("写入产出");
+    assert!(git(&worktree_path, &["add", "-A"]), "git add 失败");
+    assert!(
+        git_at(
+            &worktree_path,
+            &["commit", "-q", "-m", "subagent output"],
+            "2001-01-01T00:00:00",
+        ),
+        "提交产出失败"
+    );
+
+    let created_at = 1_000_000_000.0_f64;
+    let metadata = serde_json::json!({
+        "instance_id": "task01",
+        "task_id": "task01",
+        "mode": "subagent",
+        "repo_root": repo.to_string_lossy(),
+        "main_workspace": repo.to_string_lossy(),
+        "worktree_path": worktree_path.to_string_lossy(),
+        "base_ref": base,
+        "branch_name": "omnicrawl/subagent/task01",
+        "created_at": created_at,
+        "apply_on_exit": false,
+        "cleanup_on_exit": "auto",
+    });
+    std::fs::write(
+        worktrees.join("sw-task01.json"),
+        serde_json::to_string_pretty(&metadata).expect("序列化元数据"),
+    )
+    .expect("写元数据");
+
+    // 未满一个月：保留。
+    let result = sweep_expired_isolation_sessions(SweepOptions {
+        worktrees_root: Some(worktrees.clone()),
+        now: Some(created_at + MIN_KEEP_SECONDS + 60.0),
+        ..SweepOptions::default()
+    });
+    assert!(result.removed.is_empty(), "未满期限不应回收：{result:?}");
+
+    // 满一个月且最后一次提交早已超过期限：回收。
+    let result = sweep_expired_isolation_sessions(SweepOptions {
+        worktrees_root: Some(worktrees.clone()),
+        now: Some(created_at + DEFAULT_SWEEP_MAX_AGE_SECONDS + 60.0),
+        ..SweepOptions::default()
+    });
+    assert_eq!(
+        result.removed,
+        vec!["task01".to_string()],
+        "满一个月应回收，实际：{result:?}"
+    );
+    assert!(!worktree_path.exists(), "worktree 目录应已删除");
+    assert!(
+        !worktrees.join("sw-task01.json").is_file(),
+        "元数据应随目录一起删除"
+    );
 }

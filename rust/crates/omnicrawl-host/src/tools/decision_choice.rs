@@ -3,7 +3,11 @@
 //! 可选项、默认关闭（`decision_models.toml` 的 `[features] ask_user_custody`）。开启后
 //! **有选项**的提问不再弹给用户：宿主把问题、用户本回合的请求与已有的顾问答复当 `state`，
 //! 向决策服务提一个 choice 问题（候选项就是模型的选项），读回 `answers.<id>.choice` 作为答案。
-//! 没有选项的提问（自由问答）照旧交给用户——决策模型只能从给定选项里选，写不出自由文本。
+//! 没有选项的提问（自由问答）照旧交给用户——决策模型只能从给定候选项里选，写不出自由文本。
+//!
+//! 候选项末尾固定追加一项「我有自己的想法...」（面板自定义作答入口的同款文案）：选中它表示
+//! 给定选项都不合适、要用户自己填答案，托管按不可用处理并退回人工提问。否则需要用户手写内容
+//! 的提问（选项只是示例）会被决策模型硬选一项，替用户编出一个他没写过的答案。
 //!
 //! **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都退回
 //! 人工提问（与检索重排同一语义，和审查通道的 fail-closed 相反）：托管的目的是省一次人工往返，
@@ -159,7 +163,8 @@ pub struct CustodyContext {
 /// 让决策模型选一个选项；`None` 表示本次托管不可用，调用方保留人工提问（fail-open）。
 ///
 /// 只在**有选项**时生效：没有选项的提问是自由问答，决策模型只能从给定候选项里选，
-/// 写不出自由文本，因此照旧交给用户。
+/// 写不出自由文本，因此照旧交给用户。末尾的 [`crate::host::QUESTION_CUSTOM_LABEL`] 是
+/// 「交回用户」的判据：决策模型选它就等于说给定选项都不合适，同样返回 `None`。
 pub fn chosen_option(
     options: &CustodyOptions,
     context: &CustodyContext,
@@ -170,13 +175,20 @@ pub fn chosen_option(
     }
     let channel = options.channel.as_ref()?;
     let state = custody_state(context);
-    let criteria: Vec<(String, String)> = choices
-        .iter()
-        .enumerate()
-        .map(|(index, text)| {
+    // 候选项 = 模型的选项 + 末尾的自定义作答入口（下标 `choices.len()`）。
+    let custom_index = choices.len();
+    let criteria: Vec<(String, String)> = (0..=custom_index)
+        .map(|index| {
+            let (text, requirement) = match choices.get(index) {
+                Some(text) => (option_text(text), CUSTODY_CHOICE_CRITERIA),
+                None => (
+                    crate::host::QUESTION_CUSTOM_LABEL.to_string(),
+                    CUSTODY_CUSTOM_CRITERIA,
+                ),
+            };
             (
                 crate::decision_wire::option_key(index),
-                format!("选择「{}」：{}", option_text(text), CUSTODY_CHOICE_CRITERIA),
+                format!("选择「{text}」：{requirement}"),
             )
         })
         .collect();
@@ -188,7 +200,9 @@ pub fn chosen_option(
         criteria: &criteria,
     };
     match options.client.choose(&request) {
-        Ok(index) if index < choices.len() => Some(index),
+        Ok(index) if index < custom_index => Some(index),
+        // 选中自定义作答入口：需要用户自己写答案，退回人工提问。
+        Ok(index) if index == custom_index => None,
         Ok(index) => {
             diagnostics::warn(format!(
                 "[host] 提问托管返回越界选项（{index}），改为人工提问。"
@@ -230,9 +244,14 @@ pub fn custody_state(context: &CustodyContext) -> Value {
 /// 托管请求的判定标准：选最符合用户意图、能推进当前任务的一项。
 const CUSTODY_INSTRUCTIONS: &str = "模型在任务中途向用户提问，需要替用户从候选项里挑一个答案。\
  依据 state 里的 question（提问正文）、user_prompt（用户本回合的请求）与 advisor_replies\
- （顾问模型给出的答复，可能为空）判断：只选最符合用户意图、最能推进当前任务的一项。";
+ （顾问模型给出的答复，可能为空）判断：只选最符合用户意图、最能推进当前任务的一项。\
+ 候选项的最后一项是交回用户自己作答的出口：只有当给定选项都答不上这个问题\
+ （例如需要用户填写具体内容、而选项只是示例）时才选它。";
 
 const CUSTODY_CHOICE_CRITERIA: &str = "该选项最符合用户意图且最能推进当前任务。";
+
+const CUSTODY_CUSTOM_CRITERIA: &str =
+    "给定选项都答不上这个问题、需要用户自己填写具体内容，因此把作答交回给用户。";
 
 /// 真实实现：`POST {base_url}/v1/decide`，一个 choice 问题，读回胜出选项。
 ///
@@ -267,8 +286,8 @@ impl ChoiceClient for DecisionChoiceClient {
                 }
             }),
         );
-        let body_text = serde_json::to_string(&body)
-            .map_err(|error| format!("构造托管请求失败：{error}"))?;
+        let body_text =
+            serde_json::to_string(&body).map_err(|error| format!("构造托管请求失败：{error}"))?;
         // 脱敏旁路：屏蔽失败即放弃本次托管（不外发原文），与「失败一律 fail-open」一致。
         let body_text = match request.masking {
             Some(masking) => {
@@ -367,6 +386,71 @@ mod tests {
             ..CustodyOptions::default()
         };
         assert!(chosen_option(&options, &CustodyContext::default(), &[]).is_none());
+    }
+
+    /// 记录收到的候选项键与文案，供断言用。
+    struct RecordingChoice {
+        index: usize,
+        seen: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl ChoiceClient for RecordingChoice {
+        fn choose(&self, request: &ChoiceRequest<'_>) -> Result<usize, String> {
+            *self.seen.lock().expect("记录未被毒化") = request.criteria.to_vec();
+            Ok(self.index)
+        }
+    }
+
+    fn recording_options(
+        index: usize,
+    ) -> (CustodyOptions, Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let options = CustodyOptions {
+            enabled: true,
+            channel: Some(channel("http://127.0.0.1:1")),
+            client: Arc::new(RecordingChoice {
+                index,
+                seen: Arc::clone(&seen),
+            }),
+            ..CustodyOptions::default()
+        };
+        (options, seen)
+    }
+
+    #[test]
+    fn the_custom_option_is_appended_after_the_model_options() {
+        let choices = vec!["甲".to_string(), "乙".to_string()];
+        let (options, seen) = recording_options(0);
+        assert_eq!(
+            chosen_option(&options, &CustodyContext::default(), &choices),
+            Some(0)
+        );
+        let criteria = seen.lock().expect("记录未被毒化").clone();
+        assert_eq!(
+            criteria
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["o0", "o1", "o2"],
+            "末尾要多一项自定义作答入口"
+        );
+        assert!(
+            criteria[2].1.contains(crate::host::QUESTION_CUSTOM_LABEL),
+            "{criteria:?}"
+        );
+        assert!(criteria[0].1.contains("甲"), "{criteria:?}");
+    }
+
+    #[test]
+    fn choosing_the_custom_option_falls_back_to_asking_the_user() {
+        // 选项只是示例、答案要用户自己写时，决策模型该选自定义作答入口，托管按不可用处理。
+        let choices = vec!["甲".to_string(), "乙".to_string()];
+        let (options, _) = recording_options(choices.len());
+        assert!(chosen_option(&options, &CustodyContext::default(), &choices).is_none());
+
+        // 越界的下标（既不是模型选项也不是自定义入口）同样退回人工提问。
+        let (out_of_range, _) = recording_options(choices.len() + 3);
+        assert!(chosen_option(&out_of_range, &CustodyContext::default(), &choices).is_none());
     }
 
     #[test]
@@ -484,7 +568,11 @@ mod tests {
         let chosen = chosen_option(
             &options,
             &context,
-            &["方案甲".to_string(), "方案乙".to_string(), "方案丙".to_string()],
+            &[
+                "方案甲".to_string(),
+                "方案乙".to_string(),
+                "方案丙".to_string(),
+            ],
         )
         .expect("回环应当选出选项");
         assert_eq!(chosen, 2);
@@ -494,7 +582,7 @@ mod tests {
         assert_eq!(captured.authorization, "Bearer jv_test");
         assert_eq!(captured.model, "jev-latest");
         assert_eq!(captured.question_type, "choice");
-        assert_eq!(captured.criteria_keys, vec!["o0", "o1", "o2"]);
+        assert_eq!(captured.criteria_keys, vec!["o0", "o1", "o2", "o3"]);
         // 三类上下文都进了请求：提问、用户本回合的请求、顾问答复。
         assert!(captured.state.contains("选哪个方案"), "{}", captured.state);
         assert!(
@@ -502,7 +590,11 @@ mod tests {
             "{}",
             captured.state
         );
-        assert!(captured.state.contains("建议先拆分脚本"), "{}", captured.state);
+        assert!(
+            captured.state.contains("建议先拆分脚本"),
+            "{}",
+            captured.state
+        );
     }
 
     #[test]
@@ -527,7 +619,11 @@ mod tests {
         let chosen = chosen_option(
             &options,
             &context,
-            &["方案甲".to_string(), "方案乙".to_string(), "方案丙".to_string()],
+            &[
+                "方案甲".to_string(),
+                "方案乙".to_string(),
+                "方案丙".to_string(),
+            ],
         )
         .expect("回环应当选出选项");
         assert_eq!(chosen, 2);
@@ -535,7 +631,7 @@ mod tests {
         let captured = cassette.captured();
         assert_eq!(captured.path, "/v1/chat/completions");
         assert_eq!(captured.question_type, "choice");
-        assert_eq!(captured.criteria_keys, vec!["o0", "o1", "o2"]);
+        assert_eq!(captured.criteria_keys, vec!["o0", "o1", "o2", "o3"]);
         assert!(captured.state.contains("选哪个方案"), "{}", captured.state);
     }
 
@@ -615,7 +711,9 @@ mod tests {
                         .and_then(|content| serde_json::from_str::<Value>(content).ok())
                         .unwrap_or(Value::Null)
                 };
-                let question = inner.get("questions").and_then(|value| value.get(QUESTION_ID));
+                let question = inner
+                    .get("questions")
+                    .and_then(|value| value.get(QUESTION_ID));
                 {
                     let mut record = seen.lock().expect("记录未被毒化");
                     record.path = path;

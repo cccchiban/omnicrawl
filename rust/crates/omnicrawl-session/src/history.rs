@@ -732,7 +732,10 @@ mod tool_call_summary_tests {
         let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
 
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1]["content"], "结果报告", "最后一段模型输出保持在末尾");
+        assert_eq!(
+            messages[1]["content"], "结果报告",
+            "最后一段模型输出保持在末尾"
+        );
     }
 
     /// 按需淘汰：批内只走指定那一组，其余调用项与结果照旧配对。
@@ -753,7 +756,10 @@ mod tool_call_summary_tests {
         ];
 
         let removed = evict_tool_call_messages(&mut messages, &["c1".to_string()]);
-        assert_eq!(removed, 1, "只移除 c1 的结果消息；assistant 仍留着 c0 的调用项");
+        assert_eq!(
+            removed, 1,
+            "只移除 c1 的结果消息；assistant 仍留着 c0 的调用项"
+        );
         assert_eq!(messages.len(), 3);
         let calls = messages[1]["tool_calls"].as_array().expect("仍有调用项");
         assert_eq!(calls.len(), 1);
@@ -772,7 +778,10 @@ mod tool_call_summary_tests {
             }),
             json!({"role": "tool", "tool_call_id": "c0", "content": "结果"}),
         ];
-        assert_eq!(evict_tool_call_messages(&mut messages, &["c0".to_string()]), 2);
+        assert_eq!(
+            evict_tool_call_messages(&mut messages, &["c0".to_string()]),
+            2
+        );
         assert!(messages.is_empty(), "纯工具消息整条移除：{messages:?}");
 
         let mut with_text = vec![
@@ -815,7 +824,10 @@ mod tool_call_summary_tests {
         // 空名单与空 ID 都不动消息。
         let mut untouched = messages.clone();
         assert_eq!(evict_tool_call_messages(&mut untouched, &[]), 0);
-        assert_eq!(evict_tool_call_messages(&mut untouched, &["".to_string()]), 0);
+        assert_eq!(
+            evict_tool_call_messages(&mut untouched, &["".to_string()]),
+            0
+        );
         assert_eq!(untouched, messages);
     }
 
@@ -860,18 +872,8 @@ mod tool_call_summary_tests {
             "tool_result",
             json!({"tool": "read", "tool_call_id": "c1", "ok": true, "output": "关键内容"}),
         );
-        let evicted = event(
-            "tool_call_evicted",
-            json!({"evicted_call_ids": ["c0"]}),
-        );
-        let events = vec![
-            user,
-            first,
-            first_result,
-            second,
-            second_result,
-            evicted,
-        ];
+        let evicted = event("tool_call_evicted", json!({"evicted_call_ids": ["c0"]}));
+        let events = vec![user, first, first_result, second, second_result, evicted];
         let projected = project_history_messages(&events);
         let messages: Vec<Value> = projected.into_iter().map(|(_, message)| message).collect();
 
@@ -925,7 +927,11 @@ mod tool_call_summary_tests {
             json!({"evicted_call_ids": "not-an-array"}),
             json!({"evicted_call_ids": [1, 2]}),
         ] {
-            let events = vec![call.clone(), result.clone(), event("tool_call_evicted", payload)];
+            let events = vec![
+                call.clone(),
+                result.clone(),
+                event("tool_call_evicted", payload),
+            ];
             let projected = project_history_messages(&events);
             assert_eq!(projected.len(), 2, "坏事件不动上下文：{projected:?}");
         }
@@ -944,7 +950,10 @@ mod tool_call_summary_tests {
                 "tool_call_evicted",
                 json!({"evicted_call_ids": ["c2", "  ", "c3"]}),
             ),
-            event("tool_call_evicted", json!({"evicted_call_ids": "not-an-array"})),
+            event(
+                "tool_call_evicted",
+                json!({"evicted_call_ids": "not-an-array"}),
+            ),
         ];
         assert_eq!(
             collect_evicted_call_ids(&events),

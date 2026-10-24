@@ -9,7 +9,9 @@
 
 use omnicrawl_tls::h2conn::{ClientConnection, ConnectionError, Event, StreamState};
 use omnicrawl_tls::hpack::{Decoder, Encoder, Header};
-use omnicrawl_tls::http2::{encode_frame, flags, parse_frame, ErrorCode, Frame, DEFAULT_MAX_FRAME_SIZE};
+use omnicrawl_tls::http2::{
+    encode_frame, flags, parse_frame, ErrorCode, Frame, DEFAULT_MAX_FRAME_SIZE,
+};
 use omnicrawl_tls::keyschedule::CipherSuite;
 use omnicrawl_tls::record::{ContentType, Record, RecordKey};
 use ring::rand::SecureRandom;
@@ -417,11 +419,7 @@ fn pipelined_requests_reuse_the_hpack_dynamic_table() {
         );
     }
     // 第二个起 :authority / user-agent / accept 都命中动态表，帧应明显更小。
-    assert!(
-        sizes[1] < sizes[0],
-        "第二轮应更小：{:?}",
-        sizes
-    );
+    assert!(sizes[1] < sizes[0], "第二轮应更小：{:?}", sizes);
     assert!(sizes[2] < sizes[0]);
 }
 

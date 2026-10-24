@@ -72,6 +72,16 @@ fn run() -> Result<ExitCode, String> {
             println!("{text}");
             return Ok(ExitCode::SUCCESS);
         }
+        // 子代理窗口进程：不起内核、不进全屏，按主代理的版式渲染流水。
+        Parsed::SubagentWindow(stream) => {
+            return match omnicrawl_tui::subagent_window::run_window(stream) {
+                Ok(()) => Ok(ExitCode::SUCCESS),
+                Err(message) => {
+                    eprintln!("{message}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
         Parsed::Run(options) => *options,
     };
 
@@ -242,9 +252,7 @@ fn event_loop(
         }
         if healed || changed {
             terminal
-                .draw(|frame| {
-                    ui::render(frame, &app.state, app.settings.as_ref())
-                })
+                .draw(|frame| ui::render(frame, &app.state, app.settings.as_ref()))
                 .map_err(|error| format!("渲染失败：{error}"))?;
         }
         if app.quit {
@@ -261,8 +269,7 @@ fn event_loop(
         // 好让「其实不是粘贴」的按键流能及时按普通输入回退。
         let budget = app.poll_budget(Instant::now());
         let wait = paste_wait(&paste_tracker, budget);
-        if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))?
-        {
+        if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))? {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
             if matches!(event, Event::Resize(..)) {
                 let resized = terminal_viewport(terminal)?;
@@ -392,6 +399,24 @@ impl TerminalGuard {
         true
     }
 
+    /// 让终端上报**鼠标移动**的 ANSI 序列（1000 按键 / 1002 拖动 / 1003 所有移动 / 1006 SGR 坐标）。
+    ///
+    /// crossterm 的 `EnableMouseCapture` 在 Windows 上走 winapi 分支（`is_ansi_code_supported()`
+    /// 为假），只把控制台模式设成 `0x0098`，**不发出这些序列**。Windows Terminal 经 ConPTY
+    /// 转发鼠标事件时认的是 `?1003h`：不发它，移动根本不会写进输入缓冲，
+    /// `MouseEventKind::Moved` 一次也收不到——「[ ESC ]」「立即结束」这类悬停高亮于是全部失灵。
+    const MOUSE_MOVE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+    /// 与 [`Self::MOUSE_MOVE_ON`] 对称的关闭序列（逆序）。
+    const MOUSE_MOVE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
+    /// 补发鼠标追踪序列；写失败不影响主流程（非 VT 宿主上本就无效）。
+    fn write_mouse_move_tracking(sequence: &str) {
+        use std::io::Write;
+        let mut out = stdout();
+        let _ = out.write_all(sequence.as_bytes());
+        let _ = out.flush();
+    }
+
     /// 取走「本帧必须整屏重画」的标志（取走后清空）。
     fn take_force_redraw(&mut self) -> bool {
         std::mem::take(&mut self.force_redraw)
@@ -408,6 +433,8 @@ impl TerminalGuard {
             EnableFocusChange
         )
         .map_err(|error| format!("切换备用屏幕失败：{error}"))?;
+        // crossterm 在 Windows 上不发 ANSI 序列，鼠标移动要靠这里补上（见 MOUSE_MOVE_ON）。
+        Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
@@ -435,6 +462,8 @@ impl TerminalGuard {
             // 不再互相覆盖——两者若不一致就会一秒一次地互相判定为「被重置」。）
             let mut out = stdout();
             let _ = execute!(out, EnableMouseCapture, EnableFocusChange);
+            // 重发鼠标捕获同样只设了 winapi 模式，移动追踪序列要一起补。
+            Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
         }
         // 输出恢复前打印出来的转义序列已经在屏幕上：整屏重画一次把它们抹掉。
         // 重画只做一次、不写提示行，因此不会与正常的块级增量刷新打架。
@@ -446,6 +475,8 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
+        // 先关鼠标追踪再关捕获：顺序与开的时候相反。
+        Self::write_mouse_move_tracking(Self::MOUSE_MOVE_OFF);
         let _ = execute!(
             out,
             DisableFocusChange,

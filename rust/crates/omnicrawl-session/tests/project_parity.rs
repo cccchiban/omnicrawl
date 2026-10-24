@@ -57,9 +57,8 @@ fn env() -> &'static Env {
         let temp = PathBuf::from(
             normalize_project_path(&std::env::temp_dir().to_string_lossy()).expect("解析临时根"),
         );
-        let home = PathBuf::from(
-            normalize_project_path(&home_directory_text()).expect("解析用户主目录"),
-        );
+        let home =
+            PathBuf::from(normalize_project_path(&home_directory_text()).expect("解析用户主目录"));
         let prepared = Env { root, temp, home };
         prepared.build_layout();
         prepared
@@ -198,9 +197,7 @@ fn agent_worktrees_judgement_matches_python() {
         .expect("under_agent_worktrees")
     {
         let raw = case["input"].as_str().expect("input");
-        let input = env
-            .unmask(raw)
-            .replace('\\', std::path::MAIN_SEPARATOR_STR);
+        let input = env.unmask(raw).replace('\\', std::path::MAIN_SEPARATOR_STR);
         assert_eq!(
             under_agent_worktrees(&input),
             case["expected"].as_bool().expect("expected"),

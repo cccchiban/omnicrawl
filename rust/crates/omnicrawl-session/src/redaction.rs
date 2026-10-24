@@ -343,7 +343,7 @@ where
 
 /// 赋值式键名（`api_key`、`token`、`password` 等，允许 `-`/`_` 变体）。
 fn match_assignment_key(haystack: &str, index: usize) -> Option<(usize, String)> {
-    const KEYS: [&str; 11] = [
+    const KEYS: [&str; 10] = [
         "apikey",
         "accesskey",
         "secretkey",
@@ -354,18 +354,15 @@ fn match_assignment_key(haystack: &str, index: usize) -> Option<(usize, String)>
         "password",
         "secret",
         "token",
-        "authorization",
     ];
-    // 键名很短，只取前缀做小写比较：对整段剩余文本小写会让长文本退化成 O(n²)。
-    let candidate: String = haystack[index..]
-        .chars()
-        .take(32)
-        .collect::<String>()
-        .to_lowercase();
+    // 便宜的前置判定：键名都以 ASCII 字母开头。每个字节位置都截取前缀、转小写、
+    // 造字符串会让长文本退化成「每字符一次分配」（192 KB 的输出实测 7 秒）。
+    let first = haystack.as_bytes().get(index).copied()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    let candidate = key_candidate(haystack, index);
     for key in KEYS {
-        if key == "authorization" {
-            continue;
-        }
         if let Some(consumed) = match_flexible_key(&candidate, key) {
             return Some((index + consumed, key.to_string()));
         }
@@ -392,39 +389,54 @@ fn match_assignment_key(haystack: &str, index: usize) -> Option<(usize, String)>
     None
 }
 
+/// 取键名候选前缀并小写化：键名很短，只取 32 个 ASCII 字符。
+///
+/// 原先每个字节位置都用 `chars().take(32).collect::<String>().to_lowercase()` 造两个
+/// 临时串，192 KB 的文本就是三十多万次分配；这里改成一次小写转换、复用同一块缓冲。
+fn key_candidate(haystack: &str, index: usize) -> String {
+    let rest = &haystack[index..];
+    let take = rest
+        .char_indices()
+        .take(33)
+        .take_while(|(offset, _)| *offset < 32)
+        .last()
+        .map(|(offset, character)| offset + character.len_utf8())
+        .unwrap_or(rest.len().min(32));
+    rest[..take].to_ascii_lowercase()
+}
+
 fn match_authorization_key(haystack: &str, index: usize) -> Option<(usize, String)> {
-    // 键名很短，只取前缀做小写比较：对整段剩余文本小写会让长文本退化成 O(n²)。
-    let candidate: String = haystack[index..]
-        .chars()
-        .take(32)
-        .collect::<String>()
-        .to_lowercase();
     if index > 0 && is_word_char(haystack.as_bytes()[index - 1] as char) {
         return None;
     }
+    let candidate = key_candidate(haystack, index);
     let consumed = match_flexible_key(&candidate, "authorization")?;
     Some((index + consumed, "authorization".to_string()))
 }
 
 /// 匹配小写化后的固定键名（允许 `-`/`_` 与键名中的分隔符位置一致）。
+///
+/// 直接在候选串上逐字符比较，不再造 `compact` / `normalized` 两个临时串：
+/// 这条路径在长文本上被每个字节位置调用一次。
 fn match_flexible_key(candidate: &str, key: &str) -> Option<usize> {
-    let compact: String = candidate
-        .chars()
-        .take_while(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
-        .collect();
-    let normalized: String = compact.replace(&['_', '-'][..], "");
-    if normalized.starts_with(key) {
-        // 回推原始长度：键名长度加上被去掉的分隔符个数。
-        let mut consumed = 0;
-        let mut letters = 0;
-        for character in compact.chars() {
-            consumed += character.len_utf8();
-            if !matches!(character, '_' | '-') {
-                letters += 1;
-            }
-            if letters == key.len() {
-                return Some(consumed);
-            }
+    let mut consumed = 0usize;
+    let mut letters = 0usize;
+    let mut key_chars = key.chars();
+    for character in candidate.chars() {
+        if !(character.is_alphanumeric() || matches!(character, '_' | '-')) {
+            break;
+        }
+        consumed += character.len_utf8();
+        if matches!(character, '_' | '-') {
+            // 分隔符不占键名的字母位：位置对得上就继续，对不上说明不是这个键。
+            continue;
+        }
+        match key_chars.next() {
+            Some(expected) if expected == character => letters += 1,
+            _ => return None,
+        }
+        if letters == key.len() {
+            return Some(consumed);
         }
     }
     None

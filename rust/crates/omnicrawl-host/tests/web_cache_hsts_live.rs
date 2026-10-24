@@ -37,10 +37,7 @@ fn a_real_site_restores_the_body_from_a_304() {
     plain.url = url.to_string();
     let first = transport.send(&plain).expect("首次抓取");
     assert_eq!(first.status, 200, "首次应当 200");
-    let etag = first
-        .header("etag")
-        .expect("该地址应当给 ETag")
-        .to_string();
+    let etag = first.header("etag").expect("该地址应当给 ETag").to_string();
     // 手工带验证器、且不经过缓存：传输层仍会走还原分支，但没有副本，
     // 因此必须如实报错而不是伪装成功。
     let probe = transport.send(&request(
@@ -66,10 +63,7 @@ fn a_real_site_restores_the_body_from_a_304() {
         .send(&request(url, Vec::new()))
         .expect("第二跳应当由 304 还原");
     assert_eq!(restored.status, 200, "还原后必须报 200");
-    assert_eq!(
-        restored.body, stored.body,
-        "还原出来的正文必须与副本一致"
-    );
+    assert_eq!(restored.body, stored.body, "还原出来的正文必须与副本一致");
     assert!(!restored.body.is_empty(), "正文不能为空");
 
     // 键必须落在最终地址上：协商与存储共用同一套算法。
@@ -83,7 +77,10 @@ fn a_real_site_restores_the_body_from_a_304() {
     );
     // HTTP/2 伪头不得泄漏到响应头里（它会与真实状态码自相矛盾）。
     assert!(
-        !restored.headers.iter().any(|(name, _)| name.starts_with(':')),
+        !restored
+            .headers
+            .iter()
+            .any(|(name, _)| name.starts_with(':')),
         "响应头里不该出现伪头：{:?}",
         restored.headers
     );

@@ -450,7 +450,11 @@ fn annotated_calls_stay_in_turn_and_leave_the_context_at_turn_end() {
         Some(vec!["call-b".to_string()])
     });
 
-    assert_eq!(traffic.prunes.len(), 1, "整回合只该裁决一次（本批是最新一批，从不送审）");
+    assert_eq!(
+        traffic.prunes.len(),
+        1,
+        "整回合只该裁决一次（本批是最新一批，从不送审）"
+    );
     assert_eq!(traffic.batches.len(), 2, "两次工具批次：{traffic:?}");
     // 送审负载带上了任务背景与两组调用（最新一批的 call-c 不在里面）。
     assert_eq!(traffic.prunes[0]["task"], "读三个文件");

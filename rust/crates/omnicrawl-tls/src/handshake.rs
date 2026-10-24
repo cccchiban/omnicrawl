@@ -75,11 +75,13 @@ impl KeyExchange {
     ///
     /// 随机源由外部提供而不是内置 `SystemRandom`：这一层的测试要可复现，
     /// 而生产调用方本来就该自己决定随机源（并保证其质量）。
-    pub fn generate(group: u16, rng: &dyn ring::rand::SecureRandom) -> Result<Self, KeyExchangeError> {
+    pub fn generate(
+        group: u16,
+        rng: &dyn ring::rand::SecureRandom,
+    ) -> Result<Self, KeyExchangeError> {
         let algorithm = algorithm_for(group).ok_or(KeyExchangeError::UnsupportedGroup(group))?;
-        let private =
-            agreement::EphemeralPrivateKey::generate(algorithm, rng)
-                .map_err(|_| KeyExchangeError::AgreementFailed)?;
+        let private = agreement::EphemeralPrivateKey::generate(algorithm, rng)
+            .map_err(|_| KeyExchangeError::AgreementFailed)?;
         let public_key = private
             .compute_public_key()
             .map_err(|_| KeyExchangeError::AgreementFailed)?
@@ -94,8 +96,8 @@ impl KeyExchange {
 
     /// 用对端的公钥算出共享密钥（`ECDHE` 的结果，作为 `HKDF-Extract` 的 IKM）。
     pub fn agree(self, peer_public: &[u8]) -> Result<Vec<u8>, KeyExchangeError> {
-        let expected = public_key_len(self.group)
-            .ok_or(KeyExchangeError::UnsupportedGroup(self.group))?;
+        let expected =
+            public_key_len(self.group).ok_or(KeyExchangeError::UnsupportedGroup(self.group))?;
         if peer_public.len() != expected {
             return Err(KeyExchangeError::BadKeyLength {
                 expected,
@@ -233,9 +235,8 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(|slice| {
-            u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]])
-        })
+        self.take(4)
+            .map(|slice| u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
     }
 
     fn block(&mut self, width: LengthWidth) -> Option<&'a [u8]> {

@@ -343,7 +343,10 @@ pub fn normalize_menu_commands(commands: &[MenuCommand]) -> Vec<MenuCommand> {
         seen.push(name.clone());
         normalized.push(MenuCommand {
             command: name,
-            description: description.chars().take(MAX_MENU_DESCRIPTION_CHARS).collect(),
+            description: description
+                .chars()
+                .take(MAX_MENU_DESCRIPTION_CHARS)
+                .collect(),
         });
     }
     normalized
@@ -443,9 +446,6 @@ mod tests {
         let commands: Vec<MenuCommand> = (0..MAX_MENU_COMMANDS + 5)
             .map(|index| MenuCommand::new(format!("cmd{index}"), "说明"))
             .collect();
-        assert_eq!(
-            normalize_menu_commands(&commands).len(),
-            MAX_MENU_COMMANDS
-        );
+        assert_eq!(normalize_menu_commands(&commands).len(), MAX_MENU_COMMANDS);
     }
 }

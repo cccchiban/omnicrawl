@@ -22,22 +22,20 @@ pub use hit::{HitAction, HitRegion};
 pub use picker::{split_token, ModelDiscovery};
 
 pub use state::{
-    channel_field_value, decision_field_value, display_value, ChannelDropdown, ChannelField,
-    ChannelFormView, ChannelRow, ChoiceKind, DecisionDropdown, DecisionField,
-    DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues, DecisionRow,
-    DecisionSwitchRow, Dropdown, DropdownField, Focus, McpChange,
-    McpEditorRowView, McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, ModelParamRow,
-    OptionValue,
-    Pane, SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow,
-    ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues,
-    VisionChange, VisionModelRef,
-    WebSearchRow,
-    DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION, DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION,
-    MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT,
-    MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
-    TOOLS_APPROVAL_OPTIONS,
-    TOOLS_APPROVAL_ROW, TOOLS_WEB_SEARCH_LABEL, TOOLS_WEB_SEARCH_ROW, TTS_GEMINI_VOICES,
-    TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_SPEED_OPTIONS,
+    channel_field_value, decision_field_value, display_value, embedding_field_value,
+    ChannelDropdown, ChannelField, ChannelFormView, ChannelRow, ChoiceKind, DecisionDropdown,
+    DecisionField, DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues,
+    DecisionRow, DecisionSwitchRow, Dropdown, DropdownField, EmbeddingField, EmbeddingFormView,
+    EmbeddingRow, Focus, McpChange, McpEditorRowView, McpRowView, McpServerDraft, McpServerRow,
+    McpSettingsValues, ModelParamRow, OptionValue, Pane, SettingsChange, SettingsEvent,
+    SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange,
+    TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues, VisionChange,
+    VisionModelRef, WebSearchRow, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION,
+    DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION, MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS,
+    MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
+    TOOLS_APPROVAL_OPTIONS, TOOLS_APPROVAL_ROW, TOOLS_WEB_SEARCH_LABEL, TOOLS_WEB_SEARCH_ROW,
+    TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS,
+    TTS_SPEED_OPTIONS,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。
@@ -45,15 +43,17 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 16] = [
+pub const ROW_ORDER: [&str; 18] = [
     "model_management",
     "decision_models",
+    "embedding_models",
     "advisor",
     "tool_output_compression",
     "tools",
     "mcp",
     "vision",
     "image_gen",
+    "computer_use",
     "tts",
     "run_guard",
     "agent_workspace",
@@ -69,12 +69,14 @@ pub fn row_label(key: &str) -> String {
     let label = match key {
         "model_management" => "模型管理",
         "decision_models" => "结构化决策模型",
+        "embedding_models" => "向量模型",
         "advisor" => "顾问设置",
         "tool_output_compression" => "工具输出压缩",
         "tools" => "工具设置",
         "mcp" => "MCP 设置",
         "vision" => "视觉",
         "image_gen" => "图像生成",
+        "computer_use" => "桌面操作",
         "tts" => "TTS 语音合成",
         "run_guard" => "持续运转",
         "agent_workspace" => "隔离工作区",

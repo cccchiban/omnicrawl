@@ -188,9 +188,7 @@ pub fn upgrade(url: &str) -> Option<String> {
 }
 
 fn normalize_host(host: &str) -> String {
-    host.trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase()
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn host_of(url: &str) -> Option<String> {

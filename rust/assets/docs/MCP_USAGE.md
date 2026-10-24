@@ -20,6 +20,7 @@
 
 - MCP 默认关闭，设置 `mcp.enabled=true` 才会连接启用的 Server。
 - 当前可用传输是本地 `stdio` 和远程 `streamable_http`；远程传输使用 MCP Streamable HTTP 的 JSON/SSE 响应和会话 ID。
+- `stdio` 分帧：发送用 MCP 规范的换行分隔 JSON（一行一条消息），接收同时兼容换行分隔 JSON 与 LSP 式 `Content-Length` 帧；本地 Server 也按对端风格回包。因此既能连接官方 SDK 写的第三方 Server，也能被 Claude Desktop 等外部客户端当作 Server 使用。
 - 外部网络能力默认不暴露，除非配置策略明确允许。
 - 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
 - 审计日志默认写入 `.omnicrawl/logs/mcp-audit.jsonl`，该目录不提交到仓库。

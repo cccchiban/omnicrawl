@@ -213,6 +213,7 @@ fn memory_store_write_chain_matches_python() {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 source_event: None,
+                supersedes: Vec::new(),
             })
             .collect();
 

@@ -63,7 +63,10 @@ pub fn synthesize(
             TtsBackend::Gemini(config) => config.synthesize(chunk)?,
         };
         let (waveform, rate) = payload.decode(&bytes).map_err(|error| {
-            format!("解析{}返回的音频失败：{error}", provider_label(backend.provider()))
+            format!(
+                "解析{}返回的音频失败：{error}",
+                provider_label(backend.provider())
+            )
         })?;
         if sample_rate == 0 {
             sample_rate = rate;

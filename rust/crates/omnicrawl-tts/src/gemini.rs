@@ -121,7 +121,12 @@ impl GeminiTtsConfig {
             ));
         }
         let audio = decode_audio(&bytes)?;
-        Ok((audio, AudioPayload::Pcm16 { sample_rate: SAMPLE_RATE }))
+        Ok((
+            audio,
+            AudioPayload::Pcm16 {
+                sample_rate: SAMPLE_RATE,
+            },
+        ))
     }
 }
 
@@ -203,7 +208,10 @@ mod tests {
             json!(["AUDIO"])
         );
         let speech = &body["generationConfig"]["speechConfig"];
-        assert_eq!(speech["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Puck");
+        assert_eq!(
+            speech["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"],
+            "Puck"
+        );
         // 朗读语言交给模型按输入文本自判：请求里不带 languageCode。
         assert!(
             speech.get("languageCode").is_none(),

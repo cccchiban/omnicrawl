@@ -391,7 +391,10 @@ fn json_message(role: &str, content: &str) -> Value {
 /// 只有 `media_type` / `data_base64` / `detail`）。**实时请求与重启后的历史重建共用这一句**：
 /// 两边形状若不一致，同一条消息在「刚发出去」与「恢复后」会命中不了前缀缓存。
 pub fn user_message_with_images(content: &str, images: Option<&Value>) -> Value {
-    let Some(images) = images.and_then(Value::as_array).filter(|items| !items.is_empty()) else {
+    let Some(images) = images
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+    else {
         return json_message("user", content);
     };
     let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
@@ -403,7 +406,10 @@ pub fn user_message_with_images(content: &str, images: Option<&Value>) -> Value 
         ) else {
             continue;
         };
-        let detail = image.get("detail").and_then(Value::as_str).unwrap_or_default();
+        let detail = image
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let mut url = Map::new();
         url.insert(
             "url".to_string(),
@@ -680,7 +686,6 @@ fn python_truthy(value: &Value) -> bool {
     }
 }
 
-
 #[cfg(test)]
 mod user_message_image_tests {
     use super::*;
@@ -706,9 +711,14 @@ mod user_message_image_tests {
             {"media_type": "image/jpeg", "data_base64": "BBB", "detail": ""},
         ]);
         let message = user_message_with_images("看图", Some(&images));
-        let parts = message["content"].as_array().expect("content 应当是部件数组");
+        let parts = message["content"]
+            .as_array()
+            .expect("content 应当是部件数组");
         assert_eq!(parts.len(), 3);
-        assert_eq!(parts[0], serde_json::json!({"type": "text", "text": "看图"}));
+        assert_eq!(
+            parts[0],
+            serde_json::json!({"type": "text", "text": "看图"})
+        );
         assert_eq!(
             parts[1],
             serde_json::json!({
@@ -736,6 +746,9 @@ mod user_message_image_tests {
         ]);
         let message = user_message_with_images("看图", Some(&images));
         // 一张都拼不出来时退回纯文本：总比发一条没有正文的部件数组好。
-        assert_eq!(message, serde_json::json!({"role": "user", "content": "看图"}));
+        assert_eq!(
+            message,
+            serde_json::json!({"role": "user", "content": "看图"})
+        );
     }
 }

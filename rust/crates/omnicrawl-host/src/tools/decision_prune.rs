@@ -194,7 +194,8 @@ impl PruneClient for DecisionPruneClient {
         }
         let state = prune_state(request.task, request.groups);
         let questions = prune_questions(request.groups);
-        let body = crate::decision_wire::request_body(&channel.mode, &channel.model, &state, &questions);
+        let body =
+            crate::decision_wire::request_body(&channel.mode, &channel.model, &state, &questions);
         let body_text =
             serde_json::to_string(&body).map_err(|error| format!("构造淘汰请求失败：{error}"))?;
         let text = crate::review::decision_post_masked(
@@ -336,7 +337,9 @@ mod tests {
             }
         })
         .to_string();
-        assert!(parse_dropped_indexes(&text, JEV, 2).expect("可解析").is_empty());
+        assert!(parse_dropped_indexes(&text, JEV, 2)
+            .expect("可解析")
+            .is_empty());
     }
 
     #[test]

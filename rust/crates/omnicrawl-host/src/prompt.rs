@@ -18,8 +18,8 @@ use omnicrawl_controllers::building::{
 use omnicrawl_controllers::shared::AGENTS_INSTRUCTIONS_FILE;
 use omnicrawl_controllers::turn::context_messages::plugin_context_messages;
 use omnicrawl_controllers::turn::prompt_context::{
-    build_context_messages, build_system_prompt, format_active_skills_for_context,
-    ActiveSkill, ContextMessageInputs,
+    build_context_messages, build_system_prompt, format_active_skills_for_context, ActiveSkill,
+    ContextMessageInputs,
 };
 use omnicrawl_extensions::skill::{Skill, SkillManager, SkillMeta};
 use serde_json::Value;
@@ -240,13 +240,7 @@ impl PromptRuntime {
         has_tools: bool,
         active_skill_context: &str,
     ) -> Result<Vec<Value>, String> {
-        self.build_context_messages_with(
-            has_tools,
-            None,
-            None,
-            None,
-            Some(active_skill_context),
-        )
+        self.build_context_messages_with(has_tools, None, None, None, Some(active_skill_context))
     }
 
     /// 上下文消息装配的完整路径（含插件 Hook）。

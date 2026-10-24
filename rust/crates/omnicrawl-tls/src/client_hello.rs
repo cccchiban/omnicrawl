@@ -320,7 +320,12 @@ impl ClientHelloSpec {
             identity_list.extend_from_slice(&obfuscated_age.to_be_bytes());
         }
         let mut psk_data = Vec::new();
-        push_prefixed(&mut psk_data, LengthWidth::U16, "identities", &identity_list)?;
+        push_prefixed(
+            &mut psk_data,
+            LengthWidth::U16,
+            "identities",
+            &identity_list,
+        )?;
         // 每个 binder 是 PskBinderEntry：1 字节长度 + 实际 binder。漏掉那个长度字节会让
         // binders 列表长度少 1，服务端解析到 binder 之前就报 decode_error(50)。
         let mut binder_entries = Vec::with_capacity(binder_len + 1);
@@ -333,7 +338,12 @@ impl ClientHelloSpec {
         // 完整扩展：类型(2) + 长度(2) + 数据。
         let mut extension = Vec::new();
         push_u16(&mut extension, ext::PRE_SHARED_KEY);
-        push_prefixed(&mut extension, LengthWidth::U16, "pre_shared_key", &psk_data)?;
+        push_prefixed(
+            &mut extension,
+            LengthWidth::U16,
+            "pre_shared_key",
+            &psk_data,
+        )?;
 
         // 把扩展追加进 ClientHello 的扩展块，同时修正两层长度。
         //
@@ -368,8 +378,7 @@ impl ClientHelloSpec {
         // 每个 entry 的 1 字节长度。依据是 RFC 8448 §4：那里 `payload` 恰好在
         // `ClientHello prefix` 之后只多出 32 字节（binder 数据），其余长度字段都在 prefix 内。
         // 多截这 3 字节会让服务端算出不同的 binder，直接 alert decrypt_error(51)。
-        let binder_data_start_in_extensions =
-            extensions.len() + extension.len() - binder_len;
+        let binder_data_start_in_extensions = extensions.len() + extension.len() - binder_len;
         // 返回给调用方的偏移是 binder 数据起点（回填用）；截断点另由 `binder_offset - 3` 推出。
         let binder_start_in_extensions = binder_data_start_in_extensions;
         extensions.extend_from_slice(&extension);

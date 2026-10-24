@@ -23,8 +23,7 @@ use omnicrawl_ipc::bridge::{
     Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult, HostEvent,
     InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelHookRequest,
     ModelHookResult, SessionModelSettings, SessionSettingsParams, SubagentQueryParams,
-    TodoUpdatePayload, ToolBatch,
-    ToolEventPayload, ToolStartedPayload,
+    TodoUpdatePayload, ToolBatch, ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
     error_code, Frame, Id, ToolBatchResult, TurnCancelParams, TurnSubmitParams, PROTOCOL_VERSION,
@@ -74,7 +73,8 @@ pub struct RunnerOptions {
     /// 此模式下需审查的调用会 fail-closed 拒绝。
     pub review: Option<ReviewOptions>,
     /// 提问托管（`decision_models.toml` 的 `ask_user_custody` 开关）：开启后**有选项**的提问
-    /// 交给决策模型自动作答；`None` 或不可用时一律退回人工提问（fail-open）。
+    /// 交给决策模型自动作答（候选项末尾带「我有自己的想法...」，选中它就退回人工提问）；
+    /// `None` 或不可用时一律退回人工提问（fail-open）。
     pub custody: Option<CustodyOptions>,
     /// 工具调用淘汰（`decision_models.toml` 的 `tool_call_prune` 开关）：开启后内核会把「刚变老
     /// 的那一批」调用交回来裁决，判为无用的整组移出上下文；`None` 或不可用时一律保留原文
@@ -497,7 +497,9 @@ impl TurnRunner {
                 };
                 match self.apply_session_settings(params, on_event) {
                     Ok(_) => restore_skill_context = true,
-                    Err(error) => diagnostics::warn(format!("[host] 下发活动 Skill 上下文失败：{error}")),
+                    Err(error) => {
+                        diagnostics::warn(format!("[host] 下发活动 Skill 上下文失败：{error}"))
+                    }
                 }
                 task
             }
@@ -894,6 +896,12 @@ impl TurnRunner {
         on_event: &mut dyn FnMut(HostEvent),
     ) -> Vec<AgentLoopObservation> {
         let mut pending = PendingBatch::new(Id::Number(0), batch.calls.clone());
+        // Computer Use 子回合的批次无人值守，批内一律按 `auto` 判定：停等审批就是死锁。
+        let batch_approval = if host::is_computer_use_turn(&batch.turn_id) {
+            ApprovalMode::Auto
+        } else {
+            self.options.approval
+        };
         let mut todos: Vec<TodoItem> = Vec::new();
         let mut paused = false;
         let (sender, completions) = mpsc::channel::<JobDone>();
@@ -908,13 +916,7 @@ impl TurnRunner {
         // 审批判定要读工具说明与参数 schema：先把工具表借出来（用局部 Arc 避开 `&mut self`）。
         let registry = Arc::clone(&self.registry);
         let facts: Option<&dyn host::ToolFacts> = Some(&*registry as &dyn host::ToolFacts);
-        let mut step = advance(
-            &mut pending,
-            self.options.approval,
-            &mut todos,
-            &mut paused,
-            facts,
-        );
+        let mut step = advance(&mut pending, batch_approval, &mut todos, &mut paused, facts);
         flush_settled(&pending, batch.step, &mut started, &mut finished, on_event);
 
         loop {
@@ -961,7 +963,7 @@ impl TurnRunner {
                                         &call,
                                         &current_arguments,
                                         true,
-                                        self.options.approval.as_str(),
+                                        batch_approval.as_str(),
                                     ) {
                                         denial = Some(reason);
                                     }
@@ -983,12 +985,7 @@ impl TurnRunner {
                                 decided[index] = true;
                                 pending.decide(
                                     true,
-                                    &mut context(
-                                        self.options.approval,
-                                        &mut todos,
-                                        &mut paused,
-                                        facts,
-                                    ),
+                                    &mut context(batch_approval, &mut todos, &mut paused, facts),
                                 )
                             } else {
                                 let approved =
@@ -1013,12 +1010,7 @@ impl TurnRunner {
                                 decided[index] = true;
                                 pending.decide(
                                     approved,
-                                    &mut context(
-                                        self.options.approval,
-                                        &mut todos,
-                                        &mut paused,
-                                        facts,
-                                    ),
+                                    &mut context(batch_approval, &mut todos, &mut paused, facts),
                                 )
                             }
                         }
@@ -1042,7 +1034,7 @@ impl TurnRunner {
                             }
                             pending.answer(
                                 answer,
-                                &mut context(self.options.approval, &mut todos, &mut paused, facts),
+                                &mut context(batch_approval, &mut todos, &mut paused, facts),
                             )
                         }
                     };
@@ -1079,7 +1071,7 @@ impl TurnRunner {
                                 call,
                                 &call.arguments,
                                 false,
-                                self.options.approval.as_str(),
+                                batch_approval.as_str(),
                             ) {
                                 pending.record_result(
                                     *index,
@@ -1131,13 +1123,7 @@ impl TurnRunner {
                         self.run_jobs(jobs, &completions, &sender, &mut pending);
                     }
                     flush_settled(&pending, batch.step, &mut started, &mut finished, on_event);
-                    step = advance(
-                        &mut pending,
-                        self.options.approval,
-                        &mut todos,
-                        &mut paused,
-                        facts,
-                    );
+                    step = advance(&mut pending, batch_approval, &mut todos, &mut paused, facts);
                     flush_settled(&pending, batch.step, &mut started, &mut finished, on_event);
                 }
             }

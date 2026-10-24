@@ -210,7 +210,10 @@ pub fn stop(environment: &ConfigEnvironment, settings: &DecisionSettings) -> Ens
 }
 
 /// 拉起常驻服务进程；返回它的 PID。
-fn spawn_service(environment: &ConfigEnvironment, _settings: &DecisionSettings) -> Result<u32, String> {
+fn spawn_service(
+    environment: &ConfigEnvironment,
+    _settings: &DecisionSettings,
+) -> Result<u32, String> {
     let program = resolve_service_program();
     let mut command = Command::new(&program);
     // 子进程是常驻服务本体：不再经 ensure 路径，直接监听。
@@ -220,7 +223,9 @@ fn spawn_service(environment: &ConfigEnvironment, _settings: &DecisionSettings) 
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if let Some(log) = open_log(environment) {
-        command.stdout(Stdio::from(log.0)).stderr(Stdio::from(log.1));
+        command
+            .stdout(Stdio::from(log.0))
+            .stderr(Stdio::from(log.1));
     }
     // 服务是本机共用的常驻进程：脱离宿主创建，不纳入宿主的 kill-on-close Job。
     let child: Child = spawn_shared_service(&mut command)
@@ -340,7 +345,8 @@ mod tests {
     use omnicrawl_config::features::decision_model::DecisionApiConfig;
 
     fn environment(tag: &str) -> ConfigEnvironment {
-        let root = std::env::temp_dir().join(format!("oc-decision-api-{}-{tag}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("oc-decision-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(omnicrawl_config::core::runtime::USER_CONFIG_DIRNAME))
             .expect("建立临时配置目录");
@@ -369,8 +375,15 @@ mod tests {
         // 已启用但没有决策渠道：同样不该监听。
         let no_channel = ensure_running(&environment, &settings(true), false);
         assert!(!no_channel.ready());
-        assert!(no_channel.message.contains("决策渠道"), "{}", no_channel.message);
-        assert!(read_pid(&environment).is_none(), "拒绝启动时不该留下 PID 记录");
+        assert!(
+            no_channel.message.contains("决策渠道"),
+            "{}",
+            no_channel.message
+        );
+        assert!(
+            read_pid(&environment).is_none(),
+            "拒绝启动时不该留下 PID 记录"
+        );
     }
 
     #[test]
