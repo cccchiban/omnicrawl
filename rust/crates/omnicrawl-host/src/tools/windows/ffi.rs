@@ -17,8 +17,11 @@ pub type Hgdiobj = *mut c_void;
 pub const SW_RESTORE: c_int = 9;
 
 /// `SetWindowPos` 的 `hWndInsertAfter` 伪句柄：临时置顶再撤销时用。
-pub const HWND_TOPMOST: Hwnd = 0xFFFF_FFFF_FFFF_FFFF_usize as Hwnd;
-pub const HWND_NOTOPMOST: Hwnd = 0xFFFF_FFFF_FFFF_FFFE_usize as Hwnd;
+///
+/// 取值等于 `(HWND)(-1)` / `(HWND)(-2)`，必须按目标字宽展开：写成 64 位字面量会在
+/// 32 位目标（i686）上触发 `overflowing_literals` 而编译失败。
+pub const HWND_TOPMOST: Hwnd = !0usize as Hwnd;
+pub const HWND_NOTOPMOST: Hwnd = (!0usize - 1) as Hwnd;
 pub const SWP_NOSIZE: u32 = 0x0001;
 pub const SWP_NOMOVE: u32 = 0x0002;
 pub const SWP_SHOWWINDOW: u32 = 0x0040;
