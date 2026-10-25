@@ -76,13 +76,23 @@ fn psk_extension_is_appended_last_with_consistent_lengths() {
         "pre_shared_key 必须是最后一个扩展"
     );
 
-    // binder_offset 指向 binders 列表的 2 字节长度前缀（RFC 8446 §4.2.11.2 的截断点），
-    // 占位零从它之后开始。
-    assert!(binder_offset > 0);
-    let declared_binder_len =
-        u16::from_be_bytes([hello[binder_offset], hello[binder_offset + 1]]) as usize;
-    assert_eq!(declared_binder_len, binder_len, "binders 长度字段");
-    let binder = &hello[binder_offset + 2..binder_offset + 2 + binder_len];
+    // `binder_offset` 指向 binders 列表里第一个 PskBinderEntry 的**数据**起点；
+    // 它前面依次是 1 字节 entry 长度与 2 字节 binders 列表长度（RFC 8446 §4.2.11）。
+    // 因此截断点（Truncate，去掉整个 binders 列表）在它往回 3 字节处。
+    assert!(binder_offset > 3);
+    let declared_binders_len =
+        u16::from_be_bytes([hello[binder_offset - 3], hello[binder_offset - 2]]) as usize;
+    assert_eq!(
+        declared_binders_len,
+        binder_len + 1,
+        "binders 列表长度字段 = entry 长度字节 + binder 数据"
+    );
+    assert_eq!(
+        hello[binder_offset - 1] as usize,
+        binder_len,
+        "PskBinderEntry 的长度字节"
+    );
+    let binder = &hello[binder_offset..binder_offset + binder_len];
     assert_eq!(binder, &vec![0u8; binder_len], "编码阶段 binder 应为占位零");
 }
 
@@ -96,13 +106,13 @@ fn the_truncated_prefix_keeps_the_final_lengths() {
         .encode_with_psk(0x0a0a, &random, &session_id, &[(b"ticket".to_vec(), 0)], 32)
         .expect("编码");
 
-    let truncated = &hello[..binder_offset];
-    // RFC 8446 §4.2.11.2：转录「一直到并包括 identities 字段」——因此截断点落在
-    // binders 列表的 2 字节长度前缀之前，binder 数据与那个前缀都不进转录。
+    let truncated = &hello[..binder_offset - 3];
+    // RFC 8446 §4.2.11.2：转录「一直到并包括 identities 字段」——`Truncate()` 去掉整个
+    // binders 列表，含 2 字节列表长度前缀、1 字节 entry 长度与 binder 数据。
     assert_eq!(
         truncated.len(),
-        hello.len() - binder_len - 2,
-        "截断应去掉 binders 长度前缀 + binder 数据"
+        hello.len() - binder_len - 3,
+        "截断应去掉 binders 列表长度前缀 + entry 长度 + binder 数据"
     );
     // 截断后的握手体长度字段仍是「完整」的值——这正是规范要求的形式。
     let declared = ((hello[1] as usize) << 16) | ((hello[2] as usize) << 8) | hello[3] as usize;

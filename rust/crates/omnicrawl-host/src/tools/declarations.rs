@@ -47,11 +47,12 @@ pub fn tool_parameters_schema(argument_schema: &str) -> Value {
     }
     let mut schema = Map::new();
     schema.insert("type".to_string(), Value::from("object"));
+    let empty = properties.is_empty();
+    schema.insert("properties".to_string(), Value::Object(properties));
     // 示例值风格没有显式 required：只要声明了参数，就禁止空对象调用。
-    if !properties.is_empty() {
+    if !empty {
         schema.insert("minProperties".to_string(), Value::from(1));
     }
-    schema.insert("properties".to_string(), Value::Object(properties));
     Value::Object(schema)
 }
 

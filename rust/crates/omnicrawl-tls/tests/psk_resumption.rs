@@ -75,12 +75,12 @@ fn extract_psk(client_hello: &[u8]) -> Option<(Vec<u8>, usize, usize)> {
             let ticket_len =
                 u16::from_be_bytes([body[identity_start], body[identity_start + 1]]) as usize;
             let ticket = body[identity_start + 2..identity_start + 2 + ticket_len].to_vec();
-            // binders 紧跟在 identities 之后。
+            // binders 紧跟在 identities 之后：2 字节列表长度，然后是首个 entry 的
+            // 1 字节长度与 binder 数据（RFC 8446 §4.2.11 的 PskBinderEntry）。
             let binders_start = identity_start + identities_len;
-            let binder_len =
-                u16::from_be_bytes([body[binders_start], body[binders_start + 1]]) as usize;
-            // binder 数据在 binders 长度字段之后；偏移要换算回整个 hello 的坐标。
-            return Some((ticket, 4 + binders_start + 2, binder_len));
+            let binder_len = body[binders_start + 2] as usize;
+            // binder 数据在列表长度与 entry 长度之后；偏移要换算回整个 hello 的坐标。
+            return Some((ticket, 4 + binders_start + 3, binder_len));
         }
         cursor = data_start + len;
     }
@@ -143,8 +143,11 @@ impl PskServer {
         full.push((client_hello.len() & 0xff) as u8);
         full.extend_from_slice(client_hello);
         // **独立复算 binder**：用收到的字节截断，而不是信客户端给的中间值。
+        // 截断点是 binders 列表长度前缀之前（binder 数据起点往回 3 字节），
+        // 这样前缀与各个长度字段都留在转录里，符合 RFC 8446 §4.2.11.2。
+        let truncated = binder_offset - 3;
         let expected =
-            KeySchedule::psk_binder(suite, psk, &full[..binder_offset]).expect("服务端计算 binder");
+            KeySchedule::psk_binder(suite, psk, &full[..truncated]).expect("服务端计算 binder");
         let actual = &full[binder_offset..binder_offset + binder_len];
         assert_eq!(
             expected.as_slice(),
