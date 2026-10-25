@@ -905,6 +905,9 @@ fn a_goaway_during_the_settings_exchange_fails_the_connection() {
             .expect("编码 GOAWAY"),
         );
         tls.write_h2(&mut server_side, &batch);
+        // 写完 GOAWAY 后先等客户端读完再释放套接字：直接 drop 时若发送缓冲里还有
+        // 未送达的数据，Linux 会发 RST 把 GOAWAY 丢掉，客户端只看到 ConnectionReset。
+        thread::sleep(std::time::Duration::from_millis(300));
         server_side
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .expect("设置读超时");
