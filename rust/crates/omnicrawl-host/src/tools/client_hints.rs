@@ -99,21 +99,17 @@ pub fn hints_for(url: &str) -> Vec<String> {
         .collect()
 }
 
-/// 平台版本：Windows 取内核主版本（10/11 内核均是 10.0.0）。
+/// 平台版本：跟随**档案的 `sec-ch-ua-platform`**取值，而不是编译平台。
 ///
-/// 浏览器这里给的是**平台的真实版本**，不是随便编的数字；本实现在编译期确定目标平台，
-/// 因此只能给出该平台对应的固定值。非 Windows 目标返回 `None`——宁可不发。
+/// 指纹档案模拟的是桌面 Windows Chrome（见 `identity_for` 的 `platform`），所以无论宿主
+/// 编译到哪个平台，这里都必须给 Windows 的版本，否则会发出「Windows + 2.xxxx」这种
+/// 自相矛盾的组合。Windows 10/11 内核均为 10.0.0。
+///
+/// 只有 Chromium 系（chrome/edge）有这套高熵头；Firefox/Safari 返回 `None`——宁可不发。
 pub fn platform_version(family: &str) -> Option<&'static str> {
-    // 只对声明了 Client Hints 的族生效（Safari 没有这套头）。
-    if family == "safari" {
-        return None;
-    }
-    if cfg!(target_os = "windows") {
-        Some("\"10.0.0\"")
-    } else if cfg!(target_os = "macos") {
-        Some("\"14.0.0\"")
-    } else {
-        None
+    match family {
+        "chrome" | "edge" => Some("\"10.0.0\""),
+        _ => None,
     }
 }
 
@@ -266,14 +262,14 @@ mod tests {
     #[test]
     fn platform_version_is_absent_for_safari() {
         let _serial = super::test_guard();
-        assert!(platform_version("safari").is_none());
-        // 其余族在当前目标平台上有值（Claude 在 Windows 上跑，只断言不 panic 的形态）。
-        for family in ["chrome", "edge", "firefox"] {
-            let value = platform_version(family);
-            if cfg!(any(target_os = "windows", target_os = "macos")) {
-                assert!(value.is_some(), "{family} 应当有平台版本");
-                assert!(value.unwrap().starts_with('"'), "{family} 值需要带引号");
-            }
+        // 只有 Chromium 系有这套高熵头；Firefox/Safari 必须为空。
+        for family in ["firefox", "safari"] {
+            assert!(platform_version(family).is_none(), "{family} 不该有平台版本");
+        }
+        // 档案模拟的是桌面 Windows Chrome，值与编译平台无关。
+        for family in ["chrome", "edge"] {
+            let value = platform_version(family).expect("Chromium 系应当有平台版本");
+            assert!(value.starts_with('"') && value.ends_with('"'), "{family} 值需要带引号");
         }
     }
 }

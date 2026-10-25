@@ -1350,6 +1350,7 @@ mode = \"review\"
     }
 
     /// 桌面操作工具的确认截图必须走宿主同一条视觉附件通路，否则模型仍然看不到画面。
+    #[cfg(windows)]
     #[test]
     fn windows_input_returns_a_snapshot_through_the_registry() {
         let (registry, root) = registry("windows-snapshot");

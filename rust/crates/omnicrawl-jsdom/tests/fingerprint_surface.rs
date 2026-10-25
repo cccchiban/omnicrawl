@@ -109,6 +109,9 @@ fn canvas_paths_and_gradients_produce_gradients() {
     );
 }
 
+/// 字体只在 Windows 上按系统字体文件解析（`resolve_font` 的既定范围），
+/// 因此字形光栅化断言只在 Windows 跑；其它平台没有可用的字体文件。
+#[cfg(windows)]
 #[test]
 fn canvas_text_is_rasterized() {
     let inked = probe(
