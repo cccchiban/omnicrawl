@@ -225,7 +225,7 @@ impl SubagentWindowNotice {
     /// 消息流里那一行（渲染成 `· ` 提示行）。
     pub fn line(&self) -> String {
         format!(
-            "子代理在独立窗口运行（批次 {}）；流水：{}",
+            "子代理在独立窗口运行（批次 {}，结束自动关闭）；流水：{}",
             self.batch_id, self.stream
         )
     }
@@ -374,6 +374,12 @@ pub struct Composer {
 /// 粘贴折叠的阈值：超过这么多行就折成一个占位符（对映 Python `_PASTE_COMPACT_LINE_THRESHOLD`）。
 pub const PASTE_COMPACT_LINE_THRESHOLD: usize = 5;
 
+/// 输入框历史最多保留的条数。
+///
+/// 上下键回看只用到最近若干条，历史本身没有保留更早内容的理由；无上限时任何一处
+/// 反复提交（死循环、重试抖动）都会把它推到内存上限。
+pub const COMPOSER_HISTORY_LIMIT: usize = 500;
+
 /// 终端粘贴常带 CRLF/CR，先统一成 LF（对映 Python `_normalize_pasted_text`）。
 fn normalize_paste(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
@@ -459,10 +465,16 @@ impl Composer {
     ///
     /// 提交即退出浏览态：无论是否新入列，下一条上键都从最新一条开始。
     pub fn history_record(&mut self, text: &str) {
+        // 先退出浏览态再裁历史：浏览中的 `history_index` 指向旧下标，裁剪会让它错位。
+        self.exit_browse_mode();
         if !text.is_empty() && self.history.last().map(String::as_str) != Some(text) {
             self.history.push(text.to_string());
+            // 只留最近 [`COMPOSER_HISTORY_LIMIT`] 条：更早的既翻不到，也没有保留价值。
+            if self.history.len() > COMPOSER_HISTORY_LIMIT {
+                let overflow = self.history.len() - COMPOSER_HISTORY_LIMIT;
+                self.history.drain(..overflow);
+            }
         }
-        self.exit_browse_mode();
     }
 
     /// 是否正在浏览已发送消息。
@@ -1088,13 +1100,12 @@ impl ReasoningReveal {
         self.target = 0;
     }
 
-    /// 该记录又长了：更新目标长度（收窄时跟着回退，例如流回滚）。
-    fn grow(&mut self, index: usize, target: usize) {
+    /// 该记录又长了：按本次增量推进目标长度，不对整段重数。
+    fn extend(&mut self, index: usize, appended: usize) {
         if self.index != Some(index) {
             return;
         }
-        self.target = target;
-        self.revealed = self.revealed.min(target);
+        self.target += appended;
     }
 
     /// 退出显现态：之后所有思考段都按全文显示（收口、展开/收起、回放、回滚）。
@@ -1792,6 +1803,11 @@ impl AppState {
         }
     }
 
+    /// 当前排队条数：排空循环用它界定本轮最多能派发几条。
+    pub fn pending_len(&self) -> usize {
+        self.pending_inputs.len()
+    }
+
     /// 取队首消息准备提交；回合进行中时不取（对映 Python 的排空循环守卫）。
     ///
     /// 模态页（设置面板）是否放行由调用方判断，与 Python 的
@@ -2099,10 +2115,45 @@ impl AppState {
         self.touch_appended();
     }
 
-    /// 追加一条子代理过程文本（子代理窗口内的 `assistant` 记录）。
+    /// 追加一段子代理过程文本（子代理窗口内的 `assistant` 记录）。
+    ///
+    /// 正文是逐片到达的：合并进末尾那条正文记录，否则每一片都会单开一条消息。
     pub fn subagent_text(&mut self, text: String) {
-        self.records.push(Record::Assistant(text));
-        self.touch_appended();
+        if let Some(Record::Assistant(body)) = self.records.last_mut() {
+            body.push_str(&text);
+        } else {
+            self.records.push(Record::Assistant(text));
+            return self.touch_appended();
+        }
+        let index = self.records.len() - 1;
+        self.touch_record(index);
+    }
+
+    /// 追加一段子代理思考（子代理窗口内的 `reasoning` 记录）。
+    ///
+    /// 思考增量是逐片到达的：合并进末尾那条思考记录，否则每一片都会单开一个折叠块。
+    /// 同时挂上逐帧显现游标，与主代理的思考段同速铺开。
+    pub fn subagent_reasoning(&mut self, text: String) {
+        let appended = text.chars().count();
+        let index = self.records.len().saturating_sub(1);
+        match self.records.last_mut() {
+            Some(Record::Reasoning(body)) => body.push_str(&text),
+            _ => {
+                self.records.push(Record::Reasoning(text));
+                return self.start_reasoning_reveal(self.records.len() - 1, appended);
+            }
+        }
+        self.start_reasoning_reveal(index, appended);
+    }
+
+    /// 让第 `index` 条思考记录从当前长度起继续逐帧铺开 `appended` 个字符。
+    fn start_reasoning_reveal(&mut self, index: usize, appended: usize) {
+        let reveal = self.reasoning_reveal.get_mut();
+        if reveal.index != Some(index) {
+            reveal.start(index);
+        }
+        reveal.extend(index, appended);
+        self.touch_record(index);
     }
 
     /// 子代理工具开始：挂一张运行中的工具卡（与主代理的卡片同形）。
@@ -3029,24 +3080,19 @@ impl AppState {
         if matches!(target_index.and_then(|index| self.records.get(index)), Some(record) if target(record))
         {
             let index = target_index.expect("目标记录存在");
-            let length = if let Some(record) = self.records.get_mut(index) {
+            if let Some(record) = self.records.get_mut(index) {
                 match record {
-                    Record::Reasoning(body) | Record::Assistant(body) => {
-                        body.push_str(text);
-                        body.chars().count()
-                    }
+                    Record::Reasoning(body) | Record::Assistant(body) => body.push_str(text),
                     _ => unreachable!("target 只匹配思考与正文记录"),
                 }
-            } else {
-                0
-            };
-            // 思考段逐帧显现：新段从 0 起铺开，已有段只更新目标长度（渲染按已显现量截断）。
+            }
+            // 思考段逐帧显现：只按本次增量的字符数推进目标，不对整段重数。
             if reasoning {
                 let reveal = self.reasoning_reveal.get_mut();
                 if reveal.index != Some(index) {
                     reveal.start(index);
                 }
-                reveal.grow(index, length);
+                reveal.extend(index, text.chars().count());
             }
             // 正文逐片追加：只重算这一条记录（分块增量缓存的关键路径）。
             self.touch_record(index);
@@ -3062,7 +3108,7 @@ impl AppState {
                 let length = text.chars().count();
                 let reveal = self.reasoning_reveal.get_mut();
                 reveal.start(index);
-                reveal.grow(index, length);
+                reveal.extend(index, length);
             }
             self.touch_appended();
         }
@@ -5291,6 +5337,27 @@ mod history_tests {
         composer.history_record("同一句");
         composer.history_record("");
         assert_eq!(composer.history.len(), 1, "重复与空提交不入列");
+    }
+
+    /// 历史必须封顶：无上限时任何一处反复提交（死循环、重试抖动）都会把内存顶到分配失败。
+    #[test]
+    fn history_is_capped_and_keeps_the_newest_entries() {
+        let mut composer = Composer::default();
+        for index in 0..COMPOSER_HISTORY_LIMIT + 50 {
+            composer.history_record(&format!("第 {index} 条"));
+        }
+        assert_eq!(composer.history.len(), COMPOSER_HISTORY_LIMIT);
+        let newest = format!("第 {} 条", COMPOSER_HISTORY_LIMIT + 49);
+        assert_eq!(
+            composer.history.last().map(String::as_str),
+            Some(newest.as_str())
+        );
+        // 最早那条已被挤掉，上键翻到的第一条就是窗口内的第一条。
+        assert!(composer.navigate_history(-1));
+        assert_eq!(
+            composer.history.first().map(String::as_str),
+            Some("第 50 条")
+        );
     }
 
     #[test]

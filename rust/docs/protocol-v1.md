@@ -163,7 +163,8 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `provider` / `protocol` / `base_url` / `api_key_env` 是**渠道字段**：宿主切换模型渠道时整套下发，
   凭据本身仍然不进帧（只给环境变量名）；给空串等同于不给。
 - `model.system_prompt` / `model.context_messages` 是**提示词整体替换**：宿主启用主 Agent 模式
-  （`/plan`）后重算 system prompt（末尾追加 `<active_mode_prompt>`）与上下文消息并下发；
+  （`/plan`、`/speaking-style`）或关闭模式后重算 system prompt（末尾追加或摘掉
+  `<active_mode_prompt>`）与上下文消息并下发；
   上下文消息只在请求体里生效，不写进会话转录。
 - 设置对**后续**回合生效：正在跑的回合在开始时已快照模型配置，本次更新不会改变它已经发出的请求。
   回合进行中也能应答这个方法，不必等回合结束。
@@ -414,10 +415,12 @@ Markdown 定义；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`，两侧取同一份
 四层发现结果。
 
-`subagent` 的执行方式：`action=run` 在回合内**同步串行**跑子任务——一个跑完再跑下一个，
-父回合阻塞到全部结束，`max_concurrency` 配置保留但不再生效；`fail_fast` 在前序任务失败后停止
-调度，未跑的任务落成 `cancelled`。子任务与主回合同在一条线程，工具批次直接由内核转发宿主，
-任一时刻只有一个 `tool.batch` 在途，`turn_id` 用子任务号。`list` / `get` / `cancel` 仍可用：
+`subagent` 的执行方式：一次调用只提交**一个** `task`，`action=run` 在回合内阻塞到该任务结束。
+需要多个子代理时，在同一条助手消息里并行发起多次 `subagent` 调用——每次调用各自成批
+（`batch_id` 不同、各开一个窗口），父回合在全部调用收口后才继续。一次调用塞多个任务的
+`tasks` 数组、`max_concurrency` 与 `fail_fast` 都已移除：它们原先只在一个批次内部串行排队，
+既没有并行语义，也让「一个子代理一个任务」的边界变模糊。子任务与主回合同在一条线程，工具批次
+直接由内核转发宿主，`turn_id` 用子任务号。`list` / `get` / `cancel` 仍可用：
 任务表只用于查询与工作区切换前的拦阻。
 
 `isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），

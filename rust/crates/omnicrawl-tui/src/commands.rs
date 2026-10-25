@@ -208,6 +208,17 @@ impl CommandAgent for TuiHostAgent<'_> {
             .map_err(AgentError::new)
     }
 
+    fn active_mode(&self) -> String {
+        self.app.borrow().command_active_mode()
+    }
+
+    fn deactivate_mode(&self) -> Result<String, AgentError> {
+        self.app
+            .borrow_mut()
+            .command_deactivate_mode()
+            .map_err(AgentError::new)
+    }
+
     // ── 审批 / 推理强度 / 模型 ────────────────────────────────
 
     fn approval_mode(&self) -> String {

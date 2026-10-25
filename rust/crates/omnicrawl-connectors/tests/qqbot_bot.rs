@@ -149,6 +149,11 @@ struct MockDriver {
     turns: Mutex<Vec<String>>,
     script: Mutex<Value>,
     cancelled: AtomicBool,
+    /// 当前模式与「被激活过几次」，用来验证 QQBot 的默认开启行为。
+    mode: Mutex<String>,
+    activations: Mutex<Vec<String>>,
+    /// 让 `handle_command` 按命令表判定：未登记的命令回 `None`。
+    strict: AtomicBool,
 }
 
 impl MockDriver {
@@ -158,6 +163,14 @@ impl MockDriver {
 
     fn turns(&self) -> Vec<String> {
         self.turns.lock().expect("回合锁中毒").clone()
+    }
+
+    fn activations(&self) -> Vec<String> {
+        self.activations.lock().expect("激活记录锁中毒").clone()
+    }
+
+    fn set_mode(&self, mode: &str) {
+        *self.mode.lock().expect("模式锁中毒") = mode.to_string();
     }
 }
 
@@ -181,7 +194,48 @@ impl AgentDriver for MockDriver {
     }
 
     fn handle_command(&self, text: &str, channel: &str) -> Result<Option<String>, String> {
+        // 严格模式按命令表判定，用来验证「宿主不认识这条命令」的分支。
+        if self.strict.load(Ordering::SeqCst) {
+            let token = text
+                .trim_start()
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .split('@')
+                .next()
+                .unwrap_or("");
+            if !self.command_menu().iter().any(|(name, _)| name == token) {
+                return Ok(None);
+            }
+        }
         Ok(Some(format!("宿主收到（{channel}）：{text}")))
+    }
+
+    fn command_menu(&self) -> Vec<(String, String)> {
+        vec![
+            ("status".to_string(), String::new()),
+            ("speaking-style".to_string(), String::new()),
+            ("skills".to_string(), String::new()),
+        ]
+    }
+
+    fn active_mode(&self) -> String {
+        self.mode.lock().expect("模式锁中毒").clone()
+    }
+
+    fn activate_mode(&self, mode: &str) -> Result<String, String> {
+        self.activations
+            .lock()
+            .expect("激活记录锁中毒")
+            .push(mode.to_string());
+        self.set_mode(mode);
+        Ok(mode.to_string())
+    }
+
+    fn deactivate_mode(&self) -> Result<String, String> {
+        let previous = std::mem::take(&mut *self.mode.lock().expect("模式锁中毒"));
+        Ok(previous)
     }
 
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError> {
@@ -407,6 +461,44 @@ fn text_before_and_after_a_tool_are_separate_messages() {
             .iter()
             .any(|text| text.contains("先看目录。") && text.contains("共两个文件。")),
         "工具前后的正文不能黏在一起：{contents:?}"
+    );
+}
+
+#[test]
+fn the_last_answer_segment_is_not_sent_twice() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    // 宿主的最终回答只是最后一个模型 pass 的文本，不含工具前的正文段。
+    driver.set_script(json!({
+        "events": [
+            {"kind": "delta", "text": "先看目录。"},
+            {"kind": "tool_start", "name": "list", "id": "c1"},
+            {"kind": "tool_finish", "name": "list", "id": "c1", "output": "a.py"},
+            {"kind": "delta", "text": "共一个文件。"},
+        ],
+        "reply": "共一个文件。",
+    }));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "看看目录", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    wait_for(5.0, || {
+        port.contents()
+            .iter()
+            .any(|text| text.contains("共一个文件"))
+    });
+    wait_for(5.0, || !bot.is_busy());
+
+    let contents = port.contents();
+    assert_eq!(
+        contents
+            .iter()
+            .filter(|text| text.contains("共一个文件"))
+            .count(),
+        1,
+        "最后一段正文只能出现一次：{contents:?}"
     );
 }
 
@@ -1057,4 +1149,47 @@ fn block_syntax_gets_its_own_line_after_the_prefix() {
         markdown.starts_with("◇\n# 结论"),
         "标题不能被 `◇ ` 前缀吃掉：{markdown:?}"
     );
+}
+
+
+#[test]
+fn default_speaking_style_is_enabled_once_at_startup() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port);
+    bot.enable_default_speaking_style();
+    assert_eq!(driver.activations(), vec!["speaking-style".to_string()]);
+    assert_eq!(driver.active_mode(), "speaking-style");
+}
+
+#[test]
+fn an_explicit_mode_is_not_overridden_by_the_default() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    driver.set_mode("plan");
+    let bot = bot_with(driver.clone(), port);
+    bot.enable_default_speaking_style();
+    assert!(driver.activations().is_empty(), "已有模式时不应再激活");
+    assert_eq!(driver.active_mode(), "plan");
+}
+
+#[test]
+fn a_misspelled_command_is_answered_with_the_closest_one() {
+    let driver = Arc::new(MockDriver::default());
+    driver.strict.store(true, Ordering::SeqCst);
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "/speaking-styl", "m-1"),
+    );
+    let contents = port.contents();
+    assert!(
+        contents
+            .iter()
+            .any(|text| text.contains("是不是想用 /speaking-style")),
+        "{contents:?}"
+    );
+    // 只提示、不执行：拼错的命令不会真的切模式。
+    assert!(driver.activations().is_empty(), "不应替用户执行命令");
 }

@@ -49,11 +49,9 @@ pub fn is_reserved_role(name: &str) -> bool {
 }
 
 /// 顶层允许的字段。
-pub const TOP_LEVEL_FIELDS: [&str; 10] = [
+pub const TOP_LEVEL_FIELDS: [&str; 8] = [
     "action",
-    "tasks",
-    "max_concurrency",
-    "fail_fast",
+    "task",
     "task_id",
     "batch_id",
     "branch",
@@ -353,137 +351,100 @@ pub fn validate_arguments(
             "仅支持 action=run。".to_string(),
         ));
     }
-    let Some(tasks) = object.get("tasks").and_then(Value::as_array) else {
+    let Some(task_value) = object.get("task") else {
         return Some((
             "SUBAGENT_LIMIT_EXCEEDED".to_string(),
-            "tasks 必须是数组。".to_string(),
+            "task 必须是对象。".to_string(),
         ));
     };
-    let task_limit = config.max_tasks_per_batch;
-    if tasks.is_empty() || tasks.len() as i64 > task_limit {
-        return Some((
-            "SUBAGENT_LIMIT_EXCEEDED".to_string(),
-            format!("当前 SubAgent 阶段每批必须包含 1 到 {task_limit} 个任务。"),
-        ));
-    }
-
-    let max_concurrency = object
-        .get("max_concurrency")
-        .cloned()
-        .unwrap_or_else(|| Value::from(config.max_concurrency));
-    let concurrency_ok = match &max_concurrency {
-        Value::Number(number) if number.is_i64() => {
-            matches!(number.as_i64(), Some(1..=4))
-        }
-        _ => false,
-    };
-    if !concurrency_ok {
-        return Some((
-            "SUBAGENT_LIMIT_EXCEEDED".to_string(),
-            "max_concurrency 必须是 1 到 4 的整数。".to_string(),
-        ));
-    }
-    let fail_fast = object
-        .get("fail_fast")
-        .cloned()
-        .unwrap_or(Value::Bool(false));
-    if !fail_fast.is_boolean() {
+    let Some(task) = task_value.as_object() else {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "fail_fast 必须是布尔值。".to_string(),
+            "task 必须是对象。".to_string(),
+        ));
+    };
+    let mut unknown_task_fields: Vec<String> = task
+        .keys()
+        .filter(|key| !TASK_FIELDS.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    if !unknown_task_fields.is_empty() {
+        unknown_task_fields.sort();
+        return Some((
+            "SUBAGENT_PERMISSION_DENIED".to_string(),
+            format!(
+                "当前 SubAgent 阶段不允许任务字段：{}。",
+                unknown_task_fields.join(", ")
+            ),
         ));
     }
-
-    for (index, task) in tasks.iter().enumerate() {
-        let Some(task) = task.as_object() else {
-            return Some((
-                "AGENT_DEFINITION_INVALID".to_string(),
-                format!("tasks[{index}] 必须是对象。"),
-            ));
+    let description = task.get("description").and_then(Value::as_str);
+    let prompt = task.get("prompt").and_then(Value::as_str);
+    let agent_type = task.get("subagent_type").and_then(Value::as_str);
+    let context = task
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or("fresh");
+    if description
+        .map(|text| text.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "task.description 必须是非空字符串。".to_string(),
+        ));
+    }
+    if prompt.map(|text| text.trim().is_empty()).unwrap_or(true) {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "task.prompt 必须是非空字符串。".to_string(),
+        ));
+    }
+    if agent_type
+        .map(|text| text.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "task.subagent_type 必须是非空字符串。".to_string(),
+        ));
+    }
+    let normalized = agent_type.unwrap_or_default().trim().to_lowercase();
+    // 专属角色只能由它自己的工具创建子回合，显式指定要给出明确原因，
+    // 而不是让它变成「未找到定义」那种含糊的提示。
+    if is_reserved_role(&normalized) {
+        return Some((
+            "AGENT_TYPE_RESERVED".to_string(),
+            format!("{normalized} 由专属工具驱动，不能通过 subagent 调用。"),
+        ));
+    }
+    let Some(definition) = registry.get(&normalized) else {
+        let available = available_agent_types(config, registry).join(", ");
+        let available = if available.is_empty() {
+            "无".to_string()
+        } else {
+            available
         };
-        let mut unknown_task_fields: Vec<String> = task
-            .keys()
-            .filter(|key| !TASK_FIELDS.contains(&key.as_str()))
-            .cloned()
-            .collect();
-        if !unknown_task_fields.is_empty() {
-            unknown_task_fields.sort();
-            return Some((
-                "SUBAGENT_PERMISSION_DENIED".to_string(),
-                format!(
-                    "当前 SubAgent 阶段不允许任务字段：{}。",
-                    unknown_task_fields.join(", ")
-                ),
-            ));
-        }
-        let description = task.get("description").and_then(Value::as_str);
-        let prompt = task.get("prompt").and_then(Value::as_str);
-        let agent_type = task.get("subagent_type").and_then(Value::as_str);
-        let context = task
-            .get("context")
-            .and_then(Value::as_str)
-            .unwrap_or("fresh");
-        if description
-            .map(|text| text.trim().is_empty())
-            .unwrap_or(true)
-        {
-            return Some((
-                "AGENT_DEFINITION_INVALID".to_string(),
-                format!("tasks[{index}].description 必须是非空字符串。"),
-            ));
-        }
-        if prompt.map(|text| text.trim().is_empty()).unwrap_or(true) {
-            return Some((
-                "AGENT_DEFINITION_INVALID".to_string(),
-                format!("tasks[{index}].prompt 必须是非空字符串。"),
-            ));
-        }
-        if agent_type
-            .map(|text| text.trim().is_empty())
-            .unwrap_or(true)
-        {
-            return Some((
-                "AGENT_DEFINITION_INVALID".to_string(),
-                format!("tasks[{index}].subagent_type 必须是非空字符串。"),
-            ));
-        }
-        let normalized = agent_type.unwrap_or_default().trim().to_lowercase();
-        // 专属角色只能由它自己的工具创建子回合，显式指定要给出明确原因，
-        // 而不是让它变成「未找到定义」那种含糊的提示。
-        if is_reserved_role(&normalized) {
-            return Some((
-                "AGENT_TYPE_RESERVED".to_string(),
-                format!("{normalized} 由专属工具驱动，不能通过 subagent 调用。"),
-            ));
-        }
-        let Some(definition) = registry.get(&normalized) else {
-            let available = available_agent_types(config, registry).join(", ");
-            let available = if available.is_empty() {
-                "无".to_string()
-            } else {
-                available
-            };
-            return Some((
-                "AGENT_TYPE_NOT_FOUND".to_string(),
-                format!("未找到 Agent 定义：{normalized}。当前可用：{available}。"),
-            ));
-        };
-        let unsupported = unsupported_definition_reason(definition, config);
-        if !unsupported.is_empty() {
-            return Some(("AGENT_DEFINITION_INVALID".to_string(), unsupported));
-        }
-        if !matches!(context, "fresh" | "fork") {
-            return Some((
-                "AGENT_DEFINITION_INVALID".to_string(),
-                "context 仅支持 fresh 或 fork。".to_string(),
-            ));
-        }
-        if context == "fork" && !config.allow_fork {
-            return Some((
-                "SUBAGENT_PERMISSION_DENIED".to_string(),
-                "Fork SubAgent 默认关闭，请在配置中显式设置 allow_fork=true。".to_string(),
-            ));
-        }
+        return Some((
+            "AGENT_TYPE_NOT_FOUND".to_string(),
+            format!("未找到 Agent 定义：{normalized}。当前可用：{available}。"),
+        ));
+    };
+    let unsupported = unsupported_definition_reason(definition, config);
+    if !unsupported.is_empty() {
+        return Some(("AGENT_DEFINITION_INVALID".to_string(), unsupported));
+    }
+    if !matches!(context, "fresh" | "fork") {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "context 仅支持 fresh 或 fork。".to_string(),
+        ));
+    }
+    if context == "fork" && !config.allow_fork {
+        return Some((
+            "SUBAGENT_PERMISSION_DENIED".to_string(),
+            "Fork SubAgent 默认关闭，请在配置中显式设置 allow_fork=true。".to_string(),
+        ));
     }
     None
 }

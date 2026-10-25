@@ -113,6 +113,12 @@ pub trait CommandAgent {
     /// 加载并启用主 Agent 模式模板，返回真正生效的模式标识。
     fn activate_mode(&self, mode: &str) -> Result<String, AgentError>;
 
+    /// 当前已启用的模式标识（未启用时为空串）。
+    fn active_mode(&self) -> String;
+
+    /// 关闭当前模式，返回被关闭的模式标识（本来未启用时为空串）。
+    fn deactivate_mode(&self) -> Result<String, AgentError>;
+
     // ── 审批 / 推理强度 / 模型 ────────────────────────────────
 
     /// 当前工具审批模式。
@@ -243,6 +249,8 @@ pub(crate) mod testing {
         pub reasoning_effort: Option<String>,
         pub current_model: String,
         pub session_id: String,
+        /// 当前已启用的主 Agent 模式（未启用时为空串）。
+        pub active_mode: String,
         pub review_report: Mutex<String>,
         pub calls: Mutex<Vec<String>>,
     }
@@ -271,6 +279,7 @@ pub(crate) mod testing {
                 reasoning_effort: None,
                 current_model: String::new(),
                 session_id: String::new(),
+                active_mode: String::new(),
                 review_report: Mutex::new(String::new()),
                 calls: Mutex::new(Vec::new()),
             }
@@ -386,6 +395,15 @@ pub(crate) mod testing {
         fn activate_mode(&self, mode: &str) -> Result<String, AgentError> {
             self.record("activate_mode");
             Ok(mode.to_string())
+        }
+
+        fn active_mode(&self) -> String {
+            self.active_mode.clone()
+        }
+
+        fn deactivate_mode(&self) -> Result<String, AgentError> {
+            self.record("deactivate_mode");
+            Ok(self.active_mode.clone())
         }
 
         fn approval_mode(&self) -> String {

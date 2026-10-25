@@ -347,100 +347,22 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
         return Value::Object(public);
     }
 
-    let tasks = arguments.get("tasks");
-    let is_task_list = matches!(tasks, Some(Value::Array(_)));
-    if !is_task_list && arguments.contains_key("task_count") {
-        let descriptions_source: Vec<Value> = match arguments.get("descriptions") {
-            Some(Value::Array(items)) => items.clone(),
-            _ => Vec::new(),
-        };
-        let agent_types_source: Vec<Value> = match arguments.get("agent_types") {
-            Some(Value::Array(items)) => items.clone(),
-            _ => Vec::new(),
-        };
-        let task_count = arguments.get("task_count");
-        let valid_task_count = matches!(task_count, Some(Value::Number(number)) if number.as_i64().is_some_and(|value| value >= 0));
-        let mut public = Map::new();
-        public.insert(
-            "action".to_string(),
-            Value::from(normalized_action(&action)),
-        );
-        public.insert(
-            "task_count".to_string(),
-            if valid_task_count {
-                task_count.cloned().unwrap_or(Value::from(0))
-            } else {
-                Value::from(0)
-            },
-        );
-        public.insert(
-            "descriptions".to_string(),
-            Value::Array(
-                descriptions_source
-                    .iter()
-                    .take(4)
-                    .map(|item| {
-                        Value::from(truncate_chars(
-                            &omnicrawl_session::redaction::redact_sensitive_text(&python_text(
-                                item,
-                            )),
-                            120,
-                        ))
-                    })
-                    .collect(),
-            ),
-        );
-        public.insert(
-            "agent_types".to_string(),
-            Value::Array(
-                agent_types_source
-                    .iter()
-                    .take(4)
-                    .map(|item| {
-                        Value::from(truncate_chars(
-                            &omnicrawl_session::redaction::redact_sensitive_text(&python_text(
-                                item,
-                            )),
-                            120,
-                        ))
-                    })
-                    .collect(),
-            ),
-        );
-        public.insert(
-            "max_concurrency".to_string(),
-            arguments
-                .get("max_concurrency")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        public.insert(
-            "fail_fast".to_string(),
-            Value::from(
-                arguments
-                    .get("fail_fast")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            ),
-        );
-        return Value::Object(public);
-    }
-
-    let safe_tasks: Vec<Value> = match tasks {
-        Some(Value::Array(items)) => items.clone(),
-        _ => Vec::new(),
-    };
-    let mut descriptions: Vec<Value> = Vec::new();
-    let mut agent_types: Vec<Value> = Vec::new();
-    for item in safe_tasks.iter().take(4) {
-        let Some(task) = item.as_object() else {
-            continue;
-        };
+    // 单任务投影：`task` 是对象。查询/取消等动作没有 `task`，此时只暴露 action。
+    let task = arguments.get("task").and_then(Value::as_object);
+    let mut public = Map::new();
+    public.insert(
+        "action".to_string(),
+        Value::from(normalized_action(&action)),
+    );
+    if let Some(task) = task {
         let raw_description = task.get("description").map(python_text).unwrap_or_default();
         let description =
             omnicrawl_session::redaction::redact_sensitive_text(raw_description.trim());
         if !description.is_empty() {
-            descriptions.push(Value::from(truncate_chars(&description, 120)));
+            public.insert(
+                "description".to_string(),
+                Value::from(truncate_chars(&description, 120)),
+            );
         }
         let raw_agent_type = task
             .get("subagent_type")
@@ -448,33 +370,12 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
             .unwrap_or_default();
         let agent_type = omnicrawl_session::redaction::redact_sensitive_text(raw_agent_type.trim());
         if !agent_type.is_empty() {
-            agent_types.push(Value::from(truncate_chars(&agent_type, 120)));
+            public.insert(
+                "agent_type".to_string(),
+                Value::from(truncate_chars(&agent_type, 120)),
+            );
         }
     }
-    let mut public = Map::new();
-    public.insert(
-        "action".to_string(),
-        Value::from(normalized_action(&action)),
-    );
-    public.insert("task_count".to_string(), Value::from(safe_tasks.len()));
-    public.insert("descriptions".to_string(), Value::Array(descriptions));
-    public.insert("agent_types".to_string(), Value::Array(agent_types));
-    public.insert(
-        "max_concurrency".to_string(),
-        arguments
-            .get("max_concurrency")
-            .cloned()
-            .unwrap_or(Value::Null),
-    );
-    public.insert(
-        "fail_fast".to_string(),
-        Value::from(
-            arguments
-                .get("fail_fast")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        ),
-    );
     Value::Object(public)
 }
 

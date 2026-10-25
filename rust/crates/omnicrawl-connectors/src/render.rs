@@ -412,16 +412,24 @@ pub fn tool_summary(tool_name: &str, arguments: &Value, result_text: &str) -> St
         }
         "subagent" => {
             let context = required_compact(&args, "action", "任务", MAX_PATTERN_CHARS);
-            let count = args
-                .get("tasks")
-                .and_then(Value::as_array)
-                .map(|items| items.len())
-                .unwrap_or(0);
-            let suffix = if count > 0 {
-                format!(" · {count} 项")
-            } else {
-                String::new()
-            };
+            let task = args.get("task");
+            let agent_type = task
+                .and_then(|task| task.get("subagent_type"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            let description = task
+                .and_then(|task| task.get("description"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            let mut suffix = String::new();
+            if !agent_type.is_empty() {
+                suffix.push_str(&format!(" · {agent_type}"));
+            }
+            if !description.is_empty() {
+                suffix.push_str(&format!(" · {description}"));
+            }
             return format!("{name} {context}{suffix}");
         }
         _ if MEMORY_TOOL_OPERATIONS.contains(&operation.as_str()) => {

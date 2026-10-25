@@ -102,19 +102,7 @@ pub struct SubagentAdvancedSpec {
 }
 
 /// 子任务设置页的高级参数表。
-pub const SUBAGENT_ADVANCED_SPECS: [SubagentAdvancedSpec; 6] = [
-    SubagentAdvancedSpec {
-        key: "max_concurrency",
-        label: "最大并发数",
-        options: &[1, 2, 3, 4],
-        is_float: false,
-    },
-    SubagentAdvancedSpec {
-        key: "max_tasks_per_batch",
-        label: "每批最大任务数",
-        options: &[1, 2, 3, 4],
-        is_float: false,
-    },
+pub const SUBAGENT_ADVANCED_SPECS: [SubagentAdvancedSpec; 4] = [
     SubagentAdvancedSpec {
         key: "default_timeout_seconds",
         label: "子任务超时（秒）",
@@ -326,9 +314,10 @@ mod tests {
         );
         assert_eq!(cycle_subagent_option(&[], 5, 1), 5, "空档位表原样返回");
 
-        let timeouts = SUBAGENT_ADVANCED_SPECS[2].options;
-        assert_eq!(SUBAGENT_ADVANCED_SPECS[2].key, "default_timeout_seconds");
-        assert!(SUBAGENT_ADVANCED_SPECS[2].is_float, "子任务超时是浮点配置");
+        // 删掉「最大并发数」「每批最大任务数」后，超时项前移到第一档。
+        let timeouts = SUBAGENT_ADVANCED_SPECS[0].options;
+        assert_eq!(SUBAGENT_ADVANCED_SPECS[0].key, "default_timeout_seconds");
+        assert!(SUBAGENT_ADVANCED_SPECS[0].is_float, "子任务超时是浮点配置");
         assert_eq!(cycle_subagent_option(timeouts, 30, -1), 3600);
     }
 

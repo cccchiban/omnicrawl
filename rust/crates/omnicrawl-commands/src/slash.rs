@@ -11,8 +11,8 @@
 
 use crate::agent::{CommandAgent, SubAgentRun};
 use crate::framework::{
-    Command, CommandContext, CommandOption, CommandParseError, CommandRegistry, CommandResult,
-    CommandType,
+    Channel, Command, CommandContext, CommandOption, CommandParseError, CommandRegistry,
+    CommandResult, CommandType,
 };
 use chrono::{DateTime, Local};
 use omnicrawl_config::core::runtime::ConfigEnvironment;
@@ -206,6 +206,14 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
             .description("启用主 Agent 计划模式，后续请求追加 templates/plan.md。")
             .usage("/plan")
             .command_type(CommandType::Action),
+    )?;
+
+    registry.register(
+        Command::new("speaking-style", handle_speaking_style_command)
+            .description("开启或关闭主 Agent 简洁回复模式（默认关闭）。")
+            .usage("/speaking-style [on|off]")
+            .command_type(CommandType::Action)
+            .arg_prompt("on|off"),
     )?;
 
     registry.register(
@@ -656,6 +664,15 @@ pub fn format_tool_confirmation(tool_name: &str, arguments: &Map<String, Value>)
 
 /// 格式化 Skill 列表为可展示文本。
 pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
+    format_skills_list_with(agent, true)
+}
+
+/// 只列 Skill 名称，不带 description：给单条消息有字数上限的入口（QQ 机器人）用。
+pub fn format_skills_list_brief(agent: &dyn CommandAgent) -> String {
+    format_skills_list_with(agent, false)
+}
+
+fn format_skills_list_with(agent: &dyn CommandAgent, with_description: bool) -> String {
     let Some(metas) = agent.skill_metas() else {
         return "Skill 子系统未启用。".to_string();
     };
@@ -672,7 +689,9 @@ pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
             ""
         };
         lines.push(format!("  {}{suffix}  ({})", meta.name, meta.scope));
-        lines.push(format!("    {}", meta.description));
+        if with_description && !meta.description.trim().is_empty() {
+            lines.push(format!("    {}", meta.description));
+        }
     }
     // 发现阶段的诊断直接跟在列表后：路径写错、名称冲突、名称不合法时用户能当场看到原因。
     if let Some(diagnostics) = agent.skill_diagnostics() {
@@ -1509,9 +1528,73 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
         .with_refresh_context()
 }
 
+/// 简洁回复模式的模式标识（模板 `templates/speaking-style.md`）。
+const SPEAKING_STYLE_MODE: &str = "speaking-style";
+
+/// `/speaking-style [on|off]`：开关简洁回复模式。
+///
+/// 与 `/plan` 同一条注入链路：模式提示词由宿主装配进 system prompt 的
+/// `<active_mode_prompt>` 区块，因此这里只切模式、不碰对话历史。
+/// 无参数时报告当前状态；`on` 时若已启用，重复启用视为幂等成功。
+pub fn handle_speaking_style_command(ctx: &CommandContext<'_>) -> CommandResult {
+    let argument = ctx.arg().trim().to_lowercase();
+    match argument.as_str() {
+        "" => CommandResult::message(format_speaking_style_state(&ctx.agent.active_mode())),
+        "on" | "1" | "true" | "yes" | "开" | "开启" => {
+            let active = ctx.agent.active_mode();
+            if active == SPEAKING_STYLE_MODE {
+                return CommandResult::message(format_speaking_style_state(&active));
+            }
+            match ctx.agent.activate_mode(SPEAKING_STYLE_MODE) {
+                Ok(_) => CommandResult::message(
+                    "已开启简洁回复模式：回复不超过十行，只保留结论与必要依据。",
+                )
+                .with_refresh_context(),
+                Err(error) => CommandResult::message(format!("模式启用失败：{error}"))
+                    .with_refresh_context(),
+            }
+        }
+        "off" | "0" | "false" | "no" | "关" | "关闭" => {
+            let active = ctx.agent.active_mode();
+            if active != SPEAKING_STYLE_MODE {
+                return CommandResult::message(format!(
+                    "简洁回复模式未开启（当前模式：{}）。",
+                    if active.is_empty() { "无" } else { active.as_str() }
+                ));
+            }
+            match ctx.agent.deactivate_mode() {
+                Ok(_) => CommandResult::message("已关闭简洁回复模式。").with_refresh_context(),
+                Err(error) => CommandResult::message(format!("模式关闭失败：{error}"))
+                    .with_refresh_context(),
+            }
+        }
+        _ => CommandResult::message(
+            "用法：/speaking-style on 开启，/speaking-style off 关闭，不带参数查看状态。",
+        ),
+    }
+}
+
+fn format_speaking_style_state(active: &str) -> String {
+    if active == SPEAKING_STYLE_MODE {
+        "简洁回复模式：已开启（回复不超过十行）。/speaking-style off 关闭。".to_string()
+    } else if active.is_empty() {
+        "简洁回复模式：未开启。/speaking-style on 开启。".to_string()
+    } else {
+        format!("简洁回复模式：未开启（当前模式：{active}）。/speaking-style on 开启。")
+    }
+}
+
 /// 列出当前已加载的 Skill。
+///
+/// QQ 机器人单条消息有字数上限、回复条数也有限，介绍内容会把列表挤成一堆长消息，
+/// 因此该通道只列名称；其余入口保留 description。
 pub fn handle_skills_command(ctx: &CommandContext<'_>) -> CommandResult {
-    CommandResult::message(format_skills_list(ctx.agent))
+    let text = if ctx.channel == Channel::Qqbot {
+        format_skills_list_brief(ctx.agent)
+    } else {
+        format_skills_list(ctx.agent)
+    };
+    CommandResult::message(text)
 }
 
 /// 清理过期长期记忆。
@@ -2026,10 +2109,11 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 27);
+        assert_eq!(names.len(), 28);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
+        assert!(names.contains(&"speaking-style".to_string()));
         assert_eq!(names.last().map(String::as_str), Some("workspace"));
     }
 
@@ -2372,6 +2456,34 @@ mod tests {
         assert!(!format_skills_list(&agent).contains("发现诊断"));
     }
 
+    /// QQ 机器人只列名称：description 常是整段说明，会把列表撑成多条长消息。
+    #[test]
+    fn qqbot_skills_list_shows_names_only() {
+        let mut agent = FakeAgent::default();
+        agent.skills = Some(vec![skill("bili-note", "提取 B 站内容")]);
+        let text = registry()
+            .dispatch("/skills", &agent, Channel::Qqbot, None)
+            .message
+            .unwrap_or_default();
+        assert!(text.starts_with("已加载 1 个 Skill："), "{text}");
+        assert!(text.contains("  bili-note  (project)"), "{text}");
+        assert!(!text.contains("提取 B 站内容"), "{text}");
+    }
+
+    /// 本地与其它远程入口保持原样，仍带 description。
+    #[test]
+    fn non_qqbot_skills_list_keeps_descriptions() {
+        let mut agent = FakeAgent::default();
+        agent.skills = Some(vec![skill("bili-note", "提取 B 站内容")]);
+        for channel in [Channel::Tui, Channel::Telegram, Channel::Feishu] {
+            let text = registry()
+                .dispatch("/skills", &agent, channel.clone(), None)
+                .message
+                .unwrap_or_default();
+            assert!(text.contains("提取 B 站内容"), "{channel:?}: {text}");
+        }
+    }
+
     #[test]
     fn plugins_status_falls_back_to_interface_hint() {
         let agent = FakeAgent::default();
@@ -2414,6 +2526,44 @@ mod tests {
         assert!(detail.contains("任务：task-1"));
         assert!(detail.contains("摘要：\n没问题"));
         assert!(detail.contains("关联 artifact：1 项"));
+    }
+
+    #[test]
+    fn speaking_style_command_toggles_the_mode() {
+        let mut agent = FakeAgent::default();
+        let off = registry().dispatch("/speaking-style", &agent, Channel::Qqbot, None);
+        assert!(off
+            .message
+            .unwrap_or_default()
+            .contains("简洁回复模式：未开启"));
+
+        let on = registry().dispatch("/speaking-style on", &agent, Channel::Qqbot, None);
+        assert!(on
+            .message
+            .unwrap_or_default()
+            .contains("已开启简洁回复模式"));
+        assert!(on.refresh_context);
+        assert!(agent.calls().iter().any(|call| call == "activate_mode"));
+
+        // 宿主侧已记录为生效：不带参数的查询要如实反映，且重复开启不再激活。
+        agent.active_mode = "speaking-style".to_string();
+        let query = registry().dispatch("/speaking-style", &agent, Channel::Qqbot, None);
+        assert!(query
+            .message
+            .unwrap_or_default()
+            .contains("简洁回复模式：已开启"));
+        let again = registry().dispatch("/speaking-style 开", &agent, Channel::Qqbot, None);
+        assert!(again
+            .message
+            .unwrap_or_default()
+            .contains("简洁回复模式：已开启"));
+
+        let disable = registry().dispatch("/speaking-style off", &agent, Channel::Qqbot, None);
+        assert!(disable.message.unwrap_or_default().contains("已关闭"));
+        assert!(agent.calls().iter().any(|call| call == "deactivate_mode"));
+
+        let usage = registry().dispatch("/speaking-style 呀", &agent, Channel::Qqbot, None);
+        assert!(usage.message.unwrap_or_default().contains("用法"));
     }
 
     #[test]

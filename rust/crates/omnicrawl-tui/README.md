@@ -579,6 +579,10 @@ Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，
 system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文消息，再经
 `session.settings` 下发内核；内核拒绝时状态行会写明「只在本宿主生效」，不静默。
 
+`/speaking-style [on|off]` 走同一条链路：`off` 用 `App::command_deactivate_mode` 摘掉模式块后
+重算并下发，基础提示词、顾问准则与上下文消息都保持不变。该模式在 TUI 默认关闭，由用户
+显式开启；QQ 机器人连接器启动时会自动开启它（见 `assets/docs/QQBOT.md`）。
+
 ### 生成期间的 FIFO 输入队列
 
 对映 Python `_pending_inputs`：回合进行中按 `Enter` 的消息不丢也不并发提交，而是排进队列

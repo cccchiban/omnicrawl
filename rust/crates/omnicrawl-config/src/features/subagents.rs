@@ -13,9 +13,7 @@ use crate::core::runtime::{
 use crate::error::ConfigError;
 
 /// 设置面板允许调整的 SubAgent 资源参数（顺序与 Python 的规则表一致）。
-pub const SUBAGENT_ADVANCED_SETTING_KEYS: [&str; 6] = [
-    "max_concurrency",
-    "max_tasks_per_batch",
+pub const SUBAGENT_ADVANCED_SETTING_KEYS: [&str; 4] = [
     "default_timeout_seconds",
     "model_request_concurrency",
     "verify_command_timeout_seconds",
@@ -34,8 +32,6 @@ pub enum AdvancedValue {
 pub struct SubAgentConfig {
     pub enabled: bool,
     pub max_depth: i64,
-    pub max_concurrency: i64,
-    pub max_tasks_per_batch: i64,
     pub default_timeout_seconds: f64,
     pub model_request_concurrency: i64,
     pub allow_background: bool,
@@ -56,8 +52,6 @@ impl Default for SubAgentConfig {
         Self {
             enabled: false,
             max_depth: 1,
-            max_concurrency: 2,
-            max_tasks_per_batch: 4,
             default_timeout_seconds: 3600.0,
             model_request_concurrency: 2,
             allow_background: false,
@@ -116,8 +110,6 @@ pub fn validate_subagent_advanced_setting(
 
 fn advanced_rule(name: &str) -> Result<(&'static str, f64, f64), ConfigError> {
     let rule = match name {
-        "max_concurrency" => ("int", 1.0, 4.0),
-        "max_tasks_per_batch" => ("int", 1.0, 4.0),
         "default_timeout_seconds" => ("number", 1.0, 3600.0),
         "model_request_concurrency" => ("int", 1.0, 4.0),
         "verify_command_timeout_seconds" => ("int", 1.0, 360.0),
@@ -143,8 +135,6 @@ pub fn load_subagent_config(
     let config = SubAgentConfig {
         enabled: bool_field(&section, "enabled", false)?,
         max_depth: int_field(&section, "max_depth", 1, 1, 1)?,
-        max_concurrency: int_field(&section, "max_concurrency", 2, 1, 4)?,
-        max_tasks_per_batch: int_field(&section, "max_tasks_per_batch", 4, 1, 4)?,
         default_timeout_seconds: number_field(
             &section,
             "default_timeout_seconds",

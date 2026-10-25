@@ -702,11 +702,51 @@ fn http11_chunked_and_until_eof_bodies_are_decoded() {
 }
 
 #[test]
-fn a_peer_without_alpn_is_reported_as_unsupported() {
-    // 完全没有 ALPN 时无法判断协议：既不能猜 h2 也不能猜 1.1。
+fn a_peer_without_alpn_is_served_over_http11() {
+    // 服务端不发 ALPN 扩展时按 HTTP/1.1 走：浏览器就是这么做的。Go 关掉 HTTP/2 后的
+    // 裸 tls、老 TLS 终止器都属于这一类，若在这里失败就等于整类站点抓不到。
     let (client_side, mut server_side) = Pipe::pair();
     let server = thread::spawn(move || {
         let mut tls = ServerTls::accept_with_alpn(&mut server_side, &[]);
+        tls.finish_handshake(&mut server_side);
+        let request = tls.read_plaintext(&mut server_side);
+        let text = String::from_utf8(request).expect("请求应当是 UTF-8");
+        assert!(
+            text.starts_with("GET /no-alpn HTTP/1.1\r\n"),
+            "应当收到 1.1 请求行：{text}"
+        );
+        let body = "hello without alpn";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        tls.write_h2(&mut server_side, response.as_bytes());
+        server_side
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("设置读超时");
+        let mut sink = [0u8; 256];
+        let _ = std::io::Read::read(&mut server_side, &mut sink);
+    });
+
+    let mut connection = Connection::connect(client_side, Family::Chrome, "example.com", None)
+        .expect("没有 ALPN 时应当回落 HTTP/1.1");
+    assert_eq!(connection.alpn(), None, "服务端并没有协商出 ALPN");
+    assert_eq!(connection.protocol(), Application::Http1);
+
+    let response = connection.get("/no-alpn").expect("1.1 请求应当成功");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"hello without alpn");
+
+    drop(connection);
+    let _ = server.join();
+}
+
+#[test]
+fn a_peer_that_picks_an_unexpected_alpn_is_reported_as_unsupported() {
+    // 服务端选了本栈不实现的协议时不能瞎猜：只能如实报错。
+    let (client_side, mut server_side) = Pipe::pair();
+    let server = thread::spawn(move || {
+        let mut tls = ServerTls::accept_with_alpn(&mut server_side, &["spdy/3.1"]);
         tls.finish_handshake(&mut server_side);
         server_side
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -716,9 +756,9 @@ fn a_peer_without_alpn_is_reported_as_unsupported() {
     });
 
     match Connection::connect(client_side, Family::Chrome, "example.com", None) {
-        Err(DriverError::UnsupportedAlpn(None)) => {}
-        Err(other) => panic!("应当报「没有协商 ALPN」，得到 {other:?}"),
-        Ok(_) => panic!("没有 ALPN 时不应该成功"),
+        Err(DriverError::UnsupportedAlpn(Some(protocol))) => assert_eq!(protocol, "spdy/3.1"),
+        Err(other) => panic!("应当报「不支持的 ALPN」，得到 {other:?}"),
+        Ok(_) => panic!("协商出未知协议时不应该成功"),
     }
     let _ = server.join();
 }

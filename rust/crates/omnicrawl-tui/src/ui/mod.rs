@@ -214,39 +214,45 @@ pub fn truncate_styled(text: &StyledText, width: usize) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
-    // 先摊平成「字符 + 样式串」，再逐字符累加宽度决定截断点。
-    let cells: Vec<(char, &str)> = text
-        .spans()
-        .iter()
-        .flat_map(|span| span.text.chars().map(move |ch| (ch, span.style.as_str())))
-        .collect();
-    let total: usize = cells
-        .iter()
-        .map(|(ch, _)| unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0))
-        .sum();
-    let truncated = total > width;
+    // 只数到「已超出 width」为止：超过一格就能判定需要省略号，不再看完整串。
+    let mut seen = 0usize;
+    let mut truncated = false;
+    'measure: for span in text.spans() {
+        for ch in span.text.chars() {
+            seen += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if seen > width {
+                truncated = true;
+                break 'measure;
+            }
+        }
+    }
     // 截断时留一格给省略号。
     let budget = if truncated { width - 1 } else { width };
     let mut used = 0usize;
-    let mut kept: Vec<(char, &str)> = Vec::new();
-    for (ch, style) in cells {
-        let cell = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + cell > budget {
-            break;
-        }
-        used += cell;
-        kept.push((ch, style));
-    }
-    // 同一样式的相邻字符合并成一个 span，避免一行内出现大量碎片。
+    // 边遍历边按样式分段，同一样式的相邻字符合并成一个 span，避免大量碎片。
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut index = 0usize;
-    while index < kept.len() {
-        let style = kept[index].1;
-        let mut chunk = String::new();
-        while index < kept.len() && kept[index].1 == style {
-            chunk.push(kept[index].0);
-            index += 1;
+    let mut chunk = String::new();
+    let mut chunk_style: Option<&str> = None;
+    'collect: for span in text.spans() {
+        for ch in span.text.chars() {
+            let cell = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + cell > budget {
+                break 'collect;
+            }
+            used += cell;
+            if chunk_style != Some(span.style.as_str()) {
+                if let Some(style) = chunk_style {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut chunk),
+                        theme::rich_style(style),
+                    ));
+                }
+                chunk_style = Some(span.style.as_str());
+            }
+            chunk.push(ch);
         }
+    }
+    if let Some(style) = chunk_style {
         spans.push(Span::styled(chunk, theme::rich_style(style)));
     }
     if truncated {

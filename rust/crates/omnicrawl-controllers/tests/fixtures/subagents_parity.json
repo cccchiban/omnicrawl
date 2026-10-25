@@ -2054,13 +2054,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": null,
         "error": null
@@ -2070,13 +2068,11 @@
         "config": "default",
         "arguments": {
           "action": "spawn",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
@@ -2089,13 +2085,11 @@
         "config": "default",
         "arguments": {
           "action": "query",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
@@ -2107,13 +2101,11 @@
         "label": "action 缺失",
         "config": "default",
         "arguments": {
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
@@ -2126,13 +2118,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          },
           "zz": 1,
           "aa": 2
         },
@@ -2143,216 +2133,84 @@
         "error": null
       },
       {
-        "label": "tasks 非数组",
+        "label": "task 非对象",
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": {
+          "task": {
             "a": 1
           }
         },
         "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "tasks 必须是数组。"
+          "SUBAGENT_PERMISSION_DENIED",
+          "当前 SubAgent 阶段不允许任务字段：a。"
         ],
         "error": null
       },
       {
-        "label": "tasks 缺失",
+        "label": "task 缺失",
         "config": "default",
         "arguments": {
           "action": "run"
         },
         "result": [
           "SUBAGENT_LIMIT_EXCEEDED",
-          "tasks 必须是数组。"
+          "task 必须是对象。"
         ],
         "error": null
       },
       {
-        "label": "tasks 为空",
+        "label": "max_concurrency 已移除",
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": []
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "当前 SubAgent 阶段每批必须包含 1 到 4 个任务。"
-        ],
-        "error": null
-      },
-      {
-        "label": "tasks 超上限",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            },
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            },
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            },
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            },
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "当前 SubAgent 阶段每批必须包含 1 到 4 个任务。"
-        ],
-        "error": null
-      },
-      {
-        "label": "并发零",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
-          "max_concurrency": 0
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "max_concurrency 必须是 1 到 4 的整数。"
-        ],
-        "error": null
-      },
-      {
-        "label": "并发超上限",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
-          "max_concurrency": 5
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "max_concurrency 必须是 1 到 4 的整数。"
-        ],
-        "error": null
-      },
-      {
-        "label": "并发为布尔",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
-          "max_concurrency": true
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "max_concurrency 必须是 1 到 4 的整数。"
-        ],
-        "error": null
-      },
-      {
-        "label": "并发为字符串",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
-          "max_concurrency": "2"
-        },
-        "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "max_concurrency 必须是 1 到 4 的整数。"
-        ],
-        "error": null
-      },
-      {
-        "label": "并发合法",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          },
           "max_concurrency": 3
         },
-        "result": null,
-        "error": null
-      },
-      {
-        "label": "fail_fast 非布尔",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
-          "fail_fast": 1
-        },
         "result": [
-          "AGENT_DEFINITION_INVALID",
-          "fail_fast 必须是布尔值。"
+          "SUBAGENT_PERMISSION_DENIED",
+          "当前 SubAgent 阶段不允许参数：max_concurrency。"
         ],
         "error": null
       },
       {
-        "label": "fail_fast 合法",
+        "label": "fail_fast 已移除",
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ],
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          },
           "fail_fast": true
         },
-        "result": null,
+        "result": [
+          "SUBAGENT_PERMISSION_DENIED",
+          "当前 SubAgent 阶段不允许参数：fail_fast。"
+        ],
+        "error": null
+      },
+      {
+        "label": "fail_fast 已移除",
+        "config": "default",
+        "arguments": {
+          "action": "run",
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review"
+          },
+          "fail_fast": true
+        },
+        "result": [
+          "SUBAGENT_PERMISSION_DENIED",
+          "当前 SubAgent 阶段不允许参数：fail_fast。"
+        ],
         "error": null
       },
       {
@@ -2360,13 +2218,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            "x"
-          ]
+          "task": "x"
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "tasks[0] 必须是对象。"
+          "task 必须是对象。"
         ],
         "error": null
       },
@@ -2375,15 +2231,13 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review",
-              "zz": 1,
-              "aa": 2
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review",
+            "zz": 1,
+            "aa": 2
+          }
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
@@ -2396,17 +2250,15 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "  ",
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "  ",
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "tasks[0].description 必须是非空字符串。"
+          "task.description 必须是非空字符串。"
         ],
         "error": null
       },
@@ -2415,17 +2267,15 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": 7,
-              "prompt": "提示",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": 7,
+            "prompt": "提示",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "tasks[0].description 必须是非空字符串。"
+          "task.description 必须是非空字符串。"
         ],
         "error": null
       },
@@ -2434,16 +2284,14 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "d",
-              "subagent_type": "review"
-            }
-          ]
+          "task": {
+            "description": "d",
+            "subagent_type": "review"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "tasks[0].prompt 必须是非空字符串。"
+          "task.prompt 必须是非空字符串。"
         ],
         "error": null
       },
@@ -2452,17 +2300,15 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": " "
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": " "
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "tasks[0].subagent_type 必须是非空字符串。"
+          "task.subagent_type 必须是非空字符串。"
         ],
         "error": null
       },
@@ -2471,13 +2317,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "nope"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "nope"
+          }
         },
         "result": [
           "AGENT_TYPE_NOT_FOUND",
@@ -2490,13 +2334,11 @@
         "config": "gated",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "verify-agent"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "verify-agent"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2509,13 +2351,11 @@
         "config": "verify",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "verify-agent"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "verify-agent"
+          }
         },
         "result": null,
         "error": null
@@ -2525,13 +2365,11 @@
         "config": "gated",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "general-purpose"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "general-purpose"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2544,13 +2382,11 @@
         "config": "standard",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "general-purpose"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "general-purpose"
+          }
         },
         "result": null,
         "error": null
@@ -2560,13 +2396,11 @@
         "config": "standard-shared",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "shared-writer"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "shared-writer"
+          }
         },
         "result": null,
         "error": null
@@ -2576,13 +2410,11 @@
         "config": "standard",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "shared-writer"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "shared-writer"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2595,13 +2427,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "bad-readonly"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "bad-readonly"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2614,13 +2444,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "explore"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "explore"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2633,13 +2461,11 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "with-mcp"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "with-mcp"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2652,13 +2478,11 @@
         "config": "gated",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "worktree-readonly"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "worktree-readonly"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2671,13 +2495,11 @@
         "config": "worktree",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "worktree-readonly"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "worktree-readonly"
+          }
         },
         "result": null,
         "error": null
@@ -2687,14 +2509,12 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review",
-              "context": "shared"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review",
+            "context": "shared"
+          }
         },
         "result": [
           "AGENT_DEFINITION_INVALID",
@@ -2707,14 +2527,12 @@
         "config": "default",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review",
-              "context": "fork"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review",
+            "context": "fork"
+          }
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
@@ -2727,14 +2545,12 @@
         "config": "fork",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {
-              "description": "描述",
-              "prompt": "提示",
-              "subagent_type": "review",
-              "context": "fork"
-            }
-          ]
+          "task": {
+            "description": "描述",
+            "prompt": "提示",
+            "subagent_type": "review",
+            "context": "fork"
+          }
         },
         "result": null,
         "error": null

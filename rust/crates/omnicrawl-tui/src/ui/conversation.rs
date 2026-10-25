@@ -12,6 +12,7 @@
 //! 点击目标的解析不能只看「第几条记录」——同一条记录会折成多行，因此命中信息跟着
 //! 显示行一起产出。
 
+use std::borrow::Cow;
 use std::cell::Ref;
 
 use ratatui::layout::Rect;
@@ -727,6 +728,14 @@ pub fn visible_window(
     }
 }
 
+/// 单条记录最多展开的显示行数。
+///
+/// [`CONVERSATION_MAX_LINES`] 只裁剪**已经算完**的块，对单条记录一次性的展开规模不设防：
+/// 一条百万字符的正文按列宽折行就是上万行，压缩后摘要与长正文叠在同一条记录上时，
+/// 这一条就能把内存顶到峰值，而且它在 `trim_prefix` 里是「永远不能丢」的块。
+/// 上限取得比可见窗口更大，超出部分折成一行省略提示。
+const RECORD_MAX_LINES: usize = CONVERSATION_MAX_LINES + 200;
+
 /// 单条记录的显示行：先放一条分隔空行，再按记录类型铺内容。
 ///
 /// 「思考显示」关闭时思考段整块不出现（连它上面那行空行也不占位），因此这里可能返回空块。
@@ -759,6 +768,13 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
         Record::SubagentWindow(notice) => {
             push_prefixed(&mut lines, "· ", &notice.line(), width, Color::DarkGray)
         }
+    }
+    if lines.len() > RECORD_MAX_LINES {
+        let hidden = lines.len() - RECORD_MAX_LINES;
+        lines.truncate(RECORD_MAX_LINES);
+        lines.push(DisplayLine::plain(Line::raw(format!(
+            "{MESSAGE_PAD}…（本条过长，另有 {hidden} 行未显示）"
+        ))));
     }
     lines
 }
@@ -1119,6 +1135,13 @@ fn striped_line(text: &str, style: Style, stripe: Style) -> Line<'static> {
     ])
 }
 
+/// 单条正文参与 LaTeX/Markdown 渲染的字符上限。
+///
+/// 正文是流式增长的，而 `latex_to_text` + `render_markdown` 每帧都要吃完整段：
+/// 正文一旦失控增长（重复下发、模型死循环），渲染代价随长度平方级放大，
+/// 内存也会按「字符 × 展开倍数」膨胀。超过上限的部分不参与渲染，末尾给一行省略提示。
+const ASSISTANT_RENDER_MAX_CHARS: usize = 1_000_000;
+
 /// 助手正文：先 LaTeX 归一到 Unicode，再走对映层 Markdown 渲染。
 ///
 /// 与 Python `AssistantMessage` 同一句——`render_markdown(format!("{display_prefix}{}",
@@ -1128,8 +1151,27 @@ fn striped_line(text: &str, style: Style, stripe: Style) -> Line<'static> {
 fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
     // 正文先 LaTeX 归一（行首数学围栏要求 `$`/`$$` 从行首开始），再整段走 Markdown 渲染。
     let body = text.strip_prefix("◇ ").unwrap_or(text);
-    let block = markdown::render_markdown(&latex::latex_to_text(body));
+    // 字节数不超过上限时字符数必然不超过，直接借用，省掉一次整段复制。
+    let (body, over_limit): (Cow<'_, str>, bool) = if body.len() > ASSISTANT_RENDER_MAX_CHARS {
+        let mut clipped = String::new();
+        let mut chars = body.chars();
+        for _ in 0..ASSISTANT_RENDER_MAX_CHARS {
+            match chars.next() {
+                Some(ch) => clipped.push(ch),
+                None => break,
+            }
+        }
+        (Cow::Owned(clipped), chars.next().is_some())
+    } else {
+        (Cow::Borrowed(body), false)
+    };
+    let block = markdown::render_markdown(&latex::latex_to_text(&body));
     push_markdown(lines, &block, width, ASSISTANT_PREFIX);
+    if over_limit {
+        lines.push(DisplayLine::plain(Line::raw(format!(
+            "{MESSAGE_PAD}…（正文过长，超出部分未渲染）"
+        ))));
+    }
 }
 
 /// 把一段对映层富文本铺成显示行：每行按列宽软折行，续行同样带 1 格内边距。
@@ -1714,6 +1756,71 @@ mod tests {
         );
         let lines = display_lines(&state, 60);
         (state, lines)
+    }
+
+    #[test]
+    fn a_single_record_is_capped_at_the_line_budget() {
+        // 单条记录的展开规模同样要封顶：`CONVERSATION_MAX_LINES` 只裁剪算完的块，
+        // 截不住这一条的峰值，而它在 `trim_prefix` 里是永远不能丢的块。
+        let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.apply(
+            &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                text: "很长的一段正文。".repeat(10_000),
+            }),
+            Instant::now(),
+        );
+        let lines = record_lines(&state, 1, 60);
+        assert!(
+            lines.len() <= RECORD_MAX_LINES + 1,
+            "单条记录最多铺 {} 行，实际 {}",
+            RECORD_MAX_LINES + 1,
+            lines.len()
+        );
+        let rendered = plain(&lines);
+        assert!(
+            rendered
+                .last()
+                .is_some_and(|line| line.contains("另有") && line.contains("行未显示")),
+            "截断处要给省略提示：{:?}",
+            rendered.last()
+        );
+    }
+
+    #[test]
+    fn a_huge_assistant_body_is_clipped_before_rendering() {
+        // 正文失控增长时渲染必须封顶：超过上限的部分不参与 Markdown/LaTeX，末尾留一行提示。
+        let body = "这是一段很长的正文。".repeat(ASSISTANT_RENDER_MAX_CHARS / 8 + 5000);
+        assert!(body.chars().count() > ASSISTANT_RENDER_MAX_CHARS);
+        let mut lines: Vec<DisplayLine> = Vec::new();
+        push_assistant(&mut lines, &body, 60);
+        let rendered = plain(&lines);
+        assert!(
+            rendered
+                .last()
+                .is_some_and(|line| line.contains("正文过长")),
+            "超出上限要给省略提示"
+        );
+        // 封顶后不该铺出与正文等量的行（CJK 宽度 2 列，1M 字符约 3.3 万行）。
+        assert!(
+            lines.len() < ASSISTANT_RENDER_MAX_CHARS / 20,
+            "封顶后的行数应与上限成正比，而不是与原始正文成正比"
+        );
+    }
+
+    #[test]
+    fn truncate_styled_keeps_only_what_fits() {
+        // 只为一屏宽的数字符：超长输入不再被整段摊平成 Vec。
+        let long = StyledText::styled(&"中".repeat(200_000), "");
+        let spans = truncate_styled(&long, 10);
+        let total: usize = spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum();
+        // 预算 9 列留给正文，CJK 占 2 列，只能放 4 个字；省略号再占 1 列。
+        assert_eq!(total, 9, "截断后不超过预算加省略号");
+        assert!(spans.last().is_some_and(|span| span.content.ends_with('…')));
+        assert_eq!(spans[0].content.as_ref(), "中".repeat(4).as_str());
     }
 
     #[test]

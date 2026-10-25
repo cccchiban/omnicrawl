@@ -1237,8 +1237,6 @@ fn subagent_advanced_values(
     let mut values = Map::new();
     for key in SUBAGENT_ADVANCED_SETTING_KEYS {
         let value = match key {
-            "max_concurrency" => json!(config.max_concurrency),
-            "max_tasks_per_batch" => json!(config.max_tasks_per_batch),
             "default_timeout_seconds" => json!(config.default_timeout_seconds),
             "model_request_concurrency" => json!(config.model_request_concurrency),
             "verify_command_timeout_seconds" => json!(config.verify_command_timeout_seconds),

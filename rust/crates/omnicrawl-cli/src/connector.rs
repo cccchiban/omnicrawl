@@ -34,6 +34,9 @@ use omnicrawl_protocol::{conversation_from_openai_messages, GenerationOptions, T
 const USER_AGENT: &str = "omnicrawl-kernel-connector/0.0.1";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 内核里的助手，回答保持简洁。";
+/// 内核连接器可用的模式模板：与 `rust/assets/templates/` 同一份，脱离宿主也能切模式。
+const PLAN_PROMPT: &str = include_str!("../../../assets/templates/plan.md");
+const SPEAKING_STYLE_PROMPT: &str = include_str!("../../../assets/templates/speaking-style.md");
 /// 工具批次在连接器模式下的错误码：调用方据此区分「工具失败」与「本模式没有执行器」。
 const TOOL_UNAVAILABLE: &str = "tool_unavailable";
 /// `/help` 的回执；与 [`KernelDriver::command_menu`] 发布到 Telegram 菜单的命令保持一致。
@@ -104,6 +107,8 @@ fn connector_config_data(env: &ConfigEnvironment) -> Value {
 /// 取消检查保证，模型请求前先看一次取消标志。
 struct KernelReplySource {
     settings: Arc<ModelSettings>,
+    /// 本轮 system prompt（基础文案 + 活动模式块），由宿主在回合开始时装配。
+    system_prompt: String,
     cancel: Arc<AtomicBool>,
 }
 
@@ -124,7 +129,7 @@ impl ReplySource for KernelReplySource {
         let runtime = OpenAiChatRuntime::new(endpoint);
         let input = ChatRequestInput {
             model: self.settings.model.as_str(),
-            system_prompt: self.settings.system_prompt.as_str(),
+            system_prompt: self.system_prompt.as_str(),
             messages: &conversation,
             tools: &tools,
             options: &options,
@@ -278,6 +283,15 @@ struct KernelDriver {
     history: Mutex<Vec<Value>>,
     session_id: Mutex<String>,
     cancel: Arc<AtomicBool>,
+    /// 当前启用的主 Agent 模式标识与提示词（空串 = 未启用）。
+    active_mode: Mutex<ActiveMode>,
+}
+
+/// 一条生效中的模式提示词：追加到 system prompt 末尾。
+#[derive(Default)]
+struct ActiveMode {
+    name: String,
+    prompt: String,
 }
 
 /// 工具执行器与宿主共享的状态：待办、暂停标志与两条处理桥。
@@ -308,6 +322,7 @@ impl KernelDriver {
             history: Mutex::new(Vec::new()),
             session_id: Mutex::new(new_session_id()),
             cancel: Arc::new(AtomicBool::new(false)),
+            active_mode: Mutex::new(ActiveMode::default()),
         }
     }
 
@@ -330,6 +345,22 @@ impl KernelDriver {
             .map_err(|_| "会话标识被占用。".to_string())?;
         *session_id = new_session_id();
         Ok(())
+    }
+
+    /// 当前 system prompt：基础文案 + 活动模式块（与宿主侧 `<active_mode_prompt>` 同形）。
+    fn system_prompt(&self) -> String {
+        let base = self.settings.system_prompt.clone();
+        let Ok(mode) = self.active_mode.lock() else {
+            return base;
+        };
+        if mode.prompt.trim().is_empty() {
+            return base;
+        }
+        format!(
+            "{base}\n\n<active_mode_prompt name=\"{}\">\n{}\n</active_mode_prompt>",
+            mode.name,
+            mode.prompt.trim()
+        )
     }
 }
 
@@ -399,8 +430,61 @@ impl AgentDriver for KernelDriver {
                 Ok(Some("已开启新会话。".to_string()))
             }
             "/help" => Ok(Some(KERNEL_HELP_TEXT.to_string())),
+            _ if trimmed.starts_with("/speaking-style") => {
+                let argument = trimmed.trim_start_matches("/speaking-style").trim();
+                match argument.to_lowercase().as_str() {
+                    "on" | "开" | "开启" => {
+                        self.activate_mode("speaking-style")?;
+                        Ok(Some("已开启简洁回复模式（不超过十行）。".to_string()))
+                    }
+                    "off" | "关" | "关闭" => {
+                        self.deactivate_mode()?;
+                        Ok(Some("已关闭简洁回复模式。".to_string()))
+                    }
+                    _ => Ok(Some(format!(
+                        "简洁回复模式：{}。用法：/speaking-style on|off",
+                        if self.active_mode() == "speaking-style" {
+                            "已开启"
+                        } else {
+                            "未开启"
+                        }
+                    ))),
+                }
+            }
             _ => Ok(None),
         }
+    }
+
+    fn active_mode(&self) -> String {
+        self.active_mode
+            .lock()
+            .map(|mode| mode.name.clone())
+            .unwrap_or_default()
+    }
+
+    fn activate_mode(&self, mode: &str) -> Result<String, String> {
+        let prompt = match mode.trim().to_lowercase().as_str() {
+            "plan" => PLAN_PROMPT,
+            "speaking-style" => SPEAKING_STYLE_PROMPT,
+            other => return Err(format!("未知模式：{other}")),
+        };
+        let mut guard = self
+            .active_mode
+            .lock()
+            .map_err(|_| "模式状态被占用。".to_string())?;
+        guard.name = mode.trim().to_lowercase();
+        guard.prompt = prompt.trim().to_string();
+        Ok(guard.name.clone())
+    }
+
+    fn deactivate_mode(&self) -> Result<String, String> {
+        let mut guard = self
+            .active_mode
+            .lock()
+            .map_err(|_| "模式状态被占用。".to_string())?;
+        let previous = std::mem::take(&mut guard.name);
+        guard.prompt.clear();
+        Ok(previous)
     }
 
     /// 内核自持的命令表：这条路径没有 `omnicrawl-commands` 注册表。
@@ -409,6 +493,10 @@ impl AgentDriver for KernelDriver {
             ("status".to_string(), "查看工作区与会话".to_string()),
             ("new".to_string(), "开启新会话".to_string()),
             ("workspace".to_string(), "切换工作区".to_string()),
+            (
+                "speaking-style".to_string(),
+                "开关简洁回复模式".to_string(),
+            ),
             ("help".to_string(), "查看可用命令".to_string()),
         ]
     }
@@ -425,6 +513,7 @@ impl AgentDriver for KernelDriver {
 
         let mut model = KernelReplySource {
             settings: Arc::clone(&self.settings),
+            system_prompt: self.system_prompt(),
             cancel: Arc::clone(&self.cancel),
         };
         let mut tools = UnavailableTools {

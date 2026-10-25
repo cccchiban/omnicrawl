@@ -409,6 +409,22 @@ impl AgentDriver for HostConnectorDriver {
         Ok(result.message)
     }
 
+    fn active_mode(&self) -> String {
+        self.service.active_mode()
+    }
+
+    fn activate_mode(&self, mode: &str) -> Result<String, String> {
+        self.service
+            .activate_mode(mode)
+            .map_err(|error| error.message)
+    }
+
+    fn deactivate_mode(&self) -> Result<String, String> {
+        self.service
+            .deactivate_mode()
+            .map_err(|error| error.message)
+    }
+
     /// 发布到 Telegram 菜单的命令表来自全局命令注册表。
     ///
     /// 只取注册表里“不是纯界面动作”的命令：`/quit`、`/settings` 这类在远程被明确拒绝，
@@ -623,6 +639,16 @@ impl CommandAgent for ServiceCommandAgent {
     fn activate_mode(&self, mode: &str) -> Result<String, AgentError> {
         self.service
             .activate_mode(mode)
+            .map_err(|error| AgentError::new(error.message))
+    }
+
+    fn active_mode(&self) -> String {
+        self.service.active_mode()
+    }
+
+    fn deactivate_mode(&self) -> Result<String, AgentError> {
+        self.service
+            .deactivate_mode()
             .map_err(|error| AgentError::new(error.message))
     }
 

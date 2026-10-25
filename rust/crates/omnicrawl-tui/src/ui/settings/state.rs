@@ -8431,8 +8431,8 @@ mod tests {
                     section: "子任务功能",
                 },
                 SubagentRow {
-                    key: "max_concurrency".to_string(),
-                    label: "最大并发数".to_string(),
+                    key: "model_request_concurrency".to_string(),
+                    label: "请求并发数".to_string(),
                     value: "2".to_string(),
                     toggle: false,
                     active: false,
@@ -8464,7 +8464,7 @@ mod tests {
             state.handle_key(KeyCode::Right),
             Some(SettingsEvent::Apply(SettingsChange::Subagent(
                 SubagentChange::Advanced {
-                    key: "max_concurrency".to_string(),
+                    key: "model_request_concurrency".to_string(),
                     value: 3,
                 }
             )))
@@ -8473,7 +8473,7 @@ mod tests {
             state.handle_key(KeyCode::Left),
             Some(SettingsEvent::Apply(SettingsChange::Subagent(
                 SubagentChange::Advanced {
-                    key: "max_concurrency".to_string(),
+                    key: "model_request_concurrency".to_string(),
                     value: 1,
                 }
             )))

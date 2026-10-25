@@ -149,16 +149,14 @@ pub fn inject_notifications(messages: &mut Vec<Value>, notifications: &[Value]) 
 
 /// `_tool_subagent` 的 `wants_review` 判定。
 pub fn wants_review(arguments: &Value) -> bool {
-    let Some(tasks) = arguments.get("tasks").and_then(Value::as_array) else {
+    let Some(task) = arguments.get("task") else {
         return false;
     };
-    tasks.iter().any(|task| {
-        task.is_object()
-            && task
-                .get("subagent_type")
-                .map(|value| truthy_text(Some(value)).trim().to_lowercase() == "review")
-                .unwrap_or(false)
-    })
+    task.is_object()
+        && task
+            .get("subagent_type")
+            .map(|value| truthy_text(Some(value)).trim().to_lowercase() == "review")
+            .unwrap_or(false)
 }
 
 /// `run_subagent_task` 的结果投影：返回子任务全文，失败时给出安全错误。

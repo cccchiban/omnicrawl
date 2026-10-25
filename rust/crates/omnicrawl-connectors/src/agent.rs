@@ -159,6 +159,23 @@ pub trait AgentDriver: Send + Sync + 'static {
     /// 交给宿主的斜杠命令注册表；`Ok(None)` 表示不是宿主认识的管理命令。
     fn handle_command(&self, text: &str, channel: &str) -> Result<Option<String>, String>;
 
+    /// 当前已启用的主 Agent 模式（未启用时为空串）。
+    ///
+    /// 模式提示词由宿主装配进 system prompt，连接器只读标识做展示。
+    fn active_mode(&self) -> String {
+        String::new()
+    }
+
+    /// 启用主 Agent 模式（连接器默认开启简洁回复模式时用）。
+    fn activate_mode(&self, _mode: &str) -> Result<String, String> {
+        Err("当前宿主没有提示词装配，无法切换模式。".to_string())
+    }
+
+    /// 关闭当前模式，返回被关闭的模式标识。
+    fn deactivate_mode(&self) -> Result<String, String> {
+        Err("当前宿主没有提示词装配，无法切换模式。".to_string())
+    }
+
     /// 发布到平台命令菜单的命令表（`(命令名, 一句说明)`）。
     ///
     /// 返回空表表示该宿主没有可发布的菜单，连接器就不去动平台侧设置。菜单只是客户端

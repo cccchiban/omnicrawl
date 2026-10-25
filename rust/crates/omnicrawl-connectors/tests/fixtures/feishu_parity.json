@@ -443,13 +443,13 @@
         "name": "subagent",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {},
-            {}
-          ]
+          "task": {
+            "subagent_type": "explore",
+            "description": "看代码"
+          }
         },
         "result": "",
-        "expected": "subagent run · 2 项"
+        "expected": "subagent run · explore · 看代码"
       },
       {
         "name": "memory_search",
@@ -605,10 +605,10 @@
         "name": "subagent",
         "arguments": {
           "action": "run",
-          "tasks": [
-            {},
-            {}
-          ]
+          "task": {
+            "subagent_type": "explore",
+            "description": "看代码"
+          }
         },
         "result": "",
         "expected": ""

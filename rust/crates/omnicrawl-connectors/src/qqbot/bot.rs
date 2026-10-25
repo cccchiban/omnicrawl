@@ -64,6 +64,9 @@ const CONFIRM_ARGUMENTS_LIMIT: usize = 1200;
 /// 进度段最多列出的工具条目数。
 const MAX_PROGRESS_TOOLS: usize = 12;
 
+/// 简洁回复模式的模式标识（与主 Agent 模板 `templates/speaking-style.md` 同名）。
+const SPEAKING_STYLE_MODE: &str = "speaking-style";
+
 /// 平台下发入口：发消息、上传并发送富媒体、下载附件。
 ///
 /// 真实实现是 [`QqApi`]，测试用记录型桩件替换。
@@ -546,7 +549,24 @@ impl<D: AgentDriver> QqBot<D> {
     /// 绑定确认桥并进入网关主循环，直到 [`QqBot::request_stop`]。
     pub fn run(self: Arc<Self>) -> Result<(), String> {
         self.bind_handlers();
+        // 远程端默认要短回复：平台单条消息有上限、回复条数也有限，长文体验很差。
+        self.enable_default_speaking_style();
         self.run_forever()
+    }
+
+    /// 启动时默认开启简洁回复模式；已有其他模式时不动，失败只记日志不阻断启动。
+    pub fn enable_default_speaking_style(&self) {
+        let active = self.driver.active_mode();
+        if !active.is_empty() {
+            if active != SPEAKING_STYLE_MODE {
+                eprintln!("[qqbot] 当前已启用模式 {active}，跳过默认简洁回复模式。");
+            }
+            return;
+        }
+        match self.driver.activate_mode(SPEAKING_STYLE_MODE) {
+            Ok(_) => eprintln!("[qqbot] 已默认开启简洁回复模式（/speaking-style off 可关闭）。"),
+            Err(error) => eprintln!("[qqbot] 默认开启简洁回复模式失败：{error}"),
+        }
     }
 
     /// 网关主循环：取 token → 取网关地址 → 连接 → 收事件，断线按退避重连。
@@ -846,7 +866,18 @@ impl<D: AgentDriver> QqBot<D> {
                     reply.send_final(&text);
                 }
                 Ok(None) => {
-                    reply.send_final("未知命令。发送 /start 查看可用命令。");
+                    let suggestion = suggest_command(&inbound.content, &self.driver.command_menu());
+                    eprintln!(
+                        "[qqbot] 宿主不认识该命令：{}；建议={}",
+                        inbound.content,
+                        suggestion.as_deref().unwrap_or("无")
+                    );
+                    reply.send_final(&match suggestion {
+                        Some(name) => {
+                            format!("未知命令。是不是想用 /{name}？发送 /start 查看可用命令。")
+                        }
+                        None => "未知命令。发送 /start 查看可用命令。".to_string(),
+                    });
                 }
                 Err(error) => {
                     eprintln!("[qqbot] 宿主命令执行失败：{}", inbound.content);
@@ -1235,10 +1266,60 @@ const HELP_TEXT: &str = "\
 /cancel 取消当前任务
 /workspace <路径> 切换工作区
 /thinking on|off 显示或隐藏思考内容
+/speaking-style on|off 开关简洁回复模式（默认开启）
 /approve 批准敏感工具调用，/reject 拒绝
 /start 显示本帮助
 
 平台限制：QQ 只允许被动回复，同一条消息最多回 5 条，因此长任务会合并成少数几条消息。";
+
+/// 未知命令时猜最接近的可用命令（取命令词，忽略 `@机器人` 后缀与参数）。
+///
+/// 只做提示、不自动执行：把 `/reset` 之类的拼写近似直接当命令跑，代价远高于少点一下。
+fn suggest_command(text: &str, menu: &[(String, String)]) -> Option<String> {
+    let token = text
+        .trim()
+        .strip_prefix('/')?
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next()
+        .unwrap_or("");
+    if token.is_empty() {
+        return None;
+    }
+    let typed: Vec<char> = token.to_lowercase().chars().collect();
+    // 短命令一个字符之差就可能撞上另一条命令（`/new` 与 `/rew`），因此按长度放宽阈值。
+    let limit = match typed.len() {
+        0..=4 => return None,
+        5..=8 => 1,
+        _ => 2,
+    };
+    menu.iter()
+        .map(|(name, _)| (edit_distance(&typed, &name.to_lowercase()), name))
+        .filter(|(distance, _)| *distance > 0 && *distance <= limit)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name.to_string())
+}
+
+/// 标准莱文斯坦距离（按字符计）。
+fn edit_distance(left: &[char], right: &str) -> usize {
+    let target: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=target.len()).collect();
+    for (i, left_char) in left.iter().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, right_char) in target.iter().enumerate() {
+            let cost = if left_char == right_char { 0 } else { 1 };
+            current.push(
+                (previous[j] + cost)
+                    .min(previous[j + 1] + 1)
+                    .min(current[j] + 1),
+            );
+        }
+        previous = current;
+    }
+    previous[target.len()]
+}
 
 /// 从提问选项里解析用户答案：序号、选项正文与自由文本都接受。
 fn match_answer(options: &[String], text: &str) -> String {
@@ -1263,7 +1344,7 @@ struct TaskTimeline<'a, D: AgentDriver> {
     subagent_order: Vec<String>,
     subagent_nodes: BTreeMap<String, SubagentNode>,
     /// 已经作为正文段发出去的内容（收尾时据此只补剩余部分）。
-    sent_text: String,
+    sent_segments: Vec<String>,
     sent_any: bool,
 }
 
@@ -1279,7 +1360,7 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
             todos: Vec::new(),
             subagent_order: Vec::new(),
             subagent_nodes: BTreeMap::new(),
-            sent_text: String::new(),
+            sent_segments: Vec::new(),
             sent_any: false,
         }
     }
@@ -1404,10 +1485,7 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
             format!("◇ {text}")
         };
         if self.reply.send_intermediate(&body) > 0 {
-            if !self.sent_text.is_empty() {
-                self.sent_text.push('\n');
-            }
-            self.sent_text.push_str(&text);
+            self.sent_segments.push(text);
             self.sent_any = true;
         }
     }
@@ -1476,7 +1554,7 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
         self.deltas.clear();
         let text = resolve_final_text(&streamed, &clean_text(final_text));
         // 消息不可编辑：已经发过的正文段不再重发，只补剩下的部分。
-        let tail = remaining_after(&self.sent_text, &text);
+        let tail = remaining_after(&self.sent_segments, &text);
         if tail.trim().is_empty() {
             return;
         }
@@ -1610,20 +1688,41 @@ impl<D: AgentDriver> AskUserHandler for QqBot<D> {
     }
 }
 
-/// 已经发过的 `sent` 之后还剩多少：`text` 以 `sent` 开头时返回尾部，否则原样返回。
+/// 已经发过的正文段之后还剩多少：`text` 以若干已发正文段开头时返回尾部，否则原样返回。
+///
+/// 宿主的最终回答通常只是最后一个模型 pass 的文本，**不含**工具调用之前的正文段，因此
+/// 逐段比对「已发段的尾部拼接」，而不是要求整段累计文本都出现在 `text` 里——那样一旦
+/// 前几段是别的 pass 说的，前缀就匹配不上，最后一段会被整段重发一遍。
 ///
 /// 比较时折叠空白（模型可能把两段用不同换行拼回来），但返回值取自原文，不重排内容。
-fn remaining_after(sent: &str, text: &str) -> String {
+fn remaining_after(sent: &[String], text: &str) -> String {
     let squeezed = |value: &str| value.split_whitespace().collect::<String>();
-    let sent_squeezed = squeezed(sent);
-    if sent_squeezed.is_empty() {
+    let pieces: Vec<String> = sent
+        .iter()
+        .map(|segment| squeezed(segment))
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if pieces.is_empty() {
         return text.to_string();
     }
-    if squeezed(text) == sent_squeezed {
+    let target = squeezed(text);
+    if target.is_empty() {
         return String::new();
     }
-    if !squeezed(text).starts_with(&sent_squeezed) {
+    // 从最长到最短尝试已发段的尾部拼接：整段说过就整段跳过，部分说过只补剩余部分。
+    let mut consumed_chars = 0_usize;
+    for start in 0..pieces.len() {
+        let joined: String = pieces[start..].concat();
+        if target.starts_with(&joined) {
+            consumed_chars = joined.chars().count();
+            break;
+        }
+    }
+    if consumed_chars == 0 {
         return text.to_string();
+    }
+    if consumed_chars == target.chars().count() {
+        return String::new();
     }
     // 在原文里逐字符推进，直到折叠空白后的长度达到已发部分。
     let mut consumed = 0_usize;
@@ -1631,7 +1730,7 @@ fn remaining_after(sent: &str, text: &str) -> String {
     for (index, character) in text.char_indices() {
         if !character.is_whitespace() {
             seen += 1;
-            if seen == sent_squeezed.chars().count() {
+            if seen == consumed_chars {
                 consumed = index + character.len_utf8();
                 break;
             }
@@ -1670,5 +1769,81 @@ pub fn describe(api: &QqApi) -> String {
             format!("{name}（{id}）")
         }
         Err(error) => format!("身份查询失败：{error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{edit_distance, remaining_after, suggest_command};
+
+    fn segments(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    fn menu(items: &[&str]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|name| ((*name).to_string(), String::new()))
+            .collect()
+    }
+
+    #[test]
+    fn a_misspelled_command_points_at_the_closest_one() {
+        let menu = menu(&["status", "speaking-style", "skills", "reset"]);
+        assert_eq!(
+            suggest_command("/speaking-styl", &menu),
+            Some("speaking-style".to_string())
+        );
+        assert_eq!(
+            suggest_command("/speaking-styl@Bot on", &menu),
+            Some("speaking-style".to_string())
+        );
+    }
+
+    #[test]
+    fn unrelated_input_gets_no_suggestion() {
+        let menu = menu(&["status", "speaking-style", "reset"]);
+        assert_eq!(suggest_command("/foobar", &menu), None);
+        // 短命令不猜：一个字符之差就可能撞上另一条真命令。
+        assert_eq!(suggest_command("/re", &menu), None);
+        assert_eq!(suggest_command("/reset", &menu), None);
+        // 没有斜杠、或命令表为空时也不猜。
+        assert_eq!(suggest_command("speaking-styl", &menu), None);
+        assert_eq!(suggest_command("/speaking-styl", &[]), None);
+    }
+
+    #[test]
+    fn edit_distance_counts_character_edits() {
+        let chars: Vec<char> = "speaking-styl".chars().collect();
+        assert_eq!(edit_distance(&chars, "speaking-style"), 1);
+        assert_eq!(edit_distance(&chars, "speaking-styl"), 0);
+        assert_eq!(edit_distance(&[], "abc"), 3);
+    }
+
+    #[test]
+    fn the_last_segment_is_not_repeated_as_the_final_answer() {
+        // 宿主的最终回答只是最后一个 pass 的文本，已在正文段里说过。
+        let sent = segments(&["先看目录。", "共一个文件。"]);
+        assert_eq!(remaining_after(&sent, "共一个文件。"), "");
+    }
+
+    #[test]
+    fn nothing_sent_means_the_whole_answer_goes_out() {
+        assert_eq!(remaining_after(&[], "结论。"), "结论。");
+    }
+
+    #[test]
+    fn an_unseen_answer_still_goes_out() {
+        let sent = segments(&["先看目录。"]);
+        assert_eq!(remaining_after(&sent, "结论不一样。"), "结论不一样。");
+    }
+
+    #[test]
+    fn a_completion_of_the_last_segment_only_sends_the_tail() {
+        let sent = segments(&["先看目录。"]);
+        assert_eq!(
+            remaining_after(&sent, "先看目录。结论是两行。"),
+            "结论是两行。"
+        );
     }
 }

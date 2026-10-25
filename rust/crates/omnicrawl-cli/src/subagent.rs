@@ -94,70 +94,67 @@ impl SubAgentRuntime {
             .collect()
     }
 
-    /// 校验并准备一批任务；失败时返回 `(code, message)` 形式的顶层错误。
+    /// 校验并准备单个任务；失败时返回 `(code, message)` 形式的顶层错误。
+    ///
+    /// 一次调用只承载一个任务：要并行就并发多次调用，由宿主的多线程批次天然并行，
+    /// 不再靠一次调用塞多个任务。
     pub fn prepare(
         &self,
         arguments: &Map<String, Value>,
         parent_tools: &[String],
         batch_id: &str,
-    ) -> Result<Vec<PreparedTask>, (String, String)> {
+    ) -> Result<PreparedTask, (String, String)> {
         let value = Value::Object(arguments.clone());
         if let Some(error) = validate_arguments(&value, &self.config, &self.registry) {
             return Err(error);
         }
-        let tasks = arguments
-            .get("tasks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut prepared = Vec::with_capacity(tasks.len());
-        for (index, task) in tasks.iter().enumerate() {
-            let task = task.as_object().expect("校验已保证 tasks 元素是对象");
-            let description = task
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let prompt = task
-                .get("prompt")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let agent_type = task
-                .get("subagent_type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_lowercase();
-            let context = task
-                .get("context")
-                .and_then(Value::as_str)
-                .unwrap_or("fresh")
-                .to_string();
-            let Some(definition) = self.registry.get(&agent_type) else {
-                return Err((
-                    "AGENT_TYPE_NOT_FOUND".to_string(),
-                    format!("未找到 Agent 定义：{agent_type}。"),
-                ));
-            };
-            let verify_tools = vec![
-                omnicrawl_controllers::subagents::verify::VERIFY_COMMAND_TOOL_NAME.to_string(),
-            ];
-            let selection = select_profile_tools(definition, parent_tools, &verify_tools);
-            prepared.push(PreparedTask {
-                batch_id: batch_id.to_string(),
-                task_id: format!("task-{:012x}", index as u64 + 1),
-                description,
-                prompt,
-                agent_type,
-                definition: definition.clone(),
-                tool_names: selection.names,
-                context,
-            });
-        }
-        Ok(prepared)
+        let task = arguments
+            .get("task")
+            .and_then(Value::as_object)
+            .expect("校验已保证 task 是对象");
+        let description = task
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let prompt = task
+            .get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let agent_type = task
+            .get("subagent_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let context = task
+            .get("context")
+            .and_then(Value::as_str)
+            .unwrap_or("fresh")
+            .to_string();
+        let Some(definition) = self.registry.get(&agent_type) else {
+            return Err((
+                "AGENT_TYPE_NOT_FOUND".to_string(),
+                format!("未找到 Agent 定义：{agent_type}。"),
+            ));
+        };
+        let verify_tools = vec![
+            omnicrawl_controllers::subagents::verify::VERIFY_COMMAND_TOOL_NAME.to_string(),
+        ];
+        let selection = select_profile_tools(definition, parent_tools, &verify_tools);
+        Ok(PreparedTask {
+            batch_id: batch_id.to_string(),
+            task_id: "task-000000000001".to_string(),
+            description,
+            prompt,
+            agent_type,
+            definition: definition.clone(),
+            tool_names: selection.names,
+            context,
+        })
     }
 
     /// 子任务的初始消息：fresh 只有任务指令（系统提示走模型配置），fork 在父快照后追加指令。

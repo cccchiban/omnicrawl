@@ -7,8 +7,6 @@ version = 1
 [subagents]
 enabled = false
 max_depth = 1
-max_concurrency = 2
-max_tasks_per_batch = 4
 default_timeout_seconds = 3600
 model_request_concurrency = 2
 # 保留以兼容既有配置；子代理已改为回合内同步串行执行，本项不再生效。

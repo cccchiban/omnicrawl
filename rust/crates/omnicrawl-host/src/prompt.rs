@@ -33,6 +33,8 @@ pub const DEFAULT_AGENT_TEMP_DIR: &str = ".omnicrawl/.agent_tmp";
 const EMBEDDED_SYSTEM_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/system_prompt.md");
 const EMBEDDED_PLAN_PROMPT: &str = include_str!("../../../../rust/assets/templates/plan.md");
+const EMBEDDED_SPEAKING_STYLE_PROMPT: &str =
+    include_str!("../../../../rust/assets/templates/speaking-style.md");
 
 /// 一次提示词装配所需的宿主输入。
 pub struct PromptOptions {
@@ -193,19 +195,18 @@ impl PromptRuntime {
         let file_name = format!("{normalized}.md");
         let prompt = match read_template(self.templates_dir.as_deref(), &file_name) {
             Some(text) => text,
-            None if normalized == "plan" => EMBEDDED_PLAN_PROMPT.to_string(),
-            None => {
+            None => builtin_mode_prompt(&normalized).map(str::to_string).ok_or_else(|| {
                 // 与 Python 的文案同形：包内模板确实缺这个文件。
                 let path = self
                     .templates_dir
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("templates"))
                     .join(&file_name);
-                return Err(format!(
+                format!(
                     "读取模式模板 {normalized}.md 失败：{} 不存在。",
                     path.display()
-                ));
-            }
+                )
+            })?,
         };
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
@@ -214,6 +215,15 @@ impl PromptRuntime {
         self.mode_name = normalized.clone();
         self.mode_prompt = prompt;
         Ok(normalized)
+    }
+
+    /// 关闭当前模式：只清模式块，基础提示词、顾问准则与上下文消息保持不变。
+    ///
+    /// 返回被关闭的模式标识（本来就未启用时为空串）。
+    pub fn deactivate_mode(&mut self) -> String {
+        let previous = std::mem::take(&mut self.mode_name);
+        self.mode_prompt.clear();
+        previous
     }
 
     /// 基础 system prompt + 顾问准则 + 活动模式提示词。
@@ -364,6 +374,15 @@ fn read_template(dir: Option<&Path>, file_name: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// 编译期内嵌的模式模板：模板目录缺失时用它兜底，保证模式切换不依赖磁盘。
+pub fn builtin_mode_prompt(mode: &str) -> Option<&'static str> {
+    match mode {
+        "plan" => Some(EMBEDDED_PLAN_PROMPT),
+        "speaking-style" => Some(EMBEDDED_SPEAKING_STYLE_PROMPT),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +426,31 @@ mod tests {
         assert!(with_mode.starts_with(base.as_str()));
         assert!(with_mode.contains("<active_mode_prompt name=\"plan\">"));
         assert!(with_mode.trim_end().ends_with("</active_mode_prompt>"));
+    }
+
+    #[test]
+    fn speaking_style_mode_can_be_switched_off_again() {
+        let env = ConfigEnvironment::from_process();
+        let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
+        let base = runtime.system_prompt();
+        assert_eq!(runtime.active_mode(), "");
+
+        runtime.activate_mode("speaking-style").expect("启用简洁回复模式");
+        assert_eq!(runtime.active_mode(), "speaking-style");
+        let with_mode = runtime.system_prompt();
+        assert!(with_mode.contains("<active_mode_prompt name=\"speaking-style\">"));
+        assert!(with_mode.contains("最多十行"));
+
+        assert_eq!(runtime.deactivate_mode(), "speaking-style");
+        assert_eq!(runtime.active_mode(), "");
+        assert_eq!(runtime.system_prompt(), base, "关闭后应回到基础提示词");
+    }
+
+    #[test]
+    fn builtin_mode_prompt_covers_selectable_modes() {
+        assert!(builtin_mode_prompt("plan").is_some());
+        assert!(builtin_mode_prompt("speaking-style").is_some());
+        assert!(builtin_mode_prompt("unknown-mode").is_none());
     }
 
     #[test]

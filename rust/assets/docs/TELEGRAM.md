@@ -141,6 +141,7 @@ Bot 启动时会用 `setMyCommands` 把宿主承载方的命令表发布成 Tele
 由宿主承载的连接器直接复用 TUI 的命令注册表，因此这些命令**真的可用**：
 `/sessions`、`/archives`、`/archive`、`/history`、`/undo`、`/compact`、
 `/rename`、`/resume <id>`、`/plan`（启用主 Agent 计划模式，后续任务追加模式提示词）、
+`/speaking-style [on|off]`（开关简洁回复模式，回复不超过十行；默认关闭）、
 `/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/model`、`/advisor`、
 `/skills`、`/memory:clean`、`/mcp`、`/plugins` 等。
 `/review` 例外：它要派生子 Agent 且子任务的工具批次必须回到宿主执行，连接器的同步

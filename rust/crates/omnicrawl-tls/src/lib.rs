@@ -41,8 +41,9 @@
 //! 客户端私钥时根本走不通。
 //!
 //! 应用层由 ALPN 决定：协商出 `h2` 走 HTTP/2，协商出 `http/1.1` 在同一套 TLS 记录层上
-//! 退到 HTTP/1.1 报文。1.2 下服务端不回 ALPN 是常态（老服务器不发这个扩展），此时按
-//! HTTP/1.1 走；1.3 下不回 ALPN 则如实报 [`driver::DriverError::UnsupportedAlpn`]。
+//! 退到 HTTP/1.1 报文。服务端不回 ALPN 时（1.2 的老服务器、关掉 HTTP/2 的 1.3 服务端）
+//! 同样按 HTTP/1.1 走；只有协商出这两个之外的协议才报
+//! [`driver::DriverError::UnsupportedAlpn`]。
 //!
 //! 尚未完成：`profile` 里 Firefox / Safari 的逐字节校准、证书吊销检查、
 //! 服务端推送（刻意不支持）、0-RTT、会话恢复。

@@ -75,7 +75,7 @@ use serde_json::{json, Map, Value};
 use omnicrawl_controllers::context_compaction::SourceEvent;
 use omnicrawl_controllers::subagents::batch::batch_summary;
 use omnicrawl_controllers::subagents::coordinator::{
-    cancelled_payload, failure_payload, json_result_text, task_event_payload,
+    failure_payload, json_result_text, task_event_payload,
     terminal_event_payload, top_level_error,
 };
 use omnicrawl_controllers::subagents::coordinator::{query_request, QueryRequest};
@@ -1842,6 +1842,8 @@ fn run_computer_use(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) ->
     );
     // `timeout` / `blocked` 是可用的业务结果，`ok` 只用来表达「调用本身没出错」。
     let ok = !matches!(status.as_str(), "failed" | "cancelled");
+    // 桌面任务不发 `subagent.task.*`：窗口靠收尾事件关闭，否则会一直挂着。
+    emit_batch_finished(conn, &batch_id);
     (ok, json_result_text(&payload))
 }
 
@@ -2061,8 +2063,8 @@ fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
     };
     let parent_tools = SubAgentRuntime::parent_tool_names(&model_config);
     let batch_id = next_subagent_batch_id();
-    let tasks = match runtime.prepare(arguments, &parent_tools, &batch_id) {
-        Ok(tasks) => tasks,
+    let task = match runtime.prepare(arguments, &parent_tools, &batch_id) {
+        Ok(task) => task,
         Err((code, message)) => {
             return (false, json_result_text(&top_level_error(&code, &message)))
         }
@@ -2074,24 +2076,22 @@ fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
         json!({
             "batch_id": batch_id,
             "status": "queued",
-            "task_count": tasks.len(),
+            "task_count": 1,
         }),
     );
-    let fail_fast = arguments.get("fail_fast").and_then(Value::as_bool) == Some(true);
-    let max_concurrency = arguments
-        .get("max_concurrency")
-        .and_then(Value::as_i64)
-        .unwrap_or(runtime.config.max_concurrency);
-    let results = run_scheduled_tasks(
-        conn,
-        &Arc::new(runtime),
+    let result = run_task_in_isolation(
+        &runtime,
         &model_config,
-        &tasks,
+        &task,
         &fork_messages,
-        max_concurrency,
-        fail_fast,
+        conn,
+        &CancelToken::new(),
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        false,
+        true,
     );
-    let (ok, summary) = batch_summary(&batch_id, results);
+    let (ok, summary) = batch_summary(&batch_id, vec![result]);
+    emit_batch_finished(conn, &batch_id);
     (ok, json_result_text(&summary))
 }
 
@@ -2225,75 +2225,6 @@ fn run_subagent_query(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) 
     }
 }
 
-/// 子任务的调度：按顺序一个跑完再跑下一个。
-///
-/// 子回合与主回合同在一条线程，工具批次直接借连接执行，因此不再需要线程池、
-/// 通道或并发上限：`max_concurrency` 配置保留但不再生效。
-fn run_scheduled_tasks(
-    conn: &Rc<RefCell<Conn>>,
-    runtime: &Arc<SubAgentRuntime>,
-    model_config: &KernelModelConfig,
-    tasks: &[PreparedTask],
-    fork_messages: &[Value],
-    _max_concurrency: i64,
-    fail_fast: bool,
-) -> Vec<Value> {
-    let cancels: Vec<CancelToken> = (0..tasks.len()).map(|_| CancelToken::new()).collect();
-    let mut results: Vec<Option<Value>> = (0..tasks.len()).map(|_| None).collect();
-    let mut stopped = false;
-    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    for (index, task) in tasks.iter().enumerate() {
-        if conn.borrow().cancel.load(Ordering::SeqCst) {
-            // 父回合被取消：剩下的任务一律不启动，统一走下面的 `cancelled` 分支。
-            stopped = true;
-        }
-        if stopped {
-            break;
-        }
-        let result = run_task_in_isolation(
-            runtime,
-            model_config,
-            task,
-            fork_messages,
-            conn,
-            &cancels[index],
-            &workspace,
-            false,
-            // 同步批次同样开过程流：子代理窗口按批次显示实时对话。
-            true,
-        );
-        if fail_fast && result.get("status").and_then(Value::as_str) != Some("completed") {
-            stopped = true;
-        }
-        results[index] = Some(result);
-    }
-
-    results
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value.unwrap_or_else(|| {
-                let view = tasks[index].view();
-                let payload = cancelled_payload(
-                    &view,
-                    if fail_fast {
-                        FAIL_FAST_STOPPED_MESSAGE
-                    } else {
-                        "父任务已取消尚未调度的子任务。"
-                    },
-                );
-                emit_subagent_event(
-                    conn,
-                    &terminal_event_name(&payload),
-                    terminal_event_payload(&view, &payload),
-                );
-                payload
-            })
-        })
-        .collect()
-}
-
 /// 一个子任务从隔离区到公开结果的全过程：建工作树 → 跑子回合 → 收集产物 → 发事件。
 ///
 /// `keep_full_text` 为真时把子 Agent 的收尾文本原样挂进结果的 `full_text`：
@@ -2384,9 +2315,6 @@ fn terminal_event_name(result: &Value) -> String {
         .unwrap_or("failed");
     format!("subagent.task.{status}")
 }
-
-/// `fail_fast` 在前序任务失败后写进未调度任务的原因（与 Python 同文案）。
-const FAIL_FAST_STOPPED_MESSAGE: &str = "fail_fast 已在前序任务失败后停止调度该任务。";
 
 /// 把 worktree 产物摘要挂到子任务结果的 `artifacts` 上（与 Python 的 `[worktree]` 标记同义）。
 fn attach_worktree_artifacts(mut result: Value, artifacts: &WorktreeArtifacts) -> Value {
@@ -2541,6 +2469,18 @@ fn emit_subagent_event(conn: &Rc<RefCell<Conn>>, name: &str, payload: Value) {
             name: name.to_string(),
             payload,
         }));
+}
+
+/// 批次收尾事件：所有子任务都已落定，宿主的子代理窗口收到后自动关闭。
+///
+/// 只在批次真的跑完之后发一次；`computer_use` 这类不发 `subagent.task.*` 的入口
+/// 也靠它关窗，否则窗口会一直停在「已完成」的状态上等用户手动关。
+fn emit_batch_finished(conn: &Rc<RefCell<Conn>>, batch_id: &str) {
+    emit_subagent_event(
+        conn,
+        "subagent.batch.finished",
+        json!({ "batch_id": batch_id, "status": "finished" }),
+    );
 }
 
 /// 读取 `[run_guard].continuation`：与其它内核旁路配置同一套解析
@@ -4240,22 +4180,16 @@ fn run_subagent_request(
     // 复用 `subagent` 工具的入参形状：校验、工具白名单与错误文案因此完全同源。
     let arguments: Map<String, Value> = json!({
         "action": "run",
-        "tasks": [{
+        "task": {
             "subagent_type": agent_type,
             "description": description,
             "prompt": prompt,
-        }],
+        },
     })
     .as_object()
     .cloned()
     .unwrap_or_default();
-    let mut tasks = runtime.prepare(&arguments, &parent_tools, &batch_id)?;
-    let task = tasks.pop().ok_or_else(|| {
-        (
-            "SUBAGENT_LIMIT_EXCEEDED".to_string(),
-            "subagent.run 没有可执行的任务。".to_string(),
-        )
-    })?;
+    let task = runtime.prepare(&arguments, &parent_tools, &batch_id)?;
 
     let runtime = Arc::new(runtime);
     let cancel = CancelToken::new();
@@ -4275,6 +4209,7 @@ fn run_subagent_request(
     );
     // 结果投影复用协调器的同一条路径：失败描述、全文优先与脱敏在这里一次做对。
     let (ok, summary) = batch_summary(&batch_id, vec![result.clone()]);
+    emit_batch_finished(conn, &batch_id);
     let encoded = json_result_text(&summary);
     let output = require_completed_result(ok, &encoded)
         .map_err(|error| (subagent_failure_code(&summary), error.message().to_string()))?;
@@ -4583,14 +4518,19 @@ impl ReplySource for BackgroundModelPort {
         let mut sink = BackgroundSink {
             conn: Rc::clone(&self.conn),
             cancel: self.cancel.clone(),
+            task_id: self.task_id.clone(),
+            batch_id: self.batch_id.clone(),
+            agent_type: self.agent_type.clone(),
+            stream: self.stream,
         };
         match runtime.run_turn(&input, &mut sink) {
             Ok(reply) => {
                 let mut reply = reply;
                 name_map.restore_reply(&mut reply);
                 let reply = to_agent_reply(reply)?;
-                // 与 Python 同规则：只有带工具调用的过程性文本进子代理会话面板。
-                if self.stream && !reply.content.is_empty() && !reply.tool_calls.is_empty() {
+                // 正文已经随流逐片进过窗口；整段返回的通道（无流式增量）补发一次，
+                // 否则窗口里这一段回复会完全缺失。
+                if self.stream && !reply.content.is_empty() && !reply.content_streamed {
                     emit_subagent_event(
                         &self.conn,
                         "subagent.turn.text",
@@ -4659,21 +4599,52 @@ impl BackgroundModelPort {
     }
 }
 
-/// 子代理的流事件出口：只外发 Provider 告警，正文与思考增量一律丢弃。
+/// 子代理的流事件出口：正文与思考增量转成 `subagent.turn.*` 事件，不混进主会话。
 ///
 /// 子回合和主回合同在一条连接上，`HostEvent::Delta` / `ReasoningDelta` 会被宿主直接
-/// 追加到主会话的正文与思考段里。子代理的正文已由 `subagent.turn.text` 送进独立窗口，
-/// 这里再发一遍就会让子代理的话混进主代理的回复。
+/// 追加到主会话的正文与思考段里。因此这里既不发 `turn.delta`，也不把增量丢掉——
+/// 改成带着批次身份的子代理事件，由宿主送进独立窗口；窗口按批次渲染，主代理的回复
+/// 不受影响。`stream` 为假（不需要过程流的入口）时只外发 Provider 告警。
 struct BackgroundSink {
     conn: Rc<RefCell<Conn>>,
     cancel: CancelToken,
+    task_id: String,
+    batch_id: String,
+    agent_type: String,
+    stream: bool,
+}
+
+impl BackgroundSink {
+    fn emit_text(&self, name: &str, text: &str) {
+        if !self.stream || text.is_empty() {
+            return;
+        }
+        emit_subagent_event(
+            &self.conn,
+            name,
+            json!({
+                "task_id": self.task_id,
+                "batch_id": self.batch_id,
+                "agent_type": self.agent_type,
+                "text": text,
+            }),
+        );
+    }
 }
 
 impl TurnSink for BackgroundSink {
     fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
-        if let ModelStreamEvent::ProviderWarning(warning) = event {
-            let event = provider_warning_event(&warning);
-            self.conn.borrow_mut().notify(event);
+        match event {
+            ModelStreamEvent::ProviderWarning(ref warning) => {
+                let event = provider_warning_event(warning);
+                self.conn.borrow_mut().notify(event);
+            }
+            // 文本与思考的增量按片外发：窗口里能逐字出现，不必等整段回复落地。
+            ModelStreamEvent::TextDelta(delta) => self.emit_text("subagent.turn.text", &delta.text),
+            ModelStreamEvent::ReasoningDelta(delta) => {
+                self.emit_text("subagent.turn.reasoning", &delta.text)
+            }
+            _ => {}
         }
         if self.cancel.is_set() {
             SinkFlow::Cancel

@@ -154,18 +154,21 @@ pub fn tool_title_context(tool_name: &str, arguments: &Value, _result_text: &str
     }
     if operation == "subagent" {
         let action = arg_text(arguments, "action").trim().to_string();
-        let task_count = arguments
-            .get("tasks")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
         let mut context = if action.is_empty() {
             "任务".to_string()
         } else {
             action
         };
-        if task_count > 0 {
-            context.push_str(&format!("  {task_count} 项"));
+        // 一次调用只带一个 task：标题直接显示角色与目标，多个子代理就是多张并列的卡。
+        if let Some(task) = arguments.get("task") {
+            let agent_type = arg_text(task, "subagent_type").trim().to_string();
+            if !agent_type.is_empty() {
+                context.push_str(&format!("  {agent_type}"));
+            }
+            let description = arg_text(task, "description").trim().to_string();
+            if !description.is_empty() {
+                context.push_str(&format!("  {}", compact_title_value(&description, 48)));
+            }
         }
         return context;
     }
@@ -898,8 +901,12 @@ mod tests {
         );
         assert_eq!(tool_title_context("monitor", &json!({}), ""), "任务");
         assert_eq!(
-            tool_title_context("subagent", &json!({"action": "run", "tasks": [{}, {}]}), ""),
-            "run  2 项"
+            tool_title_context(
+                "subagent",
+                &json!({"action": "run", "task": {"subagent_type": "explore", "description": "调查并行执行"}}),
+                ""
+            ),
+            "run  explore  调查并行执行"
         );
         assert_eq!(
             tool_title_context("windows_screenshot", &json!({}), ""),

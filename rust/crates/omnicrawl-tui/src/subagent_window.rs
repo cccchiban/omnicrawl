@@ -1,4 +1,4 @@
-//! 子代理独立窗口：把 `subagent.tool.*` / `subagent.turn.text` 转成一条可跟随的
+//! 子代理独立窗口：把 `subagent.tool.*` / `subagent.turn.*` 转成一条可跟随的
 //! JSONL 流水，并在**新终端窗口**里渲染。主会话不再画进度树，只留一行受理提示。
 //!
 //! 分两半：
@@ -7,8 +7,9 @@
 //!   建流水文件并用 `CREATE_NEW_CONSOLE` 拉起一个 `omnicrawl-tui --subagent-window <文件>`
 //!   子进程；之后每个事件追加一行。主会话只保留「已开窗口」这一份状态，不参与渲染。
 //! - **窗口进程**（[`run_window`]）：尾随流水文件，把事件重建成 `AppState` 的会话记录，
-//!   再用**主代理那套** `ui::render` 渲染整页（会话区 + 输入区方框 + 底部 HUD）。
-//!   窗口关闭即进程结束，宿主侧不受影响。
+//!   再用**主代理那套** `ui::render` 渲染整页（会话区 + 输入区方框 + 底部 HUD），
+//!   并自己跑一帧一帧的动画、键盘/滚轮滚动与点击展开。批次收尾（`subagent.batch.finished`）
+//!   后窗口自动关闭；用户也可以随时按 Esc 关掉，任务不受影响。
 //!
 //! 为什么用文件而不是管道：窗口是另一个进程、另一个控制台，宿主不能把自己的 stdout 分给它；
 //! 文件同时留下现场（窗口崩溃或用户提前关掉后仍可回看），成本只是一次 `create_dir_all`。
@@ -18,13 +19,24 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
+};
 
 /// 窗口进程等待新行的轮询间隔：流水按行追加，20ms 足够让文字看起来是流式的。
 const FOLLOW_TICK: Duration = Duration::from_millis(20);
 
 /// 窗口进程的启动开关（`omnicrawl-tui --subagent-window <流水文件>`）。
 pub const WINDOW_FLAG: &str = "--subagent-window";
+
+/// 滚轮一格滚动的行数（与主代理同值）。
+const WHEEL_STEP: isize = 3;
+/// 方向键与翻页键的步长（与主代理同值）。
+const SCROLL_STEP: isize = 1;
+const PAGE_STEP: isize = 10;
 
 /// 一次子任务在窗口里的进度。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +57,7 @@ impl TaskLine {
 #[derive(Debug, Clone, PartialEq)]
 enum Entry {
     Text(String),
+    Reasoning(String),
     ToolStarted {
         call_id: String,
         tool: String,
@@ -62,6 +75,8 @@ enum Entry {
         description: String,
         status: String,
     },
+    /// 整个批次收尾：窗口据此自动关闭。
+    BatchFinished,
 }
 
 /// 一次投递的结论：主会话据此决定要不要写那行提示。
@@ -101,6 +116,17 @@ impl SubagentWindows {
             return Delivery::Ignored;
         };
         let batch_id = payload_text(payload, "batch_id").unwrap_or_else(|| "batch".to_string());
+        // 收尾事件只往**已经开着**的窗口里写：批次没有窗口（全部任务在准入阶段就被拒）
+        // 时不该为了关窗专门拉开一个新窗口。
+        if matches!(entry, Entry::BatchFinished) {
+            let Some(stream) = self.batches.get(&batch_id) else {
+                return Delivery::Ignored;
+            };
+            return match append_entry(stream, &entry) {
+                Ok(()) => Delivery::Appended,
+                Err(_) => Delivery::Ignored,
+            };
+        }
         let opened = !self.batches.contains_key(&batch_id);
         if opened {
             let stream = stream_path(root, &batch_id);
@@ -150,6 +176,11 @@ fn entry_from_event(name: &str, payload: &serde_json::Value) -> Option<Entry> {
             let body = text("text");
             (!body.trim().is_empty()).then_some(Entry::Text(body))
         }
+        "subagent.turn.reasoning" => {
+            let body = text("text");
+            (!body.trim().is_empty()).then_some(Entry::Reasoning(body))
+        }
+        "subagent.batch.finished" => Some(Entry::BatchFinished),
         "subagent.tool.started" => Some(Entry::ToolStarted {
             call_id: text("call_id"),
             tool: text("tool"),
@@ -233,6 +264,8 @@ fn append_entry(path: &Path, entry: &Entry) -> std::io::Result<()> {
 fn entry_to_json(entry: &Entry) -> serde_json::Value {
     match entry {
         Entry::Text(text) => serde_json::json!({ "kind": "text", "text": text }),
+        Entry::Reasoning(text) => serde_json::json!({ "kind": "reasoning", "text": text }),
+        Entry::BatchFinished => serde_json::json!({ "kind": "batch.finished" }),
         Entry::ToolStarted {
             call_id,
             tool,
@@ -282,6 +315,8 @@ fn entry_from_json(line: &str) -> Option<Entry> {
     };
     match text("kind").as_str() {
         "text" => Some(Entry::Text(text("text"))),
+        "reasoning" => Some(Entry::Reasoning(text("text"))),
+        "batch.finished" => Some(Entry::BatchFinished),
         "tool.started" => Some(Entry::ToolStarted {
             call_id: text("call_id"),
             tool: text("tool"),
@@ -325,9 +360,13 @@ fn spawn_window(exe: Option<&Path>, stream: &Path) {
         command.arg(WINDOW_FLAG).arg(&stream);
         #[cfg(windows)]
         {
-            // 三个标准句柄一律**不重定向**：`CREATE_NEW_CONSOLE` 给子进程分配的新控制台
+            // stdout/stderr 一律**不重定向**：`CREATE_NEW_CONSOLE` 给子进程分配的新控制台
             // 就挂在它的 stdout/stderr 上，一旦显式塞进 `Stdio::null()`，窗口进程会把整屏
             // 内容画进 NUL 设备——窗口开出来了，却永远是一块空白。
+            //
+            // stdin 置空不影响键盘：crossterm 在 Windows 上不走 stdin，而是自己
+            // `CreateFileW("CONIN$")` 打开**当前控制台**的输入句柄（事件轮询与原始模式
+            // 都走它），新控制台的输入队列因此照旧可读。
             command.stdin(Stdio::null());
             // 新控制台起不来（受限桌面会话）时不回退到「无窗口运行」：那会得到一个收了
             // 输出却不显示的进程。流水文件仍在，用户可自己 `--subagent-window` 打开。
@@ -367,16 +406,22 @@ mod platform {
     }
 }
 
-/// 窗口进程主体：尾随流水文件并按主代理的版式渲染，直到窗口关闭（写不出去即结束）。
+/// 窗口进程主体：尾随流水文件并按主代理的版式渲染。
+///
+/// 窗口自己跑事件循环：流水有新行就重画，空闲时按 [`FOLLOW_TICK`] 醒来同时推进动画
+/// （spinner、思考段铺开、图片解码、底部轮播）。Esc / Ctrl+Q 随时关窗；批次收尾
+/// （[`Entry::BatchFinished`]）后画完最后一帧自动退出。
 pub fn run_window(stream: PathBuf) -> Result<(), String> {
     let mut terminal = WindowTerminal::start()?;
+    // 窗口按 20ms 轮询：Windows 默认计时器粒度约 15.6ms，不提升精度会让「睡 20ms」
+    // 变成 31ms，动画与流式文字都会一顿一顿。随进程退出恢复。
+    let _timer = crate::ui::fullscreen::terminal::timer_resolution::TimerResolutionGuard::acquire();
     let mut rendered = Rendered::default();
-    let mut state = crate::state::AppState::new(
-        "子代理".to_string(),
-        String::new(),
-        crate::args::ApprovalMode::Auto,
-    );
-    write_update(&mut terminal, &mut state, &stream, &rendered)?;
+    let mut state = window_state();
+    draw(&mut terminal, &mut state, &stream, &rendered)?;
+    // `draw` 里写过状态行（会置脏输入块）：版本号在首帧之后取，才对得上屏幕上的内容。
+    let mut drawn_versions = state.refresh_versions();
+    let mut dirty = false;
     let mut file = wait_for_stream(&stream)?;
     let mut offset: u64 = 0;
     let mut pending = String::new();
@@ -387,24 +432,20 @@ pub fn run_window(stream: PathBuf) -> Result<(), String> {
             offset = 0;
             pending.clear();
             rendered = Rendered::default();
-            state = crate::state::AppState::new(
-                "子代理".to_string(),
-                String::new(),
-                crate::args::ApprovalMode::Auto,
-            );
+            state = window_state();
+            dirty = true;
         }
         if file.seek(SeekFrom::Start(offset)).is_err() {
             return Ok(());
         }
         let mut reader = BufReader::new(&mut file);
-        let mut read_any = false;
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(count) => {
                     offset += count as u64;
-                    read_any = true;
+                    dirty = true;
                     // 写入方可能把一行拆成多次写：凑齐换行才当作完整事件。
                     if !line.ends_with('\n') {
                         pending.push_str(&line);
@@ -422,12 +463,174 @@ pub fn run_window(stream: PathBuf) -> Result<(), String> {
                 Err(_) => return Ok(()),
             }
         }
-        if read_any {
-            write_update(&mut terminal, &mut state, &stream, &rendered)?;
+
+        let now = Instant::now();
+        state.tick_activity();
+        let _ = state.tick_reasoning_reveal();
+        let _ = state.tick_image_previews();
+        state.refresh_carousel(now, "");
+        state.tick_notice_line(now);
+
+        let versions = state.refresh_versions();
+        if dirty || versions != drawn_versions {
+            draw(&mut terminal, &mut state, &stream, &rendered)?;
+            drawn_versions = versions;
+            dirty = false;
+        }
+        // 批次收尾：最后一帧已经画完，窗口自动关闭（流水留在磁盘上可回看）。
+        if rendered.finished {
+            return Ok(());
+        }
+
+        if !event::poll(FOLLOW_TICK).map_err(|error| format!("读取终端事件失败：{error}"))? {
             continue;
         }
-        // 读到末尾：等下一批追加（宿主仍在跑任务，窗口保持跟随）。
-        std::thread::sleep(FOLLOW_TICK);
+        let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
+        if handle_event(&mut state, &mut terminal, event)? {
+            return Ok(());
+        }
+        dirty = true;
+    }
+}
+
+/// 窗口进程的空界面状态：只放会话记录，不连内核。
+fn window_state() -> crate::state::AppState {
+    let mut state = crate::state::AppState::new(
+        "子代理".to_string(),
+        String::new(),
+        crate::args::ApprovalMode::Auto,
+    );
+    // 首帧先占一条记录：空记录会画主代理的欢迎 Logo（窗口里那是错的内容）。
+    state.notice("等待子代理事件".to_string());
+    state
+}
+
+/// 处理一个终端事件；返回 `true` 表示用户要关窗。
+fn handle_event(
+    state: &mut crate::state::AppState,
+    terminal: &mut WindowTerminal,
+    event: Event,
+) -> Result<bool, String> {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Esc => return Ok(true),
+                KeyCode::Char('q') | KeyCode::Char('Q') if ctrl => return Ok(true),
+                KeyCode::Up => state.scroll_by(-SCROLL_STEP),
+                KeyCode::Down => state.scroll_by(SCROLL_STEP),
+                KeyCode::PageUp => state.scroll_by(-PAGE_STEP),
+                KeyCode::PageDown => state.scroll_by(PAGE_STEP),
+                KeyCode::Home => scroll_to_top(state, terminal)?,
+                KeyCode::End => state.scroll_to_bottom(),
+                // 其余按键一律吞掉：窗口只读，不接受输入，不该把按键变成草稿文本。
+                _ => {}
+            }
+        }
+        Event::Mouse(mouse) => {
+            // 右缘滚动条拖动优先：按住后上下移动就是滚会话，与主代理同一条路径。
+            if drag_scrollbar(state, terminal, &mouse)? {
+                return Ok(false);
+            }
+            match mouse.kind {
+                MouseEventKind::ScrollUp => state.scroll_by(-WHEEL_STEP),
+                MouseEventKind::ScrollDown => state.scroll_by(WHEEL_STEP),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let viewport = terminal.viewport()?;
+                    click(state, viewport, mouse.column, mouse.row);
+                }
+                _ => {}
+            }
+        }
+        // 尺寸变化由下一帧的 `frame.area()` 自然接手，这里只需重画。
+        Event::Resize(..) => {}
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// 滚动条拖动：命中返回 `true`（这一下不再当点选处理）。
+///
+/// 拖动状态存在 [`WindowTerminal`] 上：窗口只渲染一块会话区，没有别的交互需要它与
+/// 主代理的 `scrollbar_drag` 一样的生命周期。
+fn drag_scrollbar(
+    state: &mut crate::state::AppState,
+    terminal: &mut WindowTerminal,
+    mouse: &crossterm::event::MouseEvent,
+) -> Result<bool, String> {
+    let dragging = terminal.scrollbar_drag;
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let viewport = terminal.viewport()?;
+            let area = crate::ui::layout(viewport, state).conversation;
+            if crate::ui::conversation::scrollbar_column(area) != Some(mouse.column) {
+                return Ok(false);
+            }
+            terminal.scrollbar_drag = true;
+            drag_to(state, area, mouse.row);
+            Ok(true)
+        }
+        MouseEventKind::Drag(MouseButton::Left) if dragging => {
+            let viewport = terminal.viewport()?;
+            let area = crate::ui::layout(viewport, state).conversation;
+            drag_to(state, area, mouse.row);
+            Ok(true)
+        }
+        MouseEventKind::Up(MouseButton::Left) if dragging => {
+            terminal.scrollbar_drag = false;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// 把会话区滚动到鼠标所在行对应的偏移。
+fn drag_to(state: &mut crate::state::AppState, area: ratatui::layout::Rect, row: u16) {
+    let Some(offset) = crate::ui::conversation::scroll_offset_for_row(state, area, row) else {
+        return;
+    };
+    // 走 `scroll_by` 的差值而不是直接写字段：会话块要置脏，否则拖动后画面不跟着动。
+    let delta = offset as isize - state.scroll_from_bottom as isize;
+    state.scroll_by(delta);
+}
+
+/// 跳到最顶：`scroll_from_bottom` 的上限是「总行数 − 可见行数」。
+///
+/// 会话区的显示行数只有这里需要（渲染与命中测试各自按需算），因此按当前宽度数一次。
+fn scroll_to_top(
+    state: &mut crate::state::AppState,
+    terminal: &WindowTerminal,
+) -> Result<(), String> {
+    let viewport = terminal.viewport()?;
+    let area = crate::ui::layout(viewport, state).conversation;
+    let text = crate::ui::conversation::text_area(area);
+    let total = crate::ui::conversation::display_line_count(state, text.width);
+    state.scroll_by(-(total as isize));
+    Ok(())
+}
+
+/// 左键点击会话区：与主代理同一套命中测试，展开/收起思考段与工具卡。
+fn click(state: &mut crate::state::AppState, viewport: ratatui::layout::Rect, column: u16, row: u16) {
+    let areas = crate::ui::layout(viewport, state);
+    if !areas.conversation.contains(ratatui::layout::Position::new(column, row)) {
+        return;
+    }
+    let relative = (row - areas.conversation.y) as usize;
+    match crate::ui::conversation::hit_test(
+        state,
+        areas.conversation,
+        state.scroll_from_bottom,
+        relative,
+    ) {
+        Some(crate::ui::conversation::LineHit::ToolHint { call_id }) => state.expand_tool(&call_id),
+        Some(crate::ui::conversation::LineHit::ToolCard { call_id }) => {
+            state.collapse_tool(&call_id);
+        }
+        Some(crate::ui::conversation::LineHit::Reasoning { index }) => {
+            state.toggle_reasoning_expanded(index);
+        }
+        // 窗口里没有「重试」与「立即结束」：那两条都要求宿主侧的内核连接。
+        Some(_) | None => {}
     }
 }
 
@@ -448,6 +651,8 @@ struct Rendered {
     tasks: Vec<TaskLine>,
     /// 已经写过终态提示的任务，避免同一终态被重复上报时刷屏。
     settled: std::collections::HashSet<String>,
+    /// 批次已经收尾：窗口画完最后一帧后自动关闭。
+    finished: bool,
 }
 
 /// 一行流水 → 渲染增量：同时推进窗口的任务表与 `AppState` 的会话记录。
@@ -513,6 +718,12 @@ fn consume(rendered: &mut Rendered, state: &mut crate::state::AppState, line: &s
         Entry::Text(text) => {
             state.subagent_text(text);
         }
+        Entry::Reasoning(text) => {
+            state.subagent_reasoning(text);
+        }
+        Entry::BatchFinished => {
+            rendered.finished = true;
+        }
         Entry::ToolStarted {
             call_id,
             tool,
@@ -532,7 +743,7 @@ fn consume(rendered: &mut Rendered, state: &mut crate::state::AppState, line: &s
 }
 
 /// 整屏重画：交给主代理那套渲染（会话区 + 输入区 + 底部 HUD）。
-fn write_update(
+fn draw(
     terminal: &mut WindowTerminal,
     state: &mut crate::state::AppState,
     stream: &Path,
@@ -582,28 +793,40 @@ fn status_label(status: &str) -> &'static str {
 
 /// 窗口终端：进入备用屏幕与原始模式，退出时无条件恢复原状。
 ///
-/// 与 `main.rs` 里的 `TerminalGuard` 同一职责，但窗口进程只做渲染、不接输入，
-/// 因此不需要鼠标/焦点报告与自愈核对。
+/// 与 `main.rs` 里的 `TerminalGuard` 同一职责，但窗口进程没有内核、也没有需要自愈的
+/// 工具子进程，因此只补上鼠标**拖动/移动**追踪序列（Windows 上 crossterm 的
+/// `EnableMouseCapture` 只设 winapi 模式，不发 `?1003h`，滚轮之外的鼠标事件收不到）。
 struct WindowTerminal {
     terminal: ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    /// 右缘滚动条是否正被按住拖动。
+    scrollbar_drag: bool,
 }
 
 impl WindowTerminal {
+    /// 鼠标移动/拖动追踪的开与关（与 `main.rs` 的 `MOUSE_MOVE_ON/OFF` 同一组序列）。
+    const MOUSE_MOVE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+    const MOUSE_MOVE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
     fn start() -> Result<Self, String> {
         use crossterm::terminal::{
             disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
         };
         enable_raw_mode().map_err(|error| format!("进入原始模式失败：{error}"))?;
         let mut out = std::io::stdout();
-        if let Err(error) = crossterm::execute!(out, EnterAlternateScreen) {
+        if let Err(error) = crossterm::execute!(out, EnterAlternateScreen, EnableMouseCapture) {
             let _ = disable_raw_mode();
             return Err(format!("切换备用屏幕失败：{error}"));
         }
+        let _ = write!(std::io::stdout(), "{}", Self::MOUSE_MOVE_ON);
+        let _ = std::io::stdout().flush();
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
         match ratatui::Terminal::new(backend) {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self {
+                terminal,
+                scrollbar_drag: false,
+            }),
             Err(error) => {
-                let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+                let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
                 let _ = disable_raw_mode();
                 Err(format!("初始化终端失败：{error}"))
             }
@@ -616,12 +839,23 @@ impl WindowTerminal {
     {
         self.terminal.draw(render).map(|_| ())
     }
+
+    /// 当前视口（鼠标命中测试用）。尺寸只在这里读：终端尺寸是一次控制台往返。
+    fn viewport(&self) -> Result<ratatui::layout::Rect, String> {
+        let size = self
+            .terminal
+            .size()
+            .map_err(|error| format!("读取终端尺寸失败：{error}"))?;
+        Ok(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+    }
 }
 
 impl Drop for WindowTerminal {
     fn drop(&mut self) {
         use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+        let mut out = std::io::stdout();
+        let _ = write!(out, "{}", Self::MOUSE_MOVE_OFF);
+        let _ = crossterm::execute!(out, DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }
 }
@@ -717,15 +951,6 @@ mod tests {
         assert_eq!(rendered.tasks[0].status, "completed");
     }
 
-    /// 窗口进程用的空白界面状态：只放会话记录，不连内核。
-    fn window_state() -> crate::state::AppState {
-        crate::state::AppState::new(
-            "子代理".to_string(),
-            String::new(),
-            crate::args::ApprovalMode::Auto,
-        )
-    }
-
     #[test]
     fn events_build_the_same_records_as_the_main_conversation() {
         let mut rendered = Rendered::default();
@@ -743,14 +968,77 @@ mod tests {
         }
 
         // 过程文本 → assistant 记录；工具 → 主代理同款的工具卡（含收口后的状态）。
-        assert!(matches!(state.records[0], Record::Assistant(ref text) if text == "先看一眼"));
-        let Record::Tool(ref card) = state.records[1] else {
-            panic!("第二条应是工具卡：{:?}", state.records[1]);
+        // 第 0 条是 `window_state` 的「等待」占位提示，这里只看它之后的两条。
+        assert!(matches!(state.records[1], Record::Assistant(ref text) if text == "先看一眼"));
+        let Record::Tool(ref card) = state.records[2] else {
+            panic!("第二条应是工具卡：{:?}", state.records[2]);
         };
         assert_eq!(card.name, "read");
         assert_eq!(card.status, ToolStatus::Ok);
         assert_eq!(card.body, vec!["ok".to_string()]);
         // 还有任务在跑：状态行会显示运行态（主代理据此画 spinner 与 `[ ESC ]`）。
         assert!(state.turn.is_running());
+    }
+
+    #[test]
+    fn streamed_reasoning_and_text_join_one_record_each() {
+        let mut rendered = Rendered::default();
+        let mut state = window_state();
+        for line in [
+            serde_json::json!({"kind": "reasoning", "text": "先看"}),
+            serde_json::json!({"kind": "reasoning", "text": "一眼"}),
+            serde_json::json!({"kind": "text", "text": "接着"}),
+            serde_json::json!({"kind": "text", "text": "读文件"}),
+        ] {
+            consume(&mut rendered, &mut state, &line.to_string());
+        }
+
+        // 增量逐片到达：同一段思考/正文各自只有一条记录，不会碎成四条消息。
+        // 第 0 条是 `window_state` 的占位提示。
+        assert_eq!(state.records.len(), 3, "{:?}", state.records);
+        assert!(matches!(state.records[1], Record::Reasoning(ref text) if text == "先看一眼"));
+        assert!(matches!(state.records[2], Record::Assistant(ref text) if text == "接着读文件"));
+    }
+
+    #[test]
+    fn batch_finished_closes_the_window_after_the_last_event() {
+        let root = temp_root("finished");
+        let mut windows = SubagentWindows::new();
+        let batch = payload(&[
+            ("batch_id", serde_json::json!("batch-1")),
+            ("task_id", serde_json::json!("t1")),
+            ("agent_type", serde_json::json!("explore")),
+            ("description", serde_json::json!("查仓库")),
+        ]);
+        let Delivery::Opened { stream } =
+            windows.deliver(&root, None, "subagent.task.started", &batch)
+        else {
+            panic!("首个事件应当开窗口");
+        };
+        assert_eq!(
+            windows.deliver(&root, None, "subagent.batch.finished", &batch),
+            Delivery::Appended
+        );
+
+        let mut rendered = Rendered::default();
+        let mut state = window_state();
+        for line in std::fs::read_to_string(&stream).expect("流水可读").lines() {
+            consume(&mut rendered, &mut state, line);
+        }
+        assert!(rendered.finished, "收尾事件应让窗口准备退出");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn batch_finished_never_opens_a_window() {
+        let root = temp_root("finished-none");
+        let mut windows = SubagentWindows::new();
+        let batch = payload(&[("batch_id", serde_json::json!("batch-x"))]);
+        assert_eq!(
+            windows.deliver(&root, None, "subagent.batch.finished", &batch),
+            Delivery::Ignored
+        );
+        assert!(!windows.has_window("batch-x"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

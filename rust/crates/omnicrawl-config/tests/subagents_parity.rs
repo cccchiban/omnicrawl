@@ -37,8 +37,6 @@ fn config_view(config: &SubAgentConfig) -> Value {
     json!({
         "enabled": config.enabled,
         "max_depth": config.max_depth,
-        "max_concurrency": config.max_concurrency,
-        "max_tasks_per_batch": config.max_tasks_per_batch,
         "default_timeout_seconds": config.default_timeout_seconds,
         "model_request_concurrency": config.model_request_concurrency,
         "allow_background": config.allow_background,

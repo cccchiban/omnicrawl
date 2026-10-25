@@ -45,7 +45,7 @@ pub enum DriverError {
     EofBeforeHandshake,
     /// 连接被对端正常关闭。
     Eof,
-    /// ALPN 没有协商出 `h2`。
+    /// 对端选了 `h2` / `http/1.1` 之外的 ALPN 协议。
     UnsupportedAlpn(Option<String>),
     /// 响应不完整或不合规。
     BadResponse(String),
@@ -524,12 +524,17 @@ impl<S: Transport> Connection<S> {
                 self.protocol = Application::Http1;
                 Ok(())
             }
-            // 1.2 的分支里，服务端不协商 ALPN 是常态（老服务器根本不发这个扩展）。
-            // 此时按 HTTP/1.1 走：那是 1.2 时代的事实默认值，比直接失败更接近浏览器行为。
+            // 服务端没协商 ALPN 时按 HTTP/1.1 走。
             //
-            // 1.3 分支不这样做：1.3 的服务端**应当**回 ALPN，没回说明它没按协议谈，
-            // 猜一个协议继续发只会在后面收到更加莫名的错误。
-            None if self.handshake.version() == Some(Version::Tls12) => {
+            // 1.2 下这是常态（老服务器根本不发这个扩展），1.2 时代的事实默认值就是 1.1。
+            // 1.3 下同样如此：服务端不回 ALPN 不是「协议没谈成」，而是它没实现这个扩展
+            // （Go 关掉 HTTP/2 时的裸 tls、老 TLS 终止器、部分中间盒都很常见）。浏览器
+            // 在这两种情形下都直接按 1.1 发请求，本栈若在这里失败，等于把「只支持 1.1
+            // 的老站点」整类排除掉——而那类站点恰恰更爱按指纹拦。
+            //
+            // 能这么推断的前提是 ClientHello 只提供 h2 与 http/1.1：服务端没选 h2，
+            // 剩下的可能就只有 1.1。服务端若选了这两个之外的协议，仍然如实报错。
+            None => {
                 self.protocol = Application::Http1;
                 Ok(())
             }

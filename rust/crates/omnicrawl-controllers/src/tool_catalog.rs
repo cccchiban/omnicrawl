@@ -299,7 +299,7 @@ fn subagent_schema(template: &str, subagent_types: &[String]) -> Result<String, 
 
     let mut schema: Value = serde_json::from_str(template)
         .map_err(|error| AgentError::new(format!("SubAgent 参数 Schema 解析失败：{error}")))?;
-    match schema.pointer_mut("/properties/tasks/items/properties/subagent_type") {
+    match schema.pointer_mut("/properties/task/properties/subagent_type") {
         Some(Value::Object(field)) => {
             field.clear();
             field.insert("type".to_string(), Value::from("string"));

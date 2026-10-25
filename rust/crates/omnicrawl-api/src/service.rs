@@ -1996,6 +1996,31 @@ impl AgentService {
     /// 模式提示词由宿主装配（模板 + AGENTS.md + Skill），因此这里必须与握手走同一份装配
     /// 结果：先重建 [`PromptRuntime`] 再交给运行器下发。
     pub fn activate_mode(&self, mode: &str) -> Result<String, ApiError> {
+        self.rebuild_prompt(mode).map(|(_, activated)| activated)
+    }
+
+    /// 关闭当前模式（`/speaking-style off`）：重算并下发不带模式区块的提示词。
+    ///
+    /// 返回被关闭的模式标识；本来就未启用时为空串（仍然下发一次，保持内核状态一致）。
+    pub fn deactivate_mode(&self) -> Result<String, ApiError> {
+        self.rebuild_prompt("").map(|(previous, _)| previous)
+    }
+
+    /// 当前已启用的模式标识；未装配提示词时为空串。
+    pub fn active_mode(&self) -> String {
+        self.runner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|runner| runner.prompt()))
+            .map(|prompt| prompt.active_mode().to_string())
+            .unwrap_or_default()
+    }
+
+    /// 以当前装配为底重建提示词并下发；`mode` 为空串表示不带模式区块。
+    ///
+    /// 返回 `(切换前的模式, 切换后的模式)`；第一次查询与重建在同一把锁内完成，
+    /// 避免调用方为了读旧状态再取一次锁。
+    fn rebuild_prompt(&self, mode: &str) -> Result<(String, String), ApiError> {
         let mut guard = self
             .runner
             .try_lock()
@@ -2011,6 +2036,7 @@ impl AgentService {
                 None,
             ));
         };
+        let previous = current.active_mode().to_string();
         // 以当前装配为底重建：模板、工作区与 Skill 目录都不变，只换活动模式。
         let mut options = PromptOptions::new(self.workspace_root());
         options.agent_temp_dir = omnicrawl_host::prompt::DEFAULT_AGENT_TEMP_DIR.to_string();
@@ -2025,15 +2051,14 @@ impl AgentService {
             .disabled_for_models
             .iter()
             .any(|name| *name == self.current_model());
-        options.mode = mode.to_string();
-        let _ = current;
+        options.mode = mode.trim().to_string();
         let rebuilt = PromptRuntime::load(&self.options.env, options)
             .map_err(|error| prompt_failed(error.to_string()))?;
         let activated = mode.trim().to_string();
         runner
             .apply_prompt(Arc::new(rebuilt), &mut |_| {})
             .map_err(kernel_command_failed)?;
-        Ok(activated)
+        Ok((previous, activated))
     }
 
     /// 替换顾问运行期配置并重建工具表（连接器 `/advisor`）。

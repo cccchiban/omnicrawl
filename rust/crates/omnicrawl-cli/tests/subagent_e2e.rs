@@ -1,5 +1,5 @@
 //! 内核自持 `subagent` 工具的端到端验收：主回合要求调用 subagent → 内核跑子回合（子回合里真的
-//! 调用了一个工具）→ 折回主回合；以及 `fail_fast` 在前序任务失败后停止调度。
+//! 调用了一个工具）→ 折回主回合；以及同一条消息里多次调用时各开一个独立批次。
 //!
 //! 判据全在协议帧与内核实际发出的模型请求体上：
 //! 1. `subagent` 本身不占宿主批次（宿主收到的每一批 `tool.batch` 里都没有 `subagent` 调用）；
@@ -7,7 +7,7 @@
 //! 3. 子回合的模型请求带角色定义的 system 提示与 `<subagent_task>` 指令，并带回工具观察；
 //! 4. 子代理的 `subagent.event` 通知按 `batch.created` → `task.started` → `task.completed` 顺序发出；
 //! 5. 主回合的下一次请求里带上了子任务的 tool 观察；
-//! 6. `fail_fast` 生效时，前序任务失败后剩余任务不再被调度，而是落成 `cancelled`。
+//! 6. 同一批里的多个 `subagent` 调用各自成批（=各开一个窗口），互不影响。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -25,7 +25,6 @@ const TEST_KEY: &str = "test-key";
 const TOOL_OUTPUT: &str = "文件内容：42";
 const CHILD_TEXT: &str = "子任务完成";
 const PARENT_TEXT: &str = "主回合完成";
-const FAIL_FAST_REASON: &str = "fail_fast 已在前序任务失败后停止调度该任务。";
 
 /// 回环服务端的一次应答：正常 SSE，或一段完整原始响应（用来造失败）。
 #[derive(Clone)]
@@ -76,6 +75,25 @@ fn tool_call_stream(name: &str, arguments: &str) -> String {
         }]
     })
     .to_string();
+    let finish = json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}).to_string();
+    format!("data: {delta}\n\ndata: {finish}\n\ndata: [DONE]\n\n")
+}
+
+/// SSE：模型在同一批里要求调用多个工具（并行子代理的调用形状）。
+fn multi_tool_call_stream(calls: &[(&str, &str)]) -> String {
+    let items: Vec<serde_json::Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (name, arguments))| {
+            json!({
+                "index": index,
+                "id": format!("call-{}", index + 1),
+                "type": "function",
+                "function": {"name": name, "arguments": arguments}
+            })
+        })
+        .collect();
+    let delta = json!({"choices": [{"delta": {"tool_calls": items}}]}).to_string();
     let finish = json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}).to_string();
     format!("data: {delta}\n\ndata: {finish}\n\ndata: [DONE]\n\n")
 }
@@ -518,11 +536,11 @@ fn handshake(host: &mut Host, server: &StubServer, tools: Value, retry: Option<i
 fn kernel_runs_subagent_with_host_tool_batch() {
     let tool_arguments = json!({
         "action": "run",
-        "tasks": [{
+        "task": {
             "description": "看代码",
             "prompt": "读一下 a.py",
             "subagent_type": "review",
-        }],
+        },
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -533,7 +551,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     ]);
     let (root, workspace, agents, config) = prepare_root(
         "e2e",
-        "[subagents]\nenabled = true\nmax_concurrency = 1\nmax_tasks_per_batch = 1\n",
+        "[subagents]\nenabled = true\n",
     );
 
     let session_root = root.join("session");
@@ -584,6 +602,29 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     assert_eq!(created.len(), 1, "应有批次创建事件");
     assert_eq!(started.len(), 1, "应有任务开始事件");
     assert_eq!(completed.len(), 1, "应有任务完成事件");
+    // 收尾事件恰好一次：宿主的子代理窗口靠它自动关闭。
+    let finished = host.notifications("subagent.event", Some("subagent.batch.finished"));
+    assert_eq!(finished.len(), 1, "批次收尾事件应恰好发一次");
+    assert_eq!(
+        finished[0]["params"]["payload"]["batch_id"],
+        created[0]["params"]["payload"]["batch_id"],
+        "收尾事件要带同一个批次号"
+    );
+
+    // 4a. 子代理的正文以流式增量的形式进独立窗口（而不是等整段回复落地）。
+    let child_text = host.notifications("subagent.event", Some("subagent.turn.text"));
+    let streamed_child = child_text
+        .iter()
+        .map(|frame| {
+            frame["params"]["payload"]["text"]
+                .as_str()
+                .unwrap_or_default()
+        })
+        .collect::<String>();
+    assert!(
+        streamed_child.contains(CHILD_TEXT),
+        "子代理正文应以流式增量进窗口：{streamed_child}"
+    );
 
     // 4b. 子回合的正文只走 `subagent.turn.text`，绝不能以 `turn.delta` 外发：宿主会把
     //     `turn.delta` 直接追加到主代理的回复里，那样子代理的话就混进主代理的消息区。
@@ -679,26 +720,38 @@ fn kernel_runs_subagent_with_host_tool_batch() {
 }
 
 #[test]
-fn fail_fast_stops_scheduling_after_first_failure() {
-    let tool_arguments = json!({
+fn two_subagent_calls_in_one_batch_run_concurrently() {
+    // 并行靠「同一条消息里多次调用」而不是「一次调用塞多个任务」：
+    // 两个调用在同一批里，各自的窗口与任务号互不相同。
+    let first = json!({
         "action": "run",
-        "fail_fast": true,
-        "tasks": [
-            {"description": "第一个", "prompt": "读一下 a.py", "subagent_type": "review"},
-            {"description": "第二个", "prompt": "读一下 b.py", "subagent_type": "review"},
-        ],
+        "task": {
+            "description": "第一个",
+            "prompt": "读一下 a.py",
+            "subagent_type": "review",
+        },
     })
     .to_string();
-    // 子回合第一次请求直接失败；fail_fast 生效时第二个任务不会再被调度。
+    let second = json!({
+        "action": "run",
+        "task": {
+            "description": "第二个",
+            "prompt": "读一下 b.py",
+            "subagent_type": "review",
+        },
+    })
+    .to_string();
     let server = StubServer::spawn(vec![
-        ok_stream(tool_call_stream("subagent", &tool_arguments)),
-        server_error(),
-        ok_stream(text_stream(PARENT_TEXT)),
+        ok_stream(multi_tool_call_stream(&[
+            ("subagent", first.as_str()),
+            ("subagent", second.as_str()),
+        ])),
+        Reply::AlwaysText(CHILD_TEXT.to_string()),
     ]);
-    let (root, workspace, agents, config) = prepare_root(
-        "ff",
-        "[subagents]\nenabled = true\nmax_concurrency = 1\nmax_tasks_per_batch = 2\n",
-    );
+    let (root, workspace, agents, config) =
+        prepare_root("parallel", "[subagents]
+enabled = true
+");
 
     let mut host = Host::start(&workspace, &agents, &config);
     handshake(
@@ -708,43 +761,47 @@ fn fail_fast_stops_scheduling_after_first_failure() {
             {"type": "function", "function": {"name": "read"}},
             {"type": "function", "function": {"name": "subagent"}}
         ]),
-        Some(0),
+        None,
     );
 
-    let finished = host.run_turn("帮我评审");
+    let finished = host.run_turn("并行看两个文件");
     host.shutdown();
 
     assert_eq!(finished.len(), 1, "应恰好收到一次 turn.finished");
 
-    // 6. 第二个任务没有被调度：子回合请求只有一个，且它是第一个任务的。
+    // 两次调用 = 两个独立的批次窗口，各有一份开始与完成事件。
+    let started = host.notifications("subagent.event", Some("subagent.task.started"));
+    let completed = host.notifications("subagent.event", Some("subagent.task.completed"));
+    assert_eq!(started.len(), 2, "两个子代理都应发出开始事件");
+    assert_eq!(completed.len(), 2, "两个子代理都应发出完成事件");
+
+    let batches = host.notifications("subagent.event", Some("subagent.batch.created"));
+    assert_eq!(batches.len(), 2, "每次调用各开一个批次（=一个窗口）");
+    let first_batch = batches[0]["params"]["payload"]["batch_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let second_batch = batches[1]["params"]["payload"]["batch_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_ne!(first_batch, second_batch, "两次调用必须是不同批次");
+
+    // 两个子回合的请求都真的发过，且各带自己的任务文本。
     let requests = server.requests.lock().expect("请求锁").clone();
     let child_requests: Vec<String> = requests
         .iter()
         .map(|item| serde_json::to_string(item).unwrap_or_default())
         .filter(|text| text.contains("subagent_task"))
         .collect();
-    assert_eq!(
-        child_requests.len(),
-        1,
-        "fail_fast 生效后只应有一个子回合请求：{child_requests:?}"
+    assert_eq!(child_requests.len(), 2, "两个子回合各发一次请求");
+    assert!(
+        child_requests.iter().any(|text| text.contains("读一下 a.py")),
+        "第一个子代理的请求应该发出去"
     );
     assert!(
-        child_requests[0].contains("读一下 a.py"),
-        "唯一被调度的应是第一个任务"
-    );
-    assert!(
-        !child_requests[0].contains("读一下 b.py"),
-        "第二个任务不该进入子回合"
-    );
-
-    let started = host.notifications("subagent.event", Some("subagent.task.started"));
-    let cancelled = host.notifications("subagent.event", Some("subagent.task.cancelled"));
-    assert_eq!(started.len(), 1, "只应有一个任务真正开始");
-    assert_eq!(cancelled.len(), 1, "未调度的任务应落成取消事件");
-    let cancelled_text = serde_json::to_string(&cancelled[0]).unwrap_or_default();
-    assert!(
-        cancelled_text.contains(FAIL_FAST_REASON),
-        "取消原因应为 fail_fast 文案：{cancelled_text}"
+        child_requests.iter().any(|text| text.contains("读一下 b.py")),
+        "第二个子代理的请求应该发出去"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -754,11 +811,11 @@ fn fail_fast_stops_scheduling_after_first_failure() {
 fn worktree_isolation_creates_and_reports_isolated_workspace() {
     let tool_arguments = json!({
         "action": "run",
-        "tasks": [{
+        "task": {
             "description": "写点东西",
             "prompt": "在隔离区里读一下 a.txt",
             "subagent_type": "writer",
-        }],
+        },
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -826,8 +883,6 @@ tools:
 enabled = true
 allow_worktree = true
 allow_standard_agent = true
-max_concurrency = 1
-max_tasks_per_batch = 1
 ",
     )
     .expect("写配置");
@@ -915,72 +970,6 @@ max_tasks_per_batch = 1
     assert!(
         parent_payload.contains("omnicrawl/subagent/"),
         "父回合应看到隔离分支：{parent_payload}"
-    );
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn max_concurrency_runs_tasks_in_parallel() {
-    let tool_arguments = json!({
-        "action": "run",
-        "max_concurrency": 2,
-        "tasks": [
-            {"description": "第一个", "prompt": "读一下 a.py", "subagent_type": "review"},
-            {"description": "第二个", "prompt": "读一下 b.py", "subagent_type": "review"},
-        ],
-    })
-    .to_string();
-    // 两个子任务的请求会交错：只固定主回合的第一次请求，其余一律回同一段文本。
-    let server = StubServer::spawn(vec![
-        ok_stream(tool_call_stream("subagent", &tool_arguments)),
-        Reply::AlwaysText(CHILD_TEXT.to_string()),
-    ]);
-    let (root, workspace, agents, config) = prepare_root(
-        "concurrency",
-        "[subagents]
-enabled = true
-max_concurrency = 2
-max_tasks_per_batch = 2
-",
-    );
-
-    let mut host = Host::start(&workspace, &agents, &config);
-    handshake(
-        &mut host,
-        &server,
-        json!([
-            {"type": "function", "function": {"name": "read"}},
-            {"type": "function", "function": {"name": "subagent"}}
-        ]),
-        None,
-    );
-
-    let finished = host.run_turn("并发看两个文件");
-    host.shutdown();
-
-    assert_eq!(finished.len(), 1, "应恰好收到一次 turn.finished");
-    assert_eq!(
-        finished[0]["params"]["final_text"].as_str().unwrap(),
-        CHILD_TEXT
-    );
-
-    // 两个子任务都在同一批里跑完，各自发出开始与完成事件。
-    let started = host.notifications("subagent.event", Some("subagent.task.started"));
-    let completed = host.notifications("subagent.event", Some("subagent.task.completed"));
-    assert_eq!(started.len(), 2, "两个子任务都应发出开始事件");
-    assert_eq!(completed.len(), 2, "两个子任务都应发出完成事件");
-
-    // 父回合的观察里应带回两条完成结果，且任务号互不相同。
-    let requests = server.requests.lock().expect("请求锁").clone();
-    let parent_payload = serde_json::to_string(&requests[requests.len() - 1]).unwrap_or_default();
-    assert!(
-        parent_payload.matches("completed").count() >= 2,
-        "父回合应看到两个完成结果：{parent_payload}"
-    );
-    assert!(
-        parent_payload.matches("task-").count() >= 2,
-        "两条结果应带各自的子任务号：{parent_payload}"
     );
 
     let _ = std::fs::remove_dir_all(&root);

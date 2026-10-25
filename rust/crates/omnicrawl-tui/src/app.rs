@@ -3200,15 +3200,30 @@ impl App {
     /// 模态页（设置面板）打开时不排空，与 Python 的 `len(self.screen_stack) == 1`
     /// 守卫同义。每次成功派发都会开启新回合，循环条件随之结束，因此不会出现
     /// 重叠的回合 worker。
+    ///
+    /// 只在这一帧里派发**一条**：`dispatch_submission` 有几条路径会把消息原样排回队尾
+    /// （建议在途、回合正在运行），那几条路径不会开启新回合，`turn.is_running()` 也就
+    /// 一直为假。无界 `loop` 因此会在 UI 线程里空转：队首取出又排回，队列永不为空，
+    /// 建议结果永远取不回来、`suggest_in_flight` 永远不归零，每圈还写一次输入框历史，
+    /// 直到 `Vec<String>` 撑爆内存。派发一条就返回，下一帧的 `drain_frames` 会重新
+    /// 取回建议结果并再次调用本函数，排空照旧按 FIFO 推进。
     fn drain_pending_inputs(&mut self) {
         loop {
             if self.settings.is_some() || self.state.turn.is_running() {
+                return;
+            }
+            let queued = self.state.pending_len();
+            if queued == 0 {
                 return;
             }
             let Some(submission) = self.state.take_next_pending() else {
                 return;
             };
             self.dispatch_submission(submission.text, submission.images);
+            // 消息又被排回队尾（没有开启新回合）：本帧到此为止，避免原地空转。
+            if !self.state.turn.is_running() && self.state.pending_len() >= queued {
+                return;
+            }
         }
     }
 
@@ -6260,6 +6275,24 @@ impl App {
     /// 因此这里必须与握手走同一份装配结果；内核只按帧里的文本发请求。
     pub(crate) fn command_activate_mode(&mut self, mode: &str) -> Result<String, String> {
         let activated = self.prompt.activate_mode(mode)?;
+        self.push_prompt_to_kernel()?;
+        Ok(activated)
+    }
+
+    /// 关闭当前模式：清掉模式区块后重算并下发，基础提示词保持不变。
+    pub(crate) fn command_deactivate_mode(&mut self) -> Result<String, String> {
+        let previous = self.prompt.deactivate_mode();
+        self.push_prompt_to_kernel()?;
+        Ok(previous)
+    }
+
+    /// 当前已启用的主 Agent 模式（未启用时为空串）。
+    pub(crate) fn command_active_mode(&self) -> String {
+        self.prompt.active_mode().to_string()
+    }
+
+    /// 把当前提示词装配结果（system prompt + 上下文消息）下发内核。
+    fn push_prompt_to_kernel(&mut self) -> Result<(), String> {
         let session_id = self.current_session_id();
         let settings = SessionModelSettings {
             system_prompt: Some(self.prompt.system_prompt()),
@@ -6279,7 +6312,7 @@ impl App {
         // 模式提示词已在本进程生效（下一轮请求就带上）；内核拒绝时如实补一句，
         // 不能因为「配置已生效」就把拒绝吞掉。
         self.prompt_request = Some(id);
-        Ok(activated)
+        Ok(())
     }
 
     /// 当前模型标识：命中 models.toml 的自定义模型时给 key，否则给真实 model_id
@@ -7071,9 +7104,7 @@ fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
         active: config.enabled,
         section: "子任务功能",
     }];
-    let current: [(&str, i64); 6] = [
-        ("max_concurrency", config.max_concurrency),
-        ("max_tasks_per_batch", config.max_tasks_per_batch),
+    let current: [(&str, i64); 4] = [
         (
             "default_timeout_seconds",
             config.default_timeout_seconds as i64,
