@@ -114,11 +114,6 @@ impl RuntimeError {
         }
     }
 
-    /// HTTP 状态码失败：文案与可重试标记按 Python 的状态码阶梯。
-    pub fn http_status(status: u16) -> Self {
-        Self::from_model_error(http_status_error(status))
-    }
-
     /// 网关是否因为不认 `prompt_cache_key` 而拒绝：认出来才能摘掉该字段重发。
     ///
     /// 判定条件与 Python `is_unsupported_prompt_cache_error` 一致：

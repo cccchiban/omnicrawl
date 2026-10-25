@@ -22,19 +22,12 @@ pub const ADVISOR_BLACKLISTED_ERROR: &str = "当前执行者模型在顾问黑�
 
 pub const ADVISOR_NO_CONTEXT_ERROR: &str = "当前没有可评审的工作上下文。";
 
-pub const ADVISOR_NO_LLM_ERROR: &str = "当前运行态不支持顾问模型（缺少完整 LLM 配置）。";
-
 /// 读取内置顾问系统提示模板。
 pub fn advisor_system_prompt(templates_dir: &Path) -> Result<String, AgentError> {
     let path = templates_dir.join(ADVISOR_SYSTEM_TEMPLATE_NAME);
     let text = std::fs::read_to_string(&path)
         .map_err(|error| AgentError::new(format!("读取顾问系统提示模板失败：{error}")))?;
     Ok(text.trim().to_string())
-}
-
-/// `advisor` 是否进入工具表：显式启用且未命中当前模型黑名单。
-pub fn advisor_is_active(active: bool, blacklisted: bool) -> bool {
-    active && !blacklisted
 }
 
 /// 当前执行者模型是否命中 `disabled_for_models` 黑名单（大小写不敏感的子串匹配）。
@@ -149,29 +142,8 @@ pub fn advisor_request_timeout(parent_timeout_seconds: i64, frozen_timeout_secon
     std::cmp::min(parent_timeout_seconds, frozen_timeout_seconds)
 }
 
-/// 顾问请求的前缀缓存身份（键序固定，供 Provider 缓存对齐）。
-pub fn advisor_prompt_cache_identity(workspace: &str, selection: &str) -> Value {
-    let mut map = Map::new();
-    map.insert("workspace".to_string(), Value::from(workspace));
-    map.insert("advisor".to_string(), Value::from("system"));
-    map.insert("model".to_string(), Value::from(selection));
-    Value::Object(map)
-}
-
 pub fn advisor_status_text(model_key: &str, effort: &str) -> String {
     format!("正在咨询顾问（{model_key}，effort={effort}）…")
-}
-
-pub fn model_resolve_failed(cause: &str) -> ToolResult {
-    advisor_error_result(&format!("顾问模型无法解析：{cause}"))
-}
-
-pub fn config_invalid(cause: &str) -> ToolResult {
-    advisor_error_result(&format!("顾问模型配置无效：{cause}"))
-}
-
-pub fn runtime_init_failed(cause: &str) -> ToolResult {
-    advisor_error_result(&format!("顾问模型 Runtime 初始化失败：{cause}"))
 }
 
 pub fn request_failed(cause: &str) -> ToolResult {

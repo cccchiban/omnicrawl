@@ -129,14 +129,6 @@ impl PromptRuntime {
         self.skill_manager = Some(manager);
     }
 
-    /// 已发现的 Skill 数量（诊断与 `/skills` 用）。
-    pub fn skill_count(&self) -> usize {
-        self.skill_manager
-            .as_ref()
-            .map(|manager| manager.list_all().len())
-            .unwrap_or(0)
-    }
-
     /// 已发现的 Skill 索引条目。
     ///
     /// prompt cache 身份的 `skill_index_hash` 直接用这份列表，因此它必须与

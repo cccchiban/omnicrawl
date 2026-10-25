@@ -59,9 +59,6 @@ pub const TOP_LEVEL_FIELDS: [&str; 8] = [
     "cleanup",
     "remove_branch",
 ];
-/// worktree 控制动作。
-pub const WORKTREE_CONTROL_ACTIONS: [&str; 3] =
-    ["apply_worktree", "discard_worktree", "list_worktrees"];
 /// worktree 控制动作允许的字段。
 pub const WORKTREE_CONTROL_FIELDS: [&str; 8] = [
     "action",

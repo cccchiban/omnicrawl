@@ -708,11 +708,6 @@ fn format_skills_list_with(agent: &dyn CommandAgent, with_description: bool) -> 
     lines.join("\n")
 }
 
-/// 行内 UI 打印 Skill 列表。
-pub fn print_skills_list(agent: &dyn CommandAgent) {
-    println!("{}", format_skills_list(agent));
-}
-
 /// 执行过期记忆清理，并返回适合终端展示的结果。
 pub fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
     let deleted_paths = match agent.clean_memory() {
@@ -733,19 +728,9 @@ pub fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
     )
 }
 
-/// 行内 UI 打印记忆清理结果。
-pub fn print_memory_clean_result(agent: &dyn CommandAgent) {
-    println!("{}", format_memory_clean_result(agent));
-}
-
 /// 格式化 MCP 状态为可展示文本。
 pub fn format_mcp_status(agent: &dyn CommandAgent) -> String {
     agent.mcp_status()
-}
-
-/// 行内 UI 打印 MCP 状态。
-pub fn print_mcp_status(agent: &dyn CommandAgent) {
-    println!("{}", format_mcp_status(agent));
 }
 
 /// 格式化插件子系统只读状态。
@@ -753,11 +738,6 @@ pub fn format_plugins_status(agent: &dyn CommandAgent) -> String {
     agent
         .plugins_status()
         .unwrap_or_else(|| "插件状态接口不可用。".to_string())
-}
-
-/// 行内 UI 打印插件状态。
-pub fn print_plugins_status(agent: &dyn CommandAgent) {
-    println!("{}", format_plugins_status(agent));
 }
 
 // ── 会话 / 历史展示 ───────────────────────────────────────────

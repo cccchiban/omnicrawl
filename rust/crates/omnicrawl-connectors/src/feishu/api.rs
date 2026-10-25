@@ -118,12 +118,6 @@ impl FeishuApi {
         )
     }
 
-    /// 自建域名（私有化部署）时覆盖。
-    pub fn with_base_url(mut self, base_url: &str) -> FeishuApi {
-        self.base_url = base_url.trim_end_matches('/').to_string();
-        self
-    }
-
     /// 租户令牌：命中缓存直接返回，过期前 60 秒续期。
     pub fn tenant_token(&self) -> Result<String, FeishuApiError> {
         {

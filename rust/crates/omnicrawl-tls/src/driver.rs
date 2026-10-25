@@ -658,13 +658,6 @@ impl<S: Transport> Connection<S> {
         self.handshake.version()
     }
 
-    /// 本次握手是否走了会话恢复（服务端接受了我们提议的 PSK）。
-    ///
-    /// 用于诊断与测试：真实站点上能否恢复取决于服务端是否下发票据并在下次接受它。
-    pub fn uses_resumption(&self) -> bool {
-        self.handshake.resumed()
-    }
-
     /// 协商出的应用层协议。
     pub fn protocol(&self) -> Application {
         self.protocol

@@ -78,6 +78,26 @@ impl Default for FetcherOptions {
     }
 }
 
+/// 按 `[tls_resumption]` 段装配会话缓存（TUI 与 API 共用同一口径）。
+///
+/// 关闭时返回 `None`，传输层据此走完整握手——这正是配置段存在的意义：默认关闭，
+/// 由用户显式开启。读不出配置时同样按关闭处理（会话恢复改的是密钥调度，不能猜）。
+pub fn tls_session_cache_from_config(
+    environment: &omnicrawl_config::core::runtime::ConfigEnvironment,
+) -> Option<Arc<omnicrawl_tls::session_cache::SessionCache>> {
+    let configuration =
+        omnicrawl_config::features::tls_resumption::load_tls_resumption_configuration(
+            environment, None,
+        )
+        .ok()?;
+    if !configuration.enabled {
+        return None;
+    }
+    Some(Arc::new(
+        omnicrawl_tls::session_cache::SessionCache::with_capacity(configuration.cache_capacity),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchEntry {
     pub url: String,

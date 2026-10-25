@@ -114,11 +114,6 @@ impl EmbeddingChannelConfig {
         Ok(self)
     }
 
-    /// 向量接口地址：`base_url` 已含 `/v1`，这里只追加资源路径。
-    pub fn embeddings_url(&self) -> String {
-        format!("{}/embeddings", self.base_url.trim_end_matches('/'))
-    }
-
     /// 解析凭据：内联优先，否则从环境变量取。
     pub fn resolve_api_key(&self, env: &ConfigEnvironment) -> String {
         let inline = self.api_key.trim();
@@ -340,17 +335,4 @@ pub fn save_embedding_model_configuration(
     atomic_write_text(&target, &dump_toml_text(&data))?;
     Ok(target)
 }
-
-/// 给界面用的一份空白渠道（新建行时的初值）。
-pub fn default_embedding_channel() -> EmbeddingChannelConfig {
-    EmbeddingChannelConfig::default()
-}
-
-/// 供调用方遍历渠道 key 的顺序表（保持配置文件里的书写顺序）。
-pub fn channel_keys(configuration: &EmbeddingModelConfiguration) -> Vec<String> {
-    configuration
-        .channels
-        .iter()
-        .map(|channel| channel.key.clone())
-        .collect()
-}
+

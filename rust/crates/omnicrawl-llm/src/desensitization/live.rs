@@ -26,7 +26,7 @@ use super::ner::{
     build_ner_layer, resolve_runtime_model_path, NerExtractorPool, NerLayer, NerLayerOptions,
 };
 use super::ner_weights::NerWeights;
-use super::plan_cache::{MaskPlanCache, PlanCacheStats};
+use super::plan_cache::MaskPlanCache;
 use super::rules::{build_enabled_rules, PatternRule};
 use super::stream::StreamRestorer;
 use super::{
@@ -189,16 +189,6 @@ impl DesensitizationRuntime {
     /// 屏蔽计划缓存（观测 / 测试用）。
     pub fn plan_cache(&self) -> &MaskPlanCache {
         &self.plan_cache
-    }
-
-    /// 计划缓存的计数与占用。
-    pub fn plan_cache_stats(&self) -> PlanCacheStats {
-        self.plan_cache.stats()
-    }
-
-    /// 逐消息屏蔽缓存的 (命中, 未命中) 计数（观测 / 测试用）。
-    pub fn memo_stats(&self) -> (u64, u64) {
-        self.memo.stats()
     }
 
     /// 一次回合：屏蔽 → 内层 → 还原 → 归并。

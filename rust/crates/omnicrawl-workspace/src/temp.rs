@@ -406,19 +406,6 @@ impl AgentTempWorkspace {
         })
     }
 
-    /// 替换时间源（Python 的 `now_factory` 参数）。
-    ///
-    /// 必须在 `start_scheduler` 之前调用：调度线程持有的是当时的核心状态。
-    pub fn with_now_factory(mut self, now_factory: NowFactory) -> Self {
-        self.core = Arc::new(TempCore {
-            workspace_root: self.core.workspace_root.clone(),
-            config: self.core.config.clone(),
-            root: self.core.root.clone(),
-            now_factory: Arc::new(now_factory),
-        });
-        self
-    }
-
     pub fn core(&self) -> &Arc<TempCore> {
         &self.core
     }
@@ -753,4 +740,77 @@ pub fn system_time_to_local(time: SystemTime) -> Option<DateTime<Local>> {
 fn seconds_between(current: DateTime<Local>, target: DateTime<Local>) -> f64 {
     let delta = target - current;
     (delta.num_milliseconds() as f64 / 1000.0).max(1.0)
+}
+
+/// 按 `[agent_temp]` 段装配临时工作区并接上清理调度。
+///
+/// 这是宿主侧唯一的接入点：TUI 与本地 API 都从这里起一份句柄，因此「临时目录由谁创建、
+/// 由谁按间隔清理」不再取决于各入口各自记得做什么。返回 `None` 表示 `[agent_temp] enabled`
+/// 为假（此时宿主的落盘一律走默认路径而不做清理）。
+///
+/// 句柄必须由调用方持有到进程退出：`AgentTempWorkspace` 一被丢弃，后台清理线程就失去
+/// 意义（且 `close` 才会 join 掉它）。读配置失败只降级不阻断启动——临时目录清理属于
+/// 运维行为，配置写坏不该让 Agent 起不来。
+pub fn install_agent_temp_workspace(
+    environment: &ConfigEnvironment,
+    workspace_root: &Path,
+) -> Option<AgentTempInstallation> {
+    let (config, note) = match load_agent_temp_workspace_config(environment, None) {
+        Ok(config) => (config, None),
+        Err(error) => (
+            AgentTempWorkspaceConfig::default(),
+            Some(error.message().to_string()),
+        ),
+    };
+    if !config.enabled {
+        return None;
+    }
+    let mut workspace = match AgentTempWorkspace::new(workspace_root, Some(config)) {
+        Ok(workspace) => workspace,
+        // 连路径都解析不出来时不返回句柄：没有可清理的目录，接入只会给提示词
+        // 一个错误路径。
+        Err(_) => return None,
+    };
+    if let Err(error) = workspace.ensure() {
+        return Some(AgentTempInstallation {
+            workspace,
+            note: Some(error.message().to_string()),
+            cleaned_entries: 0,
+        });
+    }
+    // 启动补清理：进程通常活不到一个完整间隔，上次的产物只能在下次启动时收掉。
+    let cleaned_entries = workspace
+        .clean_if_due(None)
+        .ok()
+        .flatten()
+        .map(|result| result.deleted_entries.len())
+        .unwrap_or(0);
+    workspace.start_scheduler();
+    Some(AgentTempInstallation {
+        workspace,
+        note,
+        cleaned_entries,
+    })
+}
+
+/// 一次性接入结果：句柄由宿主持有，其余字段只用于启动期日志与提示词展示。
+pub struct AgentTempInstallation {
+    /// 临时工作区句柄；丢弃它即停止后台清理。
+    workspace: AgentTempWorkspace,
+    /// 读配置/建目录时的降级原因（`None` 表示一切正常）。
+    pub note: Option<String>,
+    /// 启动补清理删掉的条目数（0 表示没有到期）。
+    pub cleaned_entries: usize,
+}
+
+impl AgentTempInstallation {
+    /// 写进提示词与终端展示的临时目录路径（`[agent_temp] directory` 的实际落点）。
+    pub fn display_path(&self) -> String {
+        self.workspace.display_path()
+    }
+
+    /// 停止后台清理线程。必须由宿主在退出路径上调用，否则线程留到进程结束。
+    pub fn close(&mut self) {
+        self.workspace.close();
+    }
 }

@@ -477,13 +477,6 @@ pub fn is_relative_to(path: &Path, parent: &Path) -> bool {
     path.starts_with(parent)
 }
 
-/// 解析后的路径是否落在 root 之内（含 root 自身）。
-pub fn resolved_under(path: &Path, root: &Path) -> bool {
-    let resolved = resolve_path(path);
-    let root = resolve_path(root);
-    resolved == root || is_relative_to(&resolved, &root)
-}
-
 /// 绝对化并按字面展开 `.` 与 `..`。
 ///
 /// 与 Python `Path.resolve()` 的差别：不做符号链接解析（见 crate README 的已知差异）。

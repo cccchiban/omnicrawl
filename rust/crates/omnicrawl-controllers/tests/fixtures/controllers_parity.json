@@ -7258,96 +7258,42 @@
         }
       },
       {
-        "label": "subagent task_count 分支",
+        "label": "subagent 单任务投影",
         "tool_name": "subagent",
         "arguments": {
           "action": "run",
-          "task_count": 2,
-          "descriptions": [
-            "d1",
-            "d2",
-            "d3",
-            "d4",
-            "d5"
-          ],
-          "agent_types": [
-            "explore",
-            "plan"
-          ],
-          "max_concurrency": 2,
+          "task": {
+            "description": "  检索一下  ",
+            "subagent_type": "explore"
+          },
           "fail_fast": true
         },
         "expected": {
           "action": "run",
-          "task_count": 2,
-          "descriptions": [
-            "d1",
-            "d2",
-            "d3",
-            "d4"
-          ],
-          "agent_types": [
-            "explore",
-            "plan"
-          ],
-          "max_concurrency": 2,
-          "fail_fast": true
+          "description": "检索一下",
+          "agent_type": "explore"
         }
       },
       {
-        "label": "subagent task_count 非法",
+        "label": "subagent 单任务非法子项",
         "tool_name": "subagent",
         "arguments": {
           "action": "bogus",
-          "task_count": true,
-          "descriptions": "not-a-list"
+          "task": "not-an-object"
         },
         "expected": {
-          "action": "run",
-          "task_count": 0,
-          "descriptions": [],
-          "agent_types": [],
-          "max_concurrency": null,
-          "fail_fast": false
+          "action": "run"
         }
       },
       {
-        "label": "subagent tasks 列表",
+        "label": "subagent 查询动作只暴露 action",
         "tool_name": "subagent",
         "arguments": {
-          "action": "spawn",
-          "tasks": [
-            {
-              "description": " 任务一 ",
-              "subagent_type": "explore"
-            },
-            {
-              "description": "",
-              "subagent_type": "plan"
-            },
-            {
-              "description": "任务三"
-            },
-            "oops",
-            {
-              "description": "第五个"
-            }
-          ],
-          "max_concurrency": 4
+          "action": "list",
+          "task_id": "t1"
         },
         "expected": {
-          "action": "spawn",
-          "task_count": 5,
-          "descriptions": [
-            "任务一",
-            "任务三"
-          ],
-          "agent_types": [
-            "explore",
-            "plan"
-          ],
-          "max_concurrency": 4,
-          "fail_fast": false
+          "action": "list"
         }
       }
     ],
@@ -8454,8 +8400,8 @@
           },
           {
             "name": "subagent",
-            "description": "是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"spawn\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 4, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"explore\", \"plan\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"max_concurrency\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 4}, \"fail_fast\": {\"type\": \"boolean\"}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+            "description": "是什么：按受限 profile 调度 SubAgent，任务同步执行，支持查询取消和 worktree 控制。怎么做：单个子代理只做单个任务；需要并行就去同一条消息里并行调用多次 subagent，一次调用只提交一个 task。任务可独立拆分、需要隔离分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"action\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8794,8 +8740,8 @@
           },
           {
             "name": "subagent",
-            "description": "是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"spawn\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 4, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"explore\", \"plan\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"max_concurrency\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 4}, \"fail_fast\": {\"type\": \"boolean\"}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+            "description": "是什么：按受限 profile 调度 SubAgent，任务同步执行，支持查询取消和 worktree 控制。怎么做：单个子代理只做单个任务；需要并行就去同一条消息里并行调用多次 subagent，一次调用只提交一个 task。任务可独立拆分、需要隔离分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"action\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -9316,8 +9262,8 @@
           },
           {
             "name": "subagent",
-            "description": "是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"spawn\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 4, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"explore\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"max_concurrency\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 4}, \"fail_fast\": {\"type\": \"boolean\"}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+            "description": "是什么：按受限 profile 调度 SubAgent，任务同步执行，支持查询取消和 worktree 控制。怎么做：单个子代理只做单个任务；需要并行就去同一条消息里并行调用多次 subagent，一次调用只提交一个 task。任务可独立拆分、需要隔离分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"action\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true

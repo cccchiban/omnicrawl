@@ -139,10 +139,6 @@ impl<'a> TurnReport<'a> {
         self.callbacks.on_subagent_event(name, payload);
     }
 
-    pub fn todo_update(&mut self, todos: &Value) {
-        self.callbacks.on_todo_update(todos);
-    }
-
     /// 收尾补发：`on_delta` 直接输出最终回复，不改写「已有可见输出」的判定。
     fn flush_final_text(&mut self, text: &str) {
         self.callbacks.on_delta(text);

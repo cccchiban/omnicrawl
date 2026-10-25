@@ -1285,46 +1285,6 @@ impl PluginManager {
         workspace
     }
 
-    /// 返回已激活且已批准插件显式声明的 Agent Markdown 路径。
-    pub fn agent_definition_paths(&self) -> Vec<(String, PathBuf)> {
-        let mut workers: Vec<(String, Arc<WorkerHandle>)> = lock(&self.shared.workers)
-            .iter()
-            .map(|(name, worker)| (name.clone(), Arc::clone(worker)))
-            .collect();
-        workers.sort_by(|left, right| left.0.cmp(&right.0));
-
-        let mut definitions: Vec<(String, PathBuf)> = Vec::new();
-        for (name, worker) in workers {
-            if !worker.active() {
-                continue;
-            }
-            if !worker
-                .manifest
-                .permissions
-                .iter()
-                .any(|item| item == "agent:definitions")
-            {
-                continue;
-            }
-            if !worker
-                .record
-                .approved_permissions
-                .iter()
-                .any(|item| item == "agent:definitions")
-            {
-                continue;
-            }
-            let root = resolve_path(&worker.root);
-            for relative_path in &worker.manifest.agents {
-                let candidate = resolve_path(&root.join(relative_path));
-                if candidate.starts_with(&root) {
-                    definitions.push((name.clone(), candidate));
-                }
-            }
-        }
-        definitions
-    }
-
     pub fn list_status(&self) -> Vec<Map<String, Value>> {
         let mut workers: Vec<(String, Arc<WorkerHandle>)> = lock(&self.shared.workers)
             .iter()
@@ -1606,26 +1566,8 @@ impl PluginRuntime {
         }
     }
 
-    /// 显式注入 Worker 启动路径（CLI 与测试用）；不注入时自动解析。
-    pub fn set_worker_launcher(&mut self, launcher: Option<WorkerLauncher>) {
-        self.launcher = launcher;
-    }
-
     pub fn worker_launcher(&self) -> Option<&WorkerLauncher> {
         self.launcher.as_ref()
-    }
-
-    /// 从整份配置数据里取 `plugins` 段构造运行时。
-    pub fn from_config_data(
-        data: Option<&Value>,
-        workspace_root: Option<&Path>,
-    ) -> Result<Self, PluginError> {
-        let section = data
-            .and_then(Value::as_object)
-            .and_then(|map| map.get("plugins"))
-            .cloned();
-        let config = crate::models::parse_plugins_config(section.as_ref())?;
-        Ok(Self::new(config, workspace_root))
     }
 
     pub fn config(&self) -> &PluginsConfig {

@@ -68,7 +68,7 @@ pub use decision_suggest::{
     SuggestionInputs,
 };
 pub use error::{ToolError, ToolOutcome};
-pub use fetcher::FetcherOptions;
+pub use fetcher::{tls_session_cache_from_config, FetcherOptions};
 pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;
 pub use memory::MemoryOptions;

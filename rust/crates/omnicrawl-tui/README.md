@@ -251,14 +251,14 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | --- | --- | --- |
 | `src/ui/fullscreen/rendering/difflib.rs` | stdlib `difflib` | `SequenceMatcher` 等价子集（`isjunk=None` / `autojunk=False`）：最长匹配块 + 递归队列 + 相邻块合并，opcodes 与 CPython 逐段一致（7 组对照数据集钉住） |
 | `src/ui/fullscreen/rendering/tool_diff.rs` | `rendering/tool_diff.py` | 工具卡标题（色点/原名/上下文/状态/耗时）、fetcher 正文过滤、文件变更预览（append/rewrite 预览 + 旁注行号 diff + 80 行截断）、`替换 N 处` 摘要与真实起始行号解析 |
-| `src/ui/fullscreen/rendering/widgets.rs` | `rendering/widgets.py`（部分） | 任务清单与状态图标表；`AssistantMessage` / `ReasoningDisclosure` 的**渲染口径**已由活动页面直接调用（`markdown::render_markdown` + `latex::latex_to_text` / 思考段 `uniform_gray`），只剩 widget 级封装未挂载；`ToolDisclosure` 的标题与正文已接线；`ConfirmationScreen` 待补 |
+| `src/ui/fullscreen/rendering/widgets.rs` | `rendering/widgets.py`（部分） | 只剩工具卡正文的缩略常量（`MAX_EXPANDED_BODY_LINES` / `HEAD_BODY_LINES` / `TAIL_BODY_LINES` / `BODY_INDENT` / `EXPAND_HINT`），供 `ui/conversation.rs` 使用。原先一并搬运的 `ToolDisclosure` / `AssistantMessage` / `ReasoningDisclosure` / `ConfirmationScreen` / `RuntimeStatus` / `TodoPlan` 组件状态机从未挂载到渲染路径（渲染由 `conversation.rs` 与 `panels.rs` 直接实现），已删除；`indent_body_lines` / `body_hint_text` 与其余零引用常量同样删除 |
 | `src/ui/fullscreen/tool_labels.rs` | `ui/tool_labels.py` | 工具显示名与图标表、状态图标、耗时格式化 |
 
 已落地（渲染批 2，工具卡与状态行）：
 
 | Rust 文件 | 对映 Python | 说明 |
 | --- | --- | --- |
-| `rendering/widgets.rs`（续） | `rendering/widgets.py` | `ToolDisclosure`（标题去重、首尾各 2 行采样 + 省略提示行、展开/收起、终态正文分块释放、`update_body`、状态 class 映射、`refresh_elapsed` 只对进行中生效）、`RuntimeStatus`（同一帧文本跳过重绘 + `[ ESC ]` 提示）、`ConfirmationScreen`（默认聚焦「允许执行」、`←/→` 切焦点、`Esc` 以拒绝收口）、`indent_body_lines` / `body_hint_text` |
+| `rendering/widgets.rs`（续） | `rendering/widgets.py` | 已删除：`ToolDisclosure`、`RuntimeStatus`、`ConfirmationScreen`、`indent_body_lines` / `body_hint_text` 均无生产调用者。工具卡标题去重、首尾采样与展开/收起现在只有 `conversation.rs` 一份实现 |
 | `text.rs`（续） | Rich `Text` | `split_lines` / `join_lines`（保留分段样式），供正文采样与缩进使用 |
 
 已落地（渲染批 3，Markdown 渲染与消息组件）：
@@ -267,7 +267,7 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | --- | --- | --- |
 | `rendering/markdown.rs` | Rich `Markdown`（RichMarkdown） | 用 `pulldown-cmark`（新增依赖，已确认）解析事件流并映射为样式串：标题/段落/列表（含嵌套与任务列表 `☑`/`☐`）/围栏代码块（整块灰底 + 按语言逐 token 高亮，未知语言只加灰底）/行内代码（青字 + 灰底）/粗体/斜体/删除线/链接（下划线 + 蓝）/引用（`│ ` 前缀）/分隔线；`uniform_gray` 对映 `_UniformGrayMarkdown`（保留结构、统一下压为灰阶前景） |
 | `rendering/highlight.rs` | Rich `Syntax`（monokai 主题） | 代码块逐 token 高亮：表驱动手写扫描器，色值取 monokai 原值（关键字 `#66d9ef`、函数·类型名 `#a6e22e`、字符串 `#e6db74`、数字 `#ae81ff`、注释 `#75715e` + 斜体、运算符 `#f92672`），覆盖 Rust / Python / JS·TS / JSON / TOML / YAML / Shell / SQL（含别名），块注释与 Python 三引号字符串跨行保留状态；不引入 pygments / syntect |
-| `rendering/widgets.rs`（续） | `rendering/widgets.py` | `AssistantMessage`（全量重绘、流式分块首块补 `◇ ` 前缀、挂载后重绘并释放全文副本、复制用纯文本）；`ReasoningDisclosure`（增量累积 + 换行/512 字触发分块落盘、未换行尾部留缓冲、折叠 5 行、点击切换展开、收口全量灰阶重绘） |
+| `conversation.rs` / `panels.rs` | `rendering/widgets.py`（同语义） | `AssistantMessage`（全量重绘、流式分块首块补 `◇ ` 前缀）与 `ReasoningDisclosure`（增量累积、折叠 5 行、点击切换展开、收口灰阶重绘）的实际实现已由上两处承接，`widgets.rs` 不再保留这两套状态机 |
 
 已落地（渲染批 4，启动画面与欢迎 Logo）：
 

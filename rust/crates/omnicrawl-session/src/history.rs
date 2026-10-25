@@ -240,10 +240,6 @@ impl TurnHistoryProjector {
         }
     }
 
-    pub fn set_raw_arguments_provider(&mut self, provider: RawArgumentsProvider) {
-        self.raw_arguments_provider = Some(provider);
-    }
-
     /// 丢弃全部状态；压缩边界替换历史后由调用方重新累积后续事件。
     pub fn reset(&mut self) {
         self.entries.clear();

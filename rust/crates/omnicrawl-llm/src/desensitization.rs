@@ -467,19 +467,6 @@ impl SequenceRegistry {
         }
     }
 
-    /// 注入会话级映射归属：运行时关闭只清周期状态，序号在同一会话的多个运行时之间共享。
-    pub fn with_store(store: Arc<Mutex<SessionSequenceCache>>) -> Self {
-        Self {
-            lock: Mutex::new(()),
-            stable_index: shared_stable_index(),
-            store,
-            release_store: false,
-            open_cycles: Vec::new(),
-            last_cycle: None,
-            stats: DesensitizationStats::default(),
-        }
-    }
-
     /// 开始新周期；与上一个未完成周期请求全量相等则视为同一逻辑请求的重试复用。
     pub fn begin_cycle(&mut self, request: &str) -> (PlaceholderCycle, bool) {
         let _guard = lock(&self.lock);

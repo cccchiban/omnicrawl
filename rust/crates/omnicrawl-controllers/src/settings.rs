@@ -99,11 +99,6 @@ pub fn context_compaction_trigger_tokens(context_window_tokens: i64, percent: i6
     std::cmp::max(1, context_window_tokens * percent / 100)
 }
 
-/// `set_context_window_tokens` 的联动值：窗口变化后按既有百分比重算阈值。
-pub fn tokens_after_window_change(new_window_tokens: i64, percent: Option<i64>) -> Option<i64> {
-    percent.map(|value| context_compaction_trigger_tokens(new_window_tokens, value))
-}
-
 /// `set_context_compaction_trigger_percent` 的目标值；与现值相同则返回 `None`（不动作）。
 pub fn percent_change_target(
     context_window_tokens: i64,
@@ -135,13 +130,6 @@ pub fn validate_positive_tokens(tokens: i64) -> Result<i64, AgentError> {
         return Err(AgentError::new("上下文长度必须是正整数 Token。"));
     }
     Ok(tokens)
-}
-
-pub fn validate_compaction_percent(percent: i64) -> Result<i64, AgentError> {
-    if percent <= 0 {
-        return Err(AgentError::new("上下文压缩阈值百分比必须是正整数。"));
-    }
-    Ok(percent)
 }
 
 pub fn validate_compaction_tokens(tokens: i64) -> Result<i64, AgentError> {
@@ -256,37 +244,9 @@ pub fn model_selection(value: &str) -> Result<String, AgentError> {
     Ok(selection.to_string())
 }
 
-pub const NATIVE_VISION_INVALID: &str = "模型原生视觉必须是布尔值或未配置。";
-
-pub const CURRENT_MODEL_MISSING: &str = "当前 Agent 缺少模型配置。";
-
-pub const TOOL_SWITCH_INVALID: &str = "工具开关必须是布尔值。";
-
-pub const SUBAGENT_SWITCH_INVALID: &str = "SubAgent 开关必须是布尔值。";
-
 pub const SUBAGENTS_DISABLE_FAILED: &str = "SubAgent 关闭失败：仍有子任务未退出。";
 
 pub const SUBAGENTS_DISABLE_REASON: &str = "SubAgent 功能即将关闭，当前子任务已取消。";
-
-pub const PLUGIN_SWITCH_INVALID: &str = "Plugin 开关必须是布尔值。";
-
-pub const PLUGIN_RUNTIME_MISSING: &str = "Plugin Runtime 未连接，无法即时切换插件。";
-
-pub const MCP_SWITCH_INVALID: &str = "MCP 开关必须是布尔值。";
-
-pub const MCP_CONFIG_INVALID: &str = "MCP 配置类型无效。";
-
-pub fn model_switch_failed(cause: &str) -> AgentError {
-    AgentError::new(format!("模型运行时切换失败：{cause}"))
-}
-
-pub fn mcp_apply_failed(cause: &str) -> AgentError {
-    AgentError::new(format!("MCP 设置应用失败：{cause}"))
-}
-
-pub fn plugin_apply_failed(cause: &str) -> AgentError {
-    AgentError::new(format!("Plugin 设置应用失败：{cause}"))
-}
 
 /// `[context_compaction]` 整段映射成内核协议的压缩策略字段。
 ///

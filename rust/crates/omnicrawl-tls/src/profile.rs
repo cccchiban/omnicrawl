@@ -72,11 +72,6 @@ impl Family {
         matches!(self, Self::Chrome | Self::Edge)
     }
 
-    /// 该家族默认的 ALPN 顺序。
-    pub fn alpn_protocols(&self) -> &'static [&'static str] {
-        &["h2", "http/1.1"]
-    }
-
     /// 该家族是否把 `X25519MLKEM768` 列进 `supported_groups`。
     ///
     /// 恒为 `false`：列了却不给对应 `key_share` 会让部分服务端回 HelloRetryRequest，

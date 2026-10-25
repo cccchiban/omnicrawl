@@ -216,11 +216,6 @@ pub fn round_trips(spec: &ClientHelloSpec, message: &[u8]) -> bool {
     }
 }
 
-/// 生成一份 `server_name` 数据段（解析侧校验用）。
-pub fn rebuild_server_name(name: &str) -> Vec<u8> {
-    crate::client_hello::server_name(name)
-}
-
 /// 扩展类型是否属于「GREASE 之外的已知扩展」，用于诊断缺漏。
 pub fn is_known_extension(kind: u16) -> bool {
     matches!(

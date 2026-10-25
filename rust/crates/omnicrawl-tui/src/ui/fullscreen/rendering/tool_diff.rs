@@ -35,8 +35,6 @@ pub const MEMORY_TOOLS: &[&str] = &[
     "memory_expand_related",
     "memory_write",
 ];
-/// 知识库类工具：正文对用户无展示价值，与记忆工具一起隐藏。
-pub const KB_TOOLS: &[&str] = &["kb_search", "kb_read", "kb_write", "kb_append", "kb_list"];
 /// 正文对用户没有展示价值、完全隐藏的工具（只保留标题行）。
 pub const HIDDEN_BODY_TOOLS: &[&str] = &[
     "read",
@@ -61,8 +59,6 @@ pub const COLOR_META: &str = TEXT_MUTED;
 pub const COLOR_GUTTER: &str = TEXT_FAINT;
 pub const COLOR_CTX: &str = TEXT_SECONDARY;
 pub const COLOR_HUNK: &str = ACCENT_BLUE;
-pub const COLOR_TITLE: &str = ACCENT_AMBER;
-
 fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("静态正则"))
 }

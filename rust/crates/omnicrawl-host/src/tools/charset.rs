@@ -186,12 +186,6 @@ fn decode_bom(body: &[u8]) -> Option<(String, &'static str)> {
     None
 }
 
-/// 供未声明 charset 的调用方使用的默认解码（UTF-8，与浏览器的最终回退一致）。
-pub fn decode_utf8(body: &[u8]) -> String {
-    let (text, _) = UTF_8.decode_without_bom_handling(body);
-    text.into_owned()
-}
-
 /// GBK 用得上但没有被单独列出的编码标签，仅用于测试断言覆盖率。
 #[cfg(test)]
 const GBK_LABEL: &str = "gbk";

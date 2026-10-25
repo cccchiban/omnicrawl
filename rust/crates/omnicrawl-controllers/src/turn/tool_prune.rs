@@ -242,7 +242,6 @@ fn bound_chars(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn candidate(call_id: &str, tool: &str, output: &str) -> PruneCandidate {
         PruneCandidate::bounded(call_id, tool, "{}", true, output)

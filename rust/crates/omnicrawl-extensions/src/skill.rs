@@ -16,8 +16,6 @@ pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const SKILL_MANIFEST_FILE_NAME: &str = "manifest.json";
 pub const DEFAULT_MATCH_THRESHOLD: f64 = 0.3;
-pub const DEFAULT_MAX_RESULTS: usize = 3;
-
 /// 默认扫描的作用域目录（优先级从低到高，后加载的覆盖先加载的）。
 pub const SKILL_SCOPES: [(&str, &str); 3] = [
     ("enterprise", "OMNICRAWL_ENTERPRISE_DIR"),

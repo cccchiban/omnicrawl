@@ -47,10 +47,11 @@ pub use process_control::{
 };
 pub use slug::{is_safe_slug, validate_slug, SlugSafetyError, DEFAULT_MAX_LENGTH};
 pub use temp::{
-    agent_temp_status_label, delete_temp_entry, format_seconds, load_agent_temp_workspace_config,
-    local_to_system_time, preserved_root_names, resolve_agent_temp_dir, resolve_temp_child,
-    system_time_to_local, temp_workspace_readme, AgentTempCleanupResult, AgentTempWorkspace,
-    AgentTempWorkspaceConfig, AgentTempWorkspaceError, NowFactory, TempCore,
-    DEFAULT_AGENT_TEMP_CLEANUP_INTERVAL_HOURS, DEFAULT_AGENT_TEMP_DIRECTORY,
-    DEFAULT_AGENT_TEMP_SUBDIRECTORIES, LAST_CLEANUP_FILENAME, PRESERVED_ROOT_NAMES,
+    agent_temp_status_label, delete_temp_entry, format_seconds, install_agent_temp_workspace,
+    load_agent_temp_workspace_config, local_to_system_time, preserved_root_names,
+    resolve_agent_temp_dir, resolve_temp_child, system_time_to_local, temp_workspace_readme,
+    AgentTempCleanupResult, AgentTempInstallation, AgentTempWorkspace, AgentTempWorkspaceConfig,
+    AgentTempWorkspaceError, NowFactory, TempCore, DEFAULT_AGENT_TEMP_CLEANUP_INTERVAL_HOURS,
+    DEFAULT_AGENT_TEMP_DIRECTORY, DEFAULT_AGENT_TEMP_SUBDIRECTORIES, LAST_CLEANUP_FILENAME,
+    PRESERVED_ROOT_NAMES,
 };

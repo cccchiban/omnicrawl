@@ -172,31 +172,6 @@ impl ContextBudgetSnapshot {
         Value::Object(map)
     }
 
-    /// 计量器自己的诊断：价格来源、有符号增量与逐事件账。
-    ///
-    /// 刻意不并进 [`Self::to_dict`]：那份载荷逐字对齐 Python 的测量快照（含字段顺序被
-    /// parity 用例锁定），新增键会让对齐测试失败；这份只给本地诊断与回放看。
-    pub fn meter_payload(&self) -> Value {
-        serde_json::json!({
-            "baseline": match self.baseline {
-                Some(super::meter::MeasurementBaseline::Usage(tokens)) => {
-                    serde_json::json!({"kind": "usage", "tokens": tokens})
-                }
-                Some(super::meter::MeasurementBaseline::Estimated(tokens)) => {
-                    serde_json::json!({"kind": "estimated", "tokens": tokens})
-                }
-                None => serde_json::json!({"kind": "none", "tokens": 0}),
-            },
-            "surface_delta_tokens": self.surface_delta_tokens,
-            "nodes": self.nodes.iter().map(|node| {
-                serde_json::json!({
-                    "event_id": node.event_id,
-                    "type": node.event_type,
-                    "tokens": node.tokens,
-                })
-            }).collect::<Vec<Value>>(),
-        })
-    }
 }
 
 /// 从 Session 事实源复制出的只读事件。
@@ -1021,11 +996,6 @@ fn complete_turns(events: &[SourceEvent]) -> Vec<Vec<SourceEvent>> {
 /// 阈值判断提前一个数量级触发。
 pub fn estimate_messages_tokens(messages: &[Value]) -> i64 {
     super::meter::messages_tokens(messages, &estimate_text_tokens)
-}
-
-/// 单条消息估算：角色、投影后的内容与工具字段。
-pub fn estimate_message_tokens(message: &Value) -> i64 {
-    super::meter::message_tokens(message, &estimate_text_tokens)
 }
 
 fn value_text(value: Option<&Value>) -> String {

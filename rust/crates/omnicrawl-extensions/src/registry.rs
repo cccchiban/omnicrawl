@@ -8,7 +8,7 @@ use crate::error::PluginRegistryError;
 use crate::models::decode_utf8_sig;
 use crate::models::{
     default_timeout_for_mode, sort_handlers, PluginManifest, PluginRecord, PluginRegistryDocument,
-    PluginVersionRef, ResolvedHandler, SEALED_HANDLER_PREFIX,
+    ResolvedHandler, SEALED_HANDLER_PREFIX,
 };
 use crate::path::{home_directory, resolve_path};
 use serde_json::{Map, Value};
@@ -38,12 +38,6 @@ pub fn project_registry_path(workspace_root: &Path) -> PathBuf {
     resolve_path(workspace_root)
         .join(".omnicrawl")
         .join("plugins.json")
-}
-
-pub fn project_lock_path(workspace_root: &Path) -> PathBuf {
-    resolve_path(workspace_root)
-        .join(".omnicrawl")
-        .join("plugins.lock.json")
 }
 
 /// 读取注册表；文件不存在时返回空文档。损坏时抛错且不覆盖原文件。
@@ -370,29 +364,6 @@ pub fn remove_plugin_record(document: &mut PluginRegistryDocument, name: &str) {
     document
         .disabled_handlers
         .retain(|item| !item.starts_with(&prefix));
-}
-
-pub fn add_tombstone(
-    document: &mut PluginRegistryDocument,
-    handler_key: &str,
-) -> Result<(), PluginRegistryError> {
-    if handler_key.starts_with(SEALED_HANDLER_PREFIX) {
-        return Err(PluginRegistryError::new(format!(
-            "不能 tombstone sealed Handler：{handler_key}"
-        )));
-    }
-    if !document
-        .disabled_handlers
-        .iter()
-        .any(|item| item == handler_key)
-    {
-        document.disabled_handlers.push(handler_key.to_string());
-    }
-    Ok(())
-}
-
-pub fn version_ref_dict(reference: Option<&PluginVersionRef>) -> Option<Map<String, Value>> {
-    reference.map(PluginVersionRef::to_dict)
 }
 
 /// `json.dumps(dict(data), ensure_ascii=False, indent=2)`：缩进两格、UTF-8 原样输出。

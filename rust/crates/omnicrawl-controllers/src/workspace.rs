@@ -117,15 +117,4 @@ pub fn is_session_path(path: &Path, session_root: Option<&Path>) -> bool {
     let root = resolve_path(root);
     resolved == root || is_relative_to(&resolved, &root)
 }
-
-/// 截图目录：仅当临时目录启用时给出 `<workspace>/<directory>/images`。
-pub fn screenshot_directory(
-    workspace_root: &Path,
-    temp_workspace_enabled: bool,
-    directory: &str,
-) -> Option<PathBuf> {
-    if !temp_workspace_enabled {
-        return None;
-    }
-    Some(workspace_root.join(directory).join("images"))
-}
+

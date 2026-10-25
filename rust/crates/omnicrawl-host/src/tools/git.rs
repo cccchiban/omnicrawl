@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use omnicrawl_controllers::approval::{GIT_SUPPORTED_ACTIONS, GIT_TOOL_NAME};
+use omnicrawl_controllers::approval::GIT_SUPPORTED_ACTIONS;
 use omnicrawl_controllers::tool_args::read_required_string_list;
 use omnicrawl_core::ToolResult;
 use serde_json::{Map, Value};
@@ -216,11 +216,6 @@ pub fn bound_text(text: &str) -> String {
         .skip(total.saturating_sub(GIT_OUTPUT_TAIL_CHARS))
         .collect();
     format!("{head}\n…（git 输出已截断，共 {total} 字符）\n{tail}")
-}
-
-/// git 工具名（供审批分流判断用）。
-pub fn is_git_tool(name: &str) -> bool {
-    name == GIT_TOOL_NAME
 }
 
 #[cfg(test)]

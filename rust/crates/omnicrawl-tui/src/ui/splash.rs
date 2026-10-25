@@ -64,9 +64,6 @@ pub const LOGO_LINES: [&str; 14] = [
 /// 0 表示不设置人为最短时长；启动页仅等待准备完成。
 pub const DEFAULT_DURATION: f64 = 0.0;
 
-/// prepare 完成后画面额外停留的秒数，便于用户查看日志框内的最新启动日志。
-pub const DEFAULT_HOLD_AFTER_DONE: f64 = 2.0;
-
 /// Logo 左侧留白列数与 Logo / 日志框之间的列间距
 const LOGO_MARGIN: usize = 2;
 const BOX_GAP: usize = 4;

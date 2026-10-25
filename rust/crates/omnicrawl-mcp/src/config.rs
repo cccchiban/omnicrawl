@@ -155,10 +155,6 @@ impl McpConfig {
             .collect()
     }
 
-    /// 配置里声明的 Server 名（含禁用），用于初始化状态表。
-    pub fn server_names(&self) -> Vec<String> {
-        self.servers.iter().map(|(name, _)| name.clone()).collect()
-    }
 }
 
 /// 从 `config.toml` 与环境变量读取 MCP 配置。

@@ -365,20 +365,6 @@ impl SubAgentTaskManager {
         self.inner.retention_seconds
     }
 
-    /// 调整后续后台任务可使用的并发上限。
-    pub fn set_max_workers(&self, max_workers: usize) -> Result<(), AgentError> {
-        if max_workers < 1 {
-            return Err(AgentError::new("max_workers 必须是正整数。"));
-        }
-        let mut state = self.inner.lock();
-        if state.closed {
-            return Ok(());
-        }
-        state.max_workers = max_workers;
-        self.inner.signal.notify_all();
-        Ok(())
-    }
-
     /// 登记并后台执行任务，返回安全的 batch/task ID 投影。
     pub fn spawn(
         &self,
@@ -609,22 +595,6 @@ impl SubAgentTaskManager {
             }
             std::thread::sleep(remaining.min(Duration::from_millis(10)));
         }
-    }
-
-    /// 在 owner 范围真实空闲后调用一次，用于延迟释放共享资源。
-    pub fn call_when_idle(&self, owner_id: &str, session_id: Option<&str>, callback: IdleCallback) {
-        {
-            let mut state = self.inner.lock();
-            if state.has_active(owner_id, session_id) {
-                state.idle_callbacks.push(IdleEntry {
-                    owner_id: owner_id.to_string(),
-                    session_id: session_id.map(str::to_string),
-                    callback,
-                });
-                return;
-            }
-        }
-        callback();
     }
 
     /// 关闭指定任务范围；永久关闭时同时回收维护线程。

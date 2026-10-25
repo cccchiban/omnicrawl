@@ -1,7 +1,6 @@
 //! `omnicrawl/agent/controllers/tools/building.py`：模式模板装载与 system prompt 组装。
 
 use crate::error::AgentError;
-use crate::shared::SYSTEM_PROMPT_FILE;
 use std::path::Path;
 
 /// 顾问策略使用准则；仅当 advisor 真正启用且未命中黑名单时追加。
@@ -63,16 +62,6 @@ pub fn read_mode_prompt(templates_dir: &Path, mode: &str) -> Result<String, Agen
         return Err(AgentError::new(format!("模式模板 {mode}.md 不能为空。")));
     }
     Ok(text)
-}
-
-/// 读取独立 system prompt 模板（渲染交给提示上下文子系统）。
-pub fn read_system_prompt_template(templates_dir: &Path) -> Result<String, AgentError> {
-    let path = templates_dir.join(SYSTEM_PROMPT_FILE);
-    let bytes = std::fs::read(&path)
-        .map_err(|error| AgentError::new(format!("读取 {SYSTEM_PROMPT_FILE} 失败：{error}")))?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| AgentError::new(format!("{SYSTEM_PROMPT_FILE} 必须是 UTF-8 文本。")))?;
-    Ok(text.trim().to_string())
 }
 
 /// 在基础 system prompt 末尾追加 advisor 准则与当前活动模式提示词。

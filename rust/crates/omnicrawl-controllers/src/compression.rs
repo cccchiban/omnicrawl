@@ -28,16 +28,6 @@ pub fn should_compact(tool_name: &str, output: &str, min_chars: usize) -> bool {
     output.chars().count() >= min_chars
 }
 
-/// 并发压缩的线程数上限。
-pub fn parallel_compressions(eligible: usize) -> usize {
-    std::cmp::min(MAX_PARALLEL_COMPRESSIONS, eligible)
-}
-
-/// 整批压缩的等待上限：模型请求超时 + 宽限。
-pub fn compaction_wait_seconds(timeout_seconds: f64) -> f64 {
-    timeout_seconds + COMPACTION_GRACE_SECONDS
-}
-
 /// TUI/会话显示文本：只呈现压缩结果，不再附原始输出。
 pub fn compacted_display(
     compressed: &str,
@@ -326,41 +316,9 @@ pub fn join_compaction_sections(tools: &str, replies: &str) -> Option<String> {
 
 // ── 阈值触发的模型回复压缩 ─────────────────────────────────────────────────
 
-/// 模型回复压缩的系统提示模板。
-const REPLY_COMPACTION_TEMPLATE: &str =
-    include_str!("../../../../rust/assets/templates/model_reply_compaction_system.md");
-
 /// 历史回复在压缩提示里的包裹标记。
 pub const REPLIES_OPEN: &str = "<<<MODEL_REPLIES_START>>>";
 pub const REPLIES_CLOSE: &str = "<<<MODEL_REPLIES_END>>>";
-
-/// 模型回复压缩的系统提示。
-pub fn reply_compaction_system_prompt() -> String {
-    REPLY_COMPACTION_TEMPLATE.trim().to_string()
-}
-
-/// 构造模型回复压缩请求：任务背景 + 待压缩的全部历史回复。
-pub fn build_reply_compaction_messages(replies: &[String], task_hint: &str) -> Vec<Value> {
-    let task_text = task_hint.trim();
-    let task_text = if task_text.is_empty() {
-        "（未提供）"
-    } else {
-        task_text
-    };
-    let body = replies
-        .iter()
-        .enumerate()
-        .map(|(index, reply)| format!("### 第 {} 条回复\n{}", index + 1, reply.trim()))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-    let content = format!(
-        "请把下面这些模型回复概括成一段内容。\n\n\
-## 当前任务\n{task_text}\n\n\
-## 待压缩的模型回复（共 {} 条）\n{REPLIES_OPEN}\n{body}\n{REPLIES_CLOSE}\n",
-        replies.len()
-    );
-    vec![serde_json::json!({"role": "user", "content": content})]
-}
 
 // ── 阈值触发的双段压缩 ────────────────────────────────────────────────────
 

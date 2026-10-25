@@ -9,10 +9,9 @@
 
 use std::sync::{Arc, Condvar, Mutex};
 
-use omnicrawl_config::features::subagents::SubAgentConfig;
 use serde_json::{json, Value};
 
-use crate::subagents::coordinator::{top_level_error, PreparedTaskView};
+use crate::subagents::coordinator::top_level_error;
 use crate::subagents::definitions::AgentDefinition;
 
 /// `run` 在功能未启用时的顶层错误。
@@ -23,12 +22,6 @@ pub const BACKGROUND_DISABLED_MESSAGE: &str =
     "后台 SubAgent 默认关闭，请在配置中显式设置 allow_background=true。";
 /// 后台批次拒绝 `fail_fast`。
 pub const BACKGROUND_FAIL_FAST_MESSAGE: &str = "后台批次暂不支持 fail_fast=true。";
-/// 关闭或切换工作区期间拒绝新批次。
-pub const NOT_ACCEPTING_MESSAGE: &str = "SubAgent 正在关闭或切换工作区，暂不接受新任务。";
-/// 父任务取消子任务时写入批次的原因。
-pub const PARENT_CANCEL_REASON: &str = "父任务已取消子任务。";
-/// 未登记任务在异常收尾时使用的原因。
-pub const UNSUBMITTED_CANCEL_REASON: &str = "父任务已取消尚未调度的子任务。";
 /// 批次取消时的默认原因。
 pub const BATCH_CANCEL_REASON: &str = "子任务批次已取消。";
 
@@ -132,23 +125,6 @@ impl ActiveBatch {
         self.lock().finished.len() == self.task_count
     }
 
-    /// 有界等待整批 worker 收尾。
-    pub fn wait_done(&self, timeout: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        let mut state = self.lock();
-        while state.finished.len() != self.task_count {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            let (next, _) = self
-                .done
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|error| error.into_inner());
-            state = next;
-        }
-        true
-    }
 }
 
 /// `_requires_shared_writer_lock`：shared isolation + standard 写权限才需要主工作区单写锁。
@@ -183,23 +159,6 @@ pub fn disabled_error() -> Value {
     top_level_error("SUBAGENT_DISABLED", DISABLED_MESSAGE)
 }
 
-/// 后台批次的准入判定；`Some` 表示拒绝。
-pub fn background_rejection(config: &SubAgentConfig, fail_fast: bool) -> Option<Value> {
-    if !config.allow_background {
-        return Some(top_level_error(
-            "SUBAGENT_BACKGROUND_DISABLED",
-            BACKGROUND_DISABLED_MESSAGE,
-        ));
-    }
-    if fail_fast {
-        return Some(top_level_error(
-            "SUBAGENT_PERMISSION_DENIED",
-            BACKGROUND_FAIL_FAST_MESSAGE,
-        ));
-    }
-    None
-}
-
 /// 批次整体状态：全完成 `completed`、部分完成 `partial`、否则 `failed`。
 pub fn batch_status(results: &[Value]) -> &'static str {
     let completed = results
@@ -228,45 +187,5 @@ pub fn batch_summary(batch_id: &str, results: Vec<Value>) -> (bool, Value) {
     )
 }
 
-/// `_spawn_background` 的受理投影。
-pub fn spawn_acknowledgement(batch_id: &str, task_ids: &[String]) -> Value {
-    json!({
-        "batch_id": batch_id,
-        "task_ids": task_ids,
-        "status": "queued",
-    })
-}
-
-/// 批次创建事件的 payload。
-pub fn batch_created_payload(
-    batch_id: &str,
-    task_count: usize,
-    max_concurrency: i64,
-    fail_fast: Option<bool>,
-) -> Value {
-    let mut payload = json!({
-        "batch_id": batch_id,
-        "status": "queued",
-        "task_count": task_count,
-        "max_concurrency": max_concurrency,
-    });
-    if let Some(flag) = fail_fast {
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("fail_fast".to_string(), Value::Bool(flag));
-        }
-    }
-    payload
-}
-
-/// `_run_all` 的取消收尾投影：被取消但未开始的索引列表。
-pub fn cancelled_indexes(batch: &ActiveBatch) -> Vec<usize> {
-    batch.untracked_indexes()
-}
-
 /// 同步批次的共享入口；宿主用它登记与收尾，内核不持有线程。
 pub type SharedBatch = Arc<ActiveBatch>;
-
-/// 用任务视图构造批次（索引与 `tasks` 顺序一一对应）。
-pub fn build_batch(batch_id: &str, tasks: &[PreparedTaskView]) -> SharedBatch {
-    Arc::new(ActiveBatch::new(batch_id, tasks.len()))
-}

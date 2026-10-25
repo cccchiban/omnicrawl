@@ -30,6 +30,8 @@ const PARENT_TEXT: &str = "主回合完成";
 #[derive(Clone)]
 enum Reply {
     Stream(String),
+    /// 原样回一段完整响应（用来造 HTTP 层失败）。
+    #[allow(dead_code)]
     Raw(String),
     /// 先要求调工具、拿到结果后再收尾；脚本用尽时按请求内容兜底（并发下顺序不定）。
     ///
@@ -99,6 +101,10 @@ fn multi_tool_call_stream(calls: &[(&str, &str)]) -> String {
 }
 
 /// 一段完整的 500 响应（触发子回合失败）。
+///
+/// 当前用例都用 `AlwaysText` 造失败；这条留给脚本化调试，标 `allow` 是为了让
+/// `clippy -D warnings` 的门槛不被测试里的备用分支挡住。
+#[allow(dead_code)]
 fn server_error() -> Reply {
     Reply::Raw(
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

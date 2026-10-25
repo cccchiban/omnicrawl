@@ -318,6 +318,7 @@ fn builtin_roles_are_discovered_without_any_user_definition() {
     assert_eq!(
         names,
         vec![
+            "computer-use".to_string(),
             "explore".to_string(),
             "general-purpose".to_string(),
             "plan".to_string(),

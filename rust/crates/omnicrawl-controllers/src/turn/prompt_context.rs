@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use crate::error::AgentError;
-use crate::turn::context_messages::{project_instructions_messages, PROJECT_INSTRUCTIONS_BOUNDARY};
+use crate::turn::context_messages::project_instructions_messages;
 
 /// 稳定 prompt 前缀的版本号；Python 侧同名常量。
 pub const AGENT_PROMPT_VERSION: &str = "2026-06-22.top-level-tools-v1";
@@ -169,11 +169,6 @@ pub fn escape_xml(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-
-/// 项目规范的权限边界（供宿主直接引用，避免两处文案漂移）。
-pub fn project_instructions_boundary() -> &'static str {
-    PROJECT_INSTRUCTIONS_BOUNDARY
 }
 
 #[cfg(test)]

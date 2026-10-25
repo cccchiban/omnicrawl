@@ -91,14 +91,6 @@ pub struct UsageReported {
 }
 
 impl UsageReported {
-    pub fn to_usage(self) -> TokenUsage {
-        TokenUsage {
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_input_tokens: self.cached_input_tokens,
-            reasoning_tokens: self.reasoning_tokens,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

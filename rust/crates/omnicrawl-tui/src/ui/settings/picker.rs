@@ -118,15 +118,6 @@ pub fn window_bounds(total: usize, selected: usize, size: usize) -> (usize, usiz
     (start, start + size)
 }
 
-/// 下标夹取；空序列返回 `None`。
-pub fn clamp_index(index: usize, len: usize) -> Option<usize> {
-    if len == 0 {
-        None
-    } else {
-        Some(index.min(len - 1))
-    }
-}
-
 fn push_unique(items: &mut Vec<String>, value: String) {
     if !items.iter().any(|item| item == &value) {
         items.push(value);

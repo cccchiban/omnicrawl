@@ -12,13 +12,6 @@ use crate::toml::{Table, Value};
 
 pub const DEFAULT_THINKING_TYPE: &str = "disabled";
 pub const DEFAULT_REASONING_EFFORT: &str = "";
-pub const KNOWN_AVAILABLE_MODELS: [&str; 5] = [
-    "qwen3.6-plus",
-    "glm-5.1",
-    "deepseek-v4-flash",
-    "gpt-5.2",
-    "gpt-5.4-mini",
-];
 pub const VALID_REASONING_EFFORTS: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: i64 = 128_000;
 pub const DEFAULT_MAX_HISTORY_TURNS: i64 = 8;

@@ -17,3 +17,7 @@ boa_engine = { version = "0.22", default-features = false, features = ["annex-b"
 ego-tree = "0.6"
 regex = { workspace = true }
 scraper = { workspace = true }
+# Canvas `toDataURL` 要产出真实 PNG（含正确的 zlib 流），而不是预置的常量字节。
+png = "0.17"
+# Canvas `fillText` 的字体轮廓：只解析字形，不引 FreeType/C 依赖。
+ttf-parser = "0.25"

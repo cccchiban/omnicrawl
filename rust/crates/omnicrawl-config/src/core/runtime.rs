@@ -219,11 +219,6 @@ pub fn default_decision_models_path(env: &ConfigEnvironment) -> PathBuf {
     user_config_dir(env).join(DEFAULT_DECISION_MODELS_FILENAME)
 }
 
-/// 用户默认向量模型配置路径。
-pub fn default_embedding_models_path(env: &ConfigEnvironment) -> PathBuf {
-    user_config_dir(env).join(DEFAULT_EMBEDDING_MODELS_FILENAME)
-}
-
 /// 显式路径优先；否则始终使用用户目录配置。
 pub fn resolve_config_path(
     env: &ConfigEnvironment,
@@ -392,11 +387,6 @@ pub fn atomic_write_text(path: &Path, text: &str) -> Result<(), ConfigError> {
 
 /// 兼容既有调用名。
 pub fn dump_toml_text(data: &Table) -> String {
-    toml::dump_document(data)
-}
-
-/// 兼容既有调用名；实际输出 TOML 文本。
-pub fn dump_yaml_text(data: &Table) -> String {
     toml::dump_document(data)
 }
 

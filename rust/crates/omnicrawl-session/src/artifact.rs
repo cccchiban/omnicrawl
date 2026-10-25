@@ -13,9 +13,7 @@ use crate::naming::clean_title;
 use crate::redaction::{redact_sensitive_text, redact_sensitive_values};
 
 pub const TOOL_RESULT_INLINE_OUTPUT_CHARS: usize = 8 * 1024;
-pub const TOOL_RESULT_LARGE_OUTPUT_CHARS: usize = 128 * 1024;
 pub const TOOL_RESULT_PREVIEW_CHARS: usize = 1200;
-pub const SUBAGENT_RESULT_LARGE_OUTPUT_CHARS: usize = 128 * 1024;
 const ARTIFACTS_DIR_NAME: &str = "artifacts";
 
 pub struct SessionArtifactStore {

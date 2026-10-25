@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset, Local, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, FixedOffset, Local, NaiveDateTime, SecondsFormat};
 use serde_json::{json, Map, Value};
 
 use crate::error::SessionStoreError;
@@ -377,8 +377,4 @@ fn split_parent(path: &str) -> (String, String) {
         None => (".".to_string(), path.to_string()),
     }
 }
-
-/// 便于测试与调用方拿到 UTC 视角（跨机比对时把时间戳归一化到 UTC）。
-pub fn to_utc(value: DateTime<FixedOffset>) -> DateTime<Utc> {
-    value.with_timezone(&Utc)
-}
+

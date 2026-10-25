@@ -13,9 +13,6 @@ pub const VISION_MAX_OUTPUT_CHARS: usize = 6000;
 /// 单个候选错误在汇总文案里的最大长度（Python 侧的 240 字符）。
 pub const VISION_CANDIDATE_ERROR_CHARS: usize = 240;
 
-pub const VISION_PROXY_DISABLED_ERROR: &str = "视觉模型代理未启用。";
-pub const VISION_PROXY_NO_MODELS_ERROR: &str = "视觉模型代理已启用，但没有配置视觉模型。";
-pub const VISION_PROXY_NO_IMAGES_ERROR: &str = "视觉模型代理没有收到图片附件。";
 pub const VISION_PROXY_EMPTY_TEXT_ERROR: &str = "视觉模型返回了空文本。";
 pub const VISION_PROXY_NO_REF_ERROR: &str = "视觉模型引用缺少可用的模型标识。";
 pub const VISION_PROXY_NO_DETAIL: &str = "没有可用的错误详情";

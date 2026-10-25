@@ -8,8 +8,6 @@ use crate::error::AgentError;
 use crate::settings::{SUBAGENTS_DISABLE_FAILED, SUBAGENTS_DISABLE_REASON};
 use crate::shared::SUBAGENT_LIFECYCLE_WAIT_SECONDS;
 
-pub const SUBAGENTS_DISABLED_ERROR: &str = "SubAgent 功能未启用。";
-
 pub const AGENT_CLOSE_REASON: &str = "Agent 正在关闭，当前子任务已取消。";
 
 /// `/plugins` 展示用的一行 Worker 状态（对应 `manager.list_status()` 的元素）。

@@ -4,7 +4,6 @@
 //! 判定收进内核（任务生命周期本体在同目录 `tasks.rs`）；模型运行时引导、线程池、
 //! worktree 的 git 操作与 Session 落盘留在宿主（`omnicrawl-cli`）。
 
-use omnicrawl_session::redaction::{redact_sensitive_text, redact_sensitive_values};
 use serde_json::{json, Map, Value};
 
 use crate::error::AgentError;
@@ -23,8 +22,6 @@ pub const SUMMARY_TRUNCATED_SUFFIX: &str = "\n... 子任务结果已截断。";
 pub const SUBAGENT_FAILURE_FALLBACK: &str = "子任务执行失败。";
 /// `subagent` 工具在协调器缺席时的结果文案。
 pub const SUBAGENT_DISABLED: &str = "SubAgent 功能未启用。";
-/// `run_subagent_task` 在协调器缺席时的错误文案。
-pub const SUBAGENT_DISABLED_TASK: &str = "SubAgent 功能未启用，无法执行该任务。";
 /// 子任务结果无法解析为 JSON 时的错误文案。
 pub const SUBAGENT_UNPARSABLE: &str = "子任务返回结果无法解析。";
 /// 批次返回但没有任何子任务结果时的错误文案。
@@ -73,80 +70,6 @@ pub fn fork_task_message(description: &str, prompt: &str) -> Value {
     })
 }
 
-/// `_freeze_fork_context_messages` 的结构面：脱敏后只保留协议消息对象。
-pub fn fork_context_snapshot(messages: &Value) -> Result<Vec<Value>, AgentError> {
-    let redacted = redact_sensitive_values(messages);
-    let Some(items) = redacted.as_array() else {
-        return Err(AgentError::new("Fork 上下文必须是消息数组。"));
-    };
-    Ok(items
-        .iter()
-        .filter(|item| item.is_object())
-        .cloned()
-        .collect())
-}
-
-/// `_prepare_subagent_public_result` 在无 Session 时的本地投影。
-pub fn local_public_result(result_text: &str, summary_chars: usize) -> PublicResult {
-    let mut text = result_text.to_string();
-    let mut artifacts: Vec<Value> = Vec::new();
-    if let Some(index) = text.find(WORKTREE_MARKER) {
-        let head = text[..index].to_string();
-        let tail = text[index + WORKTREE_MARKER.len()..].to_string();
-        text = head.trim_end().to_string();
-        let body = tail.trim();
-        if !body.is_empty() {
-            let content: String = redact_sensitive_text(body)
-                .chars()
-                .take(WORKTREE_ARTIFACT_CHARS)
-                .collect();
-            artifacts.push(json!({"type": "worktree", "content": content}));
-        }
-    }
-    let mut summary = redact_sensitive_text(text.trim());
-    if summary.chars().count() > summary_chars {
-        summary = summary.chars().take(summary_chars).collect();
-        summary.push_str(SUMMARY_TRUNCATED_SUFFIX);
-    }
-    PublicResult { summary, artifacts }
-}
-
-/// `_inject_subagent_notifications`：把新完成通知并入本轮临时 user 消息。
-///
-/// 返回是否真的注入了通知（无通知时不改动 `messages`）。
-pub fn inject_notifications(messages: &mut Vec<Value>, notifications: &[Value]) -> bool {
-    if notifications.is_empty() {
-        return false;
-    }
-    let preview: Vec<Value> = notifications
-        .iter()
-        .take(NOTIFICATION_PREVIEW_ITEMS)
-        .cloned()
-        .collect();
-    let rendered = crate::json::python_dumps(&Value::Array(preview), 0);
-    let body: String = rendered.chars().take(NOTIFICATION_PREVIEW_CHARS).collect();
-    let notification_text =
-        format!("\n\n<subagent-notifications>\n{body}\n</subagent-notifications>");
-    for message in messages.iter_mut().rev() {
-        if message.get("role").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        let prefix = truthy_text(message.get("content"));
-        if let Some(map) = message.as_object_mut() {
-            map.insert(
-                "content".to_string(),
-                Value::String(format!("{prefix}{notification_text}")),
-            );
-        }
-        return true;
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": notification_text.trim(),
-    }));
-    true
-}
-
 /// `_tool_subagent` 的 `wants_review` 判定。
 pub fn wants_review(arguments: &Value) -> bool {
     let Some(task) = arguments.get("task") else {
@@ -186,18 +109,6 @@ pub fn require_completed_result(
         }
     }
     Ok(truthy_text(first.get("summary")))
-}
-
-/// `未找到 SubAgent 定义：{agent_type}。当前可用：{available}。`
-pub fn missing_definition_error(agent_type: &str, available: &[String]) -> AgentError {
-    let joined = if available.is_empty() {
-        "无".to_string()
-    } else {
-        available.join(", ")
-    };
-    AgentError::new(format!(
-        "未找到 SubAgent 定义：{agent_type}。当前可用：{joined}。"
-    ))
 }
 
 fn error_field(value: &Value) -> Value {

@@ -35,12 +35,7 @@ pub mod pbbp2 {
     pub const HEADER_MESSAGE_ID: &str = "message_id";
     pub const HEADER_SUM: &str = "sum";
     pub const HEADER_SEQ: &str = "seq";
-    pub const HEADER_TRACE_ID: &str = "trace_id";
     pub const HEADER_BIZ_RT: &str = "biz_rt";
-    pub const HEADER_HANDSHAKE_STATUS: &str = "handshake-status";
-    pub const HEADER_HANDSHAKE_MSG: &str = "handshake-msg";
-    pub const HEADER_HANDSHAKE_AUTH_ERRCODE: &str = "handshake-autherrcode";
-
     /// 消息类型（与 SDK 的 `MessageType` 一致）。
     pub const MESSAGE_TYPE_EVENT: &str = "event";
     pub const MESSAGE_TYPE_CARD: &str = "card";

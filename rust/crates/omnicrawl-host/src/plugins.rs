@@ -34,7 +34,7 @@ use omnicrawl_extensions::install::{
 };
 use omnicrawl_extensions::manager::{DispatchRequest, PluginRuntime};
 use omnicrawl_extensions::models::{hook_policy, parse_plugins_config, PluginsConfig};
-use omnicrawl_extensions::protocol::{WorkerLauncher, RUNNER_DIR_ENV};
+use omnicrawl_extensions::protocol::WorkerLauncher;
 use serde_json::{Map, Value};
 
 /// 一次 Hook 分发的结局。
@@ -47,10 +47,6 @@ pub enum HookDecision {
 }
 
 impl HookDecision {
-    pub fn is_denied(&self) -> bool {
-        matches!(self, Self::Denied(_))
-    }
-
     /// 放行时的载荷；被拒时退回传入的原始载荷。
     pub fn payload_or(self, fallback: Map<String, Value>) -> Map<String, Value> {
         match self {
@@ -694,9 +690,6 @@ fn looks_like_local_path(package_spec: &str) -> bool {
     let bytes = package_spec.as_bytes();
     bytes.len() >= 2 && bytes[1] == b':'
 }
-
-/// 环境变量名透出给调用方（启动器与打包脚本共用同一份约定）。
-pub const RUNNER_DIR_VARIABLE: &str = RUNNER_DIR_ENV;
 
 #[cfg(test)]
 mod tests {

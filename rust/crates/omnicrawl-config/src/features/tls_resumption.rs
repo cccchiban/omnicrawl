@@ -70,11 +70,12 @@ pub fn load_tls_resumption_configuration(
         Some(_) => return Err(ConfigError::new("tls_resumption.enabled 必须是布尔值。")),
     };
     let cache_capacity = match section.get("cache_capacity") {
-        Some(Value::Integer(value)) if *value > 0 => *value as usize,
+        // `0` 交给 `normalize` 换成默认值：与「0 不是『不许缓存』」的约定保持一致。
+        Some(Value::Integer(value)) if *value >= 0 => *value as usize,
         None => DEFAULT_CACHE_CAPACITY,
         Some(_) => {
             return Err(ConfigError::new(
-                "tls_resumption.cache_capacity 必须是正整数。",
+                "tls_resumption.cache_capacity 必须是非负整数。",
             ))
         }
     };

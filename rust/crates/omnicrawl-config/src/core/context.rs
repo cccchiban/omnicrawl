@@ -46,11 +46,6 @@ pub fn detect_project_context(
     ProjectContext { workspace_root }
 }
 
-/// 返回适合启动面板展示的短标签。
-pub fn project_context_status_label(context: &ProjectContext) -> String {
-    context.workspace_root.to_string_lossy().to_string()
-}
-
 fn current_directory() -> PathBuf {
     env::current_dir()
         .ok()

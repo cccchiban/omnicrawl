@@ -178,36 +178,6 @@ pub fn read_message(
     Ok(Some((message, Framing::ContentLength)))
 }
 
-/// 读一条 JSON-RPC 消息，只接受 `Content-Length` 分帧。
-///
-/// 客户端方向：读到 EOF 视为错误（附上子进程 stderr 尾部便于诊断）；本地 Server
-/// 方向：读到 EOF 视为正常收尾（返回 `None`）。
-pub fn read_frame(
-    reader: &mut impl std::io::BufRead,
-    kind: FrameKind,
-    stderr_preview: impl FnOnce() -> String,
-) -> Result<Option<Map<String, Value>>, McpClientError> {
-    let mut header: Vec<u8> = Vec::new();
-    loop {
-        let Some(line) = read_line(reader)? else {
-            return eof(kind, stderr_preview);
-        };
-        if line == b"\r\n" || line == b"\n" {
-            break;
-        }
-        header.extend_from_slice(&line);
-        if header.len() > MAX_FRAME_HEADER_BYTES {
-            return Err(McpClientError::new(format!(
-                "MCP {}头超过 {MAX_FRAME_HEADER_BYTES} 字节。",
-                kind.label()
-            )));
-        }
-    }
-
-    let content_length = parse_content_length(&header, kind)?;
-    read_sized_payload(reader, content_length, kind).map(Some)
-}
-
 /// 读一行（含行尾换行符）；EOF 返回 `None`。
 fn read_line(reader: &mut impl std::io::BufRead) -> Result<Option<Vec<u8>>, McpClientError> {
     let mut line: Vec<u8> = Vec::new();

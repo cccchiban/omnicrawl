@@ -54,7 +54,31 @@ fn mcp_prompts() -> Vec<McpItemRef> {
     }]
 }
 
-fn assert_spec_matches(tool: &ToolSpec, expected: &Value, case: &str) {
+/// 夹具里的 `subagent` Schema 用 `__subagent_types__` 占位：真实的角色枚举由运行时给出，
+/// 这里按同一套归一（去空白、小写、排序、去重）把占位符还原成该用例应有的值。
+fn expected_schema(expected: &Value, subagent_types: &[String]) -> String {
+    let template = expected["argument_schema"].as_str().expect("argument_schema");
+    if !template.contains("__subagent_types__") {
+        return template.to_string();
+    }
+    let mut roles: Vec<String> = subagent_types
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    roles.sort();
+    roles.dedup();
+    let roles: Vec<Value> = roles.iter().map(|role| Value::from(role.clone())).collect();
+    let mut schema: Value = serde_json::from_str(template).expect("schema");
+    if let Some(Value::Object(field)) = schema.pointer_mut("/properties/task/properties/subagent_type")
+    {
+        field.insert("enum".to_string(), Value::Array(roles));
+    }
+    // 与生产侧同一套序列化口径（`python_dumps(.., 0)`：分隔符 `", "` 与 `": "`）。
+    omnicrawl_controllers::json::python_dumps(&schema, 0)
+}
+
+fn assert_spec_matches(tool: &ToolSpec, expected: &Value, case: &str, subagent_types: &[String]) {
     assert_eq!(
         tool.name,
         expected["name"].as_str().expect("name"),
@@ -68,9 +92,7 @@ fn assert_spec_matches(tool: &ToolSpec, expected: &Value, case: &str) {
     );
     assert_eq!(
         tool.argument_schema,
-        expected["argument_schema"]
-            .as_str()
-            .expect("argument_schema"),
+        expected_schema(expected, subagent_types),
         "参数 Schema（{}）",
         tool.name
     );
@@ -153,7 +175,7 @@ fn tool_catalog_registration_matches_python() {
                 .collect::<Vec<_>>()
         );
         for (tool, expected) in built.iter().zip(expected.iter()) {
-            assert_spec_matches(tool, expected, label);
+            assert_spec_matches(tool, expected, label, &subagent_types);
         }
     }
 }
@@ -177,6 +199,6 @@ fn tool_catalog_mcp_samples_match_python() {
     let expected = data["mcp_samples"].as_array().expect("mcp_samples");
     assert_eq!(built.len(), expected.len(), "MCP 工具条数");
     for (tool, expected) in built.iter().zip(expected.iter()) {
-        assert_spec_matches(tool, expected, "MCP");
+        assert_spec_matches(tool, expected, "MCP", &[]);
     }
 }

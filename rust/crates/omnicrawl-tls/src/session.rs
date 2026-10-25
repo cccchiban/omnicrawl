@@ -1487,11 +1487,6 @@ impl ClientHandshake {
             .map_err(HandshakeError::Record)
     }
 
-    /// 解密一条对端的应用数据记录。
-    pub fn open_application(&mut self, payload: &[u8]) -> Result<Vec<u8>, HandshakeError> {
-        self.open_application_typed(ContentType::ApplicationData, payload)
-    }
-
     /// 解密一条对端记录，并返回它的内层类型。
     ///
     /// 1.2 的加密记录**保留真实类型**（可能是 handshake，例如会话票据），因此调用方

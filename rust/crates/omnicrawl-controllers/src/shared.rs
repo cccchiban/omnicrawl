@@ -80,10 +80,6 @@ pub const MEMORY_UNDO_EXEMPT_TOOLS: [&str; 1] = ["memory_write"];
 
 pub const ASK_USER_ADVISOR_HINT: &str = "（若用户暂时不在或无法作答：本环境已启用顾问策略，可调用一次 advisor 代替用户评估并给出合理的决策方向，避免任务空等；但高危或需审批的操作仍须获得用户的明确授权。）";
 
-pub fn contains_text(table: &[&str], text: &str) -> bool {
-    table.contains(&text)
-}
-
 pub fn read_int_env(
     name: &str,
     raw: Option<&str>,

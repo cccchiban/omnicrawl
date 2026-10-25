@@ -267,16 +267,6 @@ impl CommandResult {
         self
     }
 
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
-        self
-    }
-
-    pub fn with_error(mut self, message: impl Into<String>) -> Self {
-        self.error = Some(message.into());
-        self
-    }
-
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
         self
@@ -467,11 +457,6 @@ impl Command {
         } else {
             self.usage.clone()
         }
-    }
-
-    /// 是否接受参数（决定补全插入后是否补空格）。
-    pub fn takes_argument(&self) -> bool {
-        self.arg_prompt.is_some()
     }
 }
 

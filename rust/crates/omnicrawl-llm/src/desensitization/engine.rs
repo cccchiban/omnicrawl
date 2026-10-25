@@ -17,7 +17,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use omnicrawl_protocol::ProviderWarning;
 use serde_json::Value;
 
 use super::ner::NerLayer;
@@ -1365,11 +1364,6 @@ fn is_naming_chain(token: &str) -> bool {
         segment.chars().count() < NAMING_SEGMENT_MAX_LENGTH
             || !segment.chars().any(|character| character.is_ascii_digit())
     })
-}
-
-/// 供上层复用：把告警补齐（本层当前不产出告警，保留签名以便 middleware 接线）。
-pub fn engine_warnings() -> Vec<ProviderWarning> {
-    Vec::new()
 }
 
 #[cfg(test)]

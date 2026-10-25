@@ -4,10 +4,7 @@
 //! 逐个确认、提问工具等用户作答），审批全部完成后把待执行调用一次性交给执行层并发执行，
 //! 最后按模型顺序回观察——顺序与数量都不能变（内核会校验）。
 
-use omnicrawl_controllers::approval::{
-    decide, git_action_tier, is_git_tool_call, is_shell_command_tool_call, user_cancelled_reason,
-    ApprovalDecision, GIT_TIER_READONLY,
-};
+use omnicrawl_controllers::approval::{decide, user_cancelled_reason, ApprovalDecision};
 use omnicrawl_controllers::output::vision_observation_messages;
 use omnicrawl_controllers::shared::tool_timeout_result;
 use omnicrawl_controllers::types::ToolImageAttachment;
@@ -414,27 +411,6 @@ pub fn approval_decision(ctx: &BatchContext<'_>, call: &ToolCall) -> ApprovalDec
 /// 是否需要人工确认：只有 `Confirm` 才停等用户（`review` 不弹面板）。
 pub fn needs_confirmation(ctx: &BatchContext<'_>, call: &ToolCall) -> bool {
     matches!(approval_decision(ctx, call), ApprovalDecision::Confirm)
-}
-
-/// 旧签名的手工确认判定：等价于 `decide` 的 `Confirm`（无工具事实）。
-pub fn approval_required(mode: ApprovalMode, tool: &str, arguments: &Map<String, Value>) -> bool {
-    if is_self_hosted(tool) {
-        return false;
-    }
-    if is_git_tool_call(tool) {
-        // `git` 在 review 模式下走审查模型，这里只回答「要不要问人」。
-        if mode == ApprovalMode::Review {
-            return false;
-        }
-        return git_action_tier(arguments) != GIT_TIER_READONLY;
-    }
-    if mode == ApprovalMode::Auto {
-        return false;
-    }
-    if mode == ApprovalMode::Review {
-        return false;
-    }
-    is_shell_command_tool_call(tool)
 }
 
 pub fn is_self_hosted(tool: &str) -> bool {

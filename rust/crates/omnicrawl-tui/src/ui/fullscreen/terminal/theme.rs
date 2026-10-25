@@ -8,12 +8,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const THEME_NAME: &str = "omnicrawl-terminal";
-
 pub const TRANSPARENT: &str = "transparent";
-pub const TERMINAL_FOREGROUND: &str = "ansi_default";
-pub const TERMINAL_BACKGROUND: &str = "ansi_default";
-
 // Rich 使用 default/标准色名，Textual CSS 使用 ansi_default/ansi_*；
 // 两种表示最终都交给终端自己的前景色与 ANSI 调色板解析。
 pub const TEXT_PRIMARY: &str = "default";
@@ -29,24 +24,14 @@ pub const SCROLLBAR: &str = "default";
 pub const BORDER_MUTED: &str = "bright_black";
 
 pub const ACCENT_GREEN: &str = "green";
-pub const ACCENT_GREEN_SOFT: &str = TRANSPARENT;
 pub const ACCENT_BLUE: &str = "blue";
-pub const ACCENT_BLUE_SOFT: &str = TRANSPARENT;
 pub const ACCENT_AMBER: &str = "yellow";
-pub const ACCENT_AMBER_SOFT: &str = TRANSPARENT;
 pub const ACCENT_RED: &str = "red";
-pub const ACCENT_PURPLE: &str = "magenta";
-
-/// 用户消息左侧细竖条强调色（青色）。
-pub const ACCENT_CYAN: &str = "cyan";
 /// 工具进行中的边框色（白色）：与成功/失败语义色区分开，不引入新色相。
 pub const ACCENT_WHITE: &str = "white";
 
 /// 用户消息背景：Python 侧是 26% 透明紫，由 Textual 与终端底色混合。
 pub const USER_BACKGROUND: &str = "rgba(170, 80, 210, 0.26)";
-/// 工具调用与输出不叠加色块，保持终端原生透明背景。
-pub const TOOL_BACKGROUND: &str = TRANSPARENT;
-pub const TOOL_FOCUS_BACKGROUND: &str = TRANSPARENT;
 pub const TOOL_TEXT: &str = "bright_black";
 
 /// 思考区沿用代码块同款灰色背景与灰色前景（字体由终端自身提供）。

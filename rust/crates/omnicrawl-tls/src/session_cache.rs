@@ -55,20 +55,43 @@ impl Session {
     }
 }
 
+/// 未指定容量时的条目上限：够覆盖一次抓取的站点数，又不会把票据攒成泄漏。
+pub const DEFAULT_CAPACITY: usize = 256;
+
 /// 按 `host:port` 缓存的会话表。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SessionCache {
     entries: Mutex<HashMap<String, Session>>,
+    /// 条目上限：长时间运行的进程跨站点抓取会不断写入，必须封顶。
+    capacity: usize,
+}
+
+impl Default for SessionCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionCache {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(DEFAULT_CAPACITY)
+    }
+
+    /// 指定条目上限；`0` 按默认上限处理（与配置的归一化口径一致）。
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            capacity: capacity.max(1),
+        }
     }
 
     /// 共享句柄：一次抓取里的多个连接共用一份缓存。
     pub fn shared() -> Arc<Self> {
         Arc::new(Self::new())
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// 取一条仍有效的会话；没有或已过期时返回 `None`。
@@ -88,11 +111,27 @@ impl SessionCache {
     }
 
     /// 存入一条会话；`lifetime` 为 0 时直接忽略（服务端明确说这条票据不可恢复）。
+    ///
+    /// 达到上限时先丢掉已过期的条目，仍然满就放弃最旧的一条：恢复失败会回退完整握手，
+    /// 因此这里宁可少存一条，也不让缓存无界增长。
     pub fn put(&self, key: impl Into<String>, session: Session) {
         if session.lifetime == 0 {
             return;
         }
-        self.lock().insert(key.into(), session);
+        let key = key.into();
+        let now = now_seconds();
+        let mut entries = self.lock();
+        entries.retain(|_, item| !item.is_expired(now));
+        if entries.len() >= self.capacity && !entries.contains_key(&key) {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, item)| item.issued_at)
+                .map(|(key, _)| key.clone())
+            {
+                entries.remove(&oldest);
+            }
+        }
+        entries.insert(key, session);
     }
 
     /// 丢弃一条会话（票据被拒绝时调用，避免下次再拿它试）。
@@ -217,5 +256,29 @@ mod tests {
         cache.put(key.clone(), session(7200, now_seconds()));
         cache.remove(&key);
         assert!(cache.get(&key).is_none());
+    }
+
+    /// 容量是配置项 `[tls_resumption] cache_capacity` 的实际落点：超限必须淘汰而不是无限增长。
+    #[test]
+    fn the_capacity_bounds_the_cache() {
+        let cache = SessionCache::with_capacity(2);
+        assert_eq!(cache.capacity(), 2);
+        let now = now_seconds();
+        cache.put(cache_key("a.example", 443), session(7200, now - 3));
+        cache.put(cache_key("b.example", 443), session(7200, now - 2));
+        cache.put(cache_key("c.example", 443), session(7200, now - 1));
+        assert_eq!(cache.len(), 2, "超限时应当淘汰而不是继续增长");
+        assert!(
+            cache.get(&cache_key("a.example", 443)).is_none(),
+            "最旧的一条应当被淘汰"
+        );
+        assert!(cache.get(&cache_key("c.example", 443)).is_some());
+    }
+
+    /// 未指定容量时按默认上限；`0` 不能变成「永不缓存」。
+    #[test]
+    fn a_zero_capacity_falls_back_to_the_default() {
+        assert_eq!(SessionCache::with_capacity(0).capacity(), 1);
+        assert_eq!(SessionCache::new().capacity(), DEFAULT_CAPACITY);
     }
 }

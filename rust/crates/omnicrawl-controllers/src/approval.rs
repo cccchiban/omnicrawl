@@ -552,15 +552,9 @@ pub fn plugin_execute_denied_reason(tool_name: &str) -> String {
     format!("插件在执行前拒绝：{tool_name}。")
 }
 
-pub fn not_approved_reason(tool_name: &str) -> String {
-    format!("未批准执行：{tool_name}。")
-}
-
 pub fn user_cancelled_reason(tool_name: &str) -> String {
     format!("用户取消执行：{tool_name}。")
 }
-
-pub const SCHEMA_VALIDATION_REASON: &str = "工具参数未通过 Host Schema 校验。";
 
 pub const MASKING_FAIL_CLOSED_REASON: &str =
     "自动审查请求失败：消息脱敏屏蔽失败，已按 fail-closed 策略中止（未发送原文）。";
@@ -1565,16 +1559,6 @@ pub fn approved_event_payload(tool: &str, arguments: &Value, mode: &str) -> Valu
         "tool": tool,
         "arguments": arguments,
         "mode": mode,
-    })
-}
-
-/// `tool.execute.after` 的载荷；插件可用它改写展示文本。
-pub fn execute_after_payload(tool: &str, ok: bool, display_text: &str) -> Value {
-    serde_json::json!({
-        "tool": tool,
-        "ok": ok,
-        "displayText": display_text,
-        "annotations": {},
     })
 }
 

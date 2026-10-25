@@ -337,9 +337,6 @@ pub struct HandlerRegistration {
 }
 
 impl HandlerRegistration {
-    pub fn is_custom_hook(&self) -> bool {
-        self.hook.starts_with("plugin.")
-    }
 }
 
 /// 插件静态声明的自定义事件（对应 Python 的 `CustomEventDeclaration`）。
@@ -370,12 +367,6 @@ pub struct PluginManifest {
 }
 
 impl PluginManifest {
-    pub fn handler_keys(&self) -> Vec<String> {
-        self.hooks
-            .iter()
-            .map(|item| format!("{}/{}", self.name, item.id))
-            .collect()
-    }
 }
 
 /// 注册表中的精确版本指针（对应 Python 的 `PluginVersionRef`）。
@@ -634,12 +625,6 @@ impl HookEvent {
         data
     }
 
-    /// `trace` 的默认值：`{"depth": 0}`。
-    pub fn default_trace() -> Map<String, Value> {
-        let mut trace = Map::new();
-        trace.insert("depth".to_string(), Value::from(0));
-        trace
-    }
 }
 
 /// 单个 Handler 的规范化结果（对应 Python 的 `HookResult`）。
@@ -742,17 +727,6 @@ impl DispatchOutcome {
         }
     }
 
-    pub fn raise_if_denied(&self) -> Result<(), crate::error::PluginDispatchError> {
-        if self.denied {
-            let reason = if self.deny_reason.is_empty() {
-                format!("Hook {} 被拒绝。", self.hook)
-            } else {
-                self.deny_reason.clone()
-            };
-            return Err(crate::error::PluginDispatchError::new(reason));
-        }
-        Ok(())
-    }
 }
 
 /// ISO-8601（UTC、秒精度、`Z` 结尾）：对应

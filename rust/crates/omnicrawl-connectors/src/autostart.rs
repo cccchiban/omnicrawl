@@ -302,16 +302,6 @@ impl ConnectorManagerOptions {
         self
     }
 
-    pub fn with_lock_root(mut self, lock_root: Option<PathBuf>) -> Self {
-        self.lock_root = lock_root;
-        self
-    }
-
-    pub fn with_log_root(mut self, log_root: Option<PathBuf>) -> Self {
-        self.log_root = log_root;
-        self
-    }
-
     pub fn with_pythonpath_root(mut self, pythonpath_root: Option<PathBuf>) -> Self {
         self.pythonpath_root = pythonpath_root;
         self

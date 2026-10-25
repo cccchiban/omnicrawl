@@ -649,35 +649,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// 把实体区间映射成占位符替换（供 `engine` 在 `mask_text` 末尾调用）。
-pub fn mask_spans<F>(text: &str, spans: &[(usize, usize)], mut placeholder_for: F) -> String
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    if spans.is_empty() {
-        return text.to_string();
-    }
-    let characters: Vec<char> = text.chars().collect();
-    let mut ordered: Vec<(usize, usize)> = spans.to_vec();
-    ordered.sort_by_key(|item| item.0);
-    let mut out = String::with_capacity(text.len());
-    let mut cursor = 0usize;
-    for (start, end) in ordered {
-        if start < cursor || end > characters.len() || end <= start {
-            continue;
-        }
-        out.extend(characters[cursor..start].iter());
-        let value: String = characters[start..end].iter().collect();
-        match placeholder_for(&value) {
-            Some(placeholder) => out.push_str(&placeholder),
-            None => out.push_str(&value),
-        }
-        cursor = end;
-    }
-    out.extend(characters[cursor..].iter());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

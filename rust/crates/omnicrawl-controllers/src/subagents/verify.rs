@@ -58,15 +58,6 @@ pub fn verify_checks(python_executable: &str) -> Vec<VerifyCheck> {
     ]
 }
 
-/// 检查标识按固定顺序用顿号连接。
-pub fn verify_check_ids(python_executable: &str) -> String {
-    verify_checks(python_executable)
-        .iter()
-        .map(|check| check.identifier.clone())
-        .collect::<Vec<_>>()
-        .join("、")
-}
-
 pub fn verify_command_description() -> &'static str {
     "执行 Host 固定的本地验证检查。仅支持 unit_tests、compileall、git_diff_check；\
 不能传递 Bash、PowerShell、命令文本、路径、环境变量或网络参数。"

@@ -20,7 +20,7 @@ use omnicrawl_controllers::turn::skill_command::{
 use omnicrawl_core::diagnostics;
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
-    Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult, HostEvent,
+    Command, ContextPruneRequest, ContextPruneResult, HostEvent,
     InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelHookRequest,
     ModelHookResult, SessionModelSettings, SessionSettingsParams, SubagentQueryParams,
     TodoUpdatePayload, ToolBatch, ToolEventPayload, ToolStartedPayload,
@@ -233,10 +233,6 @@ impl TurnRunner {
         .map_err(|error| format!("工具表构建失败：{}", error.message))?;
         self.registry = Arc::new(registry);
         Ok(())
-    }
-
-    pub fn kernel_closed(&self) -> bool {
-        self.kernel.is_closed()
     }
 
     /// 握手：`initialize` 带上模型配置（内核自己发请求）、工具声明与可选的会话块。

@@ -420,11 +420,6 @@ fn kill_process_tree(child: &mut Child, job: Option<KillOnCloseJob>) {
     terminate_process_tree(child, job, true);
 }
 
-/// 文本型工具适配：命令类工具自带 ok 语义。
-pub fn command_outcome_result(outcome: CommandOutcome) -> omnicrawl_core::ToolResult {
-    super::error::command_result(outcome.ok, outcome.output)
-}
-
 impl From<CommandOutcome> for ToolOutcome {
     fn from(outcome: CommandOutcome) -> Self {
         Ok(outcome.output)

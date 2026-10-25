@@ -97,8 +97,6 @@ pub fn request_body(mode: &str, model: &str, state: &Value, questions: &Value) -
     json!({"model": model, "state": state, "questions": questions})
 }
 
-/// 决策请求失败后的默认重试次数（不含首次请求）。
-pub const DEFAULT_RETRY_COUNT: u64 = 3;
 /// 单次重试的退避基数（毫秒）：第 n 次重试前等 `BASE << (n-1)`，上限 [`MAX_RETRY_BACKOFF_MILLIS`]。
 const BASE_RETRY_BACKOFF_MILLIS: u64 = 200;
 /// 退避上限（毫秒）：决策在回合路径上同步等待，重试不能让用户等太久。
