@@ -37,6 +37,7 @@ const HOST_EXECUTABLES = [
   'omnicrawl-tui',
   'omnicrawl-api',
   'omnicrawl-decision',
+  'omnicrawl-fetch',
   'omnicrawl-mcp-server',
 ]
 

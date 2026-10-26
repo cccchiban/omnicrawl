@@ -49,7 +49,7 @@ Todo 规划协议：
 - 只在系统边界做输入验证（用户输入、外部 API）。
 - 在编写前端 UI 文案时，请保持极简主义（Minimalism）。拒绝流水账：严禁在标签、按钮或标题后使用括号进行大白话解释。
 
-omnicrawl文档（共 14 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
+omnicrawl文档（共 15 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
 - MCP 配置、调用或故障排查：优先使用 MCP 能力；读取 `omnicrawl://docs/MCP_USAGE.md`；实现细节位于 `rust/crates/omnicrawl-mcp/`。
 - Skill 安装、编写或渐进式披露：读取 `omnicrawl://docs/SKILL_INSTALLATION.md`；实现细节位于 `rust/crates/omnicrawl-extensions/src/skill.rs`。
 - 本地 HTTP/SSE API 接入（启动、鉴权、接口清单、事件流）：读取 `omnicrawl://docs/API.md`；实现位于 `rust/crates/omnicrawl-api/`。
@@ -63,6 +63,7 @@ omnicrawl文档（共 14 篇，均以 `omnicrawl://docs/<文件名>` 读取，�
 - AI 消息脱敏（可逆占位符、匹配引擎、序号注册表、流式还原、`[desensitization]` 配置、设置面板「消息脱敏」）：读取 `omnicrawl://docs/agent_gateway_desensitization_design.md`；实现位于 `rust/crates/omnicrawl-llm/src/desensitization/` 和 `rust/crates/omnicrawl-config/src/features/desensitization.rs`。
 - TTS 语音合成（Kokoro-82M ONNX CPU：配置、tts_synthesize 工具、CLI、音素化、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `rust/crates/omnicrawl-tts/` 和 `rust/crates/omnicrawl-config/src/features/tts.rs`。
 - 决策接口（结构化决策模型的本地 REST 服务：启动、无鉴权的回环访问、decide/choice/rank/review 端点、常驻与复用、脱敏与安全边界）：读取 `omnicrawl://docs/decision_api.md`；实现位于 `rust/crates/omnicrawl-decision/` 和 `rust/crates/omnicrawl-config/src/features/decision_model.rs`。
+- 抓取接口（fetcher 的本机 REST 通道：`[fetch_api]` 配置、`/v1/fetch` 端点、无鉴权回环访问、Python 批量脚本调用、与工具同源的抓取语义与安全边界）：读取 `omnicrawl://docs/fetch_api.md`；实现位于 `rust/crates/omnicrawl-fetch/`、`rust/crates/omnicrawl-config/src/features/fetch_api.rs` 和 `rust/crates/omnicrawl-host/src/tools/fetcher.rs`。
 - FSAPP 接入（文件系统应用侧的接入约定）：读取 `omnicrawl://docs/FSAPP.md`。
 
 脱敏占位符引用规则：

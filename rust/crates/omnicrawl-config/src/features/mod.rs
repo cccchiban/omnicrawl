@@ -14,6 +14,8 @@ pub mod decision_model;
 pub mod desensitization;
 // Rust 侧新增：向量模型（云端嵌入接口，Python 无对映）。
 pub mod embedding;
+// 网页抓取接口（`[fetch_api]`）：无鉴权的回环抓取通道（Rust 侧新增，Python 无对映）。
+pub mod fetch_api;
 pub mod image_gen;
 pub mod run_guard;
 pub mod skills;

@@ -1,0 +1,30 @@
+[package]
+name = "omnicrawl-fetch"
+description = "网页抓取接口：把 fetcher 的抓取能力以无鉴权的回环 REST 暴露给本机批量脚本"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_fetch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-fetch"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+omnicrawl-config = { path = "../omnicrawl-config" }
+# 抓取执行体、robots 缓存、指纹传输与常驻进程控制都复用宿主执行层，不写第二套。
+omnicrawl-host = { path = "../omnicrawl-host" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+
+[dev-dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-host = { path = "../omnicrawl-host" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }

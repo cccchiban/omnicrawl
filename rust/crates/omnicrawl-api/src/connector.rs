@@ -47,6 +47,9 @@ use crate::service::{
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 回合收尾的兜底上限：超过它仍没有终态就按失败收口，避免任务线程永久挂住。
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// 取消后等运行记录进入终态的上限：单活动名额由运行记录持有，提前返回会让用户
+/// 下一条消息直接撞上 `RUN_ACTIVE`。
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 模型流重试事件：显示层要靠它丢弃作废的半截输出，不能降级成状态提示。
 pub(crate) const ROLLBACK_EVENT: &str = "assistant.rollback";
@@ -205,19 +208,25 @@ impl HostConnectorDriver {
         text: &str,
         events: &mut dyn FnMut(TurnEvent),
     ) -> Result<String, TurnError> {
+        // 先复位取消标志再受理：`/cancel` 在上一回合结束后到达时不该牵连本回合，
+        // 而在受理之后到达的取消必须被本轮看见并落到本轮 run 上。
+        self.cancelled.store(false, Ordering::SeqCst);
         let record = self
             .service
             .start_run(text)
             .map_err(|error| TurnError::Failed(error.message.clone()))?;
         let run_id = record.run_id.clone();
         self.set_current_run(&run_id);
-        self.cancelled.store(false, Ordering::SeqCst);
 
         let mut cursor = 0u64;
         let deadline = Instant::now() + TURN_TIMEOUT;
         loop {
             if self.cancelled.load(Ordering::SeqCst) {
                 let _ = self.service.cancel_run(&run_id);
+                // 运行记录的终态由回合线程写，单活动名额也由它让出。取消请求只是置位，
+                // 这里必须等到状态落到终态才能返回——否则连接器以为回合已结束，
+                // 用户的下一句话会立刻收到「当前已有生成任务运行」。
+                self.await_settle(&run_id);
                 return Err(TurnError::Cancelled);
             }
             let items = match self.service.events_after(&run_id, cursor) {
@@ -251,7 +260,26 @@ impl HostConnectorDriver {
             }
             if Instant::now() >= deadline {
                 let _ = self.service.cancel_run(&run_id);
+                self.await_settle(&run_id);
                 return Err(TurnError::Failed("回合超时未收尾。".to_string()));
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// 取消收尾：等到运行记录进入终态，让出单活动名额后再返回。
+    ///
+    /// 取消是建议性的（内核可能已经在收尾），因此这里只等终态事实，不再向显示层转发
+    /// 任何增量：用户已经要求取消，迟到的正文段不该再追加到被中断的消息里。
+    /// 等待超时也按取消返回——但那样下一回合会收到 `RUN_ACTIVE`，所以尽量等到。
+    fn await_settle(&self, run_id: &str) {
+        let deadline = Instant::now() + CANCEL_SETTLE_TIMEOUT;
+        while Instant::now() < deadline {
+            match self.service.get_run(run_id) {
+                Ok(run) if run.status.is_terminal() => return,
+                Ok(_) => {}
+                // 记录已不在（保留窗口淘汰）：没有活动名额可让，直接收尾。
+                Err(_) => return,
             }
             std::thread::sleep(POLL_INTERVAL);
         }

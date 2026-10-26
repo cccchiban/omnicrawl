@@ -343,6 +343,18 @@ impl PendingBatch {
         pending
     }
 
+    /// 回合被取消：把仍未回填的调用写成取消结果，批次立刻收口。
+    ///
+    /// 取消是建议性的，内核不再需要这批观察；但宿主必须回一个完整批次，否则回合线程
+    /// 会一直挂在「等执行层回填」上，运行记录的活动名额也就一直不释放。
+    pub fn fill_cancelled(&mut self) -> Vec<(usize, ToolCall)> {
+        let pending = self.pending_jobs();
+        for (index, call) in &pending {
+            self.results[*index] = Some(denied_result(call.name.as_str()));
+        }
+        pending
+    }
+
     /// 整批是否已有结果（执行层回填完毕）。
     pub fn is_ready(&self) -> bool {
         !self.calls.is_empty() && self.results.iter().all(Option::is_some)
@@ -929,6 +941,42 @@ mod tests {
             observations[1].result.output.contains("600"),
             "{:?}",
             observations[1]
+        );
+    }
+
+    #[test]
+    fn cancellation_fills_only_pending_calls_and_keeps_the_batch_complete() {
+        let mut todos = Vec::new();
+        let mut paused = false;
+        let mut ctx = context(ApprovalMode::Auto, &mut todos, &mut paused);
+        let mut batch = PendingBatch::new(
+            Id::Number(8),
+            vec![
+                call("read", json!({"path": "a.py"})),
+                call("bash", json!({"command": "sleep 30"})),
+            ],
+        );
+        let jobs = match batch.advance(&mut ctx) {
+            BatchStep::Execute(jobs) => jobs,
+            other => panic!("应派发执行，实际：{other:?}"),
+        };
+        batch.record_result(jobs[0].0, text_result("已有结果".to_string()), None);
+
+        let cancelled = batch.fill_cancelled();
+        assert_eq!(
+            cancelled.iter().map(|(index, _)| *index).collect::<Vec<usize>>(),
+            vec![jobs[1].0],
+            "只回填还没结果的调用"
+        );
+        // 批次必须齐备：否则回合线程会一直等执行层回填，活动名额不释放。
+        assert!(batch.is_ready(), "取消后整批必须立刻齐备");
+        let observations = batch.observations(false);
+        assert_eq!(observations[0].result.output, "已有结果", "已有结果不被覆盖");
+        assert!(!observations[1].result.ok);
+        assert_eq!(
+            observations[1].result.output,
+            user_cancelled_reason("bash"),
+            "取消回填与人工拒绝同形"
         );
     }
 

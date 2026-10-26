@@ -283,6 +283,32 @@ confirmation_timeout_seconds = 300
 # 每个 worker 会各自创建一个 Agent 与独立隔离 worktree，按机器核数与内存设置。
 workers = 1
 
+# 网页抓取接口：把 fetcher 工具的抓取能力以 REST 暴露给本机其它程序
+# （Python 等批量脚本、CLI、Skill），它们不必经 Agent 回合就能抓网页。
+#
+# 端点（成功回 {"data": ...}，失败回 {"error": {code, message}}）：
+#   GET  /health     健康检查
+#   GET  /v1/status  服务自检（监听地址、URL 上限、固定指纹）
+#   POST /v1/fetch   {urls | url, max_chars?, max_html?, timeout?, parallel?,
+#                     insecure?, impersonate?, run_scripts?, force_scripts?}
+#                    → {count, elapsed_seconds, results: [{url, error, status,
+#                       final_url, title, content}]}
+#
+# 接口不做鉴权、不做参数校验：只要监听地址可达就能直接抓取。因此 host 只允许
+# 回环地址（127.0.0.1 / localhost / ::1），即只有本机程序能调用。
+# 抓取语义与 fetcher 工具同源：robots.txt 校验、浏览器指纹传输、正文提取与
+# 脚本重建都不变，因此同样不绕过验证码。
+# 随 OmniCrawl 启动时自动拉起，本机已有服务则直接复用。默认关闭。
+[fetch_api]
+enabled = false
+host = "127.0.0.1"
+# 端口：与本地 API（8765）、决策接口（8767）错开。
+port = 8768
+# 固定浏览器指纹族：chrome / firefox / safari / edge。留空表示按请求参数（默认 chrome）。
+impersonate = ""
+# 单次请求的 URL 上限：0 表示用默认上限 20，否则按 1–20 收窄。
+max_urls = 0
+
 [agent_temp]
 enabled = true
 directory = ".omnicrawl/.agent_tmp"

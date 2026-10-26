@@ -1993,6 +1993,12 @@
        "mimeType": "text/markdown"
       },
       {
+       "uri": "omnicrawl://docs/fetch_api.md",
+       "name": "omnicrawl/docs/fetch_api.md",
+       "description": "随 OmniCrawl 安装包提供的只读技术文档。",
+       "mimeType": "text/markdown"
+      },
+      {
        "uri": "omnicrawl://docs/FSAPP.md",
        "name": "omnicrawl/docs/FSAPP.md",
        "description": "随 OmniCrawl 安装包提供的只读技术文档。",
@@ -4832,6 +4838,7 @@
    "agent_gateway_desensitization_design.md",
    "API.md",
    "decision_api.md",
+   "fetch_api.md",
    "FSAPP.md",
    "MCP_USAGE.md",
    "memory_system_design.md",
@@ -4849,6 +4856,7 @@
    "agent_gateway_desensitization_design.md": "09ec558c2d07a185f2914c56c0acc77c8ed859a3495c8565e2cd8abc8109679c",
    "API.md": "1139c3cfb6d6855b632276be5e58bdf65f619f1b85facb2c427799188b00abdd",
    "decision_api.md": "3e54f7fc7be40ebda4891a48d32116afc39c5957e8114ac1da6339d7cca5674a",
+   "fetch_api.md": "e0f67d7dbef990d9f0f7e17fcccfea250d7fae8eb0d66614922c8aa489584d03",
    "FSAPP.md": "6accb96dcaca94b5e5e14ef1ecb9823b0afa5cd1308e62e037b311702940544b",
    "MCP_USAGE.md": "073d962216c242ec6b46fd370e969fe5f92848e54de76849783f7ef8e2f3354f",
    "memory_system_design.md": "477b9fdc0b5a06034dbffcfd7f0d37051f35b4f71ebb20bcd5fcba2f77af1011",

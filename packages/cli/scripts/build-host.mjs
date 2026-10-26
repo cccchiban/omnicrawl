@@ -9,6 +9,7 @@
 //   payload/omnicrawl-tui[.exe]    终端工作台
 //   payload/omnicrawl-api[.exe]    本地 HTTP/SSE 服务
 //   payload/omnicrawl-decision[.exe] 决策接口（结构化决策模型的本地 REST 服务）
+//   payload/omnicrawl-fetch[.exe]   抓取接口（网页抓取的本地 REST 服务，无鉴权、仅回环）
 //   payload/omnicrawl-mcp-server[.exe]
 //   payload/rust/assets/templates/          提示词与模式模板（源在 rust/assets/templates；缺失时用内嵌副本）
 //   payload/rust/assets/config-templates/   首次配置的三份 TOML 模板（源在 rust/assets/config-templates）
@@ -75,7 +76,7 @@ const zigbuild = process.argv.includes('--zigbuild')
 const skipBuild = process.argv.includes('--skip-build')
 
 /** 载荷里必须存在的可执行文件（平台后缀按目标平台给）。 */
-const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-mcp-server']
+const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-fetch', 'omnicrawl-mcp-server']
 
 /** 逐文件递归复制：Node 22.22 的目录级 cpSync 在本机会静默崩掉整个进程。 */
 function copyTree(source, destination) {
@@ -117,6 +118,7 @@ function buildRust() {
     'omnicrawl-tui',
     'omnicrawl-api',
     'omnicrawl-decision',
+    'omnicrawl-fetch',
     'omnicrawl-mcp',
   ]
   const cargoArgs = [zigbuild ? 'zigbuild' : 'build', '--release']

@@ -76,6 +76,10 @@ pub enum LineHit {
 /// 让模型侧那一轮 poll 立刻带着当前结果返回。按钮本身停在屏幕最右缘，与标题文本
 /// 共用一行，标题过长时让位（截断）给按钮，越窄的窗口越早放弃绘制按钮。
 const STOP_BUTTON: &str = "[立即结束]";
+/// 子代理调用卡标题行右侧的「查看会话」按钮：点击打开该批次的上下文窗口。
+///
+/// 与「立即结束」同一位置规则（贴右缘、窄了就不画），两种按钮不会同时出现在一张卡上。
+const VIEW_SESSION_BUTTON: &str = "[查看会话]";
 /// 按钮与其左侧内容之间至少留一格。
 const STOP_BUTTON_GAP: usize = 1;
 /// 失败提示上的重试按钮文案。
@@ -969,11 +973,12 @@ pub fn hit_test(
         .hit
 }
 
-/// 会话区第 `row` 行（区内相对行号）上「立即结束」按钮占的列区间；那行没有按钮时 `None`。
+/// 会话区第 `row` 行（区内相对行号）上标题按钮占的列区间；那行没有按钮时 `None`。
 ///
 /// 列区间由渲染路径随显示行一起算好（`DisplayLine::button`），这里只做窗口换算，
-/// 因此悬停判定与真正画出来的格子永远一致。
-pub fn stop_button_columns(
+/// 因此悬停判定与真正画出来的格子永远一致。两种按钮（「立即结束」/「查看会话」）
+/// 共用这条登记，点哪个由 [`LineHit`] 与按钮归属共同决定。
+pub fn card_button_columns(
     state: &AppState,
     area: Rect,
     scroll_from_bottom: usize,
@@ -1362,7 +1367,7 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 运行中的后台任务卡在标题行右侧挂一个「立即结束」按钮：判据与悬停/点击完全同一套
     // （`ToolCard::monitor_task_id`），否则会出现「按钮画得出来却既不亮也点不动」。
     let button_row = match card.monitor_task_id(streaming) {
-        Some(_) if running => stop_button_slot(&rows, width),
+        Some(_) if running => card_button_slot(&rows, width, STOP_BUTTON),
         _ => None,
     };
     let hovered = state.stop_button_hover() == Some(card.call_id.as_str());
@@ -1371,9 +1376,11 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
             call_id: card.call_id.clone(),
         };
         lines.push(match button_row.filter(|(slot, _)| *slot == index) {
-            Some((_, button)) => {
-                DisplayLine::with_button(attach_stop_button(row, button, hovered), hit, button)
-            }
+            Some((_, button)) => DisplayLine::with_button(
+                attach_card_button(row, button, STOP_BUTTON, hovered),
+                hit,
+                button,
+            ),
             None => DisplayLine::with_hit(row, hit),
         });
     }
@@ -1407,6 +1414,7 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 例外是带图片的工具（`read_image` / `windows_screenshot`）：文本载荷对用户没有
     // 展示价值（一份是紧凑 JSON，一份是截图元信息），正文位置让给缩略图。
     if push_image_block(lines, card, width, state) {
+        push_subagent_view_button(lines, card, state);
         return;
     }
     let body = tool_diff::tool_disclosure_body(&card.name, arguments, &result_text);
@@ -1446,6 +1454,38 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
             ));
         }
     }
+    push_subagent_view_button(lines, card, state);
+}
+
+/// 子代理调用卡的「查看会话」入口：工具调用正文之后单独一行。
+///
+/// 灰色按钮，鼠标放上去转淡黄；点击打开这张卡所属批次的上下文窗口。整行仍登记
+/// `ToolCard` 命中（点空白处照旧收起卡片），按钮那几格单独标列区间，
+/// 悬停与点击因此都只认按钮本身。
+fn push_subagent_view_button(lines: &mut Vec<DisplayLine>, card: &ToolCard, state: &AppState) {
+    if state.subagent_view_batch(&card.call_id).is_none() {
+        return;
+    }
+    let hovered = state.subagent_view_hover() == Some(card.call_id.as_str());
+    let style = if hovered {
+        theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    };
+    let indent = format!("{MESSAGE_PAD}{TOOL_BODY_INDENT}");
+    let column = display_width(&indent) as u16;
+    lines.push(DisplayLine::with_button(
+        Line::from(vec![
+            Span::raw(indent),
+            Span::styled(VIEW_SESSION_BUTTON.to_string(), style),
+        ]),
+        LineHit::ToolCard {
+            call_id: card.call_id.clone(),
+        },
+        (column, display_width(VIEW_SESSION_BUTTON) as u16),
+    ));
 }
 
 /// 带图片的工具卡的正文：铺一块图片占位区，并在该区里标出图片块的位置。
@@ -1523,13 +1563,17 @@ fn tool_title_rows(title: &StyledText, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// 「立即结束」按钮该落在哪一行、占哪几列；窗口太窄放不下时返回 `None`。
+/// 标题行右侧按钮该落在哪一行、占哪几列；窗口太窄放不下时返回 `None`。
 ///
 /// 按钮贴右缘（宽度已扣掉滚动条），选**最后一行**标题：多行标题时按钮落在最下面那行，
 /// 不会把首行的工具名挤掉。左侧内容不足留一格间隙时同样放弃——宁可没有按钮，
 /// 也不让它压着标题文字。
-fn stop_button_slot(rows: &[Line<'static>], width: usize) -> Option<(usize, (u16, u16))> {
-    let button_width = display_width(STOP_BUTTON);
+fn card_button_slot(
+    rows: &[Line<'static>],
+    width: usize,
+    label: &str,
+) -> Option<(usize, (u16, u16))> {
+    let button_width = display_width(label);
     if width <= button_width + STOP_BUTTON_GAP {
         return None;
     }
@@ -1545,7 +1589,12 @@ fn stop_button_slot(rows: &[Line<'static>], width: usize) -> Option<(usize, (u16
 /// 把按钮贴到行右缘：补足到按钮起始列，再画按钮本身。
 ///
 /// 未悬停时灰色，鼠标放上去转淡黄（与 `[ ESC ]` 一致）。
-fn attach_stop_button(row: Line<'static>, button: (u16, u16), hovered: bool) -> Line<'static> {
+fn attach_card_button(
+    row: Line<'static>,
+    button: (u16, u16),
+    label: &str,
+    hovered: bool,
+) -> Line<'static> {
     let style = if hovered {
         theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
     } else {
@@ -1559,7 +1608,7 @@ fn attach_stop_button(row: Line<'static>, button: (u16, u16), hovered: bool) -> 
         .saturating_sub(used)
         .max(STOP_BUTTON_GAP);
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(STOP_BUTTON.to_string(), style));
+    spans.push(Span::styled(label.to_string(), style));
     Line::from(spans)
 }
 
@@ -2149,7 +2198,7 @@ mod tests {
 
         // 命中判定用的列区间必须与真正画出来的位置一致，否则悬停与点击都会偏。
         let hit_box =
-            stop_button_columns(&state, area, 0, row_index).expect("同一行要能取到按钮列区间");
+            card_button_columns(&state, area, 0, row_index).expect("同一行要能取到按钮列区间");
         assert_eq!(
             hit_box.0, rendered_start,
             "命中区间的起始列必须等于按钮实际起始列"
@@ -2202,7 +2251,7 @@ mod tests {
             .enumerate()
             .find_map(|(index, line)| line.button.map(|_| (index, ())))
             .expect("按钮行");
-        let hit_box = stop_button_columns(&state, area, 0, index).expect("按钮列区间");
+        let hit_box = card_button_columns(&state, area, 0, index).expect("按钮列区间");
         assert_eq!(hit_box.1, display_width("[立即结束]") as u16);
 
         // 按钮归属的任务 id 由参数决定，供点击时打断对应的等待。
@@ -2683,6 +2732,82 @@ mod tests {
             now + std::time::Duration::from_millis(1500),
         );
         state
+    }
+
+    /// 子代理调用卡的「查看会话」入口：跟在工具调用后面单独一行，灰色、悬停转淡黄。
+    #[test]
+    fn a_subagent_card_gets_a_grey_view_session_button_after_the_call() {
+        let mut state =
+            state_with_named_tool("subagent", serde_json::json!({"action": "run"}), "完成");
+        state.subagent_stream_root =
+            std::env::temp_dir().join(format!("oc-conv-view-{}", std::process::id()));
+        state.apply(
+            &omnicrawl_ipc::bridge::HostEvent::SubagentEvent(
+                omnicrawl_ipc::bridge::SubagentEventPayload {
+                    name: "subagent.batch.created".to_string(),
+                    payload: serde_json::json!({
+                        "batch_id": "batch-1",
+                        "origin_call_id": "c1",
+                    }),
+                },
+            ),
+            Instant::now(),
+        );
+
+        let display = display_lines(&state, 60);
+        let row = display
+            .iter()
+            .find(|line| line.button.is_some())
+            .expect("子代理调用卡要有「查看会话」按钮");
+        assert_eq!(text_of(&row.line).trim(), "[查看会话]");
+        assert_eq!(
+            row.line.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::DarkGray)),
+            "未悬停时按钮是灰色"
+        );
+
+        // 悬停：同一张卡的按钮转淡黄。
+        state.set_subagent_view_hover(Some("c1".to_string()));
+        let row = display_lines(&state, 60)
+            .into_iter()
+            .find(|line| line.button.is_some())
+            .expect("按钮还在");
+        assert_eq!(
+            row.line.spans.last().map(|span| span.style.fg),
+            Some(Some(Color::Yellow)),
+            "悬停时按钮要变黄"
+        );
+        let _ = std::fs::remove_dir_all(&state.subagent_stream_root);
+    }
+
+    /// 批次收尾后入口撤下：窗口进程会自己关，按钮留着只能点出一个马上退出的空窗。
+    #[test]
+    fn a_finished_subagent_batch_removes_the_button() {
+        let mut state =
+            state_with_named_tool("subagent", serde_json::json!({"action": "run"}), "完成");
+        state.subagent_stream_root =
+            std::env::temp_dir().join(format!("oc-conv-view-done-{}", std::process::id()));
+        for name in ["subagent.batch.created", "subagent.batch.finished"] {
+            state.apply(
+                &omnicrawl_ipc::bridge::HostEvent::SubagentEvent(
+                    omnicrawl_ipc::bridge::SubagentEventPayload {
+                        name: name.to_string(),
+                        payload: serde_json::json!({
+                            "batch_id": "batch-2",
+                            "origin_call_id": "c1",
+                        }),
+                    },
+                ),
+                Instant::now(),
+            );
+        }
+        assert!(
+            display_lines(&state, 60)
+                .iter()
+                .all(|line| line.button.is_none()),
+            "收尾后不该再有「查看会话」"
+        );
+        let _ = std::fs::remove_dir_all(&state.subagent_stream_root);
     }
 
     #[test]

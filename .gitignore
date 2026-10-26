@@ -20,7 +20,6 @@ models.yaml
 designs/
 .omnicrawl/
 logs/
-/docs/
 generated_audio/
 
 CLAUDE.md

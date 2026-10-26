@@ -691,7 +691,7 @@ impl TurnRunner {
                 }
                 continue;
             }
-            self.serve_request(frame_id, frame, interactor, on_event);
+            self.serve_request(frame_id, frame, interactor, control, on_event);
         };
         self.registry.set_monitor_scope(None);
         Ok(outcome)
@@ -748,7 +748,10 @@ impl TurnRunner {
             return;
         }
         let mut interactor = Unattended;
-        self.serve_request(id, frame, &mut interactor, on_event);
+        // 回合外的帧服务没有宿主的取消来源（事件泵只在回合没持锁时跑），给一个永不
+        // 置位的控制面即可，批次行为与取消无关。
+        let control = TurnControl::new();
+        self.serve_request(id, frame, &mut interactor, &control, on_event);
     }
 
     /// 服务一个内核请求。
@@ -757,13 +760,14 @@ impl TurnRunner {
         id: Id,
         frame: Frame,
         interactor: &mut dyn Interactor,
+        control: &TurnControl,
         on_event: &mut dyn FnMut(HostEvent),
     ) {
         match frame.method() {
             Some(method) if method == omnicrawl_ipc::bridge::method::TOOL_BATCH => {
                 match ToolBatch::from_frame(&frame) {
                     Ok(batch) => {
-                        let observations = self.run_batch(batch, interactor, on_event);
+                        let observations = self.run_batch(batch, interactor, control, on_event);
                         let result = ToolBatchResult { observations }.to_result();
                         if let Err(error) = self.kernel.respond(&id, result) {
                             diagnostics::warn(format!("[host] 回工具批次失败：{error}"));
@@ -889,6 +893,7 @@ impl TurnRunner {
         &mut self,
         batch: ToolBatch,
         interactor: &mut dyn Interactor,
+        control: &TurnControl,
         on_event: &mut dyn FnMut(HostEvent),
     ) -> Vec<AgentLoopObservation> {
         let mut pending = PendingBatch::new(Id::Number(0), batch.calls.clone());
@@ -916,6 +921,11 @@ impl TurnRunner {
         flush_settled(&pending, batch.step, &mut started, &mut finished, on_event);
 
         loop {
+            // 取消可能发生在定调、审批或执行任一步：这里先收口，避免继续推进。
+            if control.is_cancelled() {
+                pending.fill_cancelled();
+                break;
+            }
             match step {
                 BatchStep::Complete => break,
                 BatchStep::Awaiting => {
@@ -1116,7 +1126,7 @@ impl TurnRunner {
                         }
                     }
                     if !jobs.is_empty() {
-                        self.run_jobs(jobs, &completions, &sender, &mut pending);
+                        self.run_jobs(jobs, &completions, &sender, &mut pending, control);
                     }
                     flush_settled(&pending, batch.step, &mut started, &mut finished, on_event);
                     step = advance(&mut pending, batch_approval, &mut todos, &mut paused, facts);
@@ -1141,6 +1151,7 @@ impl TurnRunner {
         completions: &Receiver<JobDone>,
         sender: &Sender<JobDone>,
         pending: &mut PendingBatch,
+        control: &TurnControl,
     ) {
         if jobs.is_empty() {
             return;
@@ -1171,6 +1182,12 @@ impl TurnRunner {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
+                    // 取消必须在执行等待里也被看见：否则这一批要等到工具跑完（最长
+                    // `tool_timeout_seconds`）才收口，取消后的运行记录一直占着活动名额。
+                    if control.is_cancelled() {
+                        pending.fill_cancelled();
+                        return;
+                    }
                     if Instant::now() < deadline {
                         continue;
                     }

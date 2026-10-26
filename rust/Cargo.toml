@@ -9,6 +9,7 @@ members = [
     "crates/omnicrawl-core",
     "crates/omnicrawl-decision",
     "crates/omnicrawl-extensions",
+    "crates/omnicrawl-fetch",
     "crates/omnicrawl-host",
     "crates/omnicrawl-ipc",
     "crates/omnicrawl-jsdom",

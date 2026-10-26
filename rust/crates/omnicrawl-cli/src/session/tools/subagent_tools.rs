@@ -7,7 +7,11 @@ use super::*;
 ///
 /// 与 `subagent` 的三个差异都落在这里：桌面独占（全程持锁）、不设步数上限（靠
 /// `timeout_seconds`）、子代理可主动停下（`stop_check` 以 `Ok` 结束而非报错）。
-pub(crate) fn run_computer_use(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) -> (bool, String) {
+pub(crate) fn run_computer_use(
+    conn: &Rc<RefCell<Conn>>,
+    arguments: &Map<String, Value>,
+    call_id: &str,
+) -> (bool, String) {
     let runtime = match crate::computer_use::ComputerUseRuntime::load() {
         Ok(runtime) => runtime,
         Err(detail) => return (false, detail),
@@ -56,6 +60,18 @@ pub(crate) fn run_computer_use(conn: &Rc<RefCell<Conn>>, arguments: &Map<String,
 
     let batch_id = next_subagent_batch_id();
     let task_id = format!("computer-use-{}", batch_id);
+    // 先登记批次与发起它的工具调用：桌面任务不发 `subagent.task.*`，宿主只能靠这条
+    // 事件把「查看会话」挂到那张 `computer_use` 卡上（不带它会被当成宿主自发批次直接开窗）。
+    emit_subagent_event(
+        conn,
+        "subagent.batch.created",
+        json!({
+            "batch_id": batch_id,
+            "status": "queued",
+            "task_count": 1,
+            "origin_call_id": call_id,
+        }),
+    );
     let messages = vec![runtime.task_message(&prompt)];
     let cancel = CancelToken::new();
     let child_model = child_config(&model_config, &runtime, &tool_names);
@@ -268,7 +284,14 @@ pub(crate) fn tool_outputs(messages: &[Value]) -> Vec<String> {
 }
 
 /// 内核自持的 `subagent`：校验 → 准备 → 逐个跑子回合（子模型请求由内核发，子工具批次交宿主）。
-pub(crate) fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) -> (bool, String) {
+///
+/// `call_id` 是发起本次批次的工具调用 id：随 `subagent.batch.created` 外发后，宿主才能把
+/// 「查看会话」按钮挂到那张工具卡上（没有它的批次属于宿主自发入口，如 `/review`）。
+pub(crate) fn run_subagent_batch(
+    conn: &Rc<RefCell<Conn>>,
+    arguments: &Map<String, Value>,
+    call_id: &str,
+) -> (bool, String) {
     let runtime = match SubAgentRuntime::load() {
         Ok(runtime) => runtime,
         Err(detail) => {
@@ -329,6 +352,7 @@ pub(crate) fn run_subagent_batch(conn: &Rc<RefCell<Conn>>, arguments: &Map<Strin
             "batch_id": batch_id,
             "status": "queued",
             "task_count": 1,
+            "origin_call_id": call_id,
         }),
     );
     let result = run_task_in_isolation(

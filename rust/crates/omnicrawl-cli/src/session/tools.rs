@@ -452,11 +452,11 @@ impl RemoteTools {
     /// 内核侧工具：命中即本地作答；返回 None 表示交给宿主。
     fn local_tool(&self, call: &ToolCall) -> Option<AgentLoopObservation> {
         if call.name == crate::computer_use::COMPUTER_USE_TOOL_NAME {
-            let (ok, output) = run_computer_use(&self.conn, &call.arguments);
+            let (ok, output) = run_computer_use(&self.conn, &call.arguments, &call.id);
             return Some(self.local_observation(call, ok, &output));
         }
         if call.name == crate::subagent::SUBAGENT_TOOL_NAME {
-            let (ok, output) = run_subagent_batch(&self.conn, &call.arguments);
+            let (ok, output) = run_subagent_batch(&self.conn, &call.arguments, &call.id);
             return Some(self.local_observation(call, ok, &output));
         }
         if call.name != RECALL_SESSION_EVIDENCE_TOOL_NAME {

@@ -938,7 +938,51 @@ mod tests {
     }
 
     #[test]
-    fn subagent_batch_opens_a_window_and_leaves_one_notice() {
+    fn subagent_batch_waits_for_the_click_before_opening_a_window() {
+        let mut state = state();
+        let now = Instant::now();
+        let call = call("c1", "subagent");
+        state.begin_tool_run(&call, now);
+        state.apply(
+            &subagent_event_with_call("subagent.task.queued", "t1", "batch-1", "c1"),
+            now,
+        );
+        state.apply(
+            &subagent_event("subagent.task.completed", "t1", "batch-1"),
+            now,
+        );
+
+        // 没有工具卡发起的批次（`/review` 那类）照旧直接开窗并留一行受理提示。
+        assert!(
+            state
+                .records
+                .iter()
+                .all(|record| !matches!(record, Record::SubagentWindow(_))),
+            "工具卡发起的批次不该自动开窗：{:?}",
+            state.records
+        );
+        assert!(!state.subagent_window.is_opened("batch-1"));
+        // 但按钮的归属已经绑定在那张卡上。
+        assert_eq!(state.subagent_view_batch("c1"), Some("batch-1"));
+
+        // 流水照旧按到达顺序记下两次状态。
+        let stream = state.subagent_stream_root.join("batch-1.jsonl");
+        let text = std::fs::read_to_string(&stream).expect("流水可读");
+        let statuses: Vec<String> = text
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("每行都是 JSON")["status"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(statuses, vec!["queued", "completed"]);
+        cleanup_state(&state);
+    }
+
+    #[test]
+    fn a_host_driven_batch_still_opens_its_window_and_leaves_one_notice() {
         let mut state = state();
         let now = Instant::now();
         state.apply(
@@ -946,15 +990,10 @@ mod tests {
             now,
         );
         state.apply(
-            &subagent_event("subagent.task.completed", "t1", "batch-1"),
-            now,
-        );
-        state.apply(
             &subagent_event("subagent.task.running", "t2", "batch-2"),
             now,
         );
 
-        // 每个批次只留一行受理提示：不再有进度树，也不会随事件重复追加。
         let notices: Vec<&SubagentWindowNotice> = state
             .records
             .iter()
@@ -969,23 +1008,8 @@ mod tests {
             "每个 batch_id 开一次窗口：{:?}",
             state.records
         );
-        assert_eq!(notices[0].batch_id, "batch-1");
-        assert_eq!(notices[1].batch_id, "batch-2");
         assert!(notices[0].stream.ends_with("batch-1.jsonl"));
-        assert!(state.subagent_window.has_window("batch-1"));
-
-        // 流水文件按到达顺序记下两次状态。
-        let text = std::fs::read_to_string(&notices[0].stream).expect("流水可读");
-        let statuses: Vec<String> = text
-            .lines()
-            .map(|line| {
-                serde_json::from_str::<serde_json::Value>(line).expect("每行都是 JSON")["status"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string()
-            })
-            .collect();
-        assert_eq!(statuses, vec!["queued", "completed"]);
+        assert!(state.subagent_window.is_opened("batch-1"));
         cleanup_state(&state);
     }
 
@@ -1021,15 +1045,8 @@ mod tests {
             before,
             "过程事件只进窗口，不再往消息流里加记录"
         );
-        let stream = state
-            .records
-            .iter()
-            .find_map(|record| match record {
-                Record::SubagentWindow(notice) => Some(notice.stream.clone()),
-                _ => None,
-            })
-            .expect("已开窗口");
-        let text = std::fs::read_to_string(stream).expect("流水可读");
+        let text = std::fs::read_to_string(state.subagent_stream_root.join("batch-1.jsonl"))
+            .expect("流水可读");
         assert!(text.contains("正在看代码"), "{text}");
         assert!(text.contains("\"tool\":\"read\""), "{text}");
         cleanup_state(&state);
@@ -1047,7 +1064,7 @@ mod tests {
             now,
         );
         assert!(state.records.is_empty(), "{:?}", state.records);
-        assert!(!state.subagent_window.has_window("batch-9"));
+        assert!(!state.subagent_window.is_opened("batch-9"));
     }
 
     fn subagent_event(name: &str, task_id: &str, batch_id: &str) -> HostEvent {
@@ -1081,6 +1098,25 @@ mod tests {
         HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
             name: name.to_string(),
             payload,
+        })
+    }
+
+    /// 带发起调用 id 的子任务事件（模型自己调的 `subagent` / `computer_use`）。
+    fn subagent_event_with_call(
+        name: &str,
+        task_id: &str,
+        batch_id: &str,
+        call_id: &str,
+    ) -> HostEvent {
+        HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+            name: name.to_string(),
+            payload: json!({
+                "task_id": task_id,
+                "batch_id": batch_id,
+                "agent_type": "explore",
+                "description": format!("审查 {task_id}"),
+                "origin_call_id": call_id,
+            }),
         })
     }
 

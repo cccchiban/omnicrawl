@@ -285,6 +285,12 @@ impl AgentService {
             if let Ok(mut guard) = self.control.lock() {
                 *guard = Some(control.clone());
             }
+            // 受理与取消之间有窗口：连接器的 `/cancel` 可能在本回合装上控制面之前就
+            // 置好了 store 里的取消标记（`cancel_run` 只对已存在的控制面生效）。这里补一次
+            // 对齐，否则标记留在 store 里，回合照常跑到底，用户看到的是「取消了却仍在执行」。
+            if self.store.cancel_requested(run_id).unwrap_or(false) {
+                control.request_cancel();
+            }
             let mut interactor = ServiceInteractor {
                 service: Arc::clone(&self),
                 run_id: run_id.to_string(),

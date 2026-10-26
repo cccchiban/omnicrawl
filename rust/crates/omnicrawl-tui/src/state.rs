@@ -1216,6 +1216,8 @@ pub struct AppState {
     stop_button_hover: Option<String>,
     /// 正在被悬停的「重试」按钮所属的失败记录下标（悬停时染成淡黄色）。
     retry_button_hover: Option<usize>,
+    /// 正在被悬停的子代理「查看会话」按钮所属的工具卡 `call_id`（悬停时染成淡黄色）。
+    subagent_view_hover: Option<String>,
     /// 输入区方框上边框里 `[ ESC ]` 的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
     ///
     /// 状态行搬到方框边框后就不再走会话流的命中测试，只能由渲染路径把位置记下来：
@@ -1287,6 +1289,7 @@ impl AppState {
             runtime_esc_hover: false,
             stop_button_hover: None,
             retry_button_hover: None,
+            subagent_view_hover: None,
             runtime_esc_area: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),

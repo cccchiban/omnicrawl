@@ -152,7 +152,18 @@ struct FetchPlan {
     force_scripts: bool,
 }
 
-pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> ToolOutcome {
+/// 一次抓取的结构化结果：入参 URL 顺序、逐条结果与总耗时。
+pub struct FetchBatch {
+    pub urls: Vec<String>,
+    pub entries: Vec<FetchEntry>,
+    pub elapsed_seconds: f64,
+}
+
+/// 抓取执行体：`fetcher` 工具与本地抓取接口共用这一份实现，参数口径完全一致。
+pub fn fetch_batch(
+    options: &FetcherOptions,
+    arguments: &Map<String, Value>,
+) -> Result<FetchBatch, ToolError> {
     let urls = parse_urls(arguments.get("urls"));
     if urls.is_empty() {
         return Err(ToolError::new(
@@ -188,10 +199,19 @@ pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> Tool
             .map(|url| fetch_one(options, url, &plan))
             .collect()
     };
+    Ok(FetchBatch {
+        urls,
+        entries,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+    })
+}
+
+pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> ToolOutcome {
+    let batch = fetch_batch(options, arguments)?;
     Ok(format_results(
-        &urls,
-        &entries,
-        started.elapsed().as_secs_f64(),
+        &batch.urls,
+        &batch.entries,
+        batch.elapsed_seconds,
     ))
 }
 

@@ -2511,6 +2511,104 @@ fn pasting_into_an_open_settings_panel_reaches_the_editing_field() {
     );
 }
 
+/// 子代理调用卡后面的「查看会话」：灰色、悬停转淡黄，点击才开窗，再点不重复开。
+///
+/// 回归的对象：批次事件一到就自动开窗（用户要求改成点击查看），以及按钮画得出来
+/// 却既不亮也点不动。
+#[test]
+fn view_session_button_opens_the_window_only_when_clicked() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+    // 用例只验按钮与绑定：流水落临时区，且不给可执行文件（否则会真弹窗）。
+    harness.app.state.subagent_stream_root =
+        std::env::temp_dir().join(format!("oc-host-view-{}", std::process::id()));
+    harness.app.state.subagent_window_exe = None;
+
+    let now = Instant::now();
+    harness
+        .app
+        .state
+        .begin_turn("turn-1".to_string(), "查一查".to_string(), Vec::new());
+    harness.app.state.apply(
+        &omnicrawl_ipc::bridge::HostEvent::ToolStarted(omnicrawl_ipc::bridge::ToolStartedPayload {
+            step: 1,
+            call: omnicrawl_core::ToolCall {
+                name: "subagent".to_string(),
+                arguments: json!({"action": "run"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                id: "call_child".to_string(),
+                function_name: "subagent".to_string(),
+            },
+        }),
+        now,
+    );
+    harness.app.state.apply(
+        &omnicrawl_ipc::bridge::HostEvent::SubagentEvent(
+            omnicrawl_ipc::bridge::SubagentEventPayload {
+                name: "subagent.batch.created".to_string(),
+                payload: json!({
+                    "batch_id": "batch-probe",
+                    "origin_call_id": "call_child",
+                }),
+            },
+        ),
+        now,
+    );
+
+    // 批次一到不开窗，也不往消息流补受理提示：入口就是那张卡后面的按钮。
+    assert!(!harness.app.state.subagent_window.is_opened("batch-probe"));
+    assert!(!harness
+        .app
+        .state
+        .records
+        .iter()
+        .any(|record| matches!(record, Record::SubagentWindow(_))));
+
+    let viewport = Rect::new(0, 0, 100, 30);
+    let conversation = omnicrawl_tui::ui::layout(viewport, &harness.app.state).conversation;
+    let text = omnicrawl_tui::ui::conversation::text_area(conversation);
+    let (row, (start, width)) = (0..conversation.height as usize)
+        .find_map(|row| {
+            omnicrawl_tui::ui::conversation::card_button_columns(
+                &harness.app.state,
+                conversation,
+                harness.app.state.scroll_from_bottom,
+                row,
+            )
+            .map(|button| (row, button))
+        })
+        .expect("子代理调用卡后面应当画出「查看会话」按钮");
+    let column = text.x + start + width / 2;
+
+    // 悬停：归属这张卡，渲染层据此把它染成淡黄色。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Moved,
+        column,
+        conversation.y + row as u16,
+    ));
+    assert_eq!(
+        harness.app.state.subagent_view_hover(),
+        Some("call_child"),
+        "鼠标移到「查看会话」上要把这张卡记成悬停"
+    );
+
+    // 点击：拿不到可执行文件时只跳过开窗，但绑定必须还在（真实环境里这里会开窗）。
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        conversation.y + row as u16,
+    ));
+    assert_eq!(
+        harness.app.state.subagent_view_batch("call_child"),
+        Some("batch-probe"),
+        "点击后绑定仍应可用于再次查看"
+    );
+    let _ = std::fs::remove_dir_all(&harness.app.state.subagent_stream_root);
+}
+
 /// 「立即结束」按钮：真实 `monitor` 工具卡（`call_id` 是内核 id、任务 id 在参数里）
 /// 也必须能悬停点亮、点击生效。
 ///
@@ -2552,7 +2650,7 @@ fn stop_button_on_a_monitor_tool_call_brightens_and_interrupts_the_wait() {
     let text = omnicrawl_tui::ui::conversation::text_area(conversation);
     let (row, (start, width)) = (0..conversation.height as usize)
         .find_map(|row| {
-            omnicrawl_tui::ui::conversation::stop_button_columns(
+            omnicrawl_tui::ui::conversation::card_button_columns(
                 &harness.app.state,
                 conversation,
                 harness.app.state.scroll_from_bottom,

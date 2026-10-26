@@ -105,6 +105,54 @@ impl AppState {
             self.touch_composer();
         }
 
+        /// 该工具卡后面是否要挂「查看会话」：返回它派生的批次号。
+        ///
+        /// 只有模型自己发起的 `subagent` / `computer_use` 调用才有这条绑定；批次收尾后
+        /// 窗口已经自动关闭（流水仍在磁盘上），按钮随之消失。
+        pub fn subagent_view_batch(&self, call_id: &str) -> Option<&str> {
+            if call_id.is_empty() {
+                return None;
+            }
+            self.subagent_window.view_batch(call_id)
+        }
+
+        /// 正在被悬停的「查看会话」按钮属于哪张卡（渲染层据此把它染成淡黄色）。
+        pub fn subagent_view_hover(&self) -> Option<&str> {
+            self.subagent_view_hover.as_deref()
+        }
+
+        /// 记录本轮「查看会话」按钮的悬停命中；变化时重算受影响的那张卡。
+        ///
+        /// 按钮颜色随显示行一起烘焙，所以变化时两条记录都要重算：旧的褪回灰色、新的转淡黄。
+        pub fn set_subagent_view_hover(&mut self, call_id: Option<String>) {
+            if self.subagent_view_hover == call_id {
+                return;
+            }
+            let previous = self.subagent_view_hover.take();
+            self.subagent_view_hover = call_id;
+            for key in [previous, self.subagent_view_hover.clone()]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(index) = self.tool_card_slot(&key) {
+                    self.touch_record(index);
+                }
+            }
+            self.touch_conversation_view();
+        }
+
+        /// 点击「查看会话」：给该工具卡派生的批次开一个窗口。
+        ///
+        /// 返回 `false` 表示没开（已经开过，或者拿不到自身可执行文件）；流水一直在写，
+        /// 窗口打开后从头回放，所以点得早晚都看得到完整过程。
+        pub fn open_subagent_window(&mut self, call_id: &str) -> bool {
+            let Some(batch) = self.subagent_view_batch(call_id).map(str::to_string) else {
+                return false;
+            };
+            let exe = self.subagent_window_exe.clone();
+            self.subagent_window.open(exe.as_deref(), &batch)
+        }
+
         /// 压缩后刷新遥测：上下文占用与 ↑ 换成压缩后的真实大小，↓/† 清零。
         ///
         /// 压缩发生在回合收尾之后，此后不会再发模型请求，`turn.token_usage` 会一直停在压缩前那次

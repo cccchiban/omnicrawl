@@ -84,7 +84,12 @@ pub enum Parsed {
     Help(String),
     Version(String),
     /// 子代理独立窗口进程：只跟随一个流水文件，不连内核。
-    SubagentWindow(PathBuf),
+    ///
+    /// `keep_open` 为真时批次收尾后也不退出（用户点开「查看会话」的那种窗口）。
+    SubagentWindow {
+        stream: PathBuf,
+        keep_open: bool,
+    },
 }
 
 pub const USAGE: &str = "\
@@ -141,7 +146,13 @@ fn parse_with(
                 crate::subagent_window::WINDOW_FLAG
             ));
         };
-        return Ok(Parsed::SubagentWindow(PathBuf::from(stream)));
+        return Ok(Parsed::SubagentWindow {
+            stream: PathBuf::from(stream),
+            // 点开的窗口要留到用户自己关：收尾事件只是让它改成「已结束」。
+            keep_open: args
+                .iter()
+                .any(|arg| arg == crate::subagent_window::KEEP_OPEN_FLAG),
+        });
     }
     let mut kernel: Option<PathBuf> = None;
     let mut model: Option<String> = None;
@@ -588,6 +599,35 @@ mod tests {
             &|| Err("没有配置".to_string()),
         )
         .expect("窗口子命令应当解析成功");
-        assert_eq!(parsed, Parsed::SubagentWindow(PathBuf::from("a.jsonl")));
+        assert_eq!(
+            parsed,
+            Parsed::SubagentWindow {
+                stream: PathBuf::from("a.jsonl"),
+                keep_open: false,
+            }
+        );
+    }
+
+    /// 用户点开的窗口带 `--keep-open`：批次收尾后不自动退出。
+    #[test]
+    fn the_keep_open_flag_keeps_the_clicked_window_alive() {
+        let parsed = parse_with(
+            &[
+                "--subagent-window".to_string(),
+                "a.jsonl".to_string(),
+                "--keep-open".to_string(),
+            ],
+            Path::new("."),
+            &|| Err("没有配置".to_string()),
+            &|| Err("没有配置".to_string()),
+        )
+        .expect("窗口子命令应当解析成功");
+        assert!(matches!(
+            parsed,
+            Parsed::SubagentWindow {
+                keep_open: true,
+                ..
+            }
+        ));
     }
 }

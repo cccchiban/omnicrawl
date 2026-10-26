@@ -72,8 +72,8 @@ fn run() -> Result<ExitCode, String> {
             return Ok(ExitCode::SUCCESS);
         }
         // 子代理窗口进程：不起内核、不进全屏，按主代理的版式渲染流水。
-        Parsed::SubagentWindow(stream) => {
-            return match omnicrawl_tui::subagent_window::run_window(stream) {
+        Parsed::SubagentWindow { stream, keep_open } => {
+            return match omnicrawl_tui::subagent_window::run_window(stream, keep_open) {
                 Ok(()) => Ok(ExitCode::SUCCESS),
                 Err(message) => {
                     eprintln!("{message}");
@@ -180,6 +180,8 @@ fn prepare_startup(
     app.autostart_local_decision_service();
     // 决策 REST 接口：`[api]` 启用后随实例自启动（供 CLI / Skill 等外部程序调用）。
     app.autostart_decision_api();
+    // 抓取接口：`[fetch_api]` 启用后随实例自启动（供 Python 等批量脚本调用）。
+    app.autostart_fetch_api();
     for line in app.startup_service_lines.clone() {
         sink.write_line(&line, LogLevel::Info);
     }

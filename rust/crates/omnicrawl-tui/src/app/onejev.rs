@@ -355,6 +355,20 @@ impl App {
         self.startup_service_lines.push(outcome.message);
     }
 
+    /// 启动时按配置把抓取接口准备好（`config.toml` 的 `[fetch_api]` 段）。
+    ///
+    /// 已就绪（含**其他 OmniCrawl 实例**起的服务）就复用，不重复拉起；未启用时不动任何进程。
+    /// 它是给批量脚本用的外部通道，默认关，打开后常驻，停由 `omnicrawl fetch stop` 显式做。
+    pub fn autostart_fetch_api(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        let settings = omnicrawl_fetch::load_settings(&environment);
+        if settings.unavailable_reason().is_some() {
+            return;
+        }
+        let outcome = omnicrawl_fetch::ensure_running(&environment, &settings, false);
+        self.startup_service_lines.push(outcome.message);
+    }
+
     /// 启动时按配置把自部署决策服务准备好（渠道 `onejev` + `[local] auto_start`）。
     ///
     /// 判定与处理都集中在 `OneJevServer`：端口已就绪（含**其他 OmniCrawl 实例**起的服务）

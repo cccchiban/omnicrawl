@@ -259,10 +259,11 @@ impl AppState {
             self.scroll_to_bottom();
         }
 
-        /// 子任务事件 → 独立窗口：按 `batch_id` 记账，首次出现时开窗并留一行受理提示。
+        /// 子任务事件 → 独立窗口：按 `batch_id` 记账，把事件转成窗口流水。
         ///
-        /// 过程文本、工具调用与任务状态都由 `subagent-window` 子进程渲染，主会话不再画进度树；
-        /// 这里只做两件本地的事：把事件转成窗口流水、批次首次出现时往消息流补一条提示。
+        /// 模型自己发起的批次（带 `call_id`）**不开窗**：它只在对应工具卡后面留一个
+        /// 「查看会话」入口，用户点了才开。宿主自发的入口（`/review`）没有工具卡可挂，
+        /// 收到首个事件时仍然直接开窗，并留一行受理提示。
         pub(super) fn apply_subagent_event(&mut self, name: &str, payload: &serde_json::Value) {
             let batch_id = payload_text(payload, "batch_id")
                 .map(str::to_string)
@@ -272,19 +273,34 @@ impl AppState {
                         payload_text(payload, "task_id").unwrap_or("task")
                     )
                 });
-            let opened = self.subagent_window.deliver(
+            let delivery = self.subagent_window.deliver(
                 &self.subagent_stream_root,
                 self.subagent_window_exe.as_deref(),
                 name,
                 payload,
             );
-            if let crate::subagent_window::Delivery::Opened { stream } = opened {
-                self.records
-                    .push(Record::SubagentWindow(SubagentWindowNotice {
-                        batch_id,
-                        stream: stream.display().to_string(),
-                    }));
-                self.touch_appended();
+            // 这张卡上的「查看会话」可能刚出现（批次创建）或刚撤下（批次收尾）：
+            // 前者来自载荷里的发起调用 id，后者只能从批次绑定反查。
+            let call_id = payload_text(payload, "origin_call_id")
+                .map(str::to_string)
+                .or_else(|| self.subagent_window.call_of(&batch_id).map(str::to_string));
+            match delivery {
+                crate::subagent_window::Delivery::Opened { stream } => {
+                    self.records
+                        .push(Record::SubagentWindow(SubagentWindowNotice {
+                            batch_id,
+                            stream: stream.display().to_string(),
+                        }));
+                    self.touch_appended();
+                }
+                _ => {
+                    if let Some(index) = call_id
+                        .as_deref()
+                        .and_then(|call_id| self.tool_card_slot(call_id))
+                    {
+                        self.touch_record(index);
+                    }
+                }
             }
         }
 

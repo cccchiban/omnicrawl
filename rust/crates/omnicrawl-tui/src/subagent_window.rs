@@ -14,7 +14,7 @@
 //! 为什么用文件而不是管道：窗口是另一个进程、另一个控制台，宿主不能把自己的 stdout 分给它；
 //! 文件同时留下现场（窗口崩溃或用户提前关掉后仍可回看），成本只是一次 `create_dir_all`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -31,6 +31,8 @@ const FOLLOW_TICK: Duration = Duration::from_millis(20);
 
 /// 窗口进程的启动开关（`omnicrawl-tui --subagent-window <流水文件>`）。
 pub const WINDOW_FLAG: &str = "--subagent-window";
+/// 关掉「批次收尾后自动关闭」：按需点开的窗口要留到用户自己关。
+pub const KEEP_OPEN_FLAG: &str = "--keep-open";
 
 /// 滚轮一格滚动的行数（与主代理同值）。
 const WHEEL_STEP: isize = 3;
@@ -82,18 +84,24 @@ enum Entry {
 /// 一次投递的结论：主会话据此决定要不要写那行提示。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
-    /// 该批次第一次开窗口（提示里带上流水路径）。
+    /// 宿主自发批次（`/review`）的窗口已自动打开（提示里带上流水路径）。
     Opened { stream: PathBuf },
-    /// 已开过窗口，事件已追加。
+    /// 事件已追加进流水。
     Appended,
     /// 这个事件不进窗口。
     Ignored,
 }
 
-/// 主宿主侧的子代理窗口管理：按批次建窗口、记账、投递事件。
+/// 主宿主侧的子代理窗口管理：按批次记账、投递事件，**只在用户点击时**开窗。
 #[derive(Default)]
 pub struct SubagentWindows {
     batches: HashMap<String, PathBuf>,
+    /// 发起批次的工具调用 id → 批次号：工具卡据此决定要不要挂「查看会话」按钮。
+    calls: HashMap<String, String>,
+    /// 已经开过窗口的批次：再点不重复开（用户要求）。
+    opened: HashSet<String>,
+    /// 已经收尾的批次：窗口已自动关闭，工具卡上的「查看会话」随之撤下。
+    finished: HashSet<String>,
 }
 
 impl SubagentWindows {
@@ -101,10 +109,14 @@ impl SubagentWindows {
         Self::default()
     }
 
-    /// 把一条子代理事件交给对应批次的窗口。
+    /// 把一条子代理事件交给对应批次的流水。
     ///
     /// `root` 是流水落盘目录；`exe` 是要拉起的窗口可执行文件。两者都由调用方给：测试指到
     /// 临时目录与假可执行文件，生产走用户配置目录与 `current_exe()`。
+    ///
+    /// 带 `call_id` 的批次（模型自己调 `subagent` / `computer_use` 起的）**不**开窗，
+    /// 只在工具卡后面留一个「查看会话」入口；不带 `call_id` 的是宿主自发入口（`/review`），
+    /// 用户主动下了这条命令，照旧直接开窗。
     pub fn deliver(
         &mut self,
         root: &Path,
@@ -112,51 +124,100 @@ impl SubagentWindows {
         name: &str,
         payload: &serde_json::Value,
     ) -> Delivery {
-        let Some(entry) = entry_from_event(name, payload) else {
-            return Delivery::Ignored;
-        };
         let batch_id = payload_text(payload, "batch_id").unwrap_or_else(|| "batch".to_string());
-        // 收尾事件只往**已经开着**的窗口里写：批次没有窗口（全部任务在准入阶段就被拒）
-        // 时不该为了关窗专门拉开一个新窗口。
-        if matches!(entry, Entry::BatchFinished) {
+        let entry = entry_from_event(name, payload);
+        // 收尾事件只往**已经登记**的流水里写：批次没有窗口（全部任务在准入阶段就被拒）
+        // 时不该为了关窗专门建一个文件。
+        if matches!(entry, Some(Entry::BatchFinished)) {
             let Some(stream) = self.batches.get(&batch_id) else {
                 return Delivery::Ignored;
             };
-            return match append_entry(stream, &entry) {
+            self.finished.insert(batch_id.clone());
+            return match append_entry(stream, &Entry::BatchFinished) {
                 Ok(()) => Delivery::Appended,
                 Err(_) => Delivery::Ignored,
             };
         }
-        let opened = !self.batches.contains_key(&batch_id);
-        if opened {
+        let mut auto_opened = None;
+        if !self.batches.contains_key(&batch_id) {
+            let call_id = payload_text(payload, "origin_call_id");
+            // 既不是可渲染事件、又不是工具调用发起的批次：不建流水（免得点出来一个空窗口）。
+            if entry.is_none() && call_id.is_none() {
+                return Delivery::Ignored;
+            }
             let stream = stream_path(root, &batch_id);
             // 同一批次号在重启后复用（概率极低）：旧文件截断，免得窗口一开始就显示旧记录。
             let _ = std::fs::create_dir_all(root);
-            match File::create(&stream) {
-                Ok(file) => drop(file),
-                Err(_) => return Delivery::Ignored,
+            if File::create(&stream).is_err() {
+                return Delivery::Ignored;
             }
             self.batches.insert(batch_id.clone(), stream.clone());
-            spawn_window(exe, &stream);
+            match call_id {
+                Some(call_id) => {
+                    self.calls.insert(call_id, batch_id.clone());
+                }
+                None => {
+                    self.opened.insert(batch_id.clone());
+                    spawn_window(exe, &stream, false);
+                    auto_opened = Some(stream);
+                }
+            }
         }
         let Some(stream) = self.batches.get(&batch_id) else {
             return Delivery::Ignored;
         };
-        if append_entry(stream, &entry).is_err() {
-            return Delivery::Ignored;
-        }
-        if opened {
-            Delivery::Opened {
-                stream: stream.clone(),
+        if let Some(entry) = entry {
+            if append_entry(stream, &entry).is_err() {
+                return Delivery::Ignored;
             }
-        } else {
-            Delivery::Appended
+        }
+        match auto_opened {
+            Some(stream) => Delivery::Opened { stream },
+            None => Delivery::Appended,
         }
     }
 
-    /// 该批次是否开过窗口。
-    pub fn has_window(&self, batch_id: &str) -> bool {
-        self.batches.contains_key(batch_id)
+    /// 该批次是否已经开过窗口（再点不会重复开）。
+    pub fn is_opened(&self, batch_id: &str) -> bool {
+        self.opened.contains(batch_id)
+    }
+
+    /// 某次工具调用派发的批次号：工具卡据此决定要不要挂「查看会话」。
+    ///
+    /// 批次收尾后返回 `None`：窗口进程收到收尾事件会自己关掉，按钮留着只会点出一个
+    /// 立刻退出的空窗口。
+    pub fn view_batch(&self, call_id: &str) -> Option<&str> {
+        let batch = self.calls.get(call_id)?;
+        (!self.finished.contains(batch)).then_some(batch.as_str())
+    }
+
+    /// 某个批次由哪次工具调用发起（收尾时要让那张卡重算，把「查看会话」撤下）。
+    pub fn call_of(&self, batch_id: &str) -> Option<&str> {
+        self.calls
+            .iter()
+            .find(|(_, batch)| batch.as_str() == batch_id)
+            .map(|(call, _)| call.as_str())
+    }
+
+    /// 用户点了「查看会话」：该批次还没开过窗口就开一个。
+    ///
+    /// 返回 `false` 表示没有该批次的流水、拿不到可执行文件，或这个批次已经开过窗口了
+    /// （用户要求：每点一个开一个窗口，已开过的不再重复开）。
+    ///
+    /// 点开的窗口**不随批次结束自动关闭**：用户是特地来读这段过程的，读着读着窗口
+    /// 自己消失只会让人以为出错；关窗交给 Esc / Ctrl+Q。
+    pub fn open(&mut self, exe: Option<&Path>, batch_id: &str) -> bool {
+        let Some(exe) = exe else {
+            return false;
+        };
+        let Some(stream) = self.batches.get(batch_id) else {
+            return false;
+        };
+        if !self.opened.insert(batch_id.to_string()) {
+            return false;
+        }
+        spawn_window(Some(exe), stream, true);
+        true
     }
 }
 
@@ -350,7 +411,7 @@ fn entry_from_json(line: &str) -> Option<Entry> {
 ///
 /// 放到后台线程：`CreateProcess` 在冷启动时要几十到上百毫秒，而这条路径挂在界面线程的
 /// 事件处理里，阻塞它会直接让开窗那一刻掉帧。窗口进程本身会等流水文件出现，所以先后无关。
-fn spawn_window(exe: Option<&Path>, stream: &Path) {
+fn spawn_window(exe: Option<&Path>, stream: &Path, keep_open: bool) {
     let Some(exe) = exe.map(Path::to_path_buf) else {
         return;
     };
@@ -358,6 +419,9 @@ fn spawn_window(exe: Option<&Path>, stream: &Path) {
     std::thread::spawn(move || {
         let mut command = Command::new(&exe);
         command.arg(WINDOW_FLAG).arg(&stream);
+        if keep_open {
+            command.arg(KEEP_OPEN_FLAG);
+        }
         #[cfg(windows)]
         {
             // stdout/stderr 一律**不重定向**：`CREATE_NEW_CONSOLE` 给子进程分配的新控制台
@@ -410,15 +474,16 @@ mod platform {
 ///
 /// 窗口自己跑事件循环：流水有新行就重画，空闲时按 [`FOLLOW_TICK`] 醒来同时推进动画
 /// （spinner、思考段铺开、图片解码、底部轮播）。Esc / Ctrl+Q 随时关窗；批次收尾
-/// （[`Entry::BatchFinished`]）后画完最后一帧自动退出。
-pub fn run_window(stream: PathBuf) -> Result<(), String> {
+/// （[`Entry::BatchFinished`]）后画完最后一帧自动退出——除非是用户点开的窗口
+/// （`keep_open`），那种留到用户自己关。
+pub fn run_window(stream: PathBuf, keep_open: bool) -> Result<(), String> {
     let mut terminal = WindowTerminal::start()?;
     // 窗口按 20ms 轮询：Windows 默认计时器粒度约 15.6ms，不提升精度会让「睡 20ms」
     // 变成 31ms，动画与流式文字都会一顿一顿。随进程退出恢复。
     let _timer = crate::ui::fullscreen::terminal::timer_resolution::TimerResolutionGuard::acquire();
     let mut rendered = Rendered::default();
     let mut state = window_state();
-    draw(&mut terminal, &mut state, &stream, &rendered)?;
+    draw(&mut terminal, &mut state, &stream, &rendered, keep_open)?;
     // `draw` 里写过状态行（会置脏输入块）：版本号在首帧之后取，才对得上屏幕上的内容。
     let mut drawn_versions = state.refresh_versions();
     let mut dirty = false;
@@ -473,12 +538,13 @@ pub fn run_window(stream: PathBuf) -> Result<(), String> {
 
         let versions = state.refresh_versions();
         if dirty || versions != drawn_versions {
-            draw(&mut terminal, &mut state, &stream, &rendered)?;
+            draw(&mut terminal, &mut state, &stream, &rendered, keep_open)?;
             drawn_versions = versions;
             dirty = false;
         }
         // 批次收尾：最后一帧已经画完，窗口自动关闭（流水留在磁盘上可回看）。
-        if rendered.finished {
+        // 用户点开的窗口例外：它是来读过程的，不能读着读着自己消失。
+        if rendered.finished && !keep_open {
             return Ok(());
         }
 
@@ -748,10 +814,11 @@ fn draw(
     state: &mut crate::state::AppState,
     stream: &Path,
     rendered: &Rendered,
+    keep_open: bool,
 ) -> Result<(), String> {
     // 顶部标题行之外的语义全在主页面里：窗口只把「这是哪个批次」补进状态行，
     // 其余版式与会话区构成与主代理逐块一致。文本没变时不重写，免得每帧把输入块置脏。
-    let title = window_title(stream, rendered);
+    let title = window_title(stream, rendered, keep_open);
     if state.status.as_deref() != Some(title.as_str()) {
         state.set_status(Some(title));
     }
@@ -761,7 +828,7 @@ fn draw(
 }
 
 /// 状态行文本：批次标题 + 任务进度。
-fn window_title(stream: &Path, rendered: &Rendered) -> String {
+fn window_title(stream: &Path, rendered: &Rendered, keep_open: bool) -> String {
     let name = stream
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
@@ -774,6 +841,9 @@ fn window_title(stream: &Path, rendered: &Rendered) -> String {
         .count();
     if total == 0 {
         return format!("子代理 · {name}");
+    }
+    if keep_open && rendered.finished {
+        return format!("子代理 · {name} · {done}/{total} · 已结束（Esc 关闭）");
     }
     format!("子代理 · {name} · {done}/{total}")
 }
@@ -923,7 +993,76 @@ mod tests {
             windows.deliver(&root, None, "subagent.batch.created", &batch),
             Delivery::Ignored
         );
-        assert!(!windows.has_window("batch-x"));
+        assert!(!windows.is_opened("batch-x"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 模型自己调的 `subagent` 起的批次：只落流水、绑定工具卡，不开窗。
+    #[test]
+    fn a_tool_call_batch_waits_for_the_click() {
+        let root = temp_root("on-demand");
+        let mut windows = SubagentWindows::new();
+        let created = payload(&[
+            ("batch_id", serde_json::json!("batch-7")),
+            ("origin_call_id", serde_json::json!("call_7")),
+        ]);
+        assert_eq!(
+            windows.deliver(&root, None, "subagent.batch.created", &created),
+            Delivery::Appended
+        );
+        assert!(!windows.is_opened("batch-7"), "点击之前不该开窗");
+        assert_eq!(windows.view_batch("call_7"), Some("batch-7"));
+
+        let started = payload(&[
+            ("batch_id", serde_json::json!("batch-7")),
+            ("task_id", serde_json::json!("t1")),
+        ]);
+        assert_eq!(
+            windows.deliver(&root, None, "subagent.task.started", &started),
+            Delivery::Appended
+        );
+        let text = std::fs::read_to_string(root.join("batch-7.jsonl")).expect("流水已建立");
+        assert_eq!(text.lines().count(), 1, "只有可渲染事件落盘：{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 点一次开一个窗口；同一个批次再点不重复开（用户要求）。
+    #[test]
+    fn the_button_opens_one_window_per_batch() {
+        let root = temp_root("click-once");
+        let mut windows = SubagentWindows::new();
+        let batch = payload(&[
+            ("batch_id", serde_json::json!("batch-8")),
+            ("origin_call_id", serde_json::json!("call_8")),
+        ]);
+        windows.deliver(&root, None, "subagent.batch.created", &batch);
+        let exe = root.join("fake-tui.exe");
+
+        assert!(windows.open(Some(&exe), "batch-8"), "第一次点击要开窗");
+        assert!(windows.is_opened("batch-8"));
+        assert!(!windows.open(Some(&exe), "batch-8"), "已开过的不再开");
+        // 拿不到可执行文件时什么都不做（测试与无自身路径的场景）。
+        assert!(!windows.open(None, "batch-8"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 批次收尾后撤下入口：窗口进程会自己关，留着按钮只能点出一个马上退出的空窗。
+    #[test]
+    fn a_finished_batch_drops_the_button() {
+        let root = temp_root("finished-button");
+        let mut windows = SubagentWindows::new();
+        let batch = payload(&[
+            ("batch_id", serde_json::json!("batch-9")),
+            ("origin_call_id", serde_json::json!("call_9")),
+        ]);
+        windows.deliver(&root, None, "subagent.batch.created", &batch);
+        assert_eq!(windows.view_batch("call_9"), Some("batch-9"));
+        assert_eq!(
+            windows.deliver(&root, None, "subagent.batch.finished", &batch),
+            Delivery::Appended
+        );
+        assert_eq!(windows.view_batch("call_9"), None);
+        assert_eq!(windows.call_of("batch-9"), Some("call_9"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1038,7 +1177,7 @@ mod tests {
             windows.deliver(&root, None, "subagent.batch.finished", &batch),
             Delivery::Ignored
         );
-        assert!(!windows.has_window("batch-x"));
+        assert!(!windows.is_opened("batch-x"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
