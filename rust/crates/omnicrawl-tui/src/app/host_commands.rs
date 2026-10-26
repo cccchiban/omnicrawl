@@ -118,7 +118,7 @@ impl App {
                 provider: Some(self.llm.provider.clone()),
                 protocol: Some(self.llm.protocol.clone()),
                 base_url: Some(self.llm.base_url.clone()),
-                api_key_env: Some(self.llm.api_key_env.clone()),
+                api_key: Some(self.llm.api_key.clone()),
                 ..SessionModelSettings::default()
             })),
             compaction: None,

@@ -541,15 +541,15 @@ pub struct SessionModelSettings {
     /// 渠道的基地址；空则沿用运行时默认。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    /// 存放 API Key 的环境变量名（凭据本身不进帧）。
+    /// API Key 明文；空串视作不改。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
 }
 
 /// 宿主交给内核的模型配置，内核据此自己发起 Chat Completions 请求。
 ///
-/// 凭据不进帧：这里只给环境变量名，内核在发请求时读环境。
-/// 这样帧、日志与诊断输出里都不会出现 Key，Python 侧的 `api_key_env` 也是同一套约定。
+/// 凭据随帧明文本机传递：宿主把 `config.toml` 里那条渠道的 `api_key` 直接放进来，
+/// 内核发请求时原样使用，不再绕环境变量。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KernelModelConfig {
     pub model: String,
@@ -563,9 +563,9 @@ pub struct KernelModelConfig {
     /// 空则用运行时的默认地址。
     #[serde(default)]
     pub base_url: String,
-    /// 存放 API Key 的环境变量名。
+    /// API Key 明文。空表示未配置凭据，内核会在请求时报鉴权缺失。
     #[serde(default)]
-    pub api_key_env: String,
+    pub api_key: String,
     #[serde(default)]
     pub user_agent: String,
     /// 系统提示词。请求改由内核组装后，这份文本必须由宿主交进来。

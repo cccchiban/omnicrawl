@@ -128,7 +128,7 @@ mod runtime_selection_tests {
             provider: provider.to_string(),
             protocol: protocol.to_string(),
             base_url: String::new(),
-            api_key_env: String::new(),
+        api_key: String::new(),
             user_agent: String::new(),
             system_prompt: String::new(),
             context_messages: Vec::new(),
@@ -155,7 +155,7 @@ mod runtime_selection_tests {
         match error {
             LoopError::ReplySource(message) => assert_eq!(
                 message,
-                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+                "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。",
             ),
             other => panic!("意外的错误类型：{other:?}"),
         }
@@ -224,7 +224,6 @@ mod runtime_selection_tests {
             base_url: String::new(),
             model: "m".to_string(),
             user_agent: String::new(),
-            api_key_env: String::new(),
             context_window_tokens: 0,
             api_key: "k".to_string(),
             desensitization: DesensitizationFingerprint(None),

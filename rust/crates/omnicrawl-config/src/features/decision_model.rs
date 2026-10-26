@@ -58,8 +58,6 @@ pub const DECISION_MODES: [&str; 3] = [
 /// 但 `base_url` 仍要落在回环地址上——`is_local_service` / `is_loopback_url` 按它判定
 /// 「这条渠道是不是本机自部署」，进而决定要不要拉起、以及要不要走管道。
 pub const DEFAULT_LOCAL_DECISION_BASE_URL: &str = "http://127.0.0.1:8766";
-/// 自部署渠道的默认凭据环境变量名（本地服务不校验凭据，但仍需要一个非空占位）。
-pub const DEFAULT_LOCAL_DECISION_API_KEY_ENV: &str = "ONEJEV_API_KEY";
 /// 自部署渠道的默认 key（界面「切换为自部署」时用它）。
 pub const DEFAULT_LOCAL_DECISION_CHANNEL_KEY: &str = "onejev-local";
 
@@ -67,8 +65,6 @@ pub const DEFAULT_LOCAL_DECISION_CHANNEL_KEY: &str = "onejev-local";
 pub const DEFAULT_DECISION_BASE_URL: &str = "https://jevtypesafeai.com/api";
 /// 默认模型：跟随最新版本；生产环境建议改成固定版本（如 `jev-1.13.0`）。
 pub const DEFAULT_DECISION_MODEL: &str = "jev-latest";
-/// 默认凭据环境变量名。
-pub const DEFAULT_DECISION_API_KEY_ENV: &str = "JEV_API_KEY";
 /// 首次生成配置时使用的默认渠道 key。
 pub const DEFAULT_DECISION_CHANNEL_KEY: &str = "jev-main";
 
@@ -85,9 +81,8 @@ pub struct DecisionChannelConfig {
     /// 决策服务类型，取 [`DECISION_MODES`] 之一。
     pub mode: String,
     pub base_url: String,
-    /// 内联凭据。与 `config.toml` 的渠道 profile 同口径：可以为空，此时走 `api_key_env`。
+    /// 内联凭据。与 `config.toml` 的渠道 profile 同口径，只认这一处明文。
     pub api_key: String,
-    pub api_key_env: String,
     /// 决策模型名（`jev-latest` 或固定版本）。
     pub model: String,
     /// 一次请求失败后的重试次数（不含首次请求）；0 表示不重试。
@@ -103,7 +98,6 @@ impl Default for DecisionChannelConfig {
             mode: DECISION_MODE_JEV.to_string(),
             base_url: DEFAULT_DECISION_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
             model: DEFAULT_DECISION_MODEL.to_string(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             enabled: true,
@@ -156,12 +150,6 @@ impl DecisionChannelConfig {
             )));
         }
         self.api_key = self.api_key.trim().to_string();
-        let api_key_env = self.api_key_env.trim().to_string();
-        self.api_key_env = if api_key_env.is_empty() {
-            DEFAULT_DECISION_API_KEY_ENV.to_string()
-        } else {
-            api_key_env
-        };
         // 负值与越界值收口而不是报错：它是一个纯退避参数，不该让整条渠道失效。
         self.retry_count = self.retry_count.clamp(0, MAX_DECISION_RETRY_COUNT);
         Ok(self)
@@ -895,10 +883,6 @@ pub fn save_decision_model_configuration(
             "api_key".to_string(),
             Value::String(channel.api_key.clone()),
         );
-        entry.insert(
-            "api_key_env".to_string(),
-            Value::String(channel.api_key_env.clone()),
-        );
         entry.insert("model".to_string(), Value::String(channel.model.clone()));
         entry.insert(
             "retry_count".to_string(),
@@ -919,7 +903,6 @@ fn parse_channel(key: &str, section: &Table) -> Result<DecisionChannelConfig, Co
         mode: text_field(section, "mode", DECISION_MODE_JEV),
         base_url: text_field(section, "base_url", DEFAULT_DECISION_BASE_URL),
         api_key: python_str(section.get("api_key")),
-        api_key_env: text_field(section, "api_key_env", DEFAULT_DECISION_API_KEY_ENV),
         model: text_field(section, "model", DEFAULT_DECISION_MODEL),
         retry_count: match section.get("retry_count") {
             Some(Value::Integer(value)) => *value,
@@ -974,7 +957,6 @@ mod tests {
         assert_eq!(channel.mode, DECISION_MODE_JEV);
         assert_eq!(channel.base_url, DEFAULT_DECISION_BASE_URL);
         assert_eq!(channel.model, DEFAULT_DECISION_MODEL);
-        assert_eq!(channel.api_key_env, DEFAULT_DECISION_API_KEY_ENV);
         assert!(channel.enabled);
         assert_eq!(
             channel.decide_url(),
@@ -1153,7 +1135,6 @@ mod tests {
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: "https://jevtypesafeai.com/api/".to_string(),
                     api_key: String::new(),
-                    api_key_env: "JEV_API_KEY".to_string(),
                     model: "jev-1.13.0".to_string(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     enabled: true,
@@ -1164,7 +1145,6 @@ mod tests {
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: "http://127.0.0.1:8080".to_string(),
                     api_key: "jv_live_test".to_string(),
-                    api_key_env: String::new(),
                     model: "jev-latest".to_string(),
                     retry_count: 0,
                     enabled: true,
@@ -1191,11 +1171,6 @@ mod tests {
             reloaded.channels[1].retry_count, 0,
             "0 表示不重试，要原样往返"
         );
-        // 空的环境变量名回落到默认名。
-        assert_eq!(
-            reloaded.channels[1].api_key_env,
-            DEFAULT_DECISION_API_KEY_ENV
-        );
         assert_eq!(
             reloaded.active_channel().map(|item| item.key.as_str()),
             Some("self-hosted"),
@@ -1216,7 +1191,6 @@ mod tests {
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
                     api_key: String::new(),
-                    api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
                     enabled: false,
@@ -1227,7 +1201,6 @@ mod tests {
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
                     api_key: String::new(),
-                    api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
                     enabled: true,
@@ -1249,7 +1222,6 @@ mod tests {
             mode: DECISION_MODE_JEV.to_string(),
             base_url: DEFAULT_DECISION_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),
             enabled: true,
@@ -1263,7 +1235,6 @@ mod tests {
             mode: DECISION_MODE_JEV.to_string(),
             base_url: "jevtypesafeai.com".to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_DECISION_API_KEY_ENV.to_string(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),
             enabled: true,

@@ -9,7 +9,7 @@
 # 未配置、未启用或缺凭据时，记忆检索直接退回纯关键词规则排序——这是刻意的兜底，
 # 不是错误：向量召回是纯加速项，不可用不该让检索失败。
 #
-# 密钥请用环境变量（api_key_env）；也可以直接写 api_key，但不要提交到版本库。
+# 密钥只写明文 api_key；不要提交到版本库。
 version = 1
 
 # 默认使用的向量渠道 key；留空或指向不存在的渠道时取第一条启用的渠道。
@@ -20,7 +20,6 @@ name = "OpenAI 向量"
 # base_url 按 OpenAI 兼容口径填到 /v1，这里只追加 /embeddings。
 base_url = "https://api.openai.com/v1"
 api_key = ""
-api_key_env = "OPENAI_API_KEY"
 model = "text-embedding-3-small"
 # 期望维度；0 表示由服务端决定（不下发 dimensions 字段）。
 # 换模型或改维度后旧向量会自然失效（缓存键带渠道指纹）。

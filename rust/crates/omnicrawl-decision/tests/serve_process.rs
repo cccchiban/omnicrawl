@@ -24,7 +24,6 @@ name = "测试渠道"
 mode = "jev"
 base_url = "http://127.0.0.1:1"
 api_key = "test-key"
-api_key_env = "JEV_API_KEY"
 model = "jev-test"
 enabled = true
 
@@ -53,7 +52,6 @@ name = "测试渠道"
 mode = "jev"
 base_url = "http://127.0.0.1:1"
 api_key = "test-key"
-api_key_env = "JEV_API_KEY"
 model = "jev-test"
 enabled = true
 

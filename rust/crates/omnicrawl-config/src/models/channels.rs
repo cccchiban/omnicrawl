@@ -35,7 +35,6 @@ pub struct ChannelConfig {
     pub api_key: String,
     pub model_id: String,
     pub enabled: bool,
-    pub api_key_env: String,
     pub user_agent: String,
 }
 
@@ -105,7 +104,6 @@ pub fn default_channel(provider: &str, key: Option<&str>) -> Result<ChannelConfi
         protocol: protocols[0].as_str().to_string(),
         base_url: provider_default_url(provider).to_string(),
         api_key: String::new(),
-        api_key_env: provider_api_key_env(provider).to_string(),
         model_id: provider_default_model(provider).to_string(),
         key: channel_key,
         enabled: true,
@@ -213,16 +211,6 @@ pub fn load_channel_configuration(
             }
             raw
         };
-        let api_key_env = {
-            let raw = python_str(raw_profile.get("api_key_env"))
-                .trim()
-                .to_string();
-            if raw.is_empty() {
-                provider_api_key_env(&provider).to_string()
-            } else {
-                raw
-            }
-        };
         let name = {
             let raw = python_str(raw_model.get("display_name")).trim().to_string();
             if raw.is_empty() {
@@ -239,7 +227,6 @@ pub fn load_channel_configuration(
             protocol,
             base_url: python_str(raw_profile.get("base_url")).trim().to_string(),
             api_key: python_str(raw_profile.get("api_key")).trim().to_string(),
-            api_key_env,
             user_agent: python_str(raw_profile.get("user_agent")).trim().to_string(),
             model_id: python_str(raw_model.get("model_id")).trim().to_string(),
             enabled: flag_default_true(raw_model) && flag_default_true(raw_profile),
@@ -351,12 +338,6 @@ pub fn save_channel_configuration(
             "base_url".to_string(),
             Value::String(channel.base_url.clone()),
         );
-        let api_key_env = if channel.api_key_env.is_empty() {
-            provider_api_key_env(&channel.provider).to_string()
-        } else {
-            channel.api_key_env.clone()
-        };
-        profile.insert("api_key_env".to_string(), Value::String(api_key_env));
         profile.insert(
             "default_protocol".to_string(),
             Value::String(channel.protocol.clone()),
@@ -630,14 +611,6 @@ fn provider_protocols(provider: &str) -> &'static [Protocol] {
         Some(Provider::Anthropic) => &[Protocol::AnthropicMessages],
         Some(Provider::Gemini) => &[Protocol::GeminiGenerateContent],
         None => &[],
-    }
-}
-
-fn provider_api_key_env(provider: &str) -> &'static str {
-    match Provider::parse(provider) {
-        Some(Provider::Anthropic) => "ANTHROPIC_API_KEY",
-        Some(Provider::Gemini) => "GEMINI_API_KEY",
-        _ => "OPENAI_API_KEY",
     }
 }
 

@@ -413,7 +413,6 @@ mod tests {
             model: "jev-latest".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "k".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         });
         // 只有 PID 记录、还没有就绪标记：此时不算就绪。

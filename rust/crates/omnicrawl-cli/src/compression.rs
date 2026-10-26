@@ -77,7 +77,6 @@ fn resolve_compression_model(
             child.provider = resolved.provider.clone();
             child.protocol = resolved.protocol.clone();
             child.base_url = resolved.base_url.clone();
-            child.api_key_env = resolved.api_key_env.clone();
             child.user_agent = resolved.user_agent.clone();
             child.system_prompt = String::new();
             child.tools = Vec::new();
@@ -94,7 +93,7 @@ fn resolve_compression_model(
     (child, String::new(), String::new())
 }
 
-/// Profile `api_key_env` 对应的「明文 key 优先」查找：只认 Profile 里写的 `api_key`。
+/// Profile 凭据查找：只认 Profile 里写的明文 `api_key`。
 ///
 /// 审查/压缩渠道往往是另一家服务（例如主渠道是聚合网关、压缩渠道是硅基流动），
 /// 用主渠道的 key 去打压缩渠道会 HTTP 401。

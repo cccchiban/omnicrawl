@@ -386,7 +386,6 @@ pub struct ChannelRow {
     /// 渠道的内联密钥。只用于「是否已配置 + 掩码显示」与保存时的写回：
     /// 界面从不渲染明文（`channel_field_value` 走 [`mask_api_key`]），输入态也从空开始。
     pub api_key: String,
-    pub api_key_env: String,
     pub model_id: String,
     pub user_agent: String,
     pub enabled: bool,
@@ -400,7 +399,6 @@ pub enum ChannelField {
     Protocol,
     BaseUrl,
     ApiKey,
-    ApiKeyEnv,
     ModelId,
     UserAgent,
     Enabled,
@@ -408,13 +406,12 @@ pub enum ChannelField {
 
 impl ChannelField {
     /// 表单里的字段顺序。
-    pub const ORDER: [ChannelField; 9] = [
+    pub const ORDER: [ChannelField; 8] = [
         ChannelField::Name,
         ChannelField::Provider,
         ChannelField::Protocol,
         ChannelField::BaseUrl,
         ChannelField::ApiKey,
-        ChannelField::ApiKeyEnv,
         ChannelField::ModelId,
         ChannelField::UserAgent,
         ChannelField::Enabled,
@@ -428,7 +425,6 @@ impl ChannelField {
             Self::Protocol => "请求协议",
             Self::BaseUrl => "Base URL",
             Self::ApiKey => "API Key",
-            Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
             Self::UserAgent => "User-Agent（可选）",
             Self::Enabled => "启用",
@@ -462,7 +458,6 @@ pub struct DecisionRow {
     pub base_url: String,
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时的写回，界面从不渲染明文。
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     /// 请求失败后的重试次数（不含首次请求）。
     pub retry_count: i64,
@@ -476,7 +471,6 @@ pub enum DecisionField {
     Mode,
     BaseUrl,
     ApiKey,
-    ApiKeyEnv,
     ModelId,
     RetryCount,
     Enabled,
@@ -484,12 +478,11 @@ pub enum DecisionField {
 
 impl DecisionField {
     /// 表单里的字段顺序。
-    pub const ORDER: [DecisionField; 8] = [
+    pub const ORDER: [DecisionField; 7] = [
         DecisionField::Name,
         DecisionField::Mode,
         DecisionField::BaseUrl,
         DecisionField::ApiKey,
-        DecisionField::ApiKeyEnv,
         DecisionField::ModelId,
         DecisionField::RetryCount,
         DecisionField::Enabled,
@@ -502,7 +495,6 @@ impl DecisionField {
             Self::Mode => "请求方式",
             Self::BaseUrl => "Base URL",
             Self::ApiKey => "API Key",
-            Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
             Self::RetryCount => "失败重试次数",
             Self::Enabled => "启用",
@@ -567,7 +559,6 @@ pub struct EmbeddingRow {
     pub base_url: String,
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时写回，界面从不渲染明文。
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     /// 期望维度；0 表示由服务端决定。
     pub dimensions: i64,
@@ -581,7 +572,6 @@ pub enum EmbeddingField {
     Name,
     BaseUrl,
     ApiKey,
-    ApiKeyEnv,
     ModelId,
     Dimensions,
     TimeoutSeconds,
@@ -589,11 +579,10 @@ pub enum EmbeddingField {
 }
 
 impl EmbeddingField {
-    pub const ORDER: [EmbeddingField; 8] = [
+    pub const ORDER: [EmbeddingField; 7] = [
         EmbeddingField::Name,
         EmbeddingField::BaseUrl,
         EmbeddingField::ApiKey,
-        EmbeddingField::ApiKeyEnv,
         EmbeddingField::ModelId,
         EmbeddingField::Dimensions,
         EmbeddingField::TimeoutSeconds,
@@ -605,7 +594,6 @@ impl EmbeddingField {
             Self::Name => "渠道名称",
             Self::BaseUrl => "Base URL",
             Self::ApiKey => "API Key",
-            Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
             Self::Dimensions => "向量维度",
             Self::TimeoutSeconds => "超时秒数",
@@ -1964,7 +1952,7 @@ fn secret_draft_for(configured: bool) -> String {
 }
 
 /// 密钥在界面上的展示：只露末 4 位，其余打码；空值直接显示「（未配置）」。
-fn mask_api_key(api_key: &str) -> String {
+pub(crate) fn mask_api_key(api_key: &str) -> String {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
         return "（未配置）".to_string();
@@ -2005,9 +1993,8 @@ pub enum SettingsEvent {
         provider: String,
         protocol: String,
         base_url: String,
-        /// 渠道的内联密钥（可能为空）：环境变量没设时用它发探测请求。
+        /// 渠道的内联密钥（可能为空）：发探测请求时用它鉴权。
         api_key: String,
-        api_key_env: String,
         user_agent: String,
     },
 }

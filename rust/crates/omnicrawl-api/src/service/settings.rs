@@ -211,7 +211,7 @@ impl AgentService {
                 provider: non_empty(&llm.provider),
                 protocol: non_empty(&llm.protocol),
                 base_url: non_empty(&llm.base_url),
-                api_key_env: non_empty(&llm.api_key_env),
+                api_key: non_empty(&llm.api_key),
                 // 原生视觉随模型走：换模型后带图观察是该直送主模型还是交给 `[vision]` 代理，
                 // 取决于新模型的声明，所以每次切换都要重新下发。
                 native_vision: Some(self.options.native_vision),

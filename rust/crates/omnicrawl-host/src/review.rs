@@ -81,7 +81,6 @@ pub fn review_options_from_config(
         model,
         base_url: llm.base_url.clone(),
         api_key: llm.api_key.clone(),
-        api_key_env: llm.api_key_env.clone(),
         request_timeout_seconds: llm.request_timeout_seconds,
         masking: masking_from_config(environment).map(Arc::new),
         channel,
@@ -125,7 +124,6 @@ pub fn decision_channel_from_config(
             model: channel.model,
             base_url: channel.base_url,
             api_key: channel.api_key,
-            api_key_env: channel.api_key_env,
             retry_count: channel.retry_count.max(0) as u64,
         })
 }
@@ -147,12 +145,11 @@ fn review_runtime_identity(environment: &ConfigEnvironment) -> String {
     let channel = decision_channel_from_config(environment)
         .map(|channel| {
             format!(
-                "{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}",
                 channel.mode,
                 channel.model,
                 channel.base_url,
                 channel.api_key,
-                channel.api_key_env,
                 channel.retry_count
             )
         })
@@ -463,7 +460,6 @@ pub struct DecisionReviewOptions {
     /// `/v1/systemone`）；`chat_completions` 按 OpenAI 兼容口径填到 `/v1`（不含 `/chat/completions`）。
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     /// 请求失败后的重试次数（不含首次请求）。
     pub retry_count: u64,
 }
@@ -496,7 +492,6 @@ pub struct ReviewOptions {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     /// 主渠道的请求超时（秒）；审查请求再按 [`REVIEW_TIMEOUT_CAP_SECONDS`] 收口。
     pub request_timeout_seconds: i64,
     pub masking: Option<Arc<ReviewMasking>>,
@@ -510,7 +505,6 @@ impl Default for ReviewOptions {
             model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
             request_timeout_seconds: 300,
             masking: None,
             channel: ReviewChannel::Chat,
@@ -667,8 +661,8 @@ fn review_with_decision(
     let api_key = decision.resolve_api_key();
     if api_key.trim().is_empty() && crate::decision_wire::requires_api_key(&decision.mode) {
         return Err(review_request_failed_reason(&format!(
-            "缺少 API Key：请设置环境变量 {}。",
-            decision.api_key_env
+            "缺少 API Key：请在决策渠道 {} 中填写 api_key。",
+            decision.model
         )));
     }
 
@@ -709,8 +703,7 @@ pub fn decision_review(
     let api_key = channel.resolve_api_key();
     if api_key.trim().is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
         return Err(review_request_failed_reason(&format!(
-            "缺少 API Key：请设置环境变量 {}。",
-            channel.api_key_env
+            "缺少 API Key：请填写该决策渠道的 api_key。"
         )));
     }
     let instruction = review_instruction(payload);
@@ -751,10 +744,9 @@ pub fn decision_post_masked(
 ) -> Result<String, String> {
     let api_key = channel.resolve_api_key();
     if api_key.trim().is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
-        return Err(format!(
-            "缺少 API Key：请设置环境变量 {}。",
-            channel.api_key_env
-        ));
+        return Err(
+            "缺少 API Key：请填写该决策渠道的 api_key。".to_string()
+        );
     }
     let mut masker = match masking {
         Some(masking) => match (masking.factory)() {
@@ -953,10 +945,9 @@ fn review_with_chat(options: &ReviewOptions, request: &ReviewRequest<'_>) -> Res
     }
     let api_key = options.resolve_api_key();
     if api_key.trim().is_empty() {
-        return Err(review_request_failed_reason(&format!(
-            "缺少 API Key：请设置环境变量 {}。",
-            options.api_key_env
-        )));
+        return Err(review_request_failed_reason(
+            "缺少 API Key：请在审查模型渠道中填写 api_key。",
+        ));
     }
 
     let (masked_instruction, mut masker) = prepare_review_request(options, request)?;
@@ -1172,13 +1163,12 @@ mod tests {
         let missing_key = ReviewOptions {
             model: "review-model".to_string(),
             api_key: String::new(),
-            api_key_env: "OMNICRAWL_TEST_MISSING_KEY".to_string(),
             ..ReviewOptions::default()
         };
         let reason = review_tool_call(&missing_key, &request).expect_err("缺凭据必须拒绝");
         assert!(
-            reason.contains("OMNICRAWL_TEST_MISSING_KEY"),
-            "文案应点明缺哪个环境变量：{reason}"
+            reason.contains("请在审查模型渠道中填写 api_key"),
+            "文案应点明去哪里补凭据：{reason}"
         );
     }
 
@@ -1225,15 +1215,14 @@ mod tests {
                 model: "jev-latest".to_string(),
                 base_url: "http://127.0.0.1:1".to_string(),
                 api_key: String::new(),
-                api_key_env: "OMNICRAWL_TEST_DECISION_KEY".to_string(),
                 retry_count: 0,
             }),
             ..ReviewOptions::default()
         };
         let reason = review_tool_call(&options, &request).expect_err("缺决策凭据必须拒绝");
         assert!(
-            reason.contains("OMNICRAWL_TEST_DECISION_KEY"),
-            "文案应点明缺哪个环境变量：{reason}"
+            reason.contains("填写 api_key"),
+            "文案应点明去哪里补凭据：{reason}"
         );
     }
 
@@ -1246,7 +1235,6 @@ mod tests {
             model: "jev-latest".to_string(),
             base_url: cassette.base_url(),
             api_key: "jv_test".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         };
         let request = ReviewRequest {
@@ -1304,7 +1292,6 @@ mod tests {
             model: "jev-latest".to_string(),
             base_url: cassette.base_url(),
             api_key: "jv_test".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         };
         let request = ReviewRequest {
@@ -1361,7 +1348,6 @@ mod tests {
             model: "jev-1.13.0".to_string(),
             base_url: format!("{}/v1", cassette.base_url()),
             api_key: "jv_test".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         };
         let request = ReviewRequest {

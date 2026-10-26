@@ -75,19 +75,16 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `turn.cancel` 是建议性的：内核在下一个模型或工具批次边界检查取消。若某一批工具已经交给宿主，
 
 `initialize` 的 `model` 是可选块：**给了它，内核就自己发模型请求**（工具仍由宿主执行），宿主不必再应答
-`model.reply`；不给则维持代答路径，旧宿主不受影响。凭据不进帧——`api_key_env` 只给环境变量名。
-因此**宿主必须保证这个名字在内核子进程的环境里真的有值**：`config.toml` 里的字面 `api_key`
-不在环境里，宿主起内核时要把它按这个名字补进子进程环境（`KernelClient::spawn_with_env` /
-`spawn_with_stderr_env` + `kernel_credentials_env`）；名字留空时宿主按 Provider 默认名下发
-（`frame_api_key_env`：openai → `OPENAI_API_KEY`，anthropic → `ANTHROPIC_API_KEY`，gemini → `GEMINI_API_KEY`）。
-否则内核会在每回合开始就失败：`读取环境变量 … 失败…模型请求无法鉴权`。
+`model.reply`；不给则维持代答路径，旧宿主不受影响。凭据随帧明文下发——`api_key` 就是
+`config.toml` 里那条渠道的明文密钥，内核发请求时原样使用，不再读环境变量；留空表示未配置
+凭据，内核会在每回合开始就以「缺少 API Key」失败。
 
 `initialize` 的 `plugin_model_hooks`（缺省 false）是宿主对插件模型 Hook 的能力声明：声明后内核
 在每次模型请求前发 `model.hook`（见「内核 → 宿主」请求表），未声明则不发，因此只实现协议最小集
 的兼容宿主不受影响。TUI 与本地 API 都声明。
 
 ```json
-{"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+{"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key": "<密钥>",
            "user_agent": "omnicrawl/0.1.0", "system_prompt": "你是助手。",
            "context_messages": [{"role": "user", "content": "<runtime_context>…</runtime_context>"}],
            "tools": [{"type": "function", "function": {"name": "read_file"}}],
@@ -146,7 +143,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 ```json
 {"model": {"model": "gpt-5.2", "provider": "openai", "protocol": "openai_responses",
-           "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+           "base_url": "https://api.openai.com/v1", "api_key": "<密钥>",
            "options": {"reasoning_effort": "high"}, "reasoning_effort": "high",
            "system_prompt": "你是助手。…<active_mode_prompt name=\"plan\">…</active_mode_prompt>",
            "context_messages": [{"role": "user", "content": "<project_instructions>…</project_instructions>"}],
@@ -160,8 +157,8 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
   （如 `model.tools`、`model.reasoning_effort`、`model.base_url`、`compaction.trigger_context_tokens`）。
 - `model.reasoning_effort` 只写生成选项里的 `reasoning_effort` 这一个键（别名按 `llm.reasoning_effort`
   的别名表归一化后写入），不像 `model.options` 那样整体替换——后者会顺手把别的生成选项打回默认值。
-- `provider` / `protocol` / `base_url` / `api_key_env` 是**渠道字段**：宿主切换模型渠道时整套下发，
-  凭据本身仍然不进帧（只给环境变量名）；给空串等同于不给。
+- `provider` / `protocol` / `base_url` / `api_key` 是**渠道字段**：宿主切换模型渠道时整套下发，
+  凭据就是明文 `api_key`；给空串等同于不给。
 - `model.system_prompt` / `model.context_messages` 是**提示词整体替换**：宿主启用主 Agent 模式
   （`/plan`、`/speaking-style`）或关闭模式后重算 system prompt（末尾追加或摘掉
   `<active_mode_prompt>`）与上下文消息并下发；

@@ -260,12 +260,14 @@ fn workspace_dir() -> PathBuf {
     root
 }
 
+const TEST_KEY: &str = "test-key";
+
 fn options(approval: ApprovalMode) -> Options {
     Options {
         kernel: Path::new("omnicrawl").to_path_buf(),
         model: "stub-model".to_string(),
         base_url: "http://127.0.0.1:1/v1".to_string(),
-        api_key_env: "OMNICRAWL_TUI_TEST_KEY".to_string(),
+        api_key: TEST_KEY.to_string(),
         system_prompt: Some("你是测试助手。".to_string()),
         session_root: None,
         context_window_tokens: Some(128_000),
@@ -708,7 +710,6 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
             model: "stub".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "stub".to_string(),
-            api_key_env: "STUB".to_string(),
             retry_count: 1,
         }),
         masking: None,
@@ -725,7 +726,6 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
             model: "stub".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "stub".to_string(),
-            api_key_env: "STUB".to_string(),
             retry_count: 1,
         }),
         masking: None,
@@ -812,7 +812,6 @@ fn context_prune_does_not_block_the_ui_thread() {
             model: "stub".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "stub".to_string(),
-            api_key_env: "STUB".to_string(),
             retry_count: 1,
         }),
         masking: None,
@@ -2472,7 +2471,6 @@ fn pasting_into_an_open_settings_panel_reaches_the_editing_field() {
                 protocol: "chat_completions".to_string(),
                 base_url: "https://api.example.com/v1".to_string(),
                 api_key: String::new(),
-                api_key_env: "PROBE_API_KEY".to_string(),
                 model_id: "gpt-5.2".to_string(),
                 user_agent: String::new(),
                 enabled: true,

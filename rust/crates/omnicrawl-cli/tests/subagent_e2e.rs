@@ -464,7 +464,7 @@ fn model_block(server: &StubServer, tools: Value, retry: Option<i64>) -> Value {
     let mut block = json!({
         "model": "stub-model",
         "base_url": server.addr,
-        "api_key_env": "OPENAI_API_KEY",
+        "api_key": TEST_KEY,
         "system_prompt": "你是主助手。",
         "tools": tools,
     });

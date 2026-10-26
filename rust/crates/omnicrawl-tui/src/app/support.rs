@@ -256,13 +256,13 @@ pub(super) fn computer_use_form_values(config: &ComputerUseConfig) -> Vec<FieldV
 
 /// 图像生成页的字段初值；顺序与 `FormKind::ImageGen` 的字段表一致。
 ///
-/// `api_key` 不进界面：编辑期间按磁盘原值保留，界面只显示凭据的环境变量名。
+/// `api_key` 只渲染掩码，输入态从空开始（留空＝不改动），与渠道页同口径。
 pub(super) fn image_gen_form_values(config: &ImageGenConfiguration) -> Vec<FieldValue> {
     vec![
         FieldValue::Flag(config.enabled),
         FieldValue::Text(config.provider.clone()),
         FieldValue::Text(config.base_url.clone()),
-        FieldValue::Text(config.api_key_env.clone()),
+        FieldValue::Text(crate::ui::settings::state::mask_api_key(&config.api_key)),
         FieldValue::Text(config.model.clone()),
         FieldValue::Text(config.size.clone()),
         FieldValue::Text(config.quality.clone()),
@@ -363,8 +363,8 @@ pub(super) fn feature_label(key: &str) -> String {
 
 /// 图像生成运行期选项：命令行只承载显式覆盖，未给的字段回落 `[image_gen]` 配置。
 ///
-/// 凭据只认配置里的明文 `api_key`（执行体不看 `api_key_env`），因此这里必须一并带上，
-/// 否则工具每次都会以「缺少 API Key」失败。
+/// 凭据只认配置里的明文 `api_key`，因此这里必须一并带上，否则工具每次都会以
+/// 「缺少 API Key」失败。
 pub(super) fn image_gen_options_from(
     config: &ImageGenConfiguration,
     cli: &crate::args::ImageGenArgs,
@@ -377,11 +377,10 @@ pub(super) fn image_gen_options_from(
             .clone()
             .unwrap_or_else(|| config.base_url.clone()),
         model: cli.model.clone().unwrap_or_else(|| config.model.clone()),
-        api_key: config.api_key.clone(),
-        api_key_env: cli
-            .api_key_env
+        api_key: cli
+            .api_key
             .clone()
-            .unwrap_or_else(|| config.api_key_env.clone()),
+            .unwrap_or_else(|| config.api_key.clone()),
         size: config.size.clone(),
         quality: config.quality.clone(),
         output_format: config.output_format.clone(),
@@ -418,7 +417,6 @@ pub(super) fn decision_row_from_config(channel: &DecisionChannelConfig) -> Decis
         base_url: channel.base_url.clone(),
         // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
         api_key: channel.api_key.clone(),
-        api_key_env: channel.api_key_env.clone(),
         model: channel.model.clone(),
         retry_count: channel.retry_count,
         enabled: channel.enabled,
@@ -433,7 +431,6 @@ pub(super) fn embedding_row_from_config(channel: &EmbeddingChannelConfig) -> Emb
         base_url: channel.base_url.clone(),
         // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
         api_key: channel.api_key.clone(),
-        api_key_env: channel.api_key_env.clone(),
         model: channel.model.clone(),
         dimensions: channel.dimensions,
         timeout_seconds: channel.timeout_seconds,
@@ -448,7 +445,6 @@ pub(super) fn embedding_config_from_row(row: &EmbeddingRow) -> EmbeddingChannelC
         name: row.name.trim().to_string(),
         base_url: row.base_url.trim().to_string(),
         api_key: row.api_key.trim().to_string(),
-        api_key_env: row.api_key_env.trim().to_string(),
         model: row.model.trim().to_string(),
         dimensions: row.dimensions,
         batch_size: EmbeddingChannelConfig::default().batch_size,
@@ -464,7 +460,6 @@ pub(super) fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConf
         mode: row.mode.trim().to_string(),
         base_url: row.base_url.trim().to_string(),
         api_key: row.api_key.trim().to_string(),
-        api_key_env: row.api_key_env.trim().to_string(),
         model: row.model.trim().to_string(),
         retry_count: row.retry_count,
         enabled: row.enabled,
@@ -481,7 +476,6 @@ pub(super) fn channel_row_from_config(channel: &ChannelConfig) -> ChannelRow {
         base_url: channel.base_url.clone(),
         // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
         api_key: channel.api_key.clone(),
-        api_key_env: channel.api_key_env.clone(),
         model_id: channel.model_id.clone(),
         user_agent: channel.user_agent.clone(),
         enabled: channel.enabled,
@@ -503,7 +497,6 @@ pub(super) fn channel_config_from_row(row: &ChannelRow) -> ChannelConfig {
         api_key: row.api_key.trim().to_string(),
         model_id: row.model_id.trim().to_string(),
         enabled: row.enabled,
-        api_key_env: row.api_key_env.trim().to_string(),
         user_agent: row.user_agent.trim().to_string(),
     }
 }

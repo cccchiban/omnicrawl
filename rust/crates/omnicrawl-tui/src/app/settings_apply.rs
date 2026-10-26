@@ -45,7 +45,6 @@ impl App {
                 self.llm.provider = channel.provider.clone();
                 self.llm.protocol = channel.protocol.clone();
                 self.llm.base_url = channel.base_url.clone();
-                self.llm.api_key_env = channel.api_key_env.clone();
                 self.llm.profile_id = channel.profile_id.clone();
                 self.llm.catalog_key = channel.key.clone();
                 self.llm.model_source = "custom".to_string();
@@ -748,8 +747,7 @@ impl App {
 
     /// 图像生成：写 `config.toml [image_gen]`，再按新配置重建图像生成工具。
     ///
-    /// 界面不编辑 `api_key`（凭据不进界面状态）：整段写盘时按磁盘原值继承，
-    /// 否则会把已存的凭据抹掉；重建工具表失败时磁盘与运行期一起回滚。
+    /// 凭据字段只显示掩码，留空＝保留磁盘原值；重建工具表失败时磁盘与运行期一起回滚。
     pub(super) fn apply_image_gen_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_image_gen_configuration(&environment, None)
@@ -761,7 +759,10 @@ impl App {
         configuration.enabled = field_flag(values, 0);
         configuration.provider = field_text_or(values, 1, "openai");
         configuration.base_url = field_text_or(values, 2, "https://api.openai.com/v1");
-        configuration.api_key_env = field_text_or(values, 3, "OPENAI_API_KEY");
+        let api_key = field_text(values, 3);
+        if !api_key.trim().is_empty() {
+            configuration.api_key = api_key.trim().to_string();
+        }
         configuration.model = field_text_or(values, 4, "gpt-image-2");
         configuration.size = field_text(values, 5);
         configuration.quality = field_text(values, 6);
@@ -802,7 +803,6 @@ impl App {
         image_gen.base_url = config.base_url.clone();
         image_gen.model = config.model.clone();
         image_gen.api_key = config.api_key.clone();
-        image_gen.api_key_env = config.api_key_env.clone();
         image_gen.size = config.size.clone();
         image_gen.quality = config.quality.clone();
         image_gen.output_format = config.output_format.clone();

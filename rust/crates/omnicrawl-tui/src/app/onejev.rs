@@ -114,7 +114,6 @@ impl App {
             mode: DECISION_MODE_ONEJEV.to_string(),
             base_url: DEFAULT_LOCAL_DECISION_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_LOCAL_DECISION_API_KEY_ENV.to_string(),
             model: model_name,
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             enabled: true,

@@ -217,7 +217,7 @@ fn model_config(server: &StubServer) -> Value {
     json!({
         "model": "e2e-model",
         "base_url": server.addr,
-        "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
         "user_agent": "omnicrawl-e2e",
         "system_prompt": "你是助手。",
         "tools": [{

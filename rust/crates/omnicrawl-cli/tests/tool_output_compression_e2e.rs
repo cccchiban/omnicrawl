@@ -344,7 +344,7 @@ fn model_config(server: &StubServer) -> Value {
     json!({
         "model": "e2e-model",
         "base_url": server.addr,
-        "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
         "system_prompt": "你是助手。",
         "tools": [{
             "type": "function",
@@ -396,7 +396,6 @@ fn write_config(name: &str, base_url: &str, min_chars: usize) -> PathBuf {
              [llm.profiles.stub]\n\
              provider = \"openai\"\n\
              base_url = \"{base_url}\"\n\
-             api_key_env = \"OMNICRAWL_TEST_KEY\"\n\
              api_key = \"{LITERAL_KEY}\"\n\
              [tool_output_compression]\nenabled = true\nmodel_key = \"compress-model\"\n\
              thinking_enabled = false\nreasoning_effort = \"high\"\nmin_chars = {min_chars}\n\
@@ -710,7 +709,6 @@ fn write_config_with_profile(name: &str, base_url: &str, min_chars: usize) -> Pa
              [llm.profiles.stub]
              provider = \"openai\"
              base_url = \"{base_url}\"
-             api_key_env = \"OMNICRAWL_TEST_KEY\"
              {literal}
              [tool_output_compression]
 enabled = true

@@ -127,7 +127,6 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
                     "provider": channel.provider,
                     "enabled": channel.enabled,
                     "has_api_key": !channel.api_key.is_empty(),
-                    "api_key_env": channel.api_key_env,
                     "base_url": channel.base_url,
                 }))
                 .collect::<Vec<Value>>(),
@@ -446,15 +445,9 @@ async fn put_image_gen(
         next.enabled = body_required_bool("enabled", Some(raw))?;
     }
     if provided(&body, "api_key").is_some() {
+        // 凭据只走明文：空串表示清空，非空即写入。
         let text = body_string_field(&body, "api_key")?.unwrap_or_default();
-        // 凭据只走环境变量：这里只接受「清空」，明文一律拒绝。
-        if !text.is_empty() {
-            return Err(ApiError::bad_request(
-                "INVALID_SETTING",
-                "image_gen.api_key 不接受明文写入；请使用 api_key_env 环境变量。",
-            ));
-        }
-        next.api_key = String::new();
+        next.api_key = text.trim().to_string();
     }
     if let Some(value) = body_int("n", body.get("n"), IMAGE_GEN_N_RANGE.0, IMAGE_GEN_N_RANGE.1)? {
         next.n = value;
@@ -470,7 +463,7 @@ async fn put_image_gen(
     for (field, target) in [
         ("provider", &mut next.provider),
         ("base_url", &mut next.base_url),
-        ("api_key_env", &mut next.api_key_env),
+        ("api_key", &mut next.api_key),
         ("model", &mut next.model),
         ("size", &mut next.size),
         ("quality", &mut next.quality),
@@ -1190,7 +1183,6 @@ fn serialize_image_gen(
         "enabled": config.enabled,
         "provider": config.provider,
         "base_url": config.base_url,
-        "api_key_env": config.api_key_env,
         "has_api_key": !config.api_key.is_empty(),
         "model": config.model,
         "size": config.size,

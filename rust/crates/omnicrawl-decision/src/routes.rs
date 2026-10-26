@@ -174,7 +174,6 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
             "mode": channel.mode,
             "model": channel.model,
             "base_url": channel.base_url,
-            "api_key_env": channel.api_key_env,
             "api_key_configured": !channel.resolve_api_key().is_empty(),
             "retry_count": channel.retry_count,
         })

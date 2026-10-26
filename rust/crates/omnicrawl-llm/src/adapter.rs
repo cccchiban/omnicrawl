@@ -351,14 +351,14 @@ fn missing_credential_message(profile_id: &str, protocol: Protocol) -> String {
     if profile_id.trim().is_empty() {
         // 内核自己组装的运行期没有 Profile 身份（`KernelModelConfig` 不带 id）：沿用内核既有
         // 文案，不为空 id 造出 `Profile  缺少…` 这种双空格消息。
-        return "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。"
+        return "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。"
             .to_string();
     }
     match protocol {
         Protocol::AnthropicMessages => format!("Profile {profile_id} 缺少 Anthropic API Key。"),
         Protocol::GeminiGenerateContent => format!("Profile {profile_id} 缺少 Gemini API Key。"),
         _ => format!(
-            "Profile {profile_id} 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。"
+            "Profile {profile_id} 缺少 API Key。请在 Profile 中配置 api_key。"
         ),
     }
 }

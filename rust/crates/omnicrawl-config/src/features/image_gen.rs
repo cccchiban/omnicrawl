@@ -9,7 +9,6 @@ use crate::value::{python_str, truthy};
 
 pub const DEFAULT_IMAGE_GEN_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_IMAGE_GEN_MODEL: &str = "gpt-image-2";
-pub const DEFAULT_IMAGE_GEN_API_KEY_ENV: &str = "OPENAI_API_KEY";
 
 /// Gemini 通道的默认端点与模型（`provider = "gemini"` 且沿用默认值时自动折算）。
 pub const DEFAULT_IMAGE_GEN_GEMINI_BASE_URL: &str =
@@ -45,7 +44,6 @@ pub struct ImageGenConfiguration {
     pub provider: String,
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     pub size: String,
     pub quality: String,
@@ -65,7 +63,6 @@ impl Default for ImageGenConfiguration {
             provider: DEFAULT_IMAGE_GEN_PROVIDER.to_string(),
             base_url: DEFAULT_IMAGE_GEN_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_IMAGE_GEN_API_KEY_ENV.to_string(),
             model: DEFAULT_IMAGE_GEN_MODEL.to_string(),
             size: "auto".to_string(),
             quality: "auto".to_string(),
@@ -173,12 +170,6 @@ impl ImageGenConfiguration {
         self.aspect_ratio = aspect_ratio;
         self.image_size = image_size;
         self.api_key = self.api_key.trim().to_string();
-        let api_key_env = self.api_key_env.trim().to_string();
-        self.api_key_env = if api_key_env.is_empty() {
-            DEFAULT_IMAGE_GEN_API_KEY_ENV.to_string()
-        } else {
-            api_key_env
-        };
         Ok(self)
     }
 
@@ -206,7 +197,6 @@ pub fn load_image_gen_configuration(
         provider: text_field(&section, "provider", DEFAULT_IMAGE_GEN_PROVIDER),
         base_url: text_field(&section, "base_url", DEFAULT_IMAGE_GEN_BASE_URL),
         api_key: text_field(&section, "api_key", ""),
-        api_key_env: text_field(&section, "api_key_env", DEFAULT_IMAGE_GEN_API_KEY_ENV),
         model: text_field(&section, "model", DEFAULT_IMAGE_GEN_MODEL),
         size: text_field(&section, "size", "auto"),
         quality: text_field(&section, "quality", "auto"),
@@ -245,10 +235,6 @@ pub fn save_image_gen_configuration(
     section.insert(
         "api_key".to_string(),
         Value::String(configuration.api_key.clone()),
-    );
-    section.insert(
-        "api_key_env".to_string(),
-        Value::String(configuration.api_key_env.clone()),
     );
     section.insert(
         "model".to_string(),

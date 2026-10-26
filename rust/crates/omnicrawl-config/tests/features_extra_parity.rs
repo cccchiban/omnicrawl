@@ -201,7 +201,6 @@ fn image_gen_load_matches_python() {
                     "provider": config.provider,
                     "base_url": config.base_url,
                     "api_key": config.api_key,
-                    "api_key_env": config.api_key_env,
                     "model": config.model,
                     "size": config.size,
                     "quality": config.quality,

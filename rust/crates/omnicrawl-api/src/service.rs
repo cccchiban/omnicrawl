@@ -36,7 +36,7 @@ use omnicrawl_controllers::tool_args::public_tool_arguments;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_extensions::skill::SkillManager;
 use omnicrawl_host::approval::ApprovalMode;
-use omnicrawl_host::kernel::{frame_api_key_env, kernel_credentials_env, KernelClient};
+use omnicrawl_host::kernel::KernelClient;
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::tools::monitor::{MonitorManager, MonitorPollView, MonitorTaskView};
@@ -335,16 +335,8 @@ impl AgentService {
     ) -> Result<Self, String> {
         let ready = Arc::new(Mutex::new(String::new()));
         let slot = Arc::clone(&ready);
-        // 凭据注入：帧里只带变量名，内核只从环境读密钥；`config.toml` 里的字面 `api_key`
-        // 不在环境里，必须在这里补进子进程环境（否则回合会报「读取环境变量 … 失败」）。
-        // 名字用帧里的那个（空名字已由 `options_from_process` 退回 Provider 默认名）。
-        let credentials = kernel_credentials_env(
-            &options.env,
-            &options.model.provider,
-            &options.model.api_key_env,
-        );
         let client =
-            KernelClient::spawn_with_stderr_env(kernel_program, credentials, move |line| {
+            KernelClient::spawn_with_stderr(kernel_program, move |line| {
                 if let Some(session_id) = parse_session_ready(line) {
                     if let Ok(mut guard) = slot.lock() {
                         *guard = session_id;
@@ -867,7 +859,7 @@ fn options_from_process_profile(
         provider: llm.provider.clone(),
         protocol: llm.protocol.clone(),
         base_url: llm.base_url.clone(),
-        api_key_env: frame_api_key_env(&llm.provider, &llm.api_key_env),
+        api_key: llm.api_key.clone(),
         user_agent: if llm.user_agent.trim().is_empty() {
             format!("omnicrawl-api/{}", env!("CARGO_PKG_VERSION"))
         } else {

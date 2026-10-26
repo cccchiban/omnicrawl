@@ -177,12 +177,9 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 
 **凭据口径**：压缩渠道用它在 config.toml 里写下的明文 `api_key`；没写明文就没有可用凭据，
 压缩按「缺少凭据」跳过。
-原因是内核进程里的 `OPENAI_API_KEY` 是宿主为**当前主渠道**注入的（`omnicrawl-host/src/kernel.rs`
-的 `kernel_credentials_env`），而压缩渠道往往是另一家服务——用户的配置里主渠道是聚合网关、
-压缩渠道是硅基流动，两边都写着 `api_key_env = "OPENAI_API_KEY"`；若按环境变量优先，就会
-把聚合网关的 key 发给硅基流动，得到 `模型服务鉴权失败（HTTP 401）`。Python 侧读的是用户自己的
-shell 环境（同名变量通常根本没设），因此明文优先在常见配置下与它同结果；差异只在
-「仅在环境变量里轮换密钥、config.toml 里留着旧明文」时 Rust 会用明文。
+压缩渠道往往是另一家服务——用户的配置里主渠道是聚合网关、压缩渠道是硅基流动；两个渠道各带
+自己的明文 `api_key`，各用各的，不会把聚合网关的 key 发给硅基流动（那会得到
+`模型服务鉴权失败（HTTP 401）`）。凭据不再有环境变量通道后也不存在同名变量串用的问题。
 对应回归：`crates/omnicrawl-cli/tests/tool_output_compression_e2e.rs` 的
 `compression_model_key_is_resolved_through_the_profile_connection` 断言压缩请求带的是
 渠道明文 key，而主请求仍走帧里声明的环境变量名。
@@ -229,10 +226,8 @@ shell 环境（同名变量通常根本没设），因此明文优先在常见�
 
 宿主可以在回合间隙改内核持有的设置，用于设置面板即点即存：
 
-- `model`：`model` / `options` / `reasoning_effort`（只改生成选项里的这一个键）/ `tools`（静态工具声明整体替换）/ `context_window_tokens`，以及渠道字段 `provider` / `protocol` / `base_url` / `api_key_env`（切换模型渠道时整套下发，空串等同于不给，凭据本身不进帧）；
-  内核的 `read_api_key` 只按 `api_key_env` 这个**名字**读环境变量（读不到就整回合失败：
-  `读取环境变量 … 失败…模型请求无法鉴权`），所以凭据只写在 `config.toml` 时，宿主必须把它注入
-  内核子进程的环境（TUI 与本地 API 都在起内核/重起内核时做这件事）。
+- `model`：`model` / `options` / `reasoning_effort`（只改生成选项里的这一个键）/ `tools`（静态工具声明整体替换）/ `context_window_tokens`，以及渠道字段 `provider` / `protocol` / `base_url` / `api_key`（切换模型渠道时整套下发，空串等同于不给）；
+  凭据就是明文 `api_key`，内核的 `read_api_key` 直接取它，不再读环境变量。
 - `compaction`：压缩阈值与窗口等字段，映射与 `initialize.session.compaction` 共用
   `compaction.rs::overlay_compaction_config`，两处不会漂移。
 

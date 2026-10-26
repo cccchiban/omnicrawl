@@ -25,7 +25,6 @@ pub struct ProviderProfile {
     pub enabled: bool,
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     pub user_agent: String,
     pub default_protocol: String,
     pub discovery_enabled: bool,

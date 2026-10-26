@@ -104,8 +104,7 @@ use omnicrawl_config::features::decision_model::{
     SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES, DECISION_SWITCH_KB_SEARCH,
     DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH, DECISION_SWITCH_WEB_SEARCH,
     DECISION_SWITCH_WEB_SEARCH_EMBEDDING, DEFAULT_DECISION_RETRY_COUNT,
-    DEFAULT_LOCAL_DECISION_API_KEY_ENV, DEFAULT_LOCAL_DECISION_BASE_URL,
-    DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
+    DEFAULT_LOCAL_DECISION_BASE_URL, DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
 };
 use omnicrawl_config::features::embedding::{
     load_embedding_model_configuration, save_embedding_model_configuration, EmbeddingChannelConfig,
@@ -154,7 +153,7 @@ use omnicrawl_workspace::agent_isolation::{
 use crate::args::{ApprovalMode, Options};
 use crate::commands::{self, TuiHostAgent};
 use crate::host::{self, BatchStep, Waiting};
-use crate::kernel::{frame_api_key_env, KernelClient};
+use crate::kernel::KernelClient;
 use crate::state::{AppState, PendingImage, Record};
 use crate::tools::{
     tts_backend, AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry,
@@ -301,29 +300,6 @@ struct ToolCompletion {
 /// `config.toml` 的渠道设置。
 pub fn uses_external_channel(options: &Options) -> bool {
     !options.base_url.trim().is_empty()
-}
-
-/// 握手交给内核的凭据环境变量名。
-///
-/// 内核的 `read_api_key` 只看这个名字对应的环境变量，所以起内核时的凭据注入
-/// （`KernelClient::spawn_with_env`）必须用同一个名字，否则注入了也不会被读到。
-///
-/// 口径：命令行给了 `--base-url` 时用命令行那个名字；否则优先 `config.toml` 渠道里的名字，
-/// 渠道没写名字就用 Provider 默认名。
-pub fn effective_api_key_env(
-    external_channel: bool,
-    provider: &str,
-    llm_env: &str,
-    cli_env: &str,
-) -> String {
-    if external_channel {
-        return frame_api_key_env(provider, cli_env);
-    }
-    if llm_env.trim().is_empty() {
-        frame_api_key_env(provider, "")
-    } else {
-        llm_env.to_string()
-    }
 }
 
 /// 按工作区装配提示词运行时：模板 → system prompt、AGENTS.md → 项目规范、
@@ -1254,30 +1230,6 @@ mod tests {
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             KeyEventKind::Release
         )));
-    }
-
-    #[test]
-    fn api_key_env_follows_channel_then_provider_default() {
-        // 命令行渠道（`--base-url`）：用命令行那个名字。
-        assert_eq!(
-            effective_api_key_env(true, "openai", "OPENAI_API_KEY", "MY_KEY"),
-            "MY_KEY"
-        );
-        // 配置渠道：优先渠道里的名字。
-        assert_eq!(
-            effective_api_key_env(false, "openai", "CHANNEL_KEY", "OPENAI_API_KEY"),
-            "CHANNEL_KEY"
-        );
-        // 渠道里没写名字：退回 Provider 默认名（不能退回空串：内核只看这个名字）。
-        assert_eq!(
-            effective_api_key_env(false, "anthropic", "  ", "OPENAI_API_KEY"),
-            "ANTHROPIC_API_KEY"
-        );
-        assert_eq!(
-            effective_api_key_env(false, "gemini", "", "OPENAI_API_KEY"),
-            "GEMINI_API_KEY"
-        );
-        assert_eq!(effective_api_key_env(true, "", "", ""), "OPENAI_API_KEY");
     }
 
     #[test]

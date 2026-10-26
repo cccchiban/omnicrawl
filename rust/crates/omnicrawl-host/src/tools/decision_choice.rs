@@ -43,7 +43,6 @@ pub struct ChoiceChannel {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     /// 请求失败后的重试次数（不含首次请求）。
     pub retry_count: u64,
 }
@@ -55,7 +54,6 @@ impl ChoiceChannel {
             model: channel.model.clone(),
             base_url: channel.base_url.clone(),
             api_key: channel.api_key.clone(),
-            api_key_env: channel.api_key_env.clone(),
             retry_count: channel.retry_count.max(0) as u64,
         }
     }
@@ -264,10 +262,9 @@ impl ChoiceClient for DecisionChoiceClient {
         let channel = request.channel;
         let api_key = channel.resolve_api_key();
         if api_key.is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
-            return Err(format!(
-                "缺少 API Key：请设置环境变量 {}。",
-                channel.api_key_env
-            ));
+            return Err(
+                "缺少 API Key：请填写该决策渠道的 api_key。".to_string(),
+            );
         }
         let criteria: Map<String, Value> = request
             .criteria
@@ -350,7 +347,6 @@ mod tests {
             model: "jev-latest".to_string(),
             base_url: base_url.to_string(),
             api_key: "jv_test".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         }
     }

@@ -23,7 +23,6 @@ pub fn embedding_field_value(row: &EmbeddingRow, field: EmbeddingField) -> Strin
         EmbeddingField::BaseUrl => row.base_url.clone(),
         // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码（与渠道页同款）。
         EmbeddingField::ApiKey => mask_api_key(&row.api_key),
-        EmbeddingField::ApiKeyEnv => row.api_key_env.clone(),
         EmbeddingField::ModelId => row.model.clone(),
         EmbeddingField::Dimensions => {
             if row.dimensions > 0 {
@@ -64,7 +63,6 @@ pub(super) fn set_embedding_field(row: &mut EmbeddingRow, field: EmbeddingField,
                 row.api_key = trimmed.to_string();
             }
         }
-        EmbeddingField::ApiKeyEnv => row.api_key_env = value.trim().to_string(),
         EmbeddingField::ModelId => row.model = value.trim().to_string(),
         // 「由服务端决定」这类非数字输入按 0 处理（0 即不下发 dimensions）。
         EmbeddingField::Dimensions => {
@@ -122,7 +120,6 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
         DecisionField::BaseUrl => row.base_url.clone(),
         // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码（与渠道页同款）。
         DecisionField::ApiKey => mask_api_key(&row.api_key),
-        DecisionField::ApiKeyEnv => row.api_key_env.clone(),
         DecisionField::ModelId => row.model.clone(),
         DecisionField::RetryCount => row.retry_count.to_string(),
         DecisionField::Enabled => {
@@ -157,7 +154,6 @@ pub(super) fn set_decision_field(row: &mut DecisionRow, field: DecisionField, va
                 row.api_key = trimmed.to_string();
             }
         }
-        DecisionField::ApiKeyEnv => row.api_key_env = value.trim().to_string(),
         DecisionField::ModelId => row.model = value.trim().to_string(),
         // 非数字输入原样保留（保存前的本地校验会给出可读提示），越界值由配置侧收口。
         DecisionField::RetryCount => {
@@ -242,7 +238,6 @@ pub fn channel_field_value(row: &ChannelRow, field: ChannelField) -> String {
         ChannelField::BaseUrl => row.base_url.clone(),
         // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码。
         ChannelField::ApiKey => mask_api_key(&row.api_key),
-        ChannelField::ApiKeyEnv => row.api_key_env.clone(),
         ChannelField::ModelId => row.model_id.clone(),
         ChannelField::UserAgent => row.user_agent.clone(),
         ChannelField::Enabled => {
@@ -279,7 +274,6 @@ pub(super) fn set_channel_field(row: &mut ChannelRow, field: ChannelField, value
                 row.api_key = trimmed.to_string();
             }
         }
-        ChannelField::ApiKeyEnv => row.api_key_env = value,
         ChannelField::ModelId => row.model_id = value,
         ChannelField::UserAgent => row.user_agent = value,
         ChannelField::Enabled => row.enabled = value == "开启",

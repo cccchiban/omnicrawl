@@ -637,9 +637,9 @@
       }
     },
     {
-      "name": "Key 只写了环境变量名",
+      "name": "Profile 未写明文 api_key",
       "initial_files": {
-        "config.toml": "[llm.profiles.gem-main]\nprovider = \"gemini\"\napi_key_env = \"GEMINI_API_KEY\"\n\n[llm.active_model]\nprofile = \"gem-main\"\n"
+        "config.toml": "[llm.profiles.gem-main]\nprovider = \"gemini\"\n\n[llm.active_model]\nprofile = \"gem-main\"\n"
       },
       "env": {
         "GEMINI_API_KEY": "env-key"
@@ -647,7 +647,7 @@
       "channel_setup": false,
       "prompt": null,
       "final_files": {
-        "config.toml": "[llm.profiles.gem-main]\nprovider = \"gemini\"\napi_key_env = \"GEMINI_API_KEY\"\n\n[llm.active_model]\nprofile = \"gem-main\"\n",
+        "config.toml": "[llm.profiles.gem-main]\nprovider = \"gemini\"\n\n[llm.active_model]\nprofile = \"gem-main\"\n",
         "models.toml": "# 模型配置模板\nversion = 1\n",
         "subagents.toml": "# 子代理设置模板\n"
       },

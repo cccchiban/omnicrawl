@@ -15,7 +15,8 @@ pub struct Options {
     pub kernel: PathBuf,
     pub model: String,
     pub base_url: String,
-    pub api_key_env: String,
+    /// 命令行直给的 API Key 明文；空表示走 config.toml 的渠道。
+    pub api_key: String,
     /// system prompt 的**显式覆盖**：只有 `--system-prompt` 给了才有值。
     /// `None` 表示没给，提示词装配走 `rust/assets/templates/system_prompt.md` 模板——
     /// 这里不能回落成默认文案，否则模板会被一句话顶掉（曾经的 bug）。
@@ -62,7 +63,7 @@ pub struct ImageGenArgs {
     pub enabled: Option<bool>,
     pub base_url: Option<String>,
     pub model: Option<String>,
-    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
 }
 
 impl Default for ImageGenArgs {
@@ -71,7 +72,7 @@ impl Default for ImageGenArgs {
             enabled: None,
             base_url: None,
             model: None,
-            api_key_env: None,
+            api_key: None,
         }
     }
 }
@@ -96,7 +97,7 @@ omnicrawl 或 PATH。
   --kernel <路径>          内核可执行文件
   --model <名称>           模型名（未给时读 config.toml 里的当前模型）
   --base-url <地址>        模型接口基地址（未给时读 config.toml）
-  --api-key-env <变量名>   存放凭据的环境变量名（未给时读 config.toml）
+  --api-key <密钥>         API Key 明文（未给时读 config.toml）
   --system-prompt <文本>   系统提示词；给了就整段替换内置模板
   --session-root <目录>    会话根目录；给了就让内核自己持有会话
   --context-window <N>     HUD 上下文占用条的分母（token）
@@ -109,7 +110,7 @@ omnicrawl 或 PATH。
   --image-gen              启用图像生成（未给时读 config.toml 的 [image_gen]）
   --image-gen-base-url <地址>   图像接口基地址（未给时读 config.toml）
   --image-gen-model <名称>      图像模型（未给时读 config.toml）
-  --image-gen-api-key-env <变量> 图像 API Key 的环境变量名（未给时读 config.toml）
+  --image-gen-api-key <密钥> 图像 API Key 明文（未给时读 config.toml）
   --advisor-model <名称>        顾问模型（给了即启用；未给时读 config.toml）
   --advisor-base-url <地址>     顾问接口基地址（未给时读 config.toml，再回落主模型）
   --advisor-effort <强度>       顾问推理强度（未给时读 config.toml）
@@ -145,7 +146,7 @@ fn parse_with(
     let mut kernel: Option<PathBuf> = None;
     let mut model: Option<String> = None;
     let mut base_url: Option<String> = None;
-    let mut api_key_env: Option<String> = None;
+    let mut api_key: Option<String> = None;
     let mut system_prompt: Option<String> = None;
     let mut session_root: Option<PathBuf> = None;
     let mut context_window: Option<u64> = None;
@@ -157,7 +158,7 @@ fn parse_with(
     let mut image_gen_switch: Option<bool> = None;
     let mut image_gen_base_url: Option<String> = None;
     let mut image_gen_model: Option<String> = None;
-    let mut image_gen_api_key_env: Option<String> = None;
+    let mut image_gen_api_key: Option<String> = None;
     let mut advisor_model: Option<String> = None;
     let mut advisor_base_url: Option<String> = None;
     let mut advisor_effort: Option<String> = None;
@@ -176,7 +177,7 @@ fn parse_with(
             "--kernel" => kernel = Some(PathBuf::from(take_value(args, &mut index, flag)?)),
             "--model" => model = Some(take_value(args, &mut index, flag)?),
             "--base-url" => base_url = Some(take_value(args, &mut index, flag)?),
-            "--api-key-env" => api_key_env = Some(take_value(args, &mut index, flag)?),
+            "--api-key" => api_key = Some(take_value(args, &mut index, flag)?),
             "--system-prompt" => system_prompt = Some(take_value(args, &mut index, flag)?),
             "--session-root" => {
                 let value = take_value(args, &mut index, flag)?;
@@ -220,8 +221,8 @@ fn parse_with(
             "--image-gen-model" => {
                 image_gen_model = Some(take_value(args, &mut index, flag)?);
             }
-            "--image-gen-api-key-env" => {
-                image_gen_api_key_env = Some(take_value(args, &mut index, flag)?);
+            "--image-gen-api-key" => {
+                image_gen_api_key = Some(take_value(args, &mut index, flag)?);
             }
             "--advisor-model" => {
                 advisor_model = Some(take_value(args, &mut index, flag)?);
@@ -253,7 +254,7 @@ fn parse_with(
         kernel: kernel.unwrap_or_else(|| resolve_kernel_path(exe_dir)),
         model,
         base_url: base_url.unwrap_or_default(),
-        api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+        api_key: api_key.unwrap_or_default(),
         system_prompt,
         session_root,
         context_window_tokens: context_window,
@@ -279,7 +280,7 @@ fn parse_with(
             enabled: image_gen_switch,
             base_url: image_gen_base_url,
             model: image_gen_model,
-            api_key_env: image_gen_api_key_env,
+            api_key: image_gen_api_key,
         },
         advisor: AdvisorArgs {
             // `--advisor-model` 是唯一开关：没给就让宿主按配置决定。
@@ -347,7 +348,7 @@ mod tests {
             "https://cli.example/v1"
         );
         let parsed = options(&["--model", "m"]);
-        assert_eq!(parsed.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(parsed.api_key, "");
         // 没给 `--approval` 时取配置兜底（上文的注入值），不再是硬编码的 manual。
         assert_eq!(parsed.approval, ApprovalMode::Review);
         assert_eq!(parsed.command_timeout_seconds, 360);
@@ -361,7 +362,7 @@ mod tests {
         assert_eq!(defaults.enabled, None, "命令行没给时留给配置文件");
         assert_eq!(defaults.base_url, None);
         assert_eq!(defaults.model, None);
-        assert_eq!(defaults.api_key_env, None);
+        assert_eq!(defaults.api_key, None);
 
         assert_eq!(
             options(&["--model", "m", "--image-gen"]).image_gen.enabled,
@@ -375,13 +376,13 @@ mod tests {
             "https://cli.example/v1",
             "--image-gen-model",
             "cli-model",
-            "--image-gen-api-key-env",
+            "--image-gen-api-key",
             "CLI_KEY",
         ])
         .image_gen;
         assert_eq!(cli.base_url.as_deref(), Some("https://cli.example/v1"));
         assert_eq!(cli.model.as_deref(), Some("cli-model"));
-        assert_eq!(cli.api_key_env.as_deref(), Some("CLI_KEY"));
+        assert_eq!(cli.api_key.as_deref(), Some("CLI_KEY"));
     }
 
     /// 测试默认的模型回退：配置里没有模型（真实配置属于开发机状态，不能进断言）。

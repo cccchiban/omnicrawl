@@ -21,8 +21,6 @@ use crate::value::{python_str, truthy};
 pub const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
 /// 默认向量模型。
 pub const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
-/// 默认凭据环境变量名。
-pub const DEFAULT_EMBEDDING_API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// 首次生成配置时使用的默认渠道 key。
 pub const DEFAULT_EMBEDDING_CHANNEL_KEY: &str = "openai-embedding";
 
@@ -37,9 +35,7 @@ pub struct EmbeddingChannelConfig {
     pub key: String,
     pub name: String,
     pub base_url: String,
-    /// 内联凭据。为空时走 `api_key_env`。
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     /// 期望维度；0 表示由服务端决定（不传 `dimensions`）。
     pub dimensions: i64,
@@ -56,7 +52,6 @@ impl Default for EmbeddingChannelConfig {
             name: "OpenAI 向量".to_string(),
             base_url: DEFAULT_EMBEDDING_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_EMBEDDING_API_KEY_ENV.to_string(),
             model: DEFAULT_EMBEDDING_MODEL.to_string(),
             dimensions: 0,
             batch_size: 64,
@@ -91,7 +86,6 @@ impl EmbeddingChannelConfig {
                 self.key
             )));
         }
-        self.api_key_env = self.api_key_env.trim().to_string();
         if self.dimensions < 0 {
             return Err(ConfigError::new(format!(
                 "向量渠道 {} 的 dimensions 不能为负。",
@@ -114,17 +108,9 @@ impl EmbeddingChannelConfig {
         Ok(self)
     }
 
-    /// 解析凭据：内联优先，否则从环境变量取。
-    pub fn resolve_api_key(&self, env: &ConfigEnvironment) -> String {
-        let inline = self.api_key.trim();
-        if !inline.is_empty() {
-            return inline.to_string();
-        }
-        let name = self.api_key_env.trim();
-        if name.is_empty() {
-            return String::new();
-        }
-        env.get_trimmed(name)
+    /// 解析凭据：只认配置里的明文 `api_key`。
+    pub fn resolve_api_key(&self, _env: &ConfigEnvironment) -> String {
+        self.api_key.trim().to_string()
     }
 }
 
@@ -217,10 +203,6 @@ fn parse_channel(key: &str, section: &Table) -> Result<EmbeddingChannelConfig, C
             value => value,
         },
         api_key: text("api_key"),
-        api_key_env: match text("api_key_env") {
-            value if value.is_empty() => base.api_key_env,
-            value => value,
-        },
         model: match text("model") {
             value if value.is_empty() => base.model,
             value => value,
@@ -317,10 +299,6 @@ pub fn save_embedding_model_configuration(
             "api_key".to_string(),
             Value::String(channel.api_key.clone()),
         );
-        entry.insert(
-            "api_key_env".to_string(),
-            Value::String(channel.api_key_env.clone()),
-        );
         entry.insert("model".to_string(), Value::String(channel.model.clone()));
         entry.insert("dimensions".to_string(), Value::Integer(channel.dimensions));
         entry.insert("batch_size".to_string(), Value::Integer(channel.batch_size));
@@ -335,4 +313,4 @@ pub fn save_embedding_model_configuration(
     atomic_write_text(&target, &dump_toml_text(&data))?;
     Ok(target)
 }
-
+

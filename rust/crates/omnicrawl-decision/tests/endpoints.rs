@@ -130,7 +130,6 @@ fn spawn_api(base_url: &str) -> SocketAddr {
             model: "jev-test".to_string(),
             base_url: base_url.to_string(),
             api_key: "jv_test".to_string(),
-            api_key_env: "JEV_API_KEY".to_string(),
             retry_count: 0,
         }),
     };

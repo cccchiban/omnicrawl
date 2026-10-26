@@ -850,7 +850,7 @@ fn schemas() -> Value {
                 "enabled": {"type": "boolean"},
                 "provider": {"type": "string", "enum": ["openai", "gemini"]},
                 "base_url": {"type": "string"},
-                "api_key_env": {"type": "string"},
+                "api_key": {"type": "string"},
                 "model": {"type": "string"},
                 "size": {"type": "string"},
                 "quality": {"type": "string"},

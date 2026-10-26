@@ -303,7 +303,6 @@ impl App {
                 protocol,
                 base_url,
                 api_key,
-                api_key_env,
                 user_agent,
             }) => self.start_channel_model_discovery(
                 profile_id,
@@ -311,7 +310,6 @@ impl App {
                 protocol,
                 base_url,
                 api_key,
-                api_key_env,
                 user_agent,
             ),
         }
@@ -319,10 +317,8 @@ impl App {
 
     /// 后台自动检测一个渠道的模型列表（网络 I/O 不能占用界面线程）。
     ///
-    /// 凭据优先取 `api_key_env` 指向的环境变量，没设时退回渠道里的内联密钥
-    /// （渠道页新录入的那一行；否则只把密钥留在 config.toml 的用户会看到
-    /// 「缺少 API Key，无法发现模型」）；协议字符串先解析成内核枚举，
-    /// 无法识别或缺少凭据时直接把原因回填给面板。
+    /// 凭据只取渠道里的明文密钥（渠道页新录入的那一行，或 config.toml 里已存的值）；
+    /// 协议字符串先解析成内核枚举，无法识别或缺少凭据时直接把原因回填给面板。
     pub(super) fn start_channel_model_discovery(
         &mut self,
         profile_id: String,
@@ -330,14 +326,10 @@ impl App {
         protocol: String,
         base_url: String,
         api_key: String,
-        api_key_env: String,
         user_agent: String,
     ) {
-        // 与 config 层 `ProviderProfile.resolve_api_key` 同口径：环境变量优先，其次内联密钥。
-        let api_key = match std::env::var(&api_key_env) {
-            Ok(value) if !value.trim().is_empty() => value,
-            _ => api_key.trim().to_string(),
-        };
+        // 与 config 层 `ProviderProfile.resolve_api_key` 同口径：只认明文密钥。
+        let api_key = api_key.trim().to_string();
         let timeout = (self.options.tool_timeout_seconds as f64).clamp(1.0, 10.0);
         let (sender, receiver) = mpsc::channel::<ChannelModelsResult>();
         self.channel_models_task = Some(receiver);

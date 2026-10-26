@@ -204,7 +204,7 @@ fn model() -> KernelModelConfig {
         provider: String::new(),
         protocol: String::new(),
         base_url: String::new(),
-        api_key_env: String::new(),
+        api_key: String::new(),
         user_agent: "omnicrawl-test".to_string(),
         system_prompt: "系统提示".to_string(),
         context_messages: Vec::new(),

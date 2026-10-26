@@ -277,7 +277,7 @@ fn model_config(server: &StubServer) -> Value {
     json!({
         "model": "main-model",
         "base_url": server.addr,
-        "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
         "system_prompt": "你是助手。",
         "tools": [{
             "type": "function",

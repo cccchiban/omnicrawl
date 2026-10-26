@@ -110,11 +110,7 @@ pub fn apply(
             (&settings.provider, &mut config.provider, "model.provider"),
             (&settings.protocol, &mut config.protocol, "model.protocol"),
             (&settings.base_url, &mut config.base_url, "model.base_url"),
-            (
-                &settings.api_key_env,
-                &mut config.api_key_env,
-                "model.api_key_env",
-            ),
+            (&settings.api_key, &mut config.api_key, "model.api_key"),
         ] {
             let Some(text) = value.as_ref() else {
                 continue;
@@ -263,7 +259,7 @@ mod tests {
             provider: String::new(),
             protocol: String::new(),
             base_url: String::new(),
-            api_key_env: String::new(),
+        api_key: String::new(),
             user_agent: String::new(),
             system_prompt: "系统".to_string(),
             context_messages: Vec::new(),
@@ -421,7 +417,7 @@ mod tests {
                 provider: Some("anthropic".to_string()),
                 protocol: Some("anthropic_messages".to_string()),
                 base_url: Some("https://api.example.com".to_string()),
-                api_key_env: Some("EXAMPLE_KEY".to_string()),
+                api_key: Some("EXAMPLE_KEY".to_string()),
                 ..SessionModelSettings::default()
             }),
             None,
@@ -435,7 +431,7 @@ mod tests {
                 "model.provider".to_string(),
                 "model.protocol".to_string(),
                 "model.base_url".to_string(),
-                "model.api_key_env".to_string(),
+                "model.api_key".to_string(),
             ]
         );
         let config = model.expect("仍有模型配置");
@@ -443,7 +439,7 @@ mod tests {
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.protocol, "anthropic_messages");
         assert_eq!(config.base_url, "https://api.example.com");
-        assert_eq!(config.api_key_env, "EXAMPLE_KEY");
+        assert_eq!(config.api_key, "EXAMPLE_KEY");
     }
 
     #[test]

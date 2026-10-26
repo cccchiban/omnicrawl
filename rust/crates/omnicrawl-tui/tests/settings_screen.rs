@@ -59,7 +59,6 @@ fn channel(key: &str, name: &str, provider: &str, model_id: &str, enabled: bool)
         protocol: String::new(),
         base_url: "https://api.example.com/v1".to_string(),
         api_key: "sk-test-key".to_string(),
-        api_key_env: "EXAMPLE_API_KEY".to_string(),
         model_id: model_id.to_string(),
         user_agent: String::new(),
         enabled,
@@ -562,7 +561,7 @@ fn channel_model_candidates_scroll_with_the_selection() {
     }
     state.handle_key(KeyCode::Enter); // 进右侧面板
     state.handle_key(KeyCode::Enter); // 编辑渠道
-    for _ in 0..6 {
+    for _ in 0..5 {
         state.handle_key(KeyCode::Down); // 走到「模型 ID」字段
     }
     state.handle_key(KeyCode::Enter); // 请宿主检测；这里直接回填结果
@@ -572,7 +571,7 @@ fn channel_model_candidates_scroll_with_the_selection() {
     let head = text(&draw(&state, WIDTH, HEIGHT));
     assert!(head.contains("model-01"), "窗口起点是最前面的候选：{head}");
     assert!(
-        head.contains("... 后面 22 个"),
+        head.contains("... 后面 21 个"),
         "超出一屏时给出尾部条目数：{head}"
     );
     assert!(

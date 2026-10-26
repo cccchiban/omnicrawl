@@ -140,7 +140,7 @@ impl OpenAiChatRuntime {
         let api_key = self.endpoint.api_key.trim();
         if api_key.is_empty() {
             return Err(RuntimeError::configuration(
-                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+                "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。",
             ));
         }
 
@@ -354,7 +354,7 @@ impl AnthropicRuntime {
         let api_key = self.endpoint.api_key.trim();
         if api_key.is_empty() {
             return Err(RuntimeError::configuration(
-                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+                "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。",
             ));
         }
 
@@ -518,7 +518,7 @@ impl ResponsesRuntime {
         let api_key = self.endpoint.api_key.trim();
         if api_key.is_empty() {
             return Err(RuntimeError::configuration(
-                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+                "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。",
             ));
         }
 
@@ -790,7 +790,7 @@ impl GeminiRuntime {
         let api_key = self.endpoint.api_key.trim();
         if api_key.is_empty() {
             return Err(RuntimeError::configuration(
-                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+                "模型 Profile 缺少 API Key。请在 Profile 中配置 api_key。",
             ));
         }
 

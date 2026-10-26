@@ -98,7 +98,7 @@ retry_count = 3
 | 404 | `NOT_FOUND` | 路径不存在 |
 | 502 | `DECISION_REQUEST_FAILED` | 上游决策服务连接失败、超时或返回 4xx/5xx |
 | 502 | `DECISION_UNPARSABLE` | 上游响应不可解析，或没有可用答案 |
-| 502 | `DECISION_CREDENTIALS_MISSING` | 缺决策渠道凭据（请设置渠道的 `api_key_env`） |
+| 502 | `DECISION_CREDENTIALS_MISSING` | 缺决策渠道凭据（请在渠道里填写明文 `api_key`） |
 | 502 | `DECISION_MASKING_UNAVAILABLE` | 脱敏不可用，已中止请求（**不外发原文**） |
 | 503 | `SERVICE_UNAVAILABLE` | 服务没有可用决策渠道 |
 
@@ -123,7 +123,6 @@ retry_count = 3
       "mode": "jev",
       "model": "jev-latest",
       "base_url": "https://jevtypesafeai.com/api",
-      "api_key_env": "JEV_API_KEY",
       "api_key_configured": true,
       "retry_count": 3
     },

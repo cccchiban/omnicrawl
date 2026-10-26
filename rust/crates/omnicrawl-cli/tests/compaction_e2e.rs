@@ -391,7 +391,7 @@ fn kernel_owns_the_session_and_compacts_after_turn() {
         "model": {
             "model": "e2e-model",
             "base_url": server.addr,
-            "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
             "user_agent": "omnicrawl-e2e",
             "system_prompt": "你是助手。",
             "tools": [{
@@ -594,7 +594,7 @@ fn kernel_recovers_from_context_overflow() {
         "model": {
             "model": "e2e-model",
             "base_url": server.addr,
-            "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
             "system_prompt": "你是助手。",
             "tools": [],
             "request_timeout_seconds": 10,
@@ -734,7 +734,7 @@ fn kernel_answers_evidence_tool_without_the_host() {
         "model": {
             "model": "e2e-model",
             "base_url": server.addr,
-            "api_key_env": "OMNICRAWL_TEST_KEY",
+        "api_key": TEST_KEY,
             "system_prompt": "你是助手。",
             "tools": [{
                 "type": "function",

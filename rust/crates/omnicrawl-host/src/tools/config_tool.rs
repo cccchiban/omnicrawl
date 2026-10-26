@@ -23,7 +23,7 @@ use super::error::{ToolError, ToolOutcome};
 /// 打码后的占位值：键名与结构照旧，只有值被替换。
 const MASKED: &str = "<已隐藏>";
 
-/// 值本身是凭据的键名（精确匹配，`api_key_env` 这类指针不算）。
+/// 值本身是凭据的键名（精确匹配）。
 const CREDENTIAL_KEYS: [&str; 7] = [
     "api_key",
     "bearer_token",
@@ -308,7 +308,7 @@ mod tests {
             "omnicrawl-config-tool-read",
             &[(
                 "config.toml",
-                "[llm.profiles.channel]\napi_key = \"sk-secret\"\napi_key_env = \"OPENAI_API_KEY\"\n\n[approval]\nmode = \"review\"\n",
+                "[llm.profiles.channel]\napi_key = \"sk-secret\"\n\n[approval]\nmode = \"review\"\n",
             )],
         );
         let environment = ConfigEnvironment::new(&root, "windows");
@@ -319,7 +319,7 @@ mod tests {
         .expect("读取成功");
         assert!(output.contains("api_key = \"<已隐藏>\""), "{output}");
         assert!(
-            output.contains("api_key_env = \"OPENAI_API_KEY\""),
+            output.contains("[approval]"),
             "环境变量名不是凭据：{output}"
         );
         assert!(output.contains("mode = \"review\""), "{output}");

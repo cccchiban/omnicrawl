@@ -56,7 +56,6 @@ fn channel_from_json(value: &Json) -> C::ChannelConfig {
         api_key: value["api_key"].as_str().unwrap().to_string(),
         model_id: value["model_id"].as_str().unwrap().to_string(),
         enabled: value["enabled"].as_bool().unwrap(),
-        api_key_env: value["api_key_env"].as_str().unwrap().to_string(),
         user_agent: value["user_agent"].as_str().unwrap().to_string(),
     }
 }
@@ -72,7 +71,6 @@ fn channel_to_json(channel: &C::ChannelConfig) -> Json {
         "api_key": channel.api_key,
         "model_id": channel.model_id,
         "enabled": channel.enabled,
-        "api_key_env": channel.api_key_env,
         "user_agent": channel.user_agent,
     })
 }

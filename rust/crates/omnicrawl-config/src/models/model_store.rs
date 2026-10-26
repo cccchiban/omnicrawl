@@ -1,7 +1,7 @@
 //! `models.toml` 读取、校验与写回。
 //!
 //! 对应 `omnicrawl/config/models/model_store.py`。凭据字段（`api_key` / `token` / `cookie` /
-//! `authorization`）在模型条目里一律拒绝；`api_key_env` 才是允许的写法。
+//! `authorization`）在模型条目里一律拒绝；凭据只放在配置文件的渠道 profile 里。
 
 use std::path::{Path, PathBuf};
 

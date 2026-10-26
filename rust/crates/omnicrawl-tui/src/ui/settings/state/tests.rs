@@ -37,7 +37,6 @@ use super::*;
             name: key.to_string(),
             base_url: "https://example.invalid/v1".to_string(),
             api_key: String::new(),
-            api_key_env: "EMBEDDING_API_KEY".to_string(),
             model: "text-embedding-3-small".to_string(),
             dimensions: 0,
             timeout_seconds: 30,
@@ -183,7 +182,6 @@ use super::*;
                 .unwrap_or_default(),
             base_url: "https://api.example.com/v1".to_string(),
             api_key: "sk-test-key".to_string(),
-            api_key_env: "EXAMPLE_API_KEY".to_string(),
             model_id: model_id.to_string(),
             user_agent: String::new(),
             enabled: true,
@@ -779,8 +777,8 @@ use super::*;
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 编辑主渠道
 
-        // 字段顺序：渠道名 / Provider / 请求协议 / Base URL / API Key / 凭据变量 / 模型 ID / UA / 启用。
-        for _ in 0..6 {
+        // 字段顺序：渠道名 / Provider / 请求协议 / Base URL / API Key / 模型 ID / UA / 启用。
+        for _ in 0..5 {
             state.handle_key(KeyCode::Down);
         }
         assert_eq!(
@@ -2166,17 +2164,17 @@ use super::*;
     }
 
     #[test]
-    fn channel_api_key_field_sits_next_to_the_env_field() {
+    fn channel_api_key_field_sits_before_model_id() {
         let order = ChannelField::ORDER;
-        assert_eq!(order.len(), 9, "渠道表单字段顺序：{order:?}");
+        assert_eq!(order.len(), 8, "渠道表单字段顺序：{order:?}");
         let key = order
             .iter()
             .position(|field| *field == ChannelField::ApiKey)
             .expect("表单里应有 API Key 行");
         assert_eq!(
             order[key + 1],
-            ChannelField::ApiKeyEnv,
-            "API Key 应紧邻 API Key 环境变量：{order:?}"
+            ChannelField::ModelId,
+            "API Key 之后应是模型 ID：{order:?}"
         );
         assert_eq!(ChannelField::ApiKey.label(), "API Key");
         assert!(ChannelField::ApiKey.is_text(), "API Key 应是可输入字段");

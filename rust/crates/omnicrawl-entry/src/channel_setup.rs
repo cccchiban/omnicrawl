@@ -7,8 +7,10 @@
 //! 原子写与校验，不重写 TOML 逻辑）。
 //!
 //! 与 Python 的差异：不做多列宽表单与鼠标交互，也不做远端模型自动发现（那需要模型目录网络层）；
-//! 渠道名、Provider、协议、基地址、模型 ID、凭据变量名六项足够启动，其余字段保存后可在
+//! 渠道名、Provider、协议、基地址、模型 ID、API Key 六项足够启动，其余字段保存后可在
 //! 设置面板里改。
+//!
+//! 凭据只走明文字段：向导把 Key 直接写进 `config.toml` 的渠道 profile，不提供环境变量名入口。
 
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -107,15 +109,16 @@ pub fn run_channel_setup(
             lines,
         };
     }
-    let default_env = default_api_key_env(&provider).to_string();
-    let Some(api_key_env) = ask(
-        &mut input,
-        &mut stdout,
-        "凭据环境变量名",
-        default_env.as_str(),
-    ) else {
+    let Some(api_key) = ask(&mut input, &mut stdout, "API Key", "") else {
         return cancelled(lines);
     };
+    if api_key.trim().is_empty() {
+        lines.push("API Key 不能为空，已取消本次配置。".to_string());
+        return ChannelSetupOutcome {
+            completed: false,
+            lines,
+        };
+    }
 
     let channel = ChannelConfig {
         key: channel_key(&name),
@@ -124,10 +127,9 @@ pub fn run_channel_setup(
         provider,
         protocol,
         base_url: base_url.trim().to_string(),
-        api_key: String::new(),
+        api_key: api_key.trim().to_string(),
         model_id: model_id.trim().to_string(),
         enabled: true,
-        api_key_env: api_key_env.trim().to_string(),
         user_agent: String::new(),
     };
     let configuration = ChannelConfiguration {
@@ -228,15 +230,6 @@ pub fn default_base_url(provider: &str) -> &'static str {
     }
 }
 
-/// Provider 的默认凭据环境变量名。
-pub fn default_api_key_env(provider: &str) -> &'static str {
-    match provider {
-        "anthropic" => "ANTHROPIC_API_KEY",
-        "gemini" => "GEMINI_API_KEY",
-        _ => "OPENAI_API_KEY",
-    }
-}
-
 /// 把渠道名折成合法 key：非字母数字折成连字符，去首尾连字符。
 pub fn channel_key(name: &str) -> String {
     let mut key = String::new();
@@ -272,8 +265,8 @@ mod tests {
     #[test]
     fn defaults_follow_the_provider() {
         assert_eq!(default_base_url("anthropic"), "https://api.anthropic.com");
-        assert_eq!(default_api_key_env("gemini"), "GEMINI_API_KEY");
-        assert_eq!(default_api_key_env("unknown"), "OPENAI_API_KEY");
+        assert_eq!(default_base_url("gemini"), "https://generativelanguage.googleapis.com");
+        assert_eq!(default_base_url("unknown"), "https://api.openai.com/v1");
     }
 
     #[test]

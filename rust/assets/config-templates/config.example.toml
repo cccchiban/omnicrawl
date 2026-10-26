@@ -18,7 +18,8 @@ thinking_type = "disabled"
 provider = "openai"
 enabled = true
 base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+# 凭据只写明文；留空时首启向导会在启动前补问。
+api_key = ""
 # 可选：覆盖该渠道请求使用的 HTTP User-Agent。
 # user_agent = "OmniCrawl/1.0"
 default_protocol = "openai_chat_completions"
@@ -31,7 +32,7 @@ enabled = true
 provider = "anthropic"
 enabled = false
 base_url = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
+api_key = ""
 default_protocol = "anthropic_messages"
 default_context_window_tokens = 200000
 
@@ -42,7 +43,7 @@ enabled = true
 provider = "gemini"
 enabled = false
 base_url = "https://generativelanguage.googleapis.com"
-api_key_env = "GEMINI_API_KEY"
+api_key = ""
 default_protocol = "gemini_generate_content"
 default_context_window_tokens = 1000000
 
@@ -90,7 +91,6 @@ provider = "openai"
 # https://generativelanguage.googleapis.com/v1beta。
 base_url = "https://api.openai.com/v1"
 api_key = ""
-api_key_env = "OPENAI_API_KEY"
 # OpenAI 通道默认 gpt-image-2；Gemini 通道默认 gemini-2.5-flash-image。
 model = "gpt-image-2"
 # 仅 OpenAI 通道使用：auto 或 宽x高。

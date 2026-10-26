@@ -375,7 +375,7 @@ const IMAGE_GEN_FIELDS: [FieldSpec; 12] = [
     FieldSpec::flag("启用"),
     FieldSpec::enumerated("服务商 provider", &IMAGE_GEN_PROVIDERS),
     FieldSpec::text("接口地址"),
-    FieldSpec::text("API Key 环境变量"),
+    FieldSpec::text("API Key"),
     FieldSpec::text("模型"),
     FieldSpec::enumerated("默认尺寸", &IMAGE_GEN_SIZES).scoped(FieldScope::OpenAi),
     FieldSpec::enumerated("默认质量", &IMAGE_GEN_QUALITIES).scoped(FieldScope::OpenAi),

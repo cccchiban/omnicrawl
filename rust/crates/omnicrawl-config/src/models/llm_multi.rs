@@ -189,10 +189,7 @@ fn resolve_credentials(
     provider: &str,
     protocol: &str,
     profile_data: &Table,
-) -> (String, String, String, String, ProviderProfile) {
-    let api_key_env = python_str(profile_data.get("api_key_env"))
-        .trim()
-        .to_string();
+) -> (String, String, String, ProviderProfile) {
     let api_key_plain = python_str(profile_data.get("api_key")).trim().to_string();
     let user_agent = python_str(profile_data.get("user_agent"))
         .trim()
@@ -204,7 +201,6 @@ fn resolve_credentials(
         enabled: true,
         base_url: base_url.clone(),
         api_key: api_key_plain,
-        api_key_env: api_key_env.clone(),
         user_agent: user_agent.clone(),
         default_protocol: protocol.to_string(),
         discovery_enabled: true,
@@ -215,7 +211,7 @@ fn resolve_credentials(
         discovery_timeout_seconds: 10.0,
     };
     let api_key = profile.resolve_api_key(env);
-    (api_key, base_url, api_key_env, user_agent, profile)
+    (api_key, base_url, user_agent, profile)
 }
 
 /// 应用 Profile 默认窗口与 `llm.defaults` 的覆盖规则。
@@ -268,7 +264,7 @@ pub fn load_multi_model_llm_config(
     let state = resolve_model_source(&active_raw, &store, &source)?;
     let (provider, protocol, profile_data) =
         resolve_profile(&state.profile_id, &state.protocol, &profiles_raw)?;
-    let (api_key, base_url, api_key_env, user_agent, _profile) =
+    let (api_key, base_url, user_agent, _profile) =
         resolve_credentials(env, &state.profile_id, &provider, &protocol, &profile_data);
 
     // `{**defaults, **llm_section}`：llm_section 覆盖 defaults。
@@ -326,7 +322,6 @@ pub fn load_multi_model_llm_config(
             "custom".to_string()
         },
         prompt_cache: state.prompt_cache,
-        api_key_env,
         user_agent,
         request_timeout_seconds: timeout,
         request_retry_count: retries,
@@ -373,7 +368,6 @@ pub fn parse_profiles(llm_section: &Table) -> BTreeMap<String, ProviderProfile> 
                 enabled: true,
                 base_url: python_str(table.get("base_url")).trim().to_string(),
                 api_key: python_str(table.get("api_key")).trim().to_string(),
-                api_key_env: python_str(table.get("api_key_env")).trim().to_string(),
                 user_agent: python_str(table.get("user_agent")).trim().to_string(),
                 default_protocol: python_str(table.get("default_protocol")).trim().to_string(),
                 discovery_enabled,
@@ -416,7 +410,6 @@ pub fn llm_config_to_profile_and_descriptor(
         enabled: true,
         base_url: config.base_url.clone(),
         api_key: config.api_key.clone(),
-        api_key_env: config.api_key_env.clone(),
         user_agent: config.user_agent.clone(),
         default_protocol: protocol_text.clone(),
         discovery_enabled: true,
@@ -582,7 +575,6 @@ fn config_from_custom_record(
         catalog_key: record.key.clone(),
         model_source: "custom".to_string(),
         prompt_cache: record.capabilities.prompt_cache,
-        api_key_env: profile.api_key_env.clone(),
         user_agent: profile.user_agent.clone(),
         request_timeout_seconds: if profile.request_timeout_seconds > 0.0 {
             profile.request_timeout_seconds as i64
@@ -675,7 +667,6 @@ fn config_from_profile_model(
         protocol,
         catalog_key: String::new(),
         model_source: "detected".to_string(),
-        api_key_env: profile.api_key_env.clone(),
         user_agent: profile.user_agent.clone(),
         request_timeout_seconds: if profile.request_timeout_seconds > 0.0 {
             profile.request_timeout_seconds as i64

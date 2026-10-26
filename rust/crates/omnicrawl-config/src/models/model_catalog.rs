@@ -350,7 +350,6 @@ pub fn build_catalog(
                     enabled: true,
                     base_url: config.base_url.clone(),
                     api_key: config.api_key.clone(),
-                    api_key_env: config.api_key_env.clone(),
                     user_agent: config.user_agent.clone(),
                     default_protocol: if config.protocol.is_empty() {
                         "openai_chat_completions".to_string()

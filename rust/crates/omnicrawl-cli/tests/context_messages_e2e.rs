@@ -179,7 +179,7 @@ fn context_messages_reach_the_model_request_in_order() {
         json!({
             "model": "e2e-model",
             "base_url": server.base_url,
-            "api_key_env": "OMNICRAWL_TEST_KEY",
+            "api_key": TEST_KEY,
             "user_agent": "omnicrawl-e2e",
             "system_prompt": "你是助手。",
             "context_messages": context_messages,
@@ -228,7 +228,7 @@ fn context_messages_are_not_persisted_into_the_transcript() {
         json!({
             "model": "e2e-model",
             "base_url": server.base_url,
-            "api_key_env": "OMNICRAWL_TEST_KEY",
+            "api_key": TEST_KEY,
             "user_agent": "omnicrawl-e2e",
             "system_prompt": "你是助手。",
             "context_messages": [

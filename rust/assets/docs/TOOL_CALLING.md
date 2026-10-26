@@ -105,7 +105,7 @@ SubAgent 只读 profile 不暴露 `git` 工具；只读 git 查询通过被只�
 - `path`：`set` 时的点分配置路径（`llm.defaults.reasoning_effort`）；中间层缺失自动补齐，路径穿过标量则报错且不写入。
 - `value`：`set` 时的目标值（bool/int/float/string/array/object；`null` 被拒绝）。
 
-`read` 返回配置文本，**凭据值打码为 `<已隐藏>`**（键名与结构保留，`api_key_env` 这类指针不算凭据）。`set` 复用 `omnicrawl-config` 的原子写盘，与设置面板写出的 TOML 形状一致；写入只落在 `file` 指定的那一份，其余三份保持原样。
+`read` 返回配置文本，**凭据值打码为 `<已隐藏>`**（键名与结构保留）。`set` 复用 `omnicrawl-config` 的原子写盘，与设置面板写出的 TOML 形状一致；写入只落在 `file` 指定的那一份，其余三份保持原样。
 
 该工具默认与其他工具一样受工具调用审查：声明里 `requires_confirmation` 为真，`manual` 模式人工确认，`review` 模式按现有删除/写入意图规则走。它同时被排除在工具结果淘汰（`context.prune`）范围外——写配置是已落盘的副作用，记录必须留在上下文里。
 

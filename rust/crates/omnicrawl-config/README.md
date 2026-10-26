@@ -42,7 +42,7 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 
 **`models/llm_multi`**：多模型 Profile 解析（`is_multi_model_section` / `parse_profiles`）、
 `active_model` 与 `OMNICRAWL_MODEL` / `OMNICRAWL_PROFILE` 的来源判定、Profile 存在/启用与
-协议匹配校验、凭据解析（`api_key_env` 优先）、窗口覆盖规则、模型选择
+协议匹配校验、凭据解析（只认明文 `api_key`）、窗口覆盖规则、模型选择
 （自定义 key/别名、`profile/model_id`、裸 model_id）与 `llm_config_to_profile_and_descriptor`。
 
 **`features/approval`**：审批模式别名表（11 条）、归一化与报错文案、中文显示名、

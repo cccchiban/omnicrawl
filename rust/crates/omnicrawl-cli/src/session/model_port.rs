@@ -112,7 +112,6 @@ pub(super) struct RuntimeBuildKey {
     pub(super) base_url: String,
     pub(super) model: String,
     pub(super) user_agent: String,
-    pub(super) api_key_env: String,
     pub(super) context_window_tokens: i64,
     pub(super) api_key: String,
     pub(super) desensitization: DesensitizationFingerprint,
@@ -129,7 +128,6 @@ impl std::fmt::Debug for RuntimeBuildKey {
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("user_agent", &self.user_agent)
-            .field("api_key_env", &self.api_key_env)
             .field("context_window_tokens", &self.context_window_tokens)
             .field(
                 "api_key",
@@ -153,7 +151,6 @@ impl RuntimeBuildKey {
             base_url: config.base_url.clone(),
             model: config.model.clone(),
             user_agent: config.user_agent.clone(),
-            api_key_env: config.api_key_env.clone(),
             context_window_tokens: config.context_window_tokens,
             api_key: api_key.to_string(),
             desensitization: DesensitizationFingerprint::read(),
@@ -583,17 +580,9 @@ pub(super) fn desensitization_options(config: &DesensitizationConfig) -> Desensi
     }
 }
 
-/// 凭据只从环境读：帧里出现的只是环境变量名。
+/// 凭据直接取自帧里的明文字段，不再读环境变量。
 pub(crate) fn read_api_key(config: &KernelModelConfig) -> Result<String, LoopError> {
-    let name = config.api_key_env.trim();
-    if name.is_empty() {
-        return Ok(String::new());
-    }
-    std::env::var(name).map_err(|error| {
-        LoopError::ReplySource(format!(
-            "读取环境变量 {name} 失败：{error}；模型请求无法鉴权。"
-        ))
-    })
+    Ok(config.api_key.trim().to_string())
 }
 
 pub(crate) fn parse_options(config: &KernelModelConfig) -> Result<GenerationOptions, LoopError> {

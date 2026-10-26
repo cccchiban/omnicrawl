@@ -155,7 +155,6 @@ impl SettingsState {
                     protocol: form.row.protocol.clone(),
                     base_url: form.row.base_url.clone(),
                     api_key: form.row.api_key.clone(),
-                    api_key_env: form.row.api_key_env.clone(),
                     user_agent: form.row.user_agent.clone(),
                 });
                 self.model_management.status =
@@ -458,7 +457,6 @@ impl SettingsState {
             protocol: channel.protocol,
             base_url: channel.base_url,
             api_key: channel.api_key,
-            api_key_env: channel.api_key_env,
             user_agent: channel.user_agent,
         })
     }

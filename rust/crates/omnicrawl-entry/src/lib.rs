@@ -16,9 +16,7 @@ pub mod channel_setup;
 pub mod cli;
 pub mod startup;
 
-pub use channel_setup::{
-    default_api_key_env, default_base_url, run_channel_setup, ChannelSetupOutcome,
-};
+pub use channel_setup::{default_base_url, run_channel_setup, ChannelSetupOutcome};
 pub use startup::{
     bootstrap, connector_specs, interactive_terminal, locate_templates_dir, start_connectors,
     StartupOutcome,

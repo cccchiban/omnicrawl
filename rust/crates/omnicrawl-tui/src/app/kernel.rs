@@ -52,12 +52,11 @@ impl App {
             } else {
                 self.llm.base_url.clone()
             },
-            api_key_env: effective_api_key_env(
-                external_channel,
-                &self.llm.provider,
-                &self.llm.api_key_env,
-                &self.options.api_key_env,
-            ),
+            api_key: if external_channel {
+                self.options.api_key.clone()
+            } else {
+                self.llm.api_key.clone()
+            },
             user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
             system_prompt,
             context_messages: match self.prompt.context_messages_with_plugins(

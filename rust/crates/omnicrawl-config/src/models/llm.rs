@@ -68,7 +68,6 @@ pub struct LlmConfig {
     /// 路径保持 `None`（对应 Python `ModelCapabilities.prompt_cache` 未声明，
     /// 仅 GPT 系列会尝试）。
     pub prompt_cache: Option<bool>,
-    pub api_key_env: String,
     pub user_agent: String,
     pub request_timeout_seconds: i64,
     pub request_retry_count: i64,
@@ -133,7 +132,6 @@ impl LlmConfig {
             catalog_key: String::new(),
             model_source: "legacy".to_string(),
             prompt_cache: None,
-            api_key_env: String::new(),
             user_agent: String::new(),
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             request_retry_count: DEFAULT_REQUEST_RETRY_COUNT,

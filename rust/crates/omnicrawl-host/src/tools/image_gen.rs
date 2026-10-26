@@ -43,7 +43,6 @@ pub struct ImageGenOptions {
     pub provider: String,
     pub base_url: String,
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     pub size: String,
     pub quality: String,
@@ -67,7 +66,6 @@ impl Default for ImageGenOptions {
             provider: DEFAULT_PROVIDER.to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: String::new(),
-            api_key_env: DEFAULT_API_KEY_ENV.to_string(),
             model: DEFAULT_MODEL.to_string(),
             size: "auto".to_string(),
             quality: "auto".to_string(),
@@ -108,7 +106,6 @@ pub fn image_gen_options_from_config(
         provider: configuration.provider,
         base_url: configuration.base_url,
         api_key: configuration.api_key,
-        api_key_env: configuration.api_key_env,
         model: configuration.model,
         size: configuration.size,
         quality: configuration.quality,
@@ -819,7 +816,6 @@ mod tests {
         // 凭据只认明文 api_key：环境变量名填了也没用。
         let no_key = ImageGenOptions {
             api_key: String::new(),
-            api_key_env: "OMNICRAWL_TUI_IMAGE_GEN_MISSING".to_string(),
             ..options.clone()
         };
         let error = image_gen(&no_key, &arguments(json!({"prompt": "x"})))

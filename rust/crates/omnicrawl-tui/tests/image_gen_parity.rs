@@ -160,10 +160,6 @@ fn image_gen_cases_match_python() {
             enabled: config["enabled"].as_bool().unwrap_or(false),
             base_url: config["base_url"].as_str().unwrap_or_default().to_string(),
             api_key: config["api_key"].as_str().unwrap_or_default().to_string(),
-            api_key_env: config["api_key_env"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
             model: config["model"].as_str().unwrap_or_default().to_string(),
             size: config["size"].as_str().unwrap_or_default().to_string(),
             quality: config["quality"].as_str().unwrap_or_default().to_string(),

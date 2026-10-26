@@ -184,14 +184,8 @@ impl AgentService {
 
             let ready = Arc::new(Mutex::new(String::new()));
             let slot = Arc::clone(&ready);
-            // 与启动时同一口径：重起内核也要把配置里的字面密钥补进环境。
-            let credentials = kernel_credentials_env(
-                &self.options.env,
-                &self.options.model.provider,
-                &self.options.model.api_key_env,
-            );
             let client =
-                KernelClient::spawn_with_stderr_env(&spawner.program, credentials, move |line| {
+                KernelClient::spawn_with_stderr(&spawner.program, move |line| {
                     if let Some(found) = parse_session_ready(line) {
                         if let Ok(mut guard) = slot.lock() {
                             *guard = found;

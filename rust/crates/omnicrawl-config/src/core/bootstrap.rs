@@ -326,24 +326,6 @@ fn profile_provider(profile: &Table) -> String {
     }
 }
 
-fn profile_api_key_env(profile: &Table, provider: &str) -> String {
-    let name = python_str(profile.get("api_key_env")).trim().to_string();
-    if name.is_empty() {
-        default_api_key_env(provider)
-    } else {
-        name
-    }
-}
-
-/// Provider 默认的凭据环境变量名（供首启向导与宿主把凭据交给内核时共用）。
-pub fn default_api_key_env(provider: &str) -> String {
-    match provider {
-        "anthropic" => "ANTHROPIC_API_KEY".to_string(),
-        "gemini" => "GEMINI_API_KEY".to_string(),
-        _ => "OPENAI_API_KEY".to_string(),
-    }
-}
-
 /// 索取并写回 API Key，返回 `(是否已配置, 是否提示过, 错误)`。
 fn ensure_api_key(
     env: &ConfigEnvironment,
@@ -386,11 +368,10 @@ fn ensure_api_key(
     }
 
     let provider = profile_provider(profile);
-    let env_name = profile_api_key_env(profile, &provider);
-    let label = if env_name.is_empty() {
-        "当前模型 API Key"
+    let label = if provider.is_empty() {
+        "当前模型 API Key".to_string()
     } else {
-        env_name.as_str()
+        format!("{provider} API Key")
     };
     let value = match prompt {
         Some(prompt) => prompt(&format!("请输入 {label}（输入不会回显，直接回车跳过）：")),
