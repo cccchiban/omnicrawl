@@ -354,8 +354,6 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   （长度下限 + 单类开关 + 形态白名单 + 字符类混合 + 香农熵；白名单含 UUID / 十六进制 / 前缀哈希 /
   版本号 / 时间戳 / 路径 / 代码片段 / 命名链 / 词形标识符）。命中值统一走 `placeholder_for`
   分配占位符，空串 / 已脱敏（`***`）/ 整串恰为占位符的值按跳过规则处理并计数。
-  NER 语义兜底层已接在**最末尾**：由运行期注入（未启用时为 `None`），命中区间走同一个
-  `placeholder_for` 并计入 `ner_masked` / 计划缓存的 `ner` 阶段，见下文 NER 一节。
 
 - **编排件与一次性脱敏器**（`middleware.rs` / `oneshot.rs`）：逐消息屏蔽（文本块 / 工具调用参数 /
   工具结果 / 思考内容；system 文本、工具声明与图片块豁免）、碰撞扫描的文本收集、工具参数里
@@ -396,11 +394,9 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 rayon：本 crate 的链路刻意保持同步、无运行时），块内保序、按块序拼回，结果与串行逐条一致；
 release 实测 5.6s → 1.4s。
 
-旁路一次性脱敏器（`OneShotMasker`）的两层可选脱敏都由调用方注入，与 Python `oneshot.py` 一致：
-`with_gitleaks` 给 gitleaks 规则，`with_ner` 给 NER 兜底层——权重装载与池化不在本模块，
-调用方用 `build_runtime_ner_layer(&NerLayerOptions)` 拿到层（进程级抽取器池，审查请求与运行时共用同一份），
-宿主侧 `omnicrawl-host/src/review.rs` 已按 `[desensitization]` 的 `gitleaks_enabled` / `ner_enabled` 接线。
-验收见 `tests/desensitization_ner_stage.rs::oneshot_masker_uses_an_injected_ner_layer`。
+旁路一次性脱敏器（`OneShotMasker`）的可选脱敏由调用方注入，与 Python `oneshot.py` 一致：
+`with_gitleaks` 给 gitleaks 规则；宿主侧 `omnicrawl-host/src/review.rs` 已按 `[desensitization]`
+的 `gitleaks_enabled` 接线。
 未接线：`locality` 局部化扫描（Python 侧重正则的性能优化，内核的手写匹配器没有整段回溯的开销、
 结果与全量扫描一致）。
 
@@ -408,31 +404,6 @@ release 实测 5.6s → 1.4s。
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
 测试照常通过，但解析用例全变成「命中为空」的假绿。规则语料还自带每条文本的**期望命中**，
 生成器当场断言：语料被写错、被豁免表静默吃掉或优先级不符时立即失败。
-
-## NER 兜底层（`desensitization/ner.rs` + `ner_weights.rs`）
-
-对齐 Python `omnicrawl/llm/desensitization/ner.py`：BiLSTM-CRF 语义兜底（PER / ORG / LOC）。
-内核侧是**完整实现**，不是接口占位；**运行期已接线**——`DesensitizationRuntime` 按
-`DesensitizationOptions.ner`（配置层的 `[desensitization].ner_*` 逐字段搬运）构建兜底层，
-未启用、权重缺失或读取失败一律静默降级为「没有这一层」（与 Python 同义：少一层兜底仍是可用的脱敏，
-报错则会让整个回合发不出请求）。权重路径按「显式配置 → `OMNICRAWL_NER_MODEL` → 随包二进制
-`data/ner_bilstm_crf.bin`」解析；抽取器按 (路径, 设备, 缓存容量) 在**进程级池**里复用，
-多个运行期（会话 / 工具表重建）共用一个实例。接线验收见 `tests/desensitization_ner_stage.rs`
-（阶段位置与计数、类型/长度过滤、计划缓存重放）与 `tests/desensitization_runtime.rs`
-（随包权重可装载、路径无效时降级）：
-
-- **纯逻辑**：句末标点切句 + 超长硬切（`split_units` / `iter_chunks`）、中文片段等长隔离、
-  BIO 解码、实体过滤（类型 / 最小长度 / 中文区间 / 占位符重叠）、块级 LRU 结果缓存、
-  按 token 预算分批、共享抽取器池、`build_ner_layer` 的静默降级。
-- **真实推理**：`ner_weights.rs` 从 `data/ner_bilstm_crf.bin` 加载权重（Embedding → BiLSTM
-  1 层双向 → Linear → 带约束的 CRF，Viterbi 解码）。
-- **权重来源**：构建期把 checkpoint（zip + pickle 的 torch
-  存档）转成「魔数 + 头部 JSON + f32 数据块」的自描述二进制；内核不实现 pickle 解析。
-- **对照**：`tests/ner_parity.rs`（6 项）——纯逻辑逐例对照，外加 **10 条文本的端到端实体区间
-  与 Python/torch 逐位一致**。
-- **与 Python 的差异**：设备只有 CPU 实现（`auto` / `cuda` 一律回 CPU，Python 侧优先 CUDA）；
-  `predict` 逐条前向（Python 按 token 预算打包批处理，结果等价）；`extract_entities` 显式接收
-  文本长度参数（Python 收原文本）。
 
 ## 掩码记忆、计划缓存与扫描缓存（性能层）
 

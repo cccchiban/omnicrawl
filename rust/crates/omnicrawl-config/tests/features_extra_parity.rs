@@ -295,12 +295,6 @@ fn desensitization_load_matches_python() {
                     "detect_license_plate": config.detect_license_plate,
                     "gitleaks_enabled": config.gitleaks_enabled,
                     "gitleaks_config_path": config.gitleaks_config_path,
-                    "ner_enabled": config.ner_enabled,
-                    "ner_model_path": config.ner_model_path,
-                    "ner_device": config.ner_device,
-                    "ner_entity_types": config.ner_entity_types,
-                    "ner_min_entity_chars": config.ner_min_entity_chars,
-                    "ner_cache_size": config.ner_cache_size,
                 })
             })
             .map_err(|error| error.message().to_string())
@@ -313,7 +307,6 @@ fn desensitization_save_matches_python() {
         let config = desensitization::DesensitizationConfig {
             enabled: true,
             extra_sensitive_keys: vec!["secret".to_string()],
-            ner_entity_types: vec!["PER".to_string(), "LOC".to_string()],
             ..desensitization::DesensitizationConfig::default()
         };
         desensitization::save_desensitization_config(env, &config, None).expect("写回脱敏配置");

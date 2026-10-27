@@ -7,8 +7,7 @@
     "max_bytes": 4194304,
     "stage_counter_fields": {
       "rules": "rules_masked",
-      "entropy": "entropy_masked",
-      "ner": "ner_masked"
+      "entropy": "entropy_masked"
     }
   },
   "text_keys": [

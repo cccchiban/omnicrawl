@@ -567,16 +567,6 @@ pub(super) fn desensitization_options(config: &DesensitizationConfig) -> Desensi
         },
         extra_sensitive_keys: config.extra_sensitive_keys.clone(),
         exempt_keys: config.exempt_keys.clone(),
-        // NER 语义兜底层：配置层已就绪（`[desensitization].ner_*`），这里逐字段搬运。
-        // 权重路径空串 ⇒ 交给内核的路径解析（环境变量 → 随包二进制）。
-        ner: NerLayerOptions {
-            enabled: config.ner_enabled,
-            model_path: config.ner_model_path.clone(),
-            device: config.ner_device.clone(),
-            entity_types: config.ner_entity_types.clone(),
-            min_entity_chars: config.ner_min_entity_chars,
-            cache_size: config.ner_cache_size,
-        },
     }
 }
 

@@ -257,19 +257,6 @@ failure_fallback = "deterministic"
 # detect_license_plate = true           # 中国大陆车牌
 # gitleaks 开源规则：默认加载内置离线快照（rust/crates/omnicrawl-llm/data/gitleaks.toml）；
 # gitleaks_config_path 指向自定义文件时按规则 id 覆盖 / 追加（失败回退内置快照）。
-# NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）：结构 / 规则 / 熵之外的最后一道语义
-# 兜底，输入是前几层处理后的文本且只对中文片段兜底（非中文字符已等长隔离）；
-# 需要可选依赖 torch（pip install -e .[ner]）。
-# 权重随包分发，可用 ner_model_path 或环境变量 OMNICRAWL_NER_MODEL 覆盖；
-# torch / 权重缺失时本层静默跳过，不影响既有脱敏链路。
-# ner_enabled = false                   # 默认关闭；开启后作为语义兜底
-# ner_model_path = ""                   # checkpoint 路径；留空用随包权重 / 环境变量
-# ner_device = "auto"                   # auto 优先 CUDA、不可用回退 CPU
-# ner_entity_types = ["PER", "ORG", "LOC"]  # 需要识别的实体类型
-# ner_min_entity_chars = 2              # 最小实体长度（2 规避单字地名歧义）
-# 推理结果缓存：按「块」（≤200 字符）缓存，长会话中未变历史不再重复推理；
-# 容量单位是块数，默认 2048（约 400KB 文本），0 关闭。
-# ner_cache_size = 2048
 
 [api]
 bearer_token = "请替换为随机长令牌"

@@ -228,9 +228,6 @@ const COMPRESSION_FIELDS: [FieldSpec; 9] = [
     FieldSpec::model_id("压缩模型"),
 ];
 
-/// NER 推理设备候选（对映 Python 的 `NER_DEVICES`）。
-const NER_DEVICE_OPTIONS: [(&str, &str); 3] = [("auto", "auto"), ("cpu", "cpu"), ("cuda", "cuda")];
-
 /// 隔离工作区的模式候选。
 const WORKSPACE_MODE_OPTIONS: [(&str, &str); 2] = [("worktree", "worktree"), ("local", "local")];
 
@@ -301,7 +298,7 @@ const IMAGE_GEN_TIMEOUTS: [(&str, &str); 6] = [
 ];
 
 /// 消息脱敏页的字段；顺序与 `app.rs` 读值时的下标一一对应。
-const DESENSITIZATION_FIELDS: [FieldSpec; 27] = [
+const DESENSITIZATION_FIELDS: [FieldSpec; 21] = [
     FieldSpec::enabled("启用"),
     FieldSpec::toggled(
         "屏蔽异常时中止",
@@ -327,12 +324,6 @@ const DESENSITIZATION_FIELDS: [FieldSpec; 27] = [
     FieldSpec::on_off("中国大陆车牌"),
     FieldSpec::on_off("gitleaks 规则"),
     FieldSpec::text("gitleaks 配置路径"),
-    FieldSpec::on_off("NER 兜底"),
-    FieldSpec::enumerated("NER 设备", &NER_DEVICE_OPTIONS),
-    FieldSpec::text("NER 模型路径"),
-    FieldSpec::text("NER 实体类型"),
-    FieldSpec::int("NER 最小实体长度"),
-    FieldSpec::int("NER 缓存容量"),
 ];
 
 /// 持续运转（运行护栏）页的字段；顺序与 `app.rs` 读值时的下标一一对应。

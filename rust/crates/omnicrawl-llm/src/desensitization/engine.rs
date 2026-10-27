@@ -8,9 +8,6 @@
 //! 值类型规则层是手写等价实现：Python 侧的每条正则在这里都有一份等价实现（行首锚定的赋值、
 //! 转义感知的 JSON 串、以及熵兜底的一整组形态判定）。
 //!
-//! NER 语义兜底层（`ner.rs`）是**最后一层**：由调用方注入 [`NerLayer`]（未启用时为 `None`），
-//! 命中区间与其余层一样走 `placeholder_for`，并计入 `ner_masked` / 计划缓存的 `ner` 阶段。
-//!
 //! 屏蔽计划缓存（Python `plan_cache.py`）已接线：`mask_text` 先按缓存计划重放，未命中时
 //! 用记录器收集各阶段区间、跑完再把计划写回缓存。计划不含原文，只记区间 + 稳定序号。
 
@@ -19,7 +16,6 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::ner::NerLayer;
 use super::plan_cache::{stage_counter_field, MaskPlanBuilder, MaskPlanCache, PlanSpan};
 use super::rules::{scan_pattern_rules, shannon_entropy_bits, PatternRule};
 use super::{match_placeholder, DesensitizationStats, PlaceholderCycle, PLACEHOLDER_MARKER};
@@ -433,9 +429,6 @@ pub struct MaskContext<'a> {
     pub pattern_rules: &'a [PatternRule],
     /// gitleaks 规则（运行时正则）：排在值类型规则之后，重叠区间由先命中者占位。
     pub gitleaks_rules: &'a [super::gitleaks::GitleaksRule],
-    /// NER 语义兜底层：`None` 表示未启用（Python 侧也是可选依赖，默认关闭）。
-    /// 它排在熵兜底之后，只看前几层没动过的剩余文本。
-    pub ner: Option<&'a NerLayer>,
     /// 屏蔽计划缓存（运行时实例级）：`None` 等价于未接线，屏蔽路径不走计划重放与记录。
     pub plan_cache: Option<Arc<MaskPlanCache>>,
     /// 本次文本屏蔽的计划记录器；只有 [`MaskContext::recording_copy`] 产出的副本带记录器。
@@ -521,7 +514,6 @@ impl MaskContext<'_> {
             entropy_pure_digits: self.entropy_pure_digits,
             pattern_rules: self.pattern_rules,
             gitleaks_rules: self.gitleaks_rules,
-            ner: self.ner,
             plan_cache: cache,
             plan_builder: builder,
         }
@@ -551,7 +543,7 @@ impl MaskContext<'_> {
         let mut result = text.to_string();
         for (stage_index, stage) in plan.stages.iter().enumerate() {
             // 阶段内按起点降序应用：区间替换会改变长度，靠后区间的坐标只在它右侧文本未被动过时成立。
-            // 规则层 / 熵兜底层 / NER 层逆序应用替换、记录顺序也是降序；结构层正序记录，
+            // 规则层 / 熵兜底层逆序应用替换、记录顺序也是降序；结构层正序记录，
             // 靠这里排序纠正。不看记录顺序，是因为各阶段的记录方向并不一致。
             let mut ordered: Vec<&PlanSpan> = stage.iter().collect();
             ordered.sort_by(|left, right| right.start.cmp(&left.start));
@@ -603,13 +595,12 @@ fn report_plan_misalignment(
 
 /// 按阶段标签把「本周期首次登记」计入对应计数口径。
 ///
-/// 标签表来自 [`super::plan_cache::STAGE_COUNTER_FIELDS`]（`rules` / `entropy` / `ner`），
+/// 标签表来自 [`super::plan_cache::STAGE_COUNTER_FIELDS`]（`rules` / `entropy`），
 /// 与未命中路径里各层自己的计数同义。
 fn note_stage_counter(stats: &mut DesensitizationStats, field: &str) {
     match field {
         "rules_masked" => stats.rules_masked += 1,
         "entropy_masked" => stats.entropy_masked += 1,
-        "ner_masked" => stats.ner_masked += 1,
         _ => {}
     }
 }
@@ -689,67 +680,8 @@ pub fn mask_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
     if local.entropy_enabled {
         masked = mask_entropy_text(&masked, &mut local);
     }
-    // 兜底层排在最后：前面的层已经替换过的区间不会再进模型（NER 只认原文片段，
-    // 占位符区间由 `NerLayer::find_spans` 自己剔除）。
-    if let Some(layer) = local.ner {
-        masked = mask_ner_text(&masked, &mut local, layer);
-    }
     local.store_plan(text);
     masked
-}
-
-/// NER 兜底层：实体区间替换为占位符（区间来自模型，已是字符偏移，这里换算成字节）。
-///
-/// 与其余层同一套簿记：占位符分配走 `placeholder_at`（因此也进计划缓存），
-/// 新登记的值计入 `ner_masked`。
-fn mask_ner_text(text: &str, ctx: &mut MaskContext<'_>, layer: &NerLayer) -> String {
-    let spans = layer.find_spans(text);
-    if spans.is_empty() {
-        return text.to_string();
-    }
-    // 字符偏移 → 字节偏移：一个字符表建一次，比每个区间重扫便宜。
-    let mut byte_offsets: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
-    byte_offsets.push(text.len());
-    let byte_spans: Vec<(usize, usize)> = spans
-        .iter()
-        .filter_map(|(start, end)| {
-            let start_byte = *byte_offsets.get(*start)?;
-            let end_byte = *byte_offsets.get(*end)?;
-            (end_byte > start_byte).then_some((start_byte, end_byte))
-        })
-        .collect();
-    if byte_spans.is_empty() {
-        return text.to_string();
-    }
-    // 重叠实体只保留先命中的一条（与规则层「重叠区间由先命中者占位」同一口径）。
-    // NER 解码本身通常不产重叠；这里兼作兜底，保证「记下的计划一定能逆序原地重放」——
-    // 重叠会让后面那条的坐标在替换过程中失效，Python 侧下标是码点只取错值，
-    // Rust 侧是字节则会 panic。
-    let mut accepted: Vec<(usize, usize)> = Vec::with_capacity(byte_spans.len());
-    for (start, end) in byte_spans {
-        if accepted
-            .iter()
-            .any(|(known_start, known_end)| start < *known_end && *known_start < end)
-        {
-            continue;
-        }
-        accepted.push((start, end));
-    }
-    let byte_spans = accepted;
-    ctx.begin_stage("ner");
-    let mut result = text.to_string();
-    for (start, end) in byte_spans.iter().rev() {
-        let before = ctx.stats.values_masked;
-        let placeholder = match ctx.placeholder_at(text, *start, *end, None) {
-            Some(placeholder) => placeholder,
-            None => continue,
-        };
-        if ctx.stats.values_masked > before {
-            ctx.stats.ner_masked += 1;
-        }
-        result.replace_range(*start..*end, &placeholder);
-    }
-    result
 }
 
 /// 值类型规则层：命中区间替换为占位符（重叠区间由先命中的规则占位）。
@@ -1392,9 +1324,6 @@ mod plan_cache_tests {
             entropy_pure_digits: false,
             pattern_rules: rules,
             gitleaks_rules: &[],
-            // 这一组用例只管结构层与计划缓存；NER 兜底层的接线见
-            // `tests/desensitization_ner_stage.rs`。
-            ner: None,
             plan_cache: cache,
             plan_builder: None,
         };

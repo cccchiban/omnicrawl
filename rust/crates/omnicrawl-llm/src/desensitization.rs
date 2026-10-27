@@ -9,9 +9,9 @@
 //! 已落地：`registry`（占位符协议、序号分配、周期与会话映射，Python `registry.py`）、
 //! `stream`（流式还原状态机，Python `stream.py`）、`rules`（值类型规则层，Python `rules.py`，
 //! 已搬网址 / 邮箱 / 银行卡 / MAC / 车牌与整套规则语义）、`engine`（屏蔽引擎，Python `engine.py`）、
-//! `gitleaks`（规则快照与扫描，Python `gitleaks.py`）、`ner` + `ner_weights`（语义兜底层，
-//! Python `ner.py`）、`middleware` / `live`（运行时装饰器，Python `middleware.py`）、
-//! `oneshot`（旁路一次性脱敏器，Python `oneshot.py`）与 `plan_cache`（屏蔽计划缓存）。
+//! `gitleaks`（规则快照与扫描，Python `gitleaks.py`）、`middleware` / `live`（运行时装饰器，
+//! Python `middleware.py`）、`oneshot`（旁路一次性脱敏器，Python `oneshot.py`）与 `plan_cache`
+//! （屏蔽计划缓存）。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -24,8 +24,6 @@ pub mod engine;
 pub mod gitleaks;
 pub mod live;
 pub mod middleware;
-pub mod ner;
-pub mod ner_weights;
 pub mod oneshot;
 pub mod plan_cache;
 pub mod rules;
@@ -40,7 +38,7 @@ pub use gitleaks::{
     normalize_gitleaks_pattern, scan_gitleaks_rules, GitleaksMatch, GitleaksRule,
     GITLEAKS_SNAPSHOT,
 };
-pub use live::{build_runtime_ner_layer, DesensitizationOptions, DesensitizationRuntime};
+pub use live::{DesensitizationOptions, DesensitizationRuntime};
 pub use middleware::{
     assigned_but_unresolved, collect_request_texts, iter_message_texts, map_event, mask_message,
     mask_messages,
@@ -317,7 +315,6 @@ pub struct DesensitizationStats {
     pub skipped_values: u64,
     pub entropy_masked: u64,
     pub rules_masked: u64,
-    pub ner_masked: u64,
     pub mask_failures: u64,
     pub last_mask_duration_ms: f64,
 }

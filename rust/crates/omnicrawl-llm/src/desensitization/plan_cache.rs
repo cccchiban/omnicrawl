@@ -23,10 +23,9 @@ pub const DEFAULT_MAX_ENTRIES: usize = 1024;
 pub const DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// 阶段标签 → 计数口径（只在「本周期首次登记」时递增，与未命中路径一致）。
-pub const STAGE_COUNTER_FIELDS: [(&str, &str); 3] = [
+pub const STAGE_COUNTER_FIELDS: [(&str, &str); 2] = [
     ("rules", "rules_masked"),
     ("entropy", "entropy_masked"),
-    ("ner", "ner_masked"),
 ];
 
 /// 阶段标签对应的计数口径字段名；无标签或未知标签返回 `None`。
@@ -448,8 +447,8 @@ mod tests {
     fn stage_counter_fields_match_python_table() {
         assert_eq!(stage_counter_field("rules"), Some("rules_masked"));
         assert_eq!(stage_counter_field("entropy"), Some("entropy_masked"));
-        assert_eq!(stage_counter_field("ner"), Some("ner_masked"));
         assert_eq!(stage_counter_field(""), None);
         assert_eq!(stage_counter_field("struct"), None);
+        assert_eq!(stage_counter_field("ner"), None);
     }
 }

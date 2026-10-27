@@ -187,12 +187,6 @@ pub(super) fn desensitization_form_values(config: &DesensitizationConfig) -> Vec
         FieldValue::Flag(config.detect_license_plate),
         FieldValue::Flag(config.gitleaks_enabled),
         FieldValue::Text(config.gitleaks_config_path.clone()),
-        FieldValue::Flag(config.ner_enabled),
-        FieldValue::Text(config.ner_device.clone()),
-        FieldValue::Text(config.ner_model_path.clone()),
-        FieldValue::Text(config.ner_entity_types.join(", ")),
-        FieldValue::Text(config.ner_min_entity_chars.to_string()),
-        FieldValue::Text(config.ner_cache_size.to_string()),
     ]
 }
 

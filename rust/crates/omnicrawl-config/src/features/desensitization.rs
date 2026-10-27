@@ -13,16 +13,6 @@ use crate::value::python_str;
 pub const DEFAULT_ENTROPY_MIN_LENGTH: i64 = 20;
 pub const DEFAULT_ENTROPY_MIN_BITS: f64 = 3.5;
 
-/// NER 兜底层的固定取值。
-pub const NER_ENTITY_TYPES: [&str; 3] = ["PER", "ORG", "LOC"];
-pub const NER_DEVICES: [&str; 3] = ["auto", "cpu", "cuda"];
-pub const DEFAULT_NER_DEVICE: &str = "auto";
-pub const DEFAULT_NER_MIN_ENTITY_CHARS: i64 = 2;
-pub const DEFAULT_NER_CACHE_SIZE: i64 = 2048;
-
-/// `{list(NER_ENTITY_TYPES)}` 的 Python `repr` 写法。
-const NER_ENTITY_TYPES_REPR: &str = "['PER', 'ORG', 'LOC']";
-
 /// 脱敏开关、失败策略与匹配参数。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesensitizationConfig {
@@ -47,12 +37,6 @@ pub struct DesensitizationConfig {
     pub detect_license_plate: bool,
     pub gitleaks_enabled: bool,
     pub gitleaks_config_path: String,
-    pub ner_enabled: bool,
-    pub ner_model_path: String,
-    pub ner_device: String,
-    pub ner_entity_types: Vec<String>,
-    pub ner_min_entity_chars: i64,
-    pub ner_cache_size: i64,
 }
 
 impl Default for DesensitizationConfig {
@@ -79,21 +63,12 @@ impl Default for DesensitizationConfig {
             detect_license_plate: true,
             gitleaks_enabled: true,
             gitleaks_config_path: String::new(),
-            ner_enabled: false,
-            ner_model_path: String::new(),
-            ner_device: DEFAULT_NER_DEVICE.to_string(),
-            ner_entity_types: NER_ENTITY_TYPES
-                .iter()
-                .map(|item| item.to_string())
-                .collect(),
-            ner_min_entity_chars: DEFAULT_NER_MIN_ENTITY_CHARS,
-            ner_cache_size: DEFAULT_NER_CACHE_SIZE,
         }
     }
 }
 
 impl DesensitizationConfig {
-    /// Python `__post_init__`：键名归一化、熵参数区间与 NER 字段校验。
+    /// Python `__post_init__`：键名归一化与熵参数区间校验。
     pub fn validate(mut self) -> Result<Self, ConfigError> {
         self.extra_sensitive_keys = normalized_keys(&self.extra_sensitive_keys);
         self.exempt_keys = normalized_keys(&self.exempt_keys);
@@ -108,35 +83,6 @@ impl DesensitizationConfig {
             ));
         }
         self.gitleaks_config_path = self.gitleaks_config_path.trim().to_string();
-        self.ner_model_path = self.ner_model_path.trim().to_string();
-        let device = self.ner_device.trim().to_lowercase();
-        if !NER_DEVICES.contains(&device.as_str()) {
-            return Err(ConfigError::new(
-                "desensitization.ner_device 必须是 auto / cpu / cuda 之一。",
-            ));
-        }
-        self.ner_device = device;
-        let entity_types = normalized_entity_types(&self.ner_entity_types);
-        if entity_types.is_empty()
-            || entity_types
-                .iter()
-                .any(|item| !NER_ENTITY_TYPES.contains(&item.as_str()))
-        {
-            return Err(ConfigError::new(format!(
-                "desensitization.ner_entity_types 只能包含 {NER_ENTITY_TYPES_REPR}。"
-            )));
-        }
-        self.ner_entity_types = entity_types;
-        if self.ner_min_entity_chars < 1 {
-            return Err(ConfigError::new(
-                "desensitization.ner_min_entity_chars 必须是正整数。",
-            ));
-        }
-        if self.ner_cache_size < 0 {
-            return Err(ConfigError::new(
-                "desensitization.ner_cache_size 必须是非负整数。",
-            ));
-        }
         Ok(self)
     }
 }
@@ -152,7 +98,6 @@ pub fn load_desensitization_config(
 }
 
 fn parse_desensitization_section(section: &Table) -> Result<DesensitizationConfig, ConfigError> {
-    let defaults = DesensitizationConfig::default();
     DesensitizationConfig {
         enabled: bool_field(section, "enabled", false)?,
         fail_closed: bool_field(section, "fail_closed", true)?,
@@ -175,25 +120,14 @@ fn parse_desensitization_section(section: &Table) -> Result<DesensitizationConfi
         detect_license_plate: bool_field(section, "detect_license_plate", true)?,
         gitleaks_enabled: bool_field(section, "gitleaks_enabled", true)?,
         gitleaks_config_path: str_field(section, "gitleaks_config_path", "")?,
-        ner_enabled: bool_field(section, "ner_enabled", false)?,
-        ner_model_path: str_field(section, "ner_model_path", "")?,
-        ner_device: device_field(section, "ner_device", DEFAULT_NER_DEVICE)?,
-        ner_entity_types: entity_types_field(section, "ner_entity_types")?,
-        ner_min_entity_chars: int_field(
-            section,
-            "ner_min_entity_chars",
-            DEFAULT_NER_MIN_ENTITY_CHARS,
-        )?,
-        ner_cache_size: int_field(section, "ner_cache_size", defaults.ner_cache_size)?,
     }
     .validate()
 }
 
 /// 把脱敏配置写回 `config.toml` 的 `[desensitization]` 段（保留其他段）。
 ///
-/// 写盘前先校验：读取器（[`load_desensitization_config`]）对熵区间、NER 设备与实体类型
-/// 都有硬约束，写出它必然拒绝的值会让整段配置在下次读取时失效。
-/// 归一化结果同时进磁盘（键名去空、实体类型大写）。
+/// 写盘前先校验：读取器（[`load_desensitization_config`]）对熵区间有硬约束，
+/// 写出它必然拒绝的值会让整段配置在下次读取时失效。
 pub fn save_desensitization_config(
     env: &ConfigEnvironment,
     config: &DesensitizationConfig,
@@ -267,27 +201,6 @@ pub fn save_desensitization_config(
         "gitleaks_config_path".to_string(),
         Value::String(config.gitleaks_config_path.clone()),
     );
-    put_bool(&mut section, "ner_enabled", config.ner_enabled);
-    section.insert(
-        "ner_model_path".to_string(),
-        Value::String(config.ner_model_path.clone()),
-    );
-    section.insert(
-        "ner_device".to_string(),
-        Value::String(config.ner_device.clone()),
-    );
-    section.insert(
-        "ner_entity_types".to_string(),
-        string_array(&config.ner_entity_types),
-    );
-    section.insert(
-        "ner_min_entity_chars".to_string(),
-        Value::Integer(config.ner_min_entity_chars),
-    );
-    section.insert(
-        "ner_cache_size".to_string(),
-        Value::Integer(config.ner_cache_size),
-    );
     data.insert("desensitization".to_string(), Value::Table(section));
     save_config_data(env, &data, config_path)
 }
@@ -309,14 +222,6 @@ fn normalized_keys(items: &[String]) -> Vec<String> {
     items
         .iter()
         .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect()
-}
-
-fn normalized_entity_types(items: &[String]) -> Vec<String> {
-    items
-        .iter()
-        .map(|item| item.trim().to_uppercase())
         .filter(|item| !item.is_empty())
         .collect()
 }
@@ -374,46 +279,6 @@ fn float_field(section: &Table, name: &str, default: f64) -> Result<f64, ConfigE
         Some(Value::Float(value)) => Ok(*value),
         Some(_) => Err(ConfigError::new(format!(
             "desensitization.{name} 必须是 0–8 之间的数。"
-        ))),
-    }
-}
-
-fn device_field(section: &Table, name: &str, default: &str) -> Result<String, ConfigError> {
-    match section.get(name) {
-        None => Ok(default.to_string()),
-        Some(Value::String(text)) => {
-            let device = text.trim().to_lowercase();
-            if !NER_DEVICES.contains(&device.as_str()) {
-                return Err(ConfigError::new(format!(
-                    "desensitization.{name} 必须是 auto / cpu / cuda 之一。"
-                )));
-            }
-            Ok(device)
-        }
-        Some(_) => Err(ConfigError::new(format!(
-            "desensitization.{name} 必须是 auto / cpu / cuda 之一。"
-        ))),
-    }
-}
-
-fn entity_types_field(section: &Table, name: &str) -> Result<Vec<String>, ConfigError> {
-    match section.get(name) {
-        None => Ok(NER_ENTITY_TYPES
-            .iter()
-            .map(|item| item.to_string())
-            .collect()),
-        Some(Value::String(text)) if text.is_empty() => Ok(NER_ENTITY_TYPES
-            .iter()
-            .map(|item| item.to_string())
-            .collect()),
-        Some(Value::Array(items)) => Ok(normalized_entity_types(
-            &items
-                .iter()
-                .map(|item| python_str(Some(item)))
-                .collect::<Vec<String>>(),
-        )),
-        Some(_) => Err(ConfigError::new(format!(
-            "desensitization.{name} 必须是字符串数组。"
         ))),
     }
 }

@@ -1233,7 +1233,7 @@ use super::*;
         goto(&mut state, "desensitization");
         assert_eq!(state.pane(), Pane::Form(FormKind::Desensitization));
         state.handle_key(KeyCode::Enter);
-        assert_eq!(state.form_rows().len(), 27, "脱敏页共 27 个字段");
+        assert_eq!(state.form_rows().len(), 21, "脱敏页共 21 个字段");
         assert_eq!(state.form_rows()[3].value, "开启", "熵检测兜底的两态文案");
         assert_eq!(state.form_rows()[7].value, "3.5", "小数按原样显示");
 

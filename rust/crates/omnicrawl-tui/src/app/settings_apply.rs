@@ -669,13 +669,6 @@ impl App {
         configuration.detect_license_plate = field_flag(values, 18);
         configuration.gitleaks_enabled = field_flag(values, 19);
         configuration.gitleaks_config_path = field_text(values, 20).trim().to_string();
-        configuration.ner_enabled = field_flag(values, 21);
-        configuration.ner_device = field_text(values, 22);
-        configuration.ner_model_path = field_text(values, 23).trim().to_string();
-        configuration.ner_entity_types = field_list(values, 24, ',');
-        configuration.ner_min_entity_chars = positive_int(values, 25, "NER 最小实体长度")?;
-        // 0 表示关闭 NER 结果缓存，所以这里允许 0。
-        configuration.ner_cache_size = non_negative_int(values, 26, "NER 缓存容量")?;
         let path = save_desensitization_config(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         Ok(format!(

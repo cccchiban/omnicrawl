@@ -242,12 +242,9 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
    ↓
 熵兜底命中 → 脱敏
    ↓
-NER 语义兜底命中（人名 / 地名 / 机构名）→ 脱敏
-   ↓
 未命中 → 不动
 ```
 
-- NER 兜底层接收的是**前几层处理后的文本**（命中值已是 `｛Desensitized:n｝`），因此不会被邮箱 / 手机号等其它类型数据干扰，也不会重复登记已脱敏的值；
 - 同一周期内**同一值只分配一个序号**：多处出现（不同消息、不同位置）使用同一占位符，保证模型视角一致、减少注册项。
 - 同一位置多层命中只登记一次（最先命中的规则生效）。
 
@@ -257,25 +254,6 @@ NER 语义兜底命中（人名 / 地名 / 机构名）→ 脱敏
 - 语义不可见：值藏在意料之外的位置（注释、编码后的内容）时无法保证识别；
 - 非字符串标量默认不处理（数字 / 布尔等）；
 - 值类型规则层按固定形态匹配，覆盖不到语义变体（如自定义连接串格式）；gitleaks 规则的 `paths` / `regexTarget = "line"` 豁免在纯文本链路不生效，会略微偏多脱敏。
-
-### 5.6 NER 语义兜底层（BiLSTM-CRF，可选）
-
-**适用**：形态普通、随机性低、既无敏感键名也无法用正则刻画的**语义敏感值**——人名、地名、机构名。前几层都覆盖不到它们（熵层要求高随机性，规则层要求固定形态），只有语义模型能识别。
-
-- **模型**：字符级 BiLSTM-CRF（手写 CRF + 非法 BIO 转移约束），BIO 标签体系 `O / B,I-PER / B,I-ORG / B,I-LOC`；权重随包分发（`rust/crates/omnicrawl-llm/data/bilstm_crf_best.pt`，约 5MB，dev F1 0.868 / test micro-F1 0.863）；词表内嵌在 checkpoint 中。
-- **接线位置**：`engine.mask_text` 的**最末端**，即结构 → 规则 → 熵之后。输入是已屏蔽文本，命中值（含其它层已替换的占位符）不参与候选。只产出「实体区间」，替换仍由 `MaskContext.placeholder_for` 走标准序号分配；**还原 / 流式 / 周期注销全部沿用既有机制，本层不新增还原路径**。
-- **能力边界**：只识别 PER / ORG / LOC，**不识别邮箱 / 手机号 / 身份证号**等结构化敏感信息（由值类型规则层负责）。为控制误报：入口做中文片段隔离、丢弃整体未落在中文片段内的实体（模型在拉丁字母片段上的误报多来自邮箱 / 网址 / 编号）、默认丢弃单字实体（`ner_min_entity_chars=2`，规避「日 / 美 / 京」这类歧义单字）、丢弃与既有占位符重叠的实体。
-- **中文隔离**：入口把非中文字符等长替换为分隔符后才送进模型（`·` / `・` 视为中文姓名连接符），因此拉丁字母、数字与其它符号不参与推理；出口再要求实体区间**整体**落在中文片段内（至少一个汉字、其余只能是连接符），跨片段实体不成立。偏移与原文一一对应，切块与缓存口径不变。
-- **设备**：`ner_device` 取 `auto`（默认）时优先 CUDA、不可用回退 CPU；显式 `cuda` 在不可用或运行期 CUDA 出错（显存 / 驱动）时同样回退 CPU，可用性优先。
-- **性能**：长文本按句末标点切块（≤200 字符，与训练口径一致）后批量推理；抽取器按 (权重路径, 设备, 缓存容量) 进程内共享、模型只加载一次。
-- **随对话增长不劣化**（缓存粒度与短路）：历史每轮全量重发，因此本层的成本模型必须看「每轮重扫全量历史」而非「单次调用」。
-  - 结果缓存落在**块**（`iter_chunks` 的打包结果，≤200 字符）而非整段文本：`iter_chunks` 是贪心前缀打包，只追加 / 只在尾部增长的长文本其已有块逐字不变，只有新增的块需要推理（实测 200 步只追加的长文本：整段文本当键需推理 2958 块，块级缓存只需 7 块）；内容相同的块还能跨文本复用，且淘汰一次最多损失一个块的推理。
-  - **纯 ASCII 短路**：不含汉字的文本 / 块直接返回空结果、不进模型（过滤阶段本就丢弃不含汉字的实体），代码 / JSON / 日志类工具结果零推理开销（实测 100KB 纯 ASCII：7.6ms、进模型 0 块；同样的 100KB 混合文本共 596 块，只有 1 块真正进模型）。
-  - 不这样做的话会出现**抖动断崖**：整段文本当键时，一旦历史块数超过缓存容量，LRU 的顺序全扫会让命中率直接掉到 0，此后每轮重新推理全部历史，单轮耗时随历史线性上升。实测「300 块历史、每轮全量重扫」：容量 256 时命中率 0%、每轮 2.4s；容量 2048 时每轮 1.8ms（约 1360x）。
-  - `ner_cache_size`（单位：块，默认 2048，`0` 表示关闭）可调；`hits` / `misses` 按块计（含被 ASCII 短路跳过的块——它们查键未命中但未推理），`inferred_chunks` 是真正进过模型的块数，`ascii_skips` 是短路次数。
-  - 仍需注意：缓存是固定容量的 LRU，工作集（不断增长的历史）最终仍会超过容量。本轮优化把阈值后移并大幅减小单次代价；要彻底消除 O(n²)，需要让**未变化的历史消息不再重新脱敏**（按内容 + 配置代际 memoize `middleware._mask_request` 的逐条结果）。
-- **零成本降级**：torch 未安装（可选依赖 `.[ner]`）、权重缺失 / 损坏、配置非法时 `build_ner_layer` 返回 None，本层静默跳过，不影响既有脱敏链路；默认 `ner_enabled = false`（沿用整体 opt-in 约定）。
-- **命中计数**：`DesensitizationStats.ner_masked`。
 
 ## 6. 占位符协议
 
@@ -451,13 +429,6 @@ detect_mac_address = true             # MAC 地址
 detect_license_plate = true           # 中国大陆车牌
 gitleaks_enabled = true               # gitleaks 开源规则（内置离线快照）
 gitleaks_config_path = ""             # 自定义 gitleaks.toml（按 id 覆盖 / 追加）
-# NER 语义兜底层（BiLSTM-CRF：人名 / 地名 / 机构名；可选依赖 torch）
-ner_enabled = false                   # 默认关闭；开启后作为结构 / 规则 / 熵之外的语义兜底
-ner_model_path = ""                   # checkpoint 路径；留空用随包权重 / 环境变量 OMNICRAWL_NER_MODEL
-ner_device = "auto"                   # auto 优先 CUDA、不可用回退 CPU
-ner_entity_types = ["PER", "ORG", "LOC"]  # 需要识别的实体类型
-ner_min_entity_chars = 2              # 最小实体长度（2 规避单字地名歧义）
-ner_cache_size = 2048                 # 推理结果缓存容量（单位为「块」，0 关闭）
 ```
 
 - 读 / 写：`load_desensitization_config` / `save_desensitization_config`（`rust/crates/omnicrawl-config/src/features/desensitization.rs`）；写回时保留 config.toml 其他段；
@@ -465,24 +436,21 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 
 ### 10.2 可观测性（只记录「数量级」信息）
 
-- 计数（`DesensitizationStats`）：周期开始 / 复用数、屏蔽值数、值类型规则命中数（`rules_masked`）、熵兜底数（`entropy_masked`）、NER 兜底数（`ner_masked`）、还原命中数、未还原数、畸形数、跳过数、屏蔽耗时、屏蔽失败数、稳定序号复用数（`sequence_reuses`：同值跨请求复用同一序号的次数，用于观察前缀缓存稳定性）
+- 计数（`DesensitizationStats`）：周期开始 / 复用数、屏蔽值数、值类型规则命中数（`rules_masked`）、熵兜底数（`entropy_masked`）、还原命中数、未还原数、畸形数、跳过数、屏蔽耗时、屏蔽失败数、稳定序号复用数（`sequence_reuses`：同值跨请求复用同一序号的次数，用于观察前缀缓存稳定性）
 - 维度：规则类别、序号、周期 ID；
 - 明确禁止：任何原文、占位符 → 原文映射、原文长度 / 前缀等可直接或间接泄露原值的信息。
 
 ### 10.3 设置面板「消息脱敏」页
 
 - 位置：`/settings` 左侧列表（`agent_workspace` 之后，`_SETTING_ORDER` 中 `desensitization`，行标签「消息脱敏」）；
-- 表单：27 个字段（基础开关 ×4、两个键名列表、长度 / 熵阈值、两个单类令牌开关、九个值类型类别开关、gitleaks 总开关与自定义路径、NER 总开关 / 设备 / 权重路径 / 实体类型 / 最小实体长度 / 缓存容量）；保存写回 config.toml；
+- 表单：21 个字段（基础开关 ×4、两个键名列表、长度 / 熵阈值、两个单类令牌开关、九个值类型类别开关、gitleaks 总开关与自定义路径）；保存写回 config.toml；
 - 生效条件：保存后需**切换模型或重启 TUI**（对已构建的运行时不生效，面板有同款提示）。
 
 ## 11. 实现落点
 
 | 职责 | 文件 |
 |---|---|
-| 匹配引擎（键名 / 结构 / 值类型规则 / 熵兜底 / NER 兜底） | `rust/crates/omnicrawl-llm/src/desensitization/engine.rs` |
-| NER 兜底层（设备 / 路径解析、抽取器、过滤、缓存、共享实例） | `rust/crates/omnicrawl-llm/src/desensitization/ner.rs` |
-| NER 模型结构（BiLSTM-CRF，仅 torch；延迟导入） | `rust/crates/omnicrawl-llm/src/desensitization/ner_weights.rs` |
-| NER 模型权重（随包分发） | `rust/crates/omnicrawl-llm/data/bilstm_crf_best.pt` |
+| 匹配引擎（键名 / 结构 / 值类型规则 / 熵兜底） | `rust/crates/omnicrawl-llm/src/desensitization/engine.rs` |
 | 值类型规则定义与扫描 | `rust/crates/omnicrawl-llm/src/desensitization/rules.rs` |
 | gitleaks 规则解析（内置快照 + 自定义） | `rust/crates/omnicrawl-llm/src/desensitization/gitleaks.rs`、`gitleaks.toml` |
 | 序列号注册表与周期 | `rust/crates/omnicrawl-llm/src/desensitization.rs` |
@@ -539,22 +507,15 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 | 21 | 历史中含 gitleaks 类密钥（GitHub PAT / AWS / Stripe / Slack 等） | 命中替换；上游 allowlist 与熵阈值生效（示例密钥不脱敏） |
 | 22 | 网址与其中的 IP 同时命中 | 网址优先占位（重叠区间只登记一次） |
 | 23 | 自定义 gitleaks.toml（覆盖 / 追加）或路径不可用 | 自定义生效；不可用回退内置快照 |
-| 24 | `ner_enabled = true`，历史含人名 / 地名 / 机构名 | NER 兜底命中并替换；模型返回引用处还原 |
-| 25 | NER 与其他层同时命中同一文本（如邮箱与其中的人名） | NER 只见前几层处理后的文本，不重复登记 / 不破坏占位符 |
-| 26 | `ner_enabled = false` 或未安装 torch / 权重缺失 | 本层静默跳过，既有链路行为不变（零成本） |
-| 27 | 长文本（>200 字符） | 按句末标点切块推理，偏移正确回填；结果缓存命中的重复文本不再推理 |
-| 28 | `ner_device = auto` 且存在 CUDA | 优先 CUDA；不可用 / 运行期 CUDA 出错回退 CPU |
-| 29 | 同一份回复里多次写出同一序号（不同位置、文本 / 推理 / 工具参数） | 每处都还原为同一原文 |
-| 30 | 引用上下文里出现过、但源消息已离开上下文的旧序号 | 会话级映射仍命中并还原（此前为「保留 + 告警」） |
-| 31 | 运行时关闭（切换模型 / 退出）后同一序号 | 映射已丢弃：按未注册处置（保留 + 告警） |
+| 24 | 同一份回复里多次写出同一序号（不同位置、文本 / 推理 / 工具参数） | 每处都还原为同一原文 |
+| 25 | 引用上下文里出现过、但源消息已离开上下文的旧序号 | 会话级映射仍命中并还原（此前为「保留 + 告警」） |
+| 26 | 运行时关闭（切换模型 / 退出）后同一序号 | 映射已丢弃：按未注册处置（保留 + 告警） |
 
 ### 12.3 测试与回归
 
 ```bash
-python -m pytest tests/test_desensitization.py tests/test_desensitization_settings.py tests/test_desensitization_prefix_cache.py tests/test_desensitization_rules.py tests/test_desensitization_ner.py
+python -m pytest tests/test_desensitization.py tests/test_desensitization_settings.py tests/test_desensitization_prefix_cache.py tests/test_desensitization_rules.py
 ```
-
-`tests/test_desensitization_ner.py` 覆盖准确性（实体级 P/R/F1 下限与三类实体覆盖）、性能（单句推理预算、结果缓存命中）、流式处理（分片回包逐字还原、工具参数结构化还原）与降级（未启用 / torch 缺失 / 权重无效静默跳过）；未安装 torch 或缺少随包权重时依赖真实模型的用例整体跳过。
 
 ## 13. 已知边界与形态说明
 

@@ -721,17 +721,7 @@
         "detect_mac_address": true,
         "detect_license_plate": true,
         "gitleaks_enabled": true,
-        "gitleaks_config_path": "",
-        "ner_enabled": false,
-        "ner_model_path": "",
-        "ner_device": "auto",
-        "ner_entity_types": [
-          "PER",
-          "ORG",
-          "LOC"
-        ],
-        "ner_min_entity_chars": 2,
-        "ner_cache_size": 2048
+        "gitleaks_config_path": ""
       }
     },
     {
@@ -764,16 +754,7 @@
           "detect_mac_address": false,
           "detect_license_plate": false,
           "gitleaks_enabled": false,
-          "gitleaks_config_path": " D:\\gitleaks.toml ",
-          "ner_enabled": true,
-          "ner_model_path": " D:\\ner.pt ",
-          "ner_device": " CPU ",
-          "ner_entity_types": [
-            "per",
-            " loc "
-          ],
-          "ner_min_entity_chars": 3,
-          "ner_cache_size": 16
+          "gitleaks_config_path": " D:\\gitleaks.toml "
         }
       },
       "result": {
@@ -802,16 +783,7 @@
         "detect_mac_address": false,
         "detect_license_plate": false,
         "gitleaks_enabled": false,
-        "gitleaks_config_path": "D:\\gitleaks.toml",
-        "ner_enabled": true,
-        "ner_model_path": "D:\\ner.pt",
-        "ner_device": "cpu",
-        "ner_entity_types": [
-          "PER",
-          "LOC"
-        ],
-        "ner_min_entity_chars": 3,
-        "ner_cache_size": 16
+        "gitleaks_config_path": "D:\\gitleaks.toml"
       }
     },
     {
@@ -851,94 +823,6 @@
       "error": "desensitization.entropy_min_length 必须是非负整数。"
     },
     {
-      "name": "设备非法",
-      "config": {
-        "desensitization": {
-          "ner_device": "GPU"
-        }
-      },
-      "error": "desensitization.ner_device 必须是 auto / cpu / cuda 之一。"
-    },
-    {
-      "name": "实体类型非法",
-      "config": {
-        "desensitization": {
-          "ner_entity_types": [
-            "XYZ"
-          ]
-        }
-      },
-      "error": "desensitization.ner_entity_types 只能包含 ['PER', 'ORG', 'LOC']。"
-    },
-    {
-      "name": "实体类型为空",
-      "config": {
-        "desensitization": {
-          "ner_entity_types": []
-        }
-      },
-      "error": "desensitization.ner_entity_types 只能包含 ['PER', 'ORG', 'LOC']。"
-    },
-    {
-      "name": "最小实体长度为零",
-      "config": {
-        "desensitization": {
-          "ner_min_entity_chars": 0
-        }
-      },
-      "error": "desensitization.ner_min_entity_chars 必须是正整数。"
-    },
-    {
-      "name": "缓存容量为负",
-      "config": {
-        "desensitization": {
-          "ner_cache_size": -1
-        }
-      },
-      "error": "desensitization.ner_cache_size 必须是非负整数。"
-    },
-    {
-      "name": "缓存容量为零",
-      "config": {
-        "desensitization": {
-          "ner_cache_size": 0
-        }
-      },
-      "result": {
-        "enabled": false,
-        "fail_closed": true,
-        "strict_restore": false,
-        "extra_sensitive_keys": [],
-        "exempt_keys": [],
-        "entropy_enabled": true,
-        "entropy_min_length": 20,
-        "entropy_min_bits": 3.5,
-        "entropy_pure_letters": false,
-        "entropy_pure_digits": false,
-        "detect_pem_private_key": true,
-        "detect_db_connection_string": true,
-        "detect_email": false,
-        "detect_bank_card": true,
-        "detect_internal_ip": true,
-        "detect_external_ip": false,
-        "detect_url": false,
-        "detect_mac_address": true,
-        "detect_license_plate": true,
-        "gitleaks_enabled": true,
-        "gitleaks_config_path": "",
-        "ner_enabled": false,
-        "ner_model_path": "",
-        "ner_device": "auto",
-        "ner_entity_types": [
-          "PER",
-          "ORG",
-          "LOC"
-        ],
-        "ner_min_entity_chars": 2,
-        "ner_cache_size": 0
-      }
-    },
-    {
       "name": "敏感键非数组",
       "config": {
         "desensitization": {
@@ -966,7 +850,7 @@
   ],
   "desensitization_save": [
     {
-      "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[desensitization]\nenabled = true\nfail_closed = true\nstrict_restore = false\nextra_sensitive_keys = [\n    \"secret\",\n]\nexempt_keys = []\nentropy_enabled = true\nentropy_min_length = 20\nentropy_min_bits = 3.5\nentropy_pure_letters = false\nentropy_pure_digits = false\ndetect_pem_private_key = true\ndetect_db_connection_string = true\ndetect_email = false\ndetect_bank_card = true\ndetect_internal_ip = true\ndetect_external_ip = false\ndetect_url = false\ndetect_mac_address = true\ndetect_license_plate = true\ngitleaks_enabled = true\ngitleaks_config_path = \"\"\nner_enabled = false\nner_model_path = \"\"\nner_device = \"auto\"\nner_entity_types = [\n    \"PER\",\n    \"LOC\",\n]\nner_min_entity_chars = 2\nner_cache_size = 2048\n"
+      "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[desensitization]\nenabled = true\nfail_closed = true\nstrict_restore = false\nextra_sensitive_keys = [\n    \"secret\",\n]\nexempt_keys = []\nentropy_enabled = true\nentropy_min_length = 20\nentropy_min_bits = 3.5\nentropy_pure_letters = false\nentropy_pure_digits = false\ndetect_pem_private_key = true\ndetect_db_connection_string = true\ndetect_email = false\ndetect_bank_card = true\ndetect_internal_ip = true\ndetect_external_ip = false\ndetect_url = false\ndetect_mac_address = true\ndetect_license_plate = true\ngitleaks_enabled = true\ngitleaks_config_path = \"\"\n"
     }
   ]
 }

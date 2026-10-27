@@ -145,22 +145,7 @@ fn desensitization_rejects_out_of_range_entropy() {
     });
 }
 
-/// 脱敏：未知 NER 设备在写盘前被拒。
-#[test]
-fn desensitization_rejects_unknown_ner_device() {
-    assert_rejected("desensitization-device", "ner_device", |env| {
-        save_desensitization_config(
-            env,
-            &DesensitizationConfig {
-                ner_device: "tpu".to_string(),
-                ..DesensitizationConfig::default()
-            },
-            None,
-        )
-    });
-}
-
-/// 脱敏：写盘前归一化——键名去空、实体类型转大写后落盘。
+/// 脱敏：写盘前归一化——键名去空后落盘。
 #[test]
 fn desensitization_normalizes_before_writing() {
     let (env, config_path, _) = prepare("desensitization-normalize");
@@ -168,7 +153,6 @@ fn desensitization_normalizes_before_writing() {
         &env,
         &DesensitizationConfig {
             extra_sensitive_keys: vec![" secret ".to_string(), String::new()],
-            ner_entity_types: vec!["per".to_string(), " loc ".to_string()],
             ..DesensitizationConfig::default()
         },
         None,
@@ -176,8 +160,6 @@ fn desensitization_normalizes_before_writing() {
     .expect("归一化后应当可写");
     let text = text_of(&config_path);
     assert!(text.contains("\"secret\""), "{text}");
-    assert!(text.contains("\"PER\""), "{text}");
-    assert!(text.contains("\"LOC\""), "{text}");
     let _ = std::fs::remove_dir_all(env.home());
 }
 
