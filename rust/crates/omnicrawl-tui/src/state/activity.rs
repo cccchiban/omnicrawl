@@ -114,9 +114,10 @@ impl AppState {
 
         /// 略过逐帧显现、立刻铺完全部思考（收口、展开/收起、回放与回合结束时用）。
         ///
-        /// 只清掉显现游标：记录本身就是完整思考，此后所有思考段都按全文渲染。
+        /// 只关掉「逐帧揭示」，**保留**当前下标：这段思考如果还在流式到达，后续增量仍会认成
+        /// 同一条，按全文追加。清掉下标会让下一片被当成首片、从头重铺（展开/折叠后整段重放）。
         pub fn settle_reasoning_reveal(&mut self) {
-            self.reasoning_reveal.get_mut().reset();
+            self.reasoning_reveal.get_mut().settle();
         }
 
         /// 该记录本次渲染应显示的字符数（只有正在显现的那条会被截断）。
@@ -127,7 +128,7 @@ impl AppState {
         /// 是否有思考段正在逐帧铺开。
         pub fn is_reasoning_revealing(&self) -> bool {
             let reveal = self.reasoning_reveal.borrow();
-            reveal.index.is_some() && reveal.revealed < reveal.target
+            reveal.tracking && reveal.index.is_some() && reveal.revealed < reveal.target
         }
 
         /// 每帧的活动计时：回合在跑时状态行 spinner（每 80ms 换帧）与工具卡耗时在变。

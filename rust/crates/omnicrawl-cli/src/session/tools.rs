@@ -203,11 +203,21 @@ impl ToolBatchHost for RemoteTools {
         // 图片观察的去向与 Python `route_image_result` 同优先级：原生视觉直送主模型，
         // 否则交给独立视觉模型代理。两条路都走不通时必须把图片摄掉——主模型看不懂图，
         // 图片留在请求里只会被 Provider 拒掉；宿主侧已在未配置代理时不交图，这里是兵底。
+        //
+        // 原生视觉判定走三态：显式开关优先，未配置（`None`）时按模型自身声明的能力回落，
+        // 不能把「未配置」当「关闭」——那会让支持视觉的模型白走一趟代理。
         if crate::vision_proxy::has_vision_observation(&ordered) {
             let native_vision = self
                 .vision_model
                 .as_ref()
-                .map(|model| model.native_vision)
+                .map(|model| {
+                    omnicrawl_controllers::turn::turn_loop::native_vision_enabled(
+                        model.native_vision,
+                        omnicrawl_controllers::turn::turn_loop::model_supports_vision(
+                            model.vision_capability,
+                        ),
+                    )
+                })
                 .unwrap_or(false);
             if !native_vision {
                 match self.vision_model.as_ref().and_then(KernelVisionProxy::load) {

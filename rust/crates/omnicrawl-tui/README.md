@@ -165,7 +165,7 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 | `memory_search` / `memory_read` / `memory_expand_related` / `memory_write` / `memory_delete` | 已实现（按配置进出表） | 按 `scope` 路由到三处记忆目录，读写与删除交给 `omnicrawl-session` 的 `MemoryStore`（`memory_delete` 删文件并摘除索引条目，未知 id 静默跳过）；`memory_enabled` 缺省开启（与 Python `entry.py` 的 `default=True` 一致），未启用的作用域回「X 级记忆系统未启用。」 |
 | `web_search` | 已实现 | 十引擎：DuckDuckGo / GitHub / arXiv / Hugging Face（抓各自站点的公开搜索页，统一走与 `fetcher` 同款的有头浏览器环境——`omnicrawl-tls` 自研栈的 TLS/HTTP2 指纹与 UA、Client Hints 同源；端点与查询参数逐字对齐、正则解析结果页含 DDG `uddg=` 跳转还原、验证码与 JS 挑战如实报错、网络错误重试）、Tavily / Exa / Firecrawl / AnySearch / TinyFish（检索接口，Bearer、`x-api-key` 与 `X-API-Key` 鉴权、缺凭据/鉴权失败如实报错；AnySearch 的 Key 可选，留空按 IP 走匿名额度且请求不带 `Authorization`；TinyFish 走 `GET` 检索接口、Key 必填）与 `mixed`（混合搜索：并发查询全部可用渠道并按 URL 去重合并，接口型渠道只在配了凭据时参与、AnySearch 始终参与，单路失败如实回报但不影响其余渠道）。引擎与五把 API Key 取 `[web_search]` 段；工具参数里的 `engine` 不生效，改引擎只能改设置 |
 | `fetcher` | 已实现 | 多 URL 并行抓取、手动跟随 301/302/307/308 与 `<meta refresh>`、内网/本机目标直连、`insecure=true` 跳过证书校验、正文提取（`main` → `article` → `body`，剔除脚本样式）且 HTML5 容错解析 |
-| `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现 | 整组注册：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型；会改画面的操作（`windows_input`、`windows_control` 非 list、`windows_window` 的 activate）另附一张操作后前台窗口截图，模型不必再补一次 `windows_screenshot` |
+| `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现（**不进主代理工具表**） | 桌面模拟操作由专职 Computer Use 子代理全权负责，主代理只持有 `computer_use(prompt)` 入口；这五个工具由子代理按白名单（`omnicrawl-cli/src/computer_use.rs` 的 `CHILD_TOOLS`）在自己的子回合里声明。能力：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型；会改画面的操作（`windows_input`、`windows_control` 非 list、`windows_window` 的 activate）另附一张操作后前台窗口截图，模型不必再补一次 `windows_screenshot` |
 | `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model` 给出、或 `[advisor]` 段配置启用时进表 |
 | `update_todos` / `ask_user` / `pause_work` | 已实现 | 由界面侧判定与面板交互 |
 | `tts_synthesize` | 已实现 | 通道在 `omnicrawl-tts`（OpenAI `audio/speech` 与 Gemini TTS、长文本切块、音频 I/O），执行体在宿主工具表 `omnicrawl-host/src/tools/registry.rs`；`[tts]` 未启用时工具不进表（与 Python 一致） |
@@ -725,11 +725,12 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    强行开启只会让模型调 `scope="session"` 时拿到「未启用」）；
    视觉路径：`read_image` 始终在工具表里（与 Python `_build_tools` 一致），图片的去向由路由决定——
    打开 `--native-vision`，或配置里当前模型的 `native_vision`
-   （`models.toml` 的模型条目 / 渠道 Profile，按「模型覆盖 > 渠道覆盖」解析）为真时图片直送主模型
-   （握手随 `initialize.model.native_vision` 告知内核，内核不再走代理）；没开但配了 `[vision]` 时图片
-   交给独立视觉模型代理分析、结论作为不可信观察回填；两者都没有时图片不进请求，主模型只收到
-   图片元数据。Python 侧「未显式配置时回落运行时模型能力」的判定需要模型能力表，本 crate 目前没有，
-   因此未配置时按关闭处理而不是自动判断；
+   （`models.toml` 的模型条目 / 渠道 Profile，按「模型覆盖 > 渠道覆盖 > 未配置」解析）为真时
+   图片直送主模型（握手随 `initialize.model.native_vision` 告知内核，内核不再走代理）；
+   未配置时按模型自身声明的 `capabilities.vision` 回落（与 Python「未显式配置时回落运行时模型能力」
+   同口径，能力随 `initialize.model.vision_capability` 下发，宿主不把它压成 `false`）；
+   既没开也没配 `[vision]`、模型也不声明视觉能力时，图片不进请求，主模型只收到图片元数据。
+   原生视觉优先于代理：两者同时可用时图片直送主模型，视觉代理不会被调用；
    顾问的已知差异：顾问看到的「工作分支」由对话记录（user/assistant 文本）投影而成（Python 用 turn 级注入的完整工作消息），
    顾问模型来自 `--advisor-*` 与 `[advisor]` 段（基地址默认回落主模型），凭据只取顾问模型所属渠道的明文
    `api_key`（渠道没写则回落主模型那份），一律读 TOML、不读环境变量，

@@ -535,8 +535,8 @@ pub(super) fn effective_context_window(explicit: Option<u64>, llm: &LlmConfig) -
 /// 当前生效的原生视觉开关：命令行/环境显式开启优先，其次配置里当前模型的覆盖。
 ///
 /// 配置里的值由 `load_llm_config` 按「模型条目覆盖 > 渠道 Profile 覆盖 > 未配置」解出，
-/// 与 Python `_native_vision_enabled` 同口径；未配置时 Python 会回落运行时模型能力，
-/// 而 TUI 没有能力表（见 crate README），因此按关闭处理。
+/// 与 Python `_native_vision_enabled` 同口径；未配置时回落模型自身声明的
+/// `capabilities.vision`（见 `resolve_native_vision_switch`），而不是直接当关闭。
 ///
 /// `--base-url` 指向外部渠道时不再叠加配置：那份 `native_vision` 描述的是配置里选中的
 /// 模型，而外部渠道跑的是命令行给的那个模型（与 Provider / 协议 / 生成选项同一口径）。
@@ -547,7 +547,22 @@ pub(super) fn effective_native_vision(external_channel: bool, explicit: bool, ll
     if external_channel {
         return false;
     }
-    llm.native_vision.unwrap_or(false)
+    resolve_native_vision_switch(llm.native_vision, llm.vision_capability)
+}
+
+/// 原生视觉三态解析：显式开关优先，未配置时按模型自身能力回落。
+///
+/// 这是「原生视觉优先于视觉代理」的判据起点——`Some(true)` 直送主模型，`Some(false)` 交给
+/// 代理，`None`（模型也没声明能力）同样交给代理。宿主与内核共用同一口径，
+/// 免得一边「未配置」被压成 `false`、另一边按能力放出图片。
+pub fn resolve_native_vision_switch(
+    configured: Option<bool>,
+    vision_capability: Option<bool>,
+) -> bool {
+    omnicrawl_controllers::turn::turn_loop::native_vision_enabled(
+        configured,
+        omnicrawl_controllers::turn::turn_loop::model_supports_vision(vision_capability),
+    )
 }
 
 /// 生成选项（`GenerationOptions` 的 JSON 形状）：只给配置里真正有值的字段。

@@ -152,6 +152,7 @@ fn tool_catalog_registration_matches_python() {
             mcp_resources: &resources,
             mcp_prompts: &prompts,
             disabled_tools: &disabled,
+            windows_tools: false,
         };
         let result = build_agent_tools(&options);
         if !case["ok"].as_bool().expect("ok") {

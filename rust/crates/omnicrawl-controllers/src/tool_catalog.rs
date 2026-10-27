@@ -15,6 +15,8 @@ const AGENT_TOOLS_DATA: &str = include_str!("../data/agent_tools.json");
 
 const KNOWLEDGE_RUNNERS: [&str; 5] = ["kb_search", "kb_read", "kb_write", "kb_append", "kb_list"];
 
+/// Windows 桌面工具：只由专职 Computer Use 子代理的子回合声明（`windows_tools` 为真时），
+/// 主代理的工具表里没有它们。
 const WINDOWS_RUNNERS: [&str; 5] = [
     "windows_window",
     "windows_control",
@@ -84,6 +86,8 @@ pub struct ToolCatalogOptions<'a> {
     pub mcp_resources: &'a [McpItemRef],
     pub mcp_prompts: &'a [McpItemRef],
     pub disabled_tools: &'a [String],
+    /// 是否声明 Windows 桌面工具：只有专职 Computer Use 子代理的子回合为真。
+    pub windows_tools: bool,
 }
 
 fn catalog() -> &'static Value {
@@ -248,13 +252,17 @@ pub fn build_agent_tools(options: &ToolCatalogOptions<'_>) -> Result<Vec<ToolSpe
         }
     }
 
-    let windows_present = present(&WINDOWS_RUNNERS);
-    if windows_present > 0 {
-        if windows_present < WINDOWS_RUNNERS.len() {
+    // Windows 桌面工具只在专职 Computer Use 子代理的子回合里声明：桌面模拟操作由它全权负责，
+    // 主代理只持有 `computer_use(prompt)` 入口。
+    if options.windows_tools {
+        let windows_present = present(&WINDOWS_RUNNERS);
+        if windows_present > 0 && windows_present < WINDOWS_RUNNERS.len() {
             return Err(group_rule_error("windows_partial"));
         }
-        for entry in group("windows") {
-            tools.push(ToolSpec::from_entry(entry));
+        if windows_present == WINDOWS_RUNNERS.len() {
+            for entry in group("windows") {
+                tools.push(ToolSpec::from_entry(entry));
+            }
         }
     }
 

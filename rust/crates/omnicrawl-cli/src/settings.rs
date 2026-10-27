@@ -102,7 +102,7 @@ pub fn apply(
         }
         // 原生视觉：设置面板改 `[vision]` / 模型原生视觉后即时下发，不必等下一次握手。
         if let Some(native) = settings.native_vision {
-            config.native_vision = native;
+            config.native_vision = Some(native);
             applied.push("model.native_vision".to_string());
         }
         // 渠道字段：只是字符串替换，空串按「不改」处理（宿主换渠道时才会带）。
@@ -271,7 +271,8 @@ mod tests {
             context_window_tokens: 128_000,
             prompt_cache_capable: false,
             prompt_cache_identity: Default::default(),
-            native_vision: false,
+            native_vision: None,
+            vision_capability: None,
             request_retry_count: 1,
         }
     }
@@ -555,14 +556,14 @@ mod tests {
         );
         let applied = apply(&mut model, None, &request).expect("原生视觉应当被接受");
         assert_eq!(applied, vec!["model.native_vision".to_string()]);
-        assert!(model.expect("模型配置还在").native_vision);
+        assert_eq!(model.expect("模型配置还在").native_vision, Some(true));
     }
 
     /// 关掉原生视觉同样生效（只认显式给出的布尔值，不给就保持原样）。
     #[test]
     fn native_vision_can_be_turned_off_again() {
         let mut config = model_config(0);
-        config.native_vision = true;
+        config.native_vision = Some(true);
         let mut model = Some(config);
         let request = params(
             Some(SessionModelSettings {
@@ -572,14 +573,14 @@ mod tests {
             None,
         );
         apply(&mut model, None, &request).expect("关掉原生视觉应当被接受");
-        assert!(!model.expect("模型配置还在").native_vision);
+        assert_eq!(model.expect("模型配置还在").native_vision, Some(false));
     }
 
     /// 没给 `native_vision` 时不碰模型配置里那一项（与其它可选字段同一语义）。
     #[test]
     fn absent_native_vision_keeps_the_current_value() {
         let mut config = model_config(0);
-        config.native_vision = true;
+        config.native_vision = Some(true);
         let mut model = Some(config);
         let request = params(
             Some(SessionModelSettings {
@@ -589,6 +590,6 @@ mod tests {
             None,
         );
         apply(&mut model, None, &request).expect("只改推理强度应当被接受");
-        assert!(model.expect("模型配置还在").native_vision);
+        assert_eq!(model.expect("模型配置还在").native_vision, Some(true));
     }
 }

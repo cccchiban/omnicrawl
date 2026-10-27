@@ -141,6 +141,81 @@ mod tests {
         );
     }
 
+    /// 折叠/展开正在流式输出的思考段：不能把已铺开的内容清掉重铺。
+    ///
+    /// 回归的是「点击折叠（或展开）后，后续增量被当成首片、整段思考从头再流一遍」：
+    /// `settle` 只关掉逐帧揭示，必须保留当前下标，后续增量才认得「还是这一条」。
+    #[test]
+    fn toggling_a_reasoning_block_does_not_restart_the_stream() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "第一段".repeat(20),
+            }),
+            now,
+        );
+        // 铺一部分但还没铺完，此时用户点了折叠。
+        state.tick_reasoning_reveal();
+        state.toggle_reasoning_expanded(1);
+        assert_eq!(
+            state.reasoning_visible_chars(1, 60),
+            60,
+            "用户操作后当场显示全文，不等逐帧铺开"
+        );
+        assert!(!state.is_reasoning_revealing(), "不该还在逐帧揭示");
+
+        // 思考继续流：新内容直接追加显示，不能退回从第 0 个字符重铺。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "第二段".to_string(),
+            }),
+            now,
+        );
+        assert_eq!(
+            state.reasoning_visible_chars(1, 63),
+            63,
+            "后续增量应整段可见，不得从头重铺"
+        );
+        assert!(
+            !state.tick_reasoning_reveal(),
+            "已经停止揭示的段不该再驱动帧循环"
+        );
+        assert_eq!(
+            state.reasoning_visible_chars(1, 63),
+            63,
+            "推进帧也不能把可见长度退回去"
+        );
+    }
+
+    /// 同一段思考反复折叠/展开，可见长度始终等于全文。
+    #[test]
+    fn repeated_toggles_keep_the_full_text_visible() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "想".repeat(100),
+            }),
+            now,
+        );
+        for _ in 0..4 {
+            state.toggle_reasoning_expanded(1);
+            assert_eq!(state.reasoning_visible_chars(1, 100), 100);
+            state.apply(
+                &HostEvent::ReasoningDelta(TextPayload { text: "续".into() }),
+                now,
+            );
+        }
+        assert_eq!(
+            state.reasoning_visible_chars(1, 104),
+            104,
+            "四次折叠/展开后仍应按全文显示"
+        );
+    }
+
     /// 收口路径（回合结束/失败/回放）当场补全，不留半句在屏幕上。
     #[test]
     fn reasoning_reveal_settles_on_turn_end_and_replay() {

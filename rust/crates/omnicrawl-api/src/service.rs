@@ -879,7 +879,9 @@ fn options_from_process_profile(
         prompt_cache_capable: llm.prompt_cache.unwrap_or(false),
         prompt_cache_identity: Default::default(),
         // 原生视觉的优先级由内核判定（`route_image_result` 同顺序）：为真时不走代理。
-        native_vision: llm.native_vision.unwrap_or(false),
+        // 传三态而不是布尔：未配置时留给内核按模型能力回落，压成 `false` 会误走代理。
+        native_vision: llm.native_vision,
+        vision_capability: llm.vision_capability,
         request_retry_count: llm.request_retry_count.max(1) as u32,
     };
     let mut options = ServiceOptions::new(workspace.clone(), model);

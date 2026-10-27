@@ -1098,6 +1098,12 @@ pub struct ReasoningReveal {
     revealed: usize,
     /// 当前已累积到的字符数。
     target: usize,
+    /// 是否仍逐帧揭示。
+    ///
+    /// 用户主动展开/折叠、回合收口、回滚之后置为 `false`：这条记录**以后一律全文显示**。
+    /// `index` 必须保留——后续增量到达时要靠它认出「还是同一条记录」；若连 index 一起清掉，
+    /// 下一片会走「首片到达」分支把 `revealed` 归零，整段思考就会从头重新铺一遍。
+    tracking: bool,
 }
 
 impl ReasoningReveal {
@@ -1106,6 +1112,7 @@ impl ReasoningReveal {
         self.index = Some(index);
         self.revealed = 0;
         self.target = 0;
+        self.tracking = true;
     }
 
     /// 该记录又长了：按本次增量推进目标长度，不对整段重数。
@@ -1116,14 +1123,28 @@ impl ReasoningReveal {
         self.target += appended;
     }
 
-    /// 退出显现态：之后所有思考段都按全文显示（收口、展开/收起、回放、回滚）。
+    /// 退出逐帧揭示：这条记录此后一律全文显示。
+    ///
+    /// **不清 `index`**：它标记「哪一条在揭示」。清掉之后同一段思考的下一次增量会被当成
+    /// 首片，从 0 重新铺一遍（展开/折叠时表现为整段重放）。没有段在揭示时仍是彻底复位。
+    fn settle(&mut self) {
+        match self.index {
+            Some(_) => {
+                self.tracking = false;
+                self.revealed = self.target;
+            }
+            None => *self = Self::default(),
+        }
+    }
+
+    /// 彻底复位（记录被清空、回滚到不存在的下标等）。
     fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// 推进一帧；返回是否还有没铺完的内容（事件循环据此决定要不要继续按帧重画）。
     fn advance(&mut self) -> bool {
-        if self.index.is_none() || self.revealed >= self.target {
+        if !self.tracking || self.index.is_none() || self.revealed >= self.target {
             return false;
         }
         let backlog = self.target - self.revealed;
@@ -1136,7 +1157,7 @@ impl ReasoningReveal {
     /// 该记录本次渲染可见的字符数。
     fn visible_chars(&self, index: usize, total: usize) -> usize {
         match self.index {
-            Some(active) if active == index => self.revealed.min(total),
+            Some(active) if active == index && self.tracking => self.revealed.min(total),
             _ => total,
         }
     }

@@ -144,16 +144,16 @@ fn load_definition(env: &ConfigEnvironment) -> Result<AgentDefinition, String> {
         .ok_or_else(disabled_text)
 }
 
-/// 子代理实际可用的工具：定义里的 `tools` 与白名单取交集，且必须真的在父工具表里。
+/// 子代理实际可用的工具：白名单直供，不再要求它出现在父工具表里。
+///
+/// 桌面操作由这个专职子代理全权负责，主代理因此**不再声明** `windows_*`；如果这里仍按
+/// 「必须真的在父工具表里」过滤，子代理会一个桌面工具都拿不到，整个 Computer Use 直接失效。
+/// 白名单本身就是能力边界：桌面四件套加看图与只读排错，不多不少。
 ///
 /// 与 `select_profile_tools` 的区别：那条路按权限 profile 过滤，`windows_*` 不在任何
 /// profile 的白名单里，因此专职子代理必须走这份独立选择。
-pub fn child_tool_names(parent_tools: &[String]) -> Vec<String> {
-    let mut names: Vec<String> = CHILD_TOOLS
-        .iter()
-        .map(|name| (*name).to_string())
-        .filter(|name| parent_tools.contains(name))
-        .collect();
+pub fn child_tool_names() -> Vec<String> {
+    let mut names: Vec<String> = CHILD_TOOLS.iter().map(|name| (*name).to_string()).collect();
     names.sort();
     names.dedup();
     names
@@ -399,21 +399,25 @@ mod tests {
         assert_eq!(summary, "完成");
     }
 
+    /// 白名单直供：主代理不再声明 `windows_*`，子代理的工具也不能因此清空。
     #[test]
-    fn child_tools_intersect_with_parent_declarations() {
-        let parent = vec![
-            "windows_screenshot".to_string(),
-            "windows_input".to_string(),
-            "bash".to_string(),
-        ];
-        let names = child_tool_names(&parent);
-        assert_eq!(
-            names,
-            vec![
-                "windows_input".to_string(),
-                "windows_screenshot".to_string()
-            ]
-        );
+    fn child_tools_come_from_the_whitelist() {
+        let names = child_tool_names();
+        for expected in [
+            "windows_window",
+            "windows_screenshot",
+            "windows_input",
+            "windows_control",
+            "read_image",
+            "list",
+            "read",
+        ] {
+            assert!(names.contains(&expected.to_string()), "缺少 {expected}：{names:?}");
+        }
+        assert_eq!(names.len(), CHILD_TOOLS.len(), "白名单之外的不得混入：{names:?}");
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "顺序稳定：{names:?}");
     }
 
     #[test]

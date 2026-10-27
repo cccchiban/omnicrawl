@@ -150,7 +150,8 @@ fn model() -> KernelModelConfig {
         context_window_tokens: 0,
         prompt_cache_capable: false,
         prompt_cache_identity: Default::default(),
-        native_vision: false,
+        native_vision: None,
+        vision_capability: None,
         request_retry_count: 1,
     }
 }

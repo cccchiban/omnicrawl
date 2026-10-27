@@ -596,10 +596,18 @@ pub struct KernelModelConfig {
     /// 主模型是否用原生视觉。为真时内核**不**启用独立视觉模型代理——带图观察直送主模型；
     /// 为假时交给 `[vision].models` 代理；两者都不可用时内核把图片观察摄掉。
     ///
-    /// 优先级与 Python `route_image_result` 一致（原生视觉优先于代理）；旧宿主不给这个字段
-    /// 时按假处理，行为是「图片走代理」，与迁移前的默认一致。
-    #[serde(default)]
-    pub native_vision: bool,
+    /// 三态与配置域 `resolve_native_vision` 同口径：`Some(true)` 明确开启、`Some(false)`
+    /// 明确关闭、`None` 未配置（按模型自身能力回落）。宿主不能把未配置压成 `false`——
+    /// 那会让「模型本身支持视觉、用户没动过开关」的场景错误地走代理，与「原生视觉优先」
+    /// 相反。旧宿主不给这个字段时按 `None` 处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_vision: Option<bool>,
+    /// 主模型自身声明的视觉能力（对应配置域 `capabilities.vision`）。
+    ///
+    /// 只在 `native_vision` 为 `None`（未配置）时参与判定：能力为真就按原生视觉走。
+    /// 宿主从模型目录读出后下发，内核不自己去猜——它读不到用户配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_capability: Option<bool>,
     /// 空响应与可重试错误的最大请求次数，默认 1（与 Python 侧主循环的默认一致）。
     #[serde(default = "default_request_retry_count")]
     pub request_retry_count: u32,

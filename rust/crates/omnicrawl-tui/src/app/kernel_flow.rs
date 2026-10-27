@@ -22,6 +22,20 @@ impl App {
         )
     }
 
+    /// 下发给内核的原生视觉三态：`None` 表示用户没动过开关，由内核按模型能力回落。
+    ///
+    /// `--native-vision` 与外部渠道两条短路仍在宿主侧判定（它们描述的是命令行语义，
+    /// 内核看不到），只有「未配置」这一种情况才把决定权交出去。
+    pub(super) fn native_vision_override(&self) -> Option<bool> {
+        if self.options.native_vision {
+            return Some(true);
+        }
+        if uses_external_channel(&self.options) {
+            return Some(false);
+        }
+        self.llm.native_vision
+    }
+
     pub(super) fn handle_frame(&mut self, frame: Frame) {
         if frame.is_notification() {
             match HostEvent::from_frame(&frame) {

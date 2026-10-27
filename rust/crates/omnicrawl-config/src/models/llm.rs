@@ -52,6 +52,11 @@ pub struct LlmConfig {
     pub max_output_tokens: i64,
     /// 模型原生视觉：显式开关或「未配置」。
     pub native_vision: Option<bool>,
+    /// 模型自身声明的视觉能力（`capabilities.vision`），与上面的显式开关是两回事。
+    ///
+    /// `native_vision` 为 `None`（未配置）时按它回落：能力为真就按原生视觉走，否则交给
+    /// 视觉代理。没有这条回落，「模型支持视觉、用户没动过开关」会被当成不支持。
+    pub vision_capability: Option<bool>,
     pub temperature: Option<f64>,
     pub system_prompt: String,
     pub max_history_turns: i64,
@@ -123,6 +128,7 @@ impl LlmConfig {
             context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
             max_output_tokens: 0,
             native_vision: None,
+            vision_capability: None,
             temperature: None,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             max_history_turns: DEFAULT_MAX_HISTORY_TURNS,

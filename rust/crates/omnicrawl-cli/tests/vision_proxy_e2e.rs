@@ -408,6 +408,52 @@ fn vision_disabled_drops_the_image_for_a_non_vision_model() {
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
 }
 
+/// 未配置原生视觉开关、但模型声明了视觉能力：按原生视觉走，仍不调视觉模型。
+///
+/// 回归的是「宿主把未配置压成 false」：那样模型明明支持视觉，图片却白走一趟代理。
+#[test]
+fn a_vision_capable_model_skips_the_proxy_without_an_explicit_switch() {
+    let server = StubServer::spawn();
+    // 代理同样开着，但没有任何 `native_vision` 显式开关。
+    let config = write_config("capability");
+    let session_root = config.parent().expect("配置目录").join("sessions");
+    let mut kernel = Kernel::spawn(&config);
+    let mut model = model_config(&server);
+    model["vision_capability"] = json!(true);
+    assert!(
+        model.get("native_vision").is_none(),
+        "本用例只给能力，不给显式开关"
+    );
+    kernel.initialize(model, &session_root);
+
+    let frames = kernel.run_turn("看看截图");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["method"] == "turn.finished"),
+        "回合应正常收尾：{frames:?}"
+    );
+
+    let bodies = server.bodies();
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body["model"] == json!(VISION_MODEL)),
+        "模型声明支持视觉时不该调用视觉模型：{bodies:?}"
+    );
+    let follow_up = bodies
+        .iter()
+        .rfind(|body| body["model"] == json!("main-model"))
+        .expect("应当有主请求");
+    let text = follow_up.to_string();
+    assert!(
+        text.contains(&format!("base64,{IMAGE_DATA}")),
+        "图片应直送主模型：{follow_up}"
+    );
+
+    std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
 #[test]
 fn native_vision_keeps_the_image_and_skips_the_proxy() {
     let server = StubServer::spawn();

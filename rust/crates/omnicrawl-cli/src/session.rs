@@ -138,7 +138,8 @@ mod runtime_selection_tests {
             context_window_tokens: 0,
             prompt_cache_capable: false,
             prompt_cache_identity: std::collections::BTreeMap::new(),
-            native_vision: false,
+            native_vision: None,
+            vision_capability: None,
             request_retry_count: 1,
         }
     }

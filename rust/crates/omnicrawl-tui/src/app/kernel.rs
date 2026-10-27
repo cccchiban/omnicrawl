@@ -99,7 +99,9 @@ impl App {
             prompt_cache_capable: self.llm.prompt_cache.unwrap_or(false),
             prompt_cache_identity: prompt_cache_identity.to_identity_map(),
             // 交给内核做优先级判定：为真时带图观察直送主模型，不再走 `[vision]` 代理。
-            native_vision: self.native_vision_enabled(),
+            // 传三态而不是布尔：`None`（用户没动过开关）留给内核按模型能力回落。
+            native_vision: self.native_vision_override(),
+            vision_capability: self.llm.vision_capability,
             request_retry_count: if external_channel {
                 1
             } else {

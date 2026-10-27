@@ -20,7 +20,7 @@ pub(crate) fn run_computer_use(
         Ok(value) => value,
         Err(detail) => return (false, detail),
     };
-    let (model_config, parent_tools) = {
+    let model_config = {
         let borrowed = conn.borrow();
         let Some(model) = borrowed.model.clone() else {
             return (
@@ -31,19 +31,10 @@ pub(crate) fn run_computer_use(
                 )),
             );
         };
-        let tools = SubAgentRuntime::parent_tool_names(&model);
-        (model, tools)
+        model
     };
-    let tool_names = crate::computer_use::child_tool_names(&parent_tools);
-    if tool_names.is_empty() {
-        return (
-            false,
-            json_result_text(&top_level_error(
-                "COMPUTER_USE_UNAVAILABLE",
-                "当前工具表没有可用的桌面工具，Computer Use 无法执行。",
-            )),
-        );
-    }
+    // 子代理的工具由白名单直供：主代理不再声明 `windows_*`，因此不能按父工具表取交集。
+    let tool_names = crate::computer_use::child_tool_names();
     // 桌面独占：排队等前一个任务结束，等待时间同样计入本次的时间预算。
     let started = std::time::Instant::now();
     let _desktop = crate::computer_use::acquire_desktop();

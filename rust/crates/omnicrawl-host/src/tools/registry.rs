@@ -111,7 +111,9 @@ pub const TTS_RUNNERS: [&str; 1] = ["tts"];
 pub const ADVISOR_RUNNER: &str = "advisor";
 /// Computer Use 工具：由内核自持执行，只受 `[computer_use] enabled` 约束。
 pub const COMPUTER_USE_RUNNER: &str = "computer_use";
-/// Windows 桌面工具：整组注册或整组不注册（与 Python 的组规则一致）。
+/// Windows 桌面工具：**不再进主代理工具表**，只供专职 Computer Use 子代理在自己的子回合里
+/// 调用（白名单见 `omnicrawl-cli/src/computer_use.rs`）。桌面模拟操作由专职子代理全权负责，
+/// 主代理只持有 `computer_use(prompt)` 这一个入口。
 pub const WINDOWS_RUNNERS: [&str; 5] = [
     "windows_window",
     "windows_control",
@@ -176,6 +178,9 @@ pub struct RegistryOptions {
     pub advisor: AdvisorOptions,
     /// Computer Use 是否进表：只受 `[computer_use] enabled` 约束，与 `[subagents]` 无关。
     pub computer_use: bool,
+    /// 额外声明的桌面工具：桌面操作由专职 Computer Use 子代理全权负责，主代理的表里没有
+    /// `windows_*`；子代理在自己的子回合里用这张清单把它们加回自己的工具表。
+    pub windows_tools: bool,
     /// MCP 管理器：已发现的工具/资源/Prompt 进表，执行体走这个句柄。
     pub mcp: Option<Arc<McpClientManager>>,
     /// 复用既有的后台任务管理器：工具表重建时正在跑的后台命令不能被丢掉。
@@ -232,11 +237,14 @@ impl ToolRegistry {
             .chain(NET_RUNNERS.iter())
             .chain(SKILL_RUNNERS.iter())
             .chain(IMAGE_RUNNERS.iter())
-            .chain(WINDOWS_RUNNERS.iter())
             .map(|name| (*name).to_string())
             .collect();
         if options.tts.is_some() {
             available.extend(TTS_RUNNERS.iter().map(|name| (*name).to_string()));
+        }
+        // 桌面工具只在专职 Computer Use 子代理的子回合里声明（见 `windows_tools`）。
+        if options.windows_tools {
+            available.extend(WINDOWS_RUNNERS.iter().map(|name| (*name).to_string()));
         }
         if options.advisor.active() {
             available.push(ADVISOR_RUNNER.to_string());
@@ -341,6 +349,7 @@ impl ToolRegistry {
             mcp_resources: &mcp_resources,
             mcp_prompts: &mcp_prompts,
             disabled_tools: &options.disabled_tools,
+            windows_tools: options.windows_tools,
         };
         let specs = build_agent_tools(&catalog_options)
             .map_err(|error| ToolError::new(error.message().to_string()))?;
@@ -829,18 +838,23 @@ mod tests {
             "web_search",
             "fetcher",
             "image_gen",
-            "windows_window",
-            "windows_control",
-            "windows_input",
-            "windows_clipboard",
-            "windows_screenshot",
             // 视觉工具始终进表（与 Python `_build_tools` 一致），图片去向由内核路由。
             "read_image",
             "config_edit",
         ] {
             assert!(names.contains(expected), "缺少 {expected}：{names:?}");
         }
-        for hidden in ["subagent", "memory_search"] {
+        // 桌面操作由专职 Computer Use 子代理全权负责：主代理只保留 `computer_use` 入口，
+        // 不直接持有 windows_*（子代理在自己的子回合里按自己的白名单调用它们）。
+        for hidden in [
+            "subagent",
+            "memory_search",
+            "windows_window",
+            "windows_control",
+            "windows_input",
+            "windows_clipboard",
+            "windows_screenshot",
+        ] {
             assert!(!names.contains(hidden), "{hidden} 不该出现：{names:?}");
         }
         // 内核自持的三个工具仍在表里（界面负责交互）。
@@ -1370,10 +1384,20 @@ mode = \"review\"
     }
 
     /// 桌面操作工具的确认截图必须走宿主同一条视觉附件通路，否则模型仍然看不到画面。
+    ///
+    /// 这类调用只发生在专职 Computer Use 子代理的子回合里，因此这里显式按子代理的
+    /// 工具表构建（主代理的表里没有 `windows_*`）。
     #[cfg(windows)]
     #[test]
     fn windows_input_returns_a_snapshot_through_the_registry() {
-        let (registry, root) = registry("windows-snapshot");
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-windows-snapshot");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        let options = RegistryOptions {
+            windows_tools: true,
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
         // release 未按下时幂等：不产生任何输入事件，却能覆盖「操作后截图」这条通路。
         let execution = registry
             .execute_with_vision(&call("windows_input", json!({"action": "release"})))

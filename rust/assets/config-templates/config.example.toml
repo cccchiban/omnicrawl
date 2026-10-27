@@ -171,7 +171,6 @@ enabled = true
 # powershell = false
 # bash = true
 # read_image = true
-# windows_screenshot = true
 
 # 运行节奏护栏：Reasoning 死循环保护、白名单临时错误恢复与有限自动续跑。
 # 自动续跑会增加模型请求次数和 Token 消耗；保存后从下一次回合生效。

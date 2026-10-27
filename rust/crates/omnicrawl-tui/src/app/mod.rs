@@ -1418,6 +1418,42 @@ mod tests {
         );
     }
 
+    /// 未配置原生视觉、但模型自身声明支持视觉时按原生视觉走（不能压成关闭）。
+    ///
+    /// 这是「原生视觉优先于视觉代理」的一半：显式开关决定另一半，未配置的一半靠模型能力
+    /// 回落。少了这条回落，支持视觉的模型会被误送去视觉代理。
+    #[test]
+    fn native_vision_falls_back_to_the_model_capability() {
+        let environment = omnicrawl_config::core::runtime::ConfigEnvironment::from_process();
+        let mut llm = LlmConfig::with_environment(&environment);
+
+        llm.native_vision = None;
+        llm.vision_capability = Some(true);
+        assert!(
+            effective_native_vision(false, false, &llm),
+            "未配置 + 模型支持视觉 = 用原生视觉"
+        );
+
+        llm.native_vision = Some(false);
+        assert!(
+            !effective_native_vision(false, false, &llm),
+            "显式关掉优先于模型能力"
+        );
+
+        llm.native_vision = None;
+        llm.vision_capability = Some(false);
+        assert!(
+            !effective_native_vision(false, false, &llm),
+            "未配置 + 模型不支持视觉 = 交给代理"
+        );
+
+        llm.vision_capability = None;
+        assert!(
+            !effective_native_vision(false, false, &llm),
+            "未配置 + 能力未知 = 交给代理"
+        );
+    }
+
     #[test]
     fn explicit_context_window_wins_over_config() {
         let environment = omnicrawl_config::core::runtime::ConfigEnvironment::from_process();

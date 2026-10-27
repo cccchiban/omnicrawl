@@ -44,6 +44,8 @@ struct ModelSource {
     max_output_tokens: i64,
     temperature: Option<f64>,
     native_vision: Option<bool>,
+    /// 模型自身声明的视觉能力（`capabilities.vision`）；未声明时保持 `None`。
+    vision_capability: Option<bool>,
     /// 自定义模型条目声明的 prompt 缓存能力（其余来源保持 `None`）。
     prompt_cache: Option<bool>,
     provider_options: Table,
@@ -62,6 +64,7 @@ impl ModelSource {
             max_output_tokens: 0,
             temperature: None,
             native_vision: None,
+            vision_capability: None,
             prompt_cache: None,
             provider_options: Table::new(),
         }
@@ -83,6 +86,7 @@ impl ModelSource {
         self.provider_options = record.provider_options.clone();
         self.native_vision = record.native_vision;
         self.prompt_cache = record.capabilities.prompt_cache;
+        self.vision_capability = record.capabilities.vision;
     }
 }
 
@@ -312,6 +316,7 @@ pub fn load_multi_model_llm_config(
         max_output_tokens: state.max_output_tokens,
         temperature: state.temperature,
         native_vision,
+        vision_capability: state.vision_capability,
         profile_id: state.profile_id,
         provider,
         protocol,

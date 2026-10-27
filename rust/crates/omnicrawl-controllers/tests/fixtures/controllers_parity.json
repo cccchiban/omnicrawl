@@ -8073,11 +8073,6 @@
           "tts",
           "update_todos",
           "web_search",
-          "windows_clipboard",
-          "windows_control",
-          "windows_input",
-          "windows_screenshot",
-          "windows_window",
           "write_file",
           "config_edit"
         ],
@@ -8122,11 +8117,6 @@
           "tts",
           "update_todos",
           "web_search",
-          "windows_clipboard",
-          "windows_control",
-          "windows_input",
-          "windows_screenshot",
-          "windows_window",
           "write_file",
           "config_edit",
           "kb_delete"
@@ -8368,46 +8358,6 @@
             "run_in_subprocess": true
           },
           {
-            "name": "windows_window",
-            "description": "是什么：在 Windows 枚举、读取或激活顶层窗口。怎么做：需要发现窗口或确认窗口状态时使用；非 Windows、只需控件定位或不应改变前台窗口时不用；activate 在直连被拒时依次尝试官方允许的前台放行路径。怎样做：list 返回 JSON：action、matched_count、truncated、windows；get/activate 返回 action、window（含 handle、title、class_name、process_id、状态和 bounds），activate 另带 screenshot（激活后的画面）作为视觉附件；失败返回文本错误。建议：先 list 取得稳定的 window_handle，再 get 或 activate；用标题/类名过滤减少误选，激活是否到位看返回的 screenshot；激活仍失败时要由用户手动切换。",
-            "argument_schema": "{\"action\":\"list|get|activate\",\"window_handle\":\"0x...\",\"title_contains\":\"可选标题片段\",\"class_name_contains\":\"可选类名片段\",\"visible_only\":true,\"include_untitled\":false,\"max_results\":50}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_control",
-            "description": "是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要操作按钮、输入框或选择控件时使用；非 Windows 或只需鼠标坐标时不用；非 list 必须提供定位条件，多匹配需 index。怎样做：list 返回 JSON：action、matched_count、truncated、controls；其他动作返回 action、index、target，并带 screenshot（操作后的前台窗口画面）作为视觉附件；失败返回文本错误，不返回控件外的任意脚本结果。建议：先 list 再用 name/automation_id/control_type 精确定位，优先语义定位而非坐标；操作结果看返回的 screenshot，不要为此再调 windows_screenshot；set_value 仅用于字符串值。",
-            "argument_schema": "{\"action\":\"list|invoke|set_value|select|toggle|focus\",\"window_handle\":\"0x...\",\"name\":\"精确名称\",\"automation_id\":\"自动化ID\",\"class_name\":\"类名\",\"control_type\":\"button|edit|...\",\"index\":0,\"value\":\"仅 set_value\",\"max_results\":30}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_input",
-            "description": "是什么：在 Windows 发送受限的鼠标、滚轮、按键、组合键或 Unicode 文本输入，并可按顺序执行多个动作。怎么做：目标应用明确且需要真实输入时使用；能用 UI Automation 时优先不用坐标输入；click/move 必须有虚拟桌面坐标。怎样做：action 取 move|click|press|release|scroll|key|hotkey|type_text，button 含 back、forward 两个侧键（浏览器后退前进）；需要连着做几步（输入网址后回车）时用 actions 传动作对象数组按顺序执行。成功返回 JSON，按动作包含 action、坐标、按键、clicks、keys、text_length，actions 额外返回 count 与 results；同时带回 screenshot（操作后的前台窗口，含 path、window、source_bounds、image）作为视觉附件；type_text 不回显文本；失败返回文本错误。建议：先确认前台窗口和坐标，再执行最小动作；操作结果看返回的 screenshot，不要为此再调 windows_screenshot；敏感文本不回显但仍会进入目标应用，输入后不要重复发送。",
-            "argument_schema": "{\"action\":\"move|click|press|release|scroll|key|hotkey|type_text\",\"actions\":[{\"action\":\"type_text\",\"text\":\"https://example.com\"},{\"action\":\"key\",\"key\":\"enter\"}],\"x\":100,\"y\":200,\"button\":\"left|right|middle|back|forward\",\"clicks\":1,\"wheel_delta\":-120,\"key\":\"enter\",\"keys\":[\"ctrl\",\"s\"],\"presses\":1,\"text\":\"Unicode 文本\"}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_clipboard",
-            "description": "是什么：读取、写入或清空 Windows Unicode 文本剪贴板。怎么做：需要在应用间传递文本时使用；只需控件内设置值时优先用 windows_control；read_text 之外不要假设有二进制剪贴板支持。怎样做：read_text 返回 JSON：action、text、total_chars、truncated；write_text 返回 action、text_length；clear 仅返回 action；失败返回文本错误。建议：读取时设置合理 max_chars；写入内容不会回显到结果或会话参数，但会改变用户剪贴板，执行前确认目标。",
-            "argument_schema": "{\"action\":\"read_text|write_text|clear\",\"text\":\"仅 write_text\",\"max_chars\":8000}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_screenshot",
-            "description": "是什么：用 Windows GDI 截取整个桌面、桌面内的一块区域、屏幕区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只需窗口元数据时用 windows_window；刚用 windows_input、windows_control 或 windows_window 的 activate 改过界面时不用——那几次调用已经带回操作后的画面。怎样做：target=desktop 也接受 x/y/width/height 裁剪——只给 x/y 就从该点裁到桌面右下角，不传则整屏；target=region 要求 x/y/width/height 全部给出。成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；同一画面不要重复截；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
-            "argument_schema": "{\"target\":\"desktop|region|window\",\"window_handle\":\"0x...\",\"x\":0,\"y\":0,\"width\":1280,\"height\":720,\"max_dimension\":2048}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
             "name": "subagent",
             "description": "是什么：按受限 profile 调度 SubAgent，任务同步执行，支持查询取消和 worktree 控制。怎么做：单个子代理只做单个任务；需要并行就去同一条消息里并行调用多次 subagent，一次调用只提交一个 task。任务可独立拆分、需要隔离分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"action\"], \"additionalProperties\": false}",
@@ -8637,11 +8587,6 @@
           "tts",
           "update_todos",
           "web_search",
-          "windows_clipboard",
-          "windows_control",
-          "windows_input",
-          "windows_screenshot",
-          "windows_window",
           "write_file",
           "config_edit"
         ],
@@ -8821,30 +8766,6 @@
         "tools": null
       },
       {
-        "label": "Windows 只给一半",
-        "available": [
-          "bash",
-          "edit_file",
-          "grep",
-          "list",
-          "monitor",
-          "powershell",
-          "read",
-          "skill_search",
-          "windows_input",
-          "windows_window",
-          "write_file",
-          "config_edit"
-        ],
-        "memory_enabled": false,
-        "subagent_types": [],
-        "mcp_sample": false,
-        "disabled": [],
-        "ok": false,
-        "error": "Windows 桌面工具必须作为完整工具组注册。",
-        "tools": null
-      },
-      {
         "label": "MCP 三类",
         "available": [
           "bash",
@@ -9006,11 +8927,6 @@
           "tts",
           "update_todos",
           "web_search",
-          "windows_clipboard",
-          "windows_control",
-          "windows_input",
-          "windows_screenshot",
-          "windows_window",
           "write_file",
           "config_edit",
           "kb_delete"
@@ -9252,46 +9168,6 @@
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"event_ids\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 128}}}, \"required\": [\"event_ids\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": true,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_window",
-            "description": "是什么：在 Windows 枚举、读取或激活顶层窗口。怎么做：需要发现窗口或确认窗口状态时使用；非 Windows、只需控件定位或不应改变前台窗口时不用；activate 在直连被拒时依次尝试官方允许的前台放行路径。怎样做：list 返回 JSON：action、matched_count、truncated、windows；get/activate 返回 action、window（含 handle、title、class_name、process_id、状态和 bounds），activate 另带 screenshot（激活后的画面）作为视觉附件；失败返回文本错误。建议：先 list 取得稳定的 window_handle，再 get 或 activate；用标题/类名过滤减少误选，激活是否到位看返回的 screenshot；激活仍失败时要由用户手动切换。",
-            "argument_schema": "{\"action\":\"list|get|activate\",\"window_handle\":\"0x...\",\"title_contains\":\"可选标题片段\",\"class_name_contains\":\"可选类名片段\",\"visible_only\":true,\"include_untitled\":false,\"max_results\":50}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_control",
-            "description": "是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要操作按钮、输入框或选择控件时使用；非 Windows 或只需鼠标坐标时不用；非 list 必须提供定位条件，多匹配需 index。怎样做：list 返回 JSON：action、matched_count、truncated、controls；其他动作返回 action、index、target，并带 screenshot（操作后的前台窗口画面）作为视觉附件；失败返回文本错误，不返回控件外的任意脚本结果。建议：先 list 再用 name/automation_id/control_type 精确定位，优先语义定位而非坐标；操作结果看返回的 screenshot，不要为此再调 windows_screenshot；set_value 仅用于字符串值。",
-            "argument_schema": "{\"action\":\"list|invoke|set_value|select|toggle|focus\",\"window_handle\":\"0x...\",\"name\":\"精确名称\",\"automation_id\":\"自动化ID\",\"class_name\":\"类名\",\"control_type\":\"button|edit|...\",\"index\":0,\"value\":\"仅 set_value\",\"max_results\":30}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_input",
-            "description": "是什么：在 Windows 发送受限的鼠标、滚轮、按键、组合键或 Unicode 文本输入，并可按顺序执行多个动作。怎么做：目标应用明确且需要真实输入时使用；能用 UI Automation 时优先不用坐标输入；click/move 必须有虚拟桌面坐标。怎样做：action 取 move|click|press|release|scroll|key|hotkey|type_text，button 含 back、forward 两个侧键（浏览器后退前进）；需要连着做几步（输入网址后回车）时用 actions 传动作对象数组按顺序执行。成功返回 JSON，按动作包含 action、坐标、按键、clicks、keys、text_length，actions 额外返回 count 与 results；同时带回 screenshot（操作后的前台窗口，含 path、window、source_bounds、image）作为视觉附件；type_text 不回显文本；失败返回文本错误。建议：先确认前台窗口和坐标，再执行最小动作；操作结果看返回的 screenshot，不要为此再调 windows_screenshot；敏感文本不回显但仍会进入目标应用，输入后不要重复发送。",
-            "argument_schema": "{\"action\":\"move|click|press|release|scroll|key|hotkey|type_text\",\"actions\":[{\"action\":\"type_text\",\"text\":\"https://example.com\"},{\"action\":\"key\",\"key\":\"enter\"}],\"x\":100,\"y\":200,\"button\":\"left|right|middle|back|forward\",\"clicks\":1,\"wheel_delta\":-120,\"key\":\"enter\",\"keys\":[\"ctrl\",\"s\"],\"presses\":1,\"text\":\"Unicode 文本\"}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_clipboard",
-            "description": "是什么：读取、写入或清空 Windows Unicode 文本剪贴板。怎么做：需要在应用间传递文本时使用；只需控件内设置值时优先用 windows_control；read_text 之外不要假设有二进制剪贴板支持。怎样做：read_text 返回 JSON：action、text、total_chars、truncated；write_text 返回 action、text_length；clear 仅返回 action；失败返回文本错误。建议：读取时设置合理 max_chars；写入内容不会回显到结果或会话参数，但会改变用户剪贴板，执行前确认目标。",
-            "argument_schema": "{\"action\":\"read_text|write_text|clear\",\"text\":\"仅 write_text\",\"max_chars\":8000}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
-            "run_in_subprocess": true
-          },
-          {
-            "name": "windows_screenshot",
-            "description": "是什么：用 Windows GDI 截取整个桌面、桌面内的一块区域、屏幕区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只需窗口元数据时用 windows_window；刚用 windows_input、windows_control 或 windows_window 的 activate 改过界面时不用——那几次调用已经带回操作后的画面。怎样做：target=desktop 也接受 x/y/width/height 裁剪——只给 x/y 就从该点裁到桌面右下角，不传则整屏；target=region 要求 x/y/width/height 全部给出。成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；同一画面不要重复截；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
-            "argument_schema": "{\"target\":\"desktop|region|window\",\"window_handle\":\"0x...\",\"x\":0,\"y\":0,\"width\":1280,\"height\":720,\"max_dimension\":2048}",
-            "requires_confirmation": true,
-            "model_output_is_bounded": false,
             "run_in_subprocess": true
           },
           {
