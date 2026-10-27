@@ -38,7 +38,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   当本轮文本。两条路径都不改持久化历史。
 
 装配结果经 `initialize.model.system_prompt` / `context_messages` 交给内核；模式切换
-（`/plan`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
+（`/plan`、`/programming`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
 **不写进会话转录**（它们是本轮读到的环境，不是历史）。
 
 `PromptOptions.system_prompt_override` 只在**显式覆盖**时有值（TUI 的 `--system-prompt` /
@@ -99,7 +99,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - 回环用例在 `review.rs` 内部自带（`DecisionCassette`：`set_choice` / `set_reason` 两个旋钮，
   覆盖结论解析、选中理由、表外键与缺答回落）。
 
-## 检索重排（可选，默认关闭）
+## 检索重排（决策模型排序可选、默认关闭；BM25 固定启用）
 
 `tools/decision_search.rs` 把 `memory_search`、`kb_search`、`skill_search` 与 `web_search` 的候选
 交给结构化决策模型按相关度排序。四个开关各自独立（`decision_models.toml` 的 `[features]` 里的
@@ -108,31 +108,36 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank`、`MemoryOptions.rerank` 与
 `WebSearchOptions.rerank`）。
 
-联网搜索另有一条**并联**的 BM25 排序通路（`[features] web_search_bm25_rerank`，装配到
-`WebSearchOptions.bm25`；算法在 `omnicrawl-extensions` 的 `bm25` 模块，与 Skill 检索共用一份）。
-它与决策模型排序互不影响，按固定优先级逐级尝试（`channel_ranking` 的 `RankLane`）：
-**BM25 优先** → 决策模型 → 本地关键词覆盖度。两者都开启时只用 BM25；该路候选一个查询词都
-没命中时才回退决策模型；两条都不可用时回退关键词覆盖度排序，搜索不会失败。BM25 本地算分，
-不需要模型渠道也没有网络往返，因此不会因为渠道暂时不可用而白等一次超时。走 BM25 或决策模型
-时按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；一旦落到关键词兜底，条数交回调用方的
-`max_results`（兜底只圈候选、没有「取前几条」的依据）。两个开关都关着时完全不介入，保留引擎
-自身顺序。
+联网搜索有**两级固定结构**：BM25 定基序，决策模型（开关开启时）在它上面重排。BM25 的算法在
+`omnicrawl-extensions` 的 `bm25` 模块（与 Skill 检索共用一份），固定启用、不在 `[features]` 里。
+决策模型排序由 `web_search_rerank` 开关控制，但它**拿到的就是 BM25 的排序结果**（取前
+`RERANK_CHANNEL_POOL` 条送审），只负责在已相关的候选里再分高下，而不是从零判断。
+
+- 开关关闭：只用 BM25。开关开启但决策服务不可用（无渠道、缺凭据、超时、响应不可解析）：同样
+  落回 BM25，`diagnostics` 记一条警告，搜索不会失败。
+- BM25 与该路候选一个词元都不相交时没有可依据的名次，基序退化为引擎原顺序；关着开关时干脆
+  不介入，保留引擎原顺序、条数交回 `max_results`。
+- 走 BM25 或决策模型时按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；不介入时条数由调用方的
+  `max_results` 决定。
+- 没有第三级兜底：原先的「关键词覆盖度」一级已移除，BM25 的 `None` 就是「这一路不排序」。
 
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
   调用方的 `max_results`**，不做固定截断。
-- **联网搜索按渠道排序**：每一路（一个渠道的结果）单独送审——本地先按关键词覆盖度圈出该路前
-  `RERANK_CHANNEL_POOL` 条，交决策模型排序后**每路留前 5 条**（`RERANK_KEEP_PER_CHANNEL`）。
-  `engine=mixed` 时每路各自排序、各自 ≤5 条，合并后总量随渠道数增长（N 路 × 5 条），没有固定
+- **联网搜索按渠道排序**：每一路（一个渠道的结果）单独处理——先本地 BM25 定基序，开关开启时再
+  把该路前 `RERANK_CHANNEL_POOL` 条交给决策模型重排，**每路留前 5 条**（`RERANK_KEEP_PER_CHANNEL`）。
+  `engine=mixed` 时每路各自处理、各自 ≤5 条，合并后总量随渠道数增长（N 路 × 5 条），没有固定
   总量上限；只有调用方显式给了 `max_results` 才收窄总数。没有分组的中间层，也**没有 25 条上限**
   （旧的分组机制 `RERANK_GROUPS` / `RERANK_GROUP_SIZE` / `RERANK_POOL_LIMIT` / `RERANK_OUTPUT_LIMIT`
   已删除）。单引擎调用就是「唯一一路」，因此排序后同样只回 5 条。
 - **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与）；
   GitHub / arXiv / Hugging Face 是垂直站点，用 `sources` 参数点名才加进来，单独选它们作引擎时不受影响。
-- **未开启排序时**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条、总量不限（显式
-  `max_results` 才收窄）；单引擎与接口型引擎仍按 `max_results` 截断，上限 `MAX_RESULTS_PER_ENGINE`（50）。
-- **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、网络失败、响应不可解析都退回本地
-  排序结果（与审查通道的 fail-closed 相反，是本功能刻意选的：检索少几条比检索直接失败代价小）。
+- **条数**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条候选，排序后每路保留前 5 条；
+  总量随渠道数增长、不限，显式 `max_results` 才收窄。单引擎与接口型引擎按 `max_results` 截断，
+  上限 `MAX_RESULTS_PER_ENGINE`（50）。
+- **失败一律 fail-open**：没有命中词、决策模型开关没开、没有可用决策渠道、缺凭据、网络失败、
+  响应不可解析都退回 BM25 的结果（与审查通道的 fail-closed 相反，是本功能刻意选的：检索少几条
+  比检索直接失败代价小）。
 - 出网内容沿用审查通道的 `[desensitization]` 旁路（`review::masking_from_config`）；脱敏构造失败
   按「重排不可用」处理，绝不外发原文。
 - `RerankClient` 是注入点：测试用桩（`memory.rs` / `web_search.rs` 的 `StubRerank`）替换真实 HTTP

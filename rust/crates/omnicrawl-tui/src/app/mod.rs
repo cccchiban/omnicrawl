@@ -103,8 +103,8 @@ use omnicrawl_config::features::decision_model::{
     DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
     SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES, DECISION_SWITCH_KB_SEARCH,
     DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH, DECISION_SWITCH_WEB_SEARCH,
-    DECISION_SWITCH_WEB_SEARCH_BM25, DEFAULT_DECISION_RETRY_COUNT,
-    DEFAULT_LOCAL_DECISION_BASE_URL, DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
+    DEFAULT_DECISION_RETRY_COUNT, DEFAULT_LOCAL_DECISION_BASE_URL,
+    DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
 };
 use omnicrawl_config::features::embedding::{
     load_embedding_model_configuration, save_embedding_model_configuration, EmbeddingChannelConfig,

@@ -26,7 +26,7 @@ use regex::Regex;
 use scraper::Html;
 use serde_json::{Map, Value};
 
-use super::decision_search::{apply_order, keyword_coverage_order, RerankOptions, RerankRequest};
+use super::decision_search::{apply_order, RerankOptions, RerankRequest};
 use super::error::{ToolError, ToolOutcome};
 use super::tls_transport::{normalize_impersonate, TlsWebTransport};
 use super::web_transport::{
@@ -44,9 +44,10 @@ pub const MIXED_RESULTS_PER_CHANNEL: i64 = 10;
 /// 支持的全部引擎；清单的唯一来源在配置域（界面候选与配置值归一化读同一张表）。
 pub const SUPPORTED_ENGINES: [&str; 10] = WEB_SEARCH_ENGINES;
 
-/// 决策模型排序时每路渠道保留的条数：单次送审的路内候选数，也是该路最终返回的条数。
+/// 单路排序后每路渠道保留的条数：BM25 与决策模型排序都按这个数截，也是路内最终返回的条数。
 pub const RERANK_KEEP_PER_CHANNEL: usize = 5;
-/// 单路送审的候选数：本地按关键词覆盖度先圈出这么多条，再交给决策模型排序。
+/// 单路送审的候选数：本地按关键词覆盖度先圈出这么多条，再交给决策模型排序；
+/// 接口型引擎与混合搜索也按这个数向渠道要候选（BM25 要从整路里挑前几名）。
 const RERANK_CHANNEL_POOL: usize = 10;
 /// 单路请求的超时：本地小模型单批 10 条约 25s，30s 留出余量；超时即 fail-open 退回本地排序。
 const RERANK_TIMEOUT_SECONDS: u64 = 30;
@@ -54,28 +55,6 @@ const RERANK_TIMEOUT_SECONDS: u64 = 30;
 const RERANK_INSTRUCTIONS: &str = "给定 state 里的搜索查询，判断每个候选项与该查询的相关程度；\
 state 是事实来源，不要根据候选项自身措辞推测查询；候选项是一批网页搜索结果，\
 排在前面表示更值得优先查看。";
-
-/// 联网搜索的本地 BM25 排序开关状态。
-///
-/// 只有一个布尔：BM25 的参数（`k1`/`b`）与分词都在 [`omnicrawl_extensions::bm25`] 里固定，
-/// 不需要按渠道配置，因此这里不持有任何客户端或凭据。
-#[derive(Debug, Clone, Default)]
-pub struct Bm25RankOptions {
-    pub enabled: bool,
-}
-
-impl Bm25RankOptions {
-    /// 是否启用：关闭时完全不介入，保留引擎自身顺序。
-    pub fn active(&self) -> bool {
-        self.enabled
-    }
-}
-
-impl From<bool> for Bm25RankOptions {
-    fn from(enabled: bool) -> Self {
-        Self { enabled }
-    }
-}
 
 /// 混合搜索的引擎名（并发多路 + 去重合并）。
 pub const MIXED_ENGINE: &str = omnicrawl_config::features::web_search::MIXED_WEB_SEARCH_ENGINE;
@@ -189,11 +168,6 @@ pub struct WebSearchOptions {
     pub impersonate: String,
     /// 联网搜索的决策模型排序（`decision_models.toml` 的 `web_search_rerank` 开关）。
     pub rerank: Arc<RerankOptions>,
-    /// 联网搜索的本地 BM25 排序（`decision_models.toml` 的 `web_search_bm25_rerank` 开关）。
-    ///
-    /// 与 `rerank` 并行：两者都启用时优先 BM25，BM25 无命中再回退决策模型，最后回退关键词。
-    /// 本地算分，没有模型渠道与网络往返。
-    pub bm25: Arc<Bm25RankOptions>,
 }
 
 impl Default for WebSearchOptions {
@@ -216,9 +190,8 @@ impl Default for WebSearchOptions {
             github_token: String::new(),
             mixed_parallelism: 4,
             impersonate: super::tls_transport::DEFAULT_IMPERSONATE.to_string(),
-            // 缺省即不排序：重排是纯加速项，开关关着时连配置都不读。
+            // 缺省不启用决策模型排序：它是可选项，开关关着时连配置都不读。
             rerank: Arc::new(RerankOptions::default()),
-            bm25: Arc::new(Bm25RankOptions::default()),
         }
     }
 }
@@ -275,15 +248,6 @@ pub fn web_search_options_from_config(
             environment,
             omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH,
         )),
-        // BM25 与决策模型排序并行装配：各自读自己的开关，互不影响。
-        bm25: Arc::new(Bm25RankOptions {
-            enabled: omnicrawl_config::features::decision_model::load_decision_switches(
-                environment, None,
-            )
-            .get(omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH_BM25)
-            .copied()
-            .unwrap_or(false),
-        }),
         ..WebSearchOptions::default()
     }
 }
@@ -635,19 +599,20 @@ fn status_message(status: u16) -> String {
     }
 }
 
-/// 联网搜索排序的三级回退顺序：BM25 → 决策模型 → 本地关键词覆盖度。
+/// 联网搜索排序的两级结构：BM25 定基序，决策模型（开关开启时）在其结果上重排。
 ///
-/// BM25 与决策模型是**并行的两条独立通路**（各自的开关互不影响）：两者都启用时 BM25 优先，
-/// BM25 不可用再回退决策模型；两条都不可用（含开关关着、失败、候选太少）才回退到关键词
-/// 覆盖度排序。任一级成功即返回，不再尝试后面的级别。
+/// BM25 是固定启用的基序：本地算分，不需要额外的模型渠道与网络往返，中文靠二字片段召回，
+/// 长度归一回避免长摘要靠堆词占优。决策模型只在开关开启时接在它后面，且**拿到的就是 BM25
+/// 的排序结果**——它负责在已相关的候选中再分高下，而不是从零开始判断。
 ///
-/// BM25 取代了原先的向量模型排序：本地算分不需要额外的模型渠道与网络往返，中文靠二字
-/// 片段召回，长度归一回避免长摘要靠堆词占优。
+/// 任一级失败都不让搜索失败：决策模型不可用时直接用 BM25 的结果；BM25 没有可依据的命中时
+/// 保持引擎原顺序。没有第三级兜底。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RankLane {
+    /// 只用 BM25（开关关闭，或决策模型不可用）。
     Bm25,
+    /// BM25 定基序后由决策模型重排。
     Decision,
-    Keyword,
 }
 
 /// 单路排序的执行结果：既给出路内下标顺序，也说明最终由哪一级排出来。
@@ -656,9 +621,9 @@ struct ChannelRanking {
     lane: RankLane,
 }
 
-/// 单路排序：按 [`RankLane`] 的顺序逐级尝试，返回**路内下标**的新顺序。
+/// 单路排序：BM25 定基序，决策模型（开关开启时）在其结果上重排，返回**路内下标**的新顺序。
 ///
-/// `None` 表示三级都不可用（开关关着、候选太少或各级均失败），调用方保留本地顺序。
+/// `None` 表示这一次不介入（候选太少，或 BM25 无命中且决策模型关着），调用方保留本地顺序。
 pub fn channel_rerank_order(
     options: &WebSearchOptions,
     state: Value,
@@ -669,6 +634,9 @@ pub fn channel_rerank_order(
 }
 
 /// 单路排序的完整结果（含最终采用的级别，便于测试与诊断）。
+///
+/// `None` 表示这一次不介入：候选不比保留数多，或 BM25 没有任何命中且决策模型未接管——
+/// 此时调用方保持引擎原顺序，条数交回 `max_results`。
 fn channel_ranking(
     options: &WebSearchOptions,
     state: Value,
@@ -678,48 +646,37 @@ fn channel_ranking(
     if candidates.len() <= RERANK_KEEP_PER_CHANNEL {
         return None;
     }
-    // 两个排序开关都关着时完全不介入：保留引擎自身顺序，与未引入排序前一致。
-    let bm25_ready = options.bm25.active();
-    let decision_ready = options.rerank.active();
-    if !bm25_ready && !decision_ready {
-        return None;
-    }
-    // BM25 优先：本地算分，没有网络往返，也不会因为渠道暂不可用而白等一次超时。
-    if bm25_ready {
-        if let Some(order) = bm25_order(options, query, candidates) {
-            return Some(ChannelRanking {
-                order,
-                lane: RankLane::Bm25,
-            });
-        }
-        diagnostics::warn("[host] 联网搜索 BM25 排序不可用，改试决策模型排序。");
-    }
-    // 回退决策模型：与向量通路并行，互不影响。
-    if decision_ready {
-        if let Some(order) = decision_order(options, state, query, candidates) {
+    // 第一级固定是 BM25：本地算分，没有网络往返，也不会因为渠道暂不可用而白等一次超时。
+    // `None` 表示该路候选与查询一个词元都不相交，BM25 没有可依据的信息。
+    let basis = bm25_order(query, candidates);
+
+    // 第二级只在开关开着时接上，且送审的就是 BM25 的排序结果：模型在已相关的候选里再分高下。
+    // BM25 无命中时基序退化为引擎原顺序——这正是决策模型最有用武之地的时候。
+    if options.rerank.active() {
+        let ordered_basis: Vec<usize> = basis
+            .clone()
+            .unwrap_or_else(|| (0..candidates.len()).collect());
+        if let Some(order) = decision_order(options, state, candidates, &ordered_basis) {
             return Some(ChannelRanking {
                 order,
                 lane: RankLane::Decision,
             });
         }
     }
-    // 再回退本地关键词：只在开启了排序却都不可用时兜底。
-    Some(ChannelRanking {
-        order: keyword_coverage_order(query, candidates),
-        lane: RankLane::Keyword,
+
+    // 决策模型关着或不可用：直接用 BM25 的结果。BM25 也没有命中时不介入。
+    basis.map(|order| ChannelRanking {
+        order,
+        lane: RankLane::Bm25,
     })
 }
 
-/// BM25 通路：对查询与候选做本地算分，返回按得分降序的路内下标。
+/// BM25 基序：对查询与候选做本地算分，返回按得分降序的路内下标。
 ///
-/// 没有任何候选与查询有交集时返回 `None`（交给决策模型，或最终由关键词覆盖度兜底）——
-/// 此时 BM25 没有可依据的信息，让它「保持原顺序」冒充排序结果会掩盖实际的降级。
-fn bm25_order(
-    options: &WebSearchOptions,
-    query: &str,
-    candidates: &[String],
-) -> Option<Vec<usize>> {
-    if !options.bm25.active() || query.trim().is_empty() {
+/// 没有任何候选与查询有交集时返回 `None`——此时 BM25 没有可依据的信息，让它「保持原顺序」
+/// 冒充排序结果会掩盖实际的降级。调用方据此决定是否把这一路交给决策模型。
+fn bm25_order(query: &str, candidates: &[String]) -> Option<Vec<usize>> {
+    if query.trim().is_empty() {
         return None;
     }
     let documents: Vec<Vec<String>> = candidates
@@ -740,12 +697,15 @@ fn bm25_order(
     Some(order)
 }
 
-/// 决策模型通路：把这一路的候选交给决策模型按相关度排序，返回路内下标。
+/// 决策模型通路：把 BM25 排好的候选交给决策模型重排，返回路内下标。
+///
+/// `basis` 是 BM25 给出的路内顺序（BM25 无命中时由调用方传入引擎原顺序）。送审名单只从这个
+/// 顺序里取前 [`RERANK_CHANNEL_POOL`] 条：模型在已相关的候选间分高下，而不是从整路里大海捞针。
 fn decision_order(
     options: &WebSearchOptions,
     state: Value,
-    query: &str,
     candidates: &[String],
+    basis: &[usize],
 ) -> Option<Vec<usize>> {
     let rerank = options.rerank.as_ref();
     if !rerank.active() {
@@ -753,11 +713,8 @@ fn decision_order(
     }
     let channel = rerank.channel.as_ref()?;
 
-    // 送审名单：本地关键词覆盖度降序取前 RERANK_CHANNEL_POOL 条，路内下标。
-    let selected: Vec<usize> = keyword_coverage_order(query, candidates)
-        .into_iter()
-        .take(RERANK_CHANNEL_POOL)
-        .collect();
+    // 送审名单：BM25 顺序里的前 RERANK_CHANNEL_POOL 条，路内下标。
+    let selected: Vec<usize> = basis.iter().copied().take(RERANK_CHANNEL_POOL).collect();
     let texts: Vec<String> = selected
         .iter()
         .map(|index| candidates[*index].clone())
@@ -773,13 +730,13 @@ fn decision_order(
     let order = match rerank.client.rank(&request) {
         Ok(order) => order,
         Err(error) => {
-            diagnostics::warn(format!("[host] 联网搜索重排不可用，改用本地排序：{error}"));
+            diagnostics::warn(format!("[host] 联网搜索重排不可用，改用 BM25 排序：{error}"));
             return None;
         }
     };
 
-    // 合并：模型给出的名次优先（路内下标 → 送审名单下标 → 路内下标逐层还原），
-    // 没被排到的候选按本地顺序接在后面，再由调用方截到 RERANK_KEEP_PER_CHANNEL 条。
+    // 合并：模型给出的名次优先（批内名次 → 送审名单下标 → 路内下标逐层还原），
+    // 没被排到的候选按 BM25 顺序接在后面，再由调用方截到 RERANK_KEEP_PER_CHANNEL 条。
     let mut merged: Vec<usize> = Vec::with_capacity(candidates.len());
     for rank in order {
         if let Some(index) = selected.get(rank).copied() {
@@ -788,16 +745,16 @@ fn decision_order(
             }
         }
     }
-    for index in selected {
-        if !merged.contains(&index) {
-            merged.push(index);
+    for index in basis {
+        if !merged.contains(index) {
+            merged.push(*index);
         }
     }
     Some(merged)
 }
 
-/// 单路排序的收口：排序可用时按模型顺序重排并截到 [`RERANK_KEEP_PER_CHANNEL`] 条；
-/// 否则原样返回本地顺序。
+/// 单路排序的收口：排序可用时按最终顺序重排并截到 [`RERANK_KEEP_PER_CHANNEL`] 条；
+/// 否则原样返回本地顺序（条数交回 `max_results`）。
 fn reranked_channel<T>(
     options: &WebSearchOptions,
     query: &str,
@@ -814,12 +771,7 @@ fn reranked_channel<T>(
     match channel_ranking(options, state, query, &texts) {
         Some(ranking) => {
             let ordered = apply_order(items, &ranking.order);
-            // 关键词兜底只是圈出候选，没有「取前几条」的依据：条数由调用方的 max_results 决定。
-            if ranking.lane == RankLane::Keyword {
-                ordered
-            } else {
-                ordered.into_iter().take(RERANK_KEEP_PER_CHANNEL).collect()
-            }
+            ordered.into_iter().take(RERANK_KEEP_PER_CHANNEL).collect()
         }
         None => items,
     }
@@ -892,7 +844,7 @@ pub fn web_search(options: &WebSearchOptions, arguments: &Map<String, Value>) ->
     if results.is_empty() {
         return Err(ToolError::new("未找到相关搜索结果（或页面结构无法解析）。"));
     }
-    // 排序开启时取排序靠前的若干条；未开启时按 max_results 截断。
+    // 排序后取靠前的若干条；排序无从判断时按 max_results 截断。
     let results = reranked_channel(
         options,
         &query,
@@ -977,8 +929,8 @@ fn channel_results(
 /// （AnySearch 无凭据也参与）；凭据未配置的接口型渠道直接跳过（不是失败）。
 /// 单路失败只记录在案的失败清单里并继续合并其余渠道，全部失败才报错。
 ///
-/// 条数语义：每路取 [`MIXED_RESULTS_PER_CHANNEL`] 条（排序开启时由 [`RERANK_KEEP_PER_CHANNEL`] 决定
-/// 每路保留前几条），因此总量随渠道数增长、没有固定总数上限；调用方显式给了 `max_results` 才收窄总数。
+/// 条数语义：每路取 [`MIXED_RESULTS_PER_CHANNEL`] 条，排序后由 [`RERANK_KEEP_PER_CHANNEL`] 决定
+/// 每路保留前几条，因此总量随渠道数增长、没有固定总数上限；调用方显式给了 `max_results` 才收窄总数。
 fn mixed_search(
     options: &WebSearchOptions,
     query: &str,
@@ -1003,8 +955,8 @@ fn mixed_search(
                 .copied()
                 .map(|engine| {
                     scope.spawn(move || {
-                        // 抓页面通路不按 max_results 截断，这里统一把每路压到 per_channel 条。
-                        // 排序开启时先取满这一路的候选（排序要从整路里挑前几名）。
+                        // 抓页面通路不按 max_results 截断，这里统一把每路压到 per_channel 条：
+                        // 排序要从整路里挑前几名，先取满这一路的候选。
                         let limit = per_channel.max(1) as usize;
                         let results: Vec<WebSearchResult> =
                             channel_results(options, engine, query, per_channel, language)?
@@ -1220,12 +1172,8 @@ fn api_search(
     language: Option<&str>,
 ) -> ToolOutcome {
     let started = Instant::now();
-    // 排序开启时向接口型引擎要更宽的一池候选（本地只负责挑池子），条数由排序与 max_results 定。
-    let pool = if options.rerank.active() || options.bm25.active() {
-        max_results.max(RERANK_CHANNEL_POOL as i64)
-    } else {
-        max_results
-    };
+    // 向接口型引擎要更宽的一池候选（本地只负责挑池子），条数由排序与 max_results 定。
+    let pool = max_results.max(RERANK_CHANNEL_POOL as i64);
     let results = api_results(options, engine, query, pool)?;
     if results.is_empty() {
         return Err(ToolError::new("未找到相关搜索结果。"));
@@ -2749,11 +2697,14 @@ mod tests {
     }
 
     #[test]
-    fn mixed_search_keeps_five_per_channel_when_rerank_is_on() {
-        // 两路各 10 条：排序开启后每路只留排序靠前的 5 条，合计 10 条（不是 5 条总量）。
+    fn mixed_search_keeps_five_per_channel() {
+        // 两路各 10 条：BM25 排序后每路只留前 5 条，合计 10 条（不是 5 条总量）。
         let ddg: String = (0..10)
             .map(|index| {
-                format!(r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>"#)
+                format!(
+                    r#"<a class="result__a" href="https://ddg.example/{index}">乙{index}</a>
+<a class="result__snippet">rust 摘要乙{index}</a>"#
+                )
             })
             .collect();
         let anysearch: String = format!(
@@ -2769,11 +2720,7 @@ mod tests {
             ("duckduckgo.com", &ddg),
             ("api.anysearch.com", &anysearch),
         ]));
-        let client = StubRerank::new(Vec::new());
-        let options = WebSearchOptions {
-            rerank: rerank_options(client.clone()),
-            ..mixed_options(transport)
-        };
+        let options = mixed_options(transport);
         let output =
             web_search(&options, &arguments(json!({"query": "rust"}))).expect("混合搜索应当成功");
         let normalized = normalize(&output);
@@ -2781,14 +2728,13 @@ mod tests {
             normalized.contains("共 10 条（去重 0 条）"),
             "两路各 5 条 = 10 条：{normalized}"
         );
-        // 每路各送审一次（10 条候选），两路共两次。
-        assert_eq!(client.batches(), vec![10, 10]);
-        // 倒序取前五 → 每路的第 9..5 条（对应「甲9」…「甲5」）。
-        assert!(normalized.contains("甲9"), "{normalized}");
-        assert!(
-            !normalized.contains("甲4\n"),
-            "第 6 条起被截掉：{normalized}"
-        );
+        // 每条的摘要都含同一个查询词：BM25 得分打平，保持原顺序取前五。
+        for kept in ["甲0", "甲4", "乙0", "乙4"] {
+            assert!(normalized.contains(kept), "应保留 {kept}：{normalized}");
+        }
+        for dropped in ["甲5", "乙5", "乙9"] {
+            assert!(!normalized.contains(dropped), "应截掉 {dropped}：{normalized}");
+        }
     }
 
     #[test]
@@ -2934,6 +2880,8 @@ mod tests {
         /// 首个候选的 URL 序号落在这些值里时返回 `Err`（模拟该组不可用）。
         failing_first: Vec<usize>,
         seen_batches: Mutex<Vec<usize>>,
+        /// 每次送审的候选 URL 序号，按送审顺序记录。
+        seen_orders: Mutex<Vec<Vec<usize>>>,
     }
 
     impl StubRerank {
@@ -2941,6 +2889,7 @@ mod tests {
             Arc::new(Self {
                 failing_first,
                 seen_batches: Mutex::new(Vec::new()),
+                seen_orders: Mutex::new(Vec::new()),
             })
         }
 
@@ -2948,6 +2897,11 @@ mod tests {
             let mut batches = self.seen_batches.lock().expect("记录未被毒化").clone();
             batches.sort_unstable();
             batches
+        }
+
+        /// 每次送审的候选顺序（URL 序号）。
+        fn orders(&self) -> Vec<Vec<usize>> {
+            self.seen_orders.lock().expect("记录未被毒化").clone()
         }
     }
 
@@ -2974,6 +2928,16 @@ mod tests {
                 .lock()
                 .expect("记录未被毒化")
                 .push(request.candidates.len());
+            self.seen_orders
+                .lock()
+                .expect("记录未被毒化")
+                .push(
+                    request
+                        .candidates
+                        .iter()
+                        .map(|text| candidate_index(text))
+                        .collect(),
+                );
             let first = request
                 .candidates
                 .first()
@@ -3013,6 +2977,18 @@ mod tests {
             .collect()
     }
 
+    /// 同一条结果的候选文本，但去掉摘要里的查询词：让 BM25 无从判断，逼出后面几级排序。
+    ///
+    /// 保留链接：决策桩按链接里的序号认候选。
+    fn without_query(result: &WebSearchResult) -> String {
+        format!(
+            "{}\n{}\n{}",
+            result.title,
+            result.url,
+            result.snippet.replace("rust", "").trim()
+        )
+    }
+
     fn duckduckgo_page(count: usize) -> String {
         let blocks: String = (0..count)
             .map(|index| {
@@ -3032,8 +3008,9 @@ mod tests {
             rerank: rerank_options(client.clone()),
             ..WebSearchOptions::default()
         };
+        // 候选里刻意不含查询词：BM25 无从判断，基序退化为引擎原顺序，交给决策模型。
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items.iter().map(candidate_text).collect();
+        let texts: Vec<String> = items.iter().map(without_query).collect();
         let order = channel_rerank_order(&options, json!({"query": "rust"}), "rust", &texts)
             .expect("排序应当生效");
         // 桩把这一路倒序返回：10 条 → 9,8,…,0 全部在序列里。
@@ -3046,37 +3023,82 @@ mod tests {
         assert_eq!(client.batches(), vec![10]);
 
         // 收口只保留前 RERANK_KEEP_PER_CHANNEL 条。
-        let kept = reranked_channel(&options, "rust", None, items, candidate_text);
+        let kept = reranked_channel(&options, "rust", None, items, without_query);
         assert_eq!(kept.len(), RERANK_KEEP_PER_CHANNEL);
         assert_eq!(kept[0].title, "结果9");
         assert_eq!(kept[4].title, "结果5");
     }
 
+    /// 开关开着但决策模型不可用：直接用 BM25 的结果，不再有关键词兜底这一级。
     #[test]
-    fn channel_rerank_falls_back_to_keyword_order_when_the_service_fails() {
-        // 首个候选是第 0 条 → 桩直接报错：决策模型不可用，回退关键词排序。
+    fn bm25_result_is_used_when_the_decision_service_fails() {
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        // 只有第 3 条含查询词 → BM25 把它排第一，送审首条就是它。
+        let texts: Vec<String> = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                if index == 3 {
+                    candidate_text(item)
+                } else {
+                    without_query(item)
+                }
+            })
+            .collect();
+        // 首个候选是第 3 条 → 桩直接报错：决策模型不可用，落回 BM25 基序。
+        let client = StubRerank::new(vec![3]);
+        let options = WebSearchOptions {
+            rerank: rerank_options(client),
+            ..WebSearchOptions::default()
+        };
+        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
+            .expect("决策模型失败时仍应用 BM25 的结果");
+        assert_eq!(
+            ranking.lane,
+            RankLane::Bm25,
+            "决策模型不可用时应使用 BM25 排序"
+        );
+        assert_eq!(ranking.order[0], 3, "BM25 的命中者排第一");
+    }
+
+    /// 决策模型不可用不会让条数退回 `max_results`：仍按保留数截到 5 条。
+    #[test]
+    fn bm25_lane_still_keeps_five_when_decision_fails() {
+        // 每条摘要都含 rust → BM25 得分打平、保持原顺序，送审首条是第 0 条。
         let client = StubRerank::new(vec![0]);
         let options = WebSearchOptions {
             rerank: rerank_options(client),
             ..WebSearchOptions::default()
         };
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items.iter().map(candidate_text).collect();
-        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
-            .expect("决策模型失败仍应有兜底排序");
-        assert_eq!(
-            ranking.lane,
-            RankLane::Keyword,
-            "决策模型不可用时应回退关键词排序"
-        );
-        // 关键词兜底不截断：条数仍由调用方决定。
         let kept = reranked_channel(&options, "rust", None, items, candidate_text);
-        assert_eq!(kept.len(), MIXED_RESULTS_PER_CHANNEL as usize);
-        assert_eq!(kept[0].title, "结果0");
+        assert_eq!(
+            kept.len(),
+            RERANK_KEEP_PER_CHANNEL,
+            "落回 BM25 时同样截到 5 条"
+        );
+        assert_eq!(kept[0].title, "结果0", "得分打平时保持原顺序");
+    }
+
+    /// 决策模型关着且 BM25 无命中：不介入，保留引擎原顺序。
+    #[test]
+    fn no_ranking_when_switch_is_off_and_bm25_has_no_hit() {
+        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
+        let texts: Vec<String> = items.iter().map(without_query).collect();
+        assert!(
+            channel_ranking(
+                &WebSearchOptions::default(),
+                json!({"query": "rust"}),
+                "rust",
+                &texts,
+            )
+            .is_none(),
+            "没有可依据的信息时不介入"
+        );
     }
 
     #[test]
-    fn channel_rerank_skips_when_too_few_candidates_or_switch_off() {
+    fn channel_ranking_skips_when_too_few_candidates() {
         let client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(client.clone()),
@@ -3088,33 +3110,28 @@ mod tests {
             .map(candidate_text)
             .collect();
         assert!(channel_rerank_order(&options, json!({"query": "rust"}), "rust", &few).is_none());
-        // 开关关着时同样不送审（两个排序开关都关，完全保留引擎顺序）。
-        let off = WebSearchOptions::default();
-        let many: Vec<String> = results(MIXED_RESULTS_PER_CHANNEL as usize)
-            .iter()
-            .map(candidate_text)
-            .collect();
-        assert!(
-            channel_ranking(&off, json!({"query": "rust"}), "rust", &many).is_none(),
-            "两个排序开关都关着时不介入"
-        );
-        // 送审后一条都没问过桩（开关关着）。
-        assert!(client.batches().is_empty());
+        assert!(client.batches().is_empty(), "候选太少时不该送审");
     }
 
     #[test]
     fn reranked_single_engine_keeps_five_and_respects_a_smaller_max_results() {
-        let transport = Arc::new(RouteTransport::new(&[(
-            "duckduckgo.com",
-            &duckduckgo_page(50),
-        )]));
+        // 摘要里不含查询词：BM25 无从判断，这一路交给决策模型排序。
+        let page: String = (0..50)
+            .map(|index| {
+                format!(
+                    r#"<a class="result__a" href="https://example.com/{index}">结果{index}</a>
+<a class="result__snippet">摘要 {index}</a>"#
+                )
+            })
+            .collect();
+        let transport = Arc::new(RouteTransport::new(&[("duckduckgo.com", &page)]));
         let client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(client),
             ..route_options(transport)
         };
 
-        // 排序开启：这一路只留排序靠前的 5 条（不再按 25 条分组截断）。
+        // 排序后这一路只留前 5 条（不再按 25 条分组截断）。
         let output = web_search(&options, &arguments(json!({"query": "rust"})))
             .expect("排序后的搜索应当成功");
         let normalized = normalize(&output);
@@ -3134,61 +3151,58 @@ mod tests {
         assert!(normalized.contains("1. 结果9"), "{normalized}");
     }
 
-    /// 两条通路都启用时：BM25 优先，且不再调用决策模型。
+    /// 开关开着时决策模型在 BM25 结果上重排：送审顺序就是 BM25 的名次。
     #[test]
-    fn bm25_lane_wins_over_decision_lane_when_both_enabled() {
+    fn decision_lane_reranks_on_top_of_bm25() {
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        // 只有第 3 条含查询词，其余各条都不含（连标题里的数字也去掉，避免二元片段撞上）。
+        // 只有第 2 条含查询词，BM25 会把它排第一；其余各条都不含。
         let texts: Vec<String> = items
             .iter()
             .enumerate()
-            .map(|(index, _item)| {
-                let body = format!("alpha beta {}", "omega".repeat(index + 1));
+            .map(|(index, item)| {
+                let body = "omega".repeat(index + 1);
                 if index == 2 {
-                    format!("{body} 代码审查 长度归一")
+                    format!("{}\n{}\n{} 代码审查 长度归一", item.title, item.url, body)
                 } else {
-                    body
+                    format!("{}\n{}\n{}", item.title, item.url, body)
                 }
             })
             .collect();
         let decision_client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(decision_client.clone()),
-            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..WebSearchOptions::default()
         };
         let ranking = channel_ranking(
             &options,
-            json!({"query": "代码审查 长度归一", "language": "rust"}),
+            json!({"query": "代码审查 长度归一"}),
             "代码审查 长度归一",
             &texts,
         )
-        .expect("BM25 命中时应当排出来");
-        assert_eq!(ranking.lane, RankLane::Bm25, "BM25 优先");
-        assert!(
-            decision_client.batches().is_empty(),
-            "BM25 成功时不该再问决策模型"
-        );
-        assert_eq!(ranking.order.len(), texts.len(), "每个候选都有名次");
-        assert_eq!(ranking.order[0], 2, "命中词最多的「结果3」排第一");
+        .expect("决策模型开启时应当排出来");
+        assert_eq!(ranking.lane, RankLane::Decision, "开关开着时决策模型接管");
+
+        // 关键断言：决策模型拿到的候选首条就是 BM25 的第 1 名（下标 2），而不是引擎原顺序的 0。
+        let orders = decision_client.orders();
+        assert_eq!(orders.len(), 1, "单路只送审一次");
+        assert_eq!(orders[0][0], 2, "送审名单以 BM25 的名次开头");
+        // BM25 名次之外（第 RERANK_CHANNEL_POOL 条之后）的候选不送审。
+        assert_eq!(orders[0].len(), RERANK_CHANNEL_POOL);
+
+        // 并且决策模型的最终名次生效：桩把送审的 10 条倒序返回。
+        assert_eq!(ranking.order[0], orders[0][9], "模型名次生效");
     }
 
-    /// BM25 没有命中时回退决策模型，且决策模型的名次生效。
+    /// BM25 无命中、决策模型开着：基序退化为引擎原顺序，仍然送审。
     #[test]
-    fn decision_lane_takes_over_when_bm25_has_no_hit() {
+    fn decision_lane_still_works_when_bm25_has_no_hit() {
         let decision_client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(decision_client.clone()),
-            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..WebSearchOptions::default()
         };
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        // 候选里刻意不含 rust：BM25 无从判断，交给决策模型。
-        let texts: Vec<String> = items
-            .iter()
-            .map(|item| format!("{}
-{}", item.title, item.snippet.replace("rust", "")))
-            .collect();
+        let texts: Vec<String> = items.iter().map(without_query).collect();
         let ranking = channel_ranking(
             &options,
             json!({"query": "rust", "language": "rust"}),
@@ -3196,49 +3210,41 @@ mod tests {
             &texts,
         )
         .expect("BM25 无命中仍应由决策模型排出来");
-        assert_eq!(ranking.lane, RankLane::Decision, "回退到决策模型");
-        assert!(!decision_client.batches().is_empty(), "决策模型应当被调用");
+        assert_eq!(ranking.lane, RankLane::Decision);
+        assert_eq!(
+            decision_client.orders()[0][0],
+            0,
+            "BM25 无命中时按引擎原顺序送审"
+        );
         // 决策桩把这 10 条倒序返回。
         assert_eq!(ranking.order[0], 9, "决策模型给出的名次生效");
     }
 
-    /// 两条通路都不可用时回退关键词排序，检索不失败。
+    /// 开关关着时只用 BM25，绝不调用决策模型。
     #[test]
-    fn keyword_lane_is_the_last_resort_when_both_fail() {
-        // 决策模型关掉、BM25 开着但查询词与候选全无交集 → 两级都不可用。
-        let options = WebSearchOptions {
-            bm25: Arc::new(Bm25RankOptions::from(true)),
-            ..WebSearchOptions::default()
-        };
+    fn bm25_alone_when_the_switch_is_off() {
+        let options = WebSearchOptions::default();
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items
-            .iter()
-            .map(|item| format!("{}
-{}", item.title, item.snippet.replace("rust", "")))
-            .collect();
+        let texts: Vec<String> = items.iter().map(candidate_text).collect();
         let ranking = channel_ranking(
             &options,
-            json!({"query": "rust", "language": "rust"}),
-            "rust",
+            json!({"query": "rust 摘要 3"}),
+            "rust 摘要 3",
             &texts,
         )
-        .expect("两级都不可用仍应有兜底");
-        assert_eq!(ranking.lane, RankLane::Keyword, "最终回退关键词排序");
-        // 每条摘要都不含查询词，覆盖度打平 → 保持引擎原顺序。
-        assert_eq!(ranking.order, (0..texts.len()).collect::<Vec<_>>());
+        .expect("BM25 命中时应当排出来");
+        assert_eq!(ranking.lane, RankLane::Bm25, "开关关着时只有 BM25");
+        assert_eq!(ranking.order[0], 3, "BM25 的命中者排第一");
     }
 
-    /// 只开 BM25 开关时也要取宽候选池（不依赖决策模型开关）。
+    /// 不开决策模型时 BM25 也照常排序（并且同样取宽候选池）。
     #[test]
-    fn bm25_only_search_still_orders_results() {
+    fn bm25_orders_results_without_the_decision_lane() {
         let transport = Arc::new(RouteTransport::new(&[(
             "duckduckgo.com",
             &duckduckgo_page(50),
         )]));
-        let options = WebSearchOptions {
-            bm25: Arc::new(Bm25RankOptions::from(true)),
-            ..route_options(transport)
-        };
+        let options = route_options(transport);
         // 每条的摘要都含「rust 摘要」，只有第 7 条多出「7」——BM25 的可选词命中把它顶上来。
         let output = web_search(&options, &arguments(json!({"query": "rust 摘要 7"})))
             .expect("BM25 排序下的搜索应当成功");

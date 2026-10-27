@@ -167,8 +167,7 @@ impl App {
         ))
     }
 
-    /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份），
-    /// 以及联网搜索的向量排序运行期（与决策模型排序并行）。
+    /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份）。
     pub(super) fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
         self.registry_options.memory.rerank =
             Arc::new(omnicrawl_host::tools::rerank_options_from_config(
@@ -191,12 +190,6 @@ impl App {
                 environment,
                 DECISION_SWITCH_WEB_SEARCH,
             ));
-        self.registry_options.web_search.bm25 = Arc::new(omnicrawl_host::tools::Bm25RankOptions {
-            enabled: load_decision_switches(environment, None)
-                .get(DECISION_SWITCH_WEB_SEARCH_BM25)
-                .copied()
-                .unwrap_or(false),
-        });
         self.rebuild_registry()
     }
 

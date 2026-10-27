@@ -331,7 +331,7 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 | `src/ui/conversation.rs` | `rendering/widgets.py` 的 `ToolDisclosure` / `ReasoningDisclosure` 点击 | 每条显示行携带 `LineHit`（提示行 / 卡片 / 思考段）；`collapsed_body` 按「有效行」首尾各 2 行采样，提示行文案 `点击展开 N 行`；`hit_test` 按窗口起止下标把区内行号换算成绝对行号 |
 | `src/ui/hud.rs` | `status/hud.py` 的内容驱动分段 | 不再用固定列宽：分段贴齐、超长值 `compact_hud_value` 截断、窄屏逐段收缩（版本号优先保留），任何宽度都恰好填满一行 |
 | `src/ui/fullscreen/terminal/console_heal.rs` | `terminal/handling.py` 的 `_restore_windows_vt_input_mode_if_needed` | 控制台模式自愈（只声明 `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`，不引入 `windows-sys` 到 TUI）；目标值是 crossterm 鼠标捕获的整值 `0x0098`，不是 Python 的 VT 输入位 |
-| `src/main.rs` | `terminal/handling.py` 的周期看门狗 | 切备用屏幕时开鼠标与焦点报告（`Drop` 里关掉），每秒核对一次控制台模式，恢复后重发协议序列；每帧把终端区域交给 `App::set_viewport` 供命中判定 |
+| `src/main.rs` | `terminal/handling.py` 的周期看门狗 | 切备用屏幕时开鼠标与焦点报告（`Drop` 里关掉），每秒核对一次控制台模式，恢复后重发协议序列；每帧把终端区域交给 `App::set_viewport` 供命中判定；绘制完把隐藏的终端光标移到输入框插入点（输入法候选窗的落点，`settle_terminal_cursor`） |
 | `src/ui/mod.rs` | | `ui::layout` + `UiAreas`：渲染与鼠标命中共用同一套区域计算 |
 
 终端模式自愈与 Python 的**必守差异**：目标模式必须与 crossterm 自己设的值整值一致。crossterm 0.29 的 Windows 事件源走
@@ -513,6 +513,14 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 内容超过 5 行时右侧画与消息区同款的细线滚动条（`█` 滑块，透明轨道）；光标由自绘的**白色粗块**
 （白底黑字，宽字符连占位格一起染）代替终端光标，既够粗也不会闪。
 
+**终端光标跟着插入点走**（`main::settle_terminal_cursor`）：粗块是自绘的，终端光标全程隐藏，
+但输入法的候选窗与前摄文本跟的是**终端光标的位置**——不挪它就停在最后一处写屏位置（通常是
+会话区末尾），打字时前摄文字飘到那边、看起来「焦点不在输入栏」。所以 `ui::composer::render`
+每帧把插入点的屏幕坐标登记进 `AppState::composer_caret`（与 `[ ESC ]` 的 `runtime_esc_area`
+同一套 `Cell` 登记），事件循环绘制完用它 `Terminal::set_cursor_position` 移动隐藏光标：只移动、
+不显示，屏幕上不会多一个闪烁的细光标。设置面板铺满整屏时主输入框不在屏上，登记清空，光标不会
+留在被盖住的位置。
+
 **底部单行轮播**：工作区路径不再单独占一页，而是接在遥测行尾（`… MCP 0 ⁕ 工作区 <path>`），
 轮播只剩「遥测 → 留言」两页。刻意差异：Python 的 `_context_summary_text` 是独立一页。
 
@@ -579,6 +587,9 @@ Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，
 system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文消息，再经
 `session.settings` 下发内核；内核拒绝时状态行会写明「只在本宿主生效」，不静默。
 
+`/programming` 走同一条链路，模板是 `templates/programming.md`（编码行为准则：先思考再动手、
+优先最简实现、只改必要处、以可验证目标驱动执行）。
+
 `/speaking-style [on|off]` 走同一条链路：`off` 用 `App::command_deactivate_mode` 摘掉模式块后
 重算并下发，基础提示词、顾问准则与上下文消息都保持不变。该模式在 TUI 默认关闭，由用户
 显式开启；QQ 机器人连接器启动时会自动开启它（见 `assets/docs/QQBOT.md`）。
@@ -616,7 +627,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现 | 写回 `plugins.enabled`，随即走 `PluginHost::set_enabled` 事务式重建 Worker 与执行计划（与 API 的 `PUT /settings/features` 同一入口），本会话即刻生效；重建诊断显示在状态行 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；第二行「联网搜索」显示当前默认引擎与已配凭据（形如 `tavily（Tavily 已配置）`），`Enter` 进入联网搜索表单页：`搜索引擎`（duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / anysearch / tinyfish / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key` + `AnySearch API Key` + `TinyFish API Key` + `GitHub Token`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，`Esc` 直接回工具页；五把凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**（AnySearch 与 GitHub Token 留空即走匿名额度 / 公开搜索页）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
-| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前十项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索按渠道排序**：每一路渠道结果单独送审（本地先按关键词覆盖度圈出该路前 10 条），决策模型定序后每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄（见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；`web_search_bm25_rerank`（联网搜索使用 BM25 排序）与 `web_search_rerank` 是**并联的两条通路**：都开启时 BM25 优先（本地按 k1=1.2 / b=0.75 算分，中文按二字片段切分，同样每路留 5 条），该路候选一个查询词都没命中时才回退决策模型排序，两条都不可用时回退关键词覆盖度排序，搜索不会失败；BM25 不需要模型渠道，只开它也可用（见 `omnicrawl-host/src/tools/web_search.rs` 的 `channel_ranking` 与 `omnicrawl-extensions` 的 `bm25` 模块），开关变更同样重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前九项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索按渠道排序**：每一路渠道结果单独处理（先本地 BM25 定基序，再把这 10 条交给决策模型重排），定序后每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄（见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；联网搜索的 BM25 排序**不是开关**：它固定启用（本地按 k1=1.2 / b=0.75 算分，中文按二字片段切分，每路留 5 条），不需要模型渠道；该路候选一个查询词都没命中时，BM25 没有可依据的名次，基序退化为引擎原顺序；开关关着时只用 BM25，开关开着但决策服务不可用时同样落回 BM25，搜索不会失败（见 `omnicrawl-host/src/tools/web_search.rs` 的 `channel_ranking` 与 `omnicrawl-extensions` 的 `bm25` 模块）；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
 | 向量模型 | 已实现（Rust 专有） | 顶部单行开关 `启用向量召回`（写 `config.toml` 的 `[memory_embedding] enabled`，`Enter`/空格/`→` 翻转后立刻写盘并重建记忆召回运行期）。开关下方是向量渠道列表（两行行式：`› [x] 渠道名 [默认]` + `模型 ID  Base URL`）与单条渠道表单（渠道名称 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 维度 / 超时秒数 / 启用），键位与决策渠道页一致：列表 `↑↓` 选、`Enter`/`→` 编辑渠道、`N` 新建、`D` 删除，表单 `↑↓`/`Tab` 换字段、`Enter` 编辑、`Ctrl+S` 保存、`Esc` 丢弃；凭据只渲染掩码且**留空＝不改动** |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 
@@ -778,7 +789,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）；子代理改走独立窗口（见上文「子代理独立窗口」）。
    斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
-   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/workspace` 能真正执行；
+   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/programming`、`/workspace` 能真正执行；
    `/mcp` 已接线（见上文）；
    `/skill:<名>` 是运行期命令（Skill 不在注册表里）：命中时先经 `session.settings` 把技能正文下发为本轮上下文、
    回合收尾再换回常规上下文，未命中时把带可用名称的说明当本轮文本；菜单候选与实际可执行的清单同源（`command_options_with_skills`）；设置面板的一级菜单全部落地
