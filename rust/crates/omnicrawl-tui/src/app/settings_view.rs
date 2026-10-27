@@ -58,10 +58,6 @@ impl App {
         let embedding_enabled =
             load_feature_enabled(&environment, "memory_embedding", false, None, None)
                 .unwrap_or(false);
-        let embedding_web_search_rerank = load_decision_switches(&environment, None)
-            .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
-            .copied()
-            .unwrap_or(false);
         let channel_template = default_channel(provider_options()[0], None)
             .map(|channel| channel_row_from_config(&channel))
             .unwrap_or_default();
@@ -100,7 +96,6 @@ impl App {
             &default_embedding_key,
             embedding_template,
             embedding_enabled,
-            embedding_web_search_rerank,
         )
         .with_decision_local(decision_local)
         .with_choices(

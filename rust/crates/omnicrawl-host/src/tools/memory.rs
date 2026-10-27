@@ -283,6 +283,26 @@ pub fn memory_expand_related(
     ))
 }
 
+/// 删除长期记忆：按 id 删文件并摘除索引条目。
+///
+/// 删除过后 `memory_search` / `memory_read` 都不再返回它。`deleted` 只含真正删掉的 id：
+/// 已经不存在或不属于该作用域的 id 会被静默跳过（见 `deleted_count`），便于模型重试。
+pub fn memory_delete(options: &MemoryOptions, arguments: &Map<String, Value>) -> ToolOutcome {
+    let scope = scope_for(arguments)?;
+    let store = options.store(scope)?;
+    let ids = memory_ids(arguments)?;
+    let deleted = store.delete(&ids).map_err(store_error)?;
+    Ok(python_dumps(
+        &json!({
+            "scope": scope.as_str(),
+            "requested_count": ids.len(),
+            "deleted": deleted,
+            "deleted_count": deleted.len(),
+        }),
+        2,
+    ))
+}
+
 pub fn memory_write(options: &MemoryOptions, arguments: &Map<String, Value>) -> ToolOutcome {
     let scope = scope_for(arguments)?;
     // Python 侧先解析作用域存储、再进工具函数校验参数，未启用作用域要优先报错。
@@ -641,5 +661,71 @@ mod tests {
         .expect("检索不该因为重排不可用而失败");
         let results: Value = serde_json::from_str(&found).expect("结果是 JSON");
         assert_eq!(results.as_array().map(Vec::len), Some(1), "{found}");
+    }
+
+    /// 删除记忆：文件与索引一起消失，之后 search / read 都不再命中。
+    #[test]
+    fn deleting_a_memory_removes_it_from_the_index() {
+        let (options, _root) = options("delete");
+        memory_write(
+            &options,
+            &arguments(json!({"memories": [{"content": "待删记忆：内核检索"}]})),
+        )
+        .expect("写入应当成功");
+        let found = memory_search(
+            &options,
+            &arguments(json!({"query": "待删记忆", "reason": "取 id"})),
+        )
+        .expect("检索应当成功");
+        let hits: Value = serde_json::from_str(&found).expect("结果是 JSON");
+        let id = hits[0]["id"].as_str().expect("有 id").to_string();
+
+        let output = memory_delete(&options, &arguments(json!({"memory_ids": [id]})))
+            .expect("删除应当成功");
+        let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
+        assert_eq!(parsed["deleted_count"], 1, "{output}");
+        assert_eq!(parsed["deleted"][0].as_str(), Some(id.as_str()), "{output}");
+        assert_eq!(parsed["scope"], "project", "{output}");
+
+        let after = memory_search(
+            &options,
+            &arguments(json!({"query": "待删记忆", "reason": "确认已删"})),
+        )
+        .expect("检索应当成功");
+        let remaining: Value = serde_json::from_str(&after).expect("结果是 JSON");
+        assert!(
+            remaining.as_array().is_none_or(|items| !items
+                .iter()
+                .any(|item| item["id"].as_str() == Some(id.as_str()))),
+            "删除后不该再命中：{after}"
+        );
+        let read = memory_read(&options, &arguments(json!({"memory_ids": [id]})))
+            .expect("读取不报错");
+        assert_eq!(read.trim(), "[]", "删除后按 id 读不到：{read}");
+    }
+
+    /// 已不存在的 id 静默跳过：删除可重复执行，重试不该失败。
+    #[test]
+    fn deleting_an_unknown_id_reports_zero_deleted() {
+        let (options, _root) = options("delete-unknown");
+        let output = memory_delete(&options, &arguments(json!({"memory_ids": ["20200101-000000"]})))
+            .expect("删除未知 id 不算错误");
+        let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
+        assert_eq!(parsed["deleted_count"], 0, "{output}");
+        assert_eq!(parsed["requested_count"], 1, "{output}");
+    }
+
+    /// 空列表与未启用作用域的错误口径与其它记忆工具一致。
+    #[test]
+    fn deleting_validates_scope_and_ids() {
+        let disabled = MemoryOptions::default();
+        let error = memory_delete(&disabled, &arguments(json!({"memory_ids": ["m1"]})))
+            .expect_err("未启用作用域应当优先报错");
+        assert_eq!(error.message, "project 级记忆系统未启用。");
+
+        let (enabled, _root) = options("delete-empty");
+        let error = memory_delete(&enabled, &arguments(json!({"memory_ids": []})))
+            .expect_err("空列表应当被拒绝");
+        assert_eq!(error.message, "memory_ids 不能为空。");
     }
 }

@@ -21,6 +21,7 @@ members = [
     "crates/omnicrawl-tui",
     "crates/omnicrawl-tts",
     "crates/omnicrawl-tls",
+    "crates/omnicrawl-version",
     "crates/omnicrawl-workspace",
     "crates/omnicrawl-api",
     "crates/omnicrawl-entry",

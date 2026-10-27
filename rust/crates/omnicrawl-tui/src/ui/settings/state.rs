@@ -14,9 +14,6 @@ use omnicrawl_config::features::approval::{
     approval_mode_label, normalize_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
 };
-use omnicrawl_config::features::decision_model::{
-    DECISION_SWITCHES, DECISION_SWITCH_WEB_SEARCH_EMBEDDING,
-};
 use omnicrawl_config::models::channels::{protocols_for_provider, provider_options};
 use omnicrawl_onejev::ProgressSnapshot;
 use ratatui::layout::Rect;
@@ -637,15 +634,13 @@ impl EmbeddingForm {
     }
 }
 
-/// 向量模型页：顶部开关行（向量召回 + 联网搜索向量排序）+ 渠道列表 + 单条渠道表单。
+/// 向量模型页：顶部总开关（向量召回）+ 渠道列表 + 单条渠道表单。
 #[derive(Debug, Clone)]
 struct EmbeddingModelsState {
     rows: Vec<EmbeddingRow>,
     default_key: String,
     /// 顶部总开关：`config.toml` 的 `[memory_embedding] enabled`。
     enabled: bool,
-    /// 联网搜索走向量模型排序的开关（`decision_models.toml` 的 `[features]`）。
-    web_search_rerank: bool,
     /// 行游标：开关区在前，渠道随后。
     selected: usize,
     form: Option<EmbeddingForm>,
@@ -657,10 +652,8 @@ struct EmbeddingModelsState {
 impl EmbeddingModelsState {
     /// 向量召回总开关占第 0 行。
     const MEMORY_SWITCH_ROW: usize = 0;
-    /// 联网搜索向量排序占第 1 行。
-    const WEB_SEARCH_SWITCH_ROW: usize = 1;
     /// 开关行数：渠道从这一行开始。
-    const SWITCH_ROWS: usize = 2;
+    const SWITCH_ROWS: usize = 1;
 
     fn channel_index(selected: usize) -> Option<usize> {
         selected.checked_sub(Self::SWITCH_ROWS)
@@ -1108,7 +1101,6 @@ pub struct SettingsValues {
     /// 向量召回总开关（`config.toml` 的 `[memory_embedding] enabled`）。
     pub embedding_enabled: bool,
     /// 联网搜索走向量模型排序的开关（`decision_models.toml` 的 `[features]`）。
-    pub embedding_web_search_rerank: bool,
     /// 决策模型页下方那一组功能开关的当前值（键与顺序取自配置域的开关表）。
     pub decision_switches: Vec<DecisionSwitchRow>,
     /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
@@ -1161,7 +1153,6 @@ impl SettingsValues {
             default_embedding_key: String::new(),
             embedding_template: EmbeddingRow::default(),
             embedding_enabled: false,
-            embedding_web_search_rerank: false,
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
             show_thinking: true,
@@ -1235,7 +1226,6 @@ impl SettingsValues {
         default_key: &str,
         template: EmbeddingRow,
         enabled: bool,
-        web_search_rerank: bool,
     ) -> Self {
         let fallback = channels
             .first()
@@ -1249,7 +1239,6 @@ impl SettingsValues {
         self.embedding_channels = channels;
         self.embedding_template = template;
         self.embedding_enabled = enabled;
-        self.embedding_web_search_rerank = web_search_rerank;
         self
     }
 
@@ -2660,7 +2649,6 @@ impl SettingsState {
                 rows: values.embedding_channels,
                 default_key: values.default_embedding_key,
                 enabled: values.embedding_enabled,
-                web_search_rerank: values.embedding_web_search_rerank,
                 selected: 0,
                 form: None,
                 template: values.embedding_template,

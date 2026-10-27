@@ -1,0 +1,16 @@
+[package]
+name = "omnicrawl-version"
+description = "产品版本与出站 User-Agent（版本号在构建期取自 packages/cli/package.json）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[build-dependencies]
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

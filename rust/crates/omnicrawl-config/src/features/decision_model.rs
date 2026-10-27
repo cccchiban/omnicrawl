@@ -537,11 +537,11 @@ pub const DECISION_SWITCH_SKILL_SEARCH: &str = "skill_search_rerank";
 /// 「联网搜索走决策模型排序」开关的配置键。
 pub const DECISION_SWITCH_WEB_SEARCH: &str = "web_search_rerank";
 
-/// 「联网搜索走向量模型排序」开关的配置键。
+/// 「联网搜索走 BM25 排序」开关的配置键。
 ///
-/// 与 `web_search_rerank` 是并行的两条通路：两者都启用时向量优先，向量不可用再回退到
-/// 决策模型，两条都不可用才回退本地关键词排序。
-pub const DECISION_SWITCH_WEB_SEARCH_EMBEDDING: &str = "web_search_embedding_rerank";
+/// 与 `web_search_rerank` 是并行的两条通路：两者都启用时 BM25 优先，BM25 不可用再回退到
+/// 决策模型，两条都不可用才回退本地关键词覆盖度排序。
+pub const DECISION_SWITCH_WEB_SEARCH_BM25: &str = "web_search_bm25_rerank";
 
 /// 「提问自动托管」开关的配置键。
 pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
@@ -609,10 +609,10 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 10] = [
         page: SwitchPage::Decision,
     },
     DecisionSwitchSpec {
-        key: DECISION_SWITCH_WEB_SEARCH_EMBEDDING,
-        label: "联网搜索使用向量模型排序",
+        key: DECISION_SWITCH_WEB_SEARCH_BM25,
+        label: "联网搜索使用 BM25 排序",
         default: false,
-        page: SwitchPage::Embedding,
+        page: SwitchPage::Decision,
     },
     DecisionSwitchSpec {
         key: DECISION_SWITCH_ASK_USER_CUSTODY,
@@ -1317,11 +1317,11 @@ mod tests {
         assert!(!decision_switch_default(DECISION_SWITCH_WEB_SEARCH));
         // 联网搜索的向量排序开关同样默认关闭。
         assert_eq!(
-            switches.get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING).copied(),
+            switches.get(DECISION_SWITCH_WEB_SEARCH_BM25).copied(),
             Some(false)
         );
         assert!(!decision_switch_default(
-            DECISION_SWITCH_WEB_SEARCH_EMBEDDING
+            DECISION_SWITCH_WEB_SEARCH_BM25
         ));
         // 提问托管开关同样默认关闭。
         assert_eq!(
@@ -1373,7 +1373,7 @@ mod tests {
         save_decision_switch(&env, DECISION_SWITCH_SKILL_SEARCH, true, None)
             .expect("写 Skill 开关");
         save_decision_switch(&env, DECISION_SWITCH_WEB_SEARCH, true, None).expect("写联网搜索开关");
-        save_decision_switch(&env, DECISION_SWITCH_WEB_SEARCH_EMBEDDING, true, None)
+        save_decision_switch(&env, DECISION_SWITCH_WEB_SEARCH_BM25, true, None)
             .expect("写联网搜索向量排序开关");
         save_decision_switch(&env, DECISION_SWITCH_ASK_USER_CUSTODY, true, None)
             .expect("写提问托管开关");
@@ -1392,7 +1392,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            reloaded.get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING).copied(),
+            reloaded.get(DECISION_SWITCH_WEB_SEARCH_BM25).copied(),
             Some(true)
         );
         assert_eq!(

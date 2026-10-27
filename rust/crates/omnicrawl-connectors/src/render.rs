@@ -41,14 +41,21 @@ pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub const TODO_TOOL_NAME: &str = "update_todos";
 
 /// 记忆与知识库工具的正文对远程用户没有展示价值，只保留摘要行。
-pub const MEMORY_TOOL_OPERATIONS: [&str; 4] = [
+pub const MEMORY_TOOL_OPERATIONS: [&str; 5] = [
     "memory_search",
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "memory_delete",
 ];
-pub const KB_TOOL_OPERATIONS: [&str; 5] =
-    ["kb_search", "kb_read", "kb_write", "kb_append", "kb_list"];
+pub const KB_TOOL_OPERATIONS: [&str; 6] = [
+    "kb_search",
+    "kb_read",
+    "kb_write",
+    "kb_append",
+    "kb_list",
+    "kb_delete",
+];
 
 /// 文件变更工具：展示变更统计与预览，而不是采样后的原始输出。
 pub const FILE_CHANGE_OPERATIONS: [&str; 2] = ["write_file", "Edit_file"];

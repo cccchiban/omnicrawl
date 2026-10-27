@@ -42,7 +42,7 @@ const CANDIDATE_MAX_CHARS: usize = 400;
 ///
 /// 本地 OneJev 0.8B 在 CPU 上单批 5 候选约 12s，20s 留出余量；超时即 fail-open 退回本地排序。
 const RERANK_TIMEOUT_SECONDS: u64 = 20;
-const USER_AGENT: &str = "omnicrawl-search-rerank/0.0.1";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 /// 提问 ID；候选项键就是它在 `criteria` 里的下标（`c0`、`c1`…），便于把回答映射回来。
 const QUESTION_ID: &str = "most_relevant";
 const CANDIDATE_KEY_PREFIX: &str = "c";

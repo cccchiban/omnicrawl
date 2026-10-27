@@ -57,7 +57,7 @@ impl App {
             } else {
                 self.llm.api_key.clone()
             },
-            user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: USER_AGENT.to_string(),
             system_prompt,
             context_messages: match self.prompt.context_messages_with_plugins(
                 true,

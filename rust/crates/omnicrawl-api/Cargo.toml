@@ -28,6 +28,8 @@ omnicrawl-llm = { path = "../omnicrawl-llm" }
 omnicrawl-mcp = { path = "../omnicrawl-mcp" }
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 omnicrawl-session = { path = "../omnicrawl-session" }
+# 出站 User-Agent（`omnicrawl/<产品版本>`）：模型请求统一报同一个身份。
+omnicrawl-version = { path = "../omnicrawl-version" }
 # 主 Agent 隔离工作区：启动准备（worktree/local）与退出收尾（apply + 清理）。
 omnicrawl-workspace = { path = "../omnicrawl-workspace" }
 serde = { workspace = true }

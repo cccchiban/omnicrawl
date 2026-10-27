@@ -26,9 +26,6 @@ impl SettingsState {
             KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => {
                 match self.embedding_models.selected {
                     EmbeddingModelsState::MEMORY_SWITCH_ROW => self.toggle_embedding_switch(),
-                    EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW => {
-                        self.toggle_embedding_web_search_switch()
-                    }
                     _ => {
                         self.edit_embedding_channel();
                         None
@@ -55,14 +52,6 @@ impl SettingsState {
     pub(super) fn toggle_embedding_switch(&mut self) -> Option<SettingsEvent> {
         Some(SettingsEvent::Apply(SettingsChange::EmbeddingEnabled {
             enabled: !self.embedding_models.enabled,
-        }))
-    }
-
-    /// 联网搜索向量排序行：与决策页的功能开关同一口径（选中即保存）。
-    pub(super) fn toggle_embedding_web_search_switch(&mut self) -> Option<SettingsEvent> {
-        Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch {
-            key: DECISION_SWITCH_WEB_SEARCH_EMBEDDING.to_string(),
-            enabled: !self.embedding_models.web_search_rerank,
         }))
     }
 

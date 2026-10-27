@@ -302,7 +302,7 @@ fn file_stamp(path: &Path) -> Option<SystemTime> {
 /// 审查请求超时上限；与 Python 的 `min(config.request_timeout_seconds, 60)` 一致。
 const REVIEW_TIMEOUT_CAP_SECONDS: i64 = 60;
 
-const USER_AGENT: &str = "omnicrawl-review/0.0.1";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 
 /// 决策模型审查的提问 ID 与选项（提问类型 choice，答案被约束在两个选项内）。
 const DECISION_REVIEW_QUESTION_ID: &str = "tool_call_verdict";

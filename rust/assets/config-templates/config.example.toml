@@ -21,6 +21,7 @@ base_url = "https://api.openai.com/v1"
 # 凭据只写明文；留空时首启向导会在启动前补问。
 api_key = ""
 # 可选：覆盖该渠道请求使用的 HTTP User-Agent。
+# 留空时统一报 `omnicrawl/<版本>`（版本来自 packages/cli/package.json）。
 # user_agent = "OmniCrawl/1.0"
 default_protocol = "openai_chat_completions"
 default_context_window_tokens = 128000

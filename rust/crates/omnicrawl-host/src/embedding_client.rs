@@ -23,7 +23,7 @@ use omnicrawl_core::diagnostics;
 
 use crate::embedding_wire::{cosine_similarity, parse_embeddings, request_body};
 
-const USER_AGENT: &str = "OmniCrawl/0.0.1 embedding";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 /// 单条输入进请求前的截断长度：向量只看语义，不需要整段正文。
 const INPUT_MAX_CHARS: usize = 2000;
 

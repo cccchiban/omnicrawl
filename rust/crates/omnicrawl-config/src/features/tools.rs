@@ -10,7 +10,7 @@ use crate::error::ConfigError;
 use crate::toml::Value;
 
 /// 可开关的内置工具（含条件注册工具；未注册条件下配置开关不会报错）。
-pub const TOOL_SWITCH_KEYS: [&str; 27] = [
+pub const TOOL_SWITCH_KEYS: [&str; 28] = [
     "list",
     "find",
     "read",
@@ -37,11 +37,12 @@ pub const TOOL_SWITCH_KEYS: [&str; 27] = [
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "memory_delete",
     "config_edit",
 ];
 
 /// 开关名 → 界面文案。
-pub const TOOL_SWITCH_LABELS: [(&str, &str); 27] = [
+pub const TOOL_SWITCH_LABELS: [(&str, &str); 28] = [
     ("list", "列出目录内容"),
     ("find", "按名称或路径查找文件"),
     ("read", "读取文件内容"),
@@ -71,6 +72,7 @@ pub const TOOL_SWITCH_LABELS: [(&str, &str); 27] = [
     ("memory_read", "读取长期记忆"),
     ("memory_expand_related", "展开相关长期记忆"),
     ("memory_write", "写入长期记忆（scope 选作用域）"),
+    ("memory_delete", "删除长期记忆（scope 选作用域）"),
     ("config_edit", "读取或修改配置"),
 ];
 
@@ -90,7 +92,7 @@ pub fn legacy_tool_switch_alias(name: &str) -> Option<String> {
         let Some(rest) = name.strip_prefix(prefix) else {
             continue;
         };
-        for action in ["search", "read", "expand_related", "write"] {
+        for action in ["search", "read", "expand_related", "write", "delete"] {
             if rest == format!("memory_{action}") {
                 return Some(format!("memory_{action}"));
             }

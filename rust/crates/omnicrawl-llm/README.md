@@ -188,7 +188,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   （`Agent 流式回复中断：{io}`），类型名不可对齐。
 - **超时语义**：映射 Python 的 `timeout` 为建连、等响应头、以及**每次**读取响应体的空闲超时
   （不是整个响应体的总时限，否则长回复会被拦腰截断）。
-- **未配置 User-Agent 时**用 ureq 默认 UA（Python 侧是 httpx 默认 UA）；配置了 `user_agent` 时两侧一致。
+- **User-Agent**：未配置 `user_agent` 的渠道报 `omnicrawl/<产品版本>`（版本号在构建期取自
+  `packages/cli/package.json`，见 `omnicrawl-version`）；配置了 `user_agent` 时以配置为准。
 - **错误分类**（`errors.rs`）：状态码阶梯（`http_status_error`）与基于错误文案的启发式（`map_exception`）
   都已落地，分支顺序与关键词表逐条对齐 `errors.py` 的 `map_openai_exception`——模型不存在、HTML 错误页、
   限流 / 配额、上下文超限、连接提前断开、超时、鉴权、权限、连接、TLS，最后才是「未能识别」兜底。

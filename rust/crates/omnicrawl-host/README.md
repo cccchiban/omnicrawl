@@ -108,14 +108,15 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank`、`MemoryOptions.rerank` 与
 `WebSearchOptions.rerank`）。
 
-联网搜索另有一条**并联**的向量排序通路（`[features] web_search_embedding_rerank`，装配到
-`WebSearchOptions.embedding`，复用 `embedding_client`；配置仍写在 `decision_models.toml`，TUI 把
-它画在「向量模型」页顶部）。它与决策模型排序互不影响，按固定优先级
-逐级尝试（`channel_ranking` 的 `RankLane`）：**向量优先** → 决策模型 → 本地关键词。两者都开启
-时只用向量；向量不可用（未配渠道、无凭据、请求失败）才回退决策模型；两条都不可用时回退
-关键词覆盖度排序，搜索不会失败。只开向量时同样按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；
-一旦落到关键词兜底，条数交回调用方的 `max_results`（兜底只圈候选、没有「取前几条」的依据）。
-两个开关都关着时完全不介入，保留引擎自身顺序。
+联网搜索另有一条**并联**的 BM25 排序通路（`[features] web_search_bm25_rerank`，装配到
+`WebSearchOptions.bm25`；算法在 `omnicrawl-extensions` 的 `bm25` 模块，与 Skill 检索共用一份）。
+它与决策模型排序互不影响，按固定优先级逐级尝试（`channel_ranking` 的 `RankLane`）：
+**BM25 优先** → 决策模型 → 本地关键词覆盖度。两者都开启时只用 BM25；该路候选一个查询词都
+没命中时才回退决策模型；两条都不可用时回退关键词覆盖度排序，搜索不会失败。BM25 本地算分，
+不需要模型渠道也没有网络往返，因此不会因为渠道暂时不可用而白等一次超时。走 BM25 或决策模型
+时按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；一旦落到关键词兜底，条数交回调用方的
+`max_results`（兜底只圈候选、没有「取前几条」的依据）。两个开关都关着时完全不介入，保留引擎
+自身顺序。
 
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按

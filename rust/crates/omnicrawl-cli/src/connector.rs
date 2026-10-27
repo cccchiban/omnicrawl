@@ -31,7 +31,7 @@ use omnicrawl_core::{
 use omnicrawl_llm::{ChatEndpoint, ChatRequestInput, DiscardSink, OpenAiChatRuntime};
 use omnicrawl_protocol::{conversation_from_openai_messages, GenerationOptions, ToolSpec};
 
-const USER_AGENT: &str = "omnicrawl-kernel-connector/0.0.1";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 内核里的助手，回答保持简洁。";
 /// 内核连接器可用的模式模板：与 `rust/assets/templates/` 同一份，脱离宿主也能切模式。

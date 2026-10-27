@@ -50,7 +50,6 @@ use super::*;
             rows: vec![embedding_row("first", true), embedding_row("second", true)],
             default_key: "first".to_string(),
             enabled,
-            web_search_rerank: false,
             selected: 0,
             form: None,
             template: EmbeddingRow::default(),
@@ -82,26 +81,7 @@ use super::*;
         }
     }
 
-    /// 第 1 行是联网搜索向量排序开关：Enter 产出与决策页同形的开关变更。
-    #[test]
-    fn embedding_web_search_row_toggles_the_decision_switch() {
-        let mut state = embedding_state(true);
-        state.handle_key(KeyCode::Down);
-        assert_eq!(
-            state.embedding_switch_row(),
-            EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW
-        );
-        let event = state.handle_key(KeyCode::Enter);
-        match event {
-            Some(SettingsEvent::Apply(SettingsChange::DecisionSwitch { key, enabled })) => {
-                assert_eq!(key, DECISION_SWITCH_WEB_SEARCH_EMBEDDING);
-                assert!(enabled);
-            }
-            other => panic!("应当请求翻转联网搜索向量排序，实际：{other:?}"),
-        }
-    }
-
-    /// 上下移动跨越两条开关与渠道，且不会停在越界位置。
+    /// 上下移动跨越开关与渠道，且不会停在越界位置。
     #[test]
     fn embedding_cursor_walks_switch_then_channels() {
         let mut state = embedding_state(true);
@@ -109,15 +89,9 @@ use super::*;
 
         state.handle_key(KeyCode::Down);
         assert_eq!(
-            state.embedding_switch_row(),
-            EmbeddingModelsState::WEB_SEARCH_SWITCH_ROW
-        );
-        assert_eq!(state.embedding_selected(), None);
-        state.handle_key(KeyCode::Down);
-        assert_eq!(
             state.embedding_selected(),
             Some(0),
-            "下移两格应选中第一条渠道"
+            "下移一格应选中第一条渠道"
         );
         state.handle_key(KeyCode::Down);
         assert_eq!(state.embedding_selected(), Some(1));

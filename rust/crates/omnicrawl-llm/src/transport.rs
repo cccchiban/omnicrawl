@@ -13,6 +13,8 @@ use std::time::Duration;
 use ureq::http::Response;
 use ureq::Body;
 
+use omnicrawl_version::USER_AGENT;
+
 /// 一次请求：URL、凭据与协议头、请求体与超时。
 pub struct HttpRequest<'a> {
     pub url: &'a str,
@@ -100,9 +102,13 @@ pub fn send(
     for (name, value) in request.headers {
         builder = builder.header(*name, *value);
     }
-    if !request.user_agent.trim().is_empty() {
-        builder = builder.header("User-Agent", request.user_agent);
-    }
+    // 未配置 `user_agent` 的渠道也报产品身份：网关侧看到的一律是 `omnicrawl/<版本>`，
+    // 不会因为漏填一项配置就退化成 HTTP 库的默认 UA。
+    let user_agent = match request.user_agent.trim() {
+        "" => USER_AGENT,
+        configured => configured,
+    };
+    builder = builder.header("User-Agent", user_agent);
 
     match builder.send(request.body) {
         Ok(response) => Ok(split(response)),
@@ -130,9 +136,12 @@ pub fn get(
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
-    if !user_agent.trim().is_empty() {
-        builder = builder.header("User-Agent", user_agent);
-    }
+    // 与 POST 同口径：未配置时就报产品身份（模型发现也是对外请求）。
+    let user_agent = match user_agent.trim() {
+        "" => USER_AGENT,
+        configured => configured,
+    };
+    builder = builder.header("User-Agent", user_agent);
 
     match builder.call() {
         Ok(response) => Ok(split(response)),

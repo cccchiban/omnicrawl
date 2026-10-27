@@ -58,6 +58,7 @@ use omnicrawl_session::{
     utc_now, MemoryStore, ProjectEntry, SessionEvent, SessionIndexEntry, SessionRecordDiagnostic,
     SessionStoreError,
 };
+use omnicrawl_version::USER_AGENT;
 use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, finalize_subagent_worktrees, prepare_isolated_workspace,
     start_background_isolation_sweep, IsolationOptions, IsolationSession,
@@ -861,7 +862,7 @@ fn options_from_process_profile(
         base_url: llm.base_url.clone(),
         api_key: llm.api_key.clone(),
         user_agent: if llm.user_agent.trim().is_empty() {
-            format!("omnicrawl-api/{}", env!("CARGO_PKG_VERSION"))
+            USER_AGENT.to_string()
         } else {
             llm.user_agent.clone()
         },

@@ -39,7 +39,7 @@ use super::windows;
 use super::{edit, finding, git, grep, listing, read, read_image, skills, write};
 
 /// 本宿主已实现执行体的工具。
-pub const IMPLEMENTED_TOOLS: [&str; 33] = [
+pub const IMPLEMENTED_TOOLS: [&str; 35] = [
     "read",
     "read_image",
     "write_file",
@@ -57,10 +57,12 @@ pub const IMPLEMENTED_TOOLS: [&str; 33] = [
     "kb_write",
     "kb_append",
     "kb_list",
+    "kb_delete",
     "memory_search",
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "memory_delete",
     "web_search",
     "fetcher",
     "image_gen",
@@ -79,14 +81,21 @@ pub const META_RUNNERS: [&str; 3] = ["update_todos", "ask_user", "pause_work"];
 /// 工具表里按 runner 绑定进表的工具：本宿主已绑定这三个。
 pub const BOUND_RUNNERS: [&str; 3] = ["find", "git", "monitor"];
 /// 知识库工具：runner 名即工具名，整组注册或整组不注册。
-pub const KNOWLEDGE_RUNNERS: [&str; 5] =
-    ["kb_search", "kb_read", "kb_write", "kb_append", "kb_list"];
+pub const KNOWLEDGE_RUNNERS: [&str; 6] = [
+    "kb_search",
+    "kb_read",
+    "kb_write",
+    "kb_append",
+    "kb_list",
+    "kb_delete",
+];
 /// 记忆工具：整组由 `memory_enabled` 控制。
-pub const MEMORY_RUNNERS: [&str; 4] = [
+pub const MEMORY_RUNNERS: [&str; 5] = [
     "memory_search",
     "memory_read",
     "memory_expand_related",
     "memory_write",
+    "memory_delete",
 ];
 /// 联网工具：runner 名即工具名，整组不依赖开关。
 pub const NET_RUNNERS: [&str; 2] = ["web_search", "fetcher"];
@@ -602,12 +611,14 @@ impl ToolRegistry {
             "kb_write" => outcome_result(knowledge::kb_write(&self.knowledge, &arguments)),
             "kb_append" => outcome_result(knowledge::kb_append(&self.knowledge, &arguments)),
             "kb_list" => outcome_result(knowledge::kb_list(&self.knowledge, &arguments)),
+            "kb_delete" => outcome_result(knowledge::kb_delete(&self.knowledge, &arguments)),
             "memory_search" => outcome_result(memory::memory_search(&self.memory, &arguments)),
             "memory_read" => outcome_result(memory::memory_read(&self.memory, &arguments)),
             "memory_expand_related" => {
                 outcome_result(memory::memory_expand_related(&self.memory, &arguments))
             }
             "memory_write" => outcome_result(memory::memory_write(&self.memory, &arguments)),
+            "memory_delete" => outcome_result(memory::memory_delete(&self.memory, &arguments)),
             "web_search" => outcome_result(web_search::web_search(&self.web_search, &arguments)),
             "fetcher" => outcome_result(fetcher::fetcher(&self.fetcher, &arguments)),
             "image_gen" => outcome_result(image_gen::image_gen(&self.image_gen, &arguments)),
@@ -1226,6 +1237,15 @@ mode = \"review\"
             .expect("memory_search 应当被本宿主处理");
         assert!(searched.ok, "{}", searched.output);
         assert!(searched.output.contains("\"id\":"), "{}", searched.output);
+
+        // 删除走同一条分发：先取 id 再删，删完检索不到。
+        let found: serde_json::Value = serde_json::from_str(&searched.output).expect("结果是 JSON");
+        let memory_id = found[0]["id"].as_str().expect("有 id").to_string();
+        let deleted = registry
+            .execute(&call("memory_delete", json!({"memory_ids": [memory_id]})))
+            .expect("memory_delete 应当被本宿主处理");
+        assert!(deleted.ok, "{}", deleted.output);
+        assert!(deleted.output.contains("\"deleted_count\": 1"), "{}", deleted.output);
     }
 
     /// 联网工具的传输桩：搜索端点返回结果页，其余返回普通页面。

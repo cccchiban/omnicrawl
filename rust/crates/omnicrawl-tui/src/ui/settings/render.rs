@@ -433,13 +433,7 @@ fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, f
     let selected = state.embedding_selected();
     let switch_selected = state.embedding_switch_selected();
 
-    let switches = [
-        ("启用向量召回", state.embedding_enabled()),
-        (
-            SettingsState::embedding_web_search_label(),
-            state.embedding_web_search_rerank(),
-        ),
-    ];
+    let switches = [("启用向量召回", state.embedding_enabled())];
     let mut entries: Vec<(Line<'static>, Option<usize>)> = Vec::new();
     for (row, (label, enabled)) in switches.iter().enumerate() {
         let current = switch_selected && state.embedding_switch_row() == row;

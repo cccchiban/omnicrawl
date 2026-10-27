@@ -15,6 +15,7 @@
 //! 边界：`node_runner.mjs` 是插件 Worker 的 JS 端点，插件生态在 JS 侧，它不进内核；
 //! 内核持有的是宿主侧的全部逻辑（注册表、执行计划、Worker 生命周期、安装与 Skill 生命周期）。
 
+pub mod bm25;
 pub mod error;
 pub mod install;
 pub mod manager;

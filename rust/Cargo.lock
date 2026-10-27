@@ -1878,6 +1878,7 @@ dependencies = [
  "omnicrawl-mcp",
  "omnicrawl-protocol",
  "omnicrawl-session",
+ "omnicrawl-version",
  "omnicrawl-workspace",
  "serde",
  "serde_json",
@@ -1901,6 +1902,7 @@ dependencies = [
  "omnicrawl-llm",
  "omnicrawl-protocol",
  "omnicrawl-session",
+ "omnicrawl-version",
  "serde_json",
 ]
 
@@ -2052,6 +2054,7 @@ dependencies = [
  "omnicrawl-session",
  "omnicrawl-tls",
  "omnicrawl-tts",
+ "omnicrawl-version",
  "png 0.17.16",
  "regex",
  "scraper",
@@ -2088,6 +2091,7 @@ name = "omnicrawl-llm"
 version = "0.0.1"
 dependencies = [
  "omnicrawl-protocol",
+ "omnicrawl-version",
  "regex",
  "serde",
  "serde_json",
@@ -2157,6 +2161,7 @@ name = "omnicrawl-tts"
 version = "0.0.1"
 dependencies = [
  "base64",
+ "omnicrawl-version",
  "serde_json",
  "ureq",
 ]
@@ -2184,6 +2189,7 @@ dependencies = [
  "omnicrawl-protocol",
  "omnicrawl-session",
  "omnicrawl-tts",
+ "omnicrawl-version",
  "omnicrawl-workspace",
  "pulldown-cmark",
  "ratatui",
@@ -2191,6 +2197,13 @@ dependencies = [
  "regex",
  "serde_json",
  "unicode-width",
+]
+
+[[package]]
+name = "omnicrawl-version"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

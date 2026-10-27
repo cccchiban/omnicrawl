@@ -20,7 +20,7 @@ pub const MAX_CHUNK_BYTES: usize = 3500;
 /// Gemini TTS 输出的采样率（裸 PCM，16 位单声道）。
 pub const SAMPLE_RATE: u32 = 24_000;
 
-const USER_AGENT: &str = "omnicrawl-tts";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 
 /// 已归一化的 Gemini 通道参数（由 `omnicrawl-config` 的 `[tts_gemini]` 段映射而来）。
 #[derive(Debug, Clone, PartialEq)]

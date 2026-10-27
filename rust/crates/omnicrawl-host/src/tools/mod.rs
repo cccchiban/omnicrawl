@@ -77,5 +77,5 @@ pub use paths::WorkspacePaths;
 pub use registry::{RegistryOptions, ToolRegistry, IMPLEMENTED_TOOLS};
 pub use tls_transport::TlsWebTransport;
 pub use tts::{tts_backend, TtsOptions};
-pub use web_search::{web_search_options_from_config, WebSearchOptions};
+pub use web_search::{web_search_options_from_config, Bm25RankOptions, WebSearchOptions};
 pub use web_transport::{WebError, WebErrorKind, WebRequest, WebResponse, WebTransport};

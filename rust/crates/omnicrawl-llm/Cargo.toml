@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+# 出站 User-Agent：未配置渠道时统一报 `omnicrawl/<产品版本>`。
+omnicrawl-version = { path = "../omnicrawl-version" }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -500,15 +500,18 @@ impl MemoryStore {
         // 索引已落盘，此时再删被取代的记忆文件；删不掉就让整次写入失败，
         // 免得正文留在盘上、索引里却已经没有了。
         if !superseded_ids.is_empty() {
-            self.remove_superseded_entries(&superseded_ids)?;
+            let _ = self.remove_superseded_entries(&superseded_ids)?;
         }
 
         self.clean_expired_memories()?;
         Ok(records)
     }
 
-    /// 删除被新事实推翻的既有记忆（含索引条目），并清理空目录。
-    fn remove_superseded_entries(&self, memory_ids: &[String]) -> Result<(), SessionStoreError> {
+    /// 删除被新事实推翻的既有记忆（含索引条目），并清理空目录；返回实际删掉的 id。
+    fn remove_superseded_entries(
+        &self,
+        memory_ids: &[String],
+    ) -> Result<Vec<String>, SessionStoreError> {
         let mut entries = self.load_entries()?;
         let mut removed: Vec<String> = Vec::new();
         entries.retain(|entry| {
@@ -525,11 +528,11 @@ impl MemoryStore {
             }
         });
         if removed.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.save_entries(&mut entries)?;
         self.clean_empty_directories();
-        Ok(())
+        Ok(removed)
     }
 
     /// 校验并归一化一条写入请求：正文、存储目录、关联目录。
@@ -740,6 +743,18 @@ impl MemoryStore {
             }
         }
         false
+    }
+
+    /// 按 id 删除记忆：删文件、摘索引条目、清空目录。
+    ///
+    /// 返回实际删掉的 id。不存在的 id 只跳过、不报错——删除可重复执行，模型拿着一份稍旧
+    /// 的摘要重试时不该因为「已经没了」而失败。
+    pub fn delete(&self, memory_ids: &[Value]) -> Result<Vec<String>, SessionStoreError> {
+        let ids = crate::memory::dedupe_strings(memory_ids);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.remove_superseded_entries(&ids)
     }
 
     /// 按 7 + touch_count 天规则清理过期记忆，并移除空目录。

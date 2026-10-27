@@ -49,8 +49,8 @@
       },
       {
         "name": "skill_search",
-        "description": "是什么：检索 Skill 索引（名称、描述、作用域与位置），可按作用域过滤。怎么做：需要判断当前任务该用哪个 Skill 时使用；已知道 Skill 名要读正文时直接用 read 打开它的 SKILL.md。怎样做：query 是关键词，省略时按 scope 列出全部；scope 取 all、project、user、enterprise、path，缺省 all；成功返回 JSON 数组，每项含 name、description、scope、location、score、reason，空结果为 []，失败返回文本错误。建议：先检索再按命中项的 location 读正文；Skill 目录不在工作区内，不要用 find、grep 去找它。",
-        "argument_schema": "{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"scope\": {\"type\": \"string\", \"enum\": [\"all\", \"project\", \"user\", \"enterprise\", \"path\"]}, \"max_results\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 50}}, \"additionalProperties\": false}",
+        "description": "是什么：用 BM25 检索 Skill（索引范围是名称、描述与正文），可按作用域过滤。怎么做：需要判断当前任务该用哪个 Skill 时使用；已知道 Skill 名要读正文时直接用 read 打开它的 SKILL.md。怎样做：query 是关键词，省略时按 scope 列出全部；scope 取 all、project、user、enterprise、path，缺省 all；命中条目按名称排序，固定返回前十条；每项含 name、description、scope、location、score、reason，空结果为 []，失败返回文本错误。建议：先检索再按命中项的 location 读正文；Skill 目录不在工作区内，不要用 find、grep 去找它。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"scope\": {\"type\": \"string\", \"enum\": [\"all\", \"project\", \"user\", \"enterprise\", \"path\"]}}, \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -201,6 +201,15 @@
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
         "runner": "kb_search"
+      },
+      {
+        "name": "kb_delete",
+        "description": "是什么：删除一篇知识库笔记并重建索引。怎么做：笔记已过时、写错或与另一篇重复且确认无需保留时使用；只想改内容就用 kb_write 的 overwrite 或 kb_append，不必删了重写。怎样做：path 是相对知识库根的路径，可省略 .md；INDEX.md 与 README.md 由知识库自动维护，删除会被拒绝；成功返回 JSON：deleted 含被删笔记的 path、title、created、updated、project、type、status、tags；笔记不存在或越界返回文本错误。建议：删除不可撤销，删前先 kb_read 确认内容确属该篇。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"minLength\": 1}}, \"required\": [\"path\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
       }
     ],
     "meta": [
@@ -338,6 +347,15 @@
         "name": "memory_write",
         "description": "是什么：写入或合并长期记忆。怎么做：只有信息已确认且具有长期复用价值时使用；临时进度、完整对话、凭据不用写。scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；memories 为空或字段类型错误时返回文本错误。建议：content 短小、准确、可独立理解，补充 related_directories；批量写入前去重，避免污染后续检索。",
         "argument_schema": "{\"type\": \"object\", \"properties\": {\"scope\": {\"type\": \"string\", \"enum\": [\"project\", \"session\", \"user\"], \"description\": \"记忆作用域：project=当前项目；session=当前会话；user=跨会话偏好。缺省 project。\"}, \"memories\": {\"type\": \"array\", \"minItems\": 1, \"description\": \"待写入或合并的记忆对象列表。\", \"items\": {\"type\": \"object\", \"properties\": {\"content\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"简洁、可独立理解且已经确认的记忆正文。\"}, \"related_directories\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"description\": \"与该记忆相关的分类目录，可省略或传空数组。\"}, \"storage_directory\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"可选存储分类目录；省略时由后端自动分类。\"}, \"source_event\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"可选来源标识，例如本轮对话或上下文压缩。\"}}, \"required\": [\"content\"], \"additionalProperties\": false}}}, \"required\": [\"memories\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "memory_delete",
+        "description": "是什么：按 id 删除长期记忆（删文件并摘除索引条目），删除后 memory_search 与 memory_read 都不再返回它。怎么做：记忆已被证伪、写错或与后来确认的事实冲突时使用；只想更正某条事实优先在 memory_write 里用 supersedes 让新记忆取代旧的，能保留「旧结论已被推翻」的痕迹。怎样做：scope 同 memory_write（缺省 project），只删除该作用域内的记忆；memory_ids 为非空字符串列表；成功返回 JSON：scope、requested_count、deleted（实际删掉的 id 列表）、deleted_count，已不存在的 id 静默跳过，失败返回文本错误。建议：删除不可撤销，删前先 memory_read 确认 id 对应的正文，避免误删仍在用的记忆。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"scope\": {\"type\": \"string\", \"enum\": [\"project\", \"session\", \"user\"], \"description\": \"记忆作用域：project=当前项目；session=当前会话；user=跨会话偏好。缺省 project。\"}, \"memory_ids\": {\"type\": \"array\", \"minItems\": 1, \"items\": {\"type\": \"string\", \"minLength\": 1}, \"description\": \"要删除的记忆 id 列表，取自 memory_search 的结果。\"}}, \"required\": [\"memory_ids\"], \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,

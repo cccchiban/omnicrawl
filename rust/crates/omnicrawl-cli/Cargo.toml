@@ -21,5 +21,7 @@ omnicrawl-ipc = { path = "../omnicrawl-ipc" }
 omnicrawl-llm = { path = "../omnicrawl-llm" }
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 omnicrawl-session = { path = "../omnicrawl-session" }
+# 出站 User-Agent（`omnicrawl/<产品版本>`）：内核连接器模式的模型请求报同一身份。
+omnicrawl-version = { path = "../omnicrawl-version" }
 chrono = { workspace = true }
 serde_json = { workspace = true }

@@ -33,7 +33,7 @@ use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, WebErrorKind, WebRequest, WebTransport,
     MAX_REDIRECTS,
 };
-use crate::embedding_client::{semantic_scores, EmbeddingOptions, EmbeddingRequest};
+use omnicrawl_extensions::bm25;
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 10.0;
 /// 单渠道一次取回的候选上限：既是未传 `max_results` 时的默认条数，也是单引擎返回的条数上限。
@@ -54,6 +54,28 @@ const RERANK_TIMEOUT_SECONDS: u64 = 30;
 const RERANK_INSTRUCTIONS: &str = "给定 state 里的搜索查询，判断每个候选项与该查询的相关程度；\
 state 是事实来源，不要根据候选项自身措辞推测查询；候选项是一批网页搜索结果，\
 排在前面表示更值得优先查看。";
+
+/// 联网搜索的本地 BM25 排序开关状态。
+///
+/// 只有一个布尔：BM25 的参数（`k1`/`b`）与分词都在 [`omnicrawl_extensions::bm25`] 里固定，
+/// 不需要按渠道配置，因此这里不持有任何客户端或凭据。
+#[derive(Debug, Clone, Default)]
+pub struct Bm25RankOptions {
+    pub enabled: bool,
+}
+
+impl Bm25RankOptions {
+    /// 是否启用：关闭时完全不介入，保留引擎自身顺序。
+    pub fn active(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl From<bool> for Bm25RankOptions {
+    fn from(enabled: bool) -> Self {
+        Self { enabled }
+    }
+}
 
 /// 混合搜索的引擎名（并发多路 + 去重合并）。
 pub const MIXED_ENGINE: &str = omnicrawl_config::features::web_search::MIXED_WEB_SEARCH_ENGINE;
@@ -167,10 +189,11 @@ pub struct WebSearchOptions {
     pub impersonate: String,
     /// 联网搜索的决策模型排序（`decision_models.toml` 的 `web_search_rerank` 开关）。
     pub rerank: Arc<RerankOptions>,
-    /// 联网搜索的向量模型排序（`decision_models.toml` 的 `web_search_embedding_rerank` 开关）。
+    /// 联网搜索的本地 BM25 排序（`decision_models.toml` 的 `web_search_bm25_rerank` 开关）。
     ///
-    /// 与 `rerank` 并行：两者都启用时优先向量，向量失败回退决策模型，再失败回退关键词。
-    pub embedding: Arc<EmbeddingOptions>,
+    /// 与 `rerank` 并行：两者都启用时优先 BM25，BM25 无命中再回退决策模型，最后回退关键词。
+    /// 本地算分，没有模型渠道与网络往返。
+    pub bm25: Arc<Bm25RankOptions>,
 }
 
 impl Default for WebSearchOptions {
@@ -195,7 +218,7 @@ impl Default for WebSearchOptions {
             impersonate: super::tls_transport::DEFAULT_IMPERSONATE.to_string(),
             // 缺省即不排序：重排是纯加速项，开关关着时连配置都不读。
             rerank: Arc::new(RerankOptions::default()),
-            embedding: Arc::new(EmbeddingOptions::default()),
+            bm25: Arc::new(Bm25RankOptions::default()),
         }
     }
 }
@@ -252,19 +275,15 @@ pub fn web_search_options_from_config(
             environment,
             omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH,
         )),
-        // 向量排序与决策模型排序并行装配：各自读自己的开关，互不影响。
-        embedding: Arc::new(
-            crate::embedding_client::embedding_options_from_config(
-                environment,
-                omnicrawl_config::features::decision_model::load_decision_switches(environment, None)
-                    .get(
-                        omnicrawl_config::features::decision_model::
-                            DECISION_SWITCH_WEB_SEARCH_EMBEDDING,
-                    )
-                    .copied()
-                    .unwrap_or(false),
-            ),
-        ),
+        // BM25 与决策模型排序并行装配：各自读自己的开关，互不影响。
+        bm25: Arc::new(Bm25RankOptions {
+            enabled: omnicrawl_config::features::decision_model::load_decision_switches(
+                environment, None,
+            )
+            .get(omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH_BM25)
+            .copied()
+            .unwrap_or(false),
+        }),
         ..WebSearchOptions::default()
     }
 }
@@ -616,14 +635,17 @@ fn status_message(status: u16) -> String {
     }
 }
 
-/// 联网搜索排序的三级回退顺序：向量模型 → 决策模型 → 本地关键词。
+/// 联网搜索排序的三级回退顺序：BM25 → 决策模型 → 本地关键词覆盖度。
 ///
-/// 向量与决策模型是**并行的两条独立通路**（各自的开关与运行期互不影响）：两者都启用时
-/// 向量优先，向量不可用再回退决策模型；两条都不可用（含开关关着、失败、候选太少）才回退
-/// 到本地关键词排序。任一级成功即返回，不再尝试后面的级别。
+/// BM25 与决策模型是**并行的两条独立通路**（各自的开关互不影响）：两者都启用时 BM25 优先，
+/// BM25 不可用再回退决策模型；两条都不可用（含开关关着、失败、候选太少）才回退到关键词
+/// 覆盖度排序。任一级成功即返回，不再尝试后面的级别。
+///
+/// BM25 取代了原先的向量模型排序：本地算分不需要额外的模型渠道与网络往返，中文靠二字
+/// 片段召回，长度归一回避免长摘要靠堆词占优。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RankLane {
-    Vector,
+    Bm25,
     Decision,
     Keyword,
 }
@@ -657,20 +679,20 @@ fn channel_ranking(
         return None;
     }
     // 两个排序开关都关着时完全不介入：保留引擎自身顺序，与未引入排序前一致。
-    let vector_ready = options.embedding.active();
+    let bm25_ready = options.bm25.active();
     let decision_ready = options.rerank.active();
-    if !vector_ready && !decision_ready {
+    if !bm25_ready && !decision_ready {
         return None;
     }
-    // 向量优先：直接采用余弦相似度给出的顺序（向量负责定序，关键词只在前两级都不可用时兜底）。
-    if vector_ready {
-        if let Some(order) = vector_order(options, query, candidates) {
+    // BM25 优先：本地算分，没有网络往返，也不会因为渠道暂不可用而白等一次超时。
+    if bm25_ready {
+        if let Some(order) = bm25_order(options, query, candidates) {
             return Some(ChannelRanking {
                 order,
-                lane: RankLane::Vector,
+                lane: RankLane::Bm25,
             });
         }
-        diagnostics::warn("[host] 联网搜索向量排序不可用，改试决策模型排序。");
+        diagnostics::warn("[host] 联网搜索 BM25 排序不可用，改试决策模型排序。");
     }
     // 回退决策模型：与向量通路并行，互不影响。
     if decision_ready {
@@ -688,25 +710,34 @@ fn channel_ranking(
     })
 }
 
-/// 向量通路：给查询与候选算向量，返回按余弦相似度降序的路内下标。
-fn vector_order(
+/// BM25 通路：对查询与候选做本地算分，返回按得分降序的路内下标。
+///
+/// 没有任何候选与查询有交集时返回 `None`（交给决策模型，或最终由关键词覆盖度兜底）——
+/// 此时 BM25 没有可依据的信息，让它「保持原顺序」冒充排序结果会掩盖实际的降级。
+fn bm25_order(
     options: &WebSearchOptions,
     query: &str,
     candidates: &[String],
 ) -> Option<Vec<usize>> {
-    let embedding = options.embedding.as_ref();
-    let channel = embedding.channel.as_ref()?;
-    let scored = semantic_scores(
-        embedding,
-        EmbeddingRequest {
-            channel,
-            cache: &embedding.cache,
-            client: embedding.client.as_ref(),
-            query,
-            candidates,
-        },
-    )?;
-    Some(scored.into_iter().map(|(index, _)| index).collect())
+    if !options.bm25.active() || query.trim().is_empty() {
+        return None;
+    }
+    let documents: Vec<Vec<String>> = candidates
+        .iter()
+        .map(|text| bm25::tokenize(text))
+        .collect();
+    let hits = bm25::rank(&bm25::tokenize(query), &documents);
+    if hits.is_empty() {
+        return None;
+    }
+    // 没命中的候选按原顺序接在后面：BM25 负责把相关的提前，不负责丢结果。
+    let mut order: Vec<usize> = hits.into_iter().map(|hit| hit.index).collect();
+    for index in 0..candidates.len() {
+        if !order.contains(&index) {
+            order.push(index);
+        }
+    }
+    Some(order)
 }
 
 /// 决策模型通路：把这一路的候选交给决策模型按相关度排序，返回路内下标。
@@ -1190,7 +1221,7 @@ fn api_search(
 ) -> ToolOutcome {
     let started = Instant::now();
     // 排序开启时向接口型引擎要更宽的一池候选（本地只负责挑池子），条数由排序与 max_results 定。
-    let pool = if options.rerank.active() || options.embedding.active() {
+    let pool = if options.rerank.active() || options.bm25.active() {
         max_results.max(RERANK_CHANNEL_POOL as i64)
     } else {
         max_results
@@ -3103,172 +3134,119 @@ mod tests {
         assert!(normalized.contains("1. 结果9"), "{normalized}");
     }
 
-    /// 向量桩：按候选文本查表返回向量，可配置为失败。
-    struct StubEmbedding {
-        vectors: std::collections::HashMap<String, Vec<f32>>,
-        fail: bool,
-        calls: Mutex<Vec<Vec<String>>>,
-    }
-
-    impl StubEmbedding {
-        fn new(vectors: &[(&str, Vec<f32>)]) -> Arc<Self> {
-            Arc::new(Self {
-                vectors: vectors
-                    .iter()
-                    .map(|(text, vector)| (text.to_string(), vector.clone()))
-                    .collect(),
-                fail: false,
-                calls: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn failing() -> Arc<Self> {
-            Arc::new(Self {
-                vectors: std::collections::HashMap::new(),
-                fail: true,
-                calls: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn call_count(&self) -> usize {
-            self.calls.lock().expect("记录未被毒化").len()
-        }
-    }
-
-    impl crate::embedding_client::EmbeddingClient for StubEmbedding {
-        fn embed(
-            &self,
-            _channel: &crate::embedding_client::EmbeddingChannel,
-            inputs: &[String],
-        ) -> Result<Vec<Vec<f32>>, String> {
-            self.calls
-                .lock()
-                .expect("记录未被毒化")
-                .push(inputs.to_vec());
-            if self.fail {
-                return Err("桩：向量服务不可用".to_string());
-            }
-            Ok(inputs
-                .iter()
-                .map(|text| {
-                    self.vectors
-                        .get(text)
-                        .cloned()
-                        .unwrap_or_else(|| vec![0.0, 0.0])
-                })
-                .collect())
-        }
-    }
-
-    /// 向量排序运行期：开关与渠道齐备，执行器换成桩。
-    fn embedding_options(client: Arc<StubEmbedding>) -> Arc<EmbeddingOptions> {
-        Arc::new(EmbeddingOptions {
-            enabled: true,
-            channel: Some(crate::embedding_client::EmbeddingChannel {
-                model: "text-embedding-3-small".to_string(),
-                base_url: "https://example.invalid/v1".to_string(),
-                api_key: "sk_test".to_string(),
-                dimensions: 0,
-                batch_size: 64,
-                timeout_seconds: 5,
-            }),
-            cache: Arc::new(crate::embedding_client::EmbeddingCache::default()),
-            client,
-        })
-    }
-
-    /// 候选进向量请求前会被压缩空白（与 `embedding_client::clamp_input` 同口径），
-    /// 桩的键必须按压缩后的文本登记，否则查不到向量。
-    fn collapsed(text: &str) -> String {
-        text.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    /// 两条通路都启用时：向量优先，且不再调用决策模型。
+    /// 两条通路都启用时：BM25 优先，且不再调用决策模型。
     #[test]
-    fn vector_lane_wins_over_decision_lane_when_both_enabled() {
+    fn bm25_lane_wins_over_decision_lane_when_both_enabled() {
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items.iter().map(candidate_text).collect();
-        // 「结果1」与查询最接近，应排第一；决策模型的桩会把顺序倒过来，用它的调用判断谁生效。
-        let nearest = collapsed(&texts[1]);
+        // 只有第 3 条含查询词，其余各条都不含（连标题里的数字也去掉，避免二元片段撞上）。
+        let texts: Vec<String> = items
+            .iter()
+            .enumerate()
+            .map(|(index, _item)| {
+                let body = format!("alpha beta {}", "omega".repeat(index + 1));
+                if index == 2 {
+                    format!("{body} 代码审查 长度归一")
+                } else {
+                    body
+                }
+            })
+            .collect();
         let decision_client = StubRerank::new(Vec::new());
-        let embedding_client =
-            StubEmbedding::new(&[("rust", vec![1.0, 0.0]), (nearest.as_str(), vec![1.0, 0.0])]);
         let options = WebSearchOptions {
             rerank: rerank_options(decision_client.clone()),
-            embedding: embedding_options(embedding_client.clone()),
+            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..WebSearchOptions::default()
         };
-        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
-            .expect("两条通路都启用时应当排出来");
-        assert_eq!(ranking.lane, RankLane::Vector, "向量优先");
+        let ranking = channel_ranking(
+            &options,
+            json!({"query": "代码审查 长度归一", "language": "rust"}),
+            "代码审查 长度归一",
+            &texts,
+        )
+        .expect("BM25 命中时应当排出来");
+        assert_eq!(ranking.lane, RankLane::Bm25, "BM25 优先");
         assert!(
             decision_client.batches().is_empty(),
-            "向量成功时不该再问决策模型"
+            "BM25 成功时不该再问决策模型"
         );
-        assert!(embedding_client.call_count() > 0, "向量通路应当被调用");
         assert_eq!(ranking.order.len(), texts.len(), "每个候选都有名次");
-        assert_eq!(ranking.order[0], 1, "语义最近的「结果1」排第一");
+        assert_eq!(ranking.order[0], 2, "命中词最多的「结果3」排第一");
     }
 
-    /// 向量失败时回退决策模型，且决策模型的名次生效。
+    /// BM25 没有命中时回退决策模型，且决策模型的名次生效。
     #[test]
-    fn decision_lane_takes_over_when_vector_fails() {
+    fn decision_lane_takes_over_when_bm25_has_no_hit() {
         let decision_client = StubRerank::new(Vec::new());
         let options = WebSearchOptions {
             rerank: rerank_options(decision_client.clone()),
-            embedding: embedding_options(StubEmbedding::failing()),
+            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..WebSearchOptions::default()
         };
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items.iter().map(candidate_text).collect();
-        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
-            .expect("向量失败仍应由决策模型排出来");
+        // 候选里刻意不含 rust：BM25 无从判断，交给决策模型。
+        let texts: Vec<String> = items
+            .iter()
+            .map(|item| format!("{}
+{}", item.title, item.snippet.replace("rust", "")))
+            .collect();
+        let ranking = channel_ranking(
+            &options,
+            json!({"query": "rust", "language": "rust"}),
+            "rust",
+            &texts,
+        )
+        .expect("BM25 无命中仍应由决策模型排出来");
         assert_eq!(ranking.lane, RankLane::Decision, "回退到决策模型");
         assert!(!decision_client.batches().is_empty(), "决策模型应当被调用");
         // 决策桩把这 10 条倒序返回。
         assert_eq!(ranking.order[0], 9, "决策模型给出的名次生效");
     }
 
-    /// 两条通路都失败时回退关键词排序，检索不失败。
+    /// 两条通路都不可用时回退关键词排序，检索不失败。
     #[test]
     fn keyword_lane_is_the_last_resort_when_both_fail() {
+        // 决策模型关掉、BM25 开着但查询词与候选全无交集 → 两级都不可用。
         let options = WebSearchOptions {
-            rerank: rerank_options(StubRerank::new(vec![0])),
-            embedding: embedding_options(StubEmbedding::failing()),
+            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..WebSearchOptions::default()
         };
         let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let texts: Vec<String> = items.iter().map(candidate_text).collect();
-        let ranking = channel_ranking(&options, json!({"query": "rust"}), "rust", &texts)
-            .expect("两条通路都失败仍应有兜底");
+        let texts: Vec<String> = items
+            .iter()
+            .map(|item| format!("{}
+{}", item.title, item.snippet.replace("rust", "")))
+            .collect();
+        let ranking = channel_ranking(
+            &options,
+            json!({"query": "rust", "language": "rust"}),
+            "rust",
+            &texts,
+        )
+        .expect("两级都不可用仍应有兜底");
         assert_eq!(ranking.lane, RankLane::Keyword, "最终回退关键词排序");
-        // 每条摘要都命中「rust」，覆盖度打平 → 保持引擎原顺序。
+        // 每条摘要都不含查询词，覆盖度打平 → 保持引擎原顺序。
         assert_eq!(ranking.order, (0..texts.len()).collect::<Vec<_>>());
     }
 
-    /// 只开向量开关时也要取宽候选池（不依赖决策模型开关）。
+    /// 只开 BM25 开关时也要取宽候选池（不依赖决策模型开关）。
     #[test]
-    fn vector_only_search_still_orders_results() {
+    fn bm25_only_search_still_orders_results() {
         let transport = Arc::new(RouteTransport::new(&[(
             "duckduckgo.com",
             &duckduckgo_page(50),
         )]));
-        // 让第 7 条与查询同一方向：它应被顶到第一。
-        let items = results(MIXED_RESULTS_PER_CHANNEL as usize);
-        let nearest = collapsed(&candidate_text(&items[7]));
-        let embedding_client =
-            StubEmbedding::new(&[("rust", vec![1.0, 0.0]), (nearest.as_str(), vec![1.0, 0.0])]);
         let options = WebSearchOptions {
-            embedding: embedding_options(embedding_client),
+            bm25: Arc::new(Bm25RankOptions::from(true)),
             ..route_options(transport)
         };
-        let output = web_search(&options, &arguments(json!({"query": "rust"})))
-            .expect("向量排序下的搜索应当成功");
+        // 每条的摘要都含「rust 摘要」，只有第 7 条多出「7」——BM25 的可选词命中把它顶上来。
+        let output = web_search(&options, &arguments(json!({"query": "rust 摘要 7"})))
+            .expect("BM25 排序下的搜索应当成功");
         let normalized = normalize(&output);
         assert!(normalized.contains("共 5 条"), "{normalized}");
         assert!(
             normalized.contains("1. 结果7"),
-            "语义最近者排第一：{normalized}"
+            "命中可选词者排第一：{normalized}"
         );
     }
 

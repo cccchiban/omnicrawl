@@ -115,3 +115,34 @@ fn empty_supersedes_keeps_existing_behaviour() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 直接的按 id 删除：文件消失、索引条目摘除、重复删除不再报错。
+#[test]
+fn delete_removes_the_file_and_the_index_entry() {
+    let root = temp_root("delete");
+    let store = MemoryStore::open(&root);
+    let written = store
+        .write(&[request("待删的临时记忆：编译目录口径", "project-context/build")])
+        .expect("写入");
+    let id = written[0].id.clone();
+    assert!(store.load_entries().expect("读索引").iter().any(|e| e.id == id));
+
+    let deleted = store
+        .delete(&[serde_json::Value::String(id.clone())])
+        .expect("删除");
+    assert_eq!(deleted, vec![id.clone()]);
+    assert!(
+        store.load_entries().expect("读索引").iter().all(|e| e.id != id),
+        "索引里不该再有这条"
+    );
+    assert!(
+        store.read(&[serde_json::Value::String(id.clone())]).expect("读取").is_empty(),
+        "按 id 已经读不到"
+    );
+
+    // 再删一次：静默跳过，返回空列表而不是报错。
+    assert!(
+        store.delete(&[serde_json::Value::String(id)]).expect("重复删除不报错").is_empty()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

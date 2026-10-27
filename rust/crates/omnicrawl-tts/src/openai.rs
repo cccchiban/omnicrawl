@@ -13,7 +13,7 @@ use crate::codec::{preview, AudioPayload};
 /// 单次请求的文本长度上限（字符）。接口上限是 4096，这里留出余量。
 pub const MAX_CHUNK_CHARS: usize = 2000;
 
-const USER_AGENT: &str = "omnicrawl-tts";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 
 /// 已归一化的 OpenAI 通道参数（由 `omnicrawl-config` 的 `[tts_api]` 段映射而来）。
 #[derive(Debug, Clone, PartialEq)]

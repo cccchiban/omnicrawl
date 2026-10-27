@@ -15,7 +15,7 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 
 - `/skills`：查看当前已加载的 Skill；发现阶段的问题（路径不存在、同名冲突、名称不合法）会附在列表后面。
 - `/skill:<skill-name>`：手动指定本轮使用某个 Skill（命中后正文注入本轮，未命中会列出可用名称）。
-- 普通输入：Agent 用 `skill_search` 检索已索引的 `name` 和 `description`，命中后读取对应正文。
+- 普通输入：Agent 用 `skill_search` 按 BM25 检索（范围含名称、描述与正文），命中后读取对应正文。
 
 ## 2. 安装到哪里
 
@@ -77,7 +77,7 @@ disable-model-invocation: false
 | 字段 | 必填 | 规则 |
 |------|------|------|
 | `name` | 是 | 1-64 字符；仅 `a-z`、`0-9`、`-`；不能首尾为 `-`；不能连续 `--` |
-| `description` | 是 | 不为空，最长 1024 字符；用于 `skill_search` 的关键词匹配 |
+| `description` | 是 | 不为空，最长 1024 字符；用于 `skill_search` 的 BM25 检索与浏览 |
 | `disable-model-invocation` | 否 | `true` 时不会被 `read` 主动加载，只能 `/skill:name` 手动调用 |
 
 `description` 支持 YAML 块标量：`>-`（折叠成一行）或 `|`（保留换行），长描述可跨多行书写。
@@ -99,19 +99,23 @@ L1 的索引**不再**拼进模型上下文：Skill 目录整份注入会随数�
 skill_search(query="提取 B 站视频笔记", scope="project")
 ```
 
-- `query`：关键词，与索引的 `name`/`description` 走同一套打分（CJK 按 2–4 字切块、英文按
-  ≥3 字符单词）；省略时按作用域列出全部，用于先浏览再决定。
+- `query`：关键词，与索引的 `name`、`description` 与**正文**一起走 BM25（CJK 按二字片段切分、
+  英文与数字按整词，小写归一）；省略时按作用域列出全部，用于先浏览再决定。
 - `scope`：`all`（缺省）、`project`、`user`、`enterprise`、`path`（由
   `[skills].extra_paths` 引入），用于精确限定检索范围。
-- `max_results`：1–50，缺省 10。
+- 结果固定取十条：BM25 判定哪些 Skill 命中，命中的按名称排序后截断。同一条查询永远给同一份
+  结果与同一个顺序，不受打分幅度影响。
+
+正文进索引是有意为之：只检索名称与描述会漏掉「描述写得泛、正文才写清楚」的 Skill，而模型
+判断该读哪个 Skill 时，正文里的关键词恰恰是最直接的证据。
 
 带关键词检索时可选交给结构化决策模型重排（`decision_models.toml` 的
 `[features] skill_search_rerank`，默认关闭）：先取更宽的候选池（最多 20 条）送审，按决策模型
-给出的置信度排序，条数仍按 `max_results`；决策服务不可用时回退本地打分顺序。按作用域列出
-全部时不送审——那一次没有「相关度」可判。
+给出的置信度排序，条数仍是十条；决策服务不可用时回退名称序。按作用域列出全部时不送审——
+那一次没有「相关度」可判。
 
 返回项只有索引元数据（`name`、`description`、`scope`、`location`、`score`、`reason`），
-不含正文。`score` 是本地打分的值；走重排时顺序由决策模型给出，可能与 `score` 的高低不一致。
+不含正文。`score` 是 BM25 的值；走重排时顺序由决策模型给出，可能与 `score` 的高低不一致。
 判断命中后用 `read` 打开 `location` 指向的 `SKILL.md` 读正文——这就是 L3。
 `location` 可能落在工作区之外（个人级、企业级目录），因此不要用 `find`/`grep` 去找 Skill，
 它们只看工作区。

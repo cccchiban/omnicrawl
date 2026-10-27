@@ -31,7 +31,7 @@ use crate::review::{masking_from_config, ReviewMasking};
 const CONTEXT_MAX_CHARS: usize = 1_200;
 /// 一次托管请求的超时（决策服务本身是 70–500ms 量级，余量留给网络）。
 const CUSTODY_TIMEOUT_SECONDS: u64 = 20;
-const USER_AGENT: &str = "omnicrawl-ask-user-custody/0.0.1";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 /// 提问 ID；候选项键就是它在 `criteria` 里的下标（`o0`、`o1`…），便于把回答映射回选项。
 const QUESTION_ID: &str = "best_option";
 

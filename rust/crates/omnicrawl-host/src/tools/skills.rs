@@ -1,32 +1,33 @@
-//! `skill_search` 工具：按作用域与关键词只读检索 Skill 索引元数据。
+//! `skill_search` 工具：按作用域检索 Skill 索引。
 //!
-//! 语义基准是 `omnicrawl-extensions` 的 [`SkillManager`]（发现 → 索引 → 打分）：Skill 目录
-//! 不再整份注入模型上下文，改由模型按需检索；正文仍由 `read` 打开 `SKILL.md` 获取。
-//! 每次调用重扫一次索引，覆盖「本会话内刚装好 Skill」的场景。
+//! 语义基准是 `omnicrawl-extensions` 的 [`SkillManager`]（发现 → 索引 → BM25 检索）：Skill
+//! 目录不再整份注入模型上下文，改由模型按需检索；正文仍由 `read` 打开 `SKILL.md` 获取。
+//! 检索范围是 Skill 的名称、描述与**正文**，因此「描述写得泛、正文才写清楚」的 Skill 也能
+//! 被检索到。每次调用重扫一次索引，覆盖「本会话内刚装好 Skill」的场景。
 //!
-//! 带关键词的检索可选交给结构化决策模型重排（`decision_models.toml` 的
-//! `[features] skill_search_rerank`，默认关闭）：本地打分只用来挑出更宽的一池候选，
-//! 最终顺序按决策模型给出的置信度，条数仍按 `max_results`。没有关键词（按作用域列出全部）
-//! 时没有「相关度」可判，不送审。
+//! 结果固定取十条：BM25 判定哪些 Skill 命中，命中的按名称排序后截断——同一条查询给同一份
+//! 结果，不受打分幅度影响，模型看到的顺序也稳定。
+//!
+//! 可选交给结构化决策模型重排（`decision_models.toml` 的 `[features] skill_search_rerank`，
+//! 默认关闭）：此时先取更宽的一池候选送审，最终顺序按决策模型给出的置信度，条数仍是十条。
+//! 没有关键词（按作用域列出全部）时没有「相关度」可判，不送审。
 
 use std::path::Path;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::skills::load_skills_config;
 use omnicrawl_controllers::json::python_dumps;
-use omnicrawl_extensions::skill::{
-    SkillManager, SkillSearchHit, DEFAULT_MATCH_THRESHOLD, SEARCH_SCOPES,
-};
+use omnicrawl_extensions::skill::{SkillManager, SkillSearchHit, SEARCH_SCOPES};
 use serde_json::{json, Map, Value};
 
-use super::arguments::{limited_int, optional_text};
+use super::arguments::optional_text;
 use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
 
-pub const DEFAULT_SEARCH_RESULTS: i64 = 10;
-pub const MAX_SEARCH_RESULTS: i64 = 50;
+/// 固定返回的条数：检索结果只用于判断「该读哪个 Skill」，再多也只是噪声。
+pub const SEARCH_RESULT_LIMIT: usize = 10;
 
-/// 检索 Skill 索引元数据；`scope` 缺省 `all`，省略 `query` 时按作用域列出全部。
+/// 检索 Skill 索引；`scope` 缺省 `all`，省略 `query` 时按作用域列出全部。
 pub fn skill_search(
     root: &Path,
     env: &ConfigEnvironment,
@@ -46,19 +47,12 @@ pub fn skill_search(
         )));
     }
     let query = optional_text(arguments, "query");
-    let max_results = limited_int(
-        arguments,
-        "max_results",
-        DEFAULT_SEARCH_RESULTS,
-        1,
-        MAX_SEARCH_RESULTS,
-    ) as usize;
-    // 重排开启且有关键词时先取更宽的一池候选：本地打分只用于挑池子，最终顺序由决策模型决定。
+    // 重排开启且有关键词时先取更宽的一池候选：BM25 只用于挑池子，最终顺序由决策模型决定。
     let reranking = rerank.active() && !query.trim().is_empty();
     let pool = if reranking {
-        max_results.max(RERANK_POOL_LIMIT)
+        SEARCH_RESULT_LIMIT.max(RERANK_POOL_LIMIT)
     } else {
-        max_results
+        SEARCH_RESULT_LIMIT
     };
 
     let mut manager = SkillManager::new();
@@ -66,7 +60,7 @@ pub fn skill_search(
         .map(|config| config.extra_paths)
         .unwrap_or_default();
     manager.discover(Some(root), &extra_paths);
-    let mut hits = manager.search_meta(&query, &scope, pool, DEFAULT_MATCH_THRESHOLD);
+    let mut hits = manager.search_meta(&query, &scope, pool);
     if reranking {
         let state = json!({
             "query": query,
@@ -77,7 +71,7 @@ pub fn skill_search(
             hits = apply_order(hits, &order);
         }
     }
-    hits.truncate(max_results);
+    hits.truncate(SEARCH_RESULT_LIMIT);
     Ok(python_dumps(
         &Value::Array(hits.iter().map(hit_value).collect()),
         2,
@@ -199,7 +193,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
-            &arguments(json!({"query": "python code review"})),
+            &arguments(json!({"scope": "project", "query": "python code review"})),
         )
         .expect("检索成功");
         let hits: Value = serde_json::from_str(&output).expect("结果是 JSON 数组");
@@ -228,18 +222,13 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
-            &arguments(json!({"scope": "project", "max_results": 50})),
+            &arguments(json!({"scope": "project"})),
         )
         .expect("列出成功");
         assert_eq!(names(&project_only), vec!["alpha", "beta"]);
 
-        let all = skill_search(
-            &root,
-            &env(&root),
-            &plain(),
-            &arguments(json!({"scope": "all", "max_results": 50})),
-        )
-        .expect("列出成功");
+        let all = skill_search(&root, &env(&root), &plain(), &arguments(json!({"scope": "all"})))
+            .expect("列出成功");
         let all_names = names(&all);
         assert!(all_names.contains(&"alpha".to_string()), "{all}");
         assert!(all_names.contains(&"beta".to_string()), "{all}");
@@ -248,7 +237,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
-            &arguments(json!({"scope": "path", "max_results": 50})),
+            &arguments(json!({"scope": "path"})),
         )
         .expect("列出成功");
         assert!(
@@ -273,8 +262,9 @@ mod tests {
         );
     }
 
+    /// 重排开关打开时按决策模型给出的顺序返回，条数仍是固定的十条上限。
     #[test]
-    fn rerank_reorders_hits_and_keeps_max_results() {
+    fn rerank_reorders_hits() {
         let root = temp_root("rerank");
         for (name, description) in [
             ("skill-a", "rust 内核：工具表装配"),
@@ -294,17 +284,18 @@ mod tests {
             &root,
             &env(&root),
             &options,
-            &arguments(json!({"scope": "project", "query": "rust 内核", "max_results": 2})),
+            &arguments(json!({"scope": "project", "query": "rust 内核"})),
         )
         .expect("检索成功");
         let hits: Value = serde_json::from_str(&output).expect("结果是 JSON 数组");
         let items = hits.as_array().expect("数组");
-        assert_eq!(items.len(), 2, "返回条数仍按 max_results：{output}");
+        assert_eq!(items.len(), 3, "三条候选都该返回：{output}");
         assert_eq!(items[0]["name"], "skill-c", "按重排顺序返回：{output}");
         assert_eq!(items[1]["name"], "skill-b", "{output}");
+        assert_eq!(items[2]["name"], "skill-a", "{output}");
 
         let recorded = seen.lock().expect("记录未被毒化").clone();
-        assert_eq!(recorded.len(), 3, "候选池比 max_results 宽：{recorded:?}");
+        assert_eq!(recorded.len(), 3, "候选池比十条上限宽时才需要更宽的池：{recorded:?}");
         assert!(
             recorded.iter().all(|text| text.contains("名称：")),
             "候选描述应带名称：{recorded:?}"
@@ -323,14 +314,14 @@ mod tests {
             &root,
             &env(&root),
             &options,
-            &arguments(json!({"scope": "project", "max_results": 50})),
+            &arguments(json!({"scope": "project"})),
         )
         .expect("列出成功");
         assert_eq!(names(&output), vec!["alpha", "beta"]);
         assert!(seen.lock().expect("记录未被毒化").is_empty());
     }
 
-    /// 重排不可用（缺渠道）时退回本地排序，检索不该失败。
+    /// 重排不可用（缺渠道）时退回本地名称序，检索不该失败。
     #[test]
     fn rerank_failure_falls_back_to_local_order() {
         let root = temp_root("rerank-fail");
@@ -348,5 +339,76 @@ mod tests {
         )
         .expect("检索不该因为重排不可用而失败");
         assert_eq!(names(&output), vec!["alpha"]);
+    }
+
+    /// 正文也进索引：描述里没有的词，只在正文出现也能检索到。
+    #[test]
+    fn the_body_is_searchable() {
+        let root = temp_root("body");
+        write_skill(&root, "body-only", "name: body-only\ndescription: 通用助手");
+        std::fs::write(
+            root.join(".omnicrawl")
+                .join("skills")
+                .join("body-only")
+                .join("SKILL.md"),
+            "---\nname: body-only\ndescription: 通用助手\n---\n\n这个 Skill 专门处理 kubernetes 部署。\n",
+        )
+        .expect("写 SKILL.md");
+        write_skill(&root, "decoy", "name: decoy\ndescription: 通用助手");
+
+        let output = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "project", "query": "kubernetes"})),
+        )
+        .expect("检索成功");
+        assert_eq!(
+            names(&output),
+            vec!["body-only"],
+            "只有正文提到该词的 Skill 也该命中：{output}"
+        );
+    }
+
+    /// 结果按名称排序，且固定只回十条。
+    #[test]
+    fn results_are_name_sorted_and_capped_at_ten() {
+        let root = temp_root("cap");
+        for index in 0..13 {
+            let name = format!("skill-{index:02}");
+            write_skill(
+                &root,
+                &name,
+                &format!("name: {name}\ndescription: 检索排序用技能"),
+            );
+        }
+        let output = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "project", "query": "检索排序用技能"})),
+        )
+        .expect("检索成功");
+        let listed = names(&output);
+        assert_eq!(listed.len(), 10, "固定返回十条：{output}");
+        let mut sorted = listed.clone();
+        sorted.sort();
+        assert_eq!(listed, sorted, "结果按名称排序：{output}");
+        assert_eq!(listed[0], "skill-00", "从最小的名称开始截断：{output}");
+    }
+
+    /// 无交集时结果为空数组，不是报错。
+    #[test]
+    fn a_query_without_any_hit_returns_an_empty_list() {
+        let root = temp_root("no-hit");
+        write_skill(&root, "alpha", "name: alpha\ndescription: 甲级技能");
+        let output = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "project", "query": "完全无关的词汇"})),
+        )
+        .expect("检索成功");
+        assert_eq!(names(&output), Vec::<String>::new(), "{output}");
     }
 }

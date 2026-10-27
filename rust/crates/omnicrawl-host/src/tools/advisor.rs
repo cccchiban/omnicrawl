@@ -21,7 +21,7 @@ use super::error::{ToolError, ToolOutcome};
 pub const ADVISOR_TOOL_NAME: &str = "advisor";
 pub const ADVISOR_SYSTEM_PROMPT: &str =
     include_str!("../../../../../rust/assets/templates/advisor_system.md");
-const USER_AGENT: &str = "omnicrawl-tui-advisor/0.0.1";
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 
 /// 顾问运行期配置：模型来自 `--advisor-*` 或 `[advisor]` 段，凭据取自顾问模型所属渠道
 /// （渠道没写则回落主模型），工作分支与工具面由宿主注入。只读 TOML，不读环境变量。

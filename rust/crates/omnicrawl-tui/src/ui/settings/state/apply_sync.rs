@@ -81,10 +81,7 @@ impl SettingsState {
                 {
                     row.enabled = *enabled;
                 }
-                if key == DECISION_SWITCH_WEB_SEARCH_EMBEDDING {
-                    self.embedding_models.web_search_rerank = *enabled;
-                }
-                // 该开关现在画在向量页，状态行跟着焦点所在页走。
+                // 该开关画在决策页，状态行跟着焦点所在页走。
                 if self.pane == Pane::EmbeddingModels {
                     self.embedding_models.status = message;
                 } else {
@@ -534,12 +531,10 @@ impl SettingsState {
         rows: Vec<EmbeddingRow>,
         default_key: &str,
         enabled: bool,
-        web_search_rerank: bool,
         message: &str,
     ) {
         self.embedding_models.rows = rows;
         self.embedding_models.enabled = enabled;
-        self.embedding_models.web_search_rerank = web_search_rerank;
         if !default_key.trim().is_empty() {
             self.embedding_models.default_key = default_key.trim().to_string();
         }
@@ -567,10 +562,6 @@ impl SettingsState {
     }
 
     /// 联网搜索走向量模型排序的当前值（渲染层用）。
-    pub fn embedding_web_search_rerank(&self) -> bool {
-        self.embedding_models.web_search_rerank
-    }
-
     /// 行游标是否停在开关区（向量召回 / 联网搜索向量排序）。
     pub fn embedding_switch_selected(&self) -> bool {
         self.embedding_models.selected < EmbeddingModelsState::SWITCH_ROWS
@@ -579,15 +570,6 @@ impl SettingsState {
     /// 游标在开关区时的行号（0 向量召回、1 联网搜索向量排序）。
     pub fn embedding_switch_row(&self) -> usize {
         self.embedding_models.selected
-    }
-
-    /// 联网搜索向量排序开关的文案：与决策模型页的开关同源。
-    pub fn embedding_web_search_label() -> &'static str {
-        DECISION_SWITCHES
-            .iter()
-            .find(|spec| spec.key == DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
-            .map(|spec| spec.label)
-            .unwrap_or("联网搜索使用向量模型排序")
     }
 
     /// 选中的**渠道**下标；游标停在总开关时为 `None`。

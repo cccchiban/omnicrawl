@@ -61,10 +61,6 @@ impl App {
         let reloaded_enabled =
             load_feature_enabled(&environment, "memory_embedding", false, None, None)
                 .unwrap_or(false);
-        let reloaded_web_search_rerank = load_decision_switches(&environment, None)
-            .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
-            .copied()
-            .unwrap_or(false);
         let rows: Vec<EmbeddingRow> = reloaded
             .channels
             .iter()
@@ -75,7 +71,6 @@ impl App {
                 rows,
                 &reloaded.default_key,
                 reloaded_enabled,
-                reloaded_web_search_rerank,
                 "",
             );
         }
@@ -196,15 +191,12 @@ impl App {
                 environment,
                 DECISION_SWITCH_WEB_SEARCH,
             ));
-        self.registry_options.web_search.embedding = Arc::new(
-            omnicrawl_host::embedding_client::embedding_options_from_config(
-                environment,
-                load_decision_switches(environment, None)
-                    .get(DECISION_SWITCH_WEB_SEARCH_EMBEDDING)
-                    .copied()
-                    .unwrap_or(false),
-            ),
-        );
+        self.registry_options.web_search.bm25 = Arc::new(omnicrawl_host::tools::Bm25RankOptions {
+            enabled: load_decision_switches(environment, None)
+                .get(DECISION_SWITCH_WEB_SEARCH_BM25)
+                .copied()
+                .unwrap_or(false),
+        });
         self.rebuild_registry()
     }
 

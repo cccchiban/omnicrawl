@@ -303,6 +303,7 @@ fn tool_human_description(tool_name: &str) -> Option<&'static str> {
         "memory_read" => "读取记忆内容",
         "memory_expand_related" => "展开相关记忆",
         "memory_write" => "写入长期记忆",
+        "memory_delete" => "删除长期记忆",
         "subagent" => "分发只读子任务",
         "advisor" => "咨询顾问模型获取第二意见",
         _ => return None,

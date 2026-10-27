@@ -354,6 +354,18 @@ class MemoryWriteRequest:
 7. 更新 index.json
 ```
 
+### 7.5 删除记忆
+
+```python
+def memory_delete(scope: str, memory_ids: list[str]) -> list[str]:
+    """按 id 删除记忆：删文件、摘除 index.json 条目、清理空目录，返回实际删掉的 id。"""
+```
+
+- `scope` 同其余记忆工具（`project` / `session` / `user`），只删除该作用域内的记忆。
+- 已不存在的 id 静默跳过：删除可重复执行，模型拿着稍旧的摘要重试不该失败。
+- 更正既有事实优先走 `memory_write` 的 `supersedes`，能保留「旧结论已被推翻」的痕迹；
+  `memory_delete` 用于记忆本身被证伪、写错或确认无保留价值的情形。
+
 ## 9. 加深回忆机制
 
 当某条记忆被读取时，系统需要更新：

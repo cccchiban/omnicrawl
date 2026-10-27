@@ -39,6 +39,8 @@ omnicrawl-fetch = { path = "../omnicrawl-fetch" }
 omnicrawl-tts = { path = "../omnicrawl-tts" }
 # 主 Agent 隔离工作区：启动准备（worktree/local）与退出收尾（apply + 清理）。
 omnicrawl-workspace = { path = "../omnicrawl-workspace" }
+# 出站 User-Agent（`omnicrawl/<产品版本>`）：内核模型请求与其它 AI 网关共用同一身份。
+omnicrawl-version = { path = "../omnicrawl-version" }
 # 会话回放按事件时间戳计算工具卡耗时（事件里的 `created_at`）。
 chrono = { workspace = true }
 crossterm = { workspace = true }

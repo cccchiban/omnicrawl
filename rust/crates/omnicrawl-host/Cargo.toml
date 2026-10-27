@@ -27,6 +27,8 @@ omnicrawl-session = { path = "../omnicrawl-session" }
 # fetcher / web_search 的浏览器指纹通路：自研 TLS + HTTP/2 + HTTP/1.1 栈（纯 Rust，
 # 不引入 BoringSSL、CMake、NASM 与 libclang）。
 omnicrawl-tls = { path = "../omnicrawl-tls" }
+# 出站 User-Agent（`omnicrawl/<产品版本>`）：审查 / 顾问 / 决策模型与向量召回共用同一身份。
+omnicrawl-version = { path = "../omnicrawl-version" }
 # 本地 JS 沙箱（boa_engine）：正文由脚本拼装时在本机重建，不联网、不伪造指纹。
 omnicrawl-jsdom = { path = "../omnicrawl-jsdom" }
 # TTS 云服务通道（OpenAI audio/speech 与 Gemini TTS），纯 HTTP，无原生依赖。

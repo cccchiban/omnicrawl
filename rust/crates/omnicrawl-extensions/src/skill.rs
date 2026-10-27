@@ -6,6 +6,7 @@
 //!
 //! 渐进式披露的格式与 Python 逐字对齐，因为它直接进模型上下文。
 
+use crate::bm25;
 use crate::path::{expand_user, home_directory, resolve_path};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -536,25 +537,27 @@ impl SkillManager {
         self.discover_with_enterprise(cwd.as_deref(), &extra, enterprise.as_deref());
     }
 
-    /// 只读检索索引元数据：按作用域过滤后按关键词打分，命中门槛与 `match_skills` 同源。
+    /// 只读检索索引元数据：按作用域过滤后用 BM25 打分，命中的条目按名称排序取前若干条。
     ///
-    /// `scope` 取 [`SEARCH_SCOPES`] 中的取值（`all` 表示不过滤）；`user_input` 为空时
-    /// 退化为「按作用域列出全部」，此时不设门槛，便于模型先浏览再决定读哪个正文。
+    /// `scope` 取 [`SEARCH_SCOPES`] 中的取值（`all` 表示不过滤）。检索单元是 Skill 的
+    /// **名称 + 描述 + 正文**：名称与描述判断「这个 Skill 是做什么的」，正文决定「它具体
+    /// 覆盖哪些细节」，只按元数据检索会漏掉「描述写得泛、正文才写清楚」的 Skill。
+    ///
+    /// `user_input` 为空时退化为「按作用域列出全部」，此时不打分也不设门槛，便于模型先
+    /// 浏览再决定读哪个正文。
     pub fn search_meta(
         &self,
         user_input: &str,
         scope: &str,
         max_results: usize,
-        threshold: f64,
     ) -> Vec<SkillSearchHit> {
-        let input_lower = user_input.to_lowercase();
         let scoped: Vec<&SkillMeta> = self
             .index
             .iter()
             .map(|(_, meta)| meta)
             .filter(|meta| scope == "all" || meta.scope == scope)
             .collect();
-        if input_lower.trim().is_empty() {
+        if user_input.trim().is_empty() {
             let mut listed: Vec<SkillSearchHit> = scoped
                 .into_iter()
                 .map(|meta| SkillSearchHit {
@@ -567,26 +570,39 @@ impl SkillManager {
             listed.truncate(max_results);
             return listed;
         }
-        let mut hits: Vec<SkillSearchHit> = scoped
+
+        let documents: Vec<Vec<String>> = scoped
+            .iter()
+            .map(|meta| self.search_tokens(meta))
+            .collect();
+        let hits = bm25::rank(&bm25::tokenize(user_input), &documents);
+        let mut ranked: Vec<SkillSearchHit> = hits
             .into_iter()
-            .filter_map(|meta| {
-                let (score, reason) = score_match(&input_lower, meta);
-                (score >= threshold).then(|| SkillSearchHit {
-                    meta: meta.clone(),
-                    score,
-                    reason,
-                })
+            .map(|hit| SkillSearchHit {
+                meta: scoped[hit.index].clone(),
+                score: hit.score,
+                reason: format!("BM25 命中：{}", hit.matched.join(", ")),
             })
             .collect();
-        hits.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.meta.name.cmp(&right.meta.name))
-        });
-        hits.truncate(max_results);
-        hits
+        ranked.sort_by(|left, right| left.meta.name.cmp(&right.meta.name));
+        ranked.truncate(max_results);
+        ranked
+    }
+
+    /// 一个 Skill 的检索 token：名称、描述与正文一起分词。
+    fn search_tokens(&self, meta: &SkillMeta) -> Vec<String> {
+        let body = self
+            .body_cache
+            .iter()
+            .find(|(name, _)| name == &meta.name)
+            .map(|(_, body)| body.as_str())
+            .unwrap_or_default();
+        bm25::tokenize(&format!(
+            "{} {} {}",
+            meta.name.replace('-', " "),
+            meta.description,
+            body
+        ))
     }
 
     /// 兼容旧调用：Skill 指令不再注入 system prompt，原样返回。

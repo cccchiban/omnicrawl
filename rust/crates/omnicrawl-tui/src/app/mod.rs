@@ -103,7 +103,7 @@ use omnicrawl_config::features::decision_model::{
     DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
     SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES, DECISION_SWITCH_KB_SEARCH,
     DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH, DECISION_SWITCH_WEB_SEARCH,
-    DECISION_SWITCH_WEB_SEARCH_EMBEDDING, DEFAULT_DECISION_RETRY_COUNT,
+    DECISION_SWITCH_WEB_SEARCH_BM25, DEFAULT_DECISION_RETRY_COUNT,
     DEFAULT_LOCAL_DECISION_BASE_URL, DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
 };
 use omnicrawl_config::features::embedding::{
@@ -146,6 +146,7 @@ use omnicrawl_onejev::{
     LaunchSpec as OneJevLaunchSpec, OneJevServer, ServerState as OneJevServerState, ONEJEV_SIZES,
 };
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
+use omnicrawl_version::USER_AGENT;
 use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, finalize_subagent_worktrees, IsolationSession,
 };

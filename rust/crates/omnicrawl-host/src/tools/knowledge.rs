@@ -486,6 +486,40 @@ impl KnowledgeBase {
         )
     }
 
+    /// 删除一篇笔记并刷新索引；`INDEX.md` / `README.md` 由知识库自动维护，不允许删除。
+    ///
+    /// 返回被删笔记的元数据，便于调用方回报「删了哪一篇」。
+    pub fn delete(&self, rel_path: &str) -> Result<NoteMeta, ToolError> {
+        let target = self.safe_join(rel_path, ".md")?;
+        if !target.is_file() {
+            return Err(ToolError::new(format!(
+                "知识库笔记不存在：{}。",
+                self.display_path(&target)
+            )));
+        }
+        let name = target
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name == INDEX_FILENAME || name == README_FILENAME {
+            return Err(ToolError::new(format!(
+                "{} 由知识库自动维护，不能删除。",
+                self.display_path(&target)
+            )));
+        }
+        // 先读出元数据：删完就无从得知标题与路径了。
+        let meta = self.meta_for(&target)?;
+        fs::remove_file(&target).map_err(|error| {
+            ToolError::new(format!(
+                "删除知识库笔记失败：{}，{}",
+                self.display_path(&target),
+                python_os_error(&error)
+            ))
+        })?;
+        self.refresh_index()?;
+        Ok(meta)
+    }
+
     fn meta_for(&self, target: &Path) -> Result<NoteMeta, ToolError> {
         let bytes = fs::read(target).map_err(|error| {
             ToolError::new(format!("读取知识库笔记失败：{}。", python_os_error(&error)))
@@ -1091,6 +1125,16 @@ pub fn kb_append(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOu
     ))
 }
 
+/// 删除一篇笔记（`INDEX.md` / `README.md` 不允许删除），并刷新索引。
+pub fn kb_delete(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOutcome {
+    let path = argument_text(arguments, "path");
+    if path.is_empty() {
+        return Err(ToolError::new("path 不能为空。"));
+    }
+    let meta = base.delete(&path)?;
+    Ok(python_dumps(&json!({"deleted": meta.to_value()}), 2))
+}
+
 pub fn kb_list(base: &KnowledgeBase, arguments: &Map<String, Value>) -> ToolOutcome {
     let path = optional_text(arguments, "path");
     let project = optional_text(arguments, "project");
@@ -1306,5 +1350,78 @@ mod tests {
             .expect("检索不该因为重排不可用而失败");
         let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
         assert_eq!(parsed.as_array().map(Vec::len), Some(1), "{hits}");
+    }
+
+    /// 删除笔记：文件消失、索引同步、元数据回传。
+    #[test]
+    fn deleting_a_note_removes_it_from_the_index() {
+        let root = temp_root("delete");
+        let base = KnowledgeBase::new(&root);
+        base.write(
+            "topics/gone.md",
+            "正文",
+            &WriteRequest {
+                title: Some("待删"),
+                project: Some("demo"),
+                mode: "create",
+                ..WriteRequest::default()
+            },
+        )
+        .expect("写入应当成功");
+        assert_eq!(base.list_notes().len(), 1);
+
+        let output = kb_delete(&base, &arguments(json!({"path": "topics/gone"})))
+            .expect("删除应当成功");
+        let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
+        assert_eq!(parsed["deleted"]["title"], "待删", "{output}");
+        assert_eq!(parsed["deleted"]["path"], "topics/gone.md", "{output}");
+        assert!(base.list_notes().is_empty(), "索引里不该再有这篇");
+        assert!(!root.join("topics").join("gone.md").is_file(), "文件应当已删除");
+        let index = std::fs::read_to_string(root.join("INDEX.md")).expect("索引已重建");
+        assert!(!index.contains("待删"), "索引正文不该残留：{index}");
+    }
+
+    /// 不存在的笔记报错而不是静默成功：删除拼错路径必须让调用方知道。
+    #[test]
+    fn deleting_a_missing_note_reports_its_path() {
+        let root = temp_root("delete-missing");
+        let base = KnowledgeBase::new(&root);
+        let error = kb_delete(&base, &arguments(json!({"path": "topics/none"})))
+            .expect_err("不存在的笔记应当报错");
+        assert!(
+            error.message.contains("知识库笔记不存在"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// INDEX.md / README.md 由知识库自动维护，删除必须被拒绝。
+    #[test]
+    fn index_and_readme_cannot_be_deleted() {
+        let root = temp_root("delete-index");
+        let base = KnowledgeBase::new(&root);
+        base.refresh_index().expect("索引已建立");
+        for name in ["INDEX.md", "README.md"] {
+            std::fs::write(root.join(name), "# 由知识库维护
+").expect("写文件");
+            let error = kb_delete(&base, &arguments(json!({"path": name})))
+                .expect_err("不该允许删除自动维护的文件");
+            assert!(
+                error.message.contains("由知识库自动维护"),
+                "{name}: {}",
+                error.message
+            );
+            assert!(root.join(name).is_file(), "{name} 不该被删掉");
+        }
+    }
+
+    /// 越界路径与 write/read 同口径，一律拒绝。
+    #[test]
+    fn deleting_outside_the_knowledge_base_is_rejected() {
+        let root = temp_root("delete-escape");
+        let base = KnowledgeBase::new(&root);
+        let error = kb_delete(&base, &arguments(json!({"path": "../secret"})))
+            .expect_err("越界路径应当被拒绝");
+        assert_eq!(error.message, "知识库路径不允许包含 ..。");
     }
 }
