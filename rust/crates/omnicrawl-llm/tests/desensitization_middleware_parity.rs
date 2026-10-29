@@ -70,7 +70,6 @@ fn message_masking_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: &rules,
         gitleaks_rules: &[],
-        ner: None,
         plan_cache: None,
         plan_builder: None,
     };
@@ -120,7 +119,6 @@ fn unreadable_placeholder_scan_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: &rules,
         gitleaks_rules: &[],
-        ner: None,
         plan_cache: None,
         plan_builder: None,
     };
