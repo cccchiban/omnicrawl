@@ -8,7 +8,8 @@
 //! - `auto`：全部放行；
 //! - `manual`：shell 命令工具与“非只读 git 操作”弹确认，其余放行；
 //! - `review`：删除类与下载并执行类调用、高风险 Git 操作交给审查模型（见 [`crate::review`]），
-//!   其余放行；只有人工确认那一档才弹面板。
+//!   其余放行；只有人工确认那一档才弹面板。`memory_delete` 免审（见
+//!   `omnicrawl_controllers::approval::REVIEW_EXEMPT_TOOLS`）。
 
 /// 审批模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

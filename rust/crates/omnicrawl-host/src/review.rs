@@ -1,6 +1,9 @@
 //! 审查模型（`approval.mode = review`）：把删除类、下载并执行类与高风险 Git 调用
 //! 交给一个独立的审查模型做最后一道安全闸。
 //!
+//! 删除类判定在 `omnicrawl_controllers::approval`，其中 `REVIEW_EXEMPT_TOOLS` 列出的工具
+//! （当前只有 `memory_delete`）不进入审查。
+//!
 //! 语义基准是 Python 的 `agent/controllers/tools/approval.py::_review_tool_call`：
 //! 审查请求不继承主对话的 system prompt 与完整历史，只带「固定审查者身份 + 待审查调用
 //! JSON + 最近一条用户消息截断摘要 + 最近一次 ask_user 问答」；失败一律 fail-closed。
@@ -1105,6 +1108,22 @@ mod tests {
             "Git 操作",
             "{\"properties\":{\"action\":{\"type\":\"string\"}}}",
             &arguments(json!({"action": "push"})),
+        ));
+        // memory_delete 免审：删除目标只由记忆 id 限定，不必交给审查模型。
+        assert!(!needs_review(
+            mode,
+            "memory_delete",
+            "按 id 删除长期记忆",
+            "{\"properties\":{\"memory_ids\":{\"type\":\"array\"}}}",
+            &arguments(json!({"memory_ids": ["20200101-000000"]})),
+        ));
+        // 其他删除类工具仍进审查。
+        assert!(needs_review(
+            mode,
+            "kb_delete",
+            "删除知识库笔记",
+            "{\"properties\":{\"path\":{\"type\":\"string\"}}}",
+            &arguments(json!({"path": "notes/a.md"})),
         ));
         // 普通读取不进审查。
         assert!(!needs_review(

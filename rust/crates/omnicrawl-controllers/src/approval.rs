@@ -399,6 +399,14 @@ pub fn classify_shell_command(command: &str) -> &'static str {
     SHELL_RISK_SAFE
 }
 
+/// 不进入自动审查的工具：删除目标只由 id 限定，删除本身就是它的任务语义，不需要审查模型把关。
+pub const REVIEW_EXEMPT_TOOLS: [&str; 1] = ["memory_delete"];
+
+pub fn is_review_exempt_tool(tool_name: &str) -> bool {
+    let normalized = normalize_tool_name(tool_name);
+    REVIEW_EXEMPT_TOOLS.contains(&normalized.as_str())
+}
+
 /// 删除类调用是否进入审查（review 模式用）。
 pub fn is_delete_behavior_tool_call(
     tool_name: &str,
@@ -519,6 +527,9 @@ pub fn decide(
         return ApprovalDecision::Confirm;
     }
     if mode == ApprovalMode::Review {
+        if is_review_exempt_tool(tool_name) {
+            return ApprovalDecision::Approve;
+        }
         if is_shell_command_tool_call(tool_name) {
             let command = match arguments.get("command") {
                 Some(value) => crate::undo::python_str(value),
