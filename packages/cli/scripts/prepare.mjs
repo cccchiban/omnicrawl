@@ -173,7 +173,7 @@ function stagePlatform(target, source, version, host) {
     //
     // 名字不能叫 omnicrawl：启动器自己也声明了 omnicrawl，而平台包在安装树里同样会生成
     // node_modules/.bin 条目，两者撞名时平台包会抢走 .bin/omnicrawl → 本地安装与 npx 下
-    // `omnicrawl` 变成直连内核（只打印 `omnicrawl 0.0.1`）。改名 omnicrawl-kernel 后
+    // `omnicrawl` 变成直连内核（只打印 `omnicrawl 0.4.2`）。改名 omnicrawl-kernel 后
     // `.bin/omnicrawl` 只归启动器，内核仍有一个显式入口（协议调试可直接用 `omnicrawl kernel`）。
     //
     // 宿主的 6 个可执行文件同样必须列进 bin，否则 `npm pack` 会把它们写成 0644，

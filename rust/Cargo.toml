@@ -29,7 +29,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.4.2"
 edition = "2021"
 # MSRV 由依赖树里最高的那个声明决定，工作区级声明无法只对单个 crate 抬高。
 # 抬到 1.91 的直接原因：omnicrawl-jsdom 用 boa_engine 0.22（0.21 解析不了

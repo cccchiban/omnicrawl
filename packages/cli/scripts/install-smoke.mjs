@@ -93,7 +93,7 @@ try {
 
   // .bin 层：本地安装 / npx 走的是 node_modules/.bin/omnicrawl，而不是上面那个 .mjs 路径。
   // 平台包曾经同样声明 omnicrawl 的 bin，npm 会让它抢走这个条目，于是 `omnicrawl` 变成
-  // 直连内核（只打印 `omnicrawl 0.0.1`）——真实用户报障过，所以这里守住归属。
+  // 直连内核（只打印 `omnicrawl 0.4.2`）——真实用户报障过，所以这里守住归属。
   const binDir = join(app, 'node_modules', '.bin')
   const isWindows = process.platform === 'win32'
   const launcherBin = join(binDir, isWindows ? 'omnicrawl.cmd' : 'omnicrawl')
