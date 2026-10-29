@@ -289,9 +289,25 @@ pub fn windows_shell_label(lowered_process_chain: &[String]) -> String {
 
 /// 进程链里的终端标签（对应 Python 的 `windows_terminal_label`）；
 /// 重复标签只保留首次出现（Python 的 `dict.fromkeys`）。
+///
+/// 环境变量在入口处读一次，判定本体在 `terminal_label_from_parts`：终端类型取决于
+/// 「跑在哪个终端里」，把环境读进纯函数会让测试跟着宿主终端变——在 Windows Terminal
+/// 里跑测试就必然多出一项，断言随之失败。
 pub fn windows_terminal_label(lowered_process_chain: &[String]) -> String {
+    terminal_label_from_parts(
+        lowered_process_chain,
+        &std::env::var("WT_SESSION").unwrap_or_default(),
+        &std::env::var("TERM_PROGRAM").unwrap_or_default(),
+    )
+}
+
+/// 终端标签的判定本体：环境变量取值由调用方给，不读进程环境。
+pub fn terminal_label_from_parts(
+    lowered_process_chain: &[String],
+    wt_session: &str,
+    term_program: &str,
+) -> String {
     let mut labels: Vec<String> = Vec::new();
-    let wt_session = std::env::var("WT_SESSION").unwrap_or_default();
     if !wt_session.trim().is_empty()
         || lowered_process_chain
             .iter()
@@ -299,7 +315,6 @@ pub fn windows_terminal_label(lowered_process_chain: &[String]) -> String {
     {
         labels.push("Windows Terminal".to_string());
     }
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     let term_program = term_program.trim();
     if !term_program.is_empty() {
         labels.push(term_program.to_string());
@@ -510,8 +525,9 @@ mod tests {
             "code.exe".to_string(),
             "conhost.exe".to_string(),
         ];
+        // 显式给空环境：不跟随测试所在的终端（Windows Terminal 里有 WT_SESSION）。
         assert_eq!(
-            windows_terminal_label(&chain),
+            terminal_label_from_parts(&chain, "", ""),
             "VS Code Terminal / Console Host"
         );
     }
@@ -519,10 +535,27 @@ mod tests {
     #[test]
     fn terminal_label_dedupes() {
         let chain = vec!["conhost.exe".to_string()];
-        // 无环境变量时只应有链上识别出的一个标签。
-        let label = windows_terminal_label(&chain);
-        let count = label.split(" / ").count();
-        assert!(count <= 2, "意外的标签集合：{label}");
+        assert_eq!(
+            terminal_label_from_parts(&chain, "", ""),
+            "Console Host",
+            "无环境变量时只有链上识别出的标签"
+        );
+        // 环境说是 Windows Terminal、链上也命中同一个名字：只保留一次。
+        assert_eq!(
+            terminal_label_from_parts(&chain, "session-id", "Windows Terminal"),
+            "Windows Terminal / Console Host"
+        );
+    }
+
+    #[test]
+    fn terminal_label_uses_the_environment_values_it_is_given() {
+        let chain = vec!["omnicrawl.exe".to_string()];
+        assert_eq!(
+            terminal_label_from_parts(&chain, "session-id", ""),
+            "Windows Terminal"
+        );
+        assert_eq!(terminal_label_from_parts(&chain, "", "vscode"), "vscode");
+        assert_eq!(terminal_label_from_parts(&chain, "", ""), "");
     }
 
     #[test]
