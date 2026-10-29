@@ -1193,3 +1193,33 @@ fn pane_hint_sits_on_the_bottom_border() {
         text(&buffer)
     );
 }
+
+/// 菜单行用 sRGB 纯白：ANSI `white` 会被部分终端渲染成灰阶（只有加粗才变亮白）。
+#[test]
+fn menu_rows_use_white_text() {
+    let buffer = draw(&state(), WIDTH, HEIGHT);
+    let rows: Vec<String> = text_of(&buffer, 0, LEFT_COLUMN_WIDTH)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut checked = 0;
+    for (y, row) in rows.iter().enumerate() {
+        if !row.contains("工具设置") {
+            continue;
+        }
+        for x in 0..LEFT_COLUMN_WIDTH {
+            let cell = &buffer[(x, y as u16)];
+            // 只检查正文：边框与空白不参与菜单配色（焦点框本身是琥珀色）。
+            if cell.symbol().trim().is_empty() || matches!(cell.symbol(), "│" | "─") {
+                continue;
+            }
+            assert_eq!(
+                cell.style().fg,
+                Some(Color::Rgb(255, 255, 255)),
+                "菜单行应为纯白：{row}"
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 1, "应当找到一行「工具设置」");
+}

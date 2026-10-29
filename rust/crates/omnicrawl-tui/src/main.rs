@@ -46,9 +46,13 @@ const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 1.0;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
-/// 终端标签页标题的旋转动画：与界面状态行共用同一组 braille spinner，100ms 一帧。
+/// 终端标签页标题的旋转动画：待机显示 `#`，会话进行中按 `| → / → - → \` 旋转，100ms 一帧。
 const TITLE_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_NAME: &str = "omnicrawl";
+/// 待机标记：没有进行中的会话时固定这一个字符。
+const TITLE_IDLE_GLYPH: char = '#';
+/// 会话进行中的四帧旋转序列（经典斜线 spinner）。
+const TITLE_SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 /// 自愈提示的最小间隔：恢复本身照常做，只是不再每次都往屏幕上写一行。
 const NOTICE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -200,9 +204,23 @@ fn set_terminal_title(text: &str) {
     let _ = execute!(out, SetTitle(text));
 }
 
-/// 当前帧的标题文本：旋转动画 + 产品名。
-fn title_text(frame: usize) -> String {
-    format!("{} {TITLE_NAME}", ui::panels::spinner_frame(frame))
+/// 当前帧的标题文本：待机 `#`，运行中取旋转序列的当前帧，后面跟产品名。
+fn title_text(running: bool, frame: usize) -> String {
+    let glyph = if running {
+        TITLE_SPINNER[frame % TITLE_SPINNER.len()]
+    } else {
+        TITLE_IDLE_GLYPH
+    };
+    format!("{glyph} {TITLE_NAME}")
+}
+
+/// 只在标题真的变了才写 OSC：待机时每帧重写同一个字符串是白花 IO。
+fn write_title(text: &str, last: &mut String) {
+    if last == text {
+        return;
+    }
+    set_terminal_title(text);
+    *last = text.to_string();
 }
 
 fn event_loop(
@@ -215,8 +233,9 @@ fn event_loop(
     let mut viewport: Option<Rect> = None;
     // 粘贴识别状态：跨控制台输入批次的多行粘贴要挂起等后续批次。
     let mut paste_tracker = paste::PasteTracker::new();
-    // 终端标签页标题的旋转动画：独立于界面绘制，空闲时也按 100ms 推进。
+    // 终端标签页标题：待机固定 `#`，会话进行中按 100ms 一帧旋转。
     let mut title_frame = 0usize;
+    let mut last_title = title_text(false, 0);
     let mut next_title_at = Instant::now();
     loop {
         if viewport.is_none() {
@@ -224,10 +243,16 @@ fn event_loop(
             app.set_viewport(viewport.expect("刚写入视口"));
         }
         let now = Instant::now();
-        if now >= next_title_at {
-            set_terminal_title(&title_text(title_frame));
-            title_frame = title_frame.wrapping_add(1);
-            next_title_at = now + TITLE_FRAME_INTERVAL;
+        if app.state.turn.is_running() {
+            if now >= next_title_at {
+                write_title(&title_text(true, title_frame), &mut last_title);
+                title_frame = title_frame.wrapping_add(1);
+                next_title_at = now + TITLE_FRAME_INTERVAL;
+            }
+        } else {
+            // 回到待机立刻换成 `#`（不等帧点），下一次开跑从 `|` 重新开始。
+            title_frame = 0;
+            write_title(&title_text(false, 0), &mut last_title);
         }
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
@@ -472,8 +497,8 @@ impl TerminalGuard {
         .map_err(|error| format!("切换备用屏幕失败：{error}"))?;
         // crossterm 在 Windows 上不发 ANSI 序列，鼠标移动要靠这里补上（见 MOUSE_MOVE_ON）。
         Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
-        // 进全屏先给标签页一个静态产品名，随后事件循环把 spinner 接上。
-        set_terminal_title(&title_text(0));
+        // 进全屏先给标签页一个静态产品名（待机态），随后事件循环只在会话进行时接上旋转。
+        set_terminal_title(&title_text(false, 0));
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
@@ -534,10 +559,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn title_text_keeps_the_name_and_cycles_the_spinner() {
-        assert_eq!(title_text(0), "⠋ omnicrawl");
-        assert_eq!(title_text(10), "⠋ omnicrawl");
-        assert_ne!(title_text(1), title_text(0));
-        assert!(title_text(1).ends_with(" omnicrawl"));
+    fn title_is_a_hash_when_idle_and_rotates_only_while_running() {
+        assert_eq!(title_text(false, 0), "# omnicrawl");
+        assert_eq!(title_text(false, 7), "# omnicrawl", "待机不随帧变化");
+
+        let frames: Vec<String> = (0..4).map(|frame| title_text(true, frame)).collect();
+        assert_eq!(
+            frames,
+            vec!["| omnicrawl", "/ omnicrawl", "- omnicrawl", "\\ omnicrawl"]
+        );
+        assert_eq!(title_text(true, 4), "| omnicrawl", "四帧循环");
+    }
+
+    #[test]
+    fn write_title_skips_repeated_text() {
+        let mut last = String::new();
+        write_title("# omnicrawl", &mut last);
+        assert_eq!(last, "# omnicrawl");
+        // 同一串再来一次不改变状态（也只是省掉一次 OSC，不可见）。
+        write_title("# omnicrawl", &mut last);
+        assert_eq!(last, "# omnicrawl");
+        write_title("| omnicrawl", &mut last);
+        assert_eq!(last, "| omnicrawl");
     }
 }

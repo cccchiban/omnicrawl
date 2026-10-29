@@ -41,6 +41,26 @@ const DROPDOWN_MAX_ROWS: usize = 12;
 /// 表单页底部留给「1 空行 + 2 行状态 + 1 行提示」的行数。
 const FORM_TAIL_HEIGHT: u16 = 4;
 
+/// 菜单/列表项的纯白前景（sRGB，不随终端调色板走）。
+///
+/// 不用主题里的 `ACCENT_WHITE`（ANSI `white`）：不少终端把 ANSI 白映射成灰阶，只有
+/// 「加粗」才被渲染成亮白——于是同一份颜色在标题（加粗）上是白的、在菜单（不加粗）上
+/// 是灰的，看起来就像菜单掉了色。直接给 sRGB 纯白，不加粗也足够亮。
+const MENU_TEXT_COLOR: &str = "#ffffff";
+
+fn menu_text_style() -> Style {
+    theme::rich_style(MENU_TEXT_COLOR)
+}
+
+/// 设置页正文（字段标签与取值）：与菜单同一份纯白。
+///
+/// 标签原先用 `TEXT_MUTED`（dim 修饰符）弱化，取值用 `TEXT_PRIMARY`（`default`）——两者都
+/// 交给终端调色板，深色主题下常被渲染成灰。用户要求整页可读，因此正文统一纯白，
+/// 主次改由琥珀高亮、加粗标题与缩进承担。提示行、空态、省略号仍保持弱化。
+fn body_text_style() -> Style {
+    theme::rich_style(MENU_TEXT_COLOR)
+}
+
 /// 渲染整个设置面板（铺满终端，含底部帮助行）。
 pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
     // 命中区每帧重建：鼠标落点必须对应当前画出来的那一帧。
@@ -195,7 +215,7 @@ fn render_rows(frame: &mut Frame, area: Rect, state: &SettingsState) {
             let style = if index == state.selected() && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             };
             Line::styled(fit(&row_label(key), inner.width as usize), style)
         })
@@ -296,7 +316,7 @@ fn render_model_list(frame: &mut Frame, area: Rect, state: &SettingsState, focus
         let line_style = if index == selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         let checked = if row.enabled { "x" } else { " " };
         let default_mark = if row.key == default_key {
@@ -352,7 +372,7 @@ fn render_model_list(frame: &mut Frame, area: Rect, state: &SettingsState, focus
         let line_style = if is_selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         entries.push((
             Line::styled(
@@ -450,7 +470,7 @@ fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, f
                 if current && focused {
                     theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
                 } else {
-                    theme::rich_style(theme::TEXT_SECONDARY)
+                    menu_text_style()
                 },
             ),
             Some(row),
@@ -472,7 +492,7 @@ fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, f
         let line_style = if Some(absolute) == channel_selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         let checked = if row.enabled { "x" } else { " " };
         let default_mark = if state.embedding_default_key() == row.key {
@@ -550,8 +570,8 @@ fn render_embedding_form(
         };
         let label = format!("{marker} {}：", field.label());
         lines.push(Line::from(vec![
-            Span::styled(label, theme::rich_style(theme::TEXT_MUTED)),
-            Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+            Span::styled(label, body_text_style()),
+            Span::styled(value, body_text_style()),
         ]));
     }
     if form.is_new {
@@ -622,7 +642,7 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
         let line_style = if index == selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         let checked = if row.enabled { "x" } else { " " };
         let default_mark = if state.decision_default_key() == row.key {
@@ -662,7 +682,7 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
             let line_style = if absolute == selected && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             };
             entries.push((
                 Line::styled(
@@ -700,7 +720,7 @@ fn render_decision_list(frame: &mut Frame, area: Rect, state: &SettingsState, fo
             } else if row.action {
                 theme::rich_style(theme::ACCENT_WHITE)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             };
             let text = if row.value.is_empty() {
                 format!(
@@ -875,10 +895,10 @@ fn render_decision_form(
             }
         };
         let label = format!("{marker} {}：", field.label());
-        let label_style = theme::rich_style(theme::TEXT_MUTED);
+        let label_style = body_text_style();
         lines.push(Line::from(vec![
             Span::styled(label, label_style),
-            Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+            Span::styled(value, body_text_style()),
         ]));
     }
     let visible = area.height.saturating_sub(4) as usize;
@@ -907,7 +927,7 @@ fn render_decision_form(
                 let style = if highlighted {
                     Style::default().bg(Color::Yellow)
                 } else {
-                    theme::rich_style(theme::TEXT_PRIMARY)
+                    menu_text_style()
                 };
                 lines.push(Line::styled(
                     fit(&format!("  {option}"), area.width as usize),
@@ -984,10 +1004,10 @@ fn render_channel_form(
         };
         let label = format!("{marker} {}：", field.label());
         // 右侧设置项名称统一灰色（用户要求）：焦点不再把名称染成琥珀色。
-        let label_style = theme::rich_style(theme::TEXT_MUTED);
+        let label_style = body_text_style();
         lines.push(Line::from(vec![
             Span::styled(label, label_style),
-            Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+            Span::styled(value, body_text_style()),
         ]));
     }
     let visible = area.height.saturating_sub(4) as usize;
@@ -1020,7 +1040,7 @@ fn render_channel_form(
                 let style = if highlighted {
                     Style::default().bg(Color::Yellow)
                 } else {
-                    theme::rich_style(theme::TEXT_PRIMARY)
+                    menu_text_style()
                 };
                 lines.push(Line::styled(
                     fit(&format!("  {option}"), area.width as usize),
@@ -1187,10 +1207,10 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, _focused: b
             } else {
                 row.value.clone()
             };
-            let label_style = theme::rich_style(theme::TEXT_MUTED);
+            let label_style = body_text_style();
             Line::from(vec![
                 Span::styled(format!("{marker} {}：", row.label), label_style),
-                Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
+                Span::styled(value, body_text_style()),
             ])
         })
         .collect();
@@ -1264,7 +1284,7 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             if state.tool_selected() == TOOLS_APPROVAL_ROW && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             },
         )]));
     }
@@ -1282,7 +1302,7 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             if state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             },
         )]));
     }
@@ -1379,7 +1399,7 @@ fn render_mcp_globals(frame: &mut Frame, area: Rect, state: &SettingsState, focu
             let style = if row.selected && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             };
             Line::styled(fit(&text, list_area.width as usize), style)
         })
@@ -1421,7 +1441,7 @@ fn render_mcp_servers(frame: &mut Frame, area: Rect, state: &SettingsState, focu
             let style = if index == selected && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
-                theme::rich_style(theme::TEXT_SECONDARY)
+                menu_text_style()
             };
             Line::styled(fit(&text, list_area.width as usize), style)
         })
@@ -1463,7 +1483,7 @@ fn render_mcp_editor(frame: &mut Frame, area: Rect, state: &SettingsState, focus
         let style = if row.focused && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         lines.push(Line::styled(fit(&text, list_area.width as usize), style));
     }
@@ -1504,7 +1524,7 @@ fn render_vision(frame: &mut Frame, area: Rect, state: &SettingsState, focused: 
         let style = if selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         lines.push(Line::styled(fit(text, area.width as usize), style));
     }
@@ -1562,7 +1582,7 @@ fn render_subagents(frame: &mut Frame, area: Rect, state: &SettingsState, focuse
         let style = if current && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         lines.push(Line::styled(
             fit(
@@ -1641,7 +1661,7 @@ fn tool_row_spans(row: &ToolSwitchRow, selected: bool) -> Vec<Span<'static>> {
     let style = if selected {
         theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
     } else {
-        theme::rich_style(theme::TEXT_SECONDARY)
+        menu_text_style()
     };
     vec![Span::styled(text, style)]
 }
@@ -1660,7 +1680,7 @@ fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: boo
         } else if row.action {
             theme::rich_style(theme::ACCENT_WHITE)
         } else {
-            theme::rich_style(theme::TEXT_SECONDARY)
+            menu_text_style()
         };
         let text = if row.value.is_empty() {
             format!("{marker} {}", row.label)
@@ -1791,7 +1811,7 @@ fn render_dropdown_overlay(frame: &mut Frame, area: Rect, state: &SettingsState,
                         .unwrap_or(Color::Reset))
                     .bg(Color::Yellow)
             } else {
-                theme::rich_style(theme::TEXT_PRIMARY)
+                menu_text_style()
             };
             Line::styled(fit(&format!(" {label}"), inner.width as usize), style)
         })
