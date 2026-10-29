@@ -7,7 +7,7 @@
         "type": "function",
         "function": {
           "name": "read",
-          "description": "是什么：读取工作区或内置文档中的 UTF-8 文本，并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
+          "description": "是什么：读取本机文本文件或内置文档（工作区相对路径或本机绝对路径），并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
           "parameters": {
             "type": "object",
             "properties": {

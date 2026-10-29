@@ -685,9 +685,10 @@ fn default_history_limit() -> u32 {
 /// 并可传 `before_event_id` 向更早翻页。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SessionEventsParams {
-    #[serde(default)]
+    // 缺省值不回写成 `null`：协议帧里省略即「不限制」，显式 null 会让帧无法与样本逐字往返。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_event_id: Option<String>,
 }
 
@@ -698,12 +699,17 @@ pub struct SessionEventsParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResumeParams {
     pub session_id: String,
-    #[serde(default = "default_include_history")]
+    // 默认 `true` 时不写进帧：与「省略即带上历史」的样本逐字一致，显式 `false` 才发。
+    #[serde(default = "default_include_history", skip_serializing_if = "is_default_include_history")]
     pub include_history: bool,
 }
 
 fn default_include_history() -> bool {
     true
+}
+
+fn is_default_include_history(value: &bool) -> bool {
+    *value
 }
 
 /// `subagent.run` 负载：派生单个子 Agent 并等它跑完（`/review` 这类命令用）。
