@@ -671,10 +671,31 @@ fn default_history_limit() -> u32 {
     20
 }
 
+/// `session.events` 负载：只回会话的尾部窗口。
+///
+/// 缺省（`limit = None`）仍回全部事件，保持旧客户端语义；宿主回放传 `limit`，
+/// 并可传 `before_event_id` 向更早翻页。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SessionEventsParams {
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub before_event_id: Option<String>,
+}
+
 /// `session.resume` 负载。
+///
+/// `include_history` 默认 `true`，保持既有客户端语义；宿主重放对话时只消费
+/// `session.events`，可以传 `false` 跳过整份历史消息的克隆与传输。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResumeParams {
     pub session_id: String,
+    #[serde(default = "default_include_history")]
+    pub include_history: bool,
+}
+
+fn default_include_history() -> bool {
+    true
 }
 
 /// `subagent.run` 负载：派生单个子 Agent 并等它跑完（`/review` 这类命令用）。
@@ -748,7 +769,7 @@ pub enum Command {
     /// 查询用户提示历史。
     SessionHistory(SessionHistoryParams),
     /// 读取当前会话的有效事件流（回退投影后的视图，与 UI 回放同源）。
-    SessionEvents,
+    SessionEvents(SessionEventsParams),
     /// 清空当前对话并开启新会话。
     SessionNew,
     /// 恢复指定会话。
@@ -806,7 +827,7 @@ impl Command {
             Self::SessionRename(_) => method::SESSION_RENAME,
             Self::SessionArchive => method::SESSION_ARCHIVE,
             Self::SessionHistory(_) => method::SESSION_HISTORY,
-            Self::SessionEvents => method::SESSION_EVENTS,
+            Self::SessionEvents(_) => method::SESSION_EVENTS,
             Self::SessionNew => method::SESSION_NEW,
             Self::SessionResume(_) => method::SESSION_RESUME,
             Self::SubagentRun(_) => method::SUBAGENT_RUN,
@@ -829,7 +850,7 @@ impl Command {
             Self::SessionRename(payload) => payload_value(payload),
             Self::SessionArchive => json!({}),
             Self::SessionHistory(payload) => payload_value(payload),
-            Self::SessionEvents => json!({}),
+            Self::SessionEvents(payload) => payload_value(payload),
             Self::SessionNew => json!({}),
             Self::SessionResume(payload) => payload_value(payload),
             Self::SubagentRun(payload) => payload_value(payload),
@@ -862,7 +883,7 @@ impl Command {
             method::SESSION_RENAME => Command::SessionRename(from_params(params)?),
             method::SESSION_ARCHIVE => Command::SessionArchive,
             method::SESSION_HISTORY => Command::SessionHistory(from_params(params)?),
-            method::SESSION_EVENTS => Command::SessionEvents,
+            method::SESSION_EVENTS => Command::SessionEvents(from_params(params)?),
             method::SESSION_NEW => Command::SessionNew,
             method::SESSION_RESUME => Command::SessionResume(from_params(params)?),
             method::SUBAGENT_RUN => Command::SubagentRun(from_params(params)?),
@@ -1111,4 +1132,19 @@ fn payload_value<T: Serialize>(payload: &T) -> Value {
 
 fn from_params<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T, BridgeError> {
     serde_json::from_value(params).map_err(|error| BridgeError::InvalidParams(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧客户端只发 `session_id`：默认仍带历史，保持既有语义。
+    #[test]
+    fn resume_params_default_to_including_history() {
+        let params: SessionResumeParams = serde_json::from_value(serde_json::json!({
+            "session_id": "20260101-000000-abcdef"
+        }))
+        .expect("旧载荷应当可解析");
+        assert!(params.include_history);
+    }
 }

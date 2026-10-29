@@ -93,7 +93,7 @@ pub struct ToolCard {
     pub status: ToolStatus,
     pub elapsed: Option<Duration>,
     started: Instant,
-    pub body: Vec<String>,
+    pub body: String,
 }
 
 impl ToolCard {
@@ -160,7 +160,7 @@ pub struct StreamingTool {
     pub text: String,
     /// 容错解析出来的参数：流式阶段标题行与文件预览都从这里取。
     pub arguments: serde_json::Value,
-    /// 压缩阶段提示（`正在压缩…` / `已压缩 a → b 字符`）或失败文案（压缩超时/压缩失败）。
+    /// 压缩阶段提示（`正在压缩…`）或失败文案（压缩超时/压缩失败）。
     pub compression: Option<String>,
     /// 提示是不是失败文案：渲染时用红色，好和正常的计量提示区分。
     pub compression_failed: bool,
@@ -168,15 +168,13 @@ pub struct StreamingTool {
     pub streaming: bool,
 }
 
-/// 一条用户消息：正文 + 随它发出的图片。
+/// 一条用户消息：正文 + 图片预览锚点。
 ///
-/// 图片是**用户消息的一部分**（`Ctrl+V` 贴进来的剪贴板位图），因此与文本绑在同一条记录上：
-/// 会话区渲染成缩略图、重放时从事件载荷重建、提交时随 `turn.submit` 一起送给内核。
+/// 图片 Base64 只在提交/重放时短暂存在，交给 [`ImagePreviews`] 解码后立即释放；
+/// 记录里只留锚点，否则每条历史消息都会把整张原图常驻在内存里。
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserRecord {
     pub text: String,
-    /// 随这条消息发出的图片，按粘贴顺序（与 `turn.submit` 的 `TurnImageAttachment` 同形）。
-    pub images: Vec<TurnImageAttachment>,
     /// 图片预览在 [`ImagePreviews`] 里的锚点（与工具卡用 `call_id` 同一思路）。
     ///
     /// 每条用户消息一个：同一条消息的多张图属于同一块，滚动/重算都按这个键找回。
@@ -188,14 +186,13 @@ impl UserRecord {
     pub fn text_only(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            images: Vec::new(),
             image_key: String::new(),
         }
     }
 
     /// 这条消息会不会出图。
     pub fn has_images(&self) -> bool {
-        !self.images.is_empty() && !self.image_key.is_empty()
+        !self.image_key.is_empty()
     }
 }
 
@@ -1415,7 +1412,7 @@ impl AppState {
                             status: ToolStatus::Running,
                             elapsed: None,
                             started: now,
-                            body: Vec::new(),
+                            body: String::new(),
                         }));
                         self.touch_appended();
                     }
@@ -1445,9 +1442,12 @@ impl AppState {
                 let finished = payload.phase == "finished";
                 if finished {
                     // 压缩完成后用**压缩后的正文替换**卡片里的原始输出（用户要求）：
-                    // 卡片正文、折叠统计与「已压缩 a → b 字符」的提示都基于压缩文本。
+                    // 卡片正文与折叠统计都基于压缩文本。
                     if let Some(card) = self.tool_card_mut(&payload.call_id) {
-                        card.body = body_lines(&payload.output);
+                        card.body = crate::ui::fullscreen::rendering::tool_diff::stored_result_text(
+                        &card.name,
+                        &payload.output,
+                    );
                     }
                 }
                 // 压缩发生在工具调用之后，所以这里可以放心新建侧信道条目：
@@ -1462,20 +1462,17 @@ impl AppState {
                         streaming: false,
                     });
                 // 失败/超时：内核把备好的文案放在 `error` 里（用户要求「压缩超时要显示压缩超时」）。
+                // `finished` 不再往卡片上加计量行：净省按回合累加，由回合末的合并提示统一回答。
                 let failed = payload.phase == "failed";
                 let note = if failed {
-                    payload.error.clone()
+                    Some(payload.error.clone())
                 } else if finished {
-                    format!(
-                        "已压缩 {} → {} 字符",
-                        thousands(payload.before_chars),
-                        thousands(payload.after_chars)
-                    )
+                    None
                 } else {
-                    "正在压缩…".to_string()
+                    Some("正在压缩…".to_string())
                 };
                 if let Some(entry) = self.streaming_tools.get_mut(&payload.call_id) {
-                    entry.compression = Some(note);
+                    entry.compression = note;
                     entry.compression_failed = failed;
                 }
                 // 压缩提示与正文替换都画在这张卡片上：重算这一条。
@@ -1506,7 +1503,7 @@ impl AppState {
                     status: ToolStatus::Running,
                     elapsed: None,
                     started: now,
-                    body: Vec::new(),
+                    body: String::new(),
                 }));
                 self.touch_appended();
             }
@@ -1524,7 +1521,10 @@ impl AppState {
             HostEvent::ToolOutputUpdate(payload) => {
                 if let Some(index) = self.tool_card_slot(&payload.call.id) {
                     if let Some(Record::Tool(card)) = self.records.get_mut(index) {
-                        card.body = body_lines(&payload.result.output);
+                        card.body = crate::ui::fullscreen::rendering::tool_diff::stored_result_text(
+                            &card.name,
+                            &payload.result.output,
+                        );
                     }
                     self.touch_record(index);
                 }
@@ -1570,7 +1570,7 @@ impl AppState {
                 }
             }
             // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
-            // 压缩的可见边界由内核另发的 `turn.notice`（「已压缩：省 N Token」）落到会话流。
+            // 压缩的可见边界由内核另发的 `turn.notice`（「已压缩：N Token」）落到会话流。
             HostEvent::ModelResponseAfter(_) | HostEvent::ModelRequestError(_) => {}
         }
     }
@@ -1639,19 +1639,6 @@ fn last_complete_field(text: &str) -> Option<usize> {
     last
 }
 
-/// 千分位（`12345` → `12,345`）：压缩前后的字符数动辄五六位，分隔开才好读。
-fn thousands(value: usize) -> String {
-    let digits = value.to_string();
-    let mut out = String::new();
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 /// `tool_call_summary` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
 ///
 /// 计量取事件自己记下的原始与概括字符数：回放时重算不出来（正文已含落盘说明），
@@ -1678,8 +1665,39 @@ fn replay_eviction_notice(payload: &serde_json::Value) -> Option<String> {
     Some(omnicrawl_controllers::turn::compaction::format_compaction_savings_notice(saved))
 }
 
-fn body_lines(output: &str) -> Vec<String> {
-    output.lines().map(|line| line.to_string()).collect()
+/// `turn_compaction` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 这是回合末的**合并**计量：逐批工具输出压缩与决策模型淘汰在同一回合里各自不再成行，
+/// 净省量已经由内核累加好，回放照原样显示即可。
+fn replay_merged_notice(payload: &serde_json::Value) -> Option<String> {
+    let saved = payload
+        .get("saved_tokens")
+        .and_then(serde_json::Value::as_i64)?;
+    omnicrawl_controllers::turn::compaction::format_compaction_savings_option(saved)
+}
+
+/// 已经带合并计量行的回合序号集合（`user_message` 从 1 起算，与回放循环里的计数同口径）。
+///
+/// 回放要先知道「哪些回合已经有合并行」，才能在扫到同回合的 `tool_call_summary` /
+/// `tool_call_eviction` 时跳过那些分项提示——否则新会话会同时画出合并行与分项行。
+/// 旧会话没有 `turn_compaction` 事件，集合为空，分项提示照旧逐条重建。
+fn replayed_merged_turns(events: &[serde_json::Value]) -> std::collections::HashSet<usize> {
+    let mut turns = std::collections::HashSet::new();
+    let mut turn_index = 0usize;
+    for event in events {
+        let event_type = event
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match event_type {
+            "user_message" => turn_index += 1,
+            "turn_compaction" => {
+                turns.insert(turn_index);
+            }
+            _ => {}
+        }
+    }
+    turns
 }
 
 /// 回放取文本字段：非空字符串才算命中（对映 Python 的 `isinstance(value, str) and value`）。

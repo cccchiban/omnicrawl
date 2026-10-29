@@ -3,12 +3,16 @@
 //!
 //! 单个 Server 失败只记录诊断并降级，不影响其他 Server 或内置工具。
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::audit::{AuditRecord, McpAuditLogger};
@@ -23,7 +27,8 @@ use crate::jsonrpc::{
     McpCallError, McpClientError,
 };
 use crate::registry::{
-    namespace_capability_name, McpCapabilityRegistry, McpPromptMeta, McpResourceMeta, McpToolMeta,
+    namespace_capability_name, McpCapabilityRegistry, McpDiagnostic, McpPromptMeta,
+    McpResourceMeta, McpToolMeta,
 };
 use crate::security::{mcp_tool_requires_confirmation, validate_tool_arguments};
 use crate::stdio::StdioMcpConnection;
@@ -157,10 +162,36 @@ impl ManagerState {
 
     fn put_connection(&mut self, name: &str, connection: Arc<dyn McpConnection>) {
         match self.connections.iter_mut().find(|(key, _)| key == name) {
-            Some(entry) => entry.1 = connection,
+            Some(entry) => {
+                // 重新发现时替换旧连接：先显式关闭，避免留下孤儿子进程。
+                let old = std::mem::replace(&mut entry.1, connection);
+                old.close();
+            }
             None => self.connections.push((name.to_string(), connection)),
         }
     }
+}
+
+/// 能力清单缓存版本：结构变化时让旧缓存自然失效。
+const CAPABILITY_CACHE_VERSION: u32 = 1;
+/// 缓存文件名：落在工作区 `.omnicrawl/` 下，与 MCP 审计日志同根。
+const CAPABILITY_CACHE_FILE: &str = "mcp-capabilities.json";
+/// 缓存有效期：超过后重新做一次发现，避免 Server 升级后旧 Schema 永久生效。
+const CAPABILITY_CACHE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+/// 下次启动直接声明的能力清单。
+///
+/// 只保存「声明给模型的元数据」与诊断，不保存任何连接或凭据；指纹用于在配置变化时
+/// 自然失效。
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedCapabilities {
+    version: u32,
+    fingerprint: String,
+    saved_at: u64,
+    tools: Vec<McpToolMeta>,
+    resources: Vec<McpResourceMeta>,
+    prompts: Vec<McpPromptMeta>,
+    diagnostics: Vec<McpDiagnostic>,
 }
 
 /// 管理多个 MCP Server 的生命周期、能力注册和工具调用。
@@ -176,6 +207,10 @@ pub struct McpClientManager {
     approval_mode: Arc<dyn Fn() -> String + Send + Sync>,
     audit: McpAuditLogger,
     connector: Arc<Connector>,
+    /// 能力清单缓存路径；`None` 表示不读写缓存（测试与嵌入场景可关掉）。
+    capability_cache: Option<PathBuf>,
+    /// 当前注册表是否只来自磁盘缓存（尚未真正连接任何 Server）。
+    capabilities_from_cache: AtomicBool,
 }
 
 impl McpClientManager {
@@ -195,7 +230,12 @@ impl McpClientManager {
             ..ManagerState::default()
         };
         let audit = McpAuditLogger::new(&workspace_root, config.policy.audit_log_enabled);
-        Self {
+        let capability_cache = Some(
+            workspace_root
+                .join(".omnicrawl")
+                .join(CAPABILITY_CACHE_FILE),
+        );
+        let manager = Self {
             config,
             workspace_root,
             registry: Mutex::new(McpCapabilityRegistry::new()),
@@ -206,7 +246,19 @@ impl McpClientManager {
             approval_mode: Arc::new(String::new),
             audit,
             connector: Arc::new(default_connector),
-        }
+            capability_cache,
+            capabilities_from_cache: AtomicBool::new(false),
+        };
+        manager.restore_cached_capabilities();
+        manager
+    }
+
+    /// 关闭能力清单缓存（测试与嵌入场景用；会清掉已从缓存装入的元数据）。
+    pub fn without_capability_cache(mut self) -> Self {
+        self.capability_cache = None;
+        self.capabilities_from_cache.store(false, Ordering::SeqCst);
+        *self.registry() = McpCapabilityRegistry::new();
+        self
     }
 
     /// 注入审批模式取值（审计记录用）；默认空串，与 Python 的默认 getter 一致。
@@ -281,6 +333,134 @@ impl McpClientManager {
             .count()
     }
 
+    /// 当前能力表是否来自磁盘缓存（尚未真正连接任何 Server）。
+    ///
+    /// 宿主启动时据此决定要不要做一次「冷启动发现」：缓存可用就直接声明工具，
+    /// 等模型第一次调用某个 Server 的工具时再连接。
+    pub fn has_cached_capabilities(&self) -> bool {
+        self.capabilities_from_cache.load(Ordering::SeqCst)
+    }
+
+    /// 配置指纹：只覆盖会影响能力面的字段，不写任何凭据值。
+    fn config_fingerprint(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.config
+            .policy
+            .require_confirmation_for_write
+            .hash(&mut hasher);
+        self.config
+            .policy
+            .require_confirmation_for_command
+            .hash(&mut hasher);
+        self.config
+            .policy
+            .allow_external_network_tools
+            .hash(&mut hasher);
+        for server in self.config.enabled_servers() {
+            server.name.hash(&mut hasher);
+            server.transport.hash(&mut hasher);
+            server.command.hash(&mut hasher);
+            for arg in &server.args {
+                arg.hash(&mut hasher);
+            }
+            server.url.hash(&mut hasher);
+            server.timeout_seconds.hash(&mut hasher);
+            server.risk_level.hash(&mut hasher);
+            // 只哈希键名，不把环境变量/请求头里的凭据写进缓存。
+            for key in server.env.keys() {
+                key.hash(&mut hasher);
+            }
+            for key in server.headers.keys() {
+                key.hash(&mut hasher);
+            }
+        }
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// 尝试从磁盘恢复上次成功发现的能力清单。
+    fn restore_cached_capabilities(&self) {
+        if !self.config.enabled {
+            return;
+        }
+        let Some(path) = self.capability_cache.as_deref() else {
+            return;
+        };
+        let Ok(text) = fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(cache) = serde_json::from_str::<CachedCapabilities>(&text) else {
+            return;
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        if cache.saved_at.saturating_add(CAPABILITY_CACHE_TTL_SECONDS) < now {
+            return;
+        }
+        if cache.version != CAPABILITY_CACHE_VERSION
+            || cache.fingerprint != self.config_fingerprint()
+        {
+            return;
+        }
+        if cache.tools.is_empty() && cache.resources.is_empty() && cache.prompts.is_empty() {
+            return;
+        }
+        *self.registry() = McpCapabilityRegistry::from_snapshot(
+            cache.tools,
+            cache.resources,
+            cache.prompts,
+            cache.diagnostics,
+        );
+        self.capabilities_from_cache.store(true, Ordering::SeqCst);
+        // 状态页把「已声明但未连接」显示成 cached，而不是误报成 disabled。
+        for server in self.config.enabled_servers() {
+            self.set_server_status(&server.name, "cached");
+        }
+    }
+
+    /// 把当前能力表写回磁盘，供下次启动直接声明。
+    fn save_cached_capabilities(&self) {
+        if !self.config.enabled {
+            return;
+        }
+        let Some(path) = self.capability_cache.as_deref() else {
+            return;
+        };
+        // 只有所有启用的 Server 都连上才写缓存：部分发现时保留旧缓存，
+        // 下次启动仍会做一次完整发现，不会把暂时失败的 Server 永久漏掉。
+        if self.connected_count() != self.config.enabled_servers().len() {
+            return;
+        }
+        let cache = {
+            let registry = self.registry();
+            if registry.tool_count() == 0
+                && registry.resource_count() == 0
+                && registry.prompt_count() == 0
+            {
+                return;
+            }
+            CachedCapabilities {
+                version: CAPABILITY_CACHE_VERSION,
+                fingerprint: self.config_fingerprint(),
+                saved_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0),
+                tools: registry.tools().cloned().collect(),
+                resources: registry.resources().cloned().collect(),
+                prompts: registry.prompts().cloned().collect(),
+                diagnostics: registry.diagnostics().to_vec(),
+            }
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&cache) {
+            let _ = fs::write(path, text);
+        }
+    }
+
     /// 连接启用的 Server 并发现 Tool、Resource、Prompt。
     ///
     /// 单个 Server 失败只记录诊断并降级，不影响其他 Server 或内置工具。
@@ -300,8 +480,11 @@ impl McpClientManager {
             return;
         }
         self.discover_inner();
+        self.capabilities_from_cache.store(false, Ordering::SeqCst);
         // 无论成功/失败/禁用，发现流程结束即标记完成（后续不再重复执行）
         self.discovered.store(true, Ordering::SeqCst);
+        // 只缓存真正发现到的能力；一个都没发现时保留旧缓存，避免下次启动声明空表。
+        self.save_cached_capabilities();
     }
 
     fn discover_inner(&self) {
@@ -415,6 +598,9 @@ impl McpClientManager {
     /// 登记单个 Server 的发现结果；关闭流程已开始时回收连接。
     fn apply_discovery_result(&self, result: ServerDiscoveryResult) {
         let server = result.server;
+        // 先摘掉该 Server 的旧能力：发现可能是「缓存回填」或热重连，
+        // 直接 add 会产生重复诊断，也会留下已经消失的旧工具。
+        self.registry().remove_server(&server.name);
         if result.status == "unsupported" {
             self.set_server_status(&server.name, "unsupported");
             self.registry().add_diagnostic(
@@ -609,6 +795,68 @@ impl McpClientManager {
         state.failure_counts.insert(server_name.to_string(), 0);
     }
 
+    /// 首次调用某个 Server 时再建立连接。
+    ///
+    /// 启动期只从缓存声明能力，不启动子进程；这里在 `discover_lock` 下做一次幂等连接，
+    /// 已连接时直接返回。连接成功后只登记连接与状态，不重复登记能力：能力表已经由
+    /// 缓存声明给模型，协议中途也不能改变工具面。
+    fn ensure_server_connected(&self, server_name: &str) -> bool {
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .connection(server_name)
+            .is_some()
+        {
+            return true;
+        }
+        let _guard = self
+            .discover_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .connection(server_name)
+            .is_some()
+        {
+            return true;
+        }
+        if self.is_closed() {
+            return false;
+        }
+        let Some(server) = self
+            .config
+            .server(server_name)
+            .filter(|server| server.enabled)
+            .cloned()
+        else {
+            return false;
+        };
+        let result = self.connect_server(&server);
+        let Some(connection) = result.connection else {
+            self.set_server_status(server_name, &result.status);
+            self.bump_failure_count(server_name);
+            return false;
+        };
+        let rejected = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.closed {
+                true
+            } else {
+                state.put_connection(server_name, Arc::clone(&connection));
+                false
+            }
+        };
+        if rejected {
+            connection.close();
+            return false;
+        }
+        self.set_server_status(server_name, "connected");
+        true
+    }
+
     /// 调用已注册的 MCP Tool，并把协议结果归一化为文本输出。
     pub fn call_tool(
         &self,
@@ -649,6 +897,7 @@ impl McpClientManager {
             return result;
         }
 
+        self.ensure_server_connected(&meta.server_name);
         let connection = self
             .state
             .lock()
@@ -764,6 +1013,7 @@ impl McpClientManager {
             };
         };
 
+        self.ensure_server_connected(&meta.server_name);
         let connection = self
             .state
             .lock()
@@ -827,6 +1077,7 @@ impl McpClientManager {
             };
         };
 
+        self.ensure_server_connected(&meta.server_name);
         let connection = self
             .state
             .lock()
@@ -877,7 +1128,9 @@ impl McpClientManager {
             return "MCP 已关闭。可在 config.toml 的 mcp.enabled=true 开启。".to_string();
         }
 
-        if !self.discovered() {
+        // 有缓存清单时状态页只展示缓存能力与当前连接数：不要为了刷状态把所有 Server
+        // 重新拉起，否则「按需连接」在第一次 `/mcp` 就退化成全量连接。
+        if !self.discovered() && !self.has_cached_capabilities() {
             self.discover();
         }
 
@@ -1103,7 +1356,10 @@ mod tests {
         let connector: Arc<Connector> =
             Arc::new(move |_server, _root| Ok(Arc::clone(&shared) as Arc<dyn McpConnection>));
         (
-            McpClientManager::new(config, &root).with_connector(connector),
+            McpClientManager::new(config, &root)
+                // 单元测试共用固定临时目录：关掉缓存，避免上一个用例的能力表串进来。
+                .without_capability_cache()
+                .with_connector(connector),
             connection,
         )
     }
@@ -1241,5 +1497,53 @@ mod tests {
             manager.read_resource("files:missing").error_code.as_deref(),
             Some("RESOURCE_NOT_FOUND")
         );
+    }
+
+    /// 有缓存时启动只声明能力、不启动任何子进程；第一次调用才真正连接。
+    #[test]
+    fn cached_capabilities_are_declared_without_connecting_on_startup() {
+        let root = std::env::temp_dir().join(format!("omnicrawl-mcp-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("创建临时工作区");
+        let config = config_with(stdio_server("files"));
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let connector = |scripted: Arc<ScriptedConnection>| {
+            let connections = Arc::clone(&connections);
+            let connector: Arc<Connector> = Arc::new(move |_server, _root| {
+                connections.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::clone(&scripted) as Arc<dyn McpConnection>)
+            });
+            connector
+        };
+
+        let first = McpClientManager::new(config.clone(), &root)
+            .with_connector(connector(connection(None)));
+        first.discover();
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+        assert!(!first.has_cached_capabilities());
+
+        let second =
+            McpClientManager::new(config, &root).with_connector(connector(connection(None)));
+        assert!(second.has_cached_capabilities(), "第二次启动应读到缓存");
+        assert_eq!(connections.load(Ordering::SeqCst), 1, "启动不应连接 Server");
+        assert_eq!(second.tools().len(), 1);
+        assert_eq!(second.connected_count(), 0);
+
+        let mut arguments = Map::new();
+        arguments.insert("path".to_string(), json!("/tmp/a"));
+        let result = second.call_tool("files.read", &arguments);
+        assert!(result.ok, "{}", result.output);
+        assert_eq!(connections.load(Ordering::SeqCst), 2, "首次调用才连接");
+        assert_eq!(second.connected_count(), 1);
+
+        // 配置变化（命令/参数/URL 等）会让指纹失配，旧清单不能继续声明。
+        let mut changed = config_with(stdio_server("files"));
+        changed.servers[0].1.command = Some("other".to_string());
+        let third = McpClientManager::new(changed, &root)
+            .with_connector(connector(connection(None)));
+        assert!(!third.has_cached_capabilities());
+        assert!(third.tools().is_empty());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

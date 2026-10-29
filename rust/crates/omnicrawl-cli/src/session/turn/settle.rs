@@ -323,11 +323,19 @@ pub(crate) fn run_session_tail(
     // * 工具调用概括的输入事件在 `summarize_turn_after_turn` 里同步剔除这批 ID。
     // 被淘汰的原文因此既不会被压缩摘要盖回去，也不会被概括再描述一遍。
     let evict_marks = conn.borrow().evict_marks.borrow().clone();
+    // 逐批工具调用压缩在本回合累加出来的净省与次数：与淘汰合并成回合末的一行计量。
+    let (mut saved_in_turn, mut compacted_batches) = {
+        let mut connection = conn.borrow_mut();
+        (
+            std::mem::take(&mut connection.tool_compaction_saved),
+            std::mem::take(&mut connection.tool_compaction_batches),
+        )
+    };
     // 淘汰后的上下文大小：本轮若没有压缩/概括刷新遥测，就由它兜底（见函数末尾）。
     let mut eviction_context_tokens: Option<i64> = None;
     if !evict_marks.is_empty() {
         // 净省量用与遥测同源的估算器前后实测：剔除前后的运行期消息各算一次，
-        // 差值就是这次淘汰真实腾出来的上下文。会话区计量行与回放都按它重建。
+        // 差值就是这次淘汰真实腾出来的上下文。
         let tokens_before = estimate_messages_tokens(working_messages);
         let removed = evict_tool_call_messages(working_messages, &evict_marks);
         let tokens_after = estimate_messages_tokens(working_messages);
@@ -337,21 +345,37 @@ pub(crate) fn run_session_tail(
         }
         // 剔除已完成：算一次淘汰后的真实上下文大小，供 `turn.finished` 刷新底部遥测。
         eviction_context_tokens = post_compaction_context_tokens(conn, session.history.as_slice());
-        // 记账事件先落盘、再发提示：`/resume`、`/undo` 据事件重建同一行（与压缩同款做法）。
+        // 分项记账留一条事件供诊断；会话区的计量行由回合末的合并事件重建。
         if let Err(detail) = session.append(
             EVICTION_MEASURE_EVENT_TYPE,
             eviction_measure_payload(evict_marks.len(), saved_tokens),
         ) {
             eprintln!("[kernel] 会话写入工具调用淘汰记账失败：{detail}");
         }
-        conn.borrow_mut().notify(HostEvent::Notice(MessagePayload {
-            message: format_compaction_savings_notice(saved_tokens),
-        }));
+        saved_in_turn += saved_tokens;
+        compacted_batches += 1;
         eprintln!(
             "[kernel] 工具调用淘汰：剔除 {} 组、{} 条消息，省 {saved_tokens} Token（回合收尾统一处理）。",
             evict_marks.len(),
             removed
         );
+    }
+    // 会话区只留一行：逐批工具输出压缩与决策模型淘汰都是「这一回合省了多少」的分项，
+    // 提示因此合并、等回合结束才出现（不再在工具卡后面逐批抖出来）。
+    //
+    // 发生过压缩/淘汰就落事件（净省为 0 也落）：回放靠这条事件知道「本回合已经有合并行」，
+    // 于是跳过同回合的分项事件；只在那两笔都没有的回合才什么都不写。
+    if compacted_batches > 0 {
+        if let Err(detail) = session.append(
+            COMPACTION_MEASURE_EVENT_TYPE,
+            compaction_measure_payload(saved_in_turn),
+        ) {
+            eprintln!("[kernel] 会话写入回合压缩计量失败：{detail}");
+        }
+        if let Some(notice) = format_compaction_savings_option(saved_in_turn) {
+            conn.borrow_mut()
+                .notify(HostEvent::Notice(MessagePayload { message: notice }));
+        }
     }
 
     let model = conn.borrow().model.clone();

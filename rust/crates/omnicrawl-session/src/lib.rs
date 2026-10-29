@@ -77,7 +77,8 @@ pub use project::{
     ProjectStore, AGENT_WORKTREES_DIR_NAME, PROJECTS_FILE_NAME,
 };
 pub use projection::{
-    active_session_events, apply_run_guard_event, complete_tool_pairing, event_to_model_message,
+    active_session_events, active_session_events_owned, apply_run_guard_event, complete_tool_pairing,
+    event_to_model_message,
     format_tool_result_content, function_tool_call, interrupted_tool_result_message,
     recover_run_guard_state, session_title_from_events, tool_result_message,
     tool_result_output_text, user_message_with_images, CANCELLED_TURN_DEFAULT_SUMMARY,

@@ -488,6 +488,30 @@ impl ConversationCache {
         self.dirty_from = 0;
     }
 
+    /// 缓存里第一条仍保留的记录下标。
+    ///
+    /// 可见窗口只会落在最后 [`CONVERSATION_MAX_LINES`] 行，索引更小的记录不会再被渲染；
+    /// `AppState` 据此把 `records` 的前缀一并裁掉，避免「显示缓存有上限、记录没有」。
+    pub fn retained_from_record(&self) -> usize {
+        self.first_index
+    }
+
+    /// `records` 被裁掉前 `removed` 条之后，把缓存里的记录下标同步左移。
+    ///
+    /// 只在下标区间内调用（`removed <= first_index`）：块、起始行号与总行数都还对应
+    /// 原来的显示行，不需要重算。
+    pub(crate) fn rebase_after_records_pruned(&mut self, removed: usize) {
+        if removed == 0 {
+            return;
+        }
+        if removed > self.first_index {
+            self.reset_blocks();
+            return;
+        }
+        self.first_index -= removed;
+        self.dirty_from = self.dirty_from.saturating_sub(removed);
+    }
+
     /// 会话区被 2000 行上限裁掉的行数。
     fn trimmed_offset(&self) -> usize {
         self.total.saturating_sub(CONVERSATION_MAX_LINES)
@@ -624,6 +648,11 @@ impl ConversationCache {
             self.starts.push(cursor);
             cursor += chunk.len();
             self.chunks.push(chunk);
+            // 边建边裁：首次恢复 / 宽度变化时原本会先建完整份会话再丢前缀，
+            // 峰值与历史长度成正比。这里每加一块就按当前总行数裁一次，
+            // 缓存峰值稳定在「保留预算 + 单条记录」而不是整份历史。
+            self.total = cursor;
+            self.trim_prefix();
         }
         // 记录流末尾还有一条空行（对映 Python 消息流段落之间的留白）。
         self.total = cursor + 1;
@@ -1341,7 +1370,7 @@ fn background_line(text: &str, style: Style, width: usize) -> Line<'static> {
 /// 缩略态正文是「首 2 行 + 省略提示行 + 尾 2 行」，提示行是卡片上唯一保留点击交互的正文元素。
 fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state: &AppState) {
     let expanded = state.is_tool_expanded(&card.call_id);
-    let result_text = card.body.join("\n");
+    let result_text = card.body.as_str();
     // 参数来源：还在「模型写参数」的流式阶段用侧信道的容错解析结果（可能是半截 JSON，
     // 但已经到达的 path / command / content 足够把标题与文件预览画出来）；批次执行
     // 之后一律用卡片自己的真实参数。
@@ -1359,7 +1388,7 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
         status_label(card.status),
         card.live_elapsed_seconds(),
         expanded,
-        &result_text,
+        result_text,
     );
     // 标题超宽时**换行**（不再用省略号截断），续行缩进到参数起始列——也就是
     // `● bash ls -la` 里 `ls` 所在的那一列，参数列表能对齐着读。
@@ -1386,7 +1415,8 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     }
 
     // 压缩提示：灰色一行，画在工具结果上方；**工具调用完成后才显示**（用户要求），
-    // 压缩进行中先不打扰，跑完连同「已压缩 a → b 字符」一起出现。
+    // 压缩进行中先不打扰。只剩「压缩超时/失败」这一类文案——成功压缩不再往卡片上加计量行，
+    // 省下的量由回合末那一行合并提示统一回答。
     if let Some((note, failed)) = streaming.filter(|_| !running).and_then(|entry| {
         entry
             .compression
@@ -1417,7 +1447,7 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
         push_subagent_view_button(lines, card, state);
         return;
     }
-    let body = tool_diff::tool_disclosure_body(&card.name, arguments, &result_text);
+    let body = tool_diff::tool_disclosure_body(&card.name, arguments, result_text);
     let (head, hidden, tail) = if expanded {
         (body.split_lines(), 0, Vec::new())
     } else {
@@ -3283,6 +3313,35 @@ mod tests {
 
     fn cache_rebuilds(state: &AppState) -> usize {
         state.conversation_cache().borrow().rebuilds
+    }
+
+    /// 显示缓存裁掉前缀块后，`records` 也要跟着裁到尾部窗口。
+    #[test]
+    fn pruning_records_follows_the_display_window() {
+        let mut state = AppState::new(
+            "prj".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        for index in 0..6000 {
+            state.records.push(Record::Notice(format!("第 {index} 条提示")));
+        }
+        state.touch_conversation();
+
+        let before = state.records.len();
+        let _ = display_lines(&state, 60);
+        let keep_from = state.conversation_cache().borrow().retained_from_record();
+        assert!(keep_from > 0, "长会话的显示缓存应当已经丢掉前缀块");
+
+        state.prune_records_to_cache();
+        assert!(state.records.len() < before, "records 应当跟随窗口收缩");
+        assert!(
+            state.records.len() <= crate::ui::conversation::CONVERSATION_MAX_LINES * 2 + 2,
+            "保留量应受显示行预算约束：{}",
+            state.records.len()
+        );
+        assert_eq!(state.conversation_cache().borrow().retained_from_record(), 0);
+        assert_cache_matches(&state, 60, "records 裁剪后");
     }
 
     fn running_tool_state() -> AppState {

@@ -282,7 +282,7 @@ fn tool_segment_reports_progress_and_its_own_notice() {
     assert_eq!(calls.get(), 1, "工具段请求发出前报一次进度");
     assert_eq!(
         report.notices.first().map(String::as_str),
-        Some("已压缩：省 9,900 Token"),
+        Some("已压缩：9,900 Token"),
         "工具段在前：{:?}",
         report.notices
     );
@@ -290,7 +290,7 @@ fn tool_segment_reports_progress_and_its_own_notice() {
         report
             .notices
             .iter()
-            .all(|notice| !notice.contains("省 0 Token")),
+            .all(|notice| !notice.contains("：0 Token")),
         "没有净省的段不出计量行：{:?}",
         report.notices
     );
@@ -338,8 +338,8 @@ fn tool_segment_without_savings_is_dropped_entirely() {
         report
             .notices
             .iter()
-            .all(|notice| !notice.contains("省 0 Token")),
-        "不该出现「省 0 Token」：{:?}",
+            .all(|notice| !notice.contains("：0 Token")),
+        "不该出现「0 Token」：{:?}",
         report.notices
     );
     let history = report.history.expect("压缩后给出历史");

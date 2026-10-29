@@ -278,33 +278,69 @@ impl App {
     /// `/resume`：切换内核会话，并用事件流重放对话视图。
     ///
     /// 先发一条 `session.events` 请内核给出有效事件流（与 Python
-    /// `current_session_events()` 同源），读不到时才退回回执里的消息投影。
+    /// `current_session_events()` 同源），读不到时才再要一次带历史的回执。
+    ///
+    /// `session.resume` 本身传 `include_history=false`：正常路径只用事件流重放，
+    /// 避免内核为每条消息再克隆一份完整历史；历史只在事件流读不到时按需补取。
     pub(crate) fn command_session_resume(
         &mut self,
         session_id: &str,
     ) -> Result<SessionSummary, String> {
         let params = SessionResumeParams {
             session_id: session_id.to_string(),
+            include_history: false,
         };
         let result = self.session_request(Command::SessionResume(params))?;
         if let Some(target) = result.get("session_id").and_then(Value::as_str) {
             self.session_id = target.to_string();
         }
-        let history = result
+        // 兼容旧内核/测试桩：它们可能忽略 `include_history=false` 仍然带回历史；
+        // 这份历史已经拿到，直接用它，不再额外等一次 `session.events`。
+        let inline_history = result
             .get("history")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        match self.session_events_result() {
-            Some(events) => self.state.replay_events(&events),
-            None => self.state.replay_history(&history),
+        if !inline_history.is_empty() {
+            self.state.replay_history(&inline_history);
+        } else {
+            match self.session_events_result() {
+                Some(events) => self.state.replay_events(&events),
+                None => match self.session_history_result(session_id) {
+                    Ok(history) => self.state.replay_history(&history),
+                    Err(error) => {
+                        self.state.replay_history(&[]);
+                        self.state
+                            .notice(format!("会话事件读取失败，历史回退也失败：{error}"));
+                    }
+                },
+            }
         }
         session_summary(&result)
     }
 
+    /// 事件流读不到时的回退：再要一次带消息投影的 `session.resume`。
+    fn session_history_result(&mut self, session_id: &str) -> Result<Vec<Value>, String> {
+        let params = SessionResumeParams {
+            session_id: session_id.to_string(),
+            include_history: true,
+        };
+        let result = self.session_request(Command::SessionResume(params))?;
+        Ok(result
+            .get("history")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// 请内核给出当前会话的有效事件流（`session.events`）；读不到时为 `None`。
     pub(crate) fn session_events_result(&mut self) -> Option<Vec<Value>> {
-        let result = self.session_request(Command::SessionEvents).ok()?;
+        let result = self
+            .session_request(Command::SessionEvents(SessionEventsParams {
+                limit: Some(SESSION_EVENTS_TAIL_LIMIT),
+                before_event_id: None,
+            }))
+            .ok()?;
         Some(
             result
                 .get("events")
@@ -334,7 +370,10 @@ impl App {
             return;
         }
         self.state.set_status(Some("正在重放会话…".to_string()));
-        let id = self.send(Command::SessionEvents);
+        let id = self.send(Command::SessionEvents(SessionEventsParams {
+            limit: Some(SESSION_EVENTS_TAIL_LIMIT),
+            before_event_id: None,
+        }));
         self.pending_commands
             .insert(id, KernelCommand::Replay { fallback, notice });
     }

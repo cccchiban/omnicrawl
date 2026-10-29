@@ -48,8 +48,17 @@ pub fn compacted_display(
 /// 拿不到原文时这是**下界**，不会把压缩效果说得比实际更好。文案本体与上下文压缩共用
 /// [`crate::turn::compaction::format_compaction_savings_notice`]；没有净省时返回 `None`。
 pub fn saved_tokens_notice(raw_chars: usize, summary_chars: usize) -> Option<String> {
-    let saved = chars_token_floor(raw_chars) - chars_token_floor(summary_chars);
-    crate::turn::compaction::format_compaction_savings_option(saved)
+    crate::turn::compaction::format_compaction_savings_option(saved_tokens(
+        raw_chars,
+        summary_chars,
+    ))
+}
+
+/// 逐批工具调用压缩的净省 Token（可能是负数：概括反而更长）。
+///
+/// 调用方按回合累加它，收尾时与淘汰的净省一起合成一行计量。
+pub fn saved_tokens(raw_chars: usize, summary_chars: usize) -> i64 {
+    chars_token_floor(raw_chars) - chars_token_floor(summary_chars)
 }
 
 /// 纯字符数的 Token 下界折算（4 字符 1 token）。
@@ -659,9 +668,9 @@ mod dual_compaction_tests {
     fn saved_tokens_notice_converts_char_counts_to_net_savings() {
         assert_eq!(
             saved_tokens_notice(12_345, 1_234).as_deref(),
-            Some("已压缩：省 2,778 Token")
+            Some("已压缩：2,778 Token")
         );
-        // 没有净省（原文与概括同长、或概括更长）就不出计量行：报一行「省 0 Token」
+        // 没有净省（原文与概括同长、或概括更长）就不出计量行：报一行「0 Token」
         // 只会让人以为压缩失败却看到了成功提示。
         assert_eq!(saved_tokens_notice(0, 0), None);
         assert_eq!(saved_tokens_notice(999, 12_345_678), None);

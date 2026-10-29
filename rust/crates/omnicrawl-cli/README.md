@@ -112,8 +112,9 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 `turn.tool_call_arguments` 两条宿主通知（Python 只在批次执行时才画卡片，这是 Rust 侧刻意的
 增量渲染）：宿主先把卡片立起来，参数分片到达时逐段补，`write_file` / `Edit_file` 的内容预览
 因此能跟着模型输出一起长出来。压缩旁路另外发 `turn.tool_output_compression` 的阶段通知
-（`started` / `finished` + 压缩前后字符数，`finished` 还带**压缩后的正文**），
-宿主据此显示「已压缩 a → b 字符」并把卡片正文替换成压缩后的内容（用户要求「压缩后替换原内容」）。
+（`started` / `failed` / `finished`），`finished` 带**压缩后的正文**与压缩前后字符数：
+宿主据此把卡片正文替换成压缩后的内容（用户要求「压缩后替换原内容」），但**不在卡片上另加计量行**
+——省下的量按回合累加，由回合末那一行 `已压缩：N Token` 统一回答。
 
 ## 会话区提示（`turn.notice`）
 
@@ -125,21 +126,25 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 
 **压缩边界同样走这条通知**（以前发 `turn.status`，回合结束就被清掉，对话里什么也留不下）：
 
-三条链路（上下文压缩、回合末工具调用压缩、决策模型标记淘汰）共用同一句计量文案
-`已压缩：省 N Token`（`format_compaction_savings_notice`）：会话区只需要回答「这一次省了多少」，
-压缩前后的大小本身由底部遥测展示。**没有净省的段不出这一行**（`saved_tokens_notice` 与
+三条链路（上下文压缩、逐批工具输出压缩、决策模型标记淘汰）共用同一句计量文案
+`已压缩：N Token`（`format_compaction_savings_notice`）：会话区只需要回答「这一次省了多少」，
+压缩前后的大小本身由底部遥测展示。**没有净省就不出这一行**（`saved_tokens_notice` 与
 `format_compaction_savings_option` 在净省 ≤ 0 时返回 `None`）：模型没压小的时候报一行
-「省 0 Token」只会让人以为压缩失败却看到了成功提示。
+「0 Token」只会让人以为压缩失败却看到了成功提示。
 
 - 上下文压缩：`format_compaction_notice` 生成，三条路径共用——阈值触发、上下文超限恢复
   （尾部再拼一句「检测到上下文超限…」）、显式 `/compact`。净省量按压缩前后的 Token 实测值相减；
   与工具段同批出现时，这一行只报**扣除工具段原文之后**的净省，两行相加才等于整链净省。
-- 回合末工具调用压缩：`omnicrawl_controllers::compression::saved_tokens_notice` 生成。事件只落字符数
-  （`raw_chars` / `summary_chars`，其中 `summary_chars` 只数概括正文本身、不含末尾那段给模型回读用的
-  落盘说明），Token 数在展示时按 4 字符 1 token 的**下界**折算重算——两处口径来自同一份事实，
-  所以 TUI 回放（`/resume`、`/undo`）能重建逐字相同的一行，不必重算。
-- 决策模型标记淘汰：回合收尾整组剔除后按剔除前后实测的 `estimate_messages_tokens` 差值报数，
-  随 `tool_call_eviction` 事件落盘（与裁决当刻的标注事件 `tool_call_evicted` 分开）。
+- 逐批工具调用压缩与决策模型淘汰：**都不在批次中途报数**。逐批压缩发生在回合运行中，
+  逐批抖一行提示只会把计量撒在工具卡后面；两笔净省由 `Conn::tool_compaction_saved` 按回合累加，
+  回合收尾（`session::run_session_tail`）合成**一行**提示，并落一条 `turn_compaction` 事件
+  （`{"saved_tokens": N}`）供 TUI 回放（`/resume`、`/undo`）重建同一行。
+  - 分项里逐批压缩按事件记下的字符数折算：`raw_chars` / `summary_chars`（`summary_chars` 只数概括
+    正文本身、不含末尾那段给模型回读用的落盘说明），按 4 字符 1 token 的**下界**折算。
+  - 淘汰按剔除前后实测的 `estimate_messages_tokens` 差值报数，仍随 `tool_call_eviction` 事件
+    落盘（与裁决当刻的标注事件 `tool_call_evicted` 分开）——那条事件现在只供诊断，不再单独成行。
+  - 旧会话没有 `turn_compaction` 事件，回放仍按 `tool_call_summary` / `tool_call_eviction` 逐条重建，
+    因此历史会话里既有的计量行不会消失。
 
 **压缩链的顺序**（用户指定）：决策模型淘汰（回合收尾先做，见 `session::run_session_tail`）→
 非工具部分交给上下文压缩（结构化摘要，输入窗口不变）→ 两段拼成**一条** assistant 消息注入历史

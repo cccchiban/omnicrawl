@@ -525,17 +525,41 @@ fn tool_calls_are_summarized_per_batch() {
         "概括应当确实压小：{raw_chars} → {summary_chars}"
     );
 
-    // 会话区提示与上下文压缩同款：一行「已压缩：省 N Token」，不是状态行。
+    // 会话区计量只在回合末出一行「已压缩：N Token」（不是状态行，也不再逐批抖在工具卡后面）。
     // 折算口径在断言侧独立算一遍（4 字符 1 token，取净省的下界），不复用实现的函数。
     let saved = chars_token_floor(raw_chars as usize) - chars_token_floor(summary_chars as usize);
-    let notice = frames
+    let notice_at = frames
         .iter()
-        .find(|frame| frame["method"] == "turn.notice")
+        .position(|frame| {
+            frame["method"] == "turn.notice"
+                && frame["params"]["message"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("已压缩："))
+        })
         .unwrap_or_else(|| panic!("应当发一条会话区提示：{frames:?}"));
+    let notice = &frames[notice_at];
     assert_eq!(
         notice["params"]["message"],
-        json!(format!("已压缩：省 {} Token", group_digits(saved.max(0)))),
+        json!(format!("已压缩：{} Token", group_digits(saved.max(0)))),
         "提示文案要与事件载荷的计量一致"
+    );
+    let last_batch = frames
+        .iter()
+        .rposition(|frame| frame["method"] == "tool.batch")
+        .expect("本轮有工具批次");
+    assert!(
+        notice_at > last_batch,
+        "计量要等回合收尾才出现，不能夹在工具批次之间：{frames:?}"
+    );
+    // 计量随回合末事件落盘：回放（/resume、/undo）据此重建同一行。
+    let merged = events
+        .iter()
+        .find(|event| event["type"] == "turn_compaction")
+        .unwrap_or_else(|| panic!("应当写入 turn_compaction 事件：{events:?}"));
+    assert_eq!(
+        merged["payload"]["saved_tokens"].as_i64(),
+        Some(saved as i64),
+        "合并计量事件的数字要与提示一致：{merged}"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();

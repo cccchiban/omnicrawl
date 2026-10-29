@@ -37,7 +37,32 @@ const TODO_ID_LIMIT: usize = 80;
 
 /// 回退后的有效事件：`turn_undone` 自身不参与投影，它列出的 id 也被隐藏。
 pub fn active_session_events(events: &[SessionEvent]) -> Vec<SessionEvent> {
-    let mut hidden: BTreeSet<&str> = BTreeSet::new();
+    let hidden = hidden_event_ids(events);
+    events
+        .iter()
+        .filter(|event| {
+            event.event_type != TURN_UNDONE_EVENT_TYPE && !hidden.contains(event.event_id.as_str())
+        })
+        .cloned()
+        .collect()
+}
+
+/// 与 [`active_session_events`] 同一语义，但直接在拥有的 `Vec` 上过滤。
+///
+/// 会话恢复、压缩、退出收尾都从 `read_events` 拿到完整事件表；再走借用版会整份
+/// `clone` 一次，长会话的峰值因此翻倍。这里用 `retain` 原地裁剪，调用方可以直接
+/// 交出所有权。
+pub fn active_session_events_owned(mut events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    let hidden = hidden_event_ids(&events);
+    events.retain(|event| {
+        event.event_type != TURN_UNDONE_EVENT_TYPE && !hidden.contains(event.event_id.as_str())
+    });
+    events
+}
+
+/// 收集所有 `turn_undone` 事件声明要隐藏的事件 id。
+fn hidden_event_ids(events: &[SessionEvent]) -> BTreeSet<String> {
+    let mut hidden: BTreeSet<String> = BTreeSet::new();
     for event in events {
         if event.event_type != TURN_UNDONE_EVENT_TYPE {
             continue;
@@ -49,18 +74,12 @@ pub fn active_session_events(events: &[SessionEvent]) -> Vec<SessionEvent> {
             if let Some(text) = event_id.as_str() {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
-                    hidden.insert(trimmed);
+                    hidden.insert(trimmed.to_string());
                 }
             }
         }
     }
-    events
-        .iter()
-        .filter(|event| {
-            event.event_type != TURN_UNDONE_EVENT_TYPE && !hidden.contains(event.event_id.as_str())
-        })
-        .cloned()
-        .collect()
+    hidden
 }
 
 /// 按自动标题与显式重命名规则投影当前标题。
@@ -749,6 +768,50 @@ mod user_message_image_tests {
         assert_eq!(
             message,
             serde_json::json!({"role": "user", "content": "看图"})
+        );
+    }
+}
+
+#[cfg(test)]
+mod active_session_events_tests {
+    use super::*;
+
+    fn event(id: &str, event_type: &str, payload: Value) -> SessionEvent {
+        let mut event = SessionEvent::create(
+            "20260101-000000-abcdef",
+            event_type,
+            payload.as_object().cloned().unwrap_or_default(),
+            None,
+            chrono::Utc::now(),
+        )
+        .expect("事件可构造");
+        event.event_id = id.to_string();
+        event
+    }
+
+    /// 拥有版与借用版必须逐条一致；拥有版只是省掉整份 clone。
+    #[test]
+    fn owned_filter_matches_the_borrowed_filter() {
+        let keep = event("e1", "user_message", serde_json::json!({"content": "问"}));
+        let hidden = event("e2", "assistant_message", serde_json::json!({"content": "答"}));
+        let undone = event(
+            "e3",
+            TURN_UNDONE_EVENT_TYPE,
+            serde_json::json!({"event_ids": ["e2"]}),
+        );
+        let last = event("e4", "assistant_message", serde_json::json!({"content": "再答"}));
+        let events = vec![keep, hidden, undone, last];
+
+        let borrowed = active_session_events(&events);
+        let owned = active_session_events_owned(events);
+
+        assert_eq!(borrowed, owned);
+        assert_eq!(
+            owned
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["e1", "e4"]
         );
     }
 }

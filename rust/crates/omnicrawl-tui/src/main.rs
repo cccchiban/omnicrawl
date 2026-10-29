@@ -14,7 +14,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
@@ -46,6 +46,9 @@ const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 1.0;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
+/// 终端标签页标题的旋转动画：与界面状态行共用同一组 braille spinner，100ms 一帧。
+const TITLE_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+const TITLE_NAME: &str = "omnicrawl";
 /// 自愈提示的最小间隔：恢复本身照常做，只是不再每次都往屏幕上写一行。
 const NOTICE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -191,6 +194,17 @@ fn prepare_startup(
     Ok(app)
 }
 
+/// 写终端标签页标题：OSC 序列只改标签名，不动画面与光标。
+fn set_terminal_title(text: &str) {
+    let mut out = stdout();
+    let _ = execute!(out, SetTitle(text));
+}
+
+/// 当前帧的标题文本：旋转动画 + 产品名。
+fn title_text(frame: usize) -> String {
+    format!("{} {TITLE_NAME}", ui::panels::spinner_frame(frame))
+}
+
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -201,12 +215,20 @@ fn event_loop(
     let mut viewport: Option<Rect> = None;
     // 粘贴识别状态：跨控制台输入批次的多行粘贴要挂起等后续批次。
     let mut paste_tracker = paste::PasteTracker::new();
+    // 终端标签页标题的旋转动画：独立于界面绘制，空闲时也按 100ms 推进。
+    let mut title_frame = 0usize;
+    let mut next_title_at = Instant::now();
     loop {
         if viewport.is_none() {
             viewport = Some(terminal_viewport(terminal)?);
             app.set_viewport(viewport.expect("刚写入视口"));
         }
         let now = Instant::now();
+        if now >= next_title_at {
+            set_terminal_title(&title_text(title_frame));
+            title_frame = title_frame.wrapping_add(1);
+            next_title_at = now + TITLE_FRAME_INTERVAL;
+        }
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
         // 自部署（OneJev）后台任务：环境安装 / 权重下载 / 本地服务启停的结果。
@@ -242,6 +264,9 @@ fn event_loop(
             terminal
                 .draw(|frame| ui::render(frame, &app.state, app.settings.as_ref()))
                 .map_err(|error| format!("渲染失败：{error}"))?;
+            // 显示缓存推进过 `first_index` 后，把已经被裁出可见窗口的 records 一并丢掉：
+            // 否则显示行有 2000 行上限，正文/工具卡却会随会话长度无限常驻。
+            app.state.prune_records_to_cache();
             // 绘制完把（隐藏的）终端光标挪到输入框插入点：输入法的候选窗与前摄文本跟的是
             // 终端光标，不挪就停在最后一处写屏位置，打字时前摄文字飘到会话区末尾。
             settle_terminal_cursor(terminal, app.state.composer_caret())?;
@@ -260,6 +285,11 @@ fn event_loop(
         // 好让「其实不是粘贴」的按键流能及时按普通输入回退。
         let budget = app.poll_budget(Instant::now());
         let wait = paste_wait(&paste_tracker, budget);
+        // 标题动画要按时醒来：把长空闲等待截到下一帧标题时刻。
+        let title_wait = next_title_at
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        let wait = wait.min(title_wait);
         if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))? {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
             if matches!(event, Event::Resize(..)) {
@@ -442,6 +472,8 @@ impl TerminalGuard {
         .map_err(|error| format!("切换备用屏幕失败：{error}"))?;
         // crossterm 在 Windows 上不发 ANSI 序列，鼠标移动要靠这里补上（见 MOUSE_MOVE_ON）。
         Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
+        // 进全屏先给标签页一个静态产品名，随后事件循环把 spinner 接上。
+        set_terminal_title(&title_text(0));
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
@@ -489,8 +521,23 @@ impl Drop for TerminalGuard {
             DisableFocusChange,
             DisableMouseCapture,
             DisableBracketedPaste,
-            LeaveAlternateScreen
+            LeaveAlternateScreen,
+            // 退出时停掉 spinner，标签页保留产品名而不是定格在某一帧。
+            SetTitle(TITLE_NAME)
         );
         let _ = disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_text_keeps_the_name_and_cycles_the_spinner() {
+        assert_eq!(title_text(0), "⠋ omnicrawl");
+        assert_eq!(title_text(10), "⠋ omnicrawl");
+        assert_ne!(title_text(1), title_text(0));
+        assert!(title_text(1).ends_with(" omnicrawl"));
     }
 }

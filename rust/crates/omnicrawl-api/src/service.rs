@@ -1164,7 +1164,10 @@ fn build_mcp_manager(env: &ConfigEnvironment, workspace: &Path) -> Option<Arc<Mc
         }
     };
     let manager = Arc::new(McpClientManager::new(config, workspace));
-    manager.discover();
+    // 与 TUI 同口径：有缓存清单就直接声明，首次调用某个 Server 的工具时再连接。
+    if !manager.has_cached_capabilities() {
+        manager.discover();
+    }
     for diagnostic in manager.diagnostics() {
         let server = diagnostic.server_name.clone().unwrap_or_default();
         eprintln!(

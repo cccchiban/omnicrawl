@@ -2,10 +2,11 @@
 //!
 //! 表按登记顺序保存：工具声明下发给模型的顺序跟着注册顺序走，Python 的 dict 也是插入序。
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// MCP 运行期诊断，用于状态展示与降级提示。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpDiagnostic {
     pub severity: String,
     pub code: String,
@@ -14,7 +15,7 @@ pub struct McpDiagnostic {
 }
 
 /// 已发现的 MCP Tool 元数据。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolMeta {
     pub logical_name: String,
     pub server_name: String,
@@ -37,7 +38,7 @@ impl McpToolMeta {
 }
 
 /// 已发现的 MCP Resource 元数据。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpResourceMeta {
     pub logical_uri: String,
     pub server_name: String,
@@ -48,7 +49,7 @@ pub struct McpResourceMeta {
 }
 
 /// 已发现的 MCP Prompt 元数据。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpPromptMeta {
     pub logical_name: String,
     pub server_name: String,
@@ -69,6 +70,37 @@ pub struct McpCapabilityRegistry {
 impl McpCapabilityRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 从磁盘缓存恢复一份能力表：保持缓存里的登记顺序。
+    pub fn from_snapshot(
+        tools: Vec<McpToolMeta>,
+        resources: Vec<McpResourceMeta>,
+        prompts: Vec<McpPromptMeta>,
+        diagnostics: Vec<McpDiagnostic>,
+    ) -> Self {
+        let mut registry = Self::new();
+        for meta in tools {
+            registry.add_tool(meta);
+        }
+        for meta in resources {
+            registry.add_resource(meta);
+        }
+        for meta in prompts {
+            registry.add_prompt(meta);
+        }
+        registry.diagnostics = diagnostics;
+        registry
+    }
+
+    /// 去掉某个 Server 的全部能力。重新发现时先替换旧快照，避免重复登记。
+    pub fn remove_server(&mut self, server_name: &str) {
+        self.tools
+            .retain(|(_, meta)| meta.server_name != server_name);
+        self.resources
+            .retain(|(_, meta)| meta.server_name != server_name);
+        self.prompts
+            .retain(|(_, meta)| meta.server_name != server_name);
     }
 
     pub fn tools(&self) -> impl Iterator<Item = &McpToolMeta> {

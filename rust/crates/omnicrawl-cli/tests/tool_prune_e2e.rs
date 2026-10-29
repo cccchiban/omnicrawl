@@ -467,7 +467,7 @@ fn annotated_calls_stay_in_turn_and_leave_the_context_at_turn_end() {
         json!(["call-b"]),
         "淘汰事件记下被淘汰的调用 ID：{evicted}"
     );
-    // 记账事件与标注分开：实时那一行「已压缩：省 N Token」由它回放重建。
+    // 分项记账与标注分开；会话区那一行由回合末的合并计量重建。
     let measure = transcript_event(&root, "tool_call_eviction");
     assert_eq!(
         measure["payload"]["evicted_count"],
@@ -478,16 +478,35 @@ fn annotated_calls_stay_in_turn_and_leave_the_context_at_turn_end() {
         measure["payload"]["saved_tokens"].as_i64().unwrap_or(-1) > 0,
         "剔除确实让上下文变小，净省量应当是正数：{measure}"
     );
+    let merged = transcript_event(&root, "turn_compaction");
+    assert_eq!(
+        merged["payload"]["saved_tokens"].as_i64(),
+        measure["payload"]["saved_tokens"].as_i64(),
+        "回合末的合并计量应等于这一回合淘汰的实测净省：{merged}"
+    );
     let notice = traffic
         .frames
         .iter()
         .filter(|frame| frame["method"] == "turn.notice")
         .filter_map(|frame| frame["params"]["message"].as_str())
-        .find(|text| text.contains("已压缩：省"))
+        .find(|text| text.contains("已压缩："))
         .unwrap_or_else(|| panic!("应当发一条淘汰计量提示：{:?}", traffic.frames));
     assert!(
         notice.contains("Token"),
         "淘汰计量按 Token 报，不按字符数：{notice}"
+    );
+    // 只有一行：逐批压缩与淘汰不再各自成行。
+    assert_eq!(
+        traffic
+            .frames
+            .iter()
+            .filter(|frame| frame["method"] == "turn.notice")
+            .filter_map(|frame| frame["params"]["message"].as_str())
+            .filter(|text| text.contains("已压缩："))
+            .count(),
+        1,
+        "一回合只留一行合并计量：{:?}",
+        traffic.frames
     );
 
     // 回合内：标注只是标注，当回合的请求体里 call-b 的调用项与结果都还在。

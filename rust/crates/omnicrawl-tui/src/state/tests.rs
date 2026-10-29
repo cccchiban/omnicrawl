@@ -317,7 +317,7 @@ mod tests {
         match state.records.last() {
             Some(Record::Tool(card)) => {
                 assert_eq!(card.status, ToolStatus::Denied);
-                assert_eq!(card.body, vec!["第一行".to_string(), "第二行".to_string()]);
+                assert_eq!(card.body, "第一行\n第二行");
                 assert_eq!(card.elapsed, Some(Duration::from_millis(120)));
             }
             other => panic!("应当有工具卡，实际：{other:?}"),
@@ -357,12 +357,7 @@ mod tests {
         assert_eq!(cards[0].status, ToolStatus::Ok, "终态跟随最新快照");
         assert_eq!(
             cards[0].body,
-            vec![
-                "Monitor · m1 · completed".to_string(),
-                "[system] 已启动，shell=bash。".to_string(),
-                "[stdout] ready in 300ms".to_string(),
-                "[stdout] done".to_string(),
-            ],
+            "Monitor · m1 · completed\n[system] 已启动，shell=bash。\n[stdout] ready in 300ms\n[stdout] done",
             "状态行原地替换，事件行按批追加"
         );
         assert!(cards[0].elapsed.is_some(), "终态卡片的耗时要落定");
@@ -393,7 +388,7 @@ mod tests {
             Record::Tool(card) => card,
             other => panic!("第一张应是 m1 的卡：{other:?}"),
         };
-        assert_eq!(m1.body.len(), 2, "m1 的第二批追加到自己的卡上");
+        assert_eq!(m1.body.lines().count(), 2, "m1 的第二批追加到自己的卡上");
     }
 
     /// 「立即结束」按钮的两类卡片都要能定位到任务 id。
@@ -955,7 +950,7 @@ mod tests {
             Some(Record::Tool(card)) => {
                 assert_eq!(card.status, ToolStatus::Failed, "运行中的卡片要被收口");
                 assert!(
-                    card.body.iter().any(|line| line.contains("工具执行超时")),
+                    card.body.lines().any(|line| line.contains("工具执行超时")),
                     "{:?}",
                     card.body
                 );
@@ -981,12 +976,12 @@ mod tests {
     fn tool_runs_are_rendered_as_cards() {
         let mut state = state();
         let now = Instant::now();
-        let tool_call = call("c1", "read");
+        let tool_call = call("c1", "bash");
         state.begin_tool_run(&tool_call, now);
         match state.records.last() {
             Some(Record::Tool(card)) => {
                 assert_eq!(card.status, ToolStatus::Running);
-                assert_eq!(card.name, "read");
+                assert_eq!(card.name, "bash");
                 assert!(card.elapsed.is_none());
             }
             other => panic!("应落一张运行中的工具卡，实际：{other:?}"),
@@ -1005,7 +1000,7 @@ mod tests {
         match state.records.last() {
             Some(Record::Tool(card)) => {
                 assert_eq!(card.status, ToolStatus::Failed);
-                assert_eq!(card.body, vec!["出错了".to_string()]);
+                assert_eq!(card.body, "出错了");
                 assert_eq!(card.elapsed, Some(Duration::from_millis(30)));
             }
             other => panic!("应更新同一张工具卡，实际：{other:?}"),
@@ -1425,7 +1420,7 @@ mod tests {
         assert_eq!(estimated_tokens("你好abcd"), 3);
     }
 
-    /// 用户消息可以带粘贴的图片：记录里留着附件，界面才有东西可画。
+    /// 用户消息可以带粘贴的图片：附件交给预览后，记录只留锚点。
     #[test]
     fn begin_turn_keeps_the_pasted_images_on_the_user_message() {
         let mut state = state();
@@ -1434,7 +1429,7 @@ mod tests {
             data_base64: "AAA".to_string(),
             detail: "auto".to_string(),
         };
-        state.begin_turn("t1".to_string(), "看图".to_string(), vec![image.clone()]);
+        state.begin_turn("t1".to_string(), "看图".to_string(), vec![image]);
 
         let Some(Record::User(message)) = state.records.first() else {
             panic!(
@@ -1443,9 +1438,15 @@ mod tests {
             );
         };
         assert_eq!(message.text, "看图");
-        assert_eq!(message.images, vec![image]);
         assert!(message.has_images(), "有附件就该出图片块");
         assert!(!message.image_key.is_empty(), "图片块要有锚点");
+        assert!(
+            state
+                .image_previews()
+                .borrow()
+                .shows_image(&message.image_key),
+            "附件应当已经交给预览存储"
+        );
     }
 
     /// 纯文本消息不带锚点：不然界面上会多铺一块空的图片区。
@@ -1512,7 +1513,7 @@ mod replay_tests {
             ),
             event(
                 "tool_result",
-                json!({"tool": "read", "tool_call_id": "c1", "ok": true, "output": "print(1)"}),
+                json!({"tool": "read", "tool_call_id": "c1", "ok": true, "output": "   1: print(1)"}),
             ),
             // 没有结果的事件：尾部要按「未收到结果」收口，而不是留一张永远在跑的工具卡。
             event(
@@ -1529,13 +1530,10 @@ mod replay_tests {
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].name, "read");
         assert_eq!(cards[0].status, ToolStatus::Ok);
-        assert_eq!(cards[0].body, vec!["print(1)".to_string()]);
+        assert_eq!(cards[0].body, "   1: print(1)");
         assert_eq!(cards[1].name, "bash");
         assert_eq!(cards[1].status, ToolStatus::Failed);
-        assert_eq!(
-            cards[1].body,
-            vec!["工具调用在会话结束前未收到结果。".to_string()]
-        );
+        assert_eq!(cards[1].body, "工具调用在会话结束前未收到结果。");
     }
 
     #[test]
@@ -1561,7 +1559,7 @@ mod replay_tests {
         let cards = tool_cards(&state);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].status, ToolStatus::Denied);
-        assert_eq!(cards[0].body, vec!["用户拒绝执行。".to_string()]);
+        assert_eq!(cards[0].body, "用户拒绝执行。");
         assert_eq!(state.todos.len(), 1);
     }
 
@@ -1659,8 +1657,8 @@ mod replay_tests {
         assert_eq!(state.todos[0].step, "写骨架");
     }
 
-    /// 回合末的工具调用压缩在会话区留一行计量（用户要求「和上下文压缩一样」）：
-    /// 与 `compact_summary` 的回放同口径——原事件照旧画出来，边界提示追加在流里。
+    /// 旧会话（没有 `turn_compaction` 合并事件）仍按分项事件重建计量行：
+    /// 逐批工具调用压缩按字符数折算、淘汰按记账的实测值各出一行。
     #[test]
     fn replay_events_shows_the_tool_compaction_notice() {
         let mut state = state();
@@ -1690,14 +1688,52 @@ mod replay_tests {
                 .records
                 .iter()
                 .any(|record| matches!(record, Record::Notice(text)
-                if text == "已压缩：省 2,778 Token")),
+                if text == "已压缩：2,778 Token")),
             "会话区应当出现压缩计量：{:?}",
             state.records
         );
         assert!(
             matches!(state.records.last(), Some(Record::Notice(text))
-                if text == "已压缩：省 2,778 Token"),
+                if text == "已压缩：2,778 Token"),
             "计量画在工具调用之后（压缩本来就发生在整轮调用之后）：{:?}",
+            state.records
+        );
+    }
+
+    /// 新会话的回合末只画一行合并计量：同回合的分项事件（逐批压缩、淘汰记账）不再各自成行。
+    #[test]
+    fn replay_events_merges_the_turn_compaction_notices() {
+        let mut state = state();
+        state.replay_events(&[
+            event("user_message", json!({"content": "看一下日志"})),
+            event(
+                "tool_call_summary",
+                json!({
+                    "content": "本轮工具调用概括：\n看了日志。",
+                    "covered_event_ids": ["e1"],
+                    "raw_chars": 12_345,
+                    "summary_chars": 1_234,
+                }),
+            ),
+            event(
+                "tool_call_eviction",
+                json!({"evicted_count": 1, "saved_tokens": 8_900}),
+            ),
+            event("turn_compaction", json!({"saved_tokens": 11_678})),
+        ]);
+
+        let notices: Vec<&str> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Notice(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            vec!["已压缩：11,678 Token"],
+            "一回合只留一行合并计量：{:?}",
             state.records
         );
     }
@@ -1722,7 +1758,7 @@ mod replay_tests {
 
         assert!(
             matches!(state.records.last(), Some(Record::Notice(text))
-                if text == "已压缩：省 8,900 Token"),
+                if text == "已压缩：8,900 Token"),
             "淘汰记账应当落成一行计量：{:?}",
             state.records
         );
@@ -1764,9 +1800,14 @@ mod replay_tests {
             );
         };
         assert_eq!(message.text, "看一下这张图");
-        assert_eq!(message.images.len(), 1);
-        assert_eq!(message.images[0].data_base64, "AAA");
         assert!(message.has_images(), "重放的图片也要出图片块");
+        assert!(
+            state
+                .image_previews()
+                .borrow()
+                .shows_image(&message.image_key),
+            "重放的附件应当交给预览存储，而不是留在记录里"
+        );
     }
 
     /// 旧事件没有 `images` 字段：照旧是纯文本消息，不能凭空多出一块图片区。
@@ -2134,14 +2175,6 @@ mod streaming_tests {
     }
 
     #[test]
-    fn thousands_separates_digits() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_234), "1,234");
-        assert_eq!(thousands(12_345_678), "12,345,678");
-    }
-
-    #[test]
     fn streaming_card_grows_with_argument_deltas() {
         let mut state = AppState::new(
             "proj".to_string(),
@@ -2235,7 +2268,8 @@ mod streaming_tests {
                 .unwrap()
                 .compression
                 .as_deref(),
-            Some("已压缩 12,345 → 1,234 字符")
+            None,
+            "压缩完成后不在卡片上留计量行（省下的量由回合末的合并提示统一回答）"
         );
         // 压缩完成后用**压缩后的正文替换**卡片里的原始输出（用户要求）。
         let card = match state
@@ -2246,7 +2280,7 @@ mod streaming_tests {
             Some(Record::Tool(card)) => card.clone(),
             other => panic!("应当有工具卡：{other:?}"),
         };
-        assert_eq!(card.body, vec!["压缩后的正文".to_string()]);
+        assert_eq!(card.body, "压缩后的正文");
     }
 
     #[test]
@@ -2303,7 +2337,7 @@ mod streaming_tests {
             "提问结束后不能再停在「调用中」"
         );
         assert!(
-            card.body.iter().any(|line| line.contains("继续")),
+            card.body.lines().any(|line| line.contains("继续")),
             "卡片正文带回答：{:?}",
             card.body
         );
@@ -2452,10 +2486,7 @@ mod streaming_tests {
             other => panic!("应当有工具卡：{other:?}"),
         };
         assert_eq!(card.status, ToolStatus::Failed, "回合结束不能再停在调用中");
-        assert_eq!(
-            card.body,
-            vec!["工具调用在回合结束前未收到结果。".to_string()]
-        );
+        assert_eq!(card.body, "工具调用在回合结束前未收到结果。");
     }
 
     #[test]

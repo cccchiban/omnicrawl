@@ -1,6 +1,8 @@
 //! 由 `session.rs` 按职责拆出，语义未变。
 
 use super::*;
+use omnicrawl_ipc::bridge::SessionEventsParams;
+use omnicrawl_session::SessionEvent;
 use super::model_port::{read_api_key};
 
 
@@ -183,8 +185,8 @@ pub(super) fn session_handle(conn: &Conn) -> Option<(Arc<SessionStore>, String)>
 pub(super) enum SessionQuery {
     List(SessionListParams),
     History(SessionHistoryParams),
-    /// 回放用的有效事件流：不带参数，读内核当前持有的会话。
-    Events,
+    /// 回放用的有效事件流：只读内核当前持有的会话。
+    Events(SessionEventsParams),
 }
 
 impl SessionQuery {
@@ -204,7 +206,9 @@ impl SessionQuery {
             Some(method::SESSION_HISTORY) => Ok(Self::History(
                 serde_json::from_value(params).map_err(invalid)?,
             )),
-            Some(method::SESSION_EVENTS) => Ok(Self::Events),
+            Some(method::SESSION_EVENTS) => Ok(Self::Events(
+                serde_json::from_value(params).map_err(invalid)?,
+            )),
             other => Err(ErrorObject::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("未知方法 {}。", other.unwrap_or_default()),
@@ -248,7 +252,7 @@ impl SessionQuery {
                 let items: Vec<Value> = entries.iter().map(|entry| entry.to_dict()).collect();
                 Ok(json!({ "entries": items }))
             }
-            Self::Events => {
+            Self::Events(params) => {
                 // 回退投影后的有效事件流（`turn_undone` 撤掉的轮次不出现），与
                 // Python `current_session_events()` 读的是同一条视图，UI 回放据此
                 // 重建消息、工具卡与 SubAgent 进度树。
@@ -259,12 +263,142 @@ impl SessionQuery {
                             error_code::INTERNAL_ERROR,
                             format!("会话事件读取失败：{}", error.message()),
                         )
-                    })?
-                    .iter()
+                    })?;
+                let total = events.len();
+                let (selected, has_more) = select_event_window(events, params);
+                let selected: Vec<Value> = selected
+                    .into_iter()
                     .map(|event| event.to_dict())
-                    .collect::<Vec<Value>>();
-                Ok(json!({ "session_id": current, "events": events }))
+                    .collect();
+                Ok(json!({
+                    "session_id": current,
+                    "events": selected,
+                    "has_more": has_more,
+                    "total": total,
+                }))
             }
+        }
+    }
+}
+
+/// `session.events` 单次窗口的条数上限。
+const EVENT_WINDOW_MAX_LIMIT: usize = 5_000;
+/// 窗口载荷字节预算：一条工具输出/图片事件就可能几百 KB，按字节兜底更稳。
+const EVENT_WINDOW_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+/// 尾部窗口必须保留的状态事件：它们决定清单、暂停与压缩边界，不能因为落在窗口外就丢。
+const TAIL_STATE_EVENT_TYPES: [&str; 6] = [
+    "run_guard_continue",
+    "run_guard_continue_exhausted",
+    "run_guard_paused",
+    "turn_cancelled",
+    "session_interrupted",
+    "compact_summary",
+];
+
+/// 从有效事件流里截出尾部窗口。
+///
+/// `limit = None` 且不带 `before_event_id` 时原样返回全部事件，保持旧客户端语义；
+/// 宿主回放只取最后 `limit` 条，并把窗口外的最近状态事件补到前面。
+fn select_event_window(
+    events: Vec<SessionEvent>,
+    params: &SessionEventsParams,
+) -> (Vec<SessionEvent>, bool) {
+    let end = params
+        .before_event_id
+        .as_deref()
+        .and_then(|id| events.iter().position(|event| event.event_id == id))
+        .unwrap_or(events.len());
+    let limit = params
+        .limit
+        .filter(|limit| *limit > 0)
+        .map(|limit| (limit as usize).min(EVENT_WINDOW_MAX_LIMIT))
+        .unwrap_or(0);
+    if limit == 0 && params.before_event_id.is_none() {
+        return (events, false);
+    }
+
+    let mut start = end;
+    let mut bytes = 0usize;
+    while start > 0 && (limit == 0 || end - start < limit) {
+        let size = event_bytes(&events[start - 1]);
+        if limit != 0 && end - start > 0 && bytes.saturating_add(size) > EVENT_WINDOW_BYTE_BUDGET {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        start -= 1;
+    }
+
+    let mut indices: Vec<usize> = (start..end).collect();
+    if start > 0 {
+        let mut state_indices: Vec<usize> = Vec::new();
+        for event_type in TAIL_STATE_EVENT_TYPES {
+            if events[start..end]
+                .iter()
+                .any(|event| event.event_type == event_type)
+            {
+                continue;
+            }
+            if let Some(index) = events[..start]
+                .iter()
+                .rposition(|event| event.event_type == event_type)
+            {
+                state_indices.push(index);
+            }
+        }
+        if !events[start..end].iter().any(is_todo_call) {
+            if let Some(index) = events[..start].iter().rposition(is_todo_call) {
+                state_indices.push(index);
+            }
+        }
+        state_indices.sort_unstable();
+        state_indices.dedup();
+        state_indices.extend(indices);
+        indices = state_indices;
+    }
+
+    let wanted: std::collections::HashSet<usize> = indices.into_iter().collect();
+    let selected = events
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, event)| wanted.contains(&index).then_some(event))
+        .collect();
+    (selected, start > 0)
+}
+
+/// `update_todos` 的工具请求事件：TUI 重放时靠它恢复清单。
+fn is_todo_call(event: &SessionEvent) -> bool {
+    event.event_type == "tool_call_requested"
+        && event.payload.get("tool").and_then(Value::as_str) == Some(TODO_TOOL_NAME)
+}
+
+/// 事件载荷的近似字节数；只用于窗口预算，不做序列化。
+fn event_bytes(event: &SessionEvent) -> usize {
+    event.event_type.len()
+        + event.session_id.len()
+        + event.event_id.len()
+        + event.parent_id.as_deref().map_or(0, str::len)
+        + event
+            .payload
+            .iter()
+            .map(|(key, value)| key.len() + json_bytes(value) + 4)
+            .sum::<usize>()
+        + 64
+}
+
+fn json_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(number) => number.to_string().len(),
+        Value::String(text) => text.len() + 2,
+        Value::Array(items) => {
+            2 + items.len() + items.iter().map(json_bytes).sum::<usize>()
+        }
+        Value::Object(map) => {
+            2 + map
+                .iter()
+                .map(|(key, value)| key.len() + json_bytes(value) + 4)
+                .sum::<usize>()
         }
     }
 }
@@ -432,12 +566,17 @@ pub(super) fn respond_session_resume(conn: &Rc<RefCell<Conn>>, id: Id, params: &
         .map(|session| session.reopen(target));
     match reopened {
         Some(Ok(())) => {
-            let history = conn
-                .borrow()
-                .session
-                .as_ref()
-                .map(|session| session.history.clone())
-                .unwrap_or_default();
+            // 历史只在调用方明确要时复制：TUI 的 /resume 用 session.events 重放，
+            // 不需要把整份历史再克隆、序列化一遍。
+            let history = if params.include_history {
+                conn.borrow()
+                    .session
+                    .as_ref()
+                    .map(|session| session.history.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             // 回包带上索引条目与历史：宿主据此展示标题/消息数并重放对话视图。
             conn.borrow_mut().respond(
                 id,
@@ -498,4 +637,88 @@ pub(super) fn respond_session_append(conn: &Rc<RefCell<Conn>>, id: Id, params: &
     drop(borrowed);
     conn.borrow_mut()
         .respond(id, json!({ "appended": appended }));
+}
+
+#[cfg(test)]
+mod event_window_tests {
+    use super::*;
+
+    fn event(id: &str, event_type: &str, payload: Value) -> SessionEvent {
+        let mut event = SessionEvent::create(
+            "20260101-000000-abcdef",
+            event_type,
+            payload.as_object().cloned().unwrap_or_default(),
+            None,
+            chrono::Utc::now(),
+        )
+        .expect("事件可构造");
+        event.event_id = id.to_string();
+        event
+    }
+
+    fn ids(events: &[SessionEvent]) -> Vec<&str> {
+        events.iter().map(|event| event.event_id.as_str()).collect()
+    }
+
+    #[test]
+    fn no_limit_returns_everything() {
+        let events = vec![
+            event("e1", "user_message", serde_json::json!({"content": "问"})),
+            event("e2", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let (selected, has_more) =
+            select_event_window(events, &SessionEventsParams::default());
+        assert_eq!(ids(&selected), vec!["e1", "e2"]);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn limit_keeps_the_tail_and_prepends_state_events() {
+        let events = vec![
+            event("e1", "run_guard_paused", serde_json::json!({"content": "继续"})),
+            event("e2", "user_message", serde_json::json!({"content": "问"})),
+            event("e3", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let params = SessionEventsParams {
+            limit: Some(1),
+            before_event_id: None,
+        };
+        let (selected, has_more) = select_event_window(events, &params);
+        assert_eq!(ids(&selected), vec!["e1", "e3"]);
+        assert!(has_more);
+    }
+
+    #[test]
+    fn todo_tool_call_is_preserved_outside_the_window() {
+        let events = vec![
+            event(
+                "e1",
+                "tool_call_requested",
+                serde_json::json!({"tool": TODO_TOOL_NAME, "arguments": {"todos": []}}),
+            ),
+            event("e2", "assistant_message", serde_json::json!({"content": "答"})),
+        ];
+        let params = SessionEventsParams {
+            limit: Some(1),
+            before_event_id: None,
+        };
+        let (selected, _) = select_event_window(events, &params);
+        assert_eq!(ids(&selected), vec!["e1", "e2"]);
+    }
+
+    #[test]
+    fn before_event_id_pages_towards_older_events() {
+        let events = vec![
+            event("e1", "user_message", serde_json::json!({"content": "一"})),
+            event("e2", "assistant_message", serde_json::json!({"content": "二"})),
+            event("e3", "user_message", serde_json::json!({"content": "三"})),
+        ];
+        let params = SessionEventsParams {
+            limit: Some(2),
+            before_event_id: Some("e3".to_string()),
+        };
+        let (selected, has_more) = select_event_window(events, &params);
+        assert_eq!(ids(&selected), vec!["e1", "e2"]);
+        assert!(!has_more);
+    }
 }

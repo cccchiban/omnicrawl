@@ -53,9 +53,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `session.rename` | 请求 | `{title}` | `{session: 会话索引条目}` |
 | `session.archive` | 请求 | `{}` | `{session: 会话索引条目, new_session_id?}` |
 | `session.history` | 请求 | `{query?, limit?}` | `{entries: [提示历史条目]}` |
-| `session.events` | 请求 | `{}` | `{session_id, events: [会话事件]}` |
+| `session.events` | 请求 | `{limit?, before_event_id?}` | `{session_id, events: [会话事件], has_more, total}` |
 | `session.new` | 请求 | `{}` | `{session_id}` |
-| `session.resume` | 请求 | `{session_id}` | `{session_id, session: 会话索引条目, history: [消息]}` |
+| `session.resume` | 请求 | `{session_id, include_history?}` | `{session_id, session: 会话索引条目, history: [消息]}` |
 | `session.append` | 请求 | `{role?, content}` | `{appended}` |
 | `workspace.switch` | 请求 | `{path}` | `{switched, from, to}` |
 | `subagent.run` | 请求 | `{agent_type, description?, prompt}` | `{agent_type, output, task}` |
@@ -188,16 +188,22 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `session.rename`：只改当前会话的标题；索引条目直接回给宿主展示。
 - `session.archive`：归档当前会话**并自动开一条新会话**（新 id 在 `new_session_id` 里，可能缺失——归档
   已成功但新建失败时只在 stderr 记日志，不回滚归档）。归档会话从默认列表隐藏。
-- `session.resume`：切到目标会话并用转录重建运行期历史，`history` 一并回给宿主重放对话视图；目标必须
-  已存在（否则 `-32600`），已归档的先自动解除归档，切换前会丢掉当前的空占位会话。
+- `session.resume`：切到目标会话并用转录重建运行期历史；目标必须已存在（否则 `-32600`），已归档的
+  先自动解除归档，切换前会丢掉当前的空占位会话。`include_history` 缺省 `true`，`history` 一并回给
+  宿主做消息回放；宿主已有 `session.events` 时可传 `false`，跳过整份历史的克隆与传输（回包里
+  `history` 为空数组）。
 - `session.new`：清空当前对话并开新会话。
 - `session.history`：只读的用户提示历史（独立于会话转录），空 `query` 表示不过滤。
 - `session.events`：只读的**回退投影后**的有效事件流（`read_active_events`，被 `turn_undone` 撤掉的轮次
   不出现），与 Python `current_session_events()` 同源。宿主用它重建历史页：消息、工具卡、计划清单、
-  SubAgent 进度树与压缩边界都按事件还原，而不是只投影 user/assistant 文本。与其他只读查询一样，
+  SubAgent 进度树与压缩边界都按事件还原，而不是只投影 user/assistant 文本。`limit` 限制本次返回的
+  尾部窗口（宿主回放取 2000 条），`before_event_id` 用于向更早翻页；窗口外的最近状态事件
+  （`run_guard_*`、`turn_cancelled`、`session_interrupted`、`compact_summary` 与 `update_todos` 请求）
+  会补在窗口前面。缺省 `limit` 仍回全部事件，`has_more`/`total` 供分页判断。与其他只读查询一样，
   回合进行中照常应答；没有自持会话时 `-32600`。
-- `turn.undo` 与 `session.resume` 都会带回 `history`：宿主先据此对齐视图，随后再用 `session.events`
-  做完整回放（撤回的消息与工具卡才能真正消失），事件流读不到时才停在消息投影上。
+- `turn.undo` 仍带回 `history`；`session.resume` 默认带回、可用 `include_history=false` 跳过。宿主
+  正常用 `session.events` 做完整回放（撤回的消息与工具卡才能真正消失），事件流读不到时才补取
+  消息投影作为回退。
 
 `subagent.query` 的 `action` 支持 `list` / `get` / `cancel`，另加 `list_worktrees`：它不查任务表，
 而是用 `action` 字段旁路到托管根（`~/.omnicrawl/agent-worktrees`）里的 SubAgent worktree 元数据，
@@ -265,7 +271,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.delta` | `{text}` | `on_delta` |
 | `turn.reasoning_delta` | `{text}` | `on_reasoning_delta` |
 | `turn.status` | `{message}` | `on_status` |
-| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩、回合末工具调用压缩与决策模型标记淘汰共用的「已压缩：省 N Token」）。Python 侧这些消息也走 `on_status`、由 UI 按前缀特判落进对话区；Rust 侧直接用这条通知表达落点，免得既顶掉状态行又依赖文案前缀匹配 |
+| `turn.notice` | `{message}` | 无（Rust 侧新增）：一条落在**会话流**里的提示，宿主应追加进对话而不是写运行状态行（用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩那一行，以及逐批工具输出压缩与决策模型淘汰合并后的「已压缩：N Token」）。Python 侧这些消息也走 `on_status`、由 UI 按前缀特判落进对话区；Rust 侧直接用这条通知表达落点，免得既顶掉状态行又依赖文案前缀匹配 |
 | `turn.retry_status` | `{message}` | `on_retry_status` |
 | `turn.protocol_wait` | `{}` | `on_protocol_wait` |
 | `turn.stream_rollback` | `{}` | `on_stream_rollback` |
@@ -317,10 +323,11 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   批次真正执行时仍然是宿主自己发的 `tool.started` / `tool.finished`，两者靠 `call_id` 对齐。
 - **工具输出压缩的阶段提示**：内核压缩旁路在每个被压缩的观察前后发
   `turn.tool_output_compression`（`phase=started` 时不带计量，`finished` 带 `before_chars` /
-  `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」/「已压缩 a → b 字符」。
+  `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」并在 `finished` 时替换卡片正文；
+  净省不在这里逐条报——它按回合累加，由回合末的 `turn.notice` 统一报一行。
 - **会话区提示**：`turn.notice` 与 `turn.status` 的差别只在宿主落点——前者是「一条已经落在
-  对话里的提示」（当前用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩、回合末工具调用
-  压缩与决策模型标记淘汰共用的「已压缩：省 N Token」），宿主应追加进对话流；
+  对话里的提示」（当前用于出网脱敏的占位符还原告警，以及压缩边界：上下文压缩那一行，和逐批
+  工具输出压缩与决策模型淘汰合并后的「已压缩：N Token」），宿主应追加进对话流；
   后者是「正在做什么」的运行状态，宿主写状态行。压缩边界必须走前者：写状态行会在
   `turn.finished` 时被清掉，对话里只剩摘要/概括，用户看不到「上一段已被替换」的痕迹。
 - **压缩期间的运行状态**：压缩边界走 `turn.notice`，但「此刻正在压缩」走 `turn.status`

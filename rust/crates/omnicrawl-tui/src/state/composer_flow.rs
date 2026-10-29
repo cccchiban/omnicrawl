@@ -30,24 +30,23 @@ impl AppState {
                 self.next_user_image_key()
             };
             if !image_key.is_empty() {
+                // 附件只在解码期间需要：这里用所有权转移构造，避免在构造阶段再克隆；
+                // `register` 把 Base64 交给后台线程后，这份附件随即释放。
                 let attachments: Vec<ToolImageAttachment> = images
-                    .iter()
+                    .into_iter()
                     .map(|image| ToolImageAttachment {
-                        media_type: image.media_type.clone(),
-                        data_base64: image.data_base64.clone(),
+                        media_type: image.media_type,
+                        data_base64: image.data_base64,
                         filename: String::new(),
-                        detail: image.detail.clone(),
+                        detail: image.detail,
                     })
                     .collect();
                 self.image_previews
                     .borrow_mut()
                     .register(&image_key, &attachments);
             }
-            self.records.push(Record::User(UserRecord {
-                text,
-                images,
-                image_key,
-            }));
+            // 记录只留锚点：原图 Base64 已在 `register` 之后释放，避免随历史常驻。
+            self.records.push(Record::User(UserRecord { text, image_key }));
             self.touch_appended();
         }
 

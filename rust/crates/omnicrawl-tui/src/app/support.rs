@@ -1042,7 +1042,11 @@ pub(super) fn mcp_manager(workspace: &Path) -> Option<Arc<McpClientManager>> {
         return None;
     }
     let manager = Arc::new(McpClientManager::new(config, workspace));
-    manager.discover();
+    // 能力清单已缓存时只声明、不连接；模型第一次调用某个 Server 的工具时，
+    // `McpClientManager::ensure_server_connected` 再拉起对应进程。
+    if !manager.has_cached_capabilities() {
+        manager.discover();
+    }
     for diagnostic in manager.diagnostics() {
         let prefix = diagnostic
             .server_name

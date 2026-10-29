@@ -54,7 +54,7 @@ impl AppState {
                 status: ToolStatus::Running,
                 elapsed: None,
                 started: Instant::now(),
-                body: Vec::new(),
+                body: String::new(),
             }));
             self.touch_appended();
         }
@@ -194,12 +194,18 @@ impl AppState {
                 if let Some(Record::Tool(card)) = self.records.get_mut(index) {
                     card.status = status;
                     // 状态行原地替换为最新快照，事件行接在尾部。
-                    if card.body.is_empty() {
-                        card.body.push(header);
-                    } else {
-                        card.body[0] = header;
+                    let mut body = header;
+                    if let Some((_, rest)) = card.body.split_once('\n') {
+                        if !rest.is_empty() {
+                            body.push('\n');
+                            body.push_str(rest);
+                        }
                     }
-                    card.body.extend(events);
+                    if !events.is_empty() {
+                        body.push('\n');
+                        body.push_str(&events.join("\n"));
+                    }
+                    card.body = body;
                     // 终态后不再计时：卡片会一直留在会话流里，不能让耗时继续涨。
                     if status != ToolStatus::Running {
                         card.elapsed = Some(Instant::now().saturating_duration_since(card.started));
@@ -217,7 +223,10 @@ impl AppState {
                 status,
                 elapsed: None,
                 started: Instant::now(),
-                body: std::iter::once(header).chain(events).collect(),
+                body: std::iter::once(header)
+                    .chain(events)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             }));
             self.touch_appended();
         }

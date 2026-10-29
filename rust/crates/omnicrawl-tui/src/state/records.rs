@@ -3,6 +3,34 @@
 use super::*;
 
 impl AppState {
+        /// 把 `records` 裁到显示缓存仍然覆盖得到的尾部窗口。
+        ///
+        /// 显示缓存只保留最后 [`crate::ui::conversation::CONVERSATION_MAX_LINES`] 行，
+        /// 被它丢掉前缀块的那些记录再也不会被渲染；但 `records` 本身原来没有上限，
+        /// 长会话会一路把正文、工具卡与历史消息留在内存里。这里按缓存的
+        /// `retained_from_record()` 精确裁剪，并把依赖记录下标的 UI 状态一起左移。
+        ///
+        /// 由事件循环在每帧绘制之后调用：缓存只在绘制时推进 `first_index`。
+        pub fn prune_records_to_cache(&mut self) {
+            let keep_from = self.conversation_cache.borrow().retained_from_record();
+            if keep_from == 0 || keep_from > self.records.len() {
+                return;
+            }
+            self.records.drain(..keep_from);
+            self.conversation_cache
+                .get_mut()
+                .rebase_after_records_pruned(keep_from);
+            // 展开态按记录下标索引：能保留的条目左移，落在被裁前缀里的直接丢弃。
+            self.expanded_reasoning = self
+                .expanded_reasoning
+                .iter()
+                .filter_map(|index| index.checked_sub(keep_from))
+                .collect();
+            self.retry_button_hover = self
+                .retry_button_hover
+                .and_then(|index| index.checked_sub(keep_from));
+        }
+
         // ---- 工具卡图片预览 -----------------------------------------------------------
 
         /// 收下后台解码完的图片；返回是否出现了新的预览（会话区据此重画）。
@@ -305,7 +333,10 @@ impl AppState {
                     (false, _) => ToolStatus::Failed,
                 };
                 card.elapsed = Some(now.saturating_duration_since(card.started));
-                card.body = body_lines(&result.output);
+                card.body = crate::ui::fullscreen::rendering::tool_diff::stored_result_text(
+                    &card.name,
+                    &result.output,
+                );
             }
             self.touch_record(index);
         }

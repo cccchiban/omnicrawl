@@ -1108,7 +1108,7 @@ fn monitor_batches_start_poll_and_stop_a_background_task() {
             .iter()
             .filter_map(|record| match record {
                 Record::Tool(card) if card.call_id.starts_with("monitor:") => {
-                    Some(card.body.join("\n"))
+                    Some(card.body.clone())
                 }
                 _ => None,
             })

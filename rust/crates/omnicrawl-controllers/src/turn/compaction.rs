@@ -20,7 +20,7 @@ pub const RECALL_QUERY_CHARS: usize = 200;
 pub const RECALL_MAX_RESULTS: usize = 3;
 pub const RECALL_TEXT_LIMIT: usize = 1_200;
 
-/// 生成「已压缩：省 N Token」的分隔提示文本；数据缺失时返回 None。
+/// 生成「已压缩：N Token」的分隔提示文本；数据缺失时返回 None。
 ///
 /// 文本由 TUI 以灰色单独成行渲染，作为「上下文已被摘要替换」的可见边界。
 /// 只报净省下来的 Token：压缩前后的大小本身在底部遥测里另有显示，这里要回答的是
@@ -37,22 +37,36 @@ pub fn format_compaction_notice(
     Some(format_compaction_savings_notice(before - after))
 }
 
-/// 三条压缩链路共用的会话区计量文案：`已压缩：省 8,900 Token`。
+/// 三条压缩链路共用的会话区计量文案：`已压缩：8,900 Token`。
 ///
 /// 净省量为负（压缩反而变大）时报 0：那种情况下「省下」是负值，读起来只会让人困惑。
 pub fn format_compaction_savings_notice(saved_tokens: i64) -> String {
-    format!("已压缩：省 {} Token", group_digits(saved_tokens.max(0)))
+    format!("已压缩：{} Token", group_digits(saved_tokens.max(0)))
 }
 
 /// 同 [`format_compaction_savings_notice`]，但净省量不为正时返回 `None`。
 ///
-/// 会话区里「省 0 Token」是一行只带来困惑的噪声：它既可能来自「模型没压小」，
+/// 会话区里「0 Token」是一行只带来困惑的噪声：它既可能来自「模型没压小」，
 /// 也可能来自「这批内容早就被上一次压缩替换掉了」。没有净省就不该留边界。
 pub fn format_compaction_savings_option(saved_tokens: i64) -> Option<String> {
     if saved_tokens <= 0 {
         return None;
     }
     Some(format_compaction_savings_notice(saved_tokens))
+}
+
+/// 回合收尾的合并计量事件：一行提示对应一条事件，回放据此重建同一行。
+///
+/// 逐批工具调用压缩与决策模型淘汰都在同一回合里发生，用户要看的是「这一回合总共省了多少」，
+/// 因此两笔净省累加后只落一行提示；本事件就是那份合并记账，`/resume`、`/undo` 读它。
+pub const COMPACTION_MEASURE_EVENT_TYPE: &str = "turn_compaction";
+
+/// [`COMPACTION_MEASURE_EVENT_TYPE`] 的载荷：合并后的净省量。
+///
+/// 只记合并值：分项（逐批压缩按字符数折算、淘汰按实测）在同一回合里都已不再各自落行，
+/// 再存一份只会让回放多一条对不上提示的数字。
+pub fn compaction_measure_payload(saved_tokens: i64) -> Value {
+    serde_json::json!({ "saved_tokens": saved_tokens.max(0) })
 }
 
 /// 千分位分组（`12345` → `12,345`）：Token 数动辄五六位，分隔开才好读。

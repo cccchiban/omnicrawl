@@ -32,7 +32,7 @@ use crate::naming::{
     clean_title, new_session_id, normalize_relative_file_path, normalize_session_id,
     EMPTY_SESSION_EVENT_TYPES,
 };
-use crate::projection::active_session_events;
+use crate::projection::active_session_events_owned;
 use crate::prompt_history::PromptHistoryStore;
 use crate::records::{
     read_session_events_with_diagnostics as read_events_with_diagnostics, SessionEventReadResult,
@@ -262,7 +262,27 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionEvent>, SessionStoreError> {
-        Ok(active_session_events(&self.read_events(session_id)?))
+        Ok(active_session_events_owned(self.read_events(session_id)?))
+    }
+
+    /// 最后一条**有效**事件的类型。
+    ///
+    /// 退出收尾只需要这个值来决定是否补写 `session_closed`；走索引可以避免为了
+    /// 一个字段把整份转录读进内存。索引在每次 `append_event` 后同步更新。
+    ///
+    /// 索引为空（旧索引）或停在 `turn_undone` 上时回退到有效事件流：回退事件本身
+    /// 不参与投影，最后一条有效事件的类型可能与索引里的原始类型不同。
+    pub fn last_active_event_type(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, SessionStoreError> {
+        let entry = self.entry_of(session_id)?;
+        let value = entry.last_event_type.trim();
+        if value.is_empty() || value == crate::projection::TURN_UNDONE_EVENT_TYPE {
+            let events = self.read_active_events(session_id)?;
+            return Ok(events.last().map(|event| event.event_type.clone()));
+        }
+        Ok(Some(value.to_string()))
     }
 
     /// 提示历史存储（`history.jsonl`）：与 Python `SessionStore.prompt_history` 同义。
@@ -617,7 +637,7 @@ impl SessionStore {
         if entry.archived_at.is_some() || entry.message_count > 0 {
             return Ok(false);
         }
-        let events = active_session_events(&self.read_events_locked(&entry)?);
+        let events = active_session_events_owned(self.read_events_locked(&entry)?);
         let has_business_event = events
             .iter()
             .any(|event| !EMPTY_SESSION_EVENT_TYPES.contains(&event.event_type.as_str()));
@@ -640,7 +660,7 @@ impl SessionStore {
         let session_id = normalize_session_id(session_id)?;
         let entries = self.load_entries()?;
         let index = self.entry_index(&entries, &session_id)?;
-        let active = active_session_events(&self.read_events_locked(&entries[index])?);
+        let active = active_session_events_owned(self.read_events_locked(&entries[index])?);
         build_undo_plan(&session_id, &active)
     }
 
@@ -658,7 +678,7 @@ impl SessionStore {
         let session_id = normalize_session_id(&plan.session_id)?;
         let entries = self.load_entries()?;
         let index = self.entry_index(&entries, &session_id)?;
-        let active = active_session_events(&self.read_events_locked(&entries[index])?);
+        let active = active_session_events_owned(self.read_events_locked(&entries[index])?);
         let current = build_undo_plan(&session_id, &active)?;
         if current.event_ids != plan.event_ids {
             return Err(SessionStoreError::new(
@@ -1187,5 +1207,77 @@ fn resolve_path_text(raw: &str) -> String {
         format!("{prefix}{joined}")
     } else {
         format!("{prefix}{separator}{joined}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 退出收尾用的最后类型来自索引；索引停在 `turn_undone` 时回退到有效事件流。
+    #[test]
+    fn last_active_event_type_reads_the_index_and_handles_undo() {
+        let root = std::env::temp_dir().join(format!(
+            "omnicrawl-session-last-active-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let store = SessionStore::open(&root);
+        store.ensure().expect("会话根应当就绪");
+        let session = store
+            .start_session("D:/work", "最后类型", Utc::now())
+            .expect("应当能建会话");
+
+        assert_eq!(
+            store
+                .last_active_event_type(&session.session_id)
+                .expect("应当读到索引")
+                .as_deref(),
+            Some("session_started")
+        );
+
+        let user = store
+            .append_event(
+                &session.session_id,
+                "user_message",
+                json!({"content": "问"})
+                    .as_object()
+                    .cloned()
+                    .expect("载荷是对象"),
+                None,
+                Utc::now(),
+            )
+            .expect("应当能追加用户消息");
+        assert_eq!(
+            store
+                .last_active_event_type(&session.session_id)
+                .expect("应当读到索引")
+                .as_deref(),
+            Some("user_message")
+        );
+
+        store
+            .append_event(
+                &session.session_id,
+                "turn_undone",
+                json!({"event_ids": [user.event_id]})
+                    .as_object()
+                    .cloned()
+                    .expect("载荷是对象"),
+                None,
+                Utc::now(),
+            )
+            .expect("应当能追加回退事件");
+        // `turn_undone` 自身不参与投影，最后有效事件退回 `session_started`。
+        assert_eq!(
+            store
+                .last_active_event_type(&session.session_id)
+                .expect("应当回退到有效事件流")
+                .as_deref(),
+            Some("session_started")
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -6,6 +6,8 @@
 //! 证书链的信任判定交给 `rustls-webpki`（已审计）。不自研：X.509 路径构建、名称约束、
 //! 策略处理里的边界极多，写错一处就是可绕过验证，而这条链路恰恰是安全边界。
 
+use std::sync::{Arc, OnceLock};
+
 use ring::{hkdf, hmac};
 use rustls_pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
 use webpki::EndEntityCert;
@@ -222,27 +224,21 @@ fn tls12_signature_algorithm(
 }
 
 /// 受信根证书集合。
+#[derive(Debug, Clone)]
 pub struct TrustAnchors {
-    anchors: Vec<TrustAnchor<'static>>,
+    /// 共享的根证书切片：`webpki_roots` 只在进程内构建一次，每次 clone 只加一个引用。
+    anchors: Arc<[TrustAnchor<'static>]>,
 }
 
 impl TrustAnchors {
     /// 用 `webpki-roots` 的内置根（Mozilla 根证书库的快照）。
     ///
-    /// `TLS_SERVER_ROOTS` 本身就是 `TrustAnchor` 列表，直接转成拥有所有权即可。
+    /// 根证书表是编译期常量，但转换成 `webpki` 的拥有型 `TrustAnchor` 需要复制 DER。
+    /// 每个 TLS 重定向跳都复制一遍既慢又浪费内存，因此进程内只构建一次、后续共享。
     pub fn webpki_roots() -> Self {
+        static ROOTS: OnceLock<Arc<[TrustAnchor<'static>]>> = OnceLock::new();
         Self {
-            anchors: webpki_roots::TLS_SERVER_ROOTS
-                .iter()
-                .map(|anchor| TrustAnchor {
-                    subject: anchor.subject.to_vec().into(),
-                    subject_public_key_info: anchor.subject_public_key_info.to_vec().into(),
-                    name_constraints: anchor
-                        .name_constraints
-                        .as_ref()
-                        .map(|constraints| rustls_pki_types::Der::from(constraints.to_vec())),
-                })
-                .collect(),
+            anchors: Arc::clone(ROOTS.get_or_init(build_webpki_roots)),
         }
     }
 
@@ -256,8 +252,26 @@ impl TrustAnchors {
                     .map_err(|error| VerifyError::UntrustedCertificate(format!("{error}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { anchors })
+        Ok(Self {
+            anchors: anchors.into(),
+        })
     }
+}
+
+/// 构建一次内置根证书表。
+fn build_webpki_roots() -> Arc<[TrustAnchor<'static>]> {
+    webpki_roots::TLS_SERVER_ROOTS
+        .iter()
+        .map(|anchor| TrustAnchor {
+            subject: anchor.subject.to_vec().into(),
+            subject_public_key_info: anchor.subject_public_key_info.to_vec().into(),
+            name_constraints: anchor
+                .name_constraints
+                .as_ref()
+                .map(|constraints| rustls_pki_types::Der::from(constraints.to_vec())),
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// 校验服务端证书链：建链、有效期、主机名。
@@ -449,5 +463,12 @@ mod tests {
         let name = ServerName::try_from("example.com").expect("主机名合法");
         assert!(!anchors.anchors.is_empty());
         let _ = name;
+    }
+
+    #[test]
+    fn webpki_roots_are_shared_across_calls() {
+        let first = TrustAnchors::webpki_roots();
+        let second = TrustAnchors::webpki_roots();
+        assert!(Arc::ptr_eq(&first.anchors, &second.anchors));
     }
 }

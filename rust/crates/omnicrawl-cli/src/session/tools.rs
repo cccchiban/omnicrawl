@@ -437,15 +437,12 @@ impl RemoteTools {
                     }
                 }
                 self.conn.borrow_mut().session = session;
-                // 会话区计量与回合末压缩同款：一行「已压缩：省 N Token」，
-                // 计量取自事件载荷，回放（`/resume`、`/undo`）据此重建同一行。
-                if let Some(notice) =
-                    compression_logic::saved_tokens_notice(outcome.raw_chars, outcome.summary_chars)
-                {
-                    self.conn
-                        .borrow_mut()
-                        .notify(HostEvent::Notice(MessagePayload { message: notice }));
-                }
+                // 会话区计量不在批次中途落：逐批压缩发生在回合运行中，提示会一行行抖在
+                // 工具卡后面。这里只累加净省，回合收尾（`run_session_tail`）与淘汰合并成
+                // 一行「已压缩：N Token」；回放仍按事件的字符数重建同一个数字。
+                self.conn.borrow_mut().tool_compaction_saved +=
+                    compression_logic::saved_tokens(outcome.raw_chars, outcome.summary_chars);
+                self.conn.borrow_mut().tool_compaction_batches += 1;
                 eprintln!(
                     "[kernel] 逐批工具调用压缩标注：{} 次调用（{} → {} 字符），回合收尾统一处理。",
                     outcome.tool_calls, outcome.raw_chars, outcome.summary_chars

@@ -22969,17 +22969,17 @@
         {
           "before": 1500,
           "after": 2500,
-          "notice": "已压缩：省 0 Token"
+          "notice": "已压缩：0 Token"
         },
         {
           "before": 999,
           "after": 1000,
-          "notice": "已压缩：省 0 Token"
+          "notice": "已压缩：0 Token"
         },
         {
           "before": 12345,
           "after": 62000,
-          "notice": "已压缩：省 0 Token"
+          "notice": "已压缩：0 Token"
         },
         {
           "before": -5,
@@ -22989,7 +22989,7 @@
         {
           "before": 1,
           "after": 1,
-          "notice": "已压缩：省 0 Token"
+          "notice": "已压缩：0 Token"
         }
       ],
       "memory": [

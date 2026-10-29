@@ -78,9 +78,12 @@ stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
 
 - 启动期读 `config.toml` 的 `[mcp]` 段（`load_mcp_config` + 进程环境变量），配置读取失败只
   警告不阻断启动。
-- **能力发现发生在握手之前**：协议 v1 的工具声明固定在 `initialize.model.tools`，而 Python 是
-  「首次使用时懒加载」。这是有意的差异：Rust 宿主用启动期的一次阻塞换取工具面完整，
-  发现耗时与 Server 数量成正比（并发上限 8）。
+- **能力声明发生在握手之前，连接可以延后**：协议 v1 的工具声明固定在
+  `initialize.model.tools`，因此工具面必须在握手前确定。Rust 宿主把「发现结果」缓存到
+  工作区 `.omnicrawl/mcp-capabilities.json`：启动优先读缓存直接声明，不启动任何 Server；
+  模型第一次调用某个 Server 的工具时才建立连接（`ensure_server_connected`）。缓存缺失、
+  超过 7 天或配置指纹变化时，仍退回启动期的一次完整发现（并发上限 8），确保首次安装
+  就有完整工具面。
 - 已发现的 Tool 以 `server.tool` 进表，Resource/Prompt 各生成一个适配工具
   （`mcp_read_resource__<logical_uri>` / `mcp_get_prompt__<logical_name>`），
   执行体走 `omnicrawl-controllers` 的 `mcp_*_result` 结果信封（与 Python 同一份文案）。

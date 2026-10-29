@@ -129,8 +129,9 @@ use omnicrawl_ipc::{
     bridge::{
         Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
         KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
-        ModelHookResult, SessionAppendParams, SessionHistoryParams, SessionListParams,
-        SessionModelSettings, SessionRenameParams, SessionResumeParams, SessionSettingsParams,
+        ModelHookResult, SessionAppendParams, SessionEventsParams, SessionHistoryParams,
+        SessionListParams, SessionModelSettings, SessionRenameParams, SessionResumeParams,
+        SessionSettingsParams,
         SubagentRunParams, ToolBatch,
     },
     error_code, Frame, Id, PROTOCOL_VERSION,
@@ -996,6 +997,8 @@ const SUBAGENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 会话类命令的超时：本地会话目录的读写，但 `/resume` 要按转录重建历史。
 const SESSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// 会话回放只取尾部窗口：显示区本身只有 2000 行，整份事件流没有意义。
+const SESSION_EVENTS_TAIL_LIMIT: u32 = 2000;
 
 /// 命令层给的会话条数 → 协议里的 `u32`（内核会自己再收敛到 1..=100）。
 fn session_limit(limit: usize) -> u32 {
@@ -1083,7 +1086,10 @@ impl KernelCommand {
             })),
             Self::ReviewInject => None,
             // 回放没有用户输入（不入命令层），只需一条协议请求。
-            Self::Replay { .. } => Some(Command::SessionEvents),
+            Self::Replay { .. } => Some(Command::SessionEvents(SessionEventsParams {
+                limit: Some(SESSION_EVENTS_TAIL_LIMIT),
+                before_event_id: None,
+            })),
         })
     }
 

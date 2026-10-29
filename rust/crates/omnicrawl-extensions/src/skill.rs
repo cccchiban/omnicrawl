@@ -194,7 +194,6 @@ pub fn validate_skill_description(description: &str) -> Vec<String> {
 pub struct SkillManager {
     /// 保插入序：`match` 的候选顺序与 Python 的 dict 迭代序一致。
     index: Vec<(String, SkillMeta)>,
-    body_cache: Vec<(String, String)>,
     diagnostics: Vec<SkillDiagnostic>,
     real_paths: HashSet<String>,
     last_cwd: Option<PathBuf>,
@@ -228,7 +227,6 @@ impl SkillManager {
         enterprise_dir: Option<&str>,
     ) {
         self.index.clear();
-        self.body_cache.clear();
         self.diagnostics.clear();
         self.real_paths.clear();
         let work_dir = match cwd {
@@ -289,8 +287,8 @@ impl SkillManager {
             if resolved.is_dir() {
                 self.scan_directory(&resolved, "path");
             } else if resolved.is_file() && has_md_suffix(&resolved) {
-                if let Some((meta, body)) = self.parse_skill_file(&resolved, "path") {
-                    self.add_skill(meta, body);
+                if let Some(meta) = self.parse_skill_file(&resolved, "path") {
+                    self.add_skill(meta);
                 }
             } else {
                 self.diagnostics.push(SkillDiagnostic::warning(
@@ -342,23 +340,23 @@ impl SkillManager {
             if entry.is_dir() {
                 let skill_md = entry.join(SKILL_FILE_NAME);
                 if skill_md.is_file() {
-                    if let Some((meta, body)) = self.parse_skill_file(&skill_md, scope) {
-                        self.add_skill(meta, body);
+                    if let Some(meta) = self.parse_skill_file(&skill_md, scope) {
+                        self.add_skill(meta);
                     }
                     // 找到 SKILL.md → 不再递归深入。
                     continue;
                 }
                 self.scan_directory(&entry, scope);
             } else if entry.is_file() && has_md_suffix(&entry) && name != SKILL_FILE_NAME {
-                if let Some((meta, body)) = self.parse_skill_file(&entry, scope) {
-                    self.add_skill(meta, body);
+                if let Some(meta) = self.parse_skill_file(&entry, scope) {
+                    self.add_skill(meta);
                 }
             }
         }
     }
 
     /// 添加 Skill 到索引，处理符号链接去重和同名冲突。
-    fn add_skill(&mut self, meta: SkillMeta, body: String) {
+    fn add_skill(&mut self, meta: SkillMeta) {
         let real_key = match std::fs::canonicalize(&meta.source_path) {
             Ok(value) => value.to_string_lossy().to_string(),
             Err(_) => meta.source_path.to_string_lossy().to_string(),
@@ -391,12 +389,11 @@ impl SkillManager {
             return;
         }
 
-        self.body_cache.push((meta.name.clone(), body));
         self.index.push((meta.name.clone(), meta));
     }
 
     /// 解析 SKILL.md 的 YAML frontmatter；缺少必填字段或读取失败时返回 None。
-    fn parse_skill_file(&mut self, file_path: &Path, scope: &str) -> Option<(SkillMeta, String)> {
+    fn parse_skill_file(&mut self, file_path: &Path, scope: &str) -> Option<SkillMeta> {
         let raw = std::fs::read_to_string(file_path).ok()?;
         let (frontmatter, body) = parse_frontmatter(&raw);
         let manifest = read_manifest(file_path.parent().unwrap_or(Path::new(".")));
@@ -475,7 +472,7 @@ impl SkillManager {
             scope: scope.to_string(),
             disable_model_invocation: disable_model,
         };
-        Some((meta, body))
+        Some(meta)
     }
 
     /// 基于用户输入与 Skill description 的关键词匹配；`disable-model-invocation` 的技能不参与。
@@ -590,13 +587,11 @@ impl SkillManager {
     }
 
     /// 一个 Skill 的检索 token：名称、描述与正文一起分词。
+    ///
+    /// 正文按需读取、分词后立即释放：搜索是显式工具调用，不值得为它把所有
+    /// `SKILL.md` 常驻在内存里。
     fn search_tokens(&self, meta: &SkillMeta) -> Vec<String> {
-        let body = self
-            .body_cache
-            .iter()
-            .find(|(name, _)| name == &meta.name)
-            .map(|(_, body)| body.as_str())
-            .unwrap_or_default();
+        let body = read_skill_body(meta);
         bm25::tokenize(&format!(
             "{} {} {}",
             meta.name.replace('-', " "),
@@ -633,19 +628,21 @@ impl SkillManager {
         self.index.len()
     }
 
-    /// 获取完整 Skill 正文，优先使用缓存的 body。
+    /// 获取完整 Skill 正文：只在 `/skill:<名>` 命中或工具真正读取时加载。
     fn load_skill(&self, meta: &SkillMeta) -> Skill {
-        let body = self
-            .body_cache
-            .iter()
-            .find(|(name, _)| name == &meta.name)
-            .map(|(_, body)| body.clone())
-            .unwrap_or_default();
         Skill {
             meta: meta.clone(),
-            body,
+            body: read_skill_body(meta),
         }
     }
+}
+
+/// 按需读取一个 Skill 的正文：发现期只保留元数据，正文用完即弃。
+fn read_skill_body(meta: &SkillMeta) -> String {
+    std::fs::read_to_string(&meta.source_path)
+        .ok()
+        .map(|raw| parse_frontmatter(&raw).1)
+        .unwrap_or_default()
 }
 
 /// 确保作用域目录存在；创建失败时保持静默降级。

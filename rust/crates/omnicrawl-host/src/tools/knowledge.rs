@@ -4,7 +4,8 @@
 //! `omnicrawl/agent/toolkit/knowledge_tools.py`（工具参数与结果适配）。知识库默认位于用户
 //! 主目录的 `.OmniCrawl/knowledge`，与工作区无关；所有读写路径都必须落在根目录内，`..` 拒绝。
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use omnicrawl_controllers::json::{python_dumps, python_number_text};
@@ -225,22 +226,30 @@ impl KnowledgeBase {
     }
 
     /// 扫描知识库全部笔记（跳过 `INDEX.md` / `README.md` 与隐藏项），按相对路径小写排序。
+    ///
+    /// 只读 frontmatter，不把正文读进内存：列表/索引页只需要元数据。
     pub fn list_notes(&self) -> Vec<NoteMeta> {
         let mut notes: Vec<NoteMeta> = self
-            .scan_notes()
+            .scan_note_files()
             .into_iter()
-            .map(|(meta, _body)| meta)
+            .filter_map(|(path, rel_path)| {
+                let meta = read_note_frontmatter(&path)?;
+                Some(meta_from_dict(&rel_path, &meta))
+            })
             .collect();
         notes.sort_by_key(|note| note.rel_path.to_lowercase());
         notes
     }
 
-    fn scan_notes(&self) -> Vec<(NoteMeta, String)> {
+    /// 遍历知识库里的 Markdown 文件，返回 `(绝对路径, 根目录相对路径)`。
+    ///
+    /// 只做路径发现，不读文件内容；列表与搜索各自决定读多少。
+    fn scan_note_files(&self) -> Vec<(PathBuf, String)> {
         let root = resolve_lenient(&self.root);
         if !root.is_dir() {
             return Vec::new();
         }
-        let mut documents: Vec<(NoteMeta, String)> = Vec::new();
+        let mut files: Vec<(PathBuf, String)> = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(current) = stack.pop() {
             let Ok(entries) = fs::read_dir(&current) else {
@@ -284,17 +293,11 @@ impl KnowledgeBase {
                 let Ok(relative) = resolved.strip_prefix(&root) else {
                     continue;
                 };
-                let Ok(bytes) = fs::read(&resolved) else {
-                    continue;
-                };
-                let Ok(text) = String::from_utf8(bytes) else {
-                    continue;
-                };
-                let (meta, body, _extra) = parse_frontmatter(&text);
-                documents.push((meta_from_dict(&to_posix(relative), &meta), body));
+                let rel_path = to_posix(relative);
+                files.push((resolved, rel_path));
             }
         }
-        documents
+        files
     }
 
     pub fn read(&self, rel_path: &str) -> Result<String, ToolError> {
@@ -559,7 +562,12 @@ impl KnowledgeBase {
         let status = status.filter(|value| !value.trim().is_empty());
         let project = project.filter(|value| !value.trim().is_empty());
         let mut results: Vec<SearchHit> = Vec::new();
-        for (note, body) in self.scan_notes() {
+        for (path, rel_path) in self.scan_note_files() {
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let (meta, body, _extra) = parse_frontmatter(&text);
+            let note = meta_from_dict(&rel_path, &meta);
             if !matches_filters(&note, project, note_type, status, tags) {
                 continue;
             }
@@ -693,6 +701,37 @@ fn text_field(meta: &Map<String, Value>, key: &str) -> String {
         Some(other) => scalar_text(other),
         None => String::new(),
     }
+}
+
+/// frontmatter 的读取上限：只读头部，正文永远不进列表/索引路径。
+const MAX_FRONTMATTER_BYTES: usize = 64 * 1024;
+
+/// 只读取 Markdown 头部的 YAML frontmatter，不把正文读进内存。
+fn read_note_frontmatter(path: &Path) -> Option<Map<String, Value>> {
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first = String::new();
+    if reader.read_line(&mut first).ok()? == 0 {
+        return Some(Map::new());
+    }
+    if first.trim() != "---" {
+        return Some(Map::new());
+    }
+    // 统一用 LF 重新拼头部：`parse_frontmatter` 只认 `---\n`，CRLF 文件也要能读。
+    let mut text = String::from("---\n");
+    for line in reader.lines() {
+        let line = line.ok()?;
+        text.push_str(&line);
+        text.push('\n');
+        if line.trim() == "---" {
+            break;
+        }
+        if text.len() > MAX_FRONTMATTER_BYTES {
+            return None;
+        }
+    }
+    let (meta, _body, _extra) = parse_frontmatter(&text);
+    Some(meta)
 }
 
 fn parse_frontmatter(text: &str) -> (Map<String, Value>, String, Vec<(String, Value)>) {

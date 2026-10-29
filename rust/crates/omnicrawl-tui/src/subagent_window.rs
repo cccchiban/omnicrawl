@@ -1180,7 +1180,7 @@ mod tests {
         };
         assert_eq!(card.name, "read");
         assert_eq!(card.status, ToolStatus::Ok);
-        assert_eq!(card.body, vec!["ok".to_string()]);
+        assert_eq!(card.body, "ok");
         // 还有任务在跑：状态行会显示运行态（主代理据此画 spinner 与 `[ ESC ]`）。
         assert!(state.turn.is_running());
     }

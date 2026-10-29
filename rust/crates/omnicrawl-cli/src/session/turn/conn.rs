@@ -47,6 +47,16 @@ pub(crate) struct Conn {
     /// `tool_call_evicted` 事件（=标注），真正的剔除留到回合收尾一次性做
     /// （见 [`run_session_tail`]）——这就是用户要的「先标注-后压缩」。
     pub(crate) evict_marks: Rc<RefCell<Vec<String>>>,
+    /// 本轮逐批工具调用压缩的净省 Token 累加器（每回合清零）。
+    ///
+    /// 逐批压缩发生在回合运行中，但计量只在回合收尾落一行（与淘汰合并）：压缩是个过程，
+    /// 用户要看的是「这一回合总共省了多少」，而不是每批抖一行提示。
+    pub(crate) tool_compaction_saved: i64,
+    /// 本轮被采纳的逐批压缩次数（每回合清零）。
+    ///
+    /// 与净省量分开记：净省可能恰好为 0（压小了但按折算抹平），这时也要留下合并计量事件，
+    /// 否则回放会退回去按分项事件重建计量行，跟实时显示不一致。
+    pub(crate) tool_compaction_batches: usize,
     /// 后台任务管理器：任务表供 `subagent.query` 与工作区切换拦阻查询。
     pub(crate) tasks: Option<SubAgentTaskManager>,
     /// 跨回合复用的模型运行时：按构建键缓存最后一个。

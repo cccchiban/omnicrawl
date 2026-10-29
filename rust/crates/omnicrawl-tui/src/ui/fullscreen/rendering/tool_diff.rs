@@ -93,6 +93,34 @@ pub fn read_result_line_range(result_text: &str) -> Option<(i64, i64)> {
     }
 }
 
+/// 工具卡正文该在 `records` 里保留多少文本。
+///
+/// 隐藏正文的工具（`read` / 记忆 / 知识库）渲染时不会读正文；但 `read` 的标题要用
+/// 首尾行号算「第 a-b 行」，所以只留首尾两条非空行。其余工具保留完整输出；
+/// 正文改成一个 `String` 后，渲染不再每帧 `join` 一次。
+pub fn stored_result_text(tool_name: &str, output: &str) -> String {
+    let operation = tool_operation(tool_name);
+    if operation == "read" {
+        // 只保留带行号的首尾两行：标题的「第 a-b 行」靠它们计算，正文本身不展示。
+        let first = output
+            .lines()
+            .find(|line| read_result_line_range(line).is_some());
+        let last = output
+            .lines()
+            .rev()
+            .find(|line| read_result_line_range(line).is_some());
+        return match (first, last) {
+            (Some(first), Some(last)) if first != last => format!("{first}\n{last}"),
+            (Some(first), _) => first.to_string(),
+            _ => String::new(),
+        };
+    }
+    if HIDDEN_BODY_TOOLS.contains(&operation) {
+        return String::new();
+    }
+    output.to_string()
+}
+
 /// 把目录结果压缩为标题摘要，避免把完整列表挤进消息流。
 pub fn list_result_summary(result_text: &str) -> Option<String> {
     if result_text.is_empty() {
@@ -1141,5 +1169,32 @@ mod tests {
         assert!(is_file_change_tool("Edit_file"));
         assert!(!is_file_change_tool("read"));
         assert!(!is_file_change_tool(""));
+    }
+
+    #[test]
+    fn stored_result_text_keeps_only_what_the_card_reads() {
+        // read 的正文不展示，但标题要用首尾行号。
+        assert_eq!(
+            stored_result_text("read", "   1: a
+   2: b
+   3: c"),
+            "   1: a
+   3: c"
+        );
+        // 首行是说明文字时，仍要取第一条带行号的行，不能把范围算成 (3,3)。
+        assert_eq!(
+            stored_result_text("read", "文件：a.py
+   1: a
+   3: c"),
+            "   1: a
+   3: c"
+        );
+        // 记忆/知识库正文完全不展示：不留在 ToolCard 里。
+        assert_eq!(stored_result_text("kb_search", "很长的一篇笔记"), "");
+        assert_eq!(stored_result_text("memory_read", "很长的一条记忆"), "");
+        // 普通工具仍需完整正文。
+        assert_eq!(stored_result_text("bash", "第一行
+第二行"), "第一行
+第二行");
     }
 }

@@ -28,7 +28,9 @@ use omnicrawl_controllers::context_compaction::{
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
 use omnicrawl_controllers::tool_args::{public_tool_arguments, TODO_TOOL_NAME};
 use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
-use omnicrawl_controllers::turn::compaction::format_compaction_savings_notice;
+use omnicrawl_controllers::turn::compaction::{
+    compaction_measure_payload, format_compaction_savings_option, COMPACTION_MEASURE_EVENT_TYPE,
+};
 use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
 };

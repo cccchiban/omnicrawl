@@ -16,6 +16,7 @@ pub const UNDO_KIND_INCOMPLETE: &str = "incomplete";
 /// 完整回合中「跟随在回复之后、仍属于本回合」的事件类型。
 const TRAILING_TURN_EVENT_TYPES: &[&str] = &[
     "compact_summary",
+    "turn_compaction",
     "turn_snapshot",
     "turn_cancelled",
     "session_interrupted",

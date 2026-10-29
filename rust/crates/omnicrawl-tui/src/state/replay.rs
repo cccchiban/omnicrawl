@@ -68,6 +68,10 @@ impl AppState {
             let mut pending: Vec<(String, String, usize, Option<DateTime<Utc>>)> = Vec::new();
             // 被拒绝的调用：`call_id` 或 `tool:<name>` → 原因；收口时优先用它当正文。
             let mut denied: Vec<(String, String)> = Vec::new();
+            // 回合序号（每个 `user_message` 开启一个）与「已有合并计量行」的回合集合：
+            // 新会话的逐批压缩/淘汰不再各自成行，由回合末那一条合并计量代表。
+            let mut turn_index = 0usize;
+            let merged_turns = replayed_merged_turns(events);
             for event in events {
                 let event_type = event
                     .get("type")
@@ -85,6 +89,7 @@ impl AppState {
                             let images = replay_user_images(&payload);
                             self.push_user_message(content, images);
                         }
+                        turn_index += 1;
                     }
                     "assistant_message" => {
                         // 压缩后的会话正文放在 `session_content`，回放优先读它。
@@ -134,7 +139,7 @@ impl AppState {
                             status: ToolStatus::Running,
                             elapsed: None,
                             started: Instant::now(),
-                            body: Vec::new(),
+                            body: String::new(),
                         }));
                         pending.push((call_id, tool, index, replay_time(event)));
                     }
@@ -180,7 +185,7 @@ impl AppState {
                                     status: ToolStatus::Running,
                                     elapsed: None,
                                     started: Instant::now(),
-                                    body: Vec::new(),
+                                    body: String::new(),
                                 }));
                                 (index, replay_time(event))
                             }
@@ -197,7 +202,10 @@ impl AppState {
                                 ToolStatus::Failed
                             };
                             card.elapsed = replay_elapsed(started, finished);
-                            card.body = body_lines(&replay_output(&payload));
+                            card.body = crate::ui::fullscreen::rendering::tool_diff::stored_result_text(
+                                &card.name,
+                                &replay_output(&payload),
+                            );
                         }
                     }
                     other => {
@@ -218,15 +226,24 @@ impl AppState {
                                     .push(Record::Assistant(format!("会话压缩摘要：\n{content}")));
                             }
                         } else if other == "tool_call_summary" {
-                            // 回合末的整轮工具调用压缩：被概括的逐条工具事件已被投影剔除，
-                            // 这里补一行与实时通知同款的计量边界（用户要求「和上下文压缩一样」）。
-                            if let Some(note) = replay_compaction_notice(&payload) {
-                                self.records.push(Record::Notice(note));
+                            // 回合内的逐批工具调用压缩：被概括的逐条工具事件已被投影剔除，
+                            // 这里不再单独画计量（回合末的 `turn_compaction` 已把逐批压缩与
+                            // 淘汰合并成一行）。旧会话没有合并事件，仍按字符数重建那一行。
+                            if !merged_turns.contains(&turn_index) {
+                                if let Some(note) = replay_compaction_notice(&payload) {
+                                    self.records.push(Record::Notice(note));
+                                }
                             }
                         } else if other == "tool_call_eviction" {
-                            // 决策模型标记淘汰的记账：实时那一行由内核发 `turn.notice`，
-                            // 回放这里按同一份载荷重建（数字与当时看到的一致）。
-                            if let Some(note) = replay_eviction_notice(&payload) {
+                            // 决策模型标记淘汰的记账：同上，新会话由回合末的合并计量行代表。
+                            if !merged_turns.contains(&turn_index) {
+                                if let Some(note) = replay_eviction_notice(&payload) {
+                                    self.records.push(Record::Notice(note));
+                                }
+                            }
+                        } else if other == "turn_compaction" {
+                            // 回合末的合并计量：逐批工具输出压缩与决策模型淘汰的总净省。
+                            if let Some(note) = replay_merged_notice(&payload) {
                                 self.records.push(Record::Notice(note));
                             }
                         }
@@ -253,7 +270,7 @@ impl AppState {
                 };
                 if let Some(Record::Tool(card)) = self.records.get_mut(index) {
                     card.status = status;
-                    card.body = vec![reason];
+                    card.body = reason;
                 }
             }
             self.scroll_to_bottom();

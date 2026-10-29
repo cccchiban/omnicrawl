@@ -152,11 +152,13 @@ impl KernelSession {
     /// 因此「最后一次事件类型 → 动作」的映射不会在两侧分叉。本方法是幂等的：
     /// 会话已被丢弃后再调用会因读不到事件而落到「无会话」分支，不做第二次写入。
     pub fn close(&self) {
+        // 索引里的 `last_event_type` 在每次写入事件后同步更新；退出收尾不必把整份
+        // 转录读进内存，只为一个类型字段。
         let last_event_type = self
             .store
-            .read_active_events(&self.session_id)
+            .last_active_event_type(&self.session_id)
             .ok()
-            .and_then(|events| events.last().map(|event| event.event_type.clone()));
+            .flatten();
         match session_closed_action(last_event_type.as_deref()) {
             SessionCloseAction::None => {}
             SessionCloseAction::Discard => {

@@ -251,7 +251,7 @@ impl AppState {
                     card.status = ToolStatus::Failed;
                     card.elapsed = Some(now.saturating_duration_since(card.started));
                     if card.body.is_empty() {
-                        card.body = vec![message.to_string()];
+                        card.body = message.to_string();
                     }
                 }
                 self.touch_record(index);
@@ -329,7 +329,7 @@ impl AppState {
                 status: ToolStatus::Running,
                 elapsed: None,
                 started: now,
-                body: Vec::new(),
+                body: String::new(),
             }));
         }
 

@@ -175,8 +175,8 @@ pub(super) fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             respond_session_query(conn, id, &SessionQuery::History(params));
             false
         }
-        Command::SessionEvents => {
-            respond_session_query(conn, id, &SessionQuery::Events);
+        Command::SessionEvents(params) => {
+            respond_session_query(conn, id, &SessionQuery::Events(params));
             false
         }
         Command::SessionNew => {
@@ -308,6 +308,8 @@ pub fn run_stdio() -> Result<(), String> {
         tool_call_prune: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
         evict_marks: Rc::new(RefCell::new(Vec::new())),
+        tool_compaction_saved: 0,
+        tool_compaction_batches: 0,
         tasks: None,
         runtime_cache: None,
         next_id: 0,

@@ -12,7 +12,8 @@
 2. `_apply_batch_output_budget`：单工具 >50K 或批次 >200K 的输出先落盘，只留头尾预览与路径。
 3. **`_compact_tool_outputs`**：筛出合格结果 → 并行调用压缩模型 → 被采纳的结果替换模型可见文本。
 4. `_prepare_tool_result_for_model`（视觉路由）→ 写 `tool_result` 会话事件 → 回填 `AgentLoopObservation`。
-5. 每个被压缩的工具结果通过 `on_tool_output_update` 回调触发 TUI 卡片正文刷新。
+5. 每个被压缩的工具结果通过 `on_tool_output_update` 回调触发 TUI 卡片正文刷新（卡片上不加计量行）。
+6. 净省 Token 按回合累加（`Conn::tool_compaction_saved`），回合收尾与决策模型淘汰的净省合并成**一行** `已压缩：N Token` 落到会话区，并落 `turn_compaction` 事件供回放重建。
 
 字段语义（沿用既有分叉，不新增 ToolResult 字段）：
 
