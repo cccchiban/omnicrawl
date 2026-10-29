@@ -263,7 +263,7 @@ TUI 侧 `app.rs::*_form_values`（如 `run_guard_form_values` 15 行字段顺序
 | --- | --- | --- |
 | `dist/` | 487 MB | 已被 `.gitignore`，纯本地产物 |
 | `.omnicrawl/` | 267 MB / 1,310 文件 | Agent 临时目录，未跟踪 |
-| `*.omnicrawl.edit.lock` 残留 | **79 个**（会随编辑操作再生） | 编辑工具的锁文件散落在 `src/`、`assets/`、`tests/`、`.agent_tmp/` 里，虽然被 git 忽略，但污染目录视图与 `grep`；本次调查期间又新增了 3 个 |
+| `*.omnicrawl.edit.lock` 残留 | **79 个**（会随编辑操作再生） | 编辑工具的锁文件散落在 `src/`、`assets/`、`tests/`、`.agent_tmp/` 里，虽然被 git 忽略，但污染目录视图与 `grep`；本次调查期间又新增了 3 个。**已修复**：锁文件改落用户配置目录 `~/.OmniCrawl/edit-locks`（按目标路径摘要命名），编辑时顺手清掉目标旁的旧锁；遗留的旧文件可按需一次性删除 |
 | `.omnicrawl/.agent_tmp` 里的旧中间态 | `base/app_head.rs` 7,498 行、`py_core.py` 6,425 行、`service_head.rs` 2,741 行等 | 本次调查已排除，但按行数扫全仓时会污染统计 |
 
 ### 5.6 内联测试塞爆生产文件

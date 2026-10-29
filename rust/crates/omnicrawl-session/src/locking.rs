@@ -153,6 +153,27 @@ pub fn try_lock_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
+/// 立即尝试取锁：成功返回持锁句柄，被别人占着返回 `None`。
+///
+/// 用于「清扫前先确认没人用」：能拿到锁说明锁文件是死的，删掉不会打破互斥。
+pub fn try_lock_file_now(path: &Path) -> std::io::Result<Option<File>> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    match lock_file(&file) {
+        Ok(()) => Ok(Some(file)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// 持锁凭据：销毁即解锁并关闭句柄（解锁失败按已失效处理）。
 pub struct ProcessLockGuard<'a> {
     file: Option<File>,

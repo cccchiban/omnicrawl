@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use omnicrawl_session::locking::{atomic_write_text, ProcessFileLock};
+use omnicrawl_session::locking::{atomic_write_text, try_lock_file_now, ProcessFileLock};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -23,6 +23,10 @@ pub const EDIT_CONTEXT_LINES: i64 = 2;
 const LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 const LOCK_POLL_SECONDS: f64 = 0.05;
 const LOCK_FILE_SUFFIX: &str = ".omnicrawl.edit.lock";
+/// 锁目录清扫阈值：超过这个年龄且没人持有才回收。
+const LOCK_SWEEP_MAX_AGE_SECONDS: u64 = 7 * 24 * 3600;
+/// 单次清扫扫描的文件上限：锁目录再大也不该拖慢第一次编辑。
+const LOCK_SWEEP_MAX_ENTRIES: usize = 4096;
 
 /// 文件版本指纹：大小、纳秒 mtime 与内容摘要。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +50,9 @@ pub fn edit_file(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Tool
         return Err(ToolError::new("old_text 不能为空。"));
     }
 
-    let lock = lock_for(&path);
+    // 旧版把锁写在目标旁边；现在不写了，顺手清掉能清的那些（拿得到锁才删）。
+    remove_legacy_lock(&path);
+    let lock = lock_for(paths, &path);
     let _guard = lock
         .acquire(LOCK_TIMEOUT_SECONDS, LOCK_POLL_SECONDS)
         .map_err(|error| {
@@ -135,9 +141,15 @@ pub fn edit_file(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Tool
 }
 
 /// 同一目标文件共享的跨线程/跨进程编辑锁（Python 侧 `_EDIT_FILE_LOCKS`）。
-fn lock_for(path: &Path) -> Arc<ProcessFileLock> {
+///
+/// 锁文件落在 `WorkspacePaths::lock_root()`（宿主给的是用户配置目录下的 `edit-locks`），
+/// 文件名是目标绝对路径的摘要——**不再写进用户的项目树**。锁的语义不变：同机跨进程靠
+/// 同一个锁文件互斥，进程退出由 OS 释放。
+fn lock_for(paths: &WorkspacePaths, path: &Path) -> Arc<ProcessFileLock> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<ProcessFileLock>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let lock_root = paths.lock_root();
+    sweep_lock_root(&lock_root);
     let key = path.to_path_buf();
     let mut guard = registry
         .lock()
@@ -145,12 +157,85 @@ fn lock_for(path: &Path) -> Arc<ProcessFileLock> {
     guard
         .entry(key.clone())
         .or_insert_with(|| {
-            Arc::new(ProcessFileLock::new(PathBuf::from(format!(
-                "{}{LOCK_FILE_SUFFIX}",
-                key.display()
-            ))))
+            Arc::new(ProcessFileLock::new(
+                lock_root.join(lock_file_name(&key)),
+            ))
         })
         .clone()
+}
+
+/// 锁文件名：目标绝对路径的 sha256 前 16 字节，去掉目录层级，避免把路径结构搬进锁目录。
+fn lock_file_name(target: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(target.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{hex}{LOCK_FILE_SUFFIX}")
+}
+
+/// 清扫一次锁目录：一个进程只扫一遍。
+///
+/// 只删「年龄超过阈值且现在能立刻拿到锁」的文件——拿不到说明有进程正在编辑，
+/// 绝不能动。这样锁目录不会无限增长，也不会打破互斥。
+fn sweep_lock_root(root: &Path) {
+    static SWEPT: OnceLock<()> = OnceLock::new();
+    if SWEPT.set(()).is_err() {
+        return;
+    }
+    let _ = sweep_lock_root_once(root, LOCK_SWEEP_MAX_AGE_SECONDS, SystemTime::now());
+}
+
+fn sweep_lock_root_once(root: &Path, max_age_seconds: u64, now: SystemTime) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        // 锁目录还没建：第一次编辑自然会建，不需要在这里代劳。
+        Err(_) => return Ok(0),
+    };
+    let mut removed = 0usize;
+    for (index, entry) in entries.flatten().enumerate() {
+        if index >= LOCK_SWEEP_MAX_ENTRIES {
+            break;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("lock") {
+            continue;
+        }
+        let age_seconds = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .map(|age| age.as_secs())
+            .unwrap_or(0);
+        if age_seconds < max_age_seconds {
+            continue;
+        }
+        // 先取锁确认没人用，再放手删除（Windows 上持着句柄删不掉）。
+        let probe = try_lock_file_now(&path).ok().flatten();
+        if probe.is_some() {
+            drop(probe);
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// 删掉旧版留在目标旁边的锁文件：先确认没人持有（拿得到锁才删）。
+fn remove_legacy_lock(target: &Path) {
+    let legacy = PathBuf::from(format!("{}{LOCK_FILE_SUFFIX}", target.display()));
+    if !legacy.exists() {
+        return;
+    }
+    if let Ok(Some(probe)) = try_lock_file_now(&legacy) {
+        drop(probe);
+        let _ = std::fs::remove_file(&legacy);
+    }
 }
 
 fn invalid_text(display: &str) -> String {
@@ -280,11 +365,78 @@ mod tests {
         let root = std::env::temp_dir().join(format!("omnicrawl-tui-edit-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("创建临时工作区");
-        (WorkspacePaths::new(&root), root)
+        // 锁目录单独放在工作区之外（生产同理：用户配置目录），这里用工作区的兄弟目录模拟。
+        let lock_root = std::env::temp_dir().join(format!("omnicrawl-tui-edit-{name}-locks"));
+        let _ = std::fs::remove_dir_all(&lock_root);
+        (
+            WorkspacePaths::new(&root).with_lock_root(&lock_root),
+            root,
+        )
     }
 
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn edit_lock_stays_out_of_the_workspace() {
+        let (paths, root) = workspace("lock-location");
+        std::fs::write(root.join("a.py"), "旧\n").expect("预置文件");
+        edit_file(
+            &paths,
+            &args(json!({"path": "a.py", "old_text": "旧", "new_text": "新"})),
+        )
+        .expect("替换应成功");
+
+        assert!(
+            !root.join("a.py.omnicrawl.edit.lock").exists(),
+            "锁文件不该出现在用户项目树里"
+        );
+        let locks: Vec<_> = std::fs::read_dir(paths.lock_root())
+            .expect("锁目录应当存在")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(locks.len(), 1, "每个被编辑的文件一把锁：{locks:?}");
+        assert!(locks[0]
+            .to_string_lossy()
+            .ends_with(".omnicrawl.edit.lock"));
+        let content = std::fs::read_to_string(&locks[0]).unwrap_or_default();
+        assert!(content.starts_with("pid="), "锁文件应写入持有者：{content}");
+    }
+
+    #[test]
+    fn legacy_lock_beside_the_target_is_cleaned_up() {
+        let (paths, root) = workspace("legacy-lock");
+        std::fs::write(root.join("a.py"), "旧\n").expect("预置文件");
+        let legacy = root.join("a.py.omnicrawl.edit.lock");
+        std::fs::write(&legacy, "pid=1\n").expect("预置旧锁");
+
+        edit_file(
+            &paths,
+            &args(json!({"path": "a.py", "old_text": "旧", "new_text": "新"})),
+        )
+        .expect("替换应成功");
+        assert!(!legacy.exists(), "旧版留在目标旁的锁文件应当被清掉");
+    }
+
+    #[test]
+    fn sweep_removes_idle_locks_and_keeps_held_ones() {
+        let dir = std::env::temp_dir().join("omnicrawl-edit-sweep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建锁目录");
+        let idle = dir.join("idle.omnicrawl.edit.lock");
+        let held = dir.join("held.omnicrawl.edit.lock");
+        std::fs::write(&idle, "pid=1\n").expect("写锁");
+        std::fs::write(&held, "pid=2\n").expect("写锁");
+        let guard = try_lock_file_now(&held).expect("取锁").expect("应当拿到锁");
+
+        let removed = sweep_lock_root_once(&dir, 0, SystemTime::now()).expect("清扫");
+        assert_eq!(removed, 1);
+        assert!(!idle.exists(), "没人用的旧锁应被回收");
+        assert!(held.exists(), "有人持有的锁绝不能删");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

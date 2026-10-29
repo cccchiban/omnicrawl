@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_controllers::tool_args::{
     mcp_fields, mcp_prompt_arguments_error, mcp_prompt_result, mcp_resource_result,
     mcp_tool_result, normalize_tool_call, tool_validation_error_result, validate_tool_arguments,
@@ -233,7 +233,13 @@ impl ToolRegistry {
         options: &RegistryOptions,
         command_timeout_seconds: i64,
     ) -> Result<Self, ToolError> {
-        let paths = WorkspacePaths::new(root);
+        // 编辑锁落在用户配置目录，不写进工作区：用户的项目树里不该出现 `*.omnicrawl.edit.lock`。
+        let config_env = options
+            .config_env
+            .clone()
+            .unwrap_or_else(ConfigEnvironment::from_process);
+        let paths = WorkspacePaths::new(root)
+            .with_lock_root(user_config_dir(&config_env).join("edit-locks"));
         let mut available: Vec<String> = META_RUNNERS
             .iter()
             .chain(BOUND_RUNNERS.iter())
@@ -411,10 +417,7 @@ impl ToolRegistry {
             tts: options.tts.clone(),
             advisor,
             mcp: options.mcp.clone(),
-            config_env: options
-                .config_env
-                .clone()
-                .unwrap_or_else(ConfigEnvironment::from_process),
+            config_env,
             mcp_tool_names,
             mcp_resource_names,
             mcp_prompt_names,
@@ -826,6 +829,41 @@ mod tests {
             "关掉的工具不得进表：{names:?}"
         );
         assert!(names.contains("read"), "其余工具照旧进表：{names:?}");
+    }
+
+
+    /// 编辑锁不落进工作区：`Edit_file` 的锁文件进用户配置目录，项目树保持干净。
+    #[test]
+    fn edit_lock_lands_in_the_config_dir_not_the_workspace() {
+        let root = std::env::temp_dir().join("omnicrawl-registry-edit-lock");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let options = RegistryOptions {
+            config_env: Some(omnicrawl_config::core::runtime::ConfigEnvironment::new(
+                &root, "windows",
+            )),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+
+        std::fs::write(root.join("note.md"), "旧内容\n").expect("预置文件");
+        let result = registry
+            .execute(&call(
+                "Edit_file",
+                json!({"path": "note.md", "old_text": "旧内容", "new_text": "新内容"}),
+            ))
+            .expect("Edit_file 应当可用");
+        assert!(result.ok, "编辑应当成功：{:?}", result.output);
+
+        assert!(
+            !root.join("note.md.omnicrawl.edit.lock").exists(),
+            "工作区里不该出现锁文件"
+        );
+        let locks = std::fs::read_dir(root.join(".OmniCrawl").join("edit-locks"))
+            .expect("锁目录应当存在")
+            .count();
+        assert_eq!(locks, 1, "锁应当落在配置目录");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 无人值守白名单只留列出的工具：表里没有的既不可见、也执行不了。

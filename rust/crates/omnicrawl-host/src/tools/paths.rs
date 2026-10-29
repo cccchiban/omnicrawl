@@ -29,6 +29,9 @@ pub const PROTECTED_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspacePaths {
     root: PathBuf,
+    /// 编辑锁的落地目录：**不放在工作区里**，免得每次编辑在用户项目树里留一个
+    /// `*.omnicrawl.edit.lock`。None 表示调用方没注入（测试与嵌入），回落到系统临时目录。
+    lock_root: Option<PathBuf>,
 }
 
 impl WorkspacePaths {
@@ -36,7 +39,21 @@ impl WorkspacePaths {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: resolve_lenient(&root.into()),
+            lock_root: None,
         }
+    }
+
+    /// 指定编辑锁目录（宿主装配时给用户配置目录下的 `edit-locks`）。
+    pub fn with_lock_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.lock_root = Some(root.into());
+        self
+    }
+
+    /// 编辑锁目录：未注入时用系统临时目录（单测/嵌入场景，绝不写进工作区）。
+    pub fn lock_root(&self) -> PathBuf {
+        self.lock_root
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("omnicrawl-edit-locks"))
     }
 
     pub fn root(&self) -> &Path {
