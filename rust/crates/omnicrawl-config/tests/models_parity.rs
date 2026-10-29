@@ -784,6 +784,57 @@ fn selection_matches_python() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 换模型必须重算「模型自身声明的视觉能力」：漏了它，`/model` 切到多模态模型后宿主仍按
+/// 上一个模型的能力判定，带图观察会错走视觉代理；换回纯文本模型又可能被当成看得见图。
+#[test]
+fn model_selection_recomputes_the_vision_capability() {
+    let root = temp_root("vision-capability");
+    let dir = user_dir(&root);
+    std::fs::write(
+        dir.join("config.toml"),
+        "[llm.profiles.vision]\nprovider = \"openai\"\nbase_url = \"https://vision.example/v1\"\n\
+         api_key = \"vision-key\"\n\n[llm.active_model]\nsource = \"custom\"\nkey = \"vision-channel\"\n",
+    )
+    .expect("写 config.toml");
+    std::fs::write(
+        dir.join("models.toml"),
+        "version = 1\n\n[models.vision-channel]\ndisplay_name = \"DeepSeek V4.1\"\n\
+         profile = \"vision\"\nmodel_id = \"deepseek-v4.1\"\n\
+         protocol = \"openai_chat_completions\"\nenabled = true\n\n\
+         [models.vision-channel.capabilities]\nvision = true\n",
+    )
+    .expect("写 models.toml");
+
+    let env = R::ConfigEnvironment::new(root.to_string_lossy().to_string(), "win32");
+    let base = LlmConfig {
+        api_key: "k".to_string(),
+        base_url: "https://main.example/v1".to_string(),
+        model: "text-only".to_string(),
+        provider: "openai".to_string(),
+        protocol: "openai_chat_completions".to_string(),
+        profile_id: "vision".to_string(),
+        model_source: "custom".to_string(),
+        ..LlmConfig::with_environment(&env)
+    };
+
+    let switched =
+        multi::apply_model_selection(&env, &base, "vision-channel").expect("自定义 key 应可切换");
+    assert_eq!(switched.model, "deepseek-v4.1");
+    assert_eq!(
+        switched.vision_capability,
+        Some(true),
+        "要带上新模型的视觉能力"
+    );
+
+    let back =
+        multi::apply_model_selection(&env, &switched, "text-only").expect("裸模型名应可切换");
+    assert_eq!(
+        back.vision_capability, None,
+        "裸模型名没有能力来源，不能沿用上一个模型的声明"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn profiles_match_python() {
     let data = fixture();

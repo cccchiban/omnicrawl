@@ -101,7 +101,15 @@ pub fn apply(
             applied.push("model.context_window_tokens".to_string());
         }
         // 原生视觉：设置面板改 `[vision]` / 模型原生视觉后即时下发，不必等下一次握手。
-        if let Some(native) = settings.native_vision {
+        //
+        // `vision_capability` 出现即表示宿主在换模型：能力与显式开关必须一起写回。只改
+        // `native_vision` 会把旧模型的能力（或旧开关）留在内核里，带图观察就按旧模型路由。
+        if let Some(capability) = settings.vision_capability {
+            config.vision_capability = Some(capability);
+            config.native_vision = settings.native_vision;
+            applied.push("model.vision_capability".to_string());
+            applied.push("model.native_vision".to_string());
+        } else if let Some(native) = settings.native_vision {
             config.native_vision = Some(native);
             applied.push("model.native_vision".to_string());
         }
@@ -591,5 +599,33 @@ mod tests {
         );
         apply(&mut model, None, &request).expect("只改推理强度应当被接受");
         assert_eq!(model.expect("模型配置还在").native_vision, Some(true));
+    }
+
+    /// 换模型时能力与开关必须一起写回：只改开关会把旧模型的能力留在内核里，
+    /// 带图观察继续按旧模型路由（能看图的模型也会被摄掉图片）。
+    #[test]
+    fn model_switch_writes_the_vision_capability_with_the_override() {
+        let mut config = model_config(0);
+        config.native_vision = Some(true);
+        config.vision_capability = Some(false);
+        let mut model = Some(config);
+        let request = params(
+            Some(SessionModelSettings {
+                // 新模型没配置开关：同帧给了能力，这一项要按「未配置」写回。
+                native_vision: None,
+                vision_capability: Some(true),
+                ..SessionModelSettings::default()
+            }),
+            None,
+        );
+        let applied = apply(&mut model, None, &request).expect("模型切换应当被接受");
+        let config = model.expect("模型配置还在");
+        assert_eq!(config.vision_capability, Some(true));
+        assert_eq!(
+            config.native_vision, None,
+            "同帧的 None 表示新模型未配置开关"
+        );
+        assert!(applied.contains(&"model.vision_capability".to_string()));
+        assert!(applied.contains(&"model.native_vision".to_string()));
     }
 }

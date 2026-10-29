@@ -212,9 +212,10 @@ impl AgentService {
                 protocol: non_empty(&llm.protocol),
                 base_url: non_empty(&llm.base_url),
                 api_key: non_empty(&llm.api_key),
-                // 原生视觉随模型走：换模型后带图观察是该直送主模型还是交给 `[vision]` 代理，
-                // 取决于新模型的声明，所以每次切换都要重新下发。
-                native_vision: Some(self.options.native_vision),
+                // 原生视觉随模型走：显式开关保持三态，模型能力单独下发——内核按
+                // 「开关优先、未配置看能力」重新判定，不能把启动时那份开关焊死在这里。
+                native_vision: llm.native_vision,
+                vision_capability: Some(llm.vision_capability.unwrap_or(false)),
                 // 淘汰能力不是模型配置的一部分：它是宿主运行期的开关，由 `rebuild_prune` 单独下发。
                 ..SessionModelSettings::default()
             };
@@ -226,6 +227,19 @@ impl AgentService {
                 compaction,
             })?;
             self.set_current_model(&llm.model);
+            // 宿主侧「交不交图」也必须跟着新模型走：运行器与重起内核用的快照一起更新，
+            // 否则新模型看得见图，图片却在 runner 那一层就被拦下了。
+            let attach = native_vision_effective(llm) || vision_proxy_configured(&self.options.env);
+            if let Ok(mut guard) = self.runner.lock() {
+                if let Some(runner) = guard.as_mut() {
+                    runner.set_attach_vision_images(attach);
+                }
+            }
+            if let Ok(mut spawner) = self.spawner.lock() {
+                if let Some(spawner) = spawner.as_mut() {
+                    spawner.runner.attach_vision_images = attach;
+                }
+            }
             Ok(())
         }
 

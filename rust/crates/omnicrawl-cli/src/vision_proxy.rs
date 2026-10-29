@@ -1,12 +1,14 @@
 //! 独立视觉模型代理的内核执行体：把带图观察交给 `[vision].models` 里的模型，取回文本分析。
 //!
 //! 语义基准是 Python `agent/runtime/vision_proxy.py`：按配置顺序尝试，前一个候选失败就换下一个；
-//! 每个候选沿用 `initialize.model` 给的连接、只换 model 名（与工具输出压缩同一做法）。请求是旁路
+//! 每个候选的模型引用先经 `apply_model_selection` 解析成真实模型名与所属渠道的连接。请求是旁路
 //! 调用：不流式、不写会话、无工具与系统提示，`reasoning_effort=none`。
 
 use std::collections::BTreeMap;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::models::llm::{load_llm_config, ActiveModelRef, LlmConfig};
+use omnicrawl_config::models::llm_multi::apply_model_selection;
 use omnicrawl_config::models::vision::load_vision_configuration;
 use omnicrawl_controllers::output::{
     vision_display_text, vision_failure_error, vision_followup_message,
@@ -18,7 +20,8 @@ use omnicrawl_llm::{ChatRequestInput, DiscardSink, ModelRuntime};
 use omnicrawl_protocol::{conversation_from_openai_messages, GenerationOptions};
 use serde_json::Value;
 
-use crate::session::{build_model_runtime_with_key, read_api_key};
+use crate::compression::profile_literal_key;
+use crate::session::build_model_runtime_with_key;
 
 /// 视觉代理成功返回的文本与实际使用的模型标签。
 pub struct VisionAnalysis {
@@ -45,6 +48,54 @@ pub fn has_vision_observation(observations: &[AgentLoopObservation]) -> bool {
         .any(|observation| vision_logic::vision_followup_content(observation).is_some())
 }
 
+/// 把一条候选引用解析成真正要发的模型与连接。
+///
+/// 与 Python `VisionModelProxy._request_one` 同口径：引用先经 `apply_model_selection` 解析成
+/// models.toml 里的 `model_id` 与它所属渠道的 `base_url` / 凭据——直接把引用（渠道 key 或
+/// `profile/model_id`）当模型名发给上游，只会得到「模型不存在或当前账号无权使用该模型」。
+/// 配置读不出来时（极简配置 / 测试）退回「帧里那条连接 + 引用当模型名」，与工具输出压缩的
+/// 兜底同义。
+fn resolve_candidate(
+    env: &ConfigEnvironment,
+    base: Option<&LlmConfig>,
+    frame: &KernelModelConfig,
+    selection: &str,
+    reference: &ActiveModelRef,
+) -> (KernelModelConfig, String) {
+    let resolved = base.and_then(|base| apply_model_selection(env, base, selection).ok());
+    let (mut child, api_key) = match resolved {
+        Some(resolved)
+            if !resolved.model.trim().is_empty() && !resolved.base_url.trim().is_empty() =>
+        {
+            let mut child = frame.clone();
+            child.model = resolved.model.clone();
+            child.provider = resolved.provider.clone();
+            child.protocol = resolved.protocol.clone();
+            child.base_url = resolved.base_url.clone();
+            child.user_agent = resolved.user_agent.clone();
+            let api_key = profile_literal_key(env, &resolved.profile_id)
+                .unwrap_or_else(|| resolved.api_key.clone());
+            (child, api_key)
+        }
+        _ => {
+            let mut child = frame.clone();
+            child.model = selection.to_string();
+            // 配置读不出来时没有可解析的渠道：连接与凭据都只能沿用主模型那份。
+            let api_key = child.api_key.trim().to_string();
+            (child, api_key)
+        }
+    };
+    // `detected` 引用可以显式声明协议：解析结果按 Profile 默认协议，候选可能要求另一种。
+    if reference.source == "detected" && !reference.protocol.is_empty() {
+        child.protocol = reference.protocol.clone();
+    }
+    child.system_prompt = String::new();
+    child.tools = Vec::new();
+    // 故障转移不该被单个候选的长重试拖住（与 Python 一致：每个候选最多两次）。
+    child.request_retry_count = child.request_retry_count.clamp(1, 2);
+    (child, api_key)
+}
+
 impl KernelVisionProxy {
     /// 从 `[vision]` 配置与主模型连接装配代理；未启用或没有可用候选时返回 `None`（代理是可选旁路）。
     pub fn load(model: &KernelModelConfig) -> Option<Self> {
@@ -55,23 +106,15 @@ impl KernelVisionProxy {
             return None;
         }
         let config = load_vision_configuration(&env, None).ok()?;
+        // 主模型视图整个代理共用一份：候选解析只换模型/渠道，不必每个候选重读一次配置。
+        let base = load_llm_config(&env).ok();
         let mut candidates = Vec::new();
         for reference in &config.models {
             let Ok(selection) = vision_logic::model_ref_selection(reference) else {
                 continue;
             };
-            let mut child = model.clone();
-            child.model = selection;
-            if reference.source == "detected" && !reference.protocol.is_empty() {
-                child.protocol = reference.protocol.clone();
-            }
-            child.system_prompt = String::new();
-            child.tools = Vec::new();
-            // 故障转移不该被单个候选的长重试拖住（与 Python 一致：每个候选最多两次）。
-            child.request_retry_count = child.request_retry_count.clamp(1, 2);
-            let Ok(api_key) = read_api_key(&child) else {
-                continue;
-            };
+            let (child, api_key) =
+                resolve_candidate(&env, base.as_ref(), model, &selection, reference);
             let Ok(runtime) = build_model_runtime_with_key(&child, api_key) else {
                 continue;
             };
@@ -189,5 +232,117 @@ impl VisionCandidate {
             return Err(vision_logic::VISION_PROXY_EMPTY_TEXT_ERROR.to_string());
         }
         Ok(vision_logic::bound_text(&text, max_output_chars))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omnicrawl_config::core::runtime::USER_CONFIG_DIRNAME;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    const CONFIG: &str = "\
+[llm.profiles.vision]
+provider = \"openai\"
+base_url = \"https://vision.example/v1\"
+api_key = \"vision-key\"
+
+[llm.active_model]
+source = \"custom\"
+key = \"vision-channel\"
+";
+
+    const MODELS: &str = "\
+version = 1
+
+[models.vision-channel]
+display_name = \"DeepSeek V4.1\"
+profile = \"vision\"
+model_id = \"deepseek-v4.1\"
+protocol = \"openai_chat_completions\"
+enabled = true
+
+[models.vision-channel.capabilities]
+vision = true
+";
+
+    fn temp_home(tag: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("oc-vision-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("建临时 home");
+        home
+    }
+
+    fn config_env(home: &std::path::Path) -> ConfigEnvironment {
+        ConfigEnvironment::new(home.to_string_lossy().to_string(), "win32")
+    }
+
+    /// 写一份「主渠道 + 一条定义为视觉候选的自定义模型」的配置。
+    fn write_configured_home(tag: &str) -> (ConfigEnvironment, PathBuf) {
+        let home = temp_home(tag);
+        let dir = home.join(USER_CONFIG_DIRNAME);
+        std::fs::create_dir_all(&dir).expect("建配置目录");
+        std::fs::write(dir.join("config.toml"), CONFIG).expect("写 config.toml");
+        std::fs::write(dir.join("models.toml"), MODELS).expect("写 models.toml");
+        let env = config_env(&home);
+        (env, home)
+    }
+
+    fn frame() -> KernelModelConfig {
+        serde_json::from_value(json!({
+            "model": "main-model",
+            "provider": "openai",
+            "protocol": "openai_chat_completions",
+            "base_url": "https://main.example/v1",
+            "api_key": "main-key",
+            "system_prompt": "你是助手。",
+            "tools": [{"type": "function", "function": {"name": "read_image"}}],
+            "request_retry_count": 5
+        }))
+        .expect("帧模型配置")
+    }
+
+    fn custom_ref(key: &str) -> ActiveModelRef {
+        ActiveModelRef {
+            source: "custom".to_string(),
+            key: key.to_string(),
+            ..ActiveModelRef::default()
+        }
+    }
+
+    /// 自定义候选要解析成 models.toml 的 `model_id` 与它所属渠道的凭据。
+    ///
+    /// 回归的是「把渠道 key 当模型名发给上游」：真实配置里 key（如 `vision-channel`）与
+    /// 线上模型名（如 `deepseek-v4.1`）不同，原样发出去只会被回「模型不存在」。
+    #[test]
+    fn custom_ref_resolves_to_the_model_id_and_channel_credentials() {
+        let (env, home) = write_configured_home("custom");
+        let reference = custom_ref("vision-channel");
+        let base = load_llm_config(&env).expect("主模型视图应可读取");
+        let (child, api_key) =
+            resolve_candidate(&env, Some(&base), &frame(), "vision-channel", &reference);
+
+        assert_eq!(child.model, "deepseek-v4.1");
+        assert_eq!(child.base_url, "https://vision.example/v1");
+        assert_eq!(api_key, "vision-key");
+        assert!(child.system_prompt.is_empty(), "视觉请求不带主模型提示词");
+        assert!(child.tools.is_empty(), "视觉请求不带工具");
+        assert_eq!(child.request_retry_count, 2, "候选最多重试两次");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 配置读不出来（极简配置 / 测试）时沿用帧里的连接，不能把凭据丢空。
+    #[test]
+    fn unresolved_config_falls_back_to_the_frame_connection() {
+        let home = temp_home("fallback");
+        let env = config_env(&home);
+        let reference = custom_ref("vision-model");
+        let (child, api_key) = resolve_candidate(&env, None, &frame(), "vision-model", &reference);
+
+        assert_eq!(child.model, "vision-model");
+        assert_eq!(child.base_url, "https://main.example/v1");
+        assert_eq!(api_key, "main-key");
+        std::fs::remove_dir_all(home).ok();
     }
 }

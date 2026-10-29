@@ -165,12 +165,13 @@ impl App {
     }
 
 
-    /// 图片有没有去处：原生视觉直送主模型，或配了 `[vision]` 交给视觉代理。
+    /// 粘贴的图片有没有去处：只有原生视觉能处理**用户消息**里的图片。
     ///
-    /// 与 [`Self::attach_vision_images`] 同一判据——那条路决定工具图片交不交出去，
-    /// 用户粘贴的图片走的是同一套路由，两边分开判定会出现「插得进去却发不出去」。
+    /// `[vision]` 代理只分析工具产出的带图观察（内核 `apply_observations`），从不处理
+    /// `turn.submit` 里的用户图片；把代理算进「有通路」会让看不见图的模型收到 base64，
+    /// 上游直接拒掉整个回合。工具图片走哪条路由仍由 [`Self::attach_vision_images`] 决定。
     pub(super) fn vision_route_available(&self) -> bool {
-        self.attach_vision_images()
+        self.native_vision_enabled()
     }
 
 

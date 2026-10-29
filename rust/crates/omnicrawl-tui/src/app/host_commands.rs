@@ -112,6 +112,10 @@ impl App {
     pub(crate) fn command_apply_model_view(&mut self, llm: LlmConfig) {
         self.llm = llm;
         self.state.model = self.llm.model.clone();
+        // 视觉判定随模型一起下发：内核的能力回落读的是握手时那份，只换模型名会让
+        // 带图观察继续按旧模型路由（看得见图的模型也拿不到图片）。
+        let native_vision = self.native_vision_override();
+        let vision_capability = Some(self.llm.vision_capability.unwrap_or(false));
         self.push_session_settings_raw(SessionSettingsParams {
             model: Some(Box::new(SessionModelSettings {
                 model: Some(self.llm.model.clone()),
@@ -119,6 +123,8 @@ impl App {
                 protocol: Some(self.llm.protocol.clone()),
                 base_url: Some(self.llm.base_url.clone()),
                 api_key: Some(self.llm.api_key.clone()),
+                native_vision,
+                vision_capability,
                 ..SessionModelSettings::default()
             })),
             compaction: None,

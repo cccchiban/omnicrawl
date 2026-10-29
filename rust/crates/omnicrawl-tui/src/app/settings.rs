@@ -147,6 +147,9 @@ impl App {
         };
         let model = match change {
             // 换渠道：模型 id 与整条渠道一起下发（空串会被内核按「不改」忽略）。
+            //
+            // 视觉判定必须同帧下发：内核只在握手时读过一次模型能力，换模型后不带
+            // `vision_capability`，带图观察仍按旧模型路由（看得见图的模型也会被摄掉图片）。
             SettingsChange::Model { .. } | SettingsChange::Channels { .. } => {
                 Some(SessionModelSettings {
                     model: Some(self.llm.model.clone()),
@@ -154,6 +157,11 @@ impl App {
                     protocol: Some(self.llm.protocol.clone()),
                     base_url: Some(self.llm.base_url.clone()),
                     api_key: Some(self.llm.api_key.clone()),
+                    native_vision: self.native_vision_override(),
+                    // 能力未知（detected 模型没有 `capabilities.vision`）按不支持处理：
+                    // 与 `model_supports_vision` 的默认值一致，显式写 false 才表达得出
+                    // 「这次是模型切换」。
+                    vision_capability: Some(self.llm.vision_capability.unwrap_or(false)),
                     ..SessionModelSettings::default()
                 })
             }

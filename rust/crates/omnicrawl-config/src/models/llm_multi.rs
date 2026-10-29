@@ -443,6 +443,8 @@ pub fn llm_config_to_profile_and_descriptor(
         // 自定义模型声明的 prompt 缓存能力要进描述符，否则 Runtime 侧的门禁会
         // 看不到它（对应 Python `llm_config_to_profile_and_descriptor` 的同名字段）。
         prompt_cache: config.prompt_cache,
+        // 视觉能力同理：描述符是 Runtime 看到的能力视图，漏了它等于模型声明被吞掉。
+        vision: config.vision_capability,
         context_window_tokens: config.context_window_tokens,
         max_output_tokens: config.max_output_tokens,
         ..Default::default()
@@ -505,8 +507,9 @@ pub fn apply_model_selection(
         model: token.to_string(),
         max_output_tokens: 0,
         temperature: None,
-        // 换模型就重置能力声明：上一模型的 prompt_cache 不该跟着新模型走。
+        // 换模型就重置能力声明：上一模型的 prompt_cache / vision 不该跟着新模型走。
         prompt_cache: None,
+        vision_capability: None,
         native_vision: selection_native_vision(env, "", &config.profile_id),
         protocol: if config.protocol.is_empty() {
             "openai_chat_completions".to_string()
@@ -580,6 +583,8 @@ fn config_from_custom_record(
         catalog_key: record.key.clone(),
         model_source: "custom".to_string(),
         prompt_cache: record.capabilities.prompt_cache,
+        // 视觉能力与模型条目一起换：漏了它，「原生视觉优先」会沿用上一个模型的声明。
+        vision_capability: record.capabilities.vision,
         user_agent: profile.user_agent.clone(),
         request_timeout_seconds: if profile.request_timeout_seconds > 0.0 {
             profile.request_timeout_seconds as i64
@@ -619,6 +624,8 @@ fn config_from_profile_model(
             max_output_tokens: 0,
             temperature: None,
             prompt_cache: None,
+            // detected 模型没有 `capabilities.vision` 来源：能力未知，交给代理。
+            vision_capability: None,
             native_vision: selection_native_vision(env, "", profile_id),
             profile_id: profile_id.to_string(),
             provider: if config.provider.is_empty() {
@@ -666,6 +673,8 @@ fn config_from_profile_model(
         max_output_tokens: 0,
         temperature: None,
         prompt_cache: None,
+        // detected 模型没有 `capabilities.vision` 来源：能力未知，交给代理。
+        vision_capability: None,
         native_vision: selection_native_vision(env, "", &profile.id),
         profile_id: profile.id.clone(),
         provider: profile.provider.clone(),

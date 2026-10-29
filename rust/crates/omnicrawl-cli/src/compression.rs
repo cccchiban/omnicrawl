@@ -97,7 +97,7 @@ fn resolve_compression_model(
 ///
 /// 审查/压缩渠道往往是另一家服务（例如主渠道是聚合网关、压缩渠道是硅基流动），
 /// 用主渠道的 key 去打压缩渠道会 HTTP 401。
-fn profile_literal_key(env: &ConfigEnvironment, profile_id: &str) -> Option<String> {
+pub(crate) fn profile_literal_key(env: &ConfigEnvironment, profile_id: &str) -> Option<String> {
     let profile_id = profile_id.trim();
     if profile_id.is_empty() {
         return None;

@@ -107,7 +107,6 @@ use crate::compaction::{
 
 
 pub(crate) use model_port::build_model_runtime_with_key;
-pub(crate) use model_port::read_api_key;
 pub(crate) use model_port::parse_options;
 pub(crate) use protocol::run_stdio;
 

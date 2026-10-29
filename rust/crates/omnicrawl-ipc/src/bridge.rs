@@ -529,6 +529,14 @@ pub struct SessionModelSettings {
     /// 模型配置里那份只在握手时给一次，改配置要能当场生效。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_vision: Option<bool>,
+    /// 新模型自身声明的视觉能力（`capabilities.vision`）。
+    ///
+    /// 换模型时必须与 `native_vision` 一起下发：内核的能力回落读的是握手时那份
+    /// `initialize.model.vision_capability`，只换模型不换能力，带图观察仍按旧模型判定。
+    /// 给了这个字段就表示「这是一次模型切换」，同帧里的 `native_vision` 即使是 `None`
+    /// 也按「该模型未配置开关」写回，让能力回落生效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_capability: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<i64>,
     // ---- 渠道字段：切换模型渠道时一并下发，空串视作不改 ----

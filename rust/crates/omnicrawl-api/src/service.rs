@@ -120,6 +120,10 @@ pub struct ServiceOptions {
     pub confirmation_timeout_seconds: f64,
     pub command_timeout_seconds: i64,
     pub tool_timeout_seconds: i64,
+    /// 启动时算好的「原生视觉是否生效」（显式开关优先，未配置按模型能力回落）。
+    ///
+    /// 只在装配 `RunnerOptions` 时读一次；运行期换模型由 `apply_model_switch` 直接更新
+    /// 运行器与重起快照，不回写这里——`options` 在装配完成后不可变。
     pub native_vision: bool,
     pub registry_options: RegistryOptions,
     pub max_retained_runs: usize,
@@ -888,7 +892,10 @@ fn options_from_process_profile(
     // 会话根与 Python 一致：`~/.OmniCrawl/.agent_sessions`（不绑工作区），切换工作区不必搬会话。
     options.session_root = Some(user_config_dir(env).join(".agent_sessions"));
     options.approval = approval;
-    options.native_vision = llm.native_vision.unwrap_or(false);
+    // 宿主侧「交不交图」的判据必须与内核一致：显式开关优先，未配置时按模型能力回落。
+    // 只压成 `llm.native_vision.unwrap_or(false)` 会把「模型自己支持视觉、用户没动过开关」
+    // 当成不支持，于是 API 下图片根本不交给内核（TUI 走的是带回落的那条）。
+    options.native_vision = native_vision_effective(&llm);
     options.prompt = prompt;
     options.env = env.clone();
     // MCP 是增量能力：配置读不到只告警；管理器建好后同时进工具表与 `/mcp` 状态。
@@ -976,6 +983,18 @@ fn build_review_options(
     env: &ConfigEnvironment,
 ) -> Option<omnicrawl_host::review::ReviewOptions> {
     omnicrawl_host::review::review_options_from_config(llm, env)
+}
+
+/// 原生视觉是否生效：显式开关优先，未配置时按模型自身声明的能力回落。
+///
+/// 与 TUI 的 `effective_native_vision` / 内核的 `native_vision_enabled` 同一判据：
+/// 把「未配置」压成 `false` 会让支持视觉的模型（如 deepseek-v4.1）白走一趟视觉代理，
+/// 甚至因为代理没配而把图片整个丢掉。
+fn native_vision_effective(llm: &LlmConfig) -> bool {
+    omnicrawl_controllers::turn::turn_loop::native_vision_enabled(
+        llm.native_vision,
+        omnicrawl_controllers::turn::turn_loop::model_supports_vision(llm.vision_capability),
+    )
 }
 
 /// `GenerationOptions` 的 JSON 形状：只带明确配置过的项。

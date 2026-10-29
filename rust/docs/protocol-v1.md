@@ -148,7 +148,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
            "system_prompt": "你是助手。…<active_mode_prompt name=\"plan\">…</active_mode_prompt>",
            "context_messages": [{"role": "user", "content": "<project_instructions>…</project_instructions>"}],
            "tools": [{"type": "function", "function": {"name": "read_file"}}],
-           "native_vision": true, "tool_call_prune": false,
+           "native_vision": true, "vision_capability": true, "tool_call_prune": false,
            "context_window_tokens": 200000},
  "compaction": {"trigger_context_tokens": 160000, "context_window_tokens": 200000}}
 ```
@@ -176,6 +176,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `model.native_vision` 与 `model.tool_call_prune` 是**宿主运行期的能力开关**，不是模型配置的
   一部分：设置面板改完当场下发，不必等下一次握手。前者决定带图观察直送主模型还是走
   `[vision]` 代理（换模型时一并重新下发），后者决定内核要不要发起 `context.prune`。
+- `model.vision_capability` 是**换模型时的能力同步**：给了它，内核就把同帧的
+  `model.native_vision`（即使是 `null`/缺省）按「新模型的开关」写回，并按新能力重算回落。
+  只换模型名不带它，内核会继续用握手时那个模型的能力判定带图观察——支持视觉的新模型也会
+  被当成不支持，图片被摄掉或错走代理。
 
 `session.list` / `session.rename` / `session.archive` / `session.history` / `session.events` /
 `session.new` / `session.resume` 是斜杠命令（`/sessions`、`/archives`、`/rename`、`/archive`、

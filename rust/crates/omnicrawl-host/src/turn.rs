@@ -308,6 +308,14 @@ impl TurnRunner {
         self.options.approval = mode;
     }
 
+    /// 运行期更新「交不交图」：换模型后原生视觉与 `[vision]` 代理的可用性都会变。
+    ///
+    /// 与 [`TurnRunner::set_approval_mode`] 同一条路径：这个判定只发生在宿主侧
+    /// （工具批次的 `observations` 是否带图片），不必重起内核。
+    pub fn set_attach_vision_images(&mut self, attach: bool) {
+        self.options.attach_vision_images = attach;
+    }
+
     /// 运行期替换审查运行期：下一次需要审查的调用即用新配置（模型 / 通道 / 脱敏旁路）。
     ///
     /// 与 [`TurnRunner::set_approval_mode`] 同一条路径：审查运行期不参与内核握手，因此
