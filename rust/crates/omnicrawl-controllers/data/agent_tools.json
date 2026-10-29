@@ -4,7 +4,7 @@
     "core": [
       {
         "name": "list",
-        "description": "是什么：列出工作区指定路径下的文件和目录。怎么做：需要了解目录结构时使用；只需文件内容时不用，单文件路径会直接返回路径。怎样做：成功按行返回相对路径，目录末尾带 /；空目录返回‘目录为空’，超限追加截断提示；失败返回文本错误。建议：先非递归定位，再按需递归；结果超限时缩小范围。",
+        "description": "是什么：列出指定路径下的文件和目录（工作区相对路径或本机绝对路径）。怎么做：需要了解目录结构时使用；只需文件内容时不用，单文件路径会直接返回路径。怎样做：成功按行返回相对路径，目录末尾带 /；空目录返回‘目录为空’，超限追加截断提示；失败返回文本错误。建议：先非递归定位，再按需递归；结果超限时缩小范围。",
         "argument_schema": "{\"path\": \".\", \"recursive\": false}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -13,7 +13,7 @@
       },
       {
         "name": "find",
-        "description": "是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用；path 只能指向工作区内，工作区外会被拒绝。怎样做：pattern 按文件名或工作区相对路径匹配（如 `*.py`、`omnicrawl/ui/**/*.py`）；成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。",
+        "description": "是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用；path 可指向工作区内，也可用本机绝对路径指向工作区外（只读查找，不写文件）。怎样做：pattern 按文件名或工作区相对路径匹配（如 `*.py`、`omnicrawl/ui/**/*.py`）；成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。",
         "argument_schema": "{\"pattern\":\"agent\",\"path\":\".\",\"kind\":\"all|file|directory\",\"case_sensitive\":false,\"max_results\":50}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -22,7 +22,7 @@
       },
       {
         "name": "read",
-        "description": "是什么：读取工作区或内置文档中的 UTF-8 文本，并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
+        "description": "是什么：读取本机文本文件或内置文档（工作区相对路径或本机绝对路径），并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
         "argument_schema": "{\"path\":\"main.py\",\"start_line\":1,\"max_lines\":200,\"function_name\":\"Class.method\",\"text\":\"目标片段\",\"context_lines\":20}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
@@ -40,7 +40,7 @@
       },
       {
         "name": "grep",
-        "description": "是什么：在工作区文本或内置文档（`omnicrawl://docs/<文件名>`）中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 不要指向用户目录或文件系统根。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。",
+        "description": "是什么：在工作区或本机文本（含内置文档 `omnicrawl://docs/<文件名>`）中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 尽量限定范围，指向文件系统根会明显变慢。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。",
         "argument_schema": "{\"pattern\": \"class Agent\", \"path\": \".\", \"use_regex\": true, \"case_sensitive\": false, \"context_lines\": 0, \"count\": false, \"files_with_matches\": false, \"include\": \"*.py\", \"exclude\": \"*.min.js\", \"max_results\": 50}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,

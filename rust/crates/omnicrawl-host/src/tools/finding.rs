@@ -1,7 +1,8 @@
 //! `find` 工具：按名称或工作区相对路径查找文件与目录。
 //!
 //! 语义基准是 `omnicrawl/workspace/tools.py` 的 `find_files` / `_scan_file_names` /
-//! `_list_search_entries`：只允许在工作区内查找，枚举走忽略规则（等价于后端
+//! `_list_search_entries`：相对路径按工作区解析，绝对路径可指向工作区外（只读查找，
+//! 不写任何文件），枚举走忽略规则（等价于后端
 //! `--files --hidden --no-require-git`），目录由命中文件的祖先推导（空目录不返回），
 //! 候选按「修改时间倒序 + 路径小写」排序，超过 max_results 时落盘完整结果。
 
@@ -24,13 +25,9 @@ pub fn find_files(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Too
     }
     let raw_path = optional_text(arguments, "path");
     let raw_path = if raw_path.is_empty() { "." } else { &raw_path };
+    // 只读查找不设工作区边界：相对路径按工作区解析，绝对路径可以是本机任意目录。
+    // 受保护路径（`.env`、`config.toml` 等）仍由 `safe_path` / `should_skip` 拦下。
     let root = paths.safe_path(raw_path)?;
-    if !paths.is_within(&root) {
-        return Err(ToolError::new(format!(
-            "find 只能在工作区内查找：{} 不在工作区内；请把 path 指向工作区内的目录或文件。",
-            paths.relative(&root)
-        )));
-    }
     if !root.exists() {
         return Err(ToolError::new(format!(
             "路径不存在：{}",
@@ -259,17 +256,18 @@ mod tests {
                 .message,
             "kind 仅支持 all、file 或 directory。"
         );
+        // 工作区外只是「不在工作区」，不是错误：只读查找照常进行。
         let outside = std::env::temp_dir().join("omnicrawl-tui-find-outside");
-        let error = find_files(
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("建目录");
+        std::fs::write(outside.join("outside_hit.py"), "").expect("写文件");
+        let found = find_files(
             &paths,
-            &args(json!({"pattern": "x", "path": outside.to_string_lossy()})),
+            &args(json!({"pattern": "outside_hit", "path": outside.to_string_lossy()})),
         )
-        .unwrap_err();
-        assert!(
-            error.message.starts_with("find 只能在工作区内查找："),
-            "{}",
-            error.message
-        );
+        .expect("工作区外查找应当成功");
+        assert!(found.contains("outside_hit.py"), "{found}");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

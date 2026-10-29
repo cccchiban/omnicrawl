@@ -1,4 +1,6 @@
-//! `grep` 工具：在工作区文本里按正则或精确子串搜索内容。
+//! `grep` 工具：在工作区或本机文本里按正则或精确子串搜索内容。
+//!
+//! 只读、不改文件，因此不设工作区边界：相对路径按工作区解析，绝对路径可指向本机任意位置。
 //!
 //! 语义基准是 `omnicrawl/workspace/tools.py` 的 `grep` 系列与 `search_backend`：默认按
 //! 正则（ripgrep 的 RE2 系语义，这里用同一族 `regex` crate，按字节匹配以贴近 rg 对
@@ -657,6 +659,27 @@ mod tests {
 
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    /// 只读搜索同样不受工作区边界约束：绝对路径可指向本机任意位置。
+    #[test]
+    fn greps_an_absolute_path_outside_the_workspace() {
+        let (paths, _root) = workspace("outside");
+        let outside = std::env::temp_dir().join("omnicrawl-tui-grep-outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("建目录");
+        std::fs::write(outside.join("note.txt"), "外部搜索命中行\n").expect("写文件");
+
+        let text = grep(
+            &paths,
+            &args(json!({
+                "pattern": "命中行",
+                "path": outside.to_string_lossy().to_string(),
+            })),
+        )
+        .expect("工作区外的绝对路径应当可搜");
+        assert!(text.contains("命中行"), "{text}");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

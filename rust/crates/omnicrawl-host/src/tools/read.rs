@@ -1,5 +1,7 @@
 //! `read` 工具：行窗口、超长行截断、行号与续读 footer，以及定位读取。
 //!
+//! 只读、不改文件，因此不设工作区边界：相对路径按工作区解析，绝对路径可指向本机任意文件。
+//!
 //! 语义基准是 `omnicrawl/workspace/tools.py` 的 `read_file_result` /
 //! `_read_file_window` / `_format_read_lines` / `_find_function_range`。三种读取形态：
 //! 普通行窗口（流式逐行）、`text` 片段定位、`function_name` 函数定位。此外
@@ -872,6 +874,25 @@ mod tests {
 
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    /// 只读工具不受工作区边界约束：本机绝对路径照常可读。
+    #[test]
+    fn reads_an_absolute_path_outside_the_workspace() {
+        let (paths, _root) = workspace("outside");
+        let outside = std::env::temp_dir().join("omnicrawl-tui-read-outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("建目录");
+        let file = outside.join("note.txt");
+        std::fs::write(&file, "外部内容\n").expect("写文件");
+
+        let text = read(
+            &paths,
+            &args(json!({"path": file.to_string_lossy().to_string()})),
+        )
+        .expect("工作区外的绝对路径应当可读");
+        assert!(text.contains("外部内容"), "{text}");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]
