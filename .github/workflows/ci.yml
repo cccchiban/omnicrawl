@@ -1,0 +1,59 @@
+name: CI
+
+# 日常 CI：push 到 main 与 PR 时跑全工作区测试，只验证不发布。
+# 发版仍由 publish-npm.yml 在 npm-v* tag 上负责（构建 5 平台 + 发布 npm）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支连续推送时取消上一轮，省 runner 也省等待。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu 镜像自带 .NET / Android SDK / GHC 等大件（合计 15 GB 上下），
+      # 全工作区测试的调试产物会把根分区写满（曾表现为 rust-lld SIGBUS）。
+      - name: 释放磁盘空间（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 依赖树已全部是纯 Rust TLS（rustls + ring），不需要 cmake / libclang；
+      # ring 的 C 部分由 runner 自带的 MSVC（Windows）与 gcc（Linux）编译。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # 插件与扩展相关用例会拉起 node，钉一个与发版工作流一致的版本。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 构建与测试
+        working-directory: rust
+        env:
+          # 只为省盘与省时：CI 不需要调试信息。
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: cargo test --workspace --no-fail-fast

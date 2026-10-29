@@ -1,5 +1,9 @@
 # OmniCrawl
 
+[![CI](https://github.com/cccchiban/omnicrawl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cccchiban/omnicrawl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/omnicrawl-cli?label=npm&color=cb3837)](https://www.npmjs.com/package/omnicrawl-cli)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 <p align="center">
   <img src="assets/logo.jpg" alt="OmniCrawl Logo" width="200">
 </p>
