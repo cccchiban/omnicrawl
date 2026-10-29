@@ -2588,7 +2588,7 @@ impl SettingsState {
                 selected: 0,
                 approval: nearest_approval_mode(&values.approval_mode).to_string(),
                 web_search: values.web_search,
-                status: TOOLS_HINT.to_string(),
+                status: String::new(),
             },
             mcp: McpState {
                 enabled: values.mcp.enabled,
@@ -2602,12 +2602,12 @@ impl SettingsState {
                 server_selected: 0,
                 servers_view: false,
                 editor: None,
-                status: MCP_HINT.to_string(),
+                status: String::new(),
             },
             subagents: SubagentsState {
                 rows: values.subagents,
                 selected: 0,
-                status: SUBAGENTS_HINT.to_string(),
+                status: String::new(),
             },
             vision: VisionState {
                 enabled: values.vision_enabled,
@@ -2615,7 +2615,7 @@ impl SettingsState {
                 selected: 0,
                 native: values.vision_native,
                 native_previous: values.vision_native,
-                status: VISION_HINT.to_string(),
+                status: String::new(),
             },
             choices: ChoicesState {
                 show_thinking: values.show_thinking,
@@ -2633,7 +2633,7 @@ impl SettingsState {
                 window_tokens: values.context_window_tokens,
                 percent: values.compaction_percent,
                 reasoning: values.reasoning_effort,
-                status: MODEL_LIST_HINT.to_string(),
+                status: String::new(),
             },
             decision_models: DecisionModelsState {
                 rows: values.decision_channels,
@@ -2643,7 +2643,7 @@ impl SettingsState {
                 selected: 0,
                 form: None,
                 template: values.decision_template,
-                status: DECISION_LIST_HINT.to_string(),
+                status: String::new(),
             },
             embedding_models: EmbeddingModelsState {
                 rows: values.embedding_channels,
@@ -2652,7 +2652,7 @@ impl SettingsState {
                 selected: 0,
                 form: None,
                 template: values.embedding_template,
-                status: EMBEDDING_LIST_HINT.to_string(),
+                status: String::new(),
             },
             forms: form_states(values.form_values),
             model_discoveries: FORM_KINDS.iter().map(|_| ModelDiscovery::new()).collect(),

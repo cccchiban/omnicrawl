@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -260,14 +260,23 @@ enum SearchFailure {
 
 /// 剥离 HTML 标签、还原实体并把连续空白压缩为单个空格。
 pub fn strip_tags(text: &str) -> String {
-    let tag = Regex::new(r"<[^>]+>").expect("标签正则应当合法");
-    let spaced = tag.replace_all(text, " ");
+    let spaced = tag_pattern().replace_all(text, " ");
     let decoded = decode_entities(&spaced);
-    Regex::new(r"\s+")
-        .expect("空白正则应当合法")
+    whitespace_pattern()
         .replace_all(&decoded, " ")
         .trim()
         .to_string()
+}
+
+/// 编译只做一次：结果解析对每条候选都要剥标签，正则在解析器里缓存。
+fn tag_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r"<[^>]+>").expect("标签正则应当合法"))
+}
+
+fn whitespace_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r"\s+").expect("空白正则应当合法"))
 }
 
 /// 用 HTML5 分词器解码实体（`html.unescape` 的等价实现）；无实体时原样返回。
@@ -280,11 +289,8 @@ fn decode_entities(text: &str) -> String {
 }
 
 fn parse_duckduckgo(html_text: &str) -> Vec<WebSearchResult> {
-    let anchor_re =
-        Regex::new(r#"(?s)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)
-            .expect("ddg 锚点");
-    let snippet_re = Regex::new(r#"(?s)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>"#)
-        .expect("ddg 摘要");
+    let anchor_re = duckduckgo_anchor_pattern();
+    let snippet_re = duckduckgo_snippet_pattern();
 
     let mut results: Vec<WebSearchResult> = Vec::new();
     for capture in anchor_re.captures_iter(html_text) {
@@ -311,6 +317,22 @@ fn parse_duckduckgo(html_text: &str) -> Vec<WebSearchResult> {
     results
 }
 
+fn duckduckgo_anchor_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)
+            .expect("ddg 锚点")
+    })
+}
+
+fn duckduckgo_snippet_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>"#)
+            .expect("ddg 摘要")
+    })
+}
+
 fn parse_results(engine: &str, html_text: &str) -> Vec<WebSearchResult> {
     match engine {
         "github" => parse_github(html_text),
@@ -325,19 +347,21 @@ fn parse_results(engine: &str, html_text: &str) -> Vec<WebSearchResult> {
 /// 搜索引擎把命中词裹一层标记：直接交给 [`strip_tags`] 会把词切开
 /// （`flosse/<em>rust</em>-web` → `flosse/ rust -web`），标题里的人为空格比丢标记更糟。
 fn strip_highlight(text: &str) -> String {
-    let highlight =
-        Regex::new(r"(?i)</?(?:em|b|strong|i|mark|span|u)\b[^>]*>").expect("高亮标签正则应当合法");
-    strip_tags(&highlight.replace_all(text, ""))
+    strip_tags(&highlight_pattern().replace_all(text, ""))
+}
+
+fn highlight_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"(?i)</?(?:em|b|strong|i|mark|span|u)\b[^>]*>")
+            .expect("高亮标签正则应当合法")
+    })
 }
 
 /// GitHub 结果页：每条结果一个 `div.resultRow`，标题在 `.search-title` 里，摘要在 `.Content` 里。
 fn parse_github(html_text: &str) -> Vec<WebSearchResult> {
-    let anchor_re = Regex::new(
-        r#"<div class="search-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
-    )
-    .expect("github 锚点");
-    let description_re =
-        Regex::new(r#"<div class="Content[^"]*"[^>]*>(.*?)</div>"#).expect("github 摘要");
+    let anchor_re = github_anchor_pattern();
+    let description_re = github_description_pattern();
 
     let mut results = Vec::new();
     for block in html_text.split("class=\"resultRow").skip(1) {
@@ -367,17 +391,30 @@ fn parse_github(html_text: &str) -> Vec<WebSearchResult> {
     results
 }
 
+fn github_anchor_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r#"<div class="search-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+        )
+        .expect("github 锚点")
+    })
+}
+
+fn github_description_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"<div class="Content[^"]*"[^>]*>(.*?)</div>"#).expect("github 摘要")
+    })
+}
+
 /// arXiv 结果页：每条结果一个 `li.arxiv-result`，标题 `.title is-5`，摘要 `.abstract-full`。
 fn parse_arxiv(html_text: &str) -> Vec<WebSearchResult> {
-    let block_re = Regex::new(r#"(?s)<li class="arxiv-result">(.*?)</li>"#).expect("arxiv 区块");
-    let title_re = Regex::new(r#"(?s)<p class="title is-5[^"]*">(.*?)</p>"#).expect("arxiv 标题");
-    let link_re = Regex::new(r#"(?s)<p class="list-title[^"]*">\s*<a[^>]*href="([^"]+)""#)
-        .expect("arxiv 链接");
-    let full_re =
-        Regex::new(r#"(?s)<span class="abstract-full[^"]*"[^>]*>(.*?)</p>"#).expect("arxiv 全文");
-    let short_re =
-        Regex::new(r#"(?s)<span class="abstract-short[^"]*"[^>]*>(.*?)<a class="is-size-7""#)
-            .expect("arxiv 摘要");
+    let block_re = arxiv_block_pattern();
+    let title_re = arxiv_title_pattern();
+    let link_re = arxiv_link_pattern();
+    let full_re = arxiv_full_pattern();
+    let short_re = arxiv_short_pattern();
 
     let mut results = Vec::new();
     for block in block_re.captures_iter(html_text) {
@@ -405,18 +442,49 @@ fn parse_arxiv(html_text: &str) -> Vec<WebSearchResult> {
     results
 }
 
+fn arxiv_block_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN
+        .get_or_init(|| Regex::new(r#"(?s)<li class="arxiv-result">(.*?)</li>"#).expect("arxiv 区块"))
+}
+
+fn arxiv_title_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<p class="title is-5[^"]*">(.*?)</p>"#).expect("arxiv 标题")
+    })
+}
+
+fn arxiv_link_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<p class="list-title[^"]*">\s*<a[^>]*href="([^"]+)""#)
+            .expect("arxiv 链接")
+    })
+}
+
+fn arxiv_full_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<span class="abstract-full[^"]*"[^>]*>(.*?)</p>"#).expect("arxiv 全文")
+    })
+}
+
+fn arxiv_short_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<span class="abstract-short[^"]*"[^>]*>(.*?)<a class="is-size-7""#)
+            .expect("arxiv 摘要")
+    })
+}
+
 /// Hugging Face 模型列表页：每条结果一个 `article.overview-card-wrapper`，元信息在第二个描述行里。
 fn parse_huggingface(html_text: &str) -> Vec<WebSearchResult> {
-    let article_re =
-        Regex::new(r#"(?s)<article[^>]*class="overview-card-wrapper[^"]*"[^>]*>(.*?)</article>"#)
-            .expect("hf 结果块");
-    let link_re = Regex::new(r#"<a[^>]*href="([^"]+)""#).expect("hf 链接");
-    let title_re = Regex::new(r#"(?s)<h4[^>]*>(.*?)</h4>"#).expect("hf 标题");
-    let meta_re = Regex::new(
-        r#"(?s)class="mr-1 flex items-center overflow-hidden whitespace-nowrap[^"]*"[^>]*>(.*?)</div>"#,
-    )
-    .expect("hf 元信息");
-    let separator_re = Regex::new(r"(?:\s*•\s*)+").expect("hf 分隔符");
+    let article_re = huggingface_article_pattern();
+    let link_re = huggingface_link_pattern();
+    let title_re = huggingface_title_pattern();
+    let meta_re = huggingface_meta_pattern();
+    let separator_re = huggingface_separator_pattern();
 
     let mut results = Vec::new();
     for article in article_re.captures_iter(html_text) {
@@ -447,6 +515,39 @@ fn parse_huggingface(html_text: &str) -> Vec<WebSearchResult> {
         });
     }
     results
+}
+
+fn huggingface_article_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<article[^>]*class="overview-card-wrapper[^"]*"[^>]*>(.*?)</article>"#)
+            .expect("hf 结果块")
+    })
+}
+
+fn huggingface_link_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r#"<a[^>]*href="([^"]+)""#).expect("hf 链接"))
+}
+
+fn huggingface_title_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r#"(?s)<h4[^>]*>(.*?)</h4>"#).expect("hf 标题"))
+}
+
+fn huggingface_meta_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r#"(?s)class="mr-1 flex items-center overflow-hidden whitespace-nowrap[^"]*"[^>]*>(.*?)</div>"#,
+        )
+        .expect("hf 元信息")
+    })
+}
+
+fn huggingface_separator_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r"(?:\s*•\s*)+").expect("hf 分隔符"))
 }
 
 /// 还原 DuckDuckGo 的 `uddg=` 跳转参数（先按查询串语义解码，再去百分号转义）。
@@ -688,9 +789,15 @@ fn bm25_order(query: &str, candidates: &[String]) -> Option<Vec<usize>> {
         return None;
     }
     // 没命中的候选按原顺序接在后面：BM25 负责把相关的提前，不负责丢结果。
-    let mut order: Vec<usize> = hits.into_iter().map(|hit| hit.index).collect();
-    for index in 0..candidates.len() {
-        if !order.contains(&index) {
+    // 用命中位图而不是 `contains`：候选数上百时逐个线性查找是 O(n²)。
+    let mut matched = vec![false; candidates.len()];
+    let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
+    for hit in hits {
+        matched[hit.index] = true;
+        order.push(hit.index);
+    }
+    for (index, hit) in matched.iter().enumerate() {
+        if !*hit {
             order.push(index);
         }
     }
@@ -737,16 +844,20 @@ fn decision_order(
 
     // 合并：模型给出的名次优先（批内名次 → 送审名单下标 → 路内下标逐层还原），
     // 没被排到的候选按 BM25 顺序接在后面，再由调用方截到 RERANK_KEEP_PER_CHANNEL 条。
+    // 用位图去重而不是 `contains`：整路候选都可能参与，线性查找会退化成 O(n²)。
+    let mut placed = vec![false; candidates.len()];
     let mut merged: Vec<usize> = Vec::with_capacity(candidates.len());
     for rank in order {
         if let Some(index) = selected.get(rank).copied() {
-            if !merged.contains(&index) {
+            if !placed[index] {
+                placed[index] = true;
                 merged.push(index);
             }
         }
     }
     for index in basis {
-        if !merged.contains(index) {
+        if !placed[*index] {
+            placed[*index] = true;
             merged.push(*index);
         }
     }

@@ -17,7 +17,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::Terminal;
 
 use omnicrawl_config::core::context::detect_project_context;
@@ -242,6 +242,9 @@ fn event_loop(
             terminal
                 .draw(|frame| ui::render(frame, &app.state, app.settings.as_ref()))
                 .map_err(|error| format!("渲染失败：{error}"))?;
+            // 绘制完把（隐藏的）终端光标挪到输入框插入点：输入法的候选窗与前摄文本跟的是
+            // 终端光标，不挪就停在最后一处写屏位置，打字时前摄文字飘到会话区末尾。
+            settle_terminal_cursor(terminal, app.state.composer_caret())?;
         }
         if app.quit {
             return Ok(());
@@ -280,6 +283,22 @@ fn terminal_viewport(
         .size()
         .map_err(|error| format!("读取终端尺寸失败：{error}"))?;
     Ok(Rect::new(0, 0, size.width, size.height))
+}
+
+/// 把隐藏的终端光标挪到插入点：输入法据此放候选窗与前摄文本。
+///
+/// 光标块一直是自绘的（`composer::paint_block_cursor`），终端光标全程隐藏，所以这里只
+/// **移动**、不显示——屏幕上不会多出一个闪烁的细光标，但输入法拿到了正确的位置。
+fn settle_terminal_cursor(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    caret: Option<Position>,
+) -> Result<(), String> {
+    let Some(caret) = caret else {
+        return Ok(());
+    };
+    terminal
+        .set_cursor_position(caret)
+        .map_err(|error| format!("定位终端光标失败：{error}"))
 }
 
 /// 处理一个终端事件，并顺带识别「一串按键形式的粘贴」。

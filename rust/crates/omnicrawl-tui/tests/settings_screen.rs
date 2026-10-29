@@ -881,7 +881,9 @@ fn vision_page_renders_native_state_and_model_rows() {
     assert!(screen.contains("视觉代理：已启用"), "{screen}");
     assert!(screen.contains("[1] gpt-main"), "列表首项：{screen}");
     assert!(screen.contains("[2] gpt-backup"), "列表次项：{screen}");
-    assert!(screen.contains("Ctrl+S 保存"), "提示行：{screen}");
+    // 提示只画在下边框上：窄终端会截断尾部，断言可见的那一段即可。
+    assert!(screen.contains("N 原生视觉"), "提示行：{screen}");
+    assert!(state.pane_hint().contains("Ctrl+S 保存"), "提示含保存键");
     assert!(
         !screen.contains("该设置页尚未迁移到 Rust 宿主"),
         "视觉页已经迁移：{screen}"
@@ -1127,6 +1129,33 @@ fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
         collapsed.contains("Exa API Key：（未配置）"),
         "收起后字段行要恢复：{collapsed}"
     );
+}
+
+/// 键位提示只画一次（下边框上）：状态行不再重复同一段文案。
+#[test]
+fn pane_hint_is_not_repeated_in_the_status_line() {
+    for key in [
+        "tools",
+        "mcp",
+        "subagents",
+        "vision",
+        "model_management",
+        "decision_models",
+        "embedding_models",
+        "tts",
+    ] {
+        let mut state = state();
+        while state.selected_key() != key {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.status(), "", "{key} 页初始不该有状态文本");
+        let right = text_of(&draw(&state, WIDTH, HEIGHT), LEFT_COLUMN_WIDTH, WIDTH);
+        let hinted = right
+            .lines()
+            .filter(|row| row.contains('↑') && row.contains('↓'))
+            .count();
+        assert_eq!(hinted, 1, "「{key}」页的键位提示出现了 {hinted} 次：\n{right}");
+    }
 }
 
 /// 键位提示必须画在右侧面板的**下边框**上（用户要求）：同一行既有提示文字又有 '─'，

@@ -12,7 +12,7 @@
 //! [`super::tls_transport::TlsWebTransport`]（omnicrawl-tls 自研栈的浏览器档案），
 //! 不再是「接受但不生效」——因为 Python 的默认值就是 `chrome`，它属于默认路径而非可选增强。
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -688,11 +688,8 @@ fn scalar_text(value: &Value) -> String {
 
 /// 解析 `<meta http-equiv="refresh" content="N; url=X">` 的跳转目标。
 pub fn meta_refresh_target(html_text: &str, base_url: &str) -> Option<String> {
-    let meta = Regex::new(
-        r#"(?i)<meta\s+[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["']([^"']*)["']?"#,
-    )
-    .ok()?;
-    let url_pattern = Regex::new(r"(?i)url\s*=\s*([^\s;]+)").ok()?;
+    let meta = meta_refresh_pattern();
+    let url_pattern = meta_url_pattern();
     for capture in meta.captures_iter(html_text) {
         let Some(url_match) = url_pattern.captures(&capture[1]) else {
             continue;
@@ -710,22 +707,45 @@ pub fn meta_refresh_target(html_text: &str, base_url: &str) -> Option<String> {
 
 /// 提取 `<title>` 文本；不存在时返回空串。
 pub fn extract_title(html_text: &str) -> String {
-    let Ok(pattern) = Regex::new(r"(?is)<title[^>]*>(.*?)</title>") else {
-        return String::new();
-    };
+    let pattern = title_pattern();
     match pattern.captures(html_text) {
         Some(capture) => collapse_whitespace(&strip_tags(&capture[1])),
         None => String::new(),
     }
 }
 
+fn meta_refresh_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r#"(?i)<meta\s+[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["']([^"']*)["']?"#,
+        )
+        .expect("meta refresh 正则应当合法")
+    })
+}
+
+fn meta_url_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r"(?i)url\s*=\s*([^\s;]+)").expect("meta url 正则应当合法"))
+}
+
+fn title_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("title 正则应当合法")
+    })
+}
+
+fn whitespace_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(r"\s+").expect("空白正则应当合法"))
+}
+
 /// 提取正文文本：优先 `main` → `article` → `body`，剔除脚本与样式后压缩空白。
 pub fn extract_main_text(html_text: &str, max_chars: usize) -> String {
     let document = Html::parse_document(html_text);
-    let container = ["main", "article", "body"].iter().find_map(|name| {
-        Selector::parse(name)
-            .ok()
-            .and_then(|selector| document.select(&selector).next())
+    let container = container_selectors().iter().find_map(|selector| {
+        document.select(selector).next()
     });
     let mut text = String::new();
     match container {
@@ -733,6 +753,17 @@ pub fn extract_main_text(html_text: &str, max_chars: usize) -> String {
         None => append_text(document.root_element(), &mut text),
     }
     truncate(&collapse_whitespace(&text), max_chars)
+}
+
+/// 正文容器的候选选择器：按优先级只解析一次。
+fn container_selectors() -> &'static [Selector] {
+    static SELECTORS: OnceLock<Vec<Selector>> = OnceLock::new();
+    SELECTORS.get_or_init(|| {
+        ["main", "article", "body"]
+            .iter()
+            .filter_map(|name| Selector::parse(name).ok())
+            .collect()
+    })
 }
 
 fn append_text(element: ElementRef<'_>, out: &mut String) {
@@ -754,8 +785,7 @@ fn append_text(element: ElementRef<'_>, out: &mut String) {
 }
 
 fn collapse_whitespace(text: &str) -> String {
-    Regex::new(r"\s+")
-        .expect("空白正则应当合法")
+    whitespace_pattern()
         .replace_all(text, " ")
         .trim()
         .to_string()

@@ -1629,5 +1629,5 @@ const HELP_TEXT: &str = "🤖 OmniCrawl 飞书远程控制\n\n\
   /workspace [路径]  查看/切换工作区\n\n\
 文件：\n\
   直接发送图片/文件/语音，自动存入 .agent_tmp 的分类目录并交给 Agent 处理\n\n\
-其余斜杠命令（/sessions、/resume、/undo、/compact、/plan、/tasks、/mcp 等）\n\
+其余斜杠命令（/sessions、/resume、/undo、/compact、/plan、/programming、/tasks、/mcp 等）\n\
 与会话管理命令共用 TUI 的同一套实现。";

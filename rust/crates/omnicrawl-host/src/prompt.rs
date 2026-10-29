@@ -33,6 +33,8 @@ pub const DEFAULT_AGENT_TEMP_DIR: &str = ".omnicrawl/.agent_tmp";
 const EMBEDDED_SYSTEM_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/system_prompt.md");
 const EMBEDDED_PLAN_PROMPT: &str = include_str!("../../../../rust/assets/templates/plan.md");
+const EMBEDDED_PROGRAMMING_PROMPT: &str =
+    include_str!("../../../../rust/assets/templates/programming.md");
 const EMBEDDED_SPEAKING_STYLE_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/speaking-style.md");
 
@@ -370,6 +372,7 @@ fn read_template(dir: Option<&Path>, file_name: &str) -> Option<String> {
 pub fn builtin_mode_prompt(mode: &str) -> Option<&'static str> {
     match mode {
         "plan" => Some(EMBEDDED_PLAN_PROMPT),
+        "programming" => Some(EMBEDDED_PROGRAMMING_PROMPT),
         "speaking-style" => Some(EMBEDDED_SPEAKING_STYLE_PROMPT),
         _ => None,
     }
@@ -421,6 +424,17 @@ mod tests {
     }
 
     #[test]
+    fn programming_mode_appends_the_coding_guidelines() {
+        let env = ConfigEnvironment::from_process();
+        let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
+        runtime.activate_mode("programming").expect("启用编程模式");
+        let prompt = runtime.system_prompt();
+        assert!(prompt.contains("<active_mode_prompt name=\"programming\">"));
+        assert!(prompt.contains("Think Before Coding"));
+        assert!(prompt.trim_end().ends_with("</active_mode_prompt>"));
+    }
+
+    #[test]
     fn speaking_style_mode_can_be_switched_off_again() {
         let env = ConfigEnvironment::from_process();
         let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
@@ -441,6 +455,7 @@ mod tests {
     #[test]
     fn builtin_mode_prompt_covers_selectable_modes() {
         assert!(builtin_mode_prompt("plan").is_some());
+        assert!(builtin_mode_prompt("programming").is_some());
         assert!(builtin_mode_prompt("speaking-style").is_some());
         assert!(builtin_mode_prompt("unknown-mode").is_none());
     }

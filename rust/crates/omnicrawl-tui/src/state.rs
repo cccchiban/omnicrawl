@@ -1244,6 +1244,12 @@ pub struct AppState {
     /// 状态行搬到方框边框后就不再走会话流的命中测试，只能由渲染路径把位置记下来：
     /// 渲染函数拿的是 `&AppState`，所以用 `Cell`（与设置面板的 `hits` 同一思路）。
     runtime_esc_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
+    /// 输入框插入点本帧所在的屏幕坐标（渲染时登记，绘制完把终端光标挪过去）。
+    ///
+    /// 光标块是自绘的，终端光标一直隐藏；但输入法的候选窗与前摄文本跟的是**终端光标**的
+    /// 位置，不让位就会停在最后一处写屏位置（通常是会话区末尾），打字时前摄文字飘在别处。
+    /// 与 [`Self::runtime_esc_area`] 同样由渲染路径写入。
+    composer_caret: std::cell::Cell<Option<ratatui::layout::Position>>,
     /// `/sessions` 在输入框上方打开的可选列表。
     pub sessions_menu: SessionsMenu,
     /// 三块刷新的内容版本号（会话 / 输入框 / 底部）。
@@ -1312,6 +1318,7 @@ impl AppState {
             retry_button_hover: None,
             subagent_view_hover: None,
             runtime_esc_area: std::cell::Cell::new(None),
+            composer_caret: std::cell::Cell::new(None),
             sessions_menu: SessionsMenu::new(),
             refresh: RefreshVersions::default(),
             conversation_cache: std::cell::RefCell::new(ConversationCache::default()),

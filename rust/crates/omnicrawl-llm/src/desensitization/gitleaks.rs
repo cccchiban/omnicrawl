@@ -410,17 +410,86 @@ fn allowlist_parts(value: Option<&toml::Value>) -> AllowlistParts {
 }
 
 fn compile(pattern: &str) -> Option<Regex> {
-    // 先按原样编译：能编译的模式绝不动它（适配只用来救编译不过的那些）。
+    // ASCII 归一优先：`\w` / `\d` / `\s` 按 RE2 语义转 ASCII（见 ascii_shorthands），
+    // 整张表实测常驻从 527MB 降到 23MB。归一必须排在 RE2→Rust 适配之后——归一化产物里
+    // 的 `\Z` 在 Rust 下不合法，先归一的话这些规则会编译失败、白回退到 unicode 形态。
+    let adapted = adapt_for_rust(pattern);
+    if let Some(regex) = build(&ascii_shorthands(&adapted)) {
+        return Some(regex);
+    }
+    // 回退：能原样编译的模式绝不动它（适配只用来救编译不过的那些）。
     if let Some(regex) = build(pattern) {
         return Some(regex);
     }
-    build(&adapt_for_rust(pattern))
+    build(&adapted)
+}
+
+/// 把 `\w` / `\d` / `\s` 归一为 ASCII 等价形式。
+///
+/// Rust 的 `regex` 默认把这三个简写当 Unicode 类；它们一旦落在计数重复 `{m,n}` 里，
+/// 自动机就按 UTF-8 每字节展开，成本随重复上界线性膨胀——`[\w-]{50,1000}` 单条即
+/// 54MB，整张 221 条规则表实测常驻 519MB。gitleaks 上游是 Go RE2，其 `\w` / `\d` / `\s`
+/// 本就是 ASCII-only，因此这里归一既省内存也贴合上游语义。
+///
+/// 区分字符类内外：类内展开成集合片段（`[a\w]` → 不合法，故只放 `0-9A-Za-z_`），
+/// 类外展开成独立字符类。取反形式（`\W` / `\D` / `\S`）在类内无法展开，原样保留。
+fn ascii_shorthands(pattern: &str) -> String {
+    let bytes = pattern.as_bytes();
+    let mut result = String::with_capacity(pattern.len() + 64);
+    let mut in_class = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' && index + 1 < bytes.len() {
+            let next = bytes[index + 1];
+            match next {
+                b'w' => result.push_str(if in_class { "0-9A-Za-z_" } else { "[0-9A-Za-z_]" }),
+                b'd' => result.push_str(if in_class { "0-9" } else { "[0-9]" }),
+                // 类内 `\s` 展开为集合片段；RE2 的 `\s` 是 `[\t\n\f\r ]`。
+                b's' => result.push_str(if in_class { " \\t\\n\\f\\r" } else { "[ \\t\\n\\f\\r]" }),
+                // `\W` / `\D` / `\S` 在类内无法表达成集合片段，保持原样（Rust 与 RE2 同义）。
+                other => {
+                    result.push('\\');
+                    result.push(other as char);
+                }
+            }
+            index += 2;
+            continue;
+        }
+        if byte == b'[' && !in_class {
+            in_class = true;
+            result.push('[');
+            index += 1;
+            // 类首的 `^`（取反）与 `]`（字面量）不算类结束。
+            if index < bytes.len() && bytes[index] == b'^' {
+                result.push('^');
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index] == b']' {
+                result.push(']');
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b']' && in_class {
+            in_class = false;
+            result.push(']');
+            index += 1;
+            continue;
+        }
+        let character = pattern[index..].chars().next().unwrap_or(' ');
+        result.push(character);
+        index += character.len_utf8();
+    }
+    result
 }
 
 fn build(pattern: &str) -> Option<Regex> {
     RegexBuilder::new(pattern)
-        // 上游个别规则（generic-api-key / pypi-upload-token / vault-batch-token）在默认
-        // 10MB 程序上限下编译不过，这里放宽；编译期长度换运行时确定性。
+        // ASCII 归一后整张表在 1MB 上限下就能全部编译（实测），这里保留较宽的上限只为
+        // unicode 回退路径与用户自定义规则：上游个别规则（generic-api-key /
+        // pypi-upload-token / vault-batch-token）按原样编译时默认 10MB 不够。
+        // 上限本身不预分配内存，实际占用仍由自动机大小决定。
         .size_limit(64 * 1024 * 1024)
         .build()
         .ok()
@@ -626,4 +695,125 @@ fn overlaps(intervals: &[(usize, usize)], start: usize, end: usize) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod ascii_shorthands_tests {
+    use super::ascii_shorthands;
+
+    #[test]
+    fn expands_outside_char_class() {
+        assert_eq!(ascii_shorthands(r"\w+"), "[0-9A-Za-z_]+");
+        assert_eq!(ascii_shorthands(r"\d{3}"), "[0-9]{3}");
+        assert_eq!(ascii_shorthands(r"\s"), "[ \\t\\n\\f\\r]");
+    }
+
+    #[test]
+    fn expands_inside_char_class_to_set_fragment() {
+        // 类内必须展开成集合片段，不能再套一层 []
+        assert_eq!(ascii_shorthands(r"[\w.-]{0,50}"), "[0-9A-Za-z_.-]{0,50}");
+        assert_eq!(ascii_shorthands(r"[ \t\w.-]"), "[ \\t0-9A-Za-z_.-]");
+        assert_eq!(ascii_shorthands(r#"[\s'\"]{0,3}"#), r#"[ \t\n\f\r'\"]{0,3}"#);
+    }
+
+    #[test]
+    fn keeps_negated_forms_and_other_escapes() {
+        assert_eq!(ascii_shorthands(r"\W"), r"\W");
+        assert_eq!(ascii_shorthands(r"[\W]"), r"[\W]");
+        assert_eq!(ascii_shorthands(r"\S"), r"\S");
+        // \x60 / \b / \Z 等不受影响
+        assert_eq!(ascii_shorthands(r"\x60\b\Z"), r"\x60\b\Z");
+        assert_eq!(ascii_shorthands(r#"[\x60'\"\s;]"#), r#"[\x60'\" \t\n\f\r;]"#);
+    }
+
+    #[test]
+    fn leading_caret_and_literal_bracket_do_not_end_class() {
+        assert_eq!(ascii_shorthands(r"[^\w]"), "[^0-9A-Za-z_]");
+        assert_eq!(ascii_shorthands(r"[]\w]"), "[]0-9A-Za-z_]");
+    }
+
+    #[test]
+    fn multibyte_content_is_preserved() {
+        assert_eq!(ascii_shorthands(r"\w钥匙\w"), "[0-9A-Za-z_]钥匙[0-9A-Za-z_]");
+    }
+
+    #[test]
+    fn most_gitleaks_rules_use_ascii_form() {
+        use super::{adapt_for_rust, ascii_shorthands, build, normalize_gitleaks_pattern};
+        use crate::desensitization::gitleaks::parse_toml;
+
+        // 真实编译路径：normalize -> adapt_for_rust -> ascii_shorthands -> build。
+        // 少数规则（curl-auth-header 等）的 `(?i)` 被上提到模式开头后，配合计数重复字符类
+        // 会让 ASCII 形态超出程序上限，这类必须回退到 unicode 形态；其余都应走 ASCII。
+        let document = parse_toml(super::GITLEAKS_SNAPSHOT);
+        let mut ascii = 0;
+        let mut fallback = Vec::new();
+        for raw in document
+            .get("rules")
+            .and_then(|value| value.as_array())
+            .expect("rules")
+        {
+            let Some(pattern) = raw.get("regex").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let id = raw
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let normalized = adapt_for_rust(&normalize_gitleaks_pattern(pattern));
+            if build(&ascii_shorthands(&normalized)).is_some() {
+                ascii += 1;
+            } else {
+                fallback.push(id);
+            }
+        }
+        // ASCII 形态在绝大多数规则上成立；回退只允许是个位数长尾。
+        assert!(
+            ascii >= 215,
+            "走 ASCII 形态的规则只有 {ascii} 条，回退 {fallback:?}"
+        );
+        assert!(
+            fallback.len() <= 6,
+            "回退规则过多：{fallback:?}"
+        );
+    }
+
+    #[test]
+    fn expansion_keeps_ascii_capture_semantics() {
+        use super::default_rules;
+        use regex::Regex;
+
+        let rules = default_rules();
+        let find = |id: &str| {
+            rules
+                .iter()
+                .find(|rule| rule.rule_id == id)
+                .unwrap_or_else(|| panic!("缺少规则 {id}"))
+        };
+
+        // RE2 的 \w 是 ASCII-only：中文不算单词字符。
+        let pat = find("gitleaks:github-pat");
+        assert!(pat.pattern.is_match("ghp_16C7e42F292c6912E7710c838347Ae178B4a"));
+
+        // 同一段 ASCII 文本上，归一化前后的命中区间必须一致
+        let text = "token: ghp_16C7e42F292c6912E7710c838347Ae178B4a \
+                    aws_access_key_id = AKIAQ7X3ZL9PMN2R5TV8 \
+                    api_key = \"x7f9Q2mK8pL4vN6bR1tY3wZ5aC0dE\"";
+        for rule in rules {
+            let Ok(original) = Regex::new(&rule.pattern_source) else {
+                continue;
+            };
+            let a: Vec<(usize, usize)> = original
+                .find_iter(text)
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            let b: Vec<(usize, usize)> = rule
+                .pattern
+                .find_iter(text)
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            assert_eq!(a, b, "规则 {} 命中区间变化", rule.rule_id);
+        }
+    }
 }

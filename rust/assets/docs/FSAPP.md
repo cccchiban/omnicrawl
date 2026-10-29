@@ -403,6 +403,7 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | `/thinking on\|off` | 开关思考内容展示 |
 | `/workspace [路径]` | 查看或切换工作区 |
 | `/plan` | 启用主 Agent 计划模式 |
+| `/programming` | 启用主 Agent 编程模式 |
 | `/sessions`、`/resume <id>` | 查看/恢复会话 |
 | `/resume latest` | 恢复最近活动会话 |
 | `/approval` | 查看审批模式 |

@@ -209,6 +209,13 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
+        Command::new("programming", handle_mode_command)
+            .description("启用主 Agent 编程模式，后续请求追加 templates/programming.md。")
+            .usage("/programming")
+            .command_type(CommandType::Action),
+    )?;
+
+    registry.register(
         Command::new("speaking-style", handle_speaking_style_command)
             .description("开启或关闭主 Agent 简洁回复模式（默认关闭）。")
             .usage("/speaking-style [on|off]")
@@ -1481,7 +1488,7 @@ fn normalize_advisor_effort(effort: &str) -> Result<String, AgentError> {
     Ok(normalized)
 }
 
-/// 启用主 Agent 模式（当前仅 plan）。
+/// 启用主 Agent 模式（`/plan`、`/programming`）。
 pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     // 主 Agent 模式切换命令：命令名（不含前导斜杠）→ `activate_mode` 的模式标识。
     let name = match ctx.command.as_ref() {
@@ -1490,6 +1497,7 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     };
     let mode = match name.as_str() {
         "plan" => "plan",
+        "programming" => "programming",
         _ => {
             return CommandResult::message(format!("未知模式：{name}"));
         }
@@ -1500,10 +1508,10 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
             return CommandResult::message(format!("模式启用失败：{error}")).with_refresh_context()
         }
     };
-    let label = if activated == "plan" {
-        "计划模式".to_string()
-    } else {
-        activated
+    let label = match activated.as_str() {
+        "plan" => "计划模式".to_string(),
+        "programming" => "编程模式".to_string(),
+        other => other.to_string(),
     };
     CommandResult::message(format!("已启用{label}。后续任务将遵循该模式提示词。"))
         .with_refresh_context()
@@ -2090,10 +2098,11 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 28);
+        assert_eq!(names.len(), 29);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
+        assert!(names.contains(&"programming".to_string()));
         assert!(names.contains(&"speaking-style".to_string()));
         assert_eq!(names.last().map(String::as_str), Some("workspace"));
     }
@@ -2507,6 +2516,32 @@ mod tests {
         assert!(detail.contains("任务：task-1"));
         assert!(detail.contains("摘要：\n没问题"));
         assert!(detail.contains("关联 artifact：1 项"));
+    }
+
+    #[test]
+    fn mode_commands_activate_their_template() {
+        let mut agent = FakeAgent::default();
+        let plan = registry().dispatch("/plan", &agent, Channel::Tui, None);
+        assert!(plan
+            .message
+            .unwrap_or_default()
+            .contains("已启用计划模式"));
+        assert!(plan.refresh_context);
+
+        let programming = registry().dispatch("/programming", &agent, Channel::Tui, None);
+        assert!(programming
+            .message
+            .unwrap_or_default()
+            .contains("已启用编程模式"));
+        assert!(programming.refresh_context);
+        assert_eq!(
+            agent
+                .calls()
+                .iter()
+                .filter(|call| *call == "activate_mode")
+                .count(),
+            2
+        );
     }
 
     #[test]

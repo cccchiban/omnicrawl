@@ -135,10 +135,16 @@ pub fn order(query: &str, candidates: &[String]) -> Vec<usize> {
     if hits.is_empty() {
         return (0..candidates.len()).collect();
     }
-    let mut order: Vec<usize> = hits.into_iter().map(|hit| hit.index).collect();
     // 没命中的候选按原顺序接在后面：排序是「把相关的提前」，不是「丢掉不相关的」。
-    for index in 0..candidates.len() {
-        if !order.contains(&index) {
+    // 用命中位图而不是 `contains`：候选数上百时逐个线性查找是 O(n²)。
+    let mut matched = vec![false; candidates.len()];
+    let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
+    for hit in hits {
+        matched[hit.index] = true;
+        order.push(hit.index);
+    }
+    for (index, hit) in matched.iter().enumerate() {
+        if !*hit {
             order.push(index);
         }
     }

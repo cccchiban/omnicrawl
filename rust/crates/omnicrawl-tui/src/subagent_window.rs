@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -98,10 +98,13 @@ pub struct SubagentWindows {
     batches: HashMap<String, PathBuf>,
     /// 发起批次的工具调用 id → 批次号：工具卡据此决定要不要挂「查看会话」按钮。
     calls: HashMap<String, String>,
-    /// 已经开过窗口的批次：再点不重复开（用户要求）。
+    /// 宿主自发批次自动开的窗口：同批次不再自动开第二个。
     opened: HashSet<String>,
     /// 已经收尾的批次：窗口已自动关闭，工具卡上的「查看会话」随之撤下。
     finished: HashSet<String>,
+    /// 用户点开的窗口进程：只要它还活着，再点就不开第二个；它退出（用户关窗）后
+    /// 这条登记随之失效，按钮可以重新开窗。
+    windows: HashMap<String, Child>,
 }
 
 impl SubagentWindows {
@@ -158,7 +161,8 @@ impl SubagentWindows {
                 }
                 None => {
                     self.opened.insert(batch_id.clone());
-                    spawn_window(exe, &stream, false);
+                    // 宿主自发窗口不挂按钮（没有工具卡），句柄只用来回收进程。
+                    let _ = spawn_window(exe, &stream, false);
                     auto_opened = Some(stream);
                 }
             }
@@ -177,9 +181,23 @@ impl SubagentWindows {
         }
     }
 
-    /// 该批次是否已经开过窗口（再点不会重复开）。
+    /// 宿主是否已经为该批次自动开过窗口（`/review` 那类入口，同批次只开一次）。
     pub fn is_opened(&self, batch_id: &str) -> bool {
         self.opened.contains(batch_id)
+    }
+
+    /// 该批次的点开窗口是否还在显示：窗口被用户关掉后即可重新打开。
+    fn window_running(&mut self, batch_id: &str) -> bool {
+        let exited = match self.windows.get_mut(batch_id) {
+            // 进程还在跑：窗口开着。
+            Some(child) => !matches!(child.try_wait(), Ok(None)),
+            None => return false,
+        };
+        // 进程已经退出（用户关窗、或窗口自己崩溃）：登记随之失效。
+        if exited {
+            self.windows.remove(batch_id);
+        }
+        !exited
     }
 
     /// 某次工具调用派发的批次号：工具卡据此决定要不要挂「查看会话」。
@@ -199,10 +217,10 @@ impl SubagentWindows {
             .map(|(call, _)| call.as_str())
     }
 
-    /// 用户点了「查看会话」：该批次还没开过窗口就开一个。
+    /// 用户点了「查看会话」：该批次没有在显示的窗口就开一个。
     ///
-    /// 返回 `false` 表示没有该批次的流水、拿不到可执行文件，或这个批次已经开过窗口了
-    /// （用户要求：每点一个开一个窗口，已开过的不再重复开）。
+    /// 返回 `false` 表示没有该批次的流水、拿不到可执行文件，或这个批次的窗口还开着。
+    /// 窗口被用户关掉后登记自动失效，按钮可以重新开窗——不然一次关窗就把入口彻底作废。
     ///
     /// 点开的窗口**不随批次结束自动关闭**：用户是特地来读这段过程的，读着读着窗口
     /// 自己消失只会让人以为出错；关窗交给 Esc / Ctrl+Q。
@@ -210,14 +228,24 @@ impl SubagentWindows {
         let Some(exe) = exe else {
             return false;
         };
-        let Some(stream) = self.batches.get(batch_id) else {
-            return false;
-        };
-        if !self.opened.insert(batch_id.to_string()) {
+        if !self.can_open(batch_id) {
             return false;
         }
-        spawn_window(Some(exe), stream, true);
-        true
+        let Some(stream) = self.batches.get(batch_id).cloned() else {
+            return false;
+        };
+        match spawn_window(Some(exe), &stream, true) {
+            Some(child) => {
+                self.windows.insert(batch_id.to_string(), child);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 此刻能不能给该批次开窗：流水已登记，且它的窗口没有开着。
+    fn can_open(&mut self, batch_id: &str) -> bool {
+        self.batches.contains_key(batch_id) && !self.window_running(batch_id)
     }
 }
 
@@ -409,44 +437,39 @@ fn entry_from_json(line: &str) -> Option<Entry> {
 
 /// 在新终端窗口里拉起窗口进程；拿不到可执行文件或平台不支持时静默跳过（流水仍在）。
 ///
-/// 放到后台线程：`CreateProcess` 在冷启动时要几十到上百毫秒，而这条路径挂在界面线程的
-/// 事件处理里，阻塞它会直接让开窗那一刻掉帧。窗口进程本身会等流水文件出现，所以先后无关。
-fn spawn_window(exe: Option<&Path>, stream: &Path, keep_open: bool) {
-    let Some(exe) = exe.map(Path::to_path_buf) else {
-        return;
-    };
-    let stream = stream.to_path_buf();
-    std::thread::spawn(move || {
-        let mut command = Command::new(&exe);
-        command.arg(WINDOW_FLAG).arg(&stream);
-        if keep_open {
-            command.arg(KEEP_OPEN_FLAG);
-        }
-        #[cfg(windows)]
-        {
-            // stdout/stderr 一律**不重定向**：`CREATE_NEW_CONSOLE` 给子进程分配的新控制台
-            // 就挂在它的 stdout/stderr 上，一旦显式塞进 `Stdio::null()`，窗口进程会把整屏
-            // 内容画进 NUL 设备——窗口开出来了，却永远是一块空白。
-            //
-            // stdin 置空不影响键盘：crossterm 在 Windows 上不走 stdin，而是自己
-            // `CreateFileW("CONIN$")` 打开**当前控制台**的输入句柄（事件轮询与原始模式
-            // 都走它），新控制台的输入队列因此照旧可读。
-            command.stdin(Stdio::null());
-            // 新控制台起不来（受限桌面会话）时不回退到「无窗口运行」：那会得到一个收了
-            // 输出却不显示的进程。流水文件仍在，用户可自己 `--subagent-window` 打开。
-            let _ = platform::spawn_in_new_console(&mut command);
-        }
-        #[cfg(not(windows))]
-        {
-            // 非 Windows 没有「新建控制台」语义：直接后台跑，用户在支持多窗口的终端里
-            // 自己 `--subagent-window <文件>` 打开（流水与渲染是同一套）。
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let _ = command.spawn();
-        }
-    });
+/// 同步 spawn 是为了拿到进程句柄：窗口被用户关掉后要能看出来，按钮才不会一次点击就
+/// 永久作废。代价是一次 `CreateProcess`（冷启动几十到上百毫秒），只在开窗那一刻付一次。
+fn spawn_window(exe: Option<&Path>, stream: &Path, keep_open: bool) -> Option<Child> {
+    let exe = exe?;
+    let mut command = Command::new(exe);
+    command.arg(WINDOW_FLAG).arg(stream);
+    if keep_open {
+        command.arg(KEEP_OPEN_FLAG);
+    }
+    #[cfg(windows)]
+    {
+        // stdout/stderr 一律**不重定向**：`CREATE_NEW_CONSOLE` 给子进程分配的新控制台
+        // 就挂在它的 stdout/stderr 上，一旦显式塞进 `Stdio::null()`，窗口进程会把整屏
+        // 内容画进 NUL 设备——窗口开出来了，却永远是一块空白。
+        //
+        // stdin 置空不影响键盘：crossterm 在 Windows 上不走 stdin，而是自己
+        // `CreateFileW("CONIN$")` 打开**当前控制台**的输入句柄（事件轮询与原始模式
+        // 都走它），新控制台的输入队列因此照旧可读。
+        command.stdin(Stdio::null());
+        // 新控制台起不来（受限桌面会话）时不回退到「无窗口运行」：那会得到一个收了
+        // 输出却不显示的进程。流水文件仍在，用户可自己 `--subagent-window` 打开。
+        platform::spawn_in_new_console(&mut command)
+    }
+    #[cfg(not(windows))]
+    {
+        // 非 Windows 没有「新建控制台」语义：直接后台跑，用户在支持多窗口的终端里
+        // 自己 `--subagent-window <文件>` 打开（流水与渲染是同一套）。
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command.spawn().ok()
+    }
 }
 
 #[cfg(windows)]
@@ -459,14 +482,14 @@ mod platform {
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
     /// 在新控制台窗口里拉起；父 Job 不允许 breakaway 时退回不带它的一次尝试。
-    pub fn spawn_in_new_console(command: &mut Command) -> bool {
+    pub fn spawn_in_new_console(command: &mut Command) -> Option<std::process::Child> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB);
-        if command.spawn().is_ok() {
-            return true;
+        if let Ok(child) = command.spawn() {
+            return Some(child);
         }
         command.creation_flags(CREATE_NEW_CONSOLE);
-        command.spawn().is_ok()
+        command.spawn().ok()
     }
 }
 
@@ -824,7 +847,16 @@ fn draw(
     }
     terminal
         .draw(|frame| crate::ui::render(frame, state, None))
-        .map_err(|error| format!("写窗口内容失败：{error}"))
+        .map_err(|error| format!("写窗口内容失败：{error}"))?;
+    // 窗口不接输入，但页面上有个空输入框：把隐藏的终端光标挪到它的插入点，
+    // 免得停在会话区末尾（与主窗口同一处理，见 `main::settle_terminal_cursor`）。
+    if let Some(caret) = state.composer_caret() {
+        terminal
+            .terminal
+            .set_cursor_position(caret)
+            .map_err(|error| format!("定位终端光标失败：{error}"))?;
+    }
+    Ok(())
 }
 
 /// 状态行文本：批次标题 + 任务进度。
@@ -1026,23 +1058,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 点一次开一个窗口；同一个批次再点不重复开（用户要求）。
+    /// 窗口被关掉（进程退出）后登记失效，按钮可以重新开窗。
+    #[cfg(windows)]
     #[test]
-    fn the_button_opens_one_window_per_batch() {
-        let root = temp_root("click-once");
+    fn a_closed_window_lets_the_button_open_again() {
+        let root = temp_root("click-reopen");
         let mut windows = SubagentWindows::new();
         let batch = payload(&[
             ("batch_id", serde_json::json!("batch-8")),
             ("origin_call_id", serde_json::json!("call_8")),
         ]);
         windows.deliver(&root, None, "subagent.batch.created", &batch);
-        let exe = root.join("fake-tui.exe");
 
-        assert!(windows.open(Some(&exe), "batch-8"), "第一次点击要开窗");
-        assert!(windows.is_opened("batch-8"));
-        assert!(!windows.open(Some(&exe), "batch-8"), "已开过的不再开");
-        // 拿不到可执行文件时什么都不做（测试与无自身路径的场景）。
+        // 一个还在跑的子进程代表「用户没关的窗口」。
+        let live = Command::new("cmd")
+            .args(["/C", "ping -n 60 127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("起假窗口进程");
+        windows.windows.insert("batch-8".to_string(), live);
+        assert!(windows.window_running("batch-8"), "进程还在跑：窗口算开着");
+        assert!(!windows.can_open("batch-8"), "窗口开着就不再开第二个");
+
+        // 用户关掉窗口：进程退出后登记失效，按钮重新可用。
+        // 注意这里保留登记（与真实场景一致：用户关窗时宿主并不知道，只能靠进程状态发现）。
+        if let Some(live) = windows.windows.get_mut("batch-8") {
+            let _ = live.kill();
+            let _ = live.wait();
+        }
+        assert!(
+            !windows.window_running("batch-8"),
+            "退出后该批次不再算「已有窗口」"
+        );
+        assert!(windows.can_open("batch-8"), "关窗之后要能再开一次");
+
+        // 没有登记流水的批次不开。
+        assert!(!windows.can_open("batch-unknown"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 拿不到可执行文件时什么都不做（测试与无自身路径的场景）。
+    #[test]
+    fn open_without_an_executable_does_nothing() {
+        let root = temp_root("no-exe");
+        let mut windows = SubagentWindows::new();
+        let batch = payload(&[
+            ("batch_id", serde_json::json!("batch-8")),
+            ("origin_call_id", serde_json::json!("call_8")),
+        ]);
+        windows.deliver(&root, None, "subagent.batch.created", &batch);
         assert!(!windows.open(None, "batch-8"));
+        assert!(!windows.window_running("batch-8"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

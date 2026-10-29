@@ -199,6 +199,16 @@ impl AppState {
             self.runtime_esc_area.set(area);
         }
 
+        /// 输入框插入点本帧的屏幕坐标（上一帧渲染登记的，没有则为 `None`）。
+        pub fn composer_caret(&self) -> Option<ratatui::layout::Position> {
+            self.composer_caret.get()
+        }
+
+        /// 渲染路径登记输入框插入点位置（同 [`Self::set_runtime_esc_area`]，`Cell` 写入）。
+        pub fn set_composer_caret(&self, position: Option<ratatui::layout::Position>) {
+            self.composer_caret.set(position);
+        }
+
         /// 正在被悬停的「立即结束」按钮属于哪张卡（渲染层据此把它染成淡黄色）。
         pub fn stop_button_hover(&self) -> Option<&str> {
             self.stop_button_hover.as_deref()

@@ -311,6 +311,49 @@ fn block_cursor_sits_in_the_composer() {
     );
 }
 
+/// 输入法的候选窗跟前摄文本跟的是**终端光标**：它必须落在输入框插入点上。
+///
+/// 用户的症状是「页面一刷新焦点就不在输入栏、打字时文字跳来跳去」——光标块是自绘的，
+/// 终端光标全程隐藏又从不挪位，于是停在最后一处写屏位置（会话区末尾），输入法就把前摄
+/// 文字画到那里去了。
+#[test]
+fn terminal_cursor_follows_the_composer_caret() {
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state.composer.insert("输入中");
+    let _terminal = draw(&mut state, 80, 12);
+    let caret = state.composer_caret().expect("输入框在屏上时应有插入点");
+    assert_eq!(
+        caret,
+        ratatui::layout::Position::new(1 + 6, 9),
+        "插入点应是自绘粗块那一格"
+    );
+
+    // 设置面板铺满整屏时主输入框不在屏上：插入点登记清掉，不能把光标留在被盖住的位置。
+    let settings = omnicrawl_tui::ui::settings::SettingsState::new(
+        omnicrawl_tui::ui::settings::SettingsValues::new(128_000, 80, Vec::new()),
+    );
+    let backend = TestBackend::new(80, 12);
+    let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
+    terminal
+        .draw(|frame| ui::render(frame, &state, Some(&settings)))
+        .expect("渲染不应失败");
+    assert_eq!(state.composer_caret(), None, "设置面板下没有主输入框的插入点");
+}
+
+/// 渲染一帧（只画，不取文本）。
+fn draw(state: &AppState, width: u16, height: u16) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
+    terminal
+        .draw(|frame| ui::render(frame, state, None))
+        .expect("渲染不应失败");
+    terminal
+}
+
 #[test]
 fn long_composer_input_shows_a_scrollbar() {
     let mut state = AppState::new(

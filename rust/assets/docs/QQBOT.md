@@ -218,7 +218,7 @@ omnicrawl --connector qqbot
 ### harness 管理命令（与本地 TUI 同一套注册表）
 
 宿主承载时这些命令真的可用：`/sessions`、`/resume <id>`、`/history`、`/undo`、`/compact`、
-`/rename`、`/plan`、`/speaking-style`、`/tasks`、`/approval`、`/reasoning`、`/model`、`/skills`、`/mcp` 等。
+`/rename`、`/plan`、`/programming`、`/speaking-style`、`/tasks`、`/approval`、`/reasoning`、`/model`、`/skills`、`/mcp` 等。
 `/quit`、`/settings` 这类本地交互命令在远程被拒绝（与其它连接器一致）；
 `/approval:auto`（完全自动）同样只限本地 TUI，远程可切 `manual`/`review`。
 

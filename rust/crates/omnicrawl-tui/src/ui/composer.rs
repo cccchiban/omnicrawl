@@ -161,6 +161,7 @@ pub fn render_box(frame: &mut Frame, area: Rect, state: &AppState) {
 /// 方框由 [`render_box`] 单独画（整组一个框），这里只写框内那几行。
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     if area.height == 0 || area.width == 0 {
+        state.set_composer_caret(None);
         return;
     }
     // `area` 已经是方框**内部**的输入区（由 `ui::layout` 从方框里切出来），
@@ -169,6 +170,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let (rows, cursor_row, start, total) = state.composer.visible_rows(body);
     let text = text_rect(area);
     if text.width == 0 {
+        state.set_composer_caret(None);
         return;
     }
     render_scrollbar(frame, area, total, text.height as usize, start);
@@ -185,6 +187,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         );
         let line = rows.first().map(|row| row.text.clone()).unwrap_or_default();
         paint_block_cursor(frame.buffer_mut(), text, &line, 0, 0);
+        state.set_composer_caret(caret_position(text, 0, 0));
         return;
     }
 
@@ -204,6 +207,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         cursor_row as u16,
         column,
     );
+    state.set_composer_caret(caret_position(text, cursor_row as u16, column));
+}
+
+/// 插入点的屏幕坐标：正文区起点 + （行, 列）；落在正文区之外时返回 `None`。
+///
+/// 列到达正文宽度（插入点在本行最后一个字符之后）时按终端语义落到下一行行首。
+/// 事件循环每帧把隐藏的终端光标挪到这里：输入法的候选窗跟前摄文本跟的是终端光标，
+/// 停在别处就会「打字时前摄文字飘在会话区末尾」。
+fn caret_position(text: Rect, row: u16, column: usize) -> Option<ratatui::layout::Position> {
+    let width = usize::from(text.width);
+    if width == 0 || text.height == 0 {
+        return None;
+    }
+    let row = usize::from(row) + column / width;
+    let x = text.x.checked_add(u16::try_from(column % width).ok()?)?;
+    let y = text.y.checked_add(u16::try_from(row).ok()?)?;
+    let inside = x < text.right() && y < text.bottom();
+    inside.then_some(ratatui::layout::Position::new(x, y))
 }
 
 /// 把一行拆成「未选中 / 选中 / 未选中」三段；选中段反白（与消息区拖选同一套观感）。
@@ -297,6 +318,7 @@ fn paint_block_cursor(buffer: &mut Buffer, text: Rect, line: &str, row: u16, col
 mod tests {
     use super::*;
     use crate::args::ApprovalMode;
+    use ratatui::layout::Position;
 
     fn state() -> AppState {
         AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual)
@@ -331,6 +353,18 @@ mod tests {
         // 整组高度 = 两条边框 + 组内各区间 + 输入本体。
         let state = state();
         assert_eq!(group_height(&state, 80), 2 + height(&state, 78));
+    }
+
+    #[test]
+    fn caret_position_wraps_at_the_body_width_and_stays_inside() {
+        let text = Rect::new(1, 9, 5, 3);
+        assert_eq!(caret_position(text, 0, 0), Some(Position::new(1, 9)));
+        assert_eq!(caret_position(text, 1, 2), Some(Position::new(3, 10)));
+        // 列到底（插入点在本行最后一个字符之后）按终端语义落到下一行行首。
+        assert_eq!(caret_position(text, 0, 5), Some(Position::new(1, 10)));
+        // 落出正文区（行或列越界）宁可不登记，也不把光标丢到框外。
+        assert_eq!(caret_position(text, 3, 0), None);
+        assert_eq!(caret_position(Rect::new(0, 0, 0, 2), 0, 0), None);
     }
 
     #[test]

@@ -140,6 +140,9 @@ pub(crate) fn notice_line_height(state: &AppState) -> u16 {
 /// 渲染一帧：设置面板打开时铺满整屏（对映 Python 的 `SettingsScreen` 模态页）。
 pub fn render(frame: &mut Frame, state: &AppState, settings: Option<&settings::SettingsState>) {
     if let Some(settings) = settings {
+        // 设置面板铺满整屏，主输入框那一帧并不在屏上：插入点登记要清掉，否则终端光标
+        // 还停在被盖住的输入框位置，输入法会把候选窗放到那里（面板里的编辑框另有落点）。
+        state.set_composer_caret(None);
         settings::render::render(frame, frame.area(), settings);
         return;
     }

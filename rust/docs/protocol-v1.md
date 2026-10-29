@@ -160,7 +160,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `provider` / `protocol` / `base_url` / `api_key` 是**渠道字段**：宿主切换模型渠道时整套下发，
   凭据就是明文 `api_key`；给空串等同于不给。
 - `model.system_prompt` / `model.context_messages` 是**提示词整体替换**：宿主启用主 Agent 模式
-  （`/plan`、`/speaking-style`）或关闭模式后重算 system prompt（末尾追加或摘掉
+  （`/plan`、`/programming`、`/speaking-style`）或关闭模式后重算 system prompt（末尾追加或摘掉
   `<active_mode_prompt>`）与上下文消息并下发；
   上下文消息只在请求体里生效，不写进会话转录。
 - 设置对**后续**回合生效：正在跑的回合在开始时已快照模型配置，本次更新不会改变它已经发出的请求。

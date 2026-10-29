@@ -71,7 +71,6 @@ impl SettingsState {
             .mcp
             .server_selected
             .min(self.mcp.servers.len().saturating_sub(1));
-        self.mcp.status = MCP_SERVERS_HINT.to_string();
     }
 
     pub(super) fn move_mcp_server(&mut self, delta: isize) {
