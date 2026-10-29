@@ -1,11 +1,11 @@
-//! 渲染层：消息流、任务清单、待决面板、输入卡与底部单行轮播 HUD。
+//! 渲染层：消息流、任务清单、待决面板、输入卡与底部单行 HUD。
 //!
 //! 消息区在渲染前先按真实列宽软折行，滚动窗口因此按显示行精确计算，
 //! 不依赖终端自己的换行结果。
 //!
 //! `fullscreen/` 是 Python `omnicrawl/ui/fullscreen/` 的逐层对映实现（按目录
 //! 对齐、行为与视觉对齐），上述模块是该对映层完成后要退役的早期简化页面。
-//! 本层已按 Python 当前版式对齐：底部单行轮播 HUD、输入区整组共用一个圆角方框
+//! 本层已按 Python 当前版式对齐：底部单行 HUD、输入区整组共用一个圆角方框
 //! （对映 Python `#composer-wrap`：任务清单 / 排队预览 / 提示 / 命令菜单 / 输入本体都在框内）、
 //! `user：` 标签消息、无边框工具卡（`●` 状态点 + 缩进正文）。运行状态写在方框上边框上。
 
@@ -29,7 +29,7 @@ use crate::state::AppState;
 use crate::ui::fullscreen::terminal::theme;
 use crate::ui::fullscreen::text::StyledText;
 
-/// 底部单行轮播 HUD 占一行（对映 CSS `#bottom-carousel { height: 1 }`）。
+/// 底部单行 HUD 占一行（对映 CSS `#bottom-carousel { height: 1 }`）。
 pub const HUD_HEIGHT: u16 = 1;
 
 /// 输入框上方那行瞬时提示（拖选复制等）占一行：不进会话流，几秒后自散。
@@ -46,14 +46,14 @@ pub const NOTICE_LINE_HEIGHT: u16 = 1;
 /// | --- | --- | --- |
 /// | `conversation` | 消息流（含欢迎 Logo 与选区高亮） | 记录增删改、展开态、思考显示、Logo 动画 |
 /// | `composer` | 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上的状态行）与待决面板 | 键盘鼠标输入、清单/队列/面板变化、状态行 spinner |
-/// | `bottom` | 底部单行轮播 HUD | 轮播换页与解密扫描 |
+/// | `bottom` | 底部单行 HUD | 遥测刷新 |
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RefreshVersions {
     /// 会话区。
     pub conversation: u64,
     /// 输入区整组与待决面板。
     pub composer: u64,
-    /// 底部轮播 HUD。
+    /// 底部 HUD。
     pub bottom: u64,
 }
 
@@ -75,7 +75,7 @@ impl RefreshVersions {
 ///
 /// 与 Python 的 `#shell` 一致，自上而下是：会话区（吃剩余高度）→ 待决面板 →
 /// **输入区方框**（框内自上而下：任务清单 → 排队预览 → 瞬时提示 → 命令菜单 → 输入本体）
-/// → 底部轮播 HUD。运行状态不占条带：它写在输入区方框的上边框上
+/// → 底部 HUD。运行状态不占条带：它写在输入区方框的上边框上
 /// （`-------⠋ 正在调用[ESC]-------`，对映 Python 把状态放在输入框区域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiAreas {
@@ -211,7 +211,7 @@ pub fn wrap_display(text: &str, width: usize) -> Vec<String> {
 
 /// 按显示宽度截断富文本，保留原有样式；被截断时以弱化色的 `…` 收尾。
 ///
-/// 消息流行与底部轮播行都按显示列宽切，不能按字节或字符数算——CJK 与 emoji
+/// 消息流行与底部 HUD 行都按显示列宽切，不能按字节或字符数算——CJK 与 emoji
 /// 各占自己的列宽（对映 Python 的 `text-overflow: ellipsis`）。
 pub fn truncate_styled(text: &StyledText, width: usize) -> Vec<Span<'static>> {
     if width == 0 {

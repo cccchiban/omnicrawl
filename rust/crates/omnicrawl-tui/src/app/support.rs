@@ -223,7 +223,7 @@ pub(super) fn agent_workspace_form_values(config: &AgentWorkspaceConfig) -> Vec<
     ]
 }
 
-/// 联网搜索在工具页上的投影：默认引擎 + 各凭据是否已配置（凭据本身不进界面状态）。
+/// 联网搜索页的初始投影：默认引擎 + 各凭据是否已配置（凭据本身不进界面状态）。
 pub(super) fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
     let configuration = load_web_search_configuration(environment, None).unwrap_or_default();
     WebSearchRow {

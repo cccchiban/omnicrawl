@@ -24,10 +24,11 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use super::{display_width, fit, truncate_styled, wrap_display};
 use crate::state::{AppState, Record, ToolCard, ToolStatus, UserRecord};
+use crate::ui::fullscreen::rendering::welcome_logo::{self, BADGE_SEGMENT_COUNT};
 use crate::ui::fullscreen::rendering::widgets;
 use crate::ui::fullscreen::rendering::{latex, markdown, tool_diff};
 use crate::ui::fullscreen::terminal::theme;
-use crate::ui::fullscreen::text::StyledText;
+use crate::ui::fullscreen::text::{StyleRuns, StyledText};
 use crate::ui::image_preview;
 use crate::ui::panels;
 
@@ -201,6 +202,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         )
         .collect();
     frame.render_widget(Paragraph::new(window), text);
+    // 欢迎页徽标的三段跳转：渲染时把各段的屏幕矩形登记给鼠标命中（面板不画徽标时清空）。
+    state.set_welcome_badge_areas(welcome_badge_areas(state, text, total, start));
     // 图片必须画在文本之后：占位行是空白格，先铺白再把图片写进同一批格子。
     for block in blocks {
         render_image_block(frame, text, state, &block);
@@ -576,7 +579,7 @@ impl ConversationCache {
             self.reset_blocks();
         }
         if empty {
-            // 空会话首屏只画欢迎 Logo：内容只随入场动画变化（由 `mark_all_dirty` 触发重算）。
+            // 空会话首屏只画欢迎 Logo 与下方徽标：内容只随入场动画变化（由 `mark_all_dirty` 触发重算）。
             if self.chunks.is_empty() || self.dirty_from == 0 {
                 let lines = welcome_logo_lines(state, width);
                 #[cfg(test)]
@@ -902,10 +905,86 @@ fn welcome_logo_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
     let mut lines: Vec<DisplayLine> = (0..LOGO_OFFSET_ROWS)
         .map(|_| DisplayLine::plain(Line::raw("")))
         .collect();
-    for line in state.logo.text().split_lines() {
+    let rendered = state.logo.text().split_lines();
+    let last = rendered.len().saturating_sub(1);
+    for (index, line) in rendered.iter().enumerate() {
+        // 徽标是最后一行：鼠标停在某一小段时只把那段描成淡黄色（块字与标签不动）。
+        let line = match (index == last, state.welcome_badge_hover(), state.logo.subtitle()) {
+            (true, Some(segment), Some(badge)) => highlight_badge_segment(line, badge, segment),
+            _ => line.clone(),
+        };
         lines.push(DisplayLine::plain(centered_line(&line, width)));
     }
     lines
+}
+
+/// 把徽标的第 `index` 段描成淡黄色（悬停态）。
+///
+/// 按**字符区间**重铺样式：动画帧把字形换成了乱码但字符布局不变，同一个区间照样对得上。
+fn highlight_badge_segment(line: &StyledText, badge: &StyledText, index: usize) -> StyledText {
+    let Some(segment) = welcome_logo::badge_segments(badge).get(index).copied() else {
+        return line.clone();
+    };
+    let plain: Vec<char> = line.plain().chars().collect();
+    let styles = line.char_styles();
+    let highlight = format!("{} bold", theme::ACCENT_AMBER);
+    let mut runs = StyleRuns::new();
+    for (position, ch) in plain.iter().enumerate() {
+        let style = if position >= segment.start && position < segment.end {
+            highlight.as_str()
+        } else {
+            styles.get(position).map(String::as_str).unwrap_or("")
+        };
+        runs.push_char(*ch, style);
+    }
+    runs.finish()
+}
+
+/// 欢迎页徽标可点段的屏幕矩形（顺序与 [`welcome_logo::badge_segments`] 一致）。
+///
+/// 徽标只在空会话首屏出现、且固定是最后一行；位置由文本区宽度与居中偏移算出，
+/// 与 [`welcome_logo_lines`] 用同一套算法。徽标不可见时返回全 `None`。
+fn welcome_badge_areas(
+    state: &AppState,
+    text: Rect,
+    total: usize,
+    start: usize,
+) -> [Option<Rect>; BADGE_SEGMENT_COUNT] {
+    let mut areas = [None; BADGE_SEGMENT_COUNT];
+    if !state.records.is_empty() || total == 0 {
+        return areas;
+    }
+    let Some(badge) = state.logo.subtitle() else {
+        return areas;
+    };
+    let index = total - 1;
+    if index < start || index - start >= usize::from(text.height) {
+        return areas;
+    }
+    let rendered = state.logo.text().split_lines();
+    let Some(line) = rendered.last() else {
+        return areas;
+    };
+    let left = usize::from(text.width).saturating_sub(line.display_width()) / 2;
+    let plain: Vec<char> = badge.plain().chars().collect();
+    let column = |position: usize| -> usize {
+        let prefix: String = plain[..position.min(plain.len())].iter().collect();
+        display_width(&prefix)
+    };
+    for (slot, segment) in welcome_logo::badge_segments(badge).into_iter().enumerate() {
+        let from = left + column(segment.start);
+        let to = (left + column(segment.end)).min(usize::from(text.width));
+        if to <= from {
+            continue;
+        }
+        areas[slot] = Some(Rect {
+            x: text.x + from as u16,
+            y: text.y + (index - start) as u16,
+            width: (to - from) as u16,
+            height: 1,
+        });
+    }
+    areas
 }
 
 /// 一行富文本水平居中（左侧补空格，不动原有样式）。
@@ -1806,7 +1885,7 @@ mod tests {
     use crate::args::ApprovalMode;
     use crate::state::AppState;
     use serde_json::json;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     fn text_of(line: &Line<'static>) -> String {
         line.spans
@@ -2416,6 +2495,50 @@ mod tests {
         assert_eq!(
             plain(&display_lines(&state, 40)).len(),
             LOGO_OFFSET_ROWS + 8
+        );
+    }
+
+    #[test]
+    fn hovering_a_badge_segment_paints_only_that_segment_amber() {
+        let mut state = AppState::new(
+            "demo".to_string(),
+            "deepseek-4.1-flash".to_string(),
+            ApprovalMode::Review,
+        );
+        state.logo.set_subtitle(welcome_logo::session_badge_text(
+            "deepseek-4.1-flash",
+            "high",
+            "review",
+            1,
+        ));
+        let start = Instant::now();
+        state.logo.start(start);
+        state.logo.tick(start + Duration::from_secs(2));
+
+        state.set_welcome_badge_hover(Some(0)); // 模型名
+        let lines = display_lines(&state, 120);
+        let badge = lines.last().expect("徽标是最后一行").line.clone();
+        let model = badge
+            .spans
+            .iter()
+            .find(|span| span.content.starts_with("deepseek"))
+            .expect("徽标里有模型名");
+        assert_eq!(
+            model.style.fg,
+            Some(Color::Yellow),
+            "悬停段染成淡黄色：{:?}",
+            badge.spans
+        );
+        let separator = badge
+            .spans
+            .iter()
+            .find(|span| span.content.contains('*'))
+            .expect("徽标里有分隔符");
+        assert_ne!(
+            separator.style.fg,
+            Some(Color::Yellow),
+            "分隔符与其余段不变色：{:?}",
+            badge.spans
         );
     }
 

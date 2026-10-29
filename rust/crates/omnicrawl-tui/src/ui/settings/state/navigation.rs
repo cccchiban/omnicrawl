@@ -144,6 +144,18 @@ impl SettingsState {
     }
 
 
+    /// 按一级项的键直接落到那一页（欢迎页徽标等鼠标入口用）；未知键不动。
+    ///
+    /// 与点左栏同义：选中项移过去、右侧挂上该页、焦点进右栏。
+    pub fn select_key(&mut self, key: &str) {
+        let Some(index) = ROW_ORDER.iter().position(|item| *item == key) else {
+            return;
+        };
+        self.select_row(index);
+        self.enter_pane();
+    }
+
+
     pub fn selected(&self) -> usize {
         self.selected
     }

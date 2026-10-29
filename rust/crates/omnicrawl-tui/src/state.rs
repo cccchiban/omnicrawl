@@ -17,13 +17,10 @@ use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::conversation::ConversationCache;
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::{SessionMenuItem, SessionsMenu};
-use crate::ui::fullscreen::random::Rng;
 use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
-use crate::ui::fullscreen::status::hud::load_carousel_message_lines;
+use crate::ui::fullscreen::rendering::welcome_logo::BADGE_SEGMENT_COUNT;
 use crate::ui::fullscreen::status::indicators as queue;
-use crate::ui::fullscreen::status::indicators::{
-    Carousel, CarouselPage, CarouselSource, CarouselTick, CAROUSEL_ANIMATION_FRAME_SECONDS,
-};
+use crate::ui::fullscreen::status::indicators::{hud_line_text, HudSource};
 use crate::ui::fullscreen::text::StyledText;
 use crate::ui::image_preview::ImagePreviews;
 use crate::ui::RefreshVersions;
@@ -44,9 +41,6 @@ const IDLE_GAP: Duration = Duration::from_secs(2);
 
 /// 输入框可见行数上限：超过后在编辑器内滚动。
 pub const COMPOSER_MAX_LINES: usize = 5;
-
-/// 轮播随机源种子：固定值让留言页与乱码帧在测试里可复现。
-const CAROUSEL_SEED: u64 = 0x0C1C_2025;
 
 /// 输入框上方那行瞬时提示（拖选复制等）的存活时长。
 pub const NOTICE_LINE_LINGER: Duration = Duration::from_secs(3);
@@ -249,14 +243,6 @@ fn default_subagent_stream_root() -> PathBuf {
 ///
 /// `stopped`（被显式终止）归「成功」是因为它同样是终态；用词不精确但原始状态字符串
 /// 仍在卡片正文里（`Monitor · id · stopped`），不必为了措辞新增一个渲染分支。
-/// 距固定帧长的下一帧还有多久：帧号按 `started` 起算，返回值至少 1ms（避免忙等）。
-fn frame_delay(now: Instant, started: Instant, frame_seconds: f64) -> Duration {
-    let elapsed = now.saturating_duration_since(started).as_secs_f64();
-    let frame = (elapsed / frame_seconds).floor() * frame_seconds;
-    let remaining = (frame + frame_seconds - elapsed).max(0.001);
-    Duration::from_secs_f64(remaining)
-}
-
 fn monitor_status(status: &str) -> ToolStatus {
     match status {
         "running" => ToolStatus::Running,
@@ -1208,26 +1194,20 @@ pub struct AppState {
     batch: Option<host::PendingBatch>,
     /// 当前批次是否属于子代理回合：为真时不在主会话挂工具卡（只回填结果）。
     batch_quiet: bool,
-    /// 底部单行轮播状态机（对映 Python `_carousel_*`）：遥测 → 工作区路径 → 留言
-    /// 三页各 10s 循环，换页时以解密扫描特效过渡。
-    carousel: Carousel,
-    /// 当前要显示的轮播整行（渲染只读；由 [`AppState::refresh_carousel`] 按帧推进）。
-    pub carousel_text: StyledText,
-    /// 本页进入时刻（停留计时起点）。
-    carousel_since: Instant,
-    /// 上一帧动画时刻：按 `CAROUSEL_ANIMATION_FRAME_SECONDS` 限速推进解密扫描。
-    carousel_anim_at: Option<Instant>,
-    /// 首帧是否已经装配过轮播文本。
-    carousel_ready: bool,
-    /// 轮播随机源（留言页抽取与乱码字符；固定种子便于测试复现）。
-    carousel_rand: Rng,
-    /// 留言页候选（编译期内嵌的 `carousel_messages.txt`，启动期读一次）。
-    carousel_lines: Vec<String>,
+    /// 底部单行 HUD 的整行文本（渲染只读；由 [`AppState::refresh_hud`] 按最新遥测重建）。
+    pub hud_text: StyledText,
     /// 鼠标拖选的文本区间（`None` = 没有选区）：渲染层按它加反显高亮，
     /// 松手时由宿主抽出文本写入剪切板。坐标是「`display_lines` 行下标 + 行内显示列」。
     selection: Option<TextSelection>,
     /// 会话流末尾 `[ ESC ]` 提示是否被鼠标悬停（悬停时染成淡黄色）。
     pub runtime_esc_hover: bool,
+    /// 欢迎页徽标各可点段的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
+    ///
+    /// 徽标位置随窗口宽度与居中偏移变化，只能由渲染路径记下来（`Cell` 与
+    /// [`Self::runtime_esc_area`] 同一思路）。
+    welcome_badge_areas: std::cell::Cell<[Option<ratatui::layout::Rect>; BADGE_SEGMENT_COUNT]>,
+    /// 正在被悬停的徽标段下标（悬停段染成淡黄色，点击跳到对应设置页）。
+    welcome_badge_hover: Option<usize>,
     /// 正在被悬停的后台任务卡「立即结束」按钮所属的 `call_id`（悬停时染成淡黄色）。
     ///
     /// 同一时刻只可能悬停一个按钮，用「命中的卡片」而不是布尔值，卡片重排后也不会串色。
@@ -1302,15 +1282,11 @@ impl AppState {
             subagent_window_exe: None,
             batch: None,
             batch_quiet: false,
-            carousel: Carousel::new(),
-            carousel_text: StyledText::new(),
-            carousel_since: Instant::now(),
-            carousel_anim_at: None,
-            carousel_ready: false,
-            carousel_rand: Rng::new(CAROUSEL_SEED),
-            carousel_lines: load_carousel_message_lines(),
+            hud_text: StyledText::new(),
             selection: None,
             runtime_esc_hover: false,
+            welcome_badge_areas: std::cell::Cell::new([None; BADGE_SEGMENT_COUNT]),
+            welcome_badge_hover: None,
             stop_button_hover: None,
             retry_button_hover: None,
             subagent_view_hover: None,
@@ -1323,10 +1299,10 @@ impl AppState {
             reasoning_reveal: std::cell::RefCell::new(ReasoningReveal::default()),
             user_image_sequence: 0,
         };
-        // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
+        // 首帧先把 HUD 文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
         // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
-        state.refresh_carousel(Instant::now(), "");
-        // 首帧把轮播置脏，保证第一帧一定会画出来。
+        state.refresh_hud();
+        // 首帧把底部置脏，保证第一帧一定会画出来。
         state.refresh.bump_bottom();
         state
     }

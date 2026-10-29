@@ -100,8 +100,8 @@ impl CommandMenu {
             .filter(|option| option.search.to_lowercase().contains(&query))
             .cloned()
             .collect();
-        // Python 排序稳定：仅把前缀命中提到前面，同级保留统一命令源的产品顺序。
-        matches.sort_by_cached_key(|option| !option.command.to_lowercase().starts_with(&query));
+        // 候选按命令名首字母排序（大小写不敏感），不再沿用产品注册顺序。
+        matches.sort_by_cached_key(|option| option.command.to_lowercase());
         let hints = parameter_hints(&matches, &query);
         matches.extend(hints);
         self.set_matches(matches);
@@ -295,37 +295,32 @@ mod tests {
     }
 
     #[test]
-    fn refresh_filters_by_substring_and_keeps_product_order() {
+    fn refresh_filters_by_substring_and_sorts_by_command_name() {
         let mut menu = CommandMenu::new();
         menu.refresh("/se", &options());
-        // `/settings` 与 `/sessions` 都命中；两者都是前缀命中，保留原顺序。
+        // `/settings` 与 `/sessions` 都命中；按首字母排序，`sessions` 在 `settings` 前。
         let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["/settings", "/sessions"]);
+        assert_eq!(names, vec!["/sessions", "/settings"]);
         assert_eq!(menu.selection(), 0);
         assert!(menu.is_open());
     }
 
     #[test]
-    fn prefix_hits_sort_before_substring_hits() {
+    fn matches_sort_by_command_name_not_prefix_priority() {
         let mut menu = CommandMenu::new();
         let table = vec![
-            // Skill 候选的 `search` 里带别名，`/my-skill` 落在子串位置而非前缀位置；
-            // 这正是排序规则唯一能生效的场景（内置命令的 search 就是命令名本身）。
+            // Skill 候选的 `search` 里带别名：`/beta` 不是 `/s` 的前缀命中，
+            // 但它的别名 `/skills:beta` 让它进入候选。
             CommandOption {
-                search: "/skill:my-skill /my-skill my skill 说明".to_string(),
-                ..option("/skill:my-skill", "说明", &[])
+                search: "/skills:beta /beta 技能说明".to_string(),
+                ..option("/beta", "技能说明", &[])
             },
-            option("/my-note", "笔记", &[]),
+            option("/settings", "打开设置", &[]),
         ];
-        menu.refresh("/my", &table);
-        // 前缀命中排到子串命中之前，同级才保留统一命令源的产品顺序。
+        menu.refresh("/s", &table);
+        // 首字母序：`/beta` 在 `/settings` 前，与是否前缀命中无关。
         let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["/my-note", "/skill:my-skill"]);
-
-        menu.refresh("/my-s", &table);
-        // 只有一个子串命中时同样保留它。
-        let names: Vec<&str> = menu.matches().iter().map(|o| o.command.as_str()).collect();
-        assert_eq!(names, vec!["/skill:my-skill"]);
+        assert_eq!(names, vec!["/beta", "/settings"]);
     }
 
     #[test]
@@ -402,9 +397,9 @@ mod tests {
     #[test]
     fn enter_completes_unless_text_is_already_the_command() {
         let mut menu = CommandMenu::new();
-        menu.refresh("/se", &options());
+        menu.refresh("/set", &options());
         assert_eq!(
-            menu.handle_key(MenuKey::Enter, "/se"),
+            menu.handle_key(MenuKey::Enter, "/set"),
             MenuAction::Complete {
                 insert: "/settings".to_string()
             }

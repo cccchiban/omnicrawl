@@ -13,7 +13,7 @@ use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
     ChannelRow, ChoiceKind, DecisionRow, DecisionSwitchRow, DropdownField, FieldValue, Focus,
     FormKind, HitAction, ModelParamRow, Pane, SettingsChange, SettingsEvent, SettingsState,
-    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef, TOOLS_WEB_SEARCH_ROW,
+    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
 };
 
 const WIDTH: u16 = 100;
@@ -263,8 +263,12 @@ fn tools_panel_lists_switch_states() {
     assert!(screen.contains("读取文件内容：已启用"), "{screen}");
     assert!(screen.contains("执行 PowerShell 命令：已关闭"));
     assert!(
-        screen.contains("TTS 语音合成（云服务）：已启用（未注册）"),
-        "未注册的工具要标注：{screen}"
+        screen.contains("TTS 语音合成（云服务）：已启用"),
+        "工具行只画名称与开关状态：{screen}"
+    );
+    assert!(
+        !screen.contains("未注册"),
+        "工具行不再带括号说明：{screen}"
     );
     assert!(screen.contains("↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回"));
     assert!(
@@ -947,15 +951,15 @@ fn pane_row_click_selects_first_and_activates_on_the_same_row() {
     }
     state.handle_key(KeyCode::Enter);
     draw(&state, WIDTH, HEIGHT);
-    // 第 1 行是联网搜索（确认后进表单页，不产出事件），逐工具开关从第 2 行起。
-    let y = pane_row_y(&state, 2);
+    // 首行是审查模式，逐工具开关从第 2 行（下标 1）起。
+    let y = pane_row_y(&state, 1);
 
     let action = state.hit_at(40, y).expect("工具行应当可点");
     assert!(
         state.click(action).is_none(),
         "首次点击只把选中移到该行，不能顺手把开关翻掉"
     );
-    assert_eq!(state.tool_selected(), 2);
+    assert_eq!(state.tool_selected(), 1);
 
     let event = state.click(action).expect("再点当前行等同 Enter");
     assert!(
@@ -965,24 +969,20 @@ fn pane_row_click_selects_first_and_activates_on_the_same_row() {
 }
 
 #[test]
-fn web_search_row_click_opens_the_form_page_without_a_config_change() {
+fn web_search_left_row_opens_its_own_page() {
     let mut state = state();
-    while state.selected_key() != "tools" {
-        state.handle_key(KeyCode::Down);
-    }
-    state.handle_key(KeyCode::Enter);
     draw(&state, WIDTH, HEIGHT);
-    let y = pane_row_y(&state, TOOLS_WEB_SEARCH_ROW);
+    let index = omnicrawl_tui::ui::settings::ROW_ORDER
+        .iter()
+        .position(|key| *key == "web_search")
+        .expect("联网搜索在左栏");
+    let y = list_row_y(&state, index);
 
-    let action = state.hit_at(40, y).expect("联网搜索行应当可点");
-    assert!(state.click(action).is_none(), "首次点击只移动选中");
-    assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
-
-    assert!(
-        state.click(action).is_none(),
-        "联网搜索行只切面板，不产出配置变更"
-    );
+    let action = state.hit_at(5, y).expect("左栏行应当可点");
+    assert!(state.click(action).is_none(), "切页不产出配置变更事件");
+    assert_eq!(state.selected_key(), "web_search");
     assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
+    assert_eq!(state.focus(), Focus::Pane, "点左栏等于 Enter，直接进右栏");
 }
 
 #[test]
@@ -992,11 +992,10 @@ fn approval_row_is_the_first_clickable_row_and_cycles() {
         state.handle_key(KeyCode::Down);
     }
     state.handle_key(KeyCode::Enter);
-    // 进入面板时首行（审查模式）已被选中；往下挪两行（审查与联网搜索之后）才能观察到
+    // 进入面板时首行（审查模式）已被选中；往下挪一行（到第一个工具开关）才能观察到
     // 「首次点击只移动」。
     state.handle_key(KeyCode::Down);
-    state.handle_key(KeyCode::Down);
-    assert_eq!(state.tool_selected(), 2);
+    assert_eq!(state.tool_selected(), 1);
     draw(&state, WIDTH, HEIGHT);
 
     let y = pane_row_y(&state, 0);
@@ -1078,12 +1077,10 @@ fn hover_paints_the_row_under_the_cursor_yellow() {
 #[test]
 fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
     let mut state = state();
-    while state.selected_key() != "tools" {
+    while state.selected_key() != "web_search" {
         state.handle_key(KeyCode::Down);
     }
-    state.handle_key(KeyCode::Enter); // 进工具页
-    state.handle_key(KeyCode::Down); // 走到「联网搜索」
-    state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+    state.handle_key(KeyCode::Enter); // 进联网搜索页
     let collapsed = text(&draw(&state, WIDTH, HEIGHT));
     assert!(
         collapsed.contains("Tavily API Key：（未配置）"),

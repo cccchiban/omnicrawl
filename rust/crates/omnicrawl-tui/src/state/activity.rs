@@ -37,7 +37,7 @@ impl AppState {
             }
         }
 
-        /// 底部块置脏（轮播换页与解密扫描）。
+        /// 底部块置脏（遥测刷新）。
         pub fn touch_bottom(&mut self) {
             self.refresh.bump_bottom();
         }
@@ -155,28 +155,15 @@ impl AppState {
 
         /// 下一个动画帧的到期时刻距现在还有多久；没有动画在播时返回 `None`。
         ///
-        /// 欢迎 Logo 与轮播解密扫描都按固定帧长换帧：事件循环据此精确睡到下一帧，
+        /// 欢迎 Logo（含徽标的解密扫描）按固定帧长换帧：事件循环据此精确睡到下一帧，
         /// 既不会早醒空转，也不会晚到掉帧。
         pub fn next_animation_frame(&self, now: Instant) -> Option<Duration> {
-            let mut due: Option<Duration> = None;
-            if let Some(delay) = self.logo.next_frame_delay(now) {
-                due = Some(delay);
-            }
-            // 只在动画真的还在播时才算帧：轮播落定后 `carousel_anim_at` 仍留着上一次的时间戳，
-            // 不看 `is_animating()` 会把每个空闲帧都当成「下一帧马上到」而忙等。
-            if self.carousel.is_animating() {
-                if let Some(last) = self.carousel_anim_at {
-                    let remaining = frame_delay(now, last, CAROUSEL_ANIMATION_FRAME_SECONDS);
-                    due = Some(due.map_or(remaining, |known| known.min(remaining)));
-                }
-            }
-            due
+            self.logo.next_frame_delay(now)
         }
 
-        /// 轮播数据源快照。<`reasoning_effort`> 不在界面状态里（它属于模型配置），
-        /// 由宿主在 tick 时传入。
-        pub(super) fn carousel_source(&self, reasoning_effort: &str) -> CarouselSource {
-            CarouselSource {
+        /// 底部单行 HUD 的数据源快照（遥测 + 工作区）。
+        pub(super) fn hud_source(&self) -> HudSource {
+            HudSource {
                 workspace: self.project.clone(),
                 input_tokens: self.telemetry.input_tokens as i64,
                 output_tokens: self.telemetry.output_tokens as i64,
@@ -184,86 +171,19 @@ impl AppState {
                 // 总量未知时传 0：对映层与 Python 一样按 max(1) 兜底，不编造分母。
                 context_limit: self.telemetry.context_window.unwrap_or(0) as i64,
                 tokens_per_second: self.telemetry.rate.value().unwrap_or(0.0),
-                model: self.model.clone(),
-                reasoning_effort: reasoning_effort.to_string(),
-                approval_mode: self.approval.label().to_string(),
-                mcp_enabled_count: self.mcp_servers as i64,
-                pending_count: self.pending_inputs.len() as i64,
             }
         }
 
-        /// 推进底部单行轮播：停留到点换页，动画中按帧距推进解密扫描。
-        ///
-        /// 定时器由装配层持有（对映 Python 把停留/帧定时器交给 Textual 的做法），
-        /// 这里只吃「现在几点」并更新 [`AppState::carousel_text`]。
+        /// 按最新遥测重建底部单行 HUD。
         ///
         /// 文本没变时不写回、不标脏：空闲时底部块因此保持干净，事件循环可以整帧跳过绘制。
-        pub fn refresh_carousel(&mut self, now: Instant, reasoning_effort: &str) {
-            let source = self.carousel_source(reasoning_effort);
-            if self.carousel.is_animating() {
-                let due = self
-                    .carousel_anim_at
-                    .map(|last| {
-                        now.duration_since(last).as_secs_f64() >= CAROUSEL_ANIMATION_FRAME_SECONDS
-                    })
-                    .unwrap_or(true);
-                if !due {
-                    return;
-                }
-                self.carousel_anim_at = Some(now);
-                match self.carousel.animation_tick(
-                    &source,
-                    &self.carousel_lines,
-                    &mut self.carousel_rand,
-                ) {
-                    CarouselTick::Frame(text) => self.set_carousel_text(text),
-                    CarouselTick::Settled(text) => {
-                        self.set_carousel_text(text);
-                        // 动画收口后重新开始本页的停留计时。
-                        self.carousel_since = now;
-                    }
-                }
+        pub fn refresh_hud(&mut self) {
+            let text = hud_line_text(&self.hud_source());
+            if self.hud_text == text {
                 return;
             }
-            if !self.carousel_ready {
-                self.carousel_ready = true;
-                self.carousel_since = now;
-            } else if now.duration_since(self.carousel_since).as_secs_f64()
-                >= self.carousel.page_duration()
-            {
-                let next = self.carousel.next_page();
-                self.carousel.switch_to(
-                    next,
-                    true,
-                    &source,
-                    &self.carousel_lines,
-                    &mut self.carousel_rand,
-                );
-                self.carousel_anim_at = None;
-                self.carousel_since = now;
-                // 动画帧由下一帧推进，本帧仍是旧页文本（与 Python 切换当帧的可见状态一致）。
-                return;
-            }
-            // 稳态：每帧按最新遥测重建当前页（对映 Python 的 `_carousel_refresh`，
-            // 否则 token 计数要在下一次换页才会追上）。
-            let next =
-                self.carousel
-                    .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
-            self.set_carousel_text(next);
-        }
-
-        /// 写回轮播文本：内容真的变了才置脏底部块。
-        pub(super) fn set_carousel_text(&mut self, text: StyledText) {
-            if self.carousel_text == text {
-                return;
-            }
-            self.carousel_text = text;
+            self.hud_text = text;
             self.touch_bottom();
-        }
-
-        /// 当前轮播页（测试与调试用）。
-        pub fn carousel_page(&self) -> CarouselPage {
-            self.carousel.page()
         }
 
         /// 追加一条系统消息；不改动回合状态。

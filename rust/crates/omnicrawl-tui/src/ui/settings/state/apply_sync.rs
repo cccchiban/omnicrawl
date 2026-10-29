@@ -116,16 +116,6 @@ impl SettingsState {
                     form.set_values(values.clone());
                     form.set_status(message.clone());
                 }
-                // 联网搜索页是从工具页进来的，保存后回到工具页；其余表单页留在原地。
-                if *kind == FormKind::WebSearch {
-                    self.tools.web_search.engine = values
-                        .first()
-                        .map(|value| value.text().trim().to_string())
-                        .unwrap_or_default();
-                    // 凭据状态不在这里猜：只有磁盘知道明文，由宿主随后的 `set_web_search` 对齐。
-                    self.tools.status = message;
-                    self.close_web_search_form();
-                }
             }
             SettingsChange::Subagent(change) => {
                 match change {
@@ -311,10 +301,6 @@ impl SettingsState {
             | SettingsChange::Reasoning { .. } => self.model_management.status.push_str(note),
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
-            SettingsChange::Form {
-                kind: FormKind::WebSearch,
-                ..
-            } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
@@ -442,9 +428,15 @@ impl SettingsState {
         self.tools.selected = selected;
     }
 
-    /// 联网搜索设置保存后，用磁盘上的真实配置覆盖工具页那一行（含凭据是否已配置）。
+    /// 联网搜索设置保存后，用磁盘上的真实配置重排本页草稿（含凭据是否已配置）。
+    ///
+    /// 草稿里的凭据一并换成掩码：刚录入的明文不应该继续留在界面上，
+    /// 「留空＝不改动」的语义也从这一刻起成立。
     pub fn set_web_search(&mut self, row: WebSearchRow) {
-        self.tools.web_search = row;
+        let values = web_search::web_search_form_values(&row);
+        if let Some(form) = self.forms.get_mut(FormKind::WebSearch.index()) {
+            form.set_values(values);
+        }
     }
 
     /// 宿主回填：图像生成草稿按磁盘的生效值重排（归一化可能折算过端点与模型）。

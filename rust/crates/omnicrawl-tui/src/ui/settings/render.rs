@@ -19,8 +19,7 @@ use super::state::{
     ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, EmbeddingField,
     Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
     DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
-    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET, TOOLS_WEB_SEARCH_LABEL,
-    TOOLS_WEB_SEARCH_ROW,
+    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
 };
 use super::{channel_field_value, decision_field_value, embedding_field_value, row_label};
 use crate::ui::display_width;
@@ -1288,24 +1287,7 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
             },
         )]));
     }
-    // 第二行是联网搜索：`Enter` 进入独立的联网搜索表单页。
-    if offset <= 1 && lines.len() < list_height {
-        state.record_hit(
-            row_hit(list_area, TOOLS_WEB_SEARCH_ROW - offset),
-            HitAction::PaneRow(TOOLS_WEB_SEARCH_ROW),
-        );
-        lines.push(Line::from(vec![Span::styled(
-            web_search_row_text(
-                state,
-                state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused,
-            ),
-            if state.tool_selected() == TOOLS_WEB_SEARCH_ROW && focused {
-                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
-            } else {
-                menu_text_style()
-            },
-        )]));
-    }
+    // 第二行起是逐工具开关（联网搜索已抽成左栏的独立设置页）。
     let skip = offset.saturating_sub(TOOLS_SWITCH_ROW_OFFSET);
     lines.extend(
         rows.iter()
@@ -1631,30 +1613,15 @@ fn approval_row_text(state: &SettingsState, selected: bool) -> String {
     )
 }
 
-/// 联网搜索行的文本：`› 联网搜索：duckduckgo（Tavily 已配置）`。
-fn web_search_row_text(state: &SettingsState, selected: bool) -> String {
-    format!(
-        "{} {}：{}",
-        if selected { "›" } else { " " },
-        TOOLS_WEB_SEARCH_LABEL,
-        state.web_search_value()
-    )
-}
-
-/// 工具开关行的文本：`› 名称：已启用（未注册）`。
+/// 工具开关行的文本：`› 名称：已启用`。
 fn tool_row_spans(row: &ToolSwitchRow, selected: bool) -> Vec<Span<'static>> {
     let state_text = if row.enabled {
         "已启用"
     } else {
         "已关闭"
     };
-    let suffix = if row.registered {
-        ""
-    } else {
-        "（未注册）"
-    };
     let text = format!(
-        "{} {}：{state_text}{suffix}",
+        "{} {}：{state_text}",
         if selected { "›" } else { " " },
         row.label
     );

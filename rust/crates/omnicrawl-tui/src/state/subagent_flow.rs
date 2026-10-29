@@ -161,7 +161,7 @@ impl AppState {
         /// ↓（本次输出）与 †（缓存命中输入）属于**那一次已经过去的请求**，压缩后不再成立，因此清零
         /// 而不是保留；缓存率由 ↑/† 现算，清零后自然回到 `CH0%`。速率是会话累计均值，与上下文大小无关，不动。
         ///
-        /// 底部文本由 `refresh_carousel` 每帧按最新遥测重建，这里只改数值即可在下一帧显示。
+        /// 底部文本由 `refresh_hud` 每帧按最新遥测重建，这里只改数值即可在下一帧显示。
         pub fn refresh_after_compaction(&mut self, context_tokens: i64) {
             self.telemetry.input_tokens = context_tokens.max(0) as u64;
             self.telemetry.output_tokens = 0;

@@ -31,7 +31,7 @@
 | --- | --- | --- |
 | 会话 | 消息流（含欢迎 Logo、拖选高亮）与右缘滚动条 | 记录增删改、工具卡展开、思考显示、Logo 入场动画 |
 | 输入框 | 待决面板 + 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上边框的运行状态） | 键盘与鼠标输入、清单与队列变化、状态行 spinner |
-| 底部 | 单行轮播 HUD | 轮播换页与解密扫描（文本真的变了才置脏） |
+| 底部 | 单行 HUD（遥测 + 工作区） | 遥测刷新（文本真的变了才置脏） |
 
 三块都干净时**一帧都不画**：空闲的 TUI 不再以 20fps 空转（以前每 50ms 都要把整段会话
 从头渲染一遍）。模态弹层（设置 / 配置对话 / 文件选择）铺满整屏，自己每帧重画。
@@ -125,7 +125,7 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 
 - 固定 50ms 节拍在回合进行中最多白等一整个节拍才处理刚到的帧；现在有活动
   （回合在跑、有待轮询的后台结果）时按 `ACTIVE_POLL_INTERVAL`（20ms）短睡；
-- 欢迎 Logo 与轮播解密动画由 `AppState::next_animation_frame` 算出下一帧的到期时刻，
+- 欢迎 Logo（含下方会话徽标的解密扫描）由 `AppState::next_animation_frame` 算出下一帧的到期时刻，
   精确睡到那一刻，既不早醒空转也不掉帧；
 - 其余（真正空闲）睡到 `IDLE_POLL_INTERVAL`（250ms），键盘 / 鼠标 / 内核帧仍会立刻唤醒；
 - 终端尺寸只在首次与收到 `Event::Resize` 时读一次：Windows 上 `terminal.size()` 是控制台
@@ -241,8 +241,8 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | `src/ui/fullscreen/text.rs` | Rich `Text` | `StyledText` 分段样式文本、`char_styles`、`to_spans` |
 | `src/ui/fullscreen/random.rs` | stdlib `random` | xorshift64\* 随机源（固定种子可复现） |
 | `src/ui/fullscreen/terminal/theme.rs` | `terminal/theme.py` | 取色令牌同名同值 + Rich 风格串解析（含 `on <颜色>` 背景语法：`"on #272822"` 必须落到 `bg`，否则代码块会变成暗底暗字） |
-| `src/ui/fullscreen/status/hud.rs` | `status/hud.py` | HUD 纯格式化（CTX/遥测/状态段、解密扫描帧） |
-| `src/ui/fullscreen/status/indicators.rs` | `status/indicators.py` | 轮播状态机与排队预览行（组件热区留给装配层） |
+| `src/ui/fullscreen/status/hud.rs` | `status/hud.py` | HUD 纯格式化（CTX 占用 / 遥测 / 工作区路径） |
+| `src/ui/fullscreen/status/indicators.rs` | `status/indicators.py` | 底部 HUD 行装配与排队预览行（组件热区留给装配层） |
 | `src/ui/fullscreen/mod.rs` | | `round_half_even`（对映 Python 内建 `round`） |
 
 已落地（渲染批 1）：
@@ -314,7 +314,7 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 | `src/ui/conversation.rs` | 受理提示按 `· ` 提示行渲染，不参与点击命中 |
 | `src/app.rs` / `src/main.rs` | `main.rs` 认 `--subagent-window` 子命令（不连内核、不进全屏）；`App::tick_subagent_trees` 现在只推进状态行与运行中卡片的耗时 |
 
-窗口进程的页面构成与主代理一致：会话区（过程文本、工具卡）、输入区方框（状态行写上边框，内容为 `子代理 · <批次> · 完成/总数`）、底部轮播 HUD 都由 `ui::render` 画，只换了一份 `AppState`。窗口进程不接输入，因此不启用鼠标/焦点报告，也不做控制台自愈。
+窗口进程的页面构成与主代理一致：会话区（过程文本、工具卡）、输入区方框（状态行写上边框，内容为 `子代理 · <批次> · 完成/总数`）、底部单行 HUD 都由 `ui::render` 画，只换了一份 `AppState`。窗口进程不接输入，因此不启用鼠标/焦点报告，也不做控制台自愈。
 
 窗口进程与主会话解耦：关掉窗口不影响任务，流水留在磁盘上可回看或自己重开；非 Windows 平台没有「新建控制台」语义，宿主只落流水，用户可在支持多窗口的终端里自行 `omnicrawl-tui --subagent-window <文件>`。子代理的过程流由内核侧 `stream_conversation` 开关控制（`kind: "stream_conversation"`），三个入口（同步批次、`action=spawn` 后台批次、`/review` 的 `subagent.run`）都已打开。
 
@@ -346,8 +346,6 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 已知差异：
 
 - 鼠标滚轮一格按 3 行推进（Textual 的滚轮步长）；设置面板的点击与悬停已接线（见下文「设置批」）；
-- 轮播留言文案（`carousel_messages.txt`）编译期内嵌：Python 从包资源在运行期读取，可随 pip 分发并手工编辑，Rust 侧脱离宿主单文件分发时仍可用但不能在运行期改；
-- `decrypt_frame` 的乱码随机源是内部 xorshift64\*（Python 用 Mersenne Twister）：字符集与概率一致，随机序列不同；
 - `rgba(...)` 令牌（用户消息背景）只取 RGB 分量：ratatui 无 alpha 混合，Python 侧由 Textual 与终端底色混合；
 - `difflib` 等价层自实现（不引入 diff crate）：与 CPython 在 7 组对照用例上 opcodes 逐段一致，未覆盖 `isjunk` / `autojunk` 路径（Python 侧两处均传 `autojunk=False` 且无 junk 函数）；
 - Markdown 渲染为**近似样式映射**：走 `pulldown-cmark` 事件流 + 本项目主题令牌，不复刻 Rich 的 Markdown 主题（各段精确色值、标题色相不同）；代码块已做逐 token 高亮（`rendering/highlight.rs`，色值取 monokai 原值），但分词是手写扫描器、不是 pygments 等价：只覆盖 8 门常见语言（其余语言保持整块灰底），且不处理 f-string 内部表达式、Rust 宏体内部、正则字面量等嵌套分词，未知 token 一律落回纯文本；
@@ -355,8 +353,8 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 - 启动画面的日志桥改为显式上报：Python 给 root logger 挂 `logging.Handler`（只转发 WARNING/ERROR），Rust 无 logging 框架，由 `report_startup_log` 承担——有桥时写日志框且不落 stderr（避免打乱画面），无桥时回落 stderr（管道/测试下诊断不丢）；`logo_anim` 的随机源同样是内部 xorshift64\*；
 - 终端尺寸不做环境变量回退：`shutil.get_terminal_size` 会先读 `COLUMNS`/`LINES`，Rust 直接问终端（`crossterm::terminal::size`），取不到时同样回落 80x24；
 - 欢迎 Logo 动画按「起始时刻 → 经过时间」换算帧号（Python 用 Textual 定时器计次推进）：总帧数（24）与落定时刻（1.2s）一致，首帧是进度 0 的纯乱码帧（Python 首帧为 1/24）；
-- 渲染入口（`src/ui/mod.rs::render`）已是工作台本体：消息流 / 任务清单 / 面板 / 底部单行轮播 HUD / 输入卡与补全菜单各一模块，设置页与文件选择弹层另行接管整屏。
-- **页面版式已按 Python 当前版对齐**（主页面，不含设置屏）：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s + 解密扫描过渡）、悬浮圆角输入卡（占位文案 `› 输入消息或 / 命令`）、用户消息的 `user：` 标签 + 青色竖条、思考块暗底、无边框工具卡（`●` 状态点 + 缩进正文）与会话流内的运行状态行；设置屏与审批/提问面板沿用原样式。
+- 渲染入口（`src/ui/mod.rs::render`）已是工作台本体：消息流 / 任务清单 / 面板 / 底部单行 HUD / 输入卡与补全菜单各一模块，设置页与文件选择弹层另行接管整屏。
+- **页面版式已按 Python 当前版对齐**（主页面，不含设置屏）：底部单行 HUD（遥测 + 工作区路径；模型与开关改在欢迎 Logo 下方的会话徽标里）、悬浮圆角输入卡（占位文案 `› 输入消息或 / 命令`）、用户消息的 `user：` 标签 + 青色竖条、思考块暗底、无边框工具卡（`●` 状态点 + 缩进正文）与会话流内的运行状态行；设置屏与审批/提问面板沿用原样式。
 - **工具卡正文与 Python 同一来源**：正文不再用「工具输出拆行」，而是走对映层 `tool_diff::tool_disclosure_body` —— `write_file`/`Edit_file` 从**参数**画出旁注行号 diff（运行中就能看到）且豁免五行折叠，`fetcher` 只留 URL/状态/标题，`read` 与记忆/知识库类工具正文**为空且不出现提示行**，其余工具原样输出；超宽行按显示宽度**软折行**（对映 Textual 的默认 `text-wrap`，不再截断加 `…`），空行不加缩进（对映 `_indent_body_lines`），**续行保持同一结构缩进**（带旁注行号的正文折行后不落回行首、始终对齐在行号右边），缩略态点卡片不再展开（只提醒示行展开，与 Python `ToolDisclosure.on_click` 一致）。
 - 工具卡的两处非视觉差异：Python 在终态后按 12 块 × 30ms 释放正文（逐行出现的观感），Rust 一次铺满；Python 渲染完会清空 `arguments`/`result_text` 省内存，Rust 保留（展开/收起需要正文源）。
 
@@ -482,7 +480,7 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 工具调用处于运行态时一律用流式阶段的半截参数做预览，进入终态后改用卡片自己的真实参数与
 结果——避免出现「已经完成却还显示调用中/预览」的错位。
 
-**压缩后的遥测刷新**：底部轮播的上下文占用与 ↑ 来自 `turn.token_usage`（最近一次模型请求的用量），
+**压缩后的遥测刷新**：底部 HUD 的上下文占用与 ↑ 来自 `turn.token_usage`（最近一次模型请求的用量），
 而压缩发生在回合收尾、模型请求之后——不刷新就会一直显示已被替换掉的旧上下文大小。两条压缩路径
 都把压缩后的上下文 Token（稳定上下文 + 重建后的运行期历史）带给宿主，`AppState::refresh_after_compaction`
 据此把 ↑/CTX 换成新值、把 ↓/† 清零（它们属于那一次已经过去的请求，缓存率随之回到 `CH0%`）：
@@ -505,7 +503,7 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 **输入区方框**：任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体**共用一个圆角方框**
 （对映 Python `#composer-wrap`），不再裸在屏幕上；运行状态 `⠋ 正在调用 [ ESC ]` 写在方框的
 **上边框**上（`-------⠋ 正在调用[ESC]-------`，用 `Block::title_top`），不再作为会话流里的
-一行。会话区显示上限 2000 行，更早的内容不再显示；底部轮播遥测页停 20 秒、留言页停 10 秒。
+一行。会话区显示上限 2000 行，更早的内容不再显示；底部 HUD 只跟随遥测，不再换页。
 
 **计划清单属于这一屏的会话现场**：整视图重建（`/new` 的 `clear_conversation`、`/resume` 与
 `/undo` 的 `replay_events` / `replay_history`）都必须把清单一并复位并置脏输入块——它画在
@@ -526,8 +524,10 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 不显示，屏幕上不会多一个闪烁的细光标。设置面板铺满整屏时主输入框不在屏上，登记清空，光标不会
 留在被盖住的位置。
 
-**底部单行轮播**：工作区路径不再单独占一页，而是接在遥测行尾（`… MCP 0 ⁕ 工作区 <path>`），
-轮播只剩「遥测 → 留言」两页。刻意差异：Python 的 `_context_summary_text` 是独立一页。
+**底部单行 HUD**：遥测行尾接工作区路径（`… t/s ⁕ 工作区 <path>`），不再轮播、也不再显示模型与开关——
+它们改到欢迎 Logo 下方的会话徽标（`模型 * THINKING 档位 APPROVAL 模式 MCP n`），与块字同一段解密动画入场；
+徽标里的模型名与推理档、审批模式、MCP 数量四段可点——悬停转淡黄，点击分别跳到设置面板的
+模型管理 / 工具设置 / MCP 设置（各段屏幕矩形由渲染时登记，与其余鼠标命中同一套做法）。
 
 **设置面板样式统一**（都是与 Python CSS 的刻意差异）：右侧设置项名称一律灰色（焦点不再把名称染成
 琥珀色，选中位仍有 `›` 标记）；键位提示从框内一行改成画在**面板下边框**上（`──── ↑↓ 选择 … ────`）
@@ -545,9 +545,9 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
   `host/omnicrawl-host`，见 `packages/cli/scripts/build-host.mjs`）；Python 侧 Textual 工作台
   （`omnicrawl/ui/`、`main.py`）保留为迁移期对照，不再是默认入口。
 
-**已实现**：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s 循环、切换时解密扫描；遥测页是
-`上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 模型 ⁕ THK 推理强度  APR 审批模式  MCP n`（**不带 ` QUE n`**，见下文刻意差异），与 Python 的
-`#bottom-carousel` 同款式；不再有顶部两行 HUD，也不再在 HUD 里显示版本号）、
+**已实现**：底部单行 HUD（`上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 工作区 <path>`，**不带 ` QUE n`**，见下文刻意差异；
+不再轮播、也不显示版本号与模型——模型与开关改在空会话首屏的欢迎 Logo 下方：
+`模型 * THINKING 推理强度 APPROVAL 审批模式 MCP n`，与块字同一段解密动画入场）、
 消息流（用户 `user：` 灰斜标签 + 白色正文 + 左侧青色竖条、思考段暗底灰字斜体并折叠为最新五行、
 助手正文 `◇` 且**走对映层 Markdown + LaTeX 渲染**（标题/加粗/列表/围栏代码高亮/行内代码青字暗底，
 `$E=mc^2$` 一律先归一成 Unicode；刻意差异：`◇ ` 前缀在渲染后捕到首行行首，Python 是把它拼进
@@ -620,7 +620,8 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
 右侧 `Esc`/`←` 先回左栏；模型管理页的参数分区行与三个开关单选页共用 Textual `Select` 的键位：
 `Enter`/`↑`/`↓`/`空格` 展开候选，展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起；
-工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，第二行「联网搜索」进联网搜索表单页，其余行切换工具开关）；
+工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，其余行切换工具开关）；
+联网搜索是左栏的独立一级项（表单页）：`↑↓`/`Tab` 换字段、`Enter` 编辑或展开候选、`Ctrl+S` 保存、`Esc` 返回；
 结构化决策模型页的渠道行 `Enter`/`→` 进表单，其下方的功能开关行同样用 `←`/`→`/`Enter`/空格 就地切换。
 
 本批落地的一级项与二级面板：
@@ -631,7 +632,8 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现 | 写回 `plugins.enabled`，随即走 `PluginHost::set_enabled` 事务式重建 Worker 与执行计划（与 API 的 `PUT /settings/features` 同一入口），本会话即刻生效；重建诊断显示在状态行 |
-| 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；第二行「联网搜索」显示当前默认引擎与已配凭据（形如 `tavily（Tavily 已配置）`），`Enter` 进入联网搜索表单页：`搜索引擎`（duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / anysearch / tinyfish / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key` + `AnySearch API Key` + `TinyFish API Key` + `GitHub Token`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，`Esc` 直接回工具页；五把凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**（AnySearch 与 GitHub Token 留空即走匿名额度 / 公开搜索页）；其余行逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
+| 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭（只画名称与 `已启用`/`已关闭`，不带括号说明），写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调） |
+| 联网搜索 | 已实现 | 左栏独立一级项（不再挂在工具设置页里）：`搜索引擎`（duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / anysearch / tinyfish / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key` + `AnySearch API Key` + `TinyFish API Key` + `GitHub Token`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，保存后留在本页；凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**（AnySearch 与 GitHub Token 留空即走匿名额度 / 公开搜索页），刚录入的明文在保存回填时立即换回掩码 |
 | 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前九项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索按渠道排序**：每一路渠道结果单独处理（先本地 BM25 定基序，再把这 10 条交给决策模型重排），定序后每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄（见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；联网搜索的 BM25 排序**不是开关**：它固定启用（本地按 k1=1.2 / b=0.75 算分，中文按二字片段切分，每路留 5 条），不需要模型渠道；该路候选一个查询词都没命中时，BM25 没有可依据的名次，基序退化为引擎原顺序；开关关着时只用 BM25，开关开着但决策服务不可用时同样落回 BM25，搜索不会失败（见 `omnicrawl-host/src/tools/web_search.rs` 的 `channel_ranking` 与 `omnicrawl-extensions` 的 `bm25` 模块）；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
 | 向量模型 | 已实现（Rust 专有） | 顶部单行开关 `启用向量召回`（写 `config.toml` 的 `[memory_embedding] enabled`，`Enter`/空格/`→` 翻转后立刻写盘并重建记忆召回运行期）。开关下方是向量渠道列表（两行行式：`› [x] 渠道名 [默认]` + `模型 ID  Base URL`）与单条渠道表单（渠道名称 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / 维度 / 超时秒数 / 启用），键位与决策渠道页一致：列表 `↑↓` 选、`Enter`/`→` 编辑渠道、`N` 新建、`D` 删除，表单 `↑↓`/`Tab` 换字段、`Enter` 编辑、`Ctrl+S` 保存、`Esc` 丢弃；凭据只渲染掩码且**留空＝不改动** |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
@@ -803,8 +805,8 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
    自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的
    `0x0098`，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列，并对提示做一分钟限流；
-   顶部的两行 HUD 已改为 Python 当前的底部单行轮播（见上文「已知差异」与「已实现」）：
-   超长值仍经 `compact_hud_value` 保留首尾，窄屏由轮播行的显示宽度截断（`…` 收尾）；
+   顶部的两行 HUD 已改为贴底的底部单行 HUD（见上文「已知差异」与「已实现」）：
+   超长值仍经 `compact_hud_value` 保留首尾，窄屏由 HUD 行的显示宽度截断（`…` 收尾）；
 7. `model.reply` 代答路径（内核自带 provider runtime 后不需要，当前显式回 `-32601`）；
 8. ~~非 Windows 平台的进程树回收~~（已完成，见下）；
 9. ~~Windows Job Object 的 kill-on-close~~（已完成）：`omnicrawl-host` 的
@@ -834,7 +836,7 @@ cargo test -p omnicrawl-tui
    `ForwardingSink` 逐条就地还原外发，并有回归用例钉住这条语义。**用 Python 侧对照时别被迷惑**：
    Python 的 `DesensitizationRuntime.stream_turn` 本来就是 `yield from`，一直是流式的。
 2. 网关把 SSE 攒成一整块；
-3. 模型先长时间思考再一次性吐正文（底行轮播的 `t/s` 会在末尾突刺）。
+3. 模型先长时间思考再一次性吐正文（底行 HUD 的 `t/s` 会在末尾突刺）。
 
 另外，**启用脱敏后的第一个回合**还要付一次 gitleaks 规则表构造钱（221 条正则编译，release 约 1.4 s、
 debug 约 7 s 量级）：这部分发生在发出请求**之前**，界面上是「提交后静默一段」。规则表是进程内

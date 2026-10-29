@@ -428,14 +428,7 @@ use super::*;
             "首行是工具调用审查，默认 review 右移一档到 auto"
         );
 
-        // 第二行是联网搜索：确认后进表单页，不产出配置事件。
-        state.handle_key(KeyCode::Down);
-        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
-        assert_eq!(state.handle_key(KeyCode::Enter), None);
-        assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
-        state.handle_key(KeyCode::Esc);
-        assert_eq!(state.pane(), Pane::Tools, "联网搜索页的 Esc 回工具页");
-
+        // 第二行起是逐工具开关（联网搜索已是左栏的独立设置页）。
         state.handle_key(KeyCode::Down);
         assert_eq!(state.tool_selected(), TOOLS_SWITCH_ROW_OFFSET);
         assert_eq!(
@@ -467,6 +460,27 @@ use super::*;
         state.handle_key(KeyCode::Esc);
         assert_eq!(state.focus(), Focus::List);
         assert_eq!(state.selected_key(), "tools");
+    }
+
+    #[test]
+    fn select_key_jumps_straight_to_the_requested_page() {
+        let mut state = state();
+        state.select_key("mcp");
+        assert_eq!(state.selected_key(), "mcp");
+        assert_eq!(state.pane(), Pane::Mcp);
+        assert_eq!(state.focus(), Focus::Pane, "落点直接进右栏");
+
+        state.select_key("tools");
+        assert_eq!(state.selected_key(), "tools");
+        assert_eq!(state.pane(), Pane::Tools);
+
+        state.select_key("model_management");
+        assert_eq!(state.selected_key(), "model_management");
+        assert_eq!(state.pane(), Pane::ModelManagement);
+
+        // 未知键不动。
+        state.select_key("没有这一项");
+        assert_eq!(state.selected_key(), "model_management");
     }
 
     #[test]
@@ -1473,29 +1487,33 @@ use super::*;
     }
 
     #[test]
-    fn web_search_row_shows_engine_and_configured_keys() {
+    fn web_search_is_its_own_left_row() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter);
+        goto(&mut state, "web_search");
         assert_eq!(
-            state.web_search_value(),
-            "tavily（Tavily 已配置）",
-            "工具页那一行显示默认引擎与已配凭据"
+            state.pane(),
+            Pane::Form(FormKind::WebSearch),
+            "左栏选中即挂载联网搜索页"
         );
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.focus(), Focus::Pane);
 
-        // 未配任何凭据时只显示引擎。
-        let plain = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
-        assert_eq!(plain.web_search_value(), "duckduckgo");
+        let rows = state.form_rows();
+        assert_eq!(rows[0].value, "tavily", "引擎列显示配置里的默认引擎");
+        assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
+        assert_eq!(rows[2].value, "（未配置）", "未配凭据显示明确文案");
+
+        // 未配任何凭据时只显示默认引擎。
+        let mut plain = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()));
+        goto(&mut plain, "web_search");
+        assert_eq!(plain.form_rows()[0].value, "duckduckgo");
     }
 
     #[test]
     fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter); // 进工具页
-        state.handle_key(KeyCode::Down);
-        assert_eq!(state.tool_selected(), TOOLS_WEB_SEARCH_ROW);
-        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        goto(&mut state, "web_search");
+        state.handle_key(KeyCode::Enter); // 进联网搜索页
         assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
         let rows = state.form_rows();
@@ -1532,9 +1550,7 @@ use super::*;
     #[test]
     fn web_search_page_offers_every_engine_but_not_retired_ones() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Down);
+        goto(&mut state, "web_search");
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.handle_key(KeyCode::Enter), None); // 展开「搜索引擎」候选
         let options: Vec<String> = state
@@ -1561,11 +1577,9 @@ use super::*;
     }
 
     #[test]
-    fn web_search_page_returns_to_tools_after_save() {
+    fn web_search_page_stays_put_after_save() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Down);
+        goto(&mut state, "web_search");
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
@@ -1584,7 +1598,11 @@ use super::*;
             },
             "联网搜索已设为 exa，已保存到 config.toml。".to_string(),
         );
-        assert_eq!(state.pane(), Pane::Tools, "保存后回到工具页");
+        assert_eq!(
+            state.pane(),
+            Pane::Form(FormKind::WebSearch),
+            "表单页保存后留在原地"
+        );
         assert_eq!(state.status(), "联网搜索已设为 exa，已保存到 config.toml。");
 
         // 凭据状态由宿主按磁盘真实配置覆盖（这里模拟那一步）。
@@ -1597,19 +1615,21 @@ use super::*;
             tinyfish_configured: true,
             github_configured: true,
         });
-        assert_eq!(
-            state.web_search_value(),
-            "exa（Tavily 已配置、Exa 已配置、Firecrawl 已配置、AnySearch 已配置、TinyFish 已配置、GitHub 已配置）"
-        );
+        let rows = state.form_rows();
+        assert_eq!(rows[0].value, "exa", "引擎对齐到磁盘上的生效值");
+        for row in &rows[1..] {
+            assert_eq!(
+                row.value, "••••••••",
+                "刚录入的明文在保存后立即换回掩码"
+            );
+        }
     }
 
     #[test]
     fn web_search_form_carries_the_github_token_field() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter); // 进工具页
-        state.handle_key(KeyCode::Down);
-        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        goto(&mut state, "web_search");
+        state.handle_key(KeyCode::Enter); // 进联网搜索页
         let rows = state.form_rows();
         assert_eq!(rows.len(), 7, "默认引擎 + 五把 API Key + GitHub Token");
         assert_eq!(rows[4].label, "AnySearch API Key");
@@ -1621,9 +1641,7 @@ use super::*;
     #[test]
     fn web_search_page_typing_a_new_key_reaches_the_draft() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Down);
+        goto(&mut state, "web_search");
         state.handle_key(KeyCode::Enter);
         // 焦点停在引擎列：往下切到 Tavily 密钥，再进输入态重填。
         state.handle_key(KeyCode::Down);
@@ -2336,10 +2354,8 @@ use super::*;
     #[test]
     fn form_page_secret_accepts_pasted_text() {
         let mut state = web_search_state();
-        goto(&mut state, "tools");
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Down);
-        state.handle_key(KeyCode::Enter); // 进联网搜索表单页
+        goto(&mut state, "web_search");
+        state.handle_key(KeyCode::Enter); // 进联网搜索页
         assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
         state.handle_key(KeyCode::Down); // → Tavily API Key

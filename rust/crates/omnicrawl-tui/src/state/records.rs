@@ -237,6 +237,51 @@ impl AppState {
             self.composer_caret.set(position);
         }
 
+        /// 欢迎页徽标各可点段的屏幕矩形（上一帧渲染登记的；没有徽标时全是 `None`）。
+        pub fn welcome_badge_areas(&self) -> [Option<ratatui::layout::Rect>; BADGE_SEGMENT_COUNT] {
+            self.welcome_badge_areas.get()
+        }
+
+        /// 渲染路径登记徽标各段的屏幕矩形（同 [`Self::set_runtime_esc_area`]）。
+        pub fn set_welcome_badge_areas(
+            &self,
+            areas: [Option<ratatui::layout::Rect>; BADGE_SEGMENT_COUNT],
+        ) {
+            self.welcome_badge_areas.set(areas);
+        }
+
+        /// 正在被悬停的徽标段下标（渲染层据此把它描成淡黄色）。
+        pub fn welcome_badge_hover(&self) -> Option<usize> {
+            self.welcome_badge_hover
+        }
+
+        /// 落点命中的徽标段跳转目标（用上一帧渲染登记的矩形）；没命中徽标时为 `None`。
+        pub fn welcome_badge_link_at(
+            &self,
+            column: u16,
+            row: u16,
+        ) -> Option<crate::ui::fullscreen::rendering::welcome_logo::BadgeLink> {
+            let point = ratatui::layout::Position::new(column, row);
+            let slot = self
+                .welcome_badge_areas
+                .get()
+                .iter()
+                .position(|area| area.is_some_and(|area| area.contains(point)))?;
+            let badge = self.logo.subtitle()?;
+            crate::ui::fullscreen::rendering::welcome_logo::badge_segments(badge)
+                .get(slot)
+                .map(|segment| segment.link)
+        }
+
+        /// 记录徽标悬停段：颜色随显示行一起烘焙，变化时要让会话块重算。
+        pub fn set_welcome_badge_hover(&mut self, hover: Option<usize>) {
+            if self.welcome_badge_hover == hover {
+                return;
+            }
+            self.welcome_badge_hover = hover;
+            self.touch_conversation();
+        }
+
         /// 正在被悬停的「立即结束」按钮属于哪张卡（渲染层据此把它染成淡黄色）。
         pub fn stop_button_hover(&self) -> Option<&str> {
             self.stop_button_hover.as_deref()

@@ -15,6 +15,7 @@ use omnicrawl_tui::args::ApprovalMode;
 use omnicrawl_tui::host::{ASK_USER_TOOL, TODO_TOOL};
 use omnicrawl_tui::state::{AppState, Record};
 use omnicrawl_tui::ui;
+use omnicrawl_tui::ui::fullscreen::rendering::welcome_logo::BadgeLink;
 
 /// 渲染一帧并返回可见文本行。
 ///
@@ -109,8 +110,8 @@ fn chatting_state() -> AppState {
         )],
     );
     state.status = Some("正在调用".to_string());
-    // 底部轮播由宿主每帧推进；测试直接调一次，拿到当前遥测页文本。
-    state.refresh_carousel(Instant::now(), "high");
+    // 底部 HUD 由宿主每帧重建；测试直接调一次，拿到最新遥测行。
+    state.refresh_hud();
     state
 }
 
@@ -203,14 +204,15 @@ fn bottom_hud_conversation_todos_and_composer_are_on_screen() {
     let lines = screen(&state, 110, 24);
     let text = lines.join("\n");
 
-    // 底部单行轮播：贴齐屏幕底缘，内容是遥测 + 模型状态（对映 `#bottom-carousel`）。
+    // 底部单行 HUD：贴齐屏幕底缘，内容是遥测 + 工作区（不再轮播）。
     let hud = lines.last().expect("应有一行底部 HUD");
     assert!(hud.contains("0/1M 0%"), "底栏应带上下文占用：{hud:?}");
     assert!(hud.contains("t/s"), "底栏应带速率段：{hud:?}");
-    assert!(hud.contains("stub-model"), "底栏应带模型名：{hud:?}");
-    assert!(hud.contains("THK HIGH"), "底栏应带推理强度：{hud:?}");
-    assert!(hud.contains("MAN"), "底栏应带审批模式：{hud:?}");
-    assert!(hud.contains("MCP 0"), "底栏应带 MCP 段：{hud:?}");
+    assert!(hud.contains("工作区"), "底栏应带工作区：{hud:?}");
+    assert!(
+        !hud.contains("stub-model"),
+        "模型改到欢迎 Logo 下的会话徽标：{hud:?}"
+    );
     assert!(!hud.contains('│'), "底栏改用 ⁕ 分隔：{hud:?}");
     assert!(
         !lines[0].contains("stub-model"),
@@ -611,4 +613,64 @@ fn subagent_window_page_matches_the_main_agent_layout() {
     assert!(text.contains("输入消息或"), "缺少占位文案：{text}");
     // 状态行写在方框上边框上。
     assert!(text.contains("子代理 · batch-1"), "{text}");
+}
+
+#[test]
+fn welcome_logo_shows_the_session_badge_beneath_it() {
+    // 空会话首屏：块字播完后，下方那行徽标要带着当前模型与开关出现。
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "deepseek-4.1-flash".to_string(),
+        ApprovalMode::Review,
+    );
+    state.mcp_servers = 1;
+    let badge = omnicrawl_tui::ui::fullscreen::rendering::welcome_logo::session_badge_text(
+        &state.model,
+        "high",
+        state.approval.label(),
+        state.mcp_servers as i64,
+    );
+    state.logo.set_subtitle(badge);
+    let start = Instant::now();
+    state.logo.start(start);
+    state.logo.tick(start + Duration::from_secs(2));
+
+    let text = screen(&state, 120, 30).join("\n");
+    assert!(
+        text.contains("deepseek-4.1-flash * THINKING HIGH APPROVAL REV MCP 1"),
+        "欢迎页应当在块字下方显示会话徽标：{text}"
+    );
+
+    // 四段可点区都登记上了（模型名 / 推理档 / 审批模式 / MCP 数量）：同一行、从左到右。
+    let areas = state.welcome_badge_areas();
+    assert!(
+        areas.iter().all(Option::is_some),
+        "四段都应可点：{areas:?}"
+    );
+    let row = areas[0].expect("模型名可点").y;
+    assert!(
+        areas.iter().all(|area| area.expect("可点区").y == row),
+        "四段在同一行：{areas:?}"
+    );
+    assert!(
+        areas
+            .windows(2)
+            .all(|pair| pair[0].expect("左段").x < pair[1].expect("右段").x),
+        "四段从左到右排列：{areas:?}"
+    );
+
+    // 落点换算成跳转目标：模型名与推理档 → 模型管理，审批模式 → 工具设置，MCP 数 → MCP 设置。
+    let link_at = |slot: usize| {
+        let area = areas[slot].expect("可点区");
+        state.welcome_badge_link_at(area.x, area.y)
+    };
+    assert_eq!(link_at(0), Some(BadgeLink::ModelManagement));
+    assert_eq!(link_at(1), Some(BadgeLink::ModelManagement));
+    assert_eq!(link_at(2), Some(BadgeLink::Tools));
+    assert_eq!(link_at(3), Some(BadgeLink::Mcp));
+    assert_eq!(
+        state.welcome_badge_link_at(0, 0),
+        None,
+        "徽标之外不触发跳转"
+    );
 }

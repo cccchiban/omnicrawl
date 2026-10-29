@@ -496,7 +496,7 @@ mod platform {
 /// 窗口进程主体：尾随流水文件并按主代理的版式渲染。
 ///
 /// 窗口自己跑事件循环：流水有新行就重画，空闲时按 [`FOLLOW_TICK`] 醒来同时推进动画
-/// （spinner、思考段铺开、图片解码、底部轮播）。Esc / Ctrl+Q 随时关窗；批次收尾
+/// （spinner、思考段铺开、图片解码、底部 HUD）。Esc / Ctrl+Q 随时关窗；批次收尾
 /// （[`Entry::BatchFinished`]）后画完最后一帧自动退出——除非是用户点开的窗口
 /// （`keep_open`），那种留到用户自己关。
 pub fn run_window(stream: PathBuf, keep_open: bool) -> Result<(), String> {
@@ -556,7 +556,7 @@ pub fn run_window(stream: PathBuf, keep_open: bool) -> Result<(), String> {
         state.tick_activity();
         let _ = state.tick_reasoning_reveal();
         let _ = state.tick_image_previews();
-        state.refresh_carousel(now, "");
+        state.refresh_hud();
         state.tick_notice_line(now);
 
         let versions = state.refresh_versions();

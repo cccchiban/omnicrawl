@@ -67,12 +67,25 @@ impl App {
             .state
             .runtime_esc_area()
             .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)));
+        // 欢迎页徽标的可点段（模型名 / 推理档 / 审批模式 / MCP 数量）：按下即跳设置页。
+        let badge_link = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.welcome_badge_link_at(mouse.column, mouse.row)
+            }
+            _ => None,
+        };
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if on_esc => {
                 if self.state.selection().is_some() {
                     self.state.clear_selection();
                 } else if self.state.turn.is_running() {
                     self.cancel_turn();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) if badge_link.is_some() => {
+                self.state.clear_selection();
+                if let Some(link) = badge_link {
+                    self.open_settings_at(link.settings_key());
                 }
             }
             MouseEventKind::Moved => self.update_conversation_hover(mouse.column, mouse.row),
@@ -268,6 +281,7 @@ impl App {
     /// 长会话下那是一次不便宜的折行。卡片按钮的列区间随显示行缓存一起算好，
     /// 命中测试只做窗口换算。
     pub(super) fn update_conversation_hover(&mut self, column: u16, row: u16) {
+        self.update_welcome_badge_hover(column, row);
         self.update_stop_button_hover(column, row);
         self.update_subagent_view_hover(column, row);
         self.update_retry_button_hover(column, row);
@@ -280,6 +294,28 @@ impl App {
             .runtime_esc_area()
             .is_some_and(|area| area.contains(Position::new(column, row)));
         self.state.runtime_esc_hover = hover;
+    }
+
+    /// 悬停判定：鼠标是否落在欢迎页徽标某个可点段上（模型名 / 推理档 / 审批模式 / MCP 数）。
+    ///
+    /// 各段的屏幕矩形由渲染路径登记，这里只做落点比较；移开时立刻褪色。
+    pub(super) fn update_welcome_badge_hover(&mut self, column: u16, row: u16) {
+        let point = Position::new(column, row);
+        let hover = self
+            .state
+            .welcome_badge_areas()
+            .iter()
+            .position(|area| area.is_some_and(|area| area.contains(point)));
+        self.state.set_welcome_badge_hover(hover);
+    }
+
+    /// 落点命中的徽标段（点击跳转用）；没命中徽标时为 `None`。
+    pub(super) fn welcome_badge_link_at(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<crate::ui::fullscreen::rendering::welcome_logo::BadgeLink> {
+        self.state.welcome_badge_link_at(column, row)
     }
 
     /// 悬停判定：鼠标是否落在某个「重试」按钮上。

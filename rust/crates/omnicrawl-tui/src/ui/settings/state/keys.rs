@@ -294,12 +294,7 @@ impl SettingsState {
                 None
             }
             KeyCode::Esc | KeyCode::Left => {
-                // 联网搜索页是从工具页进来的，`Esc` 回去的地方也是工具页。
-                if self.pane == Pane::Form(FormKind::WebSearch) {
-                    self.close_web_search_form();
-                } else {
-                    self.back_to_list();
-                }
+                self.back_to_list();
                 None
             }
             _ => None,
@@ -324,6 +319,7 @@ impl SettingsState {
             },
             Pane::Form(kind) => match key {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
+                    // 联网搜索页要先折叠凭据掩码，单独走一条保存路径。
                     if kind == FormKind::WebSearch {
                         return self.save_web_search_form();
                     }

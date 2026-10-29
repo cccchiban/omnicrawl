@@ -44,13 +44,7 @@ impl SettingsState {
     }
 
 
-    /// 工具页「联网搜索」行的显示文案（默认引擎 + 已配置的凭据）。
-    pub fn web_search_value(&self) -> String {
-        self.tools.web_search.label()
-    }
-
-
-    /// 工具页的可选行数：审查模式 + 联网搜索 + 逐工具开关。
+    /// 工具页的可选行数：审查模式 + 逐工具开关。
     pub fn tool_row_count(&self) -> usize {
         self.tools.rows.len() + TOOLS_SWITCH_ROW_OFFSET
     }

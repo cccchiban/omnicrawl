@@ -53,6 +53,8 @@ mod mcp;
 
 mod tools;
 
+mod web_search;
+
 mod vision;
 
 mod model;
@@ -111,6 +113,7 @@ impl Pane {
             "image_gen" => Self::Form(FormKind::ImageGen),
             "computer_use" => Self::Form(FormKind::ComputerUse),
             "tools" => Self::Tools,
+            "web_search" => Self::Form(FormKind::WebSearch),
             "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
@@ -191,16 +194,13 @@ pub const MODEL_PARAM_SECTION: &str = "模型与参数";
 /// 工具页首行的行号：工具调用审查模式。
 pub const TOOLS_APPROVAL_ROW: usize = 0;
 
-/// 工具页第二行的行号：联网搜索（`Enter` 进入独立的联网搜索表单页）。
-pub const TOOLS_WEB_SEARCH_ROW: usize = 1;
-
 /// 一把工具开关的可显示状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSwitchRow {
     pub name: String,
     pub label: String,
     pub enabled: bool,
-    /// 是否已注册进当前工具表；未注册的行标注「未注册」（与 Python 一致）。
+    /// 是否已注册进当前工具表；界面只画名称与开关状态，不再单独标注。
     pub registered: bool,
 }
 
@@ -1111,7 +1111,7 @@ pub struct SettingsValues {
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
-    /// 工具页「联网搜索」行的初值（默认引擎与各凭据是否已配置）。
+    /// 联网搜索页的初值（默认引擎与各凭据是否已配置）。
     pub web_search: WebSearchRow,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
@@ -1287,7 +1287,7 @@ impl SettingsValues {
         self
     }
 
-    /// 工具页「联网搜索」行的初值（默认引擎与各凭据是否已配置）。
+    /// 联网搜索页的初值（默认引擎与各凭据是否已配置）。
     pub fn with_web_search(mut self, row: WebSearchRow) -> Self {
         self.web_search = row;
         self
@@ -2002,7 +2002,7 @@ const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl
 /// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
 /// 联网搜索页的提示：凭据留空表示不改动磁盘上的原值。
-const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回工具页（凭据留空＝不改动；引擎只由这里决定）";
+const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回（凭据留空＝不改动；引擎只由这里决定）";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
@@ -2146,12 +2146,10 @@ struct ToolsState {
     selected: usize,
     /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
     approval: String,
-    /// 联网搜索的当前配置（默认引擎 + 各凭据是否已配置，凭据本身不进界面）。
-    web_search: WebSearchRow,
     status: String,
 }
 
-/// 联网搜索在工具页上的只读投影：默认引擎与各凭据的配置状态。
+/// 联网搜索页的初始投影：默认引擎与各凭据的配置状态（凭据本身不进界面）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchRow {
     pub engine: String,
@@ -2179,44 +2177,11 @@ impl Default for WebSearchRow {
     }
 }
 
-impl WebSearchRow {
-    /// 工具页那一行的值文案：默认引擎，接口型引擎已配凭据时附一句说明。
-    pub fn label(&self) -> String {
-        let mut text = self.engine.clone();
-        let mut configured: Vec<&str> = Vec::new();
-        if self.tavily_configured {
-            configured.push("Tavily 已配置");
-        }
-        if self.exa_configured {
-            configured.push("Exa 已配置");
-        }
-        if self.firecrawl_configured {
-            configured.push("Firecrawl 已配置");
-        }
-        if self.anysearch_configured {
-            configured.push("AnySearch 已配置");
-        }
-        if self.tinyfish_configured {
-            configured.push("TinyFish 已配置");
-        }
-        if self.github_configured {
-            configured.push("GitHub 已配置");
-        }
-        if !configured.is_empty() {
-            text.push_str(&format!("（{}）", configured.join("、")));
-        }
-        text
-    }
-}
-
 /// 工具开关页首行的标签（工具调用审查模式）。
 pub const TOOLS_APPROVAL_LABEL: &str = "工具调用审查";
 
-/// 工具开关页第二行的标签（联网搜索设置页的入口）。
-pub const TOOLS_WEB_SEARCH_LABEL: &str = "联网搜索";
-
-/// 逐工具开关在工具页里的起始行号（前两行分别是审查模式与联网搜索）。
-pub const TOOLS_SWITCH_ROW_OFFSET: usize = 2;
+/// 逐工具开关在工具页里的起始行号（首行是审查模式）。
+pub const TOOLS_SWITCH_ROW_OFFSET: usize = 1;
 
 /// 凭据字段在界面上的掩码占位：已配置的凭据都用它显示，草稿值等于它表示「不改动」。
 pub const MASKED_SECRET: &str = "••••••••";
@@ -2578,6 +2543,11 @@ pub struct SettingsState {
 
 impl SettingsState {
     pub fn new(values: SettingsValues) -> Self {
+        let mut forms = form_states(values.form_values);
+        // 联网搜索页的草稿由配置投影起步（引擎 + 凭据掩码），与其他表单页同一条初始化路径。
+        if let Some(form) = forms.get_mut(FormKind::WebSearch.index()) {
+            form.set_values(web_search::web_search_form_values(&values.web_search));
+        }
         Self {
             selected: 0,
             focus: Focus::List,
@@ -2587,7 +2557,6 @@ impl SettingsState {
                 rows: values.tools,
                 selected: 0,
                 approval: nearest_approval_mode(&values.approval_mode).to_string(),
-                web_search: values.web_search,
                 status: String::new(),
             },
             mcp: McpState {
@@ -2654,7 +2623,7 @@ impl SettingsState {
                 template: values.embedding_template,
                 status: String::new(),
             },
-            forms: form_states(values.form_values),
+            forms,
             model_discoveries: FORM_KINDS.iter().map(|_| ModelDiscovery::new()).collect(),
             tts: TtsState::new(values.tts),
             hits: RefCell::new(Vec::new()),

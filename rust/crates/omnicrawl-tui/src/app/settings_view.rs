@@ -16,6 +16,23 @@ impl App {
         }
     }
 
+    /// 打开设置面板并直接落到某个一级项（欢迎页徽标这类鼠标入口用）。
+    ///
+    /// `key` 是 `ROW_ORDER` 里的键名（`model_management` / `tools` / `mcp` …），
+    /// 与点左栏那一行同义：右侧直接挂上该页、焦点进右栏。
+    pub(super) fn open_settings_at(&mut self, key: &str) {
+        // 面板铺满整屏，徽标的悬停态先收掉：关掉面板后不会留着一截黄色。
+        self.state.set_welcome_badge_hover(None);
+        match self.settings_values() {
+            Ok(values) => {
+                let mut settings = SettingsState::new(values);
+                settings.select_key(key);
+                self.settings = Some(settings);
+            }
+            Err(message) => self.state.notice(format!("设置面板打不开：{message}")),
+        }
+    }
+
     /// 读设置面板的初始值：上下文两页、四个单选页与内置工具开关。
     ///
     /// 上下文取自「命令行/环境显式给定 > config.toml 的 llm 段」，压缩阈值优先用配置里记着的
@@ -252,7 +269,8 @@ impl App {
                     match outcome {
                         Ok(message) => {
                             settings.apply_succeeded(&change, message);
-                            // 联网搜索的凭据只在磁盘上有明文：保存后用真实配置覆盖工具页那一行。
+                            // 联网搜索的凭据只在磁盘上有明文：保存后用真实配置覆盖本页的投影，
+                            // 顺带把草稿里刚录入的明文换成掩码。
                             if matches!(
                                 change,
                                 SettingsChange::Form {

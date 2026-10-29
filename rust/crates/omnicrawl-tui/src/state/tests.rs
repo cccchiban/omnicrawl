@@ -2562,12 +2562,12 @@ mod streaming_tests {
         for _ in 0..10 {
             let _ = crate::ui::conversation::display_lines(&state, 80);
             let _ = crate::ui::conversation::visible_window(&state, 80, 20, 0);
-            let _ = state.carousel_page();
+            let _ = &state.hud_text;
         }
         assert_eq!(state.refresh_versions(), before, "只读跟踪不得置脏");
     }
 
-    /// 三块各管各的：改会话不会带脏底部，换轮播不会把会话整块失效。
+    /// 三块各管各的：改会话不会带脏底部，底部遥测刷新不会把会话整块失效。
     #[test]
     fn the_three_blocks_are_versioned_independently() {
         let mut state = three_block_state();
@@ -2575,7 +2575,7 @@ mod streaming_tests {
         let base = state.refresh_versions();
         let rebuilds = state.conversation_cache().borrow().rebuilds;
 
-        // 底部轮播换页：只有底部版本动，会话的显示行缓存连一行都不重算。
+        // 底部遥测刷新：只有底部版本动，会话的显示行缓存连一行都不重算。
         state.touch_bottom();
         let after_bottom = state.refresh_versions();
         assert_eq!(after_bottom.bottom, base.bottom + 1);

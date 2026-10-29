@@ -9,8 +9,27 @@ impl App {
 
     /// 首屏挂载后启动欢迎 Logo 的入场动画（对映 Python 的
     /// `_start_welcome_logo_animation`：只在空会话首屏播放一次，重复调用无效）。
+    ///
+    /// 块字下方那行会话徽标（模型 * THINKING 推理档 APPROVAL 审批模式 MCP 数量）取当前配置，
+    /// 与块字同一段动画一起入场。
     pub fn start_welcome_logo_animation(&mut self, now: Instant) {
+        self.refresh_welcome_badge();
         self.state.logo.start(now);
+    }
+
+    /// 把欢迎页徽标对齐到当前配置（模型 / 推理档 / 审批模式 / MCP 数量）。
+    ///
+    /// 徽标画在 Logo 下方，属于会话区内容：值变了才置脏，避免每帧无谓重画。
+    fn refresh_welcome_badge(&mut self) {
+        let badge = crate::ui::fullscreen::rendering::welcome_logo::session_badge_text(
+            &self.state.model,
+            &self.llm.reasoning_effort,
+            self.state.approval.label(),
+            self.state.mcp_servers as i64,
+        );
+        if self.state.logo.set_subtitle(badge) {
+            self.state.touch_conversation();
+        }
     }
 
 
@@ -27,13 +46,13 @@ impl App {
     }
 
 
-    /// 推进底部单行轮播（对映 Python 把轮播停留/帧定时器交给 Textual 的做法）。
+    /// 按最新遥测刷新底部单行 HUD（上下文用量 / 吞吐 / 速率 + 工作区）。
     ///
-    /// 页面切换与解密扫描都由 [`AppState::refresh_carousel`] 驱动；推理强度不在界面
-    /// 状态里（它属于模型配置），因此从宿主配置透传。
-    pub fn tick_carousel(&mut self, now: Instant) {
-        let reasoning_effort = self.llm.reasoning_effort.clone();
-        self.state.refresh_carousel(now, &reasoning_effort);
+    /// 底部不再轮播：模型与各开关已移到欢迎 Logo 下方的会话徽标，这里只跟着遥测走。
+    pub fn tick_hud(&mut self) {
+        self.state.refresh_hud();
+        // 徽标跟着配置走：设置里换模型 / 推理档 / 审批模式或 MCP 后下一帧就对齐。
+        self.refresh_welcome_badge();
     }
 
 
@@ -52,7 +71,7 @@ impl App {
     /// 空闲时又白醒一次做整帧判断。这里：
     ///
     /// - 有回合在跑、有在途后台结果 → 按活动帧率短睡；
-    /// - 欢迎 Logo 动画或轮播解密动画在播 → 精确睡到下一帧到期时刻；
+    /// - 欢迎 Logo 动画在播 → 精确睡到下一帧到期时刻；
     /// - 其余（真正空闲）→ 睡到上限，靠终端事件唤醒。
     pub fn poll_budget(&self, now: Instant) -> Duration {
         let active = self.state.turn.is_running()

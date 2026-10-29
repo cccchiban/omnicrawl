@@ -1,6 +1,6 @@
 //! Rich `Text` 的最小对映：分段样式文本与按字符的样式视图。
 //!
-//! Python 侧 HUD、轮播与消息流用 `rich.text.Text` 逐段拼装（`append` /
+//! Python 侧 HUD 与消息流用 `rich.text.Text` 逐段拼装（`append` /
 //! `append_text`，样式是 Rich 风格串），再交给 Textual 渲染。Rust 侧用同形状的
 //! [`StyledText`] 承载，样式串保持原样，渲染时由
 //! [`crate::ui::fullscreen::terminal::theme::rich_style`] 解析成 ratatui 样式。

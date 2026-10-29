@@ -2,8 +2,8 @@
 //! `ui/fullscreen/rendering/logo_anim.py`）。
 //!
 //! 动画只在应用首次挂载 Logo 后播放一次：乱码从左到右逐行侵蚀字形、再让清晰
-//! 字形从左到右「吐出」，各行的扫描进度按行号错开形成自上而下的波浪，与底部
-//! 轮播 HUD 的单行横向扫描保持同一视觉语言。
+//! 字形从左到右「吐出」，各行的扫描进度按行号错开形成自上而下的波浪。Logo 下方的
+//! 会话徽标用同一套乱码→解出，与块字一起入场。
 //!
 //! Python 侧本模块是纯函数 + 常量，播放驱动在 `app/core.py`（Textual 定时器）；
 //! Rust 侧没有 Textual 定时器，由 [`LogoAnimation`] 这枚播放游标承接同样的
@@ -20,9 +20,9 @@ use crate::ui::fullscreen::rendering::welcome_logo::{
 };
 use crate::ui::fullscreen::round_half_even;
 use crate::ui::fullscreen::terminal::theme::TEXT_MUTED;
-use crate::ui::fullscreen::text::{StyleRuns, StyledText};
+use crate::ui::fullscreen::text::{span_char_styles, StyleRuns, StyledText};
 
-/// 复用底部轮播的解密字符集，保证两处「解密」特效风格一致。
+/// 乱码字符集：纯 ASCII 单宽字符，按列原位替换不会破坏块字对齐。
 pub const GARBLE_CHARS: &str =
     "#@%&*+=<>/\\?^$!~|0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -31,13 +31,15 @@ const GARBLE_BYTES: &[u8] = GARBLE_CHARS.as_bytes();
 
 /// 乱码右侧区间内偶发闪现真实目标字符，形成「解码中」的闪烁观感。
 pub const SHIMMER_CHANCE: f64 = 0.16;
-/// 总时长与帧间隔（与轮播 0.05s 帧一致；约 24 帧完成一次入场）。
+/// 总时长与帧间隔：约 24 帧完成一次入场。
 pub const LOGO_ANIM_SECONDS: f64 = 1.2;
 pub const LOGO_ANIM_FRAME_SECONDS: f64 = 0.05;
 /// 每行扫描进度相对全局进度的错位比例：行号越大越滞后，产生波浪推进。
 pub const ROW_STAGGER: f64 = 0.05;
 /// 行内扫描波前越靠右越滞后（横向 + 纵向双重波浪）。
 pub const COL_STAGGER: f64 = 0.012;
+/// Logo 下方会话徽标的解密起点：Logo 扫到约三分之一时开始吐字，与块字同时收口。
+pub const BADGE_REVEAL_START: f64 = 0.35;
 
 /// 计算第 `row_index` 行相对全局进度的局部扫描进度。
 ///
@@ -71,8 +73,8 @@ fn garble(rand: &mut Rng) -> char {
 ///
 /// 进度 `0.0` 为纯乱码、`1.0` 为完整白色 Logo；每一行先被乱码波前从左到右侵蚀、
 /// 随后由清晰字形波前从左到右吐出。行首缩进与行内空格始终保留（它们决定块字
-/// 对齐，不做乱码化）；乱码统一使用弱化灰色，清晰字形使用白色，与底部轮播特效
-/// 同风格。`rand` 传入固定种子时输出可复现。
+/// 对齐，不做乱码化）；乱码统一使用弱化灰色，清晰字形使用白色。`rand` 传入固定
+/// 种子时输出可复现。
 pub fn welcome_logo_frame(progress: f64, rand: &mut Rng) -> StyledText {
     let progress = progress.clamp(0.0, 1.0);
     if progress >= 1.0 {
@@ -121,6 +123,30 @@ pub fn welcome_logo_frame(progress: f64, rand: &mut Rng) -> StyledText {
     runs.finish()
 }
 
+/// 生成 Logo 下方会话徽标的一帧（与块字同一套「乱码 → 从左到右解出」）。
+///
+/// 徽标只有一行：`BADGE_REVEAL_START` 之前全是乱码，之后波前从左到右吐出真实字符，
+/// 波前右侧偶发闪现（[`SHIMMER_CHANCE`]）。空格保持空格，宽度与对齐不变。
+pub fn badge_frame(text: &StyledText, progress: f64, rand: &mut Rng) -> StyledText {
+    let progress = progress.clamp(0.0, 1.0);
+    let plain: Vec<char> = text.plain().chars().collect();
+    let styles = span_char_styles(text);
+    let reveal = ((progress - BADGE_REVEAL_START) / (1.0 - BADGE_REVEAL_START)).clamp(0.0, 1.0);
+    let front = (plain.len() as f64 * reveal) as usize;
+    let mut runs = StyleRuns::new();
+    for (index, ch) in plain.iter().enumerate() {
+        let style = styles.get(index).copied().unwrap_or(LOGO_STYLE);
+        if *ch == ' ' {
+            runs.push_char(' ', style);
+        } else if index < front || (reveal > 0.0 && rand.random() < SHIMMER_CHANCE) {
+            runs.push_char(*ch, style);
+        } else {
+            runs.push_char(garble(rand), TEXT_MUTED);
+        }
+    }
+    runs.finish()
+}
+
 /// 入场动画的播放游标（对映 Python `app/core.py` 的 `_logo_anim_*` 状态位）。
 ///
 /// Python 用 Textual 定时器每 0.05s 推进一帧，且「启动即推一帧」；Rust 事件循环
@@ -135,6 +161,8 @@ pub struct LogoAnimation {
     started_at: Option<Instant>,
     rand: Rng,
     current: StyledText,
+    /// Logo 下方那行会话徽标（模型与关键开关）；`None` 时只画块字。
+    subtitle: Option<StyledText>,
 }
 
 impl Default for LogoAnimation {
@@ -155,7 +183,44 @@ impl LogoAnimation {
             started_at: None,
             rand: Rng::from_entropy(),
             current: welcome_logo_text(),
+            subtitle: None,
         }
+    }
+
+    /// 设置块字下方那行会话徽标（启动动画前调用；未播放时立刻落到当前文本上）。
+    ///
+    /// 空文本表示不画徽标。返回内容是否真的变了，调用方据此决定要不要置脏重画。
+    pub fn set_subtitle(&mut self, subtitle: StyledText) -> bool {
+        let subtitle = if subtitle.is_empty() {
+            None
+        } else {
+            Some(subtitle)
+        };
+        if self.subtitle == subtitle {
+            return false;
+        }
+        self.subtitle = subtitle;
+        if !self.is_playing() {
+            self.current = self.compose_static();
+        }
+        true
+    }
+
+    /// 静态终态文本：块字 + 空行 + 徽标。
+    fn compose_static(&self) -> StyledText {
+        let mut text = welcome_logo_text();
+        if let Some(subtitle) = self.subtitle.as_ref() {
+            text.push("\n\n", "");
+            text.append_text(subtitle);
+        }
+        text
+    }
+
+    /// 徽标原文（未乱码的静态版本）；没有徽标时为 `None`。
+    ///
+    /// 动画帧只替换字形、不改字符布局，界面据此取可点段的字符区间。
+    pub fn subtitle(&self) -> Option<&StyledText> {
+        self.subtitle.as_ref()
     }
 
     /// 首屏挂载时启动动画；幂等，只在首次调用生效。
@@ -176,15 +241,21 @@ impl LogoAnimation {
         let elapsed = now.saturating_duration_since(started_at).as_secs_f64();
         let frame = (elapsed / LOGO_ANIM_FRAME_SECONDS) as usize;
         if frame >= self.total_frames {
-            // 播满总帧数：落定静态白色 Logo，避免收口停在乱码中间帧。
+            // 播满总帧数：落定静态白色 Logo（含徽标），避免收口停在乱码中间帧。
             self.frame = None;
-            self.current = welcome_logo_text();
+            self.current = self.compose_static();
             return false;
         }
         if self.frame != Some(frame) {
             self.frame = Some(frame);
             let progress = frame as f64 / self.total_frames as f64;
-            self.current = welcome_logo_frame(progress, &mut self.rand);
+            let mut text = welcome_logo_frame(progress, &mut self.rand);
+            if let Some(subtitle) = self.subtitle.as_ref() {
+                // 徽标与块字同时入场：同一进度、同一套乱码→解出，空行留出呼吸感。
+                text.push("\n\n", "");
+                text.append_text(&badge_frame(subtitle, progress, &mut self.rand));
+            }
+            self.current = text;
         }
         true
     }
@@ -338,5 +409,42 @@ mod tests {
         let first = animation.text().plain();
         animation.tick(start + Duration::from_millis(900));
         assert_ne!(first, animation.text().plain(), "扫描过程中每帧内容应推进");
+    }
+
+    #[test]
+    fn subtitle_enters_with_the_logo_and_settles_under_it() {
+        let badge = crate::ui::fullscreen::rendering::welcome_logo::session_badge_text(
+            "deepseek-4.1-flash",
+            "high",
+            "review",
+            1,
+        );
+        let settled = format!("\n\n{}", badge.plain());
+        let mut animation = LogoAnimation::new();
+        animation.set_subtitle(badge);
+
+        // 未播放：静态文本已带徽标（空行分隔，落在块字下方）。
+        assert!(animation.text().plain().ends_with(&settled));
+
+        let start = Instant::now();
+        animation.start(start);
+        let first_frame = animation.text().plain();
+        assert_eq!(
+            first_frame.lines().count(),
+            welcome_logo_text().plain().lines().count() + 2,
+            "块字下方空一行再画徽标"
+        );
+        assert!(
+            first_frame.chars().count()
+                == welcome_logo_text().plain().chars().count() + settled.chars().count(),
+            "徽标逐字替换成乱码，行宽不变"
+        );
+        assert!(!first_frame.ends_with(&settled), "徽标不应立刻清晰");
+
+        assert!(!animation.tick(start + Duration::from_millis(1250)));
+        assert!(
+            animation.text().plain().ends_with(&settled),
+            "播完后徽标落定为静态文本"
+        );
     }
 }

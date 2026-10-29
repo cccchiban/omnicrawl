@@ -90,16 +90,15 @@ impl SettingsState {
     }
 
 
-    /// 首行改审查模式（循环候选），第二行进入联网搜索表单页，其余行切换工具开关。
+    /// 首行改审查模式（循环候选），其余行切换工具开关。
+    ///
+    /// 「联网搜索」已抽成左栏的独立设置页，不再是本页的一行。
     pub(super) fn toggle_tool(&mut self, direction: isize) -> Option<SettingsEvent> {
         if self.tools.selected == TOOLS_APPROVAL_ROW {
             let mode = cycle_approval_mode(&self.tools.approval, direction);
             return Some(SettingsEvent::Apply(SettingsChange::ToolApproval {
                 mode: mode.to_string(),
             }));
-        }
-        if self.tools.selected == TOOLS_WEB_SEARCH_ROW {
-            return self.open_web_search_form();
         }
         let row = self
             .tools
@@ -108,65 +107,6 @@ impl SettingsState {
         Some(SettingsEvent::Apply(SettingsChange::ToolSwitch {
             name: row.name.clone(),
             enabled: !row.enabled,
-        }))
-    }
-
-
-    /// 进入联网搜索表单页：一条设置在工具页里，编辑界面借用表单页结构。
-    ///
-    /// 只切面板、不写配置：与左栏切页同义，`Esc` 回到工具页。
-    pub(super) fn open_web_search_form(&mut self) -> Option<SettingsEvent> {
-        // 先取值再取可变借用：草稿来自工具页那一行的当前状态。
-        let engine = self.tools.web_search.engine.clone();
-        let tavily = secret_draft_for(self.tools.web_search.tavily_configured);
-        let exa = secret_draft_for(self.tools.web_search.exa_configured);
-        let firecrawl = secret_draft_for(self.tools.web_search.firecrawl_configured);
-        let anysearch = secret_draft_for(self.tools.web_search.anysearch_configured);
-        let tinyfish = secret_draft_for(self.tools.web_search.tinyfish_configured);
-        let github = secret_draft_for(self.tools.web_search.github_configured);
-        self.pane = Pane::Form(FormKind::WebSearch);
-        self.dropdown = None;
-        if let Some(form) = self.form_mut() {
-            // 每次进入都从当前配置重起，避免上一次未保存的草稿残留。
-            form.set_values(vec![
-                FieldValue::Text(engine),
-                FieldValue::Text(tavily),
-                FieldValue::Text(exa),
-                FieldValue::Text(firecrawl),
-                FieldValue::Text(anysearch),
-                FieldValue::Text(tinyfish),
-                FieldValue::Text(github),
-            ]);
-            form.set_focused(0);
-            form.set_status(String::new());
-        }
-        None
-    }
-
-
-    /// 联网搜索表单页的 `Esc`：回到工具页（而不是左栏）。
-    pub(super) fn close_web_search_form(&mut self) {
-        self.pane = Pane::Tools;
-        self.dropdown = None;
-        self.focus = Focus::Pane;
-    }
-
-
-    /// 联网搜索表单页的保存：把三个字段拼成一页表单变更。
-    ///
-    /// 与其余表单页同构（走 `SettingsChange::Form`），这样界面的「保存 → 回填 → 回工具页」
-    /// 与失败保留草稿的语义都复用同一条路径。
-    pub(super) fn save_web_search_form(&mut self) -> Option<SettingsEvent> {
-        let form = self.form()?;
-        let values: Vec<FieldValue> = (0..form.specs().len())
-            .map(|index| {
-                let raw = form.value(index).map(|value| value.text()).unwrap_or("");
-                FieldValue::Text(secret_draft(raw))
-            })
-            .collect();
-        Some(SettingsEvent::Apply(SettingsChange::Form {
-            kind: FormKind::WebSearch,
-            values,
         }))
     }
 }
