@@ -47,6 +47,7 @@ use omnicrawl_workspace::process_control::{
 use omnicrawl_workspace::resolve_path;
 
 use crate::feishu::config::{load_feishu_config, ConfigSource};
+use crate::mqtt::config::{check_config as check_mqtt_config, load_mqtt_config};
 use crate::qqbot::config::load_qqbot_config;
 use crate::telegram::config::load_telegram_config;
 
@@ -66,6 +67,8 @@ pub const TELEGRAM_PLATFORM: &str = "Telegram";
 pub const FEISHU_PLATFORM: &str = "飞书";
 /// QQ 机器人平台的显示名。
 pub const QQ_PLATFORM: &str = "QQ";
+/// MQTT 自动化回路的显示名（不是聊天平台：遥测进、动作出）。
+pub const MQTT_PLATFORM: &str = "MQTT";
 /// 缺省子命令：`<当前可执行文件> connector telegram|feishu`。
 pub const CONNECTOR_SUBCOMMAND: &str = "connector";
 /// 监督线程观察子进程退出的轮询间隔（秒）。
@@ -96,7 +99,10 @@ impl ConnectorSpec {
     }
 }
 
-/// 缺省的三个平台：Telegram、飞书与 QQ，都走「当前可执行文件 + `connector <平台>`」。
+/// 缺省的四个平台：Telegram、飞书、QQ 与 MQTT，都走「当前可执行文件 + `connector <平台>`」。
+///
+/// MQTT 是唯一非聊天平台：它的「已配置」判定看 `[mqtt]` 是否自洽（broker、主题、动作表、规则），
+/// 而不是看有没有平台凭据。
 pub fn default_connector_specs(program: impl Into<PathBuf>) -> Vec<ConnectorSpec> {
     let program = program.into();
     vec![
@@ -112,8 +118,13 @@ pub fn default_connector_specs(program: impl Into<PathBuf>) -> Vec<ConnectorSpec
         ),
         ConnectorSpec::new(
             QQ_PLATFORM,
-            program,
+            program.clone(),
             vec![CONNECTOR_SUBCOMMAND.to_string(), "qqbot".to_string()],
+        ),
+        ConnectorSpec::new(
+            MQTT_PLATFORM,
+            program,
+            vec![CONNECTOR_SUBCOMMAND.to_string(), "mqtt".to_string()],
         ),
     ]
 }
@@ -449,7 +460,7 @@ impl ConnectorProcessManager {
         }
         if !decision.enabled {
             self.record(format!(
-                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM}/{QQ_PLATFORM} 自动启动。"
+                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM}/{QQ_PLATFORM}/{MQTT_PLATFORM} 自动启动。"
             ));
             return Vec::new();
         }
@@ -720,6 +731,24 @@ impl ConnectorProcessManager {
                     Err(error) => {
                         self.record(format!(
                             "检查 QQ 机器人自动启动配置失败，跳过该连接器：{}",
+                            safe_error_text(&error)
+                        ));
+                        false
+                    }
+                }
+            } else if spec.name == MQTT_PLATFORM {
+                // 没有凭据可查：看 [mqtt] 是否自洽（broker、主题、动作表、规则齐全）。
+                match load_mqtt_config(data.get("mqtt")) {
+                    Ok(config) => {
+                        config.enabled
+                            && check_mqtt_config(&config)
+                                .get("ready")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                    }
+                    Err(error) => {
+                        self.record(format!(
+                            "检查 MQTT 自动启动配置失败，跳过该连接器：{}",
                             safe_error_text(&error)
                         ));
                         false

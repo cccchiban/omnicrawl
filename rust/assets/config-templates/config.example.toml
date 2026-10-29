@@ -357,3 +357,59 @@ require_confirmation_for_write = true
 require_confirmation_for_command = true
 allow_external_network_tools = false
 audit_log_enabled = true
+
+# --- MQTT 自动化回路（遥测进、动作出；详见 assets/docs/MQTT.md）---------------------------
+# 与消息平台连接器不同：入口是传感器报文，出口是带 request_id 与 TTL 的下发指令。
+# 规则层永远在线，只在命中时唤醒一次模型。规划器二选一：agent（内核回合 + 工具白名单，
+# 默认）或 decision（单次结构化决策，决策模型优先、未配置时回落主模型）。
+# 启动：omnicrawl-host connector mqtt
+#
+# [mqtt]
+# enabled = true
+# broker = "mqtt://192.168.1.10:1883"      # 也支持 mqtts://host:8883
+# client_id = "omnicrawl-farm"
+# username = "farm"
+# password_env = "OMNICRAWL_MQTT_PASSWORD"
+# keepalive_seconds = 120
+# qos = 1
+# topics = ["farm/+/env"]
+# zone_field = "zone"
+# zone_topic_level = 1
+# window_seconds = 30
+# cooldown_seconds = 1800
+# poll_seconds = 1
+# command_topic = "farm/{zone}/command"
+# ack_topic = "farm/{zone}/ack"
+# ack_timeout_seconds = 15
+# ttl_seconds = 300
+# recent_actions = 5
+# audit_path = "~/.OmniCrawl/mqtt/audit.jsonl"
+#
+# 规划器：agent = 内核回合（可查资料、多步推理，工具受白名单约束）；
+#         decision = 单次结构化决策（决策模型优先，未配置时回落主模型）。
+# planner = "agent"
+# turn_timeout_seconds = 120
+# 无人值守白名单：不在表里的工具既不声明给模型，宿主也不执行。
+# 默认只读 + 记忆/知识库/联网检索；追加 bash / write_file 前先想清楚报文来源是否可信。
+# tools = ["read", "list", "find", "grep", "memory_search", "memory_read", "kb_search",
+#          "web_search", "fetcher"]
+#
+# [[mqtt.actions]]
+# id = "open_vent"
+# label = "打开通风口"
+# description = "温度偏高、湿度偏大时通风降温除湿"
+#
+# [[mqtt.actions]]
+# id = "do_nothing"
+# label = "维持现状"
+# description = "指标已在合适范围，无需干预"
+#
+# [[mqtt.rules]]
+# id = "high_temp"
+# metric = "temp"
+# op = "gt"
+# value = 28.0
+# sustain_seconds = 300
+# clear_value = 26.0
+# actions = ["open_vent", "do_nothing"]
+# fallback = "open_vent"

@@ -159,6 +159,11 @@ pub struct RegistryOptions {
     /// 被关闭的内置工具（`tools` 配置段里的开关）：这些工具不进表，
     /// 模型不可见即不可调用（与 Python 的 `agent.config.disabled_tools` 同义）。
     pub disabled_tools: Vec<String>,
+    /// 无人值守白名单：`Some` 时只保留列出的工具名，其余一律不进表。
+    ///
+    /// 与 `disabled_tools` 的区别是语义方向：那边是「关掉几个」，这边是「只开这些」。
+    /// 无人值守场景（`[mqtt]` 回路）用后者——新增工具不该因为没被拉黑就自动获得无人值守权限。
+    pub allowed_tools: Option<Vec<String>>,
     /// 知识库根目录；未配置时用 `~/.OmniCrawl/knowledge`。
     pub knowledge_root: Option<PathBuf>,
     /// 配置工具的配置环境；未注入时按进程环境解析 `~/.OmniCrawl`。
@@ -353,6 +358,15 @@ impl ToolRegistry {
         };
         let specs = build_agent_tools(&catalog_options)
             .map_err(|error| ToolError::new(error.message().to_string()))?;
+        // 白名单在最后一道过滤：表即权限——声明与执行都查这份 specs，
+        // 过滤一次就同时挡住「模型看得见」与「宿主肯执行」。
+        let specs: Vec<_> = match options.allowed_tools.as_ref() {
+            Some(allowed) => specs
+                .into_iter()
+                .filter(|spec| allowed.iter().any(|name| name == &spec.name))
+                .collect(),
+            None => specs,
+        };
         let commands = CommandRunner::new(
             paths.root(),
             if command_timeout_seconds <= 0 {
@@ -812,6 +826,35 @@ mod tests {
             "关掉的工具不得进表：{names:?}"
         );
         assert!(names.contains("read"), "其余工具照旧进表：{names:?}");
+    }
+
+    /// 无人值守白名单只留列出的工具：表里没有的既不可见、也执行不了。
+    ///
+    /// 这是 MQTT 回路的安全面——模型由传感器报文触发，报文本身来自现场设备，
+    /// 不能因为「工具默认全开」就把 shell 交出去。
+    #[test]
+    fn allowed_tools_keep_only_the_listed_ones() {
+        let root = std::env::temp_dir().join("omnicrawl-registry-allowed");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        let options = RegistryOptions {
+            allowed_tools: Some(vec!["read".to_string(), "list".to_string()]),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(names.contains("read"), "白名单内工具应当进表：{names:?}");
+        assert!(names.contains("list"), "白名单内工具应当进表：{names:?}");
+        assert!(!names.contains("bash"), "白名单外工具不得进表：{names:?}");
+        assert!(
+            !names.contains("write_file"),
+            "白名单外工具不得进表：{names:?}"
+        );
+        // 执行面同样兜住：不进表的名字宿主一律不认，模型硬编也调不动。
+        assert!(registry
+            .execute(&call("bash", json!({"command": "echo hi"})))
+            .is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

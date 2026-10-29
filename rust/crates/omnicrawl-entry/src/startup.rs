@@ -16,6 +16,7 @@ use omnicrawl_config::core::bootstrap::{
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_connectors::autostart::{
     default_connector_specs, start_configured_connectors, ConnectorProcessManager, ConnectorSpec,
+    MQTT_PLATFORM,
 };
 use omnicrawl_extensions::install::list_plugins;
 
@@ -112,6 +113,9 @@ pub fn connector_specs(kernel: &Path) -> Vec<ConnectorSpec> {
         Some(program) => default_connector_specs(program),
         None => {
             let mut specs = default_connector_specs(kernel);
+            // 内核没有 MQTT 连接器（`--connector mqtt` 不被识别）：无宿主载荷的平台不留这条
+            // spec，否则每次启动都会拉起一个必然失败的子进程。
+            specs.retain(|spec| spec.name != MQTT_PLATFORM);
             for spec in specs.iter_mut() {
                 for argument in spec.args.iter_mut() {
                     if argument == "connector" {
@@ -373,6 +377,11 @@ mod tests {
                     host.to_string_lossy().to_string(),
                     "connector".to_string(),
                     "qqbot".to_string()
+                ],
+                vec![
+                    host.to_string_lossy().to_string(),
+                    "connector".to_string(),
+                    "mqtt".to_string()
                 ],
             ]
         );

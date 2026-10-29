@@ -56,11 +56,13 @@ omnicrawl
 
 首次启动会跑一个行式向导，为当前渠道填写渠道名、Provider（OpenAI、Anthropic、Gemini）、协议、Base URL、模型 ID 与凭据环境变量名，配置保存在本机 `~/.OmniCrawl`；其余字段可在 `/settings` 里继续修改。配置好一个已启用且具备 Key 的默认渠道后，`omnicrawl` 即可进入工作台。
 
-如果本机配置了 Telegram（Bot Token + 授权用户 ID）或飞书（App ID + App Secret），
-启动 TUI 时会自动拉起对应的独立连接器子进程；未配置的平台不会启动，连接器故障不阻塞
-TUI，退出 TUI 时会自动回收连接器。同一平台同一用户只允许一个活动连接器实例：
-多个 TUI/API 进程并存时，后启动方会自动跳过，避免 Telegram/飞书重复长连接。
-设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭该联动。配置方法与安全边界见
+如果本机配置了 Telegram（Bot Token + 授权用户 ID）、飞书（App ID + App Secret）或
+MQTT（`[mqtt]` 段的 broker、topics 与 actions 齐全），启动 TUI 时会自动拉起对应的独立
+连接器子进程；未配置的平台不会启动，连接器故障不阻塞 TUI，退出 TUI 时会自动回收连接器。
+同一平台同一用户只允许一个活动连接器实例：多个 TUI/API 进程并存时，后启动方会自动跳过，
+避免重复长连接。设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭该联动。
+MQTT 不是聊天平台：它由遥测事件触发，用规则 + 决策模型决定开关棚/通风/灌溉，见
+`rust/assets/docs/MQTT.md`；Telegram/飞书的配置方法与安全边界见
 `rust/assets/docs/TELEGRAM.md`、`rust/assets/docs/FSAPP.md`。
 
 常用操作：

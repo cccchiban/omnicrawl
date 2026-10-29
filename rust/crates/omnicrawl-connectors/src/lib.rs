@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod feishu;
 pub mod http;
 pub mod json;
+pub mod mqtt;
 pub mod qqbot;
 pub mod render;
 pub mod telegram;
@@ -24,5 +25,5 @@ pub use autostart::{
     AutoStartDecision, ConnectorManagerOptions, ConnectorProcessManager, ConnectorSpec,
     OutputTarget, ProcessSpawner, SpawnRequest, StdProcessSpawner, AUTO_START_ENV,
     CONNECTOR_LOG_DIRNAME, CONNECTOR_SUBCOMMAND, DISABLED_VALUES, ENABLED_VALUES, FEISHU_PLATFORM,
-    QQ_PLATFORM, TELEGRAM_PLATFORM, WATCHER_JOIN_TIMEOUT_SECONDS, WATCH_POLL_SECONDS,
+    MQTT_PLATFORM, QQ_PLATFORM, TELEGRAM_PLATFORM, WATCHER_JOIN_TIMEOUT_SECONDS, WATCH_POLL_SECONDS,
 };

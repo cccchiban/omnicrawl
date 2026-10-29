@@ -69,8 +69,10 @@ pub fn run_with_args(platform: &str, args: &[String]) -> Result<(), String> {
         "telegram" => run_telegram(),
         "feishu" => run_feishu(),
         "qqbot" => run_qqbot(),
+        // MQTT 不是聊天平台：入口是遥测，出口是指令，没有时间线可渲染。
+        "mqtt" => crate::mqtt::run(),
         other => Err(format!(
-            "未知连接器：{other}；当前支持 telegram、feishu、qqbot。"
+            "未知连接器：{other}；当前支持 telegram、feishu、qqbot、mqtt。"
         )),
     }
 }
@@ -158,7 +160,16 @@ impl HostConnectorDriver {
     pub fn start(env: &ConfigEnvironment) -> Result<HostConnectorDriver, String> {
         let options: ServiceOptions = connector_options_from_process(env)?;
         let program = resolve_kernel_program(env, None);
-        let service = AgentService::spawn(options, &program)
+        Self::start_with(options, &program)
+    }
+
+    /// 带自定义选项启动：无人值守回路要改审批模式与工具白名单，
+    /// 不能再把配置原样读一遍（配置里的 `auto` 与全量工具表都不适合无人值守）。
+    pub fn start_with(
+        options: ServiceOptions,
+        program: &std::path::Path,
+    ) -> Result<HostConnectorDriver, String> {
+        let service = AgentService::spawn(options, program)
             .map_err(|error| format!("连接器宿主启动失败：{error}"))?;
         let service = Arc::new(service);
         // 回合外事件泵：后台子任务事件不必等到下一次回合才进会话级事件流。

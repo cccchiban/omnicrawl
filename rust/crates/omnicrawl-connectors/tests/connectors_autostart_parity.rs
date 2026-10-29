@@ -20,7 +20,7 @@ use omnicrawl_connectors::autostart::{
     auto_start_decision, child_environment, default_connector_specs, start_configured_connectors,
     ConnectorManagerOptions, ConnectorProcessManager, ConnectorSpec, OutputTarget, ProcessSpawner,
     SpawnRequest, AUTO_START_ENV, CONNECTOR_LOG_DIRNAME, CONNECTOR_SUBCOMMAND, DISABLED_VALUES,
-    ENABLED_VALUES, FEISHU_PLATFORM, QQ_PLATFORM, TELEGRAM_PLATFORM,
+    ENABLED_VALUES, FEISHU_PLATFORM, MQTT_PLATFORM, QQ_PLATFORM, TELEGRAM_PLATFORM,
 };
 use omnicrawl_workspace::process_control::{ManagedProcess, ProcessState};
 use serde_json::Value;
@@ -206,8 +206,10 @@ fn constants_match_python() {
     assert_eq!(modules.len(), 3, "数据集应当记录三个平台模块作为参考");
 
     let specs = default_connector_specs("/tmp/omnicrawl-connector");
-    assert_eq!(specs.len(), 3);
-    for (index, spec) in specs.iter().enumerate() {
+    // 数据集是 Python 侧的三平台基准；MQTT 是 Rust 侧独有的第四个平台（Python 没有对应模块），
+    // 所以它排在最后、单独钉形状，不进 platform_modules 的对照循环。
+    assert_eq!(specs.len(), names.len() + 1);
+    for (index, spec) in specs.iter().take(names.len()).enumerate() {
         assert_eq!(spec.name, names[index]);
         // Python 是 `[python, "-m", <模块>]`，Rust 是 `[宿主程序, connector, <平台>]`：
         // 命令行本身不同源（见模块文档），这里只锁住「平台 → 子命令尾段」的对应关系。
@@ -222,6 +224,13 @@ fn constants_match_python() {
         );
         assert_eq!(spec.command_line().len(), 3);
     }
+    let mqtt = &specs[names.len()];
+    assert_eq!(mqtt.name, MQTT_PLATFORM);
+    assert_eq!(
+        mqtt.args,
+        vec![CONNECTOR_SUBCOMMAND.to_string(), "mqtt".to_string()]
+    );
+    assert_eq!(mqtt.command_line().len(), 3);
 
     // 日志路径：`<用户配置目录>/logs/<平台>.log`。
     for entry in group(&data, "log_paths") {
@@ -506,4 +515,70 @@ fn production_entry_enables_log_capture() {
     assert_eq!(spawner.requests().len(), 1);
     manager.close();
     assert_eq!(manager.started_connectors(), vec!["Custom".to_string()]);
+}
+
+/// MQTT 的「已配置」看的是 `[mqtt]` 是否自洽（broker、主题、动作表），而不是平台凭据：
+/// 缺动作表就不该拉起子进程，配齐了才自动启动。
+#[test]
+fn mqtt_autostarts_only_when_the_section_is_self_consistent() {
+    const READY: &str = r#"
+[mqtt]
+broker = "mqtt://127.0.0.1:1883"
+topics = ["farm/+/env"]
+
+[[mqtt.actions]]
+id = "do_nothing"
+
+[[mqtt.rules]]
+id = "hot"
+metric = "temp"
+op = "gt"
+value = 28.0
+actions = ["do_nothing"]
+"#;
+    // 有 broker 与主题，但一条动作都没有：模型没有可选项，回路起不来。
+    const INCOMPLETE: &str = r#"
+[mqtt]
+broker = "mqtt://127.0.0.1:1883"
+topics = ["farm/+/env"]
+"#;
+
+    for (case, config, expected) in [
+        ("mqtt_ready", READY, true),
+        ("mqtt_incomplete", INCOMPLETE, false),
+    ] {
+        let root = TempDir::new(case);
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("创建工作区");
+        let config_path = root.join("config.toml");
+        std::fs::write(&config_path, config).expect("写配置");
+
+        let spawner = Arc::new(FakeSpawner::default());
+        let options = ConnectorManagerOptions::new(ConfigEnvironment::new(
+            root.path(),
+            std::env::consts::OS,
+        ))
+        .with_spawner(Arc::clone(&spawner) as Arc<dyn ProcessSpawner>)
+        .with_config_path(Some(config_path));
+        let manager = ConnectorProcessManager::new(workspace.as_path(), options);
+
+        let started = manager.start();
+        if expected {
+            assert_eq!(
+                started,
+                vec![MQTT_PLATFORM.to_string()],
+                "配置齐全的 MQTT 应当自动启动"
+            );
+            let requests = spawner.requests();
+            assert_eq!(requests.len(), 1, "应当只拉起一个 MQTT 子进程");
+            assert_eq!(
+                requests[0].args,
+                vec![CONNECTOR_SUBCOMMAND.to_string(), "mqtt".to_string()]
+            );
+        } else {
+            assert!(started.is_empty(), "配置不自洽时不应启动：{started:?}");
+            assert!(spawner.requests().is_empty(), "不应产生任何启动请求");
+        }
+        manager.close();
+    }
 }

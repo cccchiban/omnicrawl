@@ -15,6 +15,7 @@ pub mod config;
 pub mod connector;
 pub mod error;
 pub mod model_discovery;
+pub mod mqtt;
 pub mod openapi;
 pub mod qqbind;
 pub mod routes;

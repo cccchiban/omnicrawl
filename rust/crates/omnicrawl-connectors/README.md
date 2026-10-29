@@ -43,6 +43,15 @@ src/
     ├── api.rs              # 开放接口：租户令牌缓存、消息创建/更新、资源下载、长连接端点
     ├── ws.rs               # 飞书长连接：pbbp2 帧编解码、LongConnection 与重连退避（帧与 TLS 走 crate::ws）
     └── bot.rs              # 事件接入、命令分发、任务时间线装配、审批与提问桥、长连接主循环
+├── mqtt/                   # 遥测进、动作出（不是聊天平台，没有时间线）
+│   ├── config.rs           # [mqtt] 段解析：broker、主题、窗口、动作表、规则
+│   ├── codec.rs            # MQTT 3.1.1 编解码：连接/订阅/发布/确认/心跳
+│   ├── client.rs           # 阻塞式客户端：TCP 与 TLS、keepalive、QoS1 发布
+│   ├── policy.rs           # 窗口聚合、规则状态机、迟滞、冷却、读数解析
+│   ├── prompt.rs           # 固定模板、动作 JSON 解析与参数夹取
+│   ├── planner.rs          # 规划器边界（宿主实现：决策模型优先、主模型回落）
+│   ├── audit.rs            # JSONL 审计与启动时的冷却回放
+│   └── bot.rs              # 主循环：订阅→聚合→规则→唤醒→下发→等回执
 └── qqbot/
     ├── config.rs           # [qqbot] 段解析、校验与诊断（Secret 掩码）
     ├── api.rs              # AccessToken 缓存、网关地址、被动回复（文本/Markdown/富媒体）、上传、下载
@@ -189,3 +198,34 @@ cd rust && cargo test -p omnicrawl-connectors
 `bot_encrypt_secret = base64(nonce[12] || ciphertext || tag[16])`，本地用 AES-256-GCM
 解出 AppSecret——Secret 不经第三方。CLI 入口是 `omnicrawl-host connector qqbot --bind`，
 写回 `config.toml` 时保留其它段（`omnicrawl-api/src/qqbind.rs`）。
+
+## MQTT 自动化回路（`src/mqtt/`）
+
+连接器矩阵里的第四个入口，但形态完全不同：**遥测进、动作出**，没有消息时间线可渲染。
+
+- 入口是传感器报文（温湿度、墒情、光照），出口是一条带 `request_id` 与 `ttl_seconds` 的下发指令；
+- 规则层（阈值 + 持续时长 + 迟滞 + 冷却）永远在线，只在命中时**唤醒一次**模型；
+- 模型只在两次触发之间「不存在」：没有沉睡进程，也不占运行名额；
+- 模型输出被约束在动作表内、参数按 `min/max` 夹取，动作 id 不认识直接否决；
+- 模型不可用时回落规则声明的 `fallback`，`fail_safe` 规则根本不问模型；
+- 每次决策落一行审计（触发原因、窗口快照、动作、指令、回执），并作为下次唤醒的「最近动作」。
+
+传输层是手写的 MQTT 3.1.1（连接/订阅/发布/确认/心跳），与飞书长连接同一条路线
+（rustls + webpki 根证书，无原生依赖），不引第三方 MQTT 客户端。
+
+宿主装配在 `omnicrawl-api/src/mqtt.rs`，两种规划器按 `[mqtt] planner` 选：
+
+- `agent`（默认）：拉起内核子进程跑一个回合，模型可用白名单里的工具（默认只读 + 记忆/知识库/
+  联网检索），审批固定自动审查；白名单外的工具既不声明给模型，宿主也不执行。
+- `decision`：一次结构化决策——决策模型（`decision_models.toml`）可用时走 choice，
+  未配置时回落主模型单轮补全。
+
+两条路径都汇到同一份动作校验：动作必须在动作表内，参数按 min/max 夹取。
+
+端到端测试用回环假 broker 跑完整回路：
+
+```bash
+cargo test -p omnicrawl-connectors --test mqtt_loop
+```
+
+使用说明与完整配置见 `rust/assets/docs/MQTT.md`。
