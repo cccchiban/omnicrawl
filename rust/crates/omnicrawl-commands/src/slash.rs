@@ -136,7 +136,7 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 29);
+        assert_eq!(names.len(), 28);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));

@@ -10,7 +10,7 @@ use crate::error::ConfigError;
 use crate::toml::Value;
 
 /// 可开关的内置工具（含条件注册工具；未注册条件下配置开关不会报错）。
-pub const TOOL_SWITCH_KEYS: [&str; 28] = [
+pub const TOOL_SWITCH_KEYS: [&str; 32] = [
     "list",
     "find",
     "read",
@@ -31,7 +31,11 @@ pub const TOOL_SWITCH_KEYS: [&str; 28] = [
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
-    "subagent",
+    "subagent_run",
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
     "update_todos",
     "memory_search",
     "memory_read",
@@ -42,7 +46,7 @@ pub const TOOL_SWITCH_KEYS: [&str; 28] = [
 ];
 
 /// 开关名 → 界面文案。
-pub const TOOL_SWITCH_LABELS: [(&str, &str); 28] = [
+pub const TOOL_SWITCH_LABELS: [(&str, &str); 32] = [
     ("list", "列出目录内容"),
     ("find", "按名称或路径查找文件"),
     ("read", "读取文件内容"),
@@ -63,7 +67,11 @@ pub const TOOL_SWITCH_LABELS: [(&str, &str); 28] = [
     ("windows_input", "模拟 Windows 鼠标键盘"),
     ("windows_clipboard", "操作 Windows 剪贴板"),
     ("windows_screenshot", "截取 Windows 桌面"),
-    ("subagent", "分发受限子任务"),
+    ("subagent_run", "分发受限子任务"),
+    ("subagent_list", "列出子代理任务与工作树"),
+    ("subagent_cancel", "取消子代理任务"),
+    ("subagent_apply_worktree", "应用子代理工作树改动"),
+    ("subagent_discard_worktree", "丢弃子代理工作树"),
     ("update_todos", "维护自动执行清单"),
     ("memory_search", "搜索长期记忆（scope 选作用域）"),
     ("memory_read", "读取长期记忆"),

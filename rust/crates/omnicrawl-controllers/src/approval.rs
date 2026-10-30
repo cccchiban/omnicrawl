@@ -1512,9 +1512,7 @@ impl ExecutionPhase {
 }
 
 /// 正常执行路径；异常路径在此之上多一个 `ToolError`。
-pub const EXECUTION_PHASES: [ExecutionPhase; 2] = [
-    ExecutionPhase::ToolRun,
-];
+pub const EXECUTION_PHASES: [ExecutionPhase; 1] = [ExecutionPhase::ToolRun];
 
 /// 当前线程实际生效的审批模式：线程本地覆盖优先，其次配置值，配置缺失回落 review。
 pub fn effective_approval_mode(override_mode: Option<&str>, configured: Option<&str>) -> String {

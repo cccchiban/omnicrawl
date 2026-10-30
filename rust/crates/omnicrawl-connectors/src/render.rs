@@ -417,8 +417,7 @@ pub fn tool_summary(tool_name: &str, arguments: &Value, result_text: &str) -> St
             );
             return format!("{name} {context} {detail}").trim_end().to_string();
         }
-        "subagent" => {
-            let context = required_compact(&args, "action", "任务", MAX_PATTERN_CHARS);
+        "subagent_run" => {
             let task = args.get("task");
             let agent_type = task
                 .and_then(|task| task.get("subagent_type"))
@@ -437,7 +436,21 @@ pub fn tool_summary(tool_name: &str, arguments: &Value, result_text: &str) -> St
             if !description.is_empty() {
                 suffix.push_str(&format!(" · {description}"));
             }
-            return format!("{name} {context}{suffix}");
+            return format!("{name}{suffix}");
+        }
+        "subagent_list" | "subagent_cancel" => {
+            let target = compact_line(
+                args.get("task_id").or_else(|| args.get("batch_id")),
+                MAX_PATTERN_CHARS,
+            );
+            return format!("{name} {target}").trim_end().to_string();
+        }
+        "subagent_apply_worktree" | "subagent_discard_worktree" => {
+            let target = compact_line(
+                args.get("task_id").or_else(|| args.get("branch")),
+                MAX_PATTERN_CHARS,
+            );
+            return format!("{name} {target}").trim_end().to_string();
         }
         _ if MEMORY_TOOL_OPERATIONS.contains(&operation.as_str()) => {
             let query = compact_line(args.get("query"), MAX_PATH_CHARS);

@@ -285,11 +285,23 @@ async fn put_features(
                 None,
             )
         })?;
-        // 记忆是一整组工具（四个 `memory_*`），开关直接决定它们进不进表：写盘后
+        // 记忆是一整组工具（五个 `memory_*`），开关直接决定它们进不进表：写盘后
         // 同样要重建工具表，否则要等下次启动才从模型可见面里消失。
         // `subagents` 的运行期在内核侧、按每次调用现读 `subagents.toml`，这里无需动手。
         if key == "memory" {
-            service.reload_memory_switch(value)?;
+            let group: Vec<(String, bool)> = MEMORY_TOOL_NAMES
+                .iter()
+                .map(|name| ((*name).to_string(), value))
+                .collect();
+            save_tool_switches(env, &group, None).map_err(invalid_setting)?;
+            let switches = load_tool_switches(env, None).map_err(invalid_setting)?;
+            let disabled: Vec<String> = switches
+                .iter()
+                .filter(|(_, enabled)| !**enabled)
+                .map(|(name, _)| name.clone())
+                .collect();
+            // 回合在途时只写盘：与 `PUT /settings/tools` 一致，不让客户端误以为没写成。
+            let _ = service.reload_tool_switches(disabled);
         }
     }
     Ok(data(json!({
@@ -1244,3 +1256,12 @@ fn provided<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
 fn validate_tool_name(name: &str) -> Result<String, ApiError> {
     omnicrawl_config::features::tools::validate_tool_switch_name(name).map_err(invalid_setting)
 }
+
+/// 记忆工具组：`features.memory` 是一个整组开关，切换时五个工具同步开关。
+const MEMORY_TOOL_NAMES: [&str; 5] = [
+    "memory_search",
+    "memory_read",
+    "memory_expand_related",
+    "memory_write",
+    "memory_delete",
+];

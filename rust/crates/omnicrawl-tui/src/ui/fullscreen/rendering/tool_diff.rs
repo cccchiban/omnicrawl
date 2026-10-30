@@ -63,8 +63,16 @@ fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("静态正则"))
 }
 
+/// SubAgent 家族里除 `subagent_run` 外的工具：标题只显示定位键。
+const SUBAGENT_AUX_TOOLS: [&str; 4] = [
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
+];
+
 /// 压缩工具标题中的路径或搜索目标，避免长参数撑破终端。
-pub fn compact_title_value(value: &str, max_chars: usize) -> String {
+fn compact_title_value(value: &str, max_chars: usize) -> String {
     let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return "(未指定)".to_string();
@@ -176,25 +184,41 @@ pub fn tool_title_context(tool_name: &str, arguments: &Value, _result_text: &str
         }
         return context;
     }
-    if operation == "subagent" {
-        let action = arg_text(arguments, "action").trim().to_string();
-        let mut context = if action.is_empty() {
-            "任务".to_string()
-        } else {
-            action
-        };
+    if operation == "subagent_run" {
         // 一次调用只带一个 task：标题直接显示角色与目标，多个子代理就是多张并列的卡。
+        let mut context = String::new();
         if let Some(task) = arguments.get("task") {
             let agent_type = arg_text(task, "subagent_type").trim().to_string();
             if !agent_type.is_empty() {
-                context.push_str(&format!("  {agent_type}"));
+                context.push_str(&agent_type);
             }
             let description = arg_text(task, "description").trim().to_string();
             if !description.is_empty() {
-                context.push_str(&format!("  {}", compact_title_value(&description, 48)));
+                if !context.is_empty() {
+                    context.push_str("  ");
+                }
+                context.push_str(&compact_title_value(&description, 48));
             }
         }
-        return context;
+        return if context.is_empty() {
+            "任务".to_string()
+        } else {
+            context
+        };
+    }
+    if SUBAGENT_AUX_TOOLS.contains(&operation) {
+        let target = arg_text(arguments, "task_id");
+        let target = if target.trim().is_empty() {
+            arg_text(arguments, "branch")
+        } else {
+            target
+        };
+        let target = target.trim().to_string();
+        return if target.is_empty() {
+            "任务".to_string()
+        } else {
+            compact_title_value(&target, 48)
+        };
     }
     if operation == "windows_screenshot" {
         let target = arg_text(arguments, "target").trim().to_string();
@@ -926,11 +950,23 @@ mod tests {
         assert_eq!(tool_title_context("monitor", &json!({}), ""), "任务");
         assert_eq!(
             tool_title_context(
-                "subagent",
-                &json!({"action": "run", "task": {"subagent_type": "explore", "description": "调查并行执行"}}),
+                "subagent_run",
+                &json!({"task": {"subagent_type": "explore", "description": "调查并行执行"}}),
                 ""
             ),
-            "run  explore  调查并行执行"
+            "explore  调查并行执行"
+        );
+        assert_eq!(
+            tool_title_context("subagent_list", &json!({}), ""),
+            "任务"
+        );
+        assert_eq!(
+            tool_title_context("subagent_cancel", &json!({"task_id": "t1"}), ""),
+            "t1"
+        );
+        assert_eq!(
+            tool_title_context("subagent_discard_worktree", &json!({"branch": "sw-b"}), ""),
+            "sw-b"
         );
         assert_eq!(
             tool_title_context("windows_screenshot", &json!({}), ""),

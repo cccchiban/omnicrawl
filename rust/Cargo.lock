@@ -1992,7 +1992,6 @@ version = "0.4.2"
 dependencies = [
  "omnicrawl-config",
  "omnicrawl-connectors",
- "omnicrawl-extensions",
  "omnicrawl-workspace",
  "serde_json",
 ]
@@ -2102,7 +2101,6 @@ name = "omnicrawl-onejev"
 version = "0.4.2"
 dependencies = [
  "omnicrawl-config",
- "omnicrawl-extensions",
  "omnicrawl-host",
  "serde_json",
  "ureq",

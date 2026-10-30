@@ -13,7 +13,7 @@ use omnicrawl_controllers::subagents::batch::{
 use omnicrawl_controllers::subagents::coordinator::{
     build_failure_diagnostics, cancelled_payload, failure_payload, json_result_text, query_request,
     select_profile_tools, task_event_payload, terminal_event_payload, top_level_error,
-    validate_arguments, worktree_control_request, FailureFacts, PreparedTaskView,
+    validate_task_arguments, worktree_control_request, FailureFacts, PreparedTaskView,
 };
 use omnicrawl_controllers::subagents::definitions::{
     locate_builtin_directory_from, parse_agent_definition, AgentDefinition, AgentDefinitionRegistry,
@@ -944,7 +944,7 @@ fn coordinator_validation_matches_python() {
     for case in data["validate"].as_array().expect("validate") {
         let label = case["label"].as_str().expect("label");
         let config = config_from(case["config"].as_str().expect("config"), &data);
-        let actual = validate_arguments(&case["arguments"], &config, &registry);
+        let actual = validate_task_arguments(&case["arguments"], &config, &registry);
         match (actual, case["result"].as_array()) {
             (None, None) => {}
             (Some((code, message)), Some(expected)) => {
@@ -1001,7 +1001,10 @@ fn coordinator_control_requests_match_python() {
     let data = section("coordinator");
     for case in data["worktree"].as_array().expect("worktree") {
         let label = case["label"].as_str().expect("label");
-        let actual = worktree_control_request(&case["arguments"]);
+        let actual = worktree_control_request(
+            case["tool"].as_str().expect("tool"),
+            &case["arguments"],
+        );
         match (actual, case["kind"].as_str()) {
             (Ok(_), Some("ok")) => {}
             (Err((code, message)), None) => {
@@ -1013,7 +1016,10 @@ fn coordinator_control_requests_match_python() {
     }
     for case in data["query"].as_array().expect("query") {
         let label = case["label"].as_str().expect("label");
-        let actual = query_request(&case["arguments"]);
+        let actual = query_request(
+            case["tool"].as_str().expect("tool"),
+            &case["arguments"],
+        );
         match (actual, case["kind"].as_str()) {
             (Ok(_), Some("ok")) => {}
             (Err((code, message)), None) => {

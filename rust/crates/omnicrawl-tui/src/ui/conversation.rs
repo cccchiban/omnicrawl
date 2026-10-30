@@ -3002,7 +3002,7 @@ mod tests {
     #[test]
     fn a_subagent_card_gets_a_grey_view_session_button_after_the_call() {
         let mut state =
-            state_with_named_tool("subagent", serde_json::json!({"action": "run"}), "完成");
+            state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
         state.subagent_stream_root =
             std::env::temp_dir().join(format!("oc-conv-view-{}", std::process::id()));
         state.apply(
@@ -3048,7 +3048,7 @@ mod tests {
     #[test]
     fn a_finished_subagent_batch_removes_the_button() {
         let mut state =
-            state_with_named_tool("subagent", serde_json::json!({"action": "run"}), "完成");
+            state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
         state.subagent_stream_root =
             std::env::temp_dir().join(format!("oc-conv-view-done-{}", std::process::id()));
         for name in ["subagent.batch.created", "subagent.batch.finished"] {

@@ -440,16 +440,15 @@
         "expected": "monitor start npm test"
       },
       {
-        "name": "subagent",
+        "name": "subagent_run",
         "arguments": {
-          "action": "run",
           "task": {
             "subagent_type": "explore",
             "description": "看代码"
           }
         },
         "result": "",
-        "expected": "subagent run · explore · 看代码"
+        "expected": "subagent_run · explore · 看代码"
       },
       {
         "name": "memory_search",
@@ -602,9 +601,8 @@
         "expected": ""
       },
       {
-        "name": "subagent",
+        "name": "subagent_run",
         "arguments": {
-          "action": "run",
           "task": {
             "subagent_type": "explore",
             "description": "看代码"

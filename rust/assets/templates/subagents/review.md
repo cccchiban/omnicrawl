@@ -9,7 +9,11 @@ tools:
   - grep
   - git
 disallowedTools:
-  - subagent
+  - subagent_run
+  - subagent_list
+  - subagent_cancel
+  - subagent_apply_worktree
+  - subagent_discard_worktree
   - Edit_file
   - write_file
   - memory_write

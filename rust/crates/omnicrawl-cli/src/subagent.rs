@@ -1,4 +1,4 @@
-//! 内核自持的 `subagent` 工具：把一批受限子任务跑成独立子回合。
+//! 内核自持的 SubAgent 工具族：把受限子任务跑成独立子回合，并管理任务与隔离工作树。
 //!
 //! 与 `recall_session_evidence` 同类——命中即由内核作答，不占宿主的批次；区别是子回合里的
 //! 模型请求与工具批次照旧经协议外发：子模型请求走内核自带的 provider runtime，子工具批次走
@@ -11,16 +11,13 @@ use std::path::PathBuf;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::subagents::{load_subagent_config, SubAgentConfig};
 use omnicrawl_controllers::subagents::coordinator::{
-    json_result_text, select_profile_tools, top_level_error, validate_arguments, PreparedTaskView,
+    json_result_text, select_profile_tools, top_level_error, validate_task_arguments, PreparedTaskView,
 };
 use omnicrawl_controllers::subagents::definitions::{AgentDefinition, AgentDefinitionRegistry};
 use omnicrawl_controllers::subagents::orchestration::fork_task_message;
 use omnicrawl_ipc::bridge::KernelModelConfig;
 use omnicrawl_session::redaction::redact_sensitive_text;
 use serde_json::{json, Map, Value};
-
-/// 工具名：与工具目录里的 `subagent` 一致。
-pub const SUBAGENT_TOOL_NAME: &str = "subagent";
 
 /// 一个已通过校验、权限已收窄的子任务。
 #[derive(Debug, Clone)]
@@ -105,7 +102,7 @@ impl SubAgentRuntime {
         batch_id: &str,
     ) -> Result<PreparedTask, (String, String)> {
         let value = Value::Object(arguments.clone());
-        if let Some(error) = validate_arguments(&value, &self.config, &self.registry) {
+        if let Some(error) = validate_task_arguments(&value, &self.config, &self.registry) {
             return Err(error);
         }
         let task = arguments

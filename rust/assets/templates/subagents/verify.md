@@ -12,7 +12,11 @@ tools:
   - memory_expand_related
   - verify_command
 disallowedTools:
-  - subagent
+  - subagent_run
+  - subagent_list
+  - subagent_cancel
+  - subagent_apply_worktree
+  - subagent_discard_worktree
   - Edit_file
   - write_file
   - bash

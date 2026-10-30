@@ -98,8 +98,8 @@ pub fn tool_is_undo_safe(name: &str, arguments: &Map<String, Value>) -> bool {
         return true;
     }
     match name {
-        "subagent" => action_of(arguments, "run")
-            .is_some_and(|action| matches!(action.as_str(), "list" | "get" | "list_worktrees")),
+        // 查询类工具只读；`subagent_run` 会改工作区，`*_worktree` 会动主工作区，都不算安全。
+        "subagent_list" | "subagent_cancel" => true,
         "monitor" => action_of(arguments, "list")
             .is_some_and(|action| matches!(action.as_str(), "list" | "poll")),
         "windows_window" => action_of(arguments, "list")

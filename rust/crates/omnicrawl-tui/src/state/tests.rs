@@ -1011,7 +1011,7 @@ mod tests {
     fn subagent_batch_waits_for_the_click_before_opening_a_window() {
         let mut state = state();
         let now = Instant::now();
-        let call = call("c1", "subagent");
+        let call = call("c1", "subagent_run");
         state.begin_tool_run(&call, now);
         state.apply(
             &subagent_event_with_call("subagent.task.queued", "t1", "batch-1", "c1"),

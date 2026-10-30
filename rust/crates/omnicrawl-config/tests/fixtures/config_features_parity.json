@@ -54,25 +54,25 @@
   },
   {
    "value": "bogus",
-   "error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。"
+   "error": "approval.mode \u4ec5\u652f\u6301 auto, manual, review\uff0c\u5f53\u524d\u503c\uff1abogus\u3002"
   },
   {
    "value": "",
-   "error": "approval.mode 仅支持 auto, manual, review，当前值：。"
+   "error": "approval.mode \u4ec5\u652f\u6301 auto, manual, review\uff0c\u5f53\u524d\u503c\uff1a\u3002"
   }
  ],
  "approval_labels": [
   {
    "mode": "manual",
-   "expected": "人工确认"
+   "expected": "\u4eba\u5de5\u786e\u8ba4"
   },
   {
    "mode": "auto",
-   "expected": "完全自动批准"
+   "expected": "\u5b8c\u5168\u81ea\u52a8\u6279\u51c6"
   },
   {
    "mode": "review",
-   "expected": "自动审查"
+   "expected": "\u81ea\u52a8\u5ba1\u67e5"
   },
   {
    "mode": "bogus",
@@ -83,13 +83,13 @@
   {
    "mode": "review",
    "review_model": "",
-   "name": "缺段",
+   "name": "\u7f3a\u6bb5",
    "config": {}
   },
   {
    "mode": "auto",
    "review_model": "",
-   "name": "显式模式",
+   "name": "\u663e\u5f0f\u6a21\u5f0f",
    "config": {
     "approval": {
      "mode": "auto"
@@ -99,7 +99,7 @@
   {
    "mode": "review",
    "review_model": "",
-   "name": "模式需归一化",
+   "name": "\u6a21\u5f0f\u9700\u5f52\u4e00\u5316",
    "config": {
     "approval": {
      "mode": " Auto-Review "
@@ -107,9 +107,9 @@
    }
   },
   {
-   "mode_error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。",
+   "mode_error": "approval.mode \u4ec5\u652f\u6301 auto, manual, review\uff0c\u5f53\u524d\u503c\uff1abogus\u3002",
    "review_model": "",
-   "name": "模式非法",
+   "name": "\u6a21\u5f0f\u975e\u6cd5",
    "config": {
     "approval": {
      "mode": "bogus"
@@ -117,9 +117,9 @@
    }
   },
   {
-   "mode_error": "配置项 approval.mode 必须是字符串。",
+   "mode_error": "\u914d\u7f6e\u9879 approval.mode \u5fc5\u987b\u662f\u5b57\u7b26\u4e32\u3002",
    "review_model": "",
-   "name": "模式非字符串",
+   "name": "\u6a21\u5f0f\u975e\u5b57\u7b26\u4e32",
    "config": {
     "approval": {
      "mode": 5
@@ -129,7 +129,7 @@
   {
    "mode": "review",
    "review_model": "",
-   "name": "旧开关 auto_review",
+   "name": "\u65e7\u5f00\u5173 auto_review",
    "config": {
     "approval": {
      "auto_review": true
@@ -139,7 +139,7 @@
   {
    "mode": "auto",
    "review_model": "",
-   "name": "旧开关 auto_approve",
+   "name": "\u65e7\u5f00\u5173 auto_approve",
    "config": {
     "approval": {
      "auto_approve": true
@@ -149,7 +149,7 @@
   {
    "mode": "review",
    "review_model": "",
-   "name": "旧开关都关",
+   "name": "\u65e7\u5f00\u5173\u90fd\u5173",
    "config": {
     "approval": {
      "auto_review": false,
@@ -158,9 +158,9 @@
    }
   },
   {
-   "mode_error": "配置项 approval 必须是对象。",
-   "review_model_error": "配置项 approval 必须是对象。",
-   "name": "段不是对象",
+   "mode_error": "\u914d\u7f6e\u9879 approval \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "review_model_error": "\u914d\u7f6e\u9879 approval \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "name": "\u6bb5\u4e0d\u662f\u5bf9\u8c61",
    "config": {
     "approval": 5
    }
@@ -168,7 +168,7 @@
   {
    "mode": "review",
    "review_model": "gpt-5.2",
-   "name": "审查模型",
+   "name": "\u5ba1\u67e5\u6a21\u578b",
    "config": {
     "approval": {
      "review_model": " gpt-5.2 "
@@ -178,7 +178,7 @@
   {
    "mode": "review",
    "review_model": "",
-   "name": "审查模型为空",
+   "name": "\u5ba1\u67e5\u6a21\u578b\u4e3a\u7a7a",
    "config": {
     "approval": {
      "review_model": ""
@@ -187,8 +187,8 @@
   },
   {
    "mode": "review",
-   "review_model_error": "配置项 approval.review_model 必须是字符串。",
-   "name": "审查模型非字符串",
+   "review_model_error": "\u914d\u7f6e\u9879 approval.review_model \u5fc5\u987b\u662f\u5b57\u7b26\u4e32\u3002",
+   "name": "\u5ba1\u67e5\u6a21\u578b\u975e\u5b57\u7b26\u4e32",
    "config": {
     "approval": {
      "review_model": 5
@@ -199,17 +199,17 @@
  "approval_save": [
   {
    "text": "[approval]\nreview_model = \"m\"\nmode = \"auto\"\n\n[ui]\nshow_thinking = true\n",
-   "name": "写回 auto",
+   "name": "\u5199\u56de auto",
    "mode": "auto"
   },
   {
    "text": "[approval]\nreview_model = \"m\"\nmode = \"review\"\n\n[ui]\nshow_thinking = true\n",
-   "name": "写回 review",
+   "name": "\u5199\u56de review",
    "mode": "review"
   },
   {
-   "error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。",
-   "name": "写回 bogus",
+   "error": "approval.mode \u4ec5\u652f\u6301 auto, manual, review\uff0c\u5f53\u524d\u503c\uff1abogus\u3002",
+   "name": "\u5199\u56de bogus",
    "mode": "bogus"
   }
  ],
@@ -240,15 +240,15 @@
   },
   {
    "name": "bogus",
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit。"
+   "error": "tools \u914d\u7f6e\u4e0d\u652f\u6301\u5de5\u5177\uff1abogus\u3002\u53ef\u7528\uff1alist, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent_run, subagent_list, subagent_cancel, subagent_apply_worktree, subagent_discard_worktree, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit\u3002"
   },
   {
    "name": "project_bogus",
-   "error": "tools 配置不支持工具：project_bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit。"
+   "error": "tools \u914d\u7f6e\u4e0d\u652f\u6301\u5de5\u5177\uff1aproject_bogus\u3002\u53ef\u7528\uff1alist, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent_run, subagent_list, subagent_cancel, subagent_apply_worktree, subagent_discard_worktree, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit\u3002"
   },
   {
    "name": "",
-   "error": "tools 配置不支持工具：。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit。"
+   "error": "tools \u914d\u7f6e\u4e0d\u652f\u6301\u5de5\u5177\uff1a\u3002\u53ef\u7528\uff1alist, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent_run, subagent_list, subagent_cancel, subagent_apply_worktree, subagent_discard_worktree, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit\u3002"
   }
  ],
  "tools_keys": [
@@ -272,7 +272,11 @@
   "windows_input",
   "windows_clipboard",
   "windows_screenshot",
-  "subagent",
+  "subagent_run",
+  "subagent_list",
+  "subagent_cancel",
+  "subagent_apply_worktree",
+  "subagent_discard_worktree",
   "update_todos",
   "memory_search",
   "memory_read",
@@ -302,7 +306,11 @@
   "windows_input": true,
   "windows_clipboard": true,
   "windows_screenshot": true,
-  "subagent": true,
+  "subagent_run": true,
+  "subagent_list": true,
+  "subagent_cancel": true,
+  "subagent_apply_worktree": true,
+  "subagent_discard_worktree": true,
   "update_todos": true,
   "memory_search": true,
   "memory_read": true,
@@ -312,34 +320,38 @@
   "config_edit": true
  },
  "tools_labels": {
-  "list": "列出目录内容",
-  "find": "按名称或路径查找文件",
-  "read": "读取文件内容",
-  "read_image": "读取图片",
-  "grep": "在文件中搜索文本（grep）",
+  "list": "\u5217\u51fa\u76ee\u5f55\u5185\u5bb9",
+  "find": "\u6309\u540d\u79f0\u6216\u8def\u5f84\u67e5\u627e\u6587\u4ef6",
+  "read": "\u8bfb\u53d6\u6587\u4ef6\u5185\u5bb9",
+  "read_image": "\u8bfb\u53d6\u56fe\u7247",
+  "grep": "\u5728\u6587\u4ef6\u4e2d\u641c\u7d22\u6587\u672c\uff08grep\uff09",
   "web_search": "web_search",
-  "fetcher": "fetcher（浏览器指纹）",
-  "image_gen": "图像生成（Image API）",
-  "tts_synthesize": "TTS 语音合成（云服务）",
-  "Edit_file": "替换文件中的文本",
-  "write_file": "写入文件",
-  "bash": "执行 Bash 命令",
-  "powershell": "执行 PowerShell 命令",
-  "monitor": "管理后台命令",
-  "recall_session_evidence": "会话证据恢复",
-  "windows_window": "操作 Windows 窗口",
-  "windows_control": "操作 Windows UI 控件",
-  "windows_input": "模拟 Windows 鼠标键盘",
-  "windows_clipboard": "操作 Windows 剪贴板",
-  "windows_screenshot": "截取 Windows 桌面",
-  "subagent": "分发受限子任务",
-  "update_todos": "维护自动执行清单",
-  "memory_search": "搜索长期记忆（scope 选作用域）",
-  "memory_read": "读取长期记忆",
-  "memory_expand_related": "展开相关长期记忆",
-  "memory_write": "写入长期记忆（scope 选作用域）",
-  "memory_delete": "删除长期记忆（scope 选作用域）",
-  "config_edit": "读取或修改配置"
+  "fetcher": "fetcher\uff08\u6d4f\u89c8\u5668\u6307\u7eb9\uff09",
+  "image_gen": "\u56fe\u50cf\u751f\u6210\uff08Image API\uff09",
+  "tts_synthesize": "TTS \u8bed\u97f3\u5408\u6210\uff08\u4e91\u670d\u52a1\uff09",
+  "Edit_file": "\u66ff\u6362\u6587\u4ef6\u4e2d\u7684\u6587\u672c",
+  "write_file": "\u5199\u5165\u6587\u4ef6",
+  "bash": "\u6267\u884c Bash \u547d\u4ee4",
+  "powershell": "\u6267\u884c PowerShell \u547d\u4ee4",
+  "monitor": "\u7ba1\u7406\u540e\u53f0\u547d\u4ee4",
+  "recall_session_evidence": "\u4f1a\u8bdd\u8bc1\u636e\u6062\u590d",
+  "windows_window": "\u64cd\u4f5c Windows \u7a97\u53e3",
+  "windows_control": "\u64cd\u4f5c Windows UI \u63a7\u4ef6",
+  "windows_input": "\u6a21\u62df Windows \u9f20\u6807\u952e\u76d8",
+  "windows_clipboard": "\u64cd\u4f5c Windows \u526a\u8d34\u677f",
+  "windows_screenshot": "\u622a\u53d6 Windows \u684c\u9762",
+  "subagent_run": "\u5206\u53d1\u53d7\u9650\u5b50\u4efb\u52a1",
+  "subagent_list": "\u5217\u51fa\u5b50\u4ee3\u7406\u4efb\u52a1\u4e0e\u5de5\u4f5c\u6811",
+  "subagent_cancel": "\u53d6\u6d88\u5b50\u4ee3\u7406\u4efb\u52a1",
+  "subagent_apply_worktree": "\u5e94\u7528\u5b50\u4ee3\u7406\u5de5\u4f5c\u6811\u6539\u52a8",
+  "subagent_discard_worktree": "\u4e22\u5f03\u5b50\u4ee3\u7406\u5de5\u4f5c\u6811",
+  "update_todos": "\u7ef4\u62a4\u81ea\u52a8\u6267\u884c\u6e05\u5355",
+  "memory_search": "\u641c\u7d22\u957f\u671f\u8bb0\u5fc6\uff08scope \u9009\u4f5c\u7528\u57df\uff09",
+  "memory_read": "\u8bfb\u53d6\u957f\u671f\u8bb0\u5fc6",
+  "memory_expand_related": "\u5c55\u5f00\u76f8\u5173\u957f\u671f\u8bb0\u5fc6",
+  "memory_write": "\u5199\u5165\u957f\u671f\u8bb0\u5fc6\uff08scope \u9009\u4f5c\u7528\u57df\uff09",
+  "memory_delete": "\u5220\u9664\u957f\u671f\u8bb0\u5fc6\uff08scope \u9009\u4f5c\u7528\u57df\uff09",
+  "config_edit": "\u8bfb\u53d6\u6216\u4fee\u6539\u914d\u7f6e"
  },
  "tools_load": [
   {
@@ -364,7 +376,11 @@
     "windows_input": true,
     "windows_clipboard": true,
     "windows_screenshot": true,
-    "subagent": true,
+    "subagent_run": true,
+    "subagent_list": true,
+    "subagent_cancel": true,
+    "subagent_apply_worktree": true,
+    "subagent_discard_worktree": true,
     "update_todos": true,
     "memory_search": true,
     "memory_read": true,
@@ -376,7 +392,7 @@
    "disabled": [
     "powershell"
    ],
-   "name": "缺段",
+   "name": "\u7f3a\u6bb5",
    "config": {}
   },
   {
@@ -401,7 +417,11 @@
     "windows_input": true,
     "windows_clipboard": true,
     "windows_screenshot": true,
-    "subagent": true,
+    "subagent_run": true,
+    "subagent_list": true,
+    "subagent_cancel": true,
+    "subagent_apply_worktree": true,
+    "subagent_discard_worktree": true,
     "update_todos": true,
     "memory_search": true,
     "memory_read": true,
@@ -414,7 +434,7 @@
     "bash",
     "list"
    ],
-   "name": "全部覆盖",
+   "name": "\u5168\u90e8\u8986\u76d6",
    "config": {
     "tools": {
      "bash": false,
@@ -445,7 +465,11 @@
     "windows_input": true,
     "windows_clipboard": true,
     "windows_screenshot": true,
-    "subagent": true,
+    "subagent_run": true,
+    "subagent_list": true,
+    "subagent_cancel": true,
+    "subagent_apply_worktree": true,
+    "subagent_discard_worktree": true,
     "update_todos": true,
     "memory_search": false,
     "memory_read": true,
@@ -459,7 +483,7 @@
     "memory_write",
     "powershell"
    ],
-   "name": "旧记忆开关名",
+   "name": "\u65e7\u8bb0\u5fc6\u5f00\u5173\u540d",
    "config": {
     "tools": {
      "project_memory_search": false,
@@ -468,8 +492,8 @@
    }
   },
   {
-   "error": "配置项 tools.bash 必须是布尔值。",
-   "name": "非法值",
+   "error": "\u914d\u7f6e\u9879 tools.bash \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u975e\u6cd5\u503c",
    "config": {
     "tools": {
      "bash": "yes"
@@ -477,8 +501,8 @@
    }
   },
   {
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit。",
-   "name": "非法工具名",
+   "error": "tools \u914d\u7f6e\u4e0d\u652f\u6301\u5de5\u5177\uff1abogus\u3002\u53ef\u7528\uff1alist, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent_run, subagent_list, subagent_cancel, subagent_apply_worktree, subagent_discard_worktree, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit\u3002",
+   "name": "\u975e\u6cd5\u5de5\u5177\u540d",
    "config": {
     "tools": {
      "bogus": true
@@ -486,8 +510,8 @@
    }
   },
   {
-   "error": "配置项 tools 必须是对象。",
-   "name": "段不是对象",
+   "error": "\u914d\u7f6e\u9879 tools \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "name": "\u6bb5\u4e0d\u662f\u5bf9\u8c61",
    "config": {
     "tools": []
    }
@@ -496,14 +520,14 @@
  "tools_save": [
   {
    "text": "[tools]\nlist = true\nbash = false\n",
-   "name": "单个开关",
+   "name": "\u5355\u4e2a\u5f00\u5173",
    "switches": {
     "bash": false
    }
   },
   {
    "text": "[tools]\nlist = false\npowershell = true\nmemory_read = false\n",
-   "name": "批量开关",
+   "name": "\u6279\u91cf\u5f00\u5173",
    "switches": {
     "powershell": true,
     "list": false,
@@ -512,15 +536,15 @@
   },
   {
    "text": "[tools]\nlist = true\nmemory_search = false\n",
-   "name": "旧名归一化",
+   "name": "\u65e7\u540d\u5f52\u4e00\u5316",
    "switches": {
     "project_memory_search": false
    }
   },
   {
-   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit。",
+   "error": "tools \u914d\u7f6e\u4e0d\u652f\u6301\u5de5\u5177\uff1abogus\u3002\u53ef\u7528\uff1alist, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent_run, subagent_list, subagent_cancel, subagent_apply_worktree, subagent_discard_worktree, update_todos, memory_search, memory_read, memory_expand_related, memory_write, memory_delete, config_edit\u3002",
    "text_after": "[tools]\nlist = true\n",
-   "name": "非法名不写盘",
+   "name": "\u975e\u6cd5\u540d\u4e0d\u5199\u76d8",
    "switches": {
     "bash": false,
     "bogus": true
@@ -544,7 +568,7 @@
     "allow_cross_provider": false,
     "failure_fallback": "deterministic"
    },
-   "name": "缺段",
+   "name": "\u7f3a\u6bb5",
    "config": {}
   },
   {
@@ -563,7 +587,7 @@
     "allow_cross_provider": false,
     "failure_fallback": "deterministic"
    },
-   "name": "空段",
+   "name": "\u7a7a\u6bb5",
    "config": {
     "context_compaction": {}
    }
@@ -584,7 +608,7 @@
     "allow_cross_provider": true,
     "failure_fallback": "deterministic"
    },
-   "name": "合法全量",
+   "name": "\u5408\u6cd5\u5168\u91cf",
    "config": {
     "context_compaction": {
      "trigger_context_percent": 70,
@@ -604,8 +628,8 @@
    }
   },
   {
-   "error": "context_compaction.trigger_context_percent 必须是正整数。",
-   "name": "百分比为零",
+   "error": "context_compaction.trigger_context_percent \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u767e\u5206\u6bd4\u4e3a\u96f6",
    "config": {
     "context_compaction": {
      "trigger_context_percent": 0
@@ -613,8 +637,8 @@
    }
   },
   {
-   "error": "context_compaction.trigger_context_percent 必须是正整数。",
-   "name": "百分比非整数",
+   "error": "context_compaction.trigger_context_percent \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u767e\u5206\u6bd4\u975e\u6574\u6570",
    "config": {
     "context_compaction": {
      "trigger_context_percent": "70"
@@ -622,8 +646,8 @@
    }
   },
   {
-   "error": "context_compaction.trigger_context_tokens 必须是正整数。",
-   "name": "窗口为零",
+   "error": "context_compaction.trigger_context_tokens \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u7a97\u53e3\u4e3a\u96f6",
    "config": {
     "context_compaction": {
      "trigger_context_tokens": 0
@@ -631,8 +655,8 @@
    }
   },
   {
-   "error": "context_compaction.trigger_context_tokens 必须是正整数。",
-   "name": "窗口为负",
+   "error": "context_compaction.trigger_context_tokens \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u7a97\u53e3\u4e3a\u8d1f",
    "config": {
     "context_compaction": {
      "trigger_context_tokens": -5
@@ -640,8 +664,8 @@
    }
   },
   {
-   "error": "context_compaction.next_user_reserve_tokens 必须是正整数。",
-   "name": "预留为零",
+   "error": "context_compaction.next_user_reserve_tokens \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u9884\u7559\u4e3a\u96f6",
    "config": {
     "context_compaction": {
      "next_user_reserve_tokens": 0
@@ -649,8 +673,8 @@
    }
   },
   {
-   "error": "context_compaction.recent_turns 必须是正整数。",
-   "name": "近回合为零",
+   "error": "context_compaction.recent_turns \u5fc5\u987b\u662f\u6b63\u6574\u6570\u3002",
+   "name": "\u8fd1\u56de\u5408\u4e3a\u96f6",
    "config": {
     "context_compaction": {
      "recent_turns": 0
@@ -658,8 +682,8 @@
    }
   },
   {
-   "error": "context_compaction.target_summary_tokens 必须是非负整数（0 表示无预算限制）。",
-   "name": "摘要预算为负",
+   "error": "context_compaction.target_summary_tokens \u5fc5\u987b\u662f\u975e\u8d1f\u6574\u6570\uff080 \u8868\u793a\u65e0\u9884\u7b97\u9650\u5236\uff09\u3002",
+   "name": "\u6458\u8981\u9884\u7b97\u4e3a\u8d1f",
    "config": {
     "context_compaction": {
      "target_summary_tokens": -1
@@ -667,8 +691,8 @@
    }
   },
   {
-   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
-   "name": "比值为零",
+   "error": "context_compaction.emergency_context_ratio \u5fc5\u987b\u6ee1\u8db3 0 < value < 1\u3002",
+   "name": "\u6bd4\u503c\u4e3a\u96f6",
    "config": {
     "context_compaction": {
      "emergency_context_ratio": 0
@@ -676,8 +700,8 @@
    }
   },
   {
-   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
-   "name": "比值为一",
+   "error": "context_compaction.emergency_context_ratio \u5fc5\u987b\u6ee1\u8db3 0 < value < 1\u3002",
+   "name": "\u6bd4\u503c\u4e3a\u4e00",
    "config": {
     "context_compaction": {
      "emergency_context_ratio": 1.0
@@ -685,8 +709,8 @@
    }
   },
   {
-   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
-   "name": "比值过大",
+   "error": "context_compaction.emergency_context_ratio \u5fc5\u987b\u6ee1\u8db3 0 < value < 1\u3002",
+   "name": "\u6bd4\u503c\u8fc7\u5927",
    "config": {
     "context_compaction": {
      "emergency_context_ratio": 1.5
@@ -694,8 +718,8 @@
    }
   },
   {
-   "error": "context_compaction.emergency_context_ratio 必须是数字。",
-   "name": "比值非数字",
+   "error": "context_compaction.emergency_context_ratio \u5fc5\u987b\u662f\u6570\u5b57\u3002",
+   "name": "\u6bd4\u503c\u975e\u6570\u5b57",
    "config": {
     "context_compaction": {
      "emergency_context_ratio": "0.5"
@@ -703,8 +727,8 @@
    }
   },
   {
-   "error": "context_compaction.summary_profile 必须是字符串。",
-   "name": "摘要模型非字符串",
+   "error": "context_compaction.summary_profile \u5fc5\u987b\u662f\u5b57\u7b26\u4e32\u3002",
+   "name": "\u6458\u8981\u6a21\u578b\u975e\u5b57\u7b26\u4e32",
    "config": {
     "context_compaction": {
      "summary_profile": 5
@@ -712,8 +736,8 @@
    }
   },
   {
-   "error": "context_compaction.reasoning_effort 必须是非空字符串。",
-   "name": "推理强度为空",
+   "error": "context_compaction.reasoning_effort \u5fc5\u987b\u662f\u975e\u7a7a\u5b57\u7b26\u4e32\u3002",
+   "name": "\u63a8\u7406\u5f3a\u5ea6\u4e3a\u7a7a",
    "config": {
     "context_compaction": {
      "reasoning_effort": "   "
@@ -721,8 +745,8 @@
    }
   },
   {
-   "error": "context_compaction.reasoning_effort 必须是非空字符串。",
-   "name": "推理强度非字符串",
+   "error": "context_compaction.reasoning_effort \u5fc5\u987b\u662f\u975e\u7a7a\u5b57\u7b26\u4e32\u3002",
+   "name": "\u63a8\u7406\u5f3a\u5ea6\u975e\u5b57\u7b26\u4e32",
    "config": {
     "context_compaction": {
      "reasoning_effort": 5
@@ -730,8 +754,8 @@
    }
   },
   {
-   "error": "context_compaction.preserve_exact_evidence 必须是布尔值。",
-   "name": "证据开关非布尔",
+   "error": "context_compaction.preserve_exact_evidence \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u8bc1\u636e\u5f00\u5173\u975e\u5e03\u5c14",
    "config": {
     "context_compaction": {
      "preserve_exact_evidence": 1
@@ -739,8 +763,8 @@
    }
   },
   {
-   "error": "context_compaction.archive_compacted_events 必须是布尔值。",
-   "name": "归档开关非布尔",
+   "error": "context_compaction.archive_compacted_events \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u5f52\u6863\u5f00\u5173\u975e\u5e03\u5c14",
    "config": {
     "context_compaction": {
      "archive_compacted_events": "yes"
@@ -748,8 +772,8 @@
    }
   },
   {
-   "error": "context_compaction.auto_memory_recall 必须是布尔值。",
-   "name": "召回开关非布尔",
+   "error": "context_compaction.auto_memory_recall \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u53ec\u56de\u5f00\u5173\u975e\u5e03\u5c14",
    "config": {
     "context_compaction": {
      "auto_memory_recall": 0
@@ -757,8 +781,8 @@
    }
   },
   {
-   "error": "context_compaction.allow_cross_provider 必须是布尔值。",
-   "name": "跨供应商非布尔",
+   "error": "context_compaction.allow_cross_provider \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u8de8\u4f9b\u5e94\u5546\u975e\u5e03\u5c14",
    "config": {
     "context_compaction": {
      "allow_cross_provider": "y"
@@ -766,8 +790,8 @@
    }
   },
   {
-   "error": "context_compaction.failure_fallback 当前仅支持 deterministic。",
-   "name": "回退策略非法",
+   "error": "context_compaction.failure_fallback \u5f53\u524d\u4ec5\u652f\u6301 deterministic\u3002",
+   "name": "\u56de\u9000\u7b56\u7565\u975e\u6cd5",
    "config": {
     "context_compaction": {
      "failure_fallback": "model"
@@ -775,8 +799,8 @@
    }
   },
   {
-   "error": "context_compaction.failure_fallback 当前仅支持 deterministic。",
-   "name": "回退策略非字符串",
+   "error": "context_compaction.failure_fallback \u5f53\u524d\u4ec5\u652f\u6301 deterministic\u3002",
+   "name": "\u56de\u9000\u7b56\u7565\u975e\u5b57\u7b26\u4e32",
    "config": {
     "context_compaction": {
      "failure_fallback": 5
@@ -784,8 +808,8 @@
    }
   },
   {
-   "error": "context_compaction 包含未知配置项：bogus",
-   "name": "未知字段",
+   "error": "context_compaction \u5305\u542b\u672a\u77e5\u914d\u7f6e\u9879\uff1abogus",
+   "name": "\u672a\u77e5\u5b57\u6bb5",
    "config": {
     "context_compaction": {
      "bogus": 1
@@ -793,8 +817,8 @@
    }
   },
   {
-   "error": "context_compaction 包含未知配置项：zzz",
-   "name": "未知字段与废字段",
+   "error": "context_compaction \u5305\u542b\u672a\u77e5\u914d\u7f6e\u9879\uff1azzz",
+   "name": "\u672a\u77e5\u5b57\u6bb5\u4e0e\u5e9f\u5b57\u6bb5",
    "config": {
     "context_compaction": {
      "minimum_turns_between_model_compactions": 3,
@@ -818,7 +842,7 @@
     "allow_cross_provider": false,
     "failure_fallback": "deterministic"
    },
-   "name": "已废弃字段被忽略",
+   "name": "\u5df2\u5e9f\u5f03\u5b57\u6bb5\u88ab\u5ffd\u7565",
    "config": {
     "context_compaction": {
      "minimum_turns_between_model_compactions": 3
@@ -826,8 +850,8 @@
    }
   },
   {
-   "error": "配置项 context_compaction 必须是对象。",
-   "name": "段不是对象",
+   "error": "\u914d\u7f6e\u9879 context_compaction \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "name": "\u6bb5\u4e0d\u662f\u5bf9\u8c61",
    "config": {
     "context_compaction": 5
    }
@@ -855,7 +879,7 @@
      "max_auto_followups": 3
     }
    },
-   "name": "缺段",
+   "name": "\u7f3a\u6bb5",
    "config": {}
   },
   {
@@ -879,7 +903,7 @@
      "max_auto_followups": 3
     }
    },
-   "name": "空段",
+   "name": "\u7a7a\u6bb5",
    "config": {
     "run_guard": {}
    }
@@ -906,7 +930,7 @@
      "max_auto_followups": 5
     }
    },
-   "name": "合法全量",
+   "name": "\u5408\u6cd5\u5168\u91cf",
    "config": {
     "run_guard": {
      "enabled": false,
@@ -933,8 +957,8 @@
    }
   },
   {
-   "error": "run_guard.enabled 必须是布尔值。",
-   "name": "总开关非布尔",
+   "error": "run_guard.enabled \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u603b\u5f00\u5173\u975e\u5e03\u5c14",
    "config": {
     "run_guard": {
      "enabled": 1
@@ -942,8 +966,8 @@
    }
   },
   {
-   "error": "配置项 run_guard.guard 必须是对象。",
-   "name": "guard 段不是对象",
+   "error": "\u914d\u7f6e\u9879 run_guard.guard \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "name": "guard \u6bb5\u4e0d\u662f\u5bf9\u8c61",
    "config": {
     "run_guard": {
      "guard": 5
@@ -951,8 +975,8 @@
    }
   },
   {
-   "error": "配置项 run_guard.continue 必须是对象。",
-   "name": "continue 段不是对象",
+   "error": "\u914d\u7f6e\u9879 run_guard.continue \u5fc5\u987b\u662f\u5bf9\u8c61\u3002",
+   "name": "continue \u6bb5\u4e0d\u662f\u5bf9\u8c61",
    "config": {
     "run_guard": {
      "continue": []
@@ -960,8 +984,8 @@
    }
   },
   {
-   "error": "run_guard.window_chars 必须是 64 到 1000000 之间的整数。",
-   "name": "guard 窗口过小",
+   "error": "run_guard.window_chars \u5fc5\u987b\u662f 64 \u5230 1000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "guard \u7a97\u53e3\u8fc7\u5c0f",
    "config": {
     "run_guard": {
      "guard": {
@@ -971,8 +995,8 @@
    }
   },
   {
-   "error": "run_guard.window_chars 必须是 64 到 1000000 之间的整数。",
-   "name": "guard 窗口过大",
+   "error": "run_guard.window_chars \u5fc5\u987b\u662f 64 \u5230 1000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "guard \u7a97\u53e3\u8fc7\u5927",
    "config": {
     "run_guard": {
      "guard": {
@@ -982,8 +1006,8 @@
    }
   },
   {
-   "error": "run_guard.substr_len 必须是 8 到 128 之间的整数。",
-   "name": "substr 越界",
+   "error": "run_guard.substr_len \u5fc5\u987b\u662f 8 \u5230 128 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "substr \u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -993,8 +1017,8 @@
    }
   },
   {
-   "error": "run_guard.guard.repeat_ratio 必须满足 0.0 <= value <= 1.0。",
-   "name": "比值越界",
+   "error": "run_guard.guard.repeat_ratio \u5fc5\u987b\u6ee1\u8db3 0.0 <= value <= 1.0\u3002",
+   "name": "\u6bd4\u503c\u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -1004,8 +1028,8 @@
    }
   },
   {
-   "error": "run_guard.guard.repeat_ratio 必须是数字。",
-   "name": "比值非数字",
+   "error": "run_guard.guard.repeat_ratio \u5fc5\u987b\u662f\u6570\u5b57\u3002",
+   "name": "\u6bd4\u503c\u975e\u6570\u5b57",
    "config": {
     "run_guard": {
      "guard": {
@@ -1015,8 +1039,8 @@
    }
   },
   {
-   "error": "run_guard.check_every 必须是 1 到 100000 之间的整数。",
-   "name": "check_every 越界",
+   "error": "run_guard.check_every \u5fc5\u987b\u662f 1 \u5230 100000 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "check_every \u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -1026,8 +1050,8 @@
    }
   },
   {
-   "error": "run_guard.max_blocks 必须是 100 到 10000000 之间的整数。",
-   "name": "max_blocks 越界",
+   "error": "run_guard.max_blocks \u5fc5\u987b\u662f 100 \u5230 10000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "max_blocks \u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -1037,8 +1061,8 @@
    }
   },
   {
-   "error": "run_guard.max_chars 必须是 1000 到 100000000 之间的整数。",
-   "name": "max_chars 越界",
+   "error": "run_guard.max_chars \u5fc5\u987b\u662f 1000 \u5230 100000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "max_chars \u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -1048,8 +1072,8 @@
    }
   },
   {
-   "error": "run_guard.max_guard_retries 必须是 0 到 10 之间的整数。",
-   "name": "重试次数越界",
+   "error": "run_guard.max_guard_retries \u5fc5\u987b\u662f 0 \u5230 10 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "\u91cd\u8bd5\u6b21\u6570\u8d8a\u754c",
    "config": {
     "run_guard": {
      "guard": {
@@ -1059,8 +1083,8 @@
    }
   },
   {
-   "error": "run_guard.guard.auto_retry_errors 必须是字符串数组。",
-   "name": "错误码非数组",
+   "error": "run_guard.guard.auto_retry_errors \u5fc5\u987b\u662f\u5b57\u7b26\u4e32\u6570\u7ec4\u3002",
+   "name": "\u9519\u8bef\u7801\u975e\u6570\u7ec4",
    "config": {
     "run_guard": {
      "guard": {
@@ -1070,8 +1094,8 @@
    }
   },
   {
-   "error": "run_guard.guard.auto_retry_errors 的每项必须是非空字符串。",
-   "name": "错误码含空项",
+   "error": "run_guard.guard.auto_retry_errors \u7684\u6bcf\u9879\u5fc5\u987b\u662f\u975e\u7a7a\u5b57\u7b26\u4e32\u3002",
+   "name": "\u9519\u8bef\u7801\u542b\u7a7a\u9879",
    "config": {
     "run_guard": {
      "guard": {
@@ -1084,8 +1108,8 @@
    }
   },
   {
-   "error": "run_guard.guard.auto_retry_errors 的每项必须是非空字符串。",
-   "name": "错误码含非字符串",
+   "error": "run_guard.guard.auto_retry_errors \u7684\u6bcf\u9879\u5fc5\u987b\u662f\u975e\u7a7a\u5b57\u7b26\u4e32\u3002",
+   "name": "\u9519\u8bef\u7801\u542b\u975e\u5b57\u7b26\u4e32",
    "config": {
     "run_guard": {
      "guard": {
@@ -1097,8 +1121,8 @@
    }
   },
   {
-   "error": "run_guard.guard.auto_retry_errors 最多允许 32 个错误码。",
-   "name": "错误码过多",
+   "error": "run_guard.guard.auto_retry_errors \u6700\u591a\u5141\u8bb8 32 \u4e2a\u9519\u8bef\u7801\u3002",
+   "name": "\u9519\u8bef\u7801\u8fc7\u591a",
    "config": {
     "run_guard": {
      "guard": {
@@ -1142,8 +1166,8 @@
    }
   },
   {
-   "error": "run_guard.continue.enabled 必须是布尔值。",
-   "name": "续跑开关非布尔",
+   "error": "run_guard.continue.enabled \u5fc5\u987b\u662f\u5e03\u5c14\u503c\u3002",
+   "name": "\u7eed\u8dd1\u5f00\u5173\u975e\u5e03\u5c14",
    "config": {
     "run_guard": {
      "continue": {
@@ -1153,8 +1177,8 @@
    }
   },
   {
-   "error": "run_guard.max_auto_followups 必须是 1 到 20 之间的整数。",
-   "name": "续跑次数越界",
+   "error": "run_guard.max_auto_followups \u5fc5\u987b\u662f 1 \u5230 20 \u4e4b\u95f4\u7684\u6574\u6570\u3002",
+   "name": "\u7eed\u8dd1\u6b21\u6570\u8d8a\u754c",
    "config": {
     "run_guard": {
      "continue": {
@@ -1164,8 +1188,8 @@
    }
   },
   {
-   "error": "run_guard 包含未知配置项：bogus",
-   "name": "未知字段",
+   "error": "run_guard \u5305\u542b\u672a\u77e5\u914d\u7f6e\u9879\uff1abogus",
+   "name": "\u672a\u77e5\u5b57\u6bb5",
    "config": {
     "run_guard": {
      "bogus": 1
@@ -1173,8 +1197,8 @@
    }
   },
   {
-   "error": "run_guard.guard 包含未知配置项：bogus",
-   "name": "guard 未知字段",
+   "error": "run_guard.guard \u5305\u542b\u672a\u77e5\u914d\u7f6e\u9879\uff1abogus",
+   "name": "guard \u672a\u77e5\u5b57\u6bb5",
    "config": {
     "run_guard": {
      "guard": {
@@ -1184,8 +1208,8 @@
    }
   },
   {
-   "error": "run_guard.continue 包含未知配置项：bogus",
-   "name": "continue 未知字段",
+   "error": "run_guard.continue \u5305\u542b\u672a\u77e5\u914d\u7f6e\u9879\uff1abogus",
+   "name": "continue \u672a\u77e5\u5b57\u6bb5",
    "config": {
     "run_guard": {
      "continue": {
@@ -1197,7 +1221,7 @@
  ],
  "run_guard_save": [
   {
-   "name": "写回完整段",
+   "name": "\u5199\u56de\u5b8c\u6574\u6bb5",
    "text": "[ui]\nshow_thinking = true\n\n[run_guard]\nenabled = false\n\n[run_guard.guard]\nenabled = true\nwindow_chars = 3000\nsubstr_len = 32\nrepeat_ratio = 0.7\ncheck_every = 50\nmax_blocks = 10000\nmax_chars = 500000\nmax_guard_retries = 2\nauto_retry_errors = [\n    \"RATE_LIMIT\",\n]\n\n[run_guard.continue]\nenabled = true\nmax_auto_followups = 7\n"
   }
  ]

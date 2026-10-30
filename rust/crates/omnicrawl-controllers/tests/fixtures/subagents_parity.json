@@ -584,7 +584,11 @@
           "system_prompt": "你是 OmniCrawl 的 read-only 探索子 Agent。\n\n严格限制在父 Agent 分配的任务范围内。可以使用 Host 继承的 MCP、Skill、浏览器、桌面与其他外部能力；命令必须通过 Host 的只读命令策略。不得修改本地工作区文件、修改 Memory、创建其他 SubAgent 或向用户提问。\n最终回答应简洁，并优先给出可复核的文件路径、符号、行号、来源链接、调用关系和不确定项；不要输出隐藏推理。",
           "tools": [],
           "disallowed_tools": [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "Edit_file",
             "write_file",
             "memory_write"
@@ -608,7 +612,7 @@
         "definition": {
           "name": "general-purpose",
           "description": "通用实现型子代理。用于需要写入文件、局部改代码或在隔离 worktree 中落地改动的任务。 默认要求逐工具审批；isolation=worktree 时改动先落在独立分支，由父 Agent 审查后应用。",
-          "system_prompt": "你是 general-purpose 子代理。\n\n工作方式：\n1. 先阅读相关文件，确认改动范围与风险。\n2. 只做当前 prompt 要求的最小实现，不擅自扩大范围。\n3. 写文件或执行命令前说明意图；所有写操作与变更性命令都需要父侧审批。\n4. 优先使用 Edit_file 做局部修改；新建文件时再用 write_file。\n5. 完成后用简洁中文总结：改了什么、为什么、如何验证、残留风险。\n\n约束：\n- 禁止调用 subagent、switch_model、switch_skill、load_skill、search_skills。\n- 不要提交 git commit、push 或改远程。\n- 不要删除用户未明确要求删除的文件。\n- isolation=worktree 时，结果会以分支/diff 形式返回父 Agent，由父决定是否应用。",
+          "system_prompt": "你是 general-purpose 子代理。\n\n工作方式：\n1. 先阅读相关文件，确认改动范围与风险。\n2. 只做当前 prompt 要求的最小实现，不擅自扩大范围。\n3. 写文件或执行命令前说明意图；所有写操作与变更性命令都需要父侧审批。\n4. 优先使用 Edit_file 做局部修改；新建文件时再用 write_file。\n5. 完成后用简洁中文总结：改了什么、为什么、如何验证、残留风险。\n\n约束：\n- 禁止调用 subagent_run、subagent_list、subagent_cancel、subagent_apply_worktree、subagent_discard_worktree、switch_model、switch_skill、load_skill、search_skills。\n- 不要提交 git commit、push 或改远程。\n- 不要删除用户未明确要求删除的文件。\n- isolation=worktree 时，结果会以分支/diff 形式返回父 Agent，由父决定是否应用。",
           "tools": [
             "list",
             "find",
@@ -622,7 +626,11 @@
             "powershell"
           ],
           "disallowed_tools": [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "switch_model",
             "switch_skill",
             "load_skill",
@@ -650,7 +658,11 @@
           "system_prompt": "你是 OmniCrawl 的 read-only 软件规划子 Agent。\n\n先基于当前项目文件和明确证据理解现状，再给出范围、关键决策、实施顺序、边界情况、测试与回滚影响。可以使用 Host 继承的 MCP、Skill、浏览器、桌面与其他外部能力；命令必须通过 Host 的只读命令策略。不得修改本地工作区文件、修改 Memory、创建其他 SubAgent 或向用户提问。\n如果证据不足，应明确列出缺口和需要父 Agent 决策的问题；不要输出隐藏推理。",
           "tools": [],
           "disallowed_tools": [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "Edit_file",
             "write_file",
             "memory_write"
@@ -684,7 +696,11 @@
             "git"
           ],
           "disallowed_tools": [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "Edit_file",
             "write_file",
             "memory_write",
@@ -724,7 +740,11 @@
             "verify_command"
           ],
           "disallowed_tools": [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "Edit_file",
             "write_file",
             "bash",
@@ -2033,7 +2053,6 @@
         "label": "合法只读任务",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2044,60 +2063,9 @@
         "error": null
       },
       {
-        "label": "spawn 已移除",
-        "config": "default",
-        "arguments": {
-          "action": "spawn",
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          }
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "仅支持 action=run。"
-        ],
-        "error": null
-      },
-      {
-        "label": "action 非法",
-        "config": "default",
-        "arguments": {
-          "action": "query",
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          }
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "仅支持 action=run。"
-        ],
-        "error": null
-      },
-      {
-        "label": "action 缺失",
-        "config": "default",
-        "arguments": {
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          }
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "仅支持 action=run。"
-        ],
-        "error": null
-      },
-      {
         "label": "未知顶层字段",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2108,7 +2076,7 @@
         },
         "result": [
           "SUBAGENT_PERMISSION_DENIED",
-          "当前 SubAgent 阶段不允许参数：aa, zz。"
+          "subagent_run 不允许参数：aa, zz。"
         ],
         "error": null
       },
@@ -2116,7 +2084,6 @@
         "label": "task 非对象",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "a": 1
           }
@@ -2130,66 +2097,10 @@
       {
         "label": "task 缺失",
         "config": "default",
-        "arguments": {
-          "action": "run"
-        },
+        "arguments": {},
         "result": [
-          "SUBAGENT_LIMIT_EXCEEDED",
-          "task 必须是对象。"
-        ],
-        "error": null
-      },
-      {
-        "label": "max_concurrency 已移除",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          },
-          "max_concurrency": 3
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "当前 SubAgent 阶段不允许参数：max_concurrency。"
-        ],
-        "error": null
-      },
-      {
-        "label": "fail_fast 已移除",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          },
-          "fail_fast": true
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "当前 SubAgent 阶段不允许参数：fail_fast。"
-        ],
-        "error": null
-      },
-      {
-        "label": "fail_fast 已移除",
-        "config": "default",
-        "arguments": {
-          "action": "run",
-          "task": {
-            "description": "描述",
-            "prompt": "提示",
-            "subagent_type": "review"
-          },
-          "fail_fast": true
-        },
-        "result": [
-          "SUBAGENT_PERMISSION_DENIED",
-          "当前 SubAgent 阶段不允许参数：fail_fast。"
+          "AGENT_DEFINITION_INVALID",
+          "subagent_run 需要 task。"
         ],
         "error": null
       },
@@ -2197,7 +2108,6 @@
         "label": "任务非对象",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": "x"
         },
         "result": [
@@ -2210,7 +2120,6 @@
         "label": "未知任务字段",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2229,7 +2138,6 @@
         "label": "描述为空",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "  ",
             "prompt": "提示",
@@ -2246,7 +2154,6 @@
         "label": "描述非字符串",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": 7,
             "prompt": "提示",
@@ -2263,7 +2170,6 @@
         "label": "提示缺失",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "d",
             "subagent_type": "review"
@@ -2279,7 +2185,6 @@
         "label": "类型为空",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2296,7 +2201,6 @@
         "label": "未知定义",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2313,7 +2217,6 @@
         "label": "未启用 verify",
         "config": "gated",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2330,7 +2233,6 @@
         "label": "已启用 verify",
         "config": "verify",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2344,7 +2246,6 @@
         "label": "未启用 standard",
         "config": "gated",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2361,7 +2262,6 @@
         "label": "已启用 standard",
         "config": "standard",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2375,7 +2275,6 @@
         "label": "standard 共享写已开启",
         "config": "standard-shared",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2389,7 +2288,6 @@
         "label": "standard 共享写未开启",
         "config": "standard",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2406,7 +2304,6 @@
         "label": "后台只读定义不可用",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2423,7 +2320,6 @@
         "label": "带 skills 定义不可用",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2440,7 +2336,6 @@
         "label": "带 MCP 定义不可用",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2457,7 +2352,6 @@
         "label": "worktree 只读未开启",
         "config": "gated",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2474,7 +2368,6 @@
         "label": "worktree 只读已开启",
         "config": "worktree",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2488,7 +2381,6 @@
         "label": "context 非法",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2506,7 +2398,6 @@
         "label": "context fork 未开启",
         "config": "default",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2524,7 +2415,6 @@
         "label": "context fork 已开启",
         "config": "fork",
         "arguments": {
-          "action": "run",
           "task": {
             "description": "描述",
             "prompt": "提示",
@@ -2541,7 +2431,7 @@
         "arguments": "not-a-dict",
         "result": [
           "AGENT_DEFINITION_INVALID",
-          "subagent 参数必须是对象。"
+          "subagent_run 参数必须是对象。"
         ],
         "error": null
       }
@@ -2564,7 +2454,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -2640,7 +2534,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -2712,7 +2610,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -2784,7 +2686,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -2858,7 +2764,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -2930,7 +2840,11 @@
           "write_file",
           "Edit_file",
           "memory_write",
-          "subagent",
+          "subagent_run",
+          "subagent_list",
+          "subagent_cancel",
+          "subagent_apply_worktree",
+          "subagent_discard_worktree",
           "git",
           "bash",
           "powershell",
@@ -3012,18 +2926,9 @@
     ],
     "worktree": [
       {
-        "label": "列出会话",
-        "arguments": {
-          "action": "list_worktrees"
-        },
-        "kind": "ok",
-        "code": null,
-        "message": null
-      },
-      {
         "label": "应用默认策略",
+        "tool": "subagent_apply_worktree",
         "arguments": {
-          "action": "apply_worktree",
           "task_id": "task-1"
         },
         "kind": "ok",
@@ -3032,8 +2937,8 @@
       },
       {
         "label": "应用 merge 并清理",
+        "tool": "subagent_apply_worktree",
         "arguments": {
-          "action": "apply_worktree",
           "branch": " b ",
           "strategy": "merge",
           "cleanup": true
@@ -3043,83 +2948,90 @@
         "message": null
       },
       {
-        "label": "应用非法策略",
+        "label": "应用缺定位键",
+        "tool": "subagent_apply_worktree",
+        "arguments": {},
+        "kind": null,
+        "code": "AGENT_DEFINITION_INVALID",
+        "message": "subagent_apply_worktree 需要 task_id 或 branch。"
+      },
+      {
+        "label": "应用策略非法",
+        "tool": "subagent_apply_worktree",
         "arguments": {
-          "action": "apply_worktree",
           "task_id": "t",
-          "strategy": "squash"
+          "strategy": "nope"
         },
         "kind": null,
         "code": "AGENT_DEFINITION_INVALID",
         "message": "strategy 仅支持 checkout 或 merge。"
       },
       {
-        "label": "应用缺键",
+        "label": "应用不接受 force",
+        "tool": "subagent_apply_worktree",
         "arguments": {
-          "action": "apply_worktree"
-        },
-        "kind": null,
-        "code": "AGENT_DEFINITION_INVALID",
-        "message": "apply_worktree 需要 task_id 或 branch。"
-      },
-      {
-        "label": "丢弃默认",
-        "arguments": {
-          "action": "discard_worktree",
-          "task_id": "task-1"
-        },
-        "kind": "ok",
-        "code": null,
-        "message": null
-      },
-      {
-        "label": "丢弃带参数",
-        "arguments": {
-          "action": "discard_worktree",
-          "branch": "b",
-          "remove_branch": false,
-          "force": true
-        },
-        "kind": "ok",
-        "code": null,
-        "message": null
-      },
-      {
-        "label": "丢弃缺键",
-        "arguments": {
-          "action": "discard_worktree",
-          "task_id": "  "
-        },
-        "kind": null,
-        "code": "AGENT_DEFINITION_INVALID",
-        "message": "discard_worktree 需要 task_id 或 branch。"
-      },
-      {
-        "label": "未知字段",
-        "arguments": {
-          "action": "apply_worktree",
           "task_id": "t",
-          "zz": 1
+          "force": true
         },
         "kind": null,
         "code": "SUBAGENT_PERMISSION_DENIED",
-        "message": "worktree 控制动作包含不允许的字段：zz"
+        "message": "subagent_apply_worktree 不允许参数：force。"
+      },
+      {
+        "label": "丢弃默认",
+        "tool": "subagent_discard_worktree",
+        "arguments": {
+          "branch": "sw-b"
+        },
+        "kind": "ok",
+        "code": null,
+        "message": null
+      },
+      {
+        "label": "丢弃强制",
+        "tool": "subagent_discard_worktree",
+        "arguments": {
+          "task_id": "t",
+          "force": true,
+          "remove_branch": false
+        },
+        "kind": "ok",
+        "code": null,
+        "message": null
+      },
+      {
+        "label": "丢弃缺定位键",
+        "tool": "subagent_discard_worktree",
+        "arguments": {},
+        "kind": null,
+        "code": "AGENT_DEFINITION_INVALID",
+        "message": "subagent_discard_worktree 需要 task_id 或 branch。"
+      },
+      {
+        "label": "丢弃不接受 strategy",
+        "tool": "subagent_discard_worktree",
+        "arguments": {
+          "task_id": "t",
+          "strategy": "merge"
+        },
+        "kind": null,
+        "code": "SUBAGENT_PERMISSION_DENIED",
+        "message": "subagent_discard_worktree 不允许参数：strategy。"
       }
     ],
     "query": [
       {
         "label": "列出",
-        "arguments": {
-          "action": "list"
-        },
+        "tool": "subagent_list",
+        "arguments": {},
         "kind": "ok",
         "code": null,
         "message": null
       },
       {
-        "label": "读取任务",
+        "label": "按任务号取详情",
+        "tool": "subagent_list",
         "arguments": {
-          "action": "get",
           "task_id": "task-1"
         },
         "kind": "ok",
@@ -3127,39 +3039,30 @@
         "message": null
       },
       {
-        "label": "读取缺任务号",
+        "label": "列出不接受未知字段",
+        "tool": "subagent_list",
         "arguments": {
-          "action": "get"
+          "zz": 1
         },
         "kind": null,
-        "code": "AGENT_DEFINITION_INVALID",
-        "message": "get 需要 task_id。"
+        "code": "SUBAGENT_PERMISSION_DENIED",
+        "message": "subagent_list 不允许参数：zz。"
       },
       {
-        "label": "读取空任务号",
+        "label": "取消按任务号",
+        "tool": "subagent_cancel",
         "arguments": {
-          "action": "get",
-          "task_id": ""
-        },
-        "kind": null,
-        "code": "AGENT_DEFINITION_INVALID",
-        "message": "get 需要 task_id。"
-      },
-      {
-        "label": "取消任务",
-        "arguments": {
-          "action": "cancel",
-          "task_id": "task-1"
+          "task_id": "t1"
         },
         "kind": "ok",
         "code": null,
         "message": null
       },
       {
-        "label": "取消批次",
+        "label": "取消按批次",
+        "tool": "subagent_cancel",
         "arguments": {
-          "action": "cancel",
-          "batch_id": "batch-1"
+          "batch_id": "b1"
         },
         "kind": "ok",
         "code": null,
@@ -3167,23 +3070,21 @@
       },
       {
         "label": "取消缺参数",
-        "arguments": {
-          "action": "cancel"
-        },
+        "tool": "subagent_cancel",
+        "arguments": {},
         "kind": null,
         "code": "AGENT_DEFINITION_INVALID",
-        "message": "cancel 需要 task_id 或 batch_id。"
+        "message": "subagent_cancel 需要 task_id 或 batch_id。"
       },
       {
-        "label": "未知字段",
+        "label": "取消不接受未知字段",
+        "tool": "subagent_cancel",
         "arguments": {
-          "action": "cancel",
-          "task_id": "t",
           "zz": 1
         },
         "kind": null,
         "code": "SUBAGENT_PERMISSION_DENIED",
-        "message": "查询动作包含不允许的字段。"
+        "message": "subagent_cancel 不允许参数：zz。"
       }
     ],
     "projection": {

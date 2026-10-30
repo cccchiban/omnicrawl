@@ -298,30 +298,16 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
         return public_windows_desktop_arguments(tool_name, arguments);
     }
 
-    if tool_name != "subagent" {
+    if !is_subagent_tool(tool_name) {
         return Value::Object(arguments.clone());
     }
 
-    let action = {
-        let text = arguments
-            .get("action")
-            .map(python_text)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            "run".to_string()
-        } else {
-            text
-        }
-    };
-    // worktree 控制面用**原始** action 判定；只有任务分支才做闭集收敛。
+    // worktree 控制面：只暴露定位键与两种布尔开关，分支名照样过脱敏与截断。
     if matches!(
-        action.as_str(),
-        "apply_worktree" | "discard_worktree" | "list_worktrees"
+        tool_name,
+        "subagent_apply_worktree" | "subagent_discard_worktree"
     ) {
         let mut public = Map::new();
-        public.insert("action".to_string(), Value::from(action));
         for key in ["task_id", "batch_id", "branch", "strategy"] {
             let Some(value) = arguments.get(key) else {
                 continue;
@@ -332,29 +318,30 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
                 public.insert(key.to_string(), Value::from(truncate_chars(&text, 200)));
             }
         }
-        if arguments.contains_key("cleanup") {
-            public.insert(
-                "cleanup".to_string(),
-                Value::from(python_bool(arguments.get("cleanup"))),
-            );
-        }
-        if arguments.contains_key("remove_branch") {
-            public.insert(
-                "remove_branch".to_string(),
-                Value::from(python_bool(arguments.get("remove_branch"))),
-            );
+        for key in ["cleanup", "force", "remove_branch"] {
+            if arguments.contains_key(key) {
+                public.insert(
+                    key.to_string(),
+                    Value::from(python_bool(arguments.get(key))),
+                );
+            }
         }
         return Value::Object(public);
     }
 
-    // 单任务投影：`task` 是对象。查询/取消等动作没有 `task`，此时只暴露 action。
-    let task = arguments.get("task").and_then(Value::as_object);
+    // 任务投影：`subagent_run` 暴露目标与角色；查询与取消只暴露定位键。
     let mut public = Map::new();
-    public.insert(
-        "action".to_string(),
-        Value::from(normalized_action(&action)),
-    );
-    if let Some(task) = task {
+    for key in ["task_id", "batch_id"] {
+        let Some(value) = arguments.get(key) else {
+            continue;
+        };
+        let raw = python_text(value);
+        let text = omnicrawl_session::redaction::redact_sensitive_text(raw.trim());
+        if !text.is_empty() {
+            public.insert(key.to_string(), Value::from(truncate_chars(&text, 200)));
+        }
+    }
+    if let Some(task) = arguments.get("task").and_then(Value::as_object) {
         let raw_description = task.get("description").map(python_text).unwrap_or_default();
         let description =
             omnicrawl_session::redaction::redact_sensitive_text(raw_description.trim());
@@ -377,6 +364,20 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
         }
     }
     Value::Object(public)
+}
+
+/// 五个 SubAgent 工具名：公开参数投影与角色枚举注入都按它们判定。
+pub const SUBAGENT_TOOL_NAMES: [&str; 5] = [
+    "subagent_run",
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
+];
+
+/// 是否为 SubAgent 家族的工具名。
+pub fn is_subagent_tool(name: &str) -> bool {
+    SUBAGENT_TOOL_NAMES.contains(&name)
 }
 
 /// 桌面自动化参数投影：输入文本与剪贴板内容只暴露长度。
@@ -481,13 +482,6 @@ fn public_input_action(value: &Value) -> Value {
         public.insert("text_length".to_string(), Value::from(text.chars().count()));
     }
     Value::Object(public)
-}
-
-fn normalized_action(action: &str) -> String {
-    match action {
-        "run" | "list" | "get" | "cancel" => action.to_string(),
-        _ => "run".to_string(),
-    }
 }
 
 fn python_text(value: &Value) -> String {

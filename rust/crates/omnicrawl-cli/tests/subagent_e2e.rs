@@ -541,7 +541,6 @@ fn handshake(host: &mut Host, server: &StubServer, tools: Value, retry: Option<i
 #[test]
 fn kernel_runs_subagent_with_host_tool_batch() {
     let tool_arguments = json!({
-        "action": "run",
         "task": {
             "description": "看代码",
             "prompt": "读一下 a.py",
@@ -550,7 +549,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     })
     .to_string();
     let server = StubServer::spawn(vec![
-        ok_stream(tool_call_stream("subagent", &tool_arguments)),
+        ok_stream(tool_call_stream("subagent_run", &tool_arguments)),
         ok_stream(tool_call_stream("read", "{\"path\":\"a.py\"}")),
         ok_stream(text_stream(CHILD_TEXT)),
         ok_stream(text_stream(PARENT_TEXT)),
@@ -569,7 +568,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
         json!([
             {"type": "function", "function": {"name": "read"}},
             {"type": "function", "function": {"name": "grep"}},
-            {"type": "function", "function": {"name": "subagent"}}
+            {"type": "function", "function": {"name": "subagent_run"}}
         ]),
         &session_root,
     );
@@ -587,7 +586,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     assert!(!host.batches.is_empty(), "子代理内部的工具调用应落到宿主");
     for (turn_id, names, _root) in &host.batches {
         assert!(
-            !names.iter().any(|name| name == "subagent"),
+            !names.iter().any(|name| name == "subagent_run"),
             "subagent 不该出现在宿主批次里：{turn_id} {names:?}"
         );
     }
@@ -683,7 +682,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     //    （父子共用一个会话根，落盘的若出现 `read` 就说明开关没生效）。
     assert_eq!(
         transcript_tools(&session_root),
-        vec!["subagent".to_string(), "subagent".to_string()],
+        vec!["subagent_run".to_string(), "subagent_run".to_string()],
         "父会话应只有 subagent 的请求与结果事件"
     );
 
@@ -730,7 +729,6 @@ fn two_subagent_calls_in_one_batch_run_concurrently() {
     // 并行靠「同一条消息里多次调用」而不是「一次调用塞多个任务」：
     // 两个调用在同一批里，各自的窗口与任务号互不相同。
     let first = json!({
-        "action": "run",
         "task": {
             "description": "第一个",
             "prompt": "读一下 a.py",
@@ -739,7 +737,6 @@ fn two_subagent_calls_in_one_batch_run_concurrently() {
     })
     .to_string();
     let second = json!({
-        "action": "run",
         "task": {
             "description": "第二个",
             "prompt": "读一下 b.py",
@@ -749,8 +746,8 @@ fn two_subagent_calls_in_one_batch_run_concurrently() {
     .to_string();
     let server = StubServer::spawn(vec![
         ok_stream(multi_tool_call_stream(&[
-            ("subagent", first.as_str()),
-            ("subagent", second.as_str()),
+            ("subagent_run", first.as_str()),
+            ("subagent_run", second.as_str()),
         ])),
         Reply::AlwaysText(CHILD_TEXT.to_string()),
     ]);
@@ -765,7 +762,7 @@ enabled = true
         &server,
         json!([
             {"type": "function", "function": {"name": "read"}},
-            {"type": "function", "function": {"name": "subagent"}}
+            {"type": "function", "function": {"name": "subagent_run"}}
         ]),
         None,
     );
@@ -816,7 +813,6 @@ enabled = true
 #[test]
 fn worktree_isolation_creates_and_reports_isolated_workspace() {
     let tool_arguments = json!({
-        "action": "run",
         "task": {
             "description": "写点东西",
             "prompt": "在隔离区里读一下 a.txt",
@@ -825,7 +821,7 @@ fn worktree_isolation_creates_and_reports_isolated_workspace() {
     })
     .to_string();
     let server = StubServer::spawn(vec![
-        ok_stream(tool_call_stream("subagent", &tool_arguments)),
+        ok_stream(tool_call_stream("subagent_run", &tool_arguments)),
         ok_stream(tool_call_stream("read", "{\"path\":\"a.txt\"}")),
         ok_stream(text_stream(CHILD_TEXT)),
         ok_stream(text_stream(PARENT_TEXT)),
@@ -900,7 +896,7 @@ allow_standard_agent = true
         json!([
             {"type": "function", "function": {"name": "read"}},
             {"type": "function", "function": {"name": "write_file"}},
-            {"type": "function", "function": {"name": "subagent"}}
+            {"type": "function", "function": {"name": "subagent_run"}}
         ]),
         None,
     );

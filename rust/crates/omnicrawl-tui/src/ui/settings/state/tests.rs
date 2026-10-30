@@ -116,7 +116,7 @@ use super::*;
     /// 单选页的初始值：推理强度 medium、思考显示开启、记忆开启。
     fn choice_state() -> SettingsState {
         SettingsState::new(
-            SettingsValues::new(128_000, 80, tool_rows()).with_choices("medium", true, true, false),
+            SettingsValues::new(128_000, 80, tool_rows()).with_choices("medium", true, true),
         )
     }
 
@@ -133,7 +133,7 @@ use super::*;
                     ChannelRow::default(),
                 )
                 .with_model(current)
-                .with_choices("medium", true, true, false),
+                .with_choices("medium", true, true),
         )
     }
 
@@ -892,7 +892,7 @@ use super::*;
                     ChannelRow::default(),
                 )
                 .with_model("gpt-main")
-                .with_choices("", true, false, false),
+                .with_choices("", true, false),
         );
         goto(&mut state, "model_management");
         assert_eq!(state.model_param_rows()[3].1, "关闭", "空串折算到 none");

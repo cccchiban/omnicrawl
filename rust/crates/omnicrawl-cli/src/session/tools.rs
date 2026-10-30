@@ -7,6 +7,7 @@ use super::model_port::{ActiveAssistantSlot, build_model_runtime, parse_options,
 use super::protocol::{PortFailure};
 
 use super::turn::Conn;
+use omnicrawl_controllers::tool_args::is_subagent_tool;
 
 /// 工具端口：整批交给宿主执行，按调用顺序取回观察。
 pub(super) struct RemoteTools {
@@ -462,8 +463,9 @@ impl RemoteTools {
             let (ok, output) = run_computer_use(&self.conn, &call.arguments, &call.id);
             return Some(self.local_observation(call, ok, &output));
         }
-        if call.name == crate::subagent::SUBAGENT_TOOL_NAME {
-            let (ok, output) = run_subagent_batch(&self.conn, &call.arguments, &call.id);
+        if is_subagent_tool(&call.name) {
+            let (ok, output) =
+                run_subagent_tool(&call.name, &self.conn, &call.arguments, &call.id);
             return Some(self.local_observation(call, ok, &output));
         }
         if call.name != RECALL_SESSION_EVIDENCE_TOOL_NAME {
@@ -517,7 +519,7 @@ pub(crate) use background::run_background_task;
 pub(crate) use subagent_tools::emit_batch_finished;
 pub(crate) use subagent_tools::next_subagent_batch_id;
 pub(crate) use subagent_tools::run_computer_use;
-pub(crate) use subagent_tools::run_subagent_batch;
+pub(crate) use subagent_tools::run_subagent_tool;
 pub(crate) use subagent_tools::run_task_in_isolation;
 pub(crate) use subagent_tools::subagent_failure_code;
 pub(crate) use subagent_tools::subagent_query_value;

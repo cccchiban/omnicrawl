@@ -24,7 +24,7 @@ pub const VALID_APPROVAL_MODES: [&str; 3] = [
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: i64 = 128_000;
 
-pub const TOOL_SWITCH_KEYS: [&str; 27] = [
+pub const TOOL_SWITCH_KEYS: [&str; 31] = [
     "list",
     "find",
     "read",
@@ -45,7 +45,11 @@ pub const TOOL_SWITCH_KEYS: [&str; 27] = [
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
-    "subagent",
+    "subagent_run",
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
     "update_todos",
     "memory_search",
     "memory_read",

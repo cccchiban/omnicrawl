@@ -26,8 +26,17 @@ pub const READ_ONLY_TOOL_NAMES: [&str; 9] = [
 ];
 
 /// 只读 profile 硬拒绝的本地写入口与递归调度。
-pub const READ_ONLY_BLOCKED_TOOL_NAMES: [&str; 5] =
-    ["write_file", "Edit_file", "memory_write", "subagent", "git"];
+pub const READ_ONLY_BLOCKED_TOOL_NAMES: [&str; 9] = [
+    "write_file",
+    "Edit_file",
+    "memory_write",
+    "subagent_run",
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
+    "git",
+];
 
 /// standard 写 Agent 额外允许的写入与命令工具。
 pub const STANDARD_WRITE_TOOL_NAMES: [&str; 4] = ["write_file", "Edit_file", "bash", "powershell"];
@@ -48,30 +57,12 @@ pub fn is_reserved_role(name: &str) -> bool {
     RESERVED_ROLE_NAMES.contains(&normalized.as_str())
 }
 
-/// 顶层允许的字段。
-pub const TOP_LEVEL_FIELDS: [&str; 8] = [
-    "action",
-    "task",
-    "task_id",
-    "batch_id",
-    "branch",
-    "strategy",
-    "cleanup",
-    "remove_branch",
-];
-/// worktree 控制动作允许的字段。
-pub const WORKTREE_CONTROL_FIELDS: [&str; 8] = [
-    "action",
-    "task_id",
-    "batch_id",
-    "branch",
-    "strategy",
-    "cleanup",
-    "remove_branch",
-    "force",
-];
-/// 查询动作允许的字段。
-pub const QUERY_FIELDS: [&str; 3] = ["action", "task_id", "batch_id"];
+/// `subagent_run` 允许的顶层字段：只剩任务本身。
+pub const RUN_FIELDS: [&str; 1] = ["task"];
+/// `subagent_list` 允许的字段。
+pub const LIST_FIELDS: [&str; 2] = ["task_id", "batch_id"];
+/// `subagent_cancel` 允许的字段。
+pub const CANCEL_FIELDS: [&str; 2] = ["task_id", "batch_id"];
 
 pub fn verify_tool_names() -> Vec<String> {
     let mut names: Vec<String> = READ_ONLY_TOOL_NAMES
@@ -127,10 +118,9 @@ pub struct FailureFacts {
     pub detail: String,
 }
 
-/// worktree 控制动作的判定结果。
+/// worktree 控制工具的判定结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeControlRequest {
-    List,
     Apply {
         key: String,
         strategy: String,
@@ -316,7 +306,9 @@ fn filter_profile_tools(
 }
 
 /// `_validate_arguments`：返回 `None` 表示通过，否则是稳定的 `(code, message)`。
-pub fn validate_arguments(
+///
+/// 只校验 `subagent_run` 一类的任务参数：改由工具名分发后，这里不再需要动作判定。
+pub fn validate_task_arguments(
     arguments: &Value,
     config: &SubAgentConfig,
     registry: &AgentDefinitionRegistry,
@@ -324,12 +316,12 @@ pub fn validate_arguments(
     let Some(object) = arguments.as_object() else {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "subagent 参数必须是对象。".to_string(),
+            "subagent_run 参数必须是对象。".to_string(),
         ));
     };
     let mut unknown_top_level: Vec<String> = object
         .keys()
-        .filter(|key| !TOP_LEVEL_FIELDS.contains(&key.as_str()))
+        .filter(|key| !RUN_FIELDS.contains(&key.as_str()))
         .cloned()
         .collect();
     if !unknown_top_level.is_empty() {
@@ -337,21 +329,15 @@ pub fn validate_arguments(
         return Some((
             "SUBAGENT_PERMISSION_DENIED".to_string(),
             format!(
-                "当前 SubAgent 阶段不允许参数：{}。",
+                "subagent_run 不允许参数：{}。",
                 unknown_top_level.join(", ")
             ),
         ));
     }
-    if !matches!(object.get("action").and_then(Value::as_str), Some("run")) {
-        return Some((
-            "SUBAGENT_PERMISSION_DENIED".to_string(),
-            "仅支持 action=run。".to_string(),
-        ));
-    }
     let Some(task_value) = object.get("task") else {
         return Some((
-            "SUBAGENT_LIMIT_EXCEEDED".to_string(),
-            "task 必须是对象。".to_string(),
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "subagent_run 需要 task。".to_string(),
         ));
     };
     let Some(task) = task_value.as_object() else {
@@ -446,36 +432,37 @@ pub fn validate_arguments(
     None
 }
 
-/// `_worktree_control_action` 的参数判定与请求投影。
+/// worktree 控制工具（`subagent_apply_worktree` / `subagent_discard_worktree`）的参数判定。
+///
+/// 两个工具共用 `WorktreeControlRequest`，但各自只接受自己的字段：`strategy`/`cleanup`
+/// 只对 apply 有意义，`force` 只对 discard 有意义。
 pub fn worktree_control_request(
+    tool_name: &str,
     arguments: &Value,
 ) -> Result<WorktreeControlRequest, (String, String)> {
     let Some(object) = arguments.as_object() else {
         return Err((
-            "SUBAGENT_PERMISSION_DENIED".to_string(),
-            "worktree 控制动作包含不允许的字段：".to_string(),
+            "AGENT_DEFINITION_INVALID".to_string(),
+            format!("{tool_name} 参数必须是对象。"),
         ));
+    };
+    let allowed: &[&str] = if tool_name == "subagent_apply_worktree" {
+        &["task_id", "branch", "strategy", "cleanup"]
+    } else {
+        &["task_id", "branch", "remove_branch", "force"]
     };
     let mut unknown: Vec<String> = object
         .keys()
-        .filter(|key| !WORKTREE_CONTROL_FIELDS.contains(&key.as_str()))
+        .filter(|key| !allowed.contains(&key.as_str()))
         .cloned()
         .collect();
     if !unknown.is_empty() {
         unknown.sort();
         return Err((
             "SUBAGENT_PERMISSION_DENIED".to_string(),
-            format!("worktree 控制动作包含不允许的字段：{}", unknown.join(", ")),
+            format!("{tool_name} 不允许参数：{}。", unknown.join(", ")),
         ));
     }
-    let action = object
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if action == "list_worktrees" {
-        return Ok(WorktreeControlRequest::List);
-    }
-
     let key = match object.get("task_id").and_then(Value::as_str) {
         Some(value) if !value.trim().is_empty() => value,
         _ => match object.get("branch").and_then(Value::as_str) {
@@ -483,14 +470,14 @@ pub fn worktree_control_request(
             _ => {
                 return Err((
                     "AGENT_DEFINITION_INVALID".to_string(),
-                    format!("{action} 需要 task_id 或 branch。"),
+                    format!("{tool_name} 需要 task_id 或 branch。"),
                 ))
             }
         },
     };
     let key = key.trim().to_string();
 
-    if action == "apply_worktree" {
+    if tool_name == "subagent_apply_worktree" {
         let strategy = object
             .get("strategy")
             .and_then(Value::as_str)
@@ -528,60 +515,61 @@ pub fn worktree_control_request(
     })
 }
 
-/// `_query_action` 的参数判定与请求投影。
-pub fn query_request(arguments: &Value) -> Result<QueryRequest, (String, String)> {
+/// `subagent_list` / `subagent_cancel` 的参数判定与请求投影。
+///
+/// `subagent_list` 带 `task_id` 即退化成单任务详情查询，因此不再需要独立的 get 工具。
+pub fn query_request(
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<QueryRequest, (String, String)> {
     let Some(object) = arguments.as_object() else {
         return Err((
-            "SUBAGENT_PERMISSION_DENIED".to_string(),
-            "查询动作包含不允许的字段。".to_string(),
+            "AGENT_DEFINITION_INVALID".to_string(),
+            format!("{tool_name} 参数必须是对象。"),
         ));
     };
-    let unknown: Vec<String> = object
+    let allowed: &[&str] = if tool_name == "subagent_list" {
+        &LIST_FIELDS
+    } else {
+        &CANCEL_FIELDS
+    };
+    let mut unknown: Vec<String> = object
         .keys()
-        .filter(|key| !QUERY_FIELDS.contains(&key.as_str()))
+        .filter(|key| !allowed.contains(&key.as_str()))
         .cloned()
         .collect();
     if !unknown.is_empty() {
+        unknown.sort();
         return Err((
             "SUBAGENT_PERMISSION_DENIED".to_string(),
-            "查询动作包含不允许的字段。".to_string(),
+            format!("{tool_name} 不允许参数：{}。", unknown.join(", ")),
         ));
     }
-    let action = object
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let task_id = object
         .get("task_id")
         .and_then(Value::as_str)
         .unwrap_or_default()
+        .trim()
         .to_string();
     let batch_id = object
         .get("batch_id")
         .and_then(Value::as_str)
         .unwrap_or_default()
+        .trim()
         .to_string();
-    match action {
-        "list" => Ok(QueryRequest::List),
-        "get" => {
-            if task_id.is_empty() {
-                return Err((
-                    "AGENT_DEFINITION_INVALID".to_string(),
-                    "get 需要 task_id。".to_string(),
-                ));
-            }
-            Ok(QueryRequest::Get { task_id })
+    if tool_name == "subagent_list" {
+        if !task_id.is_empty() {
+            return Ok(QueryRequest::Get { task_id });
         }
-        _ => {
-            if task_id.is_empty() && batch_id.is_empty() {
-                return Err((
-                    "AGENT_DEFINITION_INVALID".to_string(),
-                    "cancel 需要 task_id 或 batch_id。".to_string(),
-                ));
-            }
-            Ok(QueryRequest::Cancel { task_id, batch_id })
-        }
+        return Ok(QueryRequest::List);
     }
+    if task_id.is_empty() && batch_id.is_empty() {
+        return Err((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "subagent_cancel 需要 task_id 或 batch_id。".to_string(),
+        ));
+    }
+    Ok(QueryRequest::Cancel { task_id, batch_id })
 }
 
 /// `_failure_payload`：失败任务的公开结果。

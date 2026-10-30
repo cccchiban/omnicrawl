@@ -266,13 +266,15 @@ pub fn build_agent_tools(options: &ToolCatalogOptions<'_>) -> Result<Vec<ToolSpe
         }
     }
 
-    if has("subagent") {
-        let entry = group("subagent")
-            .first()
-            .expect("内置目录必须有 subagent 定义");
-        let mut spec = ToolSpec::from_entry(entry);
-        spec.argument_schema = subagent_schema(&spec.argument_schema, options.subagent_types)?;
-        tools.push(spec);
+    if has("subagent_run") {
+        for entry in group("subagent") {
+            let mut spec = ToolSpec::from_entry(entry);
+            if spec.name == "subagent_run" {
+                spec.argument_schema =
+                    subagent_schema(&spec.argument_schema, options.subagent_types)?;
+            }
+            tools.push(spec);
+        }
     }
 
     if options.memory_enabled {

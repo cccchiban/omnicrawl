@@ -2,6 +2,7 @@
 //!
 //! 从 `slash.rs` 拆出。
 
+use omnicrawl_controllers::tool_args::is_subagent_tool;
 use super::*;
 
 // ── 工具确认展示 ──────────────────────────────────────────────
@@ -29,7 +30,11 @@ fn tool_human_description(tool_name: &str) -> Option<&'static str> {
         "memory_expand_related" => "展开相关记忆",
         "memory_write" => "写入长期记忆",
         "memory_delete" => "删除长期记忆",
-        "subagent" => "分发只读子任务",
+        "subagent_run" => "分发受限子任务",
+        "subagent_list" => "列出子代理任务",
+        "subagent_cancel" => "取消子代理任务",
+        "subagent_apply_worktree" => "应用子代理工作树改动",
+        "subagent_discard_worktree" => "丢弃子代理工作树",
         "advisor" => "咨询顾问模型获取第二意见",
         _ => return None,
     };
@@ -331,24 +336,29 @@ pub fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Val
         return String::new();
     }
 
-    if tool_name == "subagent" {
-        let mut detail = format!(
-            "任务数：{}",
-            python_str(
-                &arguments
-                    .get("task_count")
-                    .cloned()
-                    .unwrap_or(Value::from(0))
-            )
-        );
-        if let Some(Value::Array(descriptions)) = arguments.get("descriptions") {
-            if !descriptions.is_empty() {
-                let joined: Vec<String> = descriptions.iter().map(python_str).collect();
-                detail.push_str("，任务：");
-                detail.push_str(&joined.join("；"));
+    if is_subagent_tool(tool_name) {
+        if let Some(task) = arguments.get("task").and_then(Value::as_object) {
+            let mut detail = String::new();
+            if let Some(agent_type) = task.get("subagent_type").and_then(Value::as_str) {
+                detail.push_str(agent_type.trim());
+            }
+            if let Some(description) = task.get("description").and_then(Value::as_str) {
+                if !detail.is_empty() {
+                    detail.push('：');
+                }
+                detail.push_str(description.trim());
+            }
+            return truncate_for_display(&detail, 240);
+        }
+        for key in ["task_id", "batch_id", "branch"] {
+            if let Some(value) = arguments.get(key) {
+                let text = python_str(value);
+                if !text.trim().is_empty() {
+                    return truncate_for_display(text.trim(), 240);
+                }
             }
         }
-        return truncate_for_display(&detail, 240);
+        return String::new();
     }
 
     if tool_name.contains('.') && !arguments.is_empty() {

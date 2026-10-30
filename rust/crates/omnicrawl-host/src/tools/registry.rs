@@ -111,6 +111,15 @@ pub const TTS_RUNNERS: [&str; 1] = ["tts"];
 pub const ADVISOR_RUNNER: &str = "advisor";
 /// Computer Use 工具：由内核自持执行，只受 `[computer_use] enabled` 约束。
 pub const COMPUTER_USE_RUNNER: &str = "computer_use";
+
+/// SubAgent 工具族：由内核自持执行，宿主只负责声明。
+pub const SUBAGENT_RUNNERS: [&str; 5] = [
+    "subagent_run",
+    "subagent_list",
+    "subagent_cancel",
+    "subagent_apply_worktree",
+    "subagent_discard_worktree",
+];
 /// Windows 桌面工具：**不再进主代理工具表**，只供专职 Computer Use 子代理在自己的子回合里
 /// 调用（白名单见 `omnicrawl-cli/src/computer_use.rs`）。桌面模拟操作由专职子代理全权负责，
 /// 主代理只持有 `computer_use(prompt)` 这一个入口。
@@ -266,10 +275,10 @@ impl ToolRegistry {
         if options.session_held_by_kernel {
             available.push("evidence_recall".to_string());
         }
-        // `subagent` 由内核自持执行（子回合需要模型运行时），宿主只把它声明给模型；
-        // 角色为空时不进表，避免模型看到一个必然失败的入口。
+        // SubAgent 工具族由内核自持执行（子回合需要模型运行时），宿主只把它们声明给模型；
+        // 角色为空时不进表，避免模型看到必然失败的入口。
         if !options.subagent_roles.is_empty() {
-            available.push("subagent".to_string());
+            available.extend(SUBAGENT_RUNNERS.iter().map(|name| (*name).to_string()));
         }
         // `computer_use` 同样由内核自持（子回合需要模型运行时），只受自己的开关约束：
         // 它不受 `[subagents] enabled` 影响，关掉普通子代理不该连坐关掉桌面操作。
@@ -928,7 +937,11 @@ mod tests {
         // 桌面操作由专职 Computer Use 子代理全权负责：主代理只保留 `computer_use` 入口，
         // 不直接持有 windows_*（子代理在自己的子回合里按自己的白名单调用它们）。
         for hidden in [
-            "subagent",
+            "subagent_run",
+            "subagent_list",
+            "subagent_cancel",
+            "subagent_apply_worktree",
+            "subagent_discard_worktree",
             "memory_search",
             "windows_window",
             "windows_control",
@@ -1162,7 +1175,10 @@ mode = \"review\"
         let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
         let names = declared_names(&registry);
         assert!(names.contains("computer_use"), "{names:?}");
-        assert!(!names.contains("subagent"), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with("subagent_")),
+            "{names:?}"
+        );
 
         // 桌面关：不进表。
         let options = RegistryOptions {

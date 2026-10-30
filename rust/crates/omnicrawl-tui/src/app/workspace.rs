@@ -31,7 +31,6 @@ impl App {
             match prepare_workspace(&environment, &options, &new_root, registry_options, timeout) {
                 Ok(prepared) => prepared,
                 Err(error) => {
-                    self.notify_workspace_switch_error(&new_root, &error);
                     return Err(error);
                 }
             };
@@ -157,8 +156,6 @@ impl App {
                 }
                 Err(message) => {
                     // 装配阶段失败：如实回报，不动当前运行态。
-                    // `_prepare_workspace_switch` 的 except），旧工作区一律不动。
-                    self.notify_workspace_switch_error(&root, &message);
                     self.state.notice(message);
                 }
             },

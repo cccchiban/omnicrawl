@@ -2,7 +2,11 @@
 name: explore
 description: 快速只读探索代码、网页和外部能力，返回文件路径、行号与可复核证据
 disallowedTools:
-  - subagent
+  - subagent_run
+  - subagent_list
+  - subagent_cancel
+  - subagent_apply_worktree
+  - subagent_discard_worktree
   - Edit_file
   - write_file
   - memory_write

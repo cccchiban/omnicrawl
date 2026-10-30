@@ -2534,13 +2534,13 @@ fn view_session_button_opens_the_window_only_when_clicked() {
         &omnicrawl_ipc::bridge::HostEvent::ToolStarted(omnicrawl_ipc::bridge::ToolStartedPayload {
             step: 1,
             call: omnicrawl_core::ToolCall {
-                name: "subagent".to_string(),
-                arguments: json!({"action": "run"})
+                name: "subagent_run".to_string(),
+                arguments: json!({})
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
                 id: "call_child".to_string(),
-                function_name: "subagent".to_string(),
+                function_name: "subagent_run".to_string(),
             },
         }),
         now,

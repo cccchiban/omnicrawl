@@ -161,6 +161,10 @@ fn command_samples() -> Vec<(&'static str, Value)> {
         (method::SESSION_RENAME, json!({"title": "新的会话标题"})),
         (method::SESSION_ARCHIVE, json!({})),
         (
+            method::SESSION_DELETE,
+            json!({"session_id": "20260101-000000-abcdef"}),
+        ),
+        (
             method::SESSION_HISTORY,
             json!({"query": "测试", "limit": 20}),
         ),

@@ -15,7 +15,11 @@ tools:
   - bash
   - powershell
 disallowedTools:
-  - subagent
+  - subagent_run
+  - subagent_list
+  - subagent_cancel
+  - subagent_apply_worktree
+  - subagent_discard_worktree
   - switch_model
   - switch_skill
   - load_skill
@@ -36,7 +40,7 @@ background: false
 5. 完成后用简洁中文总结：改了什么、为什么、如何验证、残留风险。
 
 约束：
-- 禁止调用 subagent、switch_model、switch_skill、load_skill、search_skills。
+- 禁止调用 subagent_run、subagent_list、subagent_cancel、subagent_apply_worktree、subagent_discard_worktree、switch_model、switch_skill、load_skill、search_skills。
 - 不要提交 git commit、push 或改远程。
 - 不要删除用户未明确要求删除的文件。
 - isolation=worktree 时，结果会以分支/diff 形式返回父 Agent，由父决定是否应用。

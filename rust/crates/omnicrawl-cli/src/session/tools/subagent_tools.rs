@@ -274,11 +274,12 @@ pub(crate) fn tool_outputs(messages: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// 内核自持的 `subagent`：校验 → 准备 → 逐个跑子回合（子模型请求由内核发，子工具批次交宿主）。
+/// 内核自持的 SubAgent 工具入口：按工具名分发到任务执行、查询取消或 worktree 控制。
 ///
 /// `call_id` 是发起本次批次的工具调用 id：随 `subagent.batch.created` 外发后，宿主才能把
 /// 「查看会话」按钮挂到那张工具卡上（没有它的批次属于宿主自发入口，如 `/review`）。
-pub(crate) fn run_subagent_batch(
+pub(crate) fn run_subagent_tool(
+    tool_name: &str,
     conn: &Rc<RefCell<Conn>>,
     arguments: &Map<String, Value>,
     call_id: &str,
@@ -295,19 +296,15 @@ pub(crate) fn run_subagent_batch(
     if !runtime.enabled() {
         return (false, runtime.disabled_text());
     }
-    // 后台任务查询（list / get / cancel）由内核处理：任务表在内核里。
-    if matches!(
-        arguments.get("action").and_then(Value::as_str),
-        Some("list") | Some("get") | Some("cancel")
-    ) {
-        return run_subagent_query(conn, arguments);
-    }
-    // worktree 控制动作（列 / 应用 / 丢弃）由内核处理：会话信息落在托管根的元数据里。
-    if matches!(
-        arguments.get("action").and_then(Value::as_str),
-        Some("list_worktrees") | Some("apply_worktree") | Some("discard_worktree")
-    ) {
-        return run_worktree_control(arguments);
+    // 任务表与 worktree 元数据都在内核里：查询、取消与控制一律本地作答。
+    match tool_name {
+        "subagent_list" | "subagent_cancel" => {
+            return run_subagent_query(tool_name, conn, arguments)
+        }
+        "subagent_apply_worktree" | "subagent_discard_worktree" => {
+            return run_worktree_control(tool_name, arguments)
+        }
+        _ => {}
     }
     let (model_config, fork_messages) = {
         let borrowed = conn.borrow();
@@ -365,9 +362,13 @@ pub(crate) fn run_subagent_batch(
 /// 内核侧的 SubAgent 所有者标识（协议一条连接只服务一个宿主）。
 pub(crate) const SUBAGENT_OWNER_ID: &str = "kernel";
 
-/// `action=list|get|cancel`：查询与取消后台任务。
-pub(crate) fn run_subagent_query(conn: &Rc<RefCell<Conn>>, arguments: &Map<String, Value>) -> (bool, String) {
-    let request = match query_request(&Value::Object(arguments.clone())) {
+/// `subagent_list` / `subagent_cancel`：查询与取消后台任务。
+pub(crate) fn run_subagent_query(
+    tool_name: &str,
+    conn: &Rc<RefCell<Conn>>,
+    arguments: &Map<String, Value>,
+) -> (bool, String) {
+    let request = match query_request(tool_name, &Value::Object(arguments.clone())) {
         Ok(request) => request,
         Err((code, message)) => {
             return (false, json_result_text(&top_level_error(&code, &message)))
@@ -392,11 +393,17 @@ pub(crate) fn run_subagent_query(conn: &Rc<RefCell<Conn>>, arguments: &Map<Strin
         QueryRequest::List => {
             let tasks = manager.list(SUBAGENT_OWNER_ID, Some(&session_id));
             let notifications = manager.drain_notifications(SUBAGENT_OWNER_ID, Some(&session_id));
+            // 残留 worktree 与后台任务管理器是否启用无关：切工作区前必须能看到它们。
+            let worktrees: Vec<Value> = crate::worktree::list_sessions(None)
+                .iter()
+                .map(crate::worktree::session_value)
+                .collect();
             (
                 true,
                 json_result_text(&json!({
                     "tasks": tasks,
                     "notifications": notifications,
+                    "worktrees": worktrees,
                 })),
             )
         }
@@ -541,22 +548,15 @@ pub(crate) fn attach_worktree_note(mut result: Value, note: &str) -> Value {
     result
 }
 
-/// 处理 `list_worktrees` / `apply_worktree` / `discard_worktree`。
-pub(crate) fn run_worktree_control(arguments: &Map<String, Value>) -> (bool, String) {
-    let request = match worktree_control_request(&Value::Object(arguments.clone())) {
+/// `subagent_apply_worktree` / `subagent_discard_worktree`：把隔离改动写回主工作区或丢弃。
+pub(crate) fn run_worktree_control(tool_name: &str, arguments: &Map<String, Value>) -> (bool, String) {
+    let request = match worktree_control_request(tool_name, &Value::Object(arguments.clone())) {
         Ok(request) => request,
         Err((code, message)) => {
             return (false, json_result_text(&top_level_error(&code, &message)))
         }
     };
     match request {
-        WorktreeControlRequest::List => {
-            let sessions: Vec<Value> = crate::worktree::list_sessions(None)
-                .iter()
-                .map(crate::worktree::session_value)
-                .collect();
-            (true, json_result_text(&json!({"worktrees": sessions})))
-        }
         WorktreeControlRequest::Apply {
             key,
             strategy,
@@ -579,7 +579,7 @@ pub(crate) fn run_worktree_control(arguments: &Map<String, Value>) -> (bool, Str
                     (
                         true,
                         json_result_text(&json!({
-                            "action": "apply_worktree",
+                            "applied": true,
                             "key": key,
                             "strategy": strategy,
                             "cleanup": cleanup,
@@ -642,7 +642,7 @@ pub(crate) fn run_worktree_control(arguments: &Map<String, Value>) -> (bool, Str
                 Ok(()) => (
                     true,
                     json_result_text(&json!({
-                        "action": "discard_worktree",
+                        "discarded": true,
                         "key": key,
                         "remove_branch": remove_branch,
                         "force": force,
