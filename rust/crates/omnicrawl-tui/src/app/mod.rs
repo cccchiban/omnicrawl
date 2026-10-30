@@ -120,7 +120,6 @@ use omnicrawl_controllers::workspace::{
 use omnicrawl_controllers::AgentError;
 use omnicrawl_core::diagnostics::{self, Level};
 use omnicrawl_core::{ToolCall, ToolResult};
-use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::prompt_cache::build_prompt_cache_identity;
 use omnicrawl_host::tools::evicted_call_ids_for;
@@ -128,8 +127,8 @@ use omnicrawl_host::tools::FetcherOptions;
 use omnicrawl_ipc::{
     bridge::{
         Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
-        KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
-        ModelHookResult, SessionAppendParams, SessionDeleteParams, SessionEventsParams,
+        KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, SessionAppendParams,
+        SessionDeleteParams, SessionEventsParams,
         SessionHistoryParams, SessionListParams, SessionModelSettings, SessionRenameParams,
         SessionResumeParams, SessionSettingsParams,
         SubagentRunParams, ToolBatch,
@@ -248,46 +247,6 @@ fn prepare_workspace(
     }
 }
 
-/// 工具调用前的插件守卫：`tool.call.before` → `tool.approval.before` → `tool.execute.before`。
-///
-/// 与 `omnicrawl-host::turn` 的同名逻辑同序同文案：返回 `Err(reason)` 表示被挡下
-/// （`reason` 已是展示给用户的文案），`Ok(Some(arguments))` 表示插件改写了调用参数。
-fn plugin_tool_guards(
-    plugins: &PluginHost,
-    call: &ToolCall,
-    requires_confirmation: bool,
-    mode: &str,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
-    let mut arguments = call.arguments.clone();
-    if let Err(error) = plugins.tool_call_before(&call.name, &mut arguments) {
-        diagnostics::warn(format!(
-            "[tui] {0} 被插件挡下（tool.call.before）：{error}",
-            call.name
-        ));
-        return Err(format!("插件拒绝工具调用：{}。", call.name));
-    }
-    if let Err(error) =
-        plugins.tool_approval_before(&call.name, &arguments, requires_confirmation, mode)
-    {
-        diagnostics::warn(format!(
-            "[tui] {0} 被插件挡下（tool.approval.before）：{error}",
-            call.name
-        ));
-        return Err(format!("插件在审批前拒绝：{}。", call.name));
-    }
-    if let Err(error) = plugins.tool_execute_before(&call.name, &arguments) {
-        diagnostics::warn(format!(
-            "[tui] {0} 被插件挡下（tool.execute.before）：{error}",
-            call.name
-        ));
-        return Err(format!("插件在执行前拒绝：{}。", call.name));
-    }
-    if arguments == call.arguments {
-        Ok(None)
-    } else {
-        Ok(Some(arguments))
-    }
-}
 
 /// 一次工具执行的完成通知。
 struct ToolCompletion {
@@ -435,7 +394,7 @@ fn kernel_error_notice(line: &str) -> Option<String> {
 
 /// 内核进程消失时的收尾文案。
 ///
-/// 措辞保持原样：提示行、插件 `turn.error` 与流程测试都按它检索。
+/// 措辞保持原样：提示行、`turn.error` 与流程测试都按它检索。
 const KERNEL_LOST_MESSAGE: &str = "内核进程已退出。";
 
 /// 内核消失后常显在运行状态行的退出指引。
@@ -492,8 +451,6 @@ pub struct App {
     pending_skill_context: Option<Vec<Value>>,
     /// 本轮下发过活动技能正文：回合收尾要把上下文消息换回常规装配。
     restore_skill_context_after_turn: bool,
-    /// 启动期插件加载诊断：由 `main.rs` 写进启动页日志框（不进对话流，避免顶掉首屏 Logo）。
-    pub startup_plugin_lines: Vec<String>,
     /// Agent 临时目录句柄：创建分类子目录并跑清理调度。
     ///
     /// 必须活到进程退出：后台清理线程随句柄存在，提前丢弃等于没接。
@@ -511,8 +468,6 @@ pub struct App {
     ///
     /// `None` 表示还没画过任何一帧：首帧必须画，不能用「没变化」把自己跳过。
     drawn: Option<(ui::RefreshVersions, Rect)>,
-    /// 插件运行期：与 API 同源（配置 → `PluginRuntime`），Hook 在回合与工具边界上分发。
-    plugins: Arc<PluginHost>,
     /// 审查运行期（`approval.mode = review` 时用）：与 Python `_review_tool_call` 同源。
     ///
     /// 审查模型不可用（未配模型或凭据）时为 `None`，此时需审查的调用按 fail-closed 拒绝。
@@ -577,9 +532,6 @@ pub struct App {
     /// `/new` 的提示文案、`/sessions` 的当前项标记与「`/resume` 是否真换了会话」都看它，
     /// 因此它是宿主侧唯一需要跟着内核走的会话状态。
     session_id: String,
-    /// 退出时 `session.close.before` 是否已发：`request_shutdown` 可能被调多次
-    /// （命令退出一次、`main` 的收尾一次），但关闭钩子只能各发一次。
-    session_close_before_sent: bool,
     /// 慢命令的宿主侧后台任务（`/workspace`、`/mcp`），每帧轮询取回结果。
     slow_task: Option<SlowTask>,
     /// 会话区右缘滚动条正在被按住拖动（松手才结束）。
@@ -709,7 +661,7 @@ enum SlowOutcome {
 
 /// 工作线程装配好的候选子系统。
 ///
-/// 只装不提交：工具表与提示词运行时的所有权直接交给主线程，主线程负责插件门禁、
+/// 只装不提交：工具表与提示词运行时的所有权直接交给主线程，主线程负责资源收尾、
 /// 收尾旧资源与状态切换（避免跨线程改 `App` 状态）。
 struct PreparedWorkspace {
     registry: ToolRegistry,
@@ -891,17 +843,6 @@ impl App {
         state.telemetry.context_window = u64::try_from(context_window)
             .ok()
             .filter(|value| *value > 0);
-        // 插件运行期：启动失败只影响插件本身，工作台照常可用。
-        // 诊断不再写进对话流（那样会把首屏的欢迎 Logo 顶掉），而是交给启动页日志框：
-        // `main.rs` 的 `prepare_startup` 读 [`Self::startup_plugin_lines`] 再写进 splash。
-        let plugins = Arc::new(PluginHost::from_environment(
-            &ConfigEnvironment::from_process(),
-            workspace,
-        ));
-        let startup_plugin_lines = plugins.start();
-        if plugins.active() {
-            plugins.notify_app_started();
-        }
         // 审查运行期：与 Python `_review_tool_call` 同源；未配模型时为 `None`，
         // 此时 `review` 模式下需审查的调用按 fail-closed 拒绝。
         let review = build_review_options(&llm, &environment);
@@ -957,7 +898,6 @@ impl App {
             llm,
             viewport: Rect::default(),
             drawn: None,
-            plugins,
             review,
             custody,
             prune,
@@ -976,11 +916,9 @@ impl App {
             monitor_polled_at: Instant::now(),
             isolation: None,
             session_id: String::new(),
-            session_close_before_sent: false,
             slow_task: None,
             scrollbar_drag: false,
             composer_drag: false,
-            startup_plugin_lines,
             agent_temp,
             startup_service_lines: Vec::new(),
             kernel_logs: None,

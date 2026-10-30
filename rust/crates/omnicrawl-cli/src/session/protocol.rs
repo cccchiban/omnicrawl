@@ -92,14 +92,12 @@ pub(super) fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             protocol_version,
             model,
             session,
-            plugin_model_hooks,
             tool_call_prune,
             ..
         }) => {
             if let Some(config) = model {
                 conn.borrow_mut().model = Some(*config);
             }
-            conn.borrow_mut().plugin_model_hooks = plugin_model_hooks;
             conn.borrow_mut().tool_call_prune = tool_call_prune;
             if let Some(settings) = session {
                 match KernelSession::open(*settings) {
@@ -308,7 +306,6 @@ pub fn run_stdio() -> Result<(), String> {
         exit_requested: false,
         model: None,
         session: None,
-        plugin_model_hooks: false,
         tool_call_prune: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
         evict_marks: Rc::new(RefCell::new(Vec::new())),

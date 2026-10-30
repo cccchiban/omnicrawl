@@ -20,7 +20,6 @@ pub mod error;
 pub mod json;
 pub mod memory;
 pub mod output;
-pub mod plugins;
 pub mod settings;
 pub mod sha1;
 pub mod shared;

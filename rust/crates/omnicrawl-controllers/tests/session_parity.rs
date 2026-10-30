@@ -328,45 +328,6 @@ fn settings_subagent_advanced_matches_python() {
 }
 
 #[test]
-fn control_plugins_status_matches_python() {
-    let data = section("control");
-    for case in data["plugins_status"].as_array().expect("cases") {
-        let label = case["label"].as_str().expect("label");
-        let expected = case["expected"].as_str().expect("expected");
-        let actual = if case["manager_present"].as_bool().expect("manager_present") {
-            let rows: Vec<control::PluginWorkerRow> = case["rows"]
-                .as_array()
-                .expect("rows")
-                .iter()
-                .map(|row| control::PluginWorkerRow {
-                    name: row["name"].as_str().unwrap_or_default().to_string(),
-                    version: row["version"].as_str().unwrap_or_default().to_string(),
-                    scope: row["scope"].as_str().unwrap_or_default().to_string(),
-                    active: row["active"].as_bool().unwrap_or(false),
-                    circuit_open: row["circuitOpen"].as_bool().unwrap_or(false),
-                    dev_mode: row["devMode"].as_bool().unwrap_or(false),
-                    handlers: row["handlers"]
-                        .as_array()
-                        .map(|items| {
-                            items
-                                .iter()
-                                .map(|item| item.as_str().unwrap_or_default().to_string())
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    last_error: row["lastError"].as_str().unwrap_or_default().to_string(),
-                })
-                .collect();
-            let enabled = case["enabled"].as_bool().expect("enabled");
-            control::plugins_status_text(Some(&(enabled, rows)))
-        } else {
-            control::plugins_status_text(None)
-        };
-        assert_eq!(actual, expected, "插件状态文案（{label}）");
-    }
-}
-
-#[test]
 fn control_session_closed_matches_python() {
     let data = section("control");
     for case in data["session_closed"].as_array().expect("cases") {

@@ -2,7 +2,7 @@
 //! 来源发现、优先级覆盖与诊断。
 //!
 //! 扫描顺序「离项目越近优先级越高」，首次出现的名称获胜：项目 `.omnicrawl`、项目兼容
-//! `.agents`、用户、包内内置、已批准插件；插件只能提供最低优先级定义。
+//! `.agents`、用户与包内内置三层。
 //!
 //! frontmatter 只解析 Agent 定义真正用到的 YAML 子集：顶层映射、块列表、折叠/字面标量、
 //! 行内 `[]`/`{}`、引号与注释；语义按 PyYAML `safe_load` 对齐。
@@ -141,7 +141,7 @@ impl AgentDefinitionRegistry {
     }
 
     /// 重新发现当前工作区定义；已启动任务应继续使用旧定义快照。
-    pub fn discover(&mut self, workspace_root: &Path, plugin_definitions: &[(String, PathBuf)]) {
+    pub fn discover(&mut self, workspace_root: &Path) {
         let workspace = resolve_path(workspace_root);
         self.index.clear();
         self.diagnostics.clear();
@@ -161,9 +161,6 @@ impl AgentDefinitionRegistry {
         }
         for (source, directory) in directories {
             self.scan_directory(&directory, source);
-        }
-        for (plugin_name, path) in plugin_definitions {
-            self.load_path(path, &format!("plugin:{plugin_name}"), None);
         }
     }
 

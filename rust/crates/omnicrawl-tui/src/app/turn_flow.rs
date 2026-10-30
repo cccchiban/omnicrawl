@@ -144,18 +144,7 @@ impl App {
         }
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn += 1;
-        // `turn.start` 在进内核之前分发：transform 类 Handler 可改写 `userText`，
-        // 守卫类 Handler 拒绝时这一轮根本不发出去（与 Python 的 `turn_payload` 同位）。
-        let text = match self.plugins.turn_start(&text, None, Some(&turn_id)) {
-            Ok(rewritten) => rewritten,
-            Err(error) => {
-                // 本轮没发出去，活动 Skill 上下文也不能留到下一轮。
-                self.pending_skill_context = None;
-                self.state.notice(error.to_string());
-                return;
-            }
-        };
-        // 归档只在 `turn.start` 通过后做：本轮真发得出去，才不至于为一次被拦下的提交留废文件。
+        // 归档先于发送：本轮真发得出去，才不至于为一次失败的提交留废文件。
         // 复制失败不阻断发送（见 `image_archive`），正文里只列真正落盘成功的那几张。
         let text = match crate::image_archive::archive_pasted_images(&self.workspace, &images) {
             Some(note) => format!("{text}\n\n{note}"),
@@ -203,13 +192,7 @@ impl App {
         }
         self.restore_skill_context_after_turn = false;
         let has_tools = !self.registry.declarations().is_empty();
-        let session_id = self.current_session_id();
-        let messages = match self.prompt.context_messages_with_plugins(
-            has_tools,
-            Some(self.plugins.as_ref()),
-            (!session_id.is_empty()).then_some(session_id.as_str()),
-            None,
-        ) {
+        let messages = match self.prompt.context_messages(has_tools) {
             Ok(messages) => messages,
             Err(_) => return,
         };

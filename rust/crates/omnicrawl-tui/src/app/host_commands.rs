@@ -63,15 +63,12 @@ impl App {
 
     /// 把当前提示词装配结果（system prompt + 上下文消息）下发内核。
     pub(super) fn push_prompt_to_kernel(&mut self) -> Result<(), String> {
-        let session_id = self.current_session_id();
         let settings = SessionModelSettings {
             system_prompt: Some(self.prompt.system_prompt()),
-            context_messages: Some(self.prompt.context_messages_with_plugins(
-                !self.registry.declarations().is_empty(),
-                Some(self.plugins.as_ref()),
-                (!session_id.is_empty()).then_some(session_id.as_str()),
-                None,
-            )?),
+            context_messages: Some(
+                self.prompt
+                    .context_messages(!self.registry.declarations().is_empty())?,
+            ),
             ..SessionModelSettings::default()
         };
         let params = SessionSettingsParams {
@@ -147,20 +144,6 @@ impl App {
             compaction: None,
         });
         Ok(normalized.to_string())
-    }
-
-    /// 插件子系统只读状态（与 Python `format_plugins_status` 的两个分支同形）。
-    pub(crate) fn command_plugins_status(&self) -> String {
-        if !self.plugins.configured() {
-            return omnicrawl_controllers::control::plugins_status_text(None);
-        }
-        let rows: Vec<omnicrawl_controllers::control::PluginWorkerRow> = self
-            .plugins
-            .status_rows()
-            .iter()
-            .map(commands::plugin_row)
-            .collect();
-        omnicrawl_controllers::control::plugins_status_text(Some(&(self.plugins.enabled(), rows)))
     }
 
     /// 后台 SubAgent 任务的查询与取消：内核持有任务管理器，走一次快速往返。

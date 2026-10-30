@@ -59,12 +59,7 @@ impl App {
             },
             user_agent: USER_AGENT.to_string(),
             system_prompt,
-            context_messages: match self.prompt.context_messages_with_plugins(
-                true,
-                Some(self.plugins.as_ref()),
-                None,
-                None,
-            ) {
+            context_messages: match self.prompt.context_messages(true) {
                 Ok(messages) => messages,
                 Err(error) => {
                     // `unwrap_or_default` 会让模型静默地收不到项目规范 / Skill / 运行环境，
@@ -149,8 +144,6 @@ impl App {
             }),
             model: Some(Box::new(model)),
             session,
-            // TUI 总是持有插件运行期：声明能力，内核才会在模型请求前发 `model.hook`。
-            plugin_model_hooks: true,
             // 淘汰运行期已装配就声明能力：内核才会把「刚变老」的那一批交回来裁决。
             tool_call_prune: self
                 .prune
@@ -224,8 +217,6 @@ impl App {
             // 模态页先收起来：设置页要靠内核落地，留着只会盖住报错。
             self.settings = None;
             self.state.fail_turn(KERNEL_LOST_MESSAGE.to_string());
-            self.plugins
-                .turn_error(KERNEL_LOST_MESSAGE, None, self.current_turn_id().as_deref());
             // 现场仍在（消息流、工具卡、报错都在原位），再补一条「怎么退出、怎么恢复」。
             self.state.notice(self.kernel_lost_hint());
             self.state.set_status(Some(KERNEL_LOST_STATUS.to_string()));
@@ -362,8 +353,6 @@ impl App {
         self.send(Command::TurnCancel(omnicrawl_ipc::TurnCancelParams {
             turn_id: turn_id.clone(),
         }));
-        // 取消也是回合结束：插件侧发 `turn.cancelled`（通知类，失败不阻断收尾）。
-        self.plugins.turn_cancelled(None, Some(turn_id.as_str()));
         // 先回收正在跑的进程树与这个回合的后台任务，再卸下批次：迟到的结果会被忽略。
         self.registry.cancel_token().cancel();
         self.registry

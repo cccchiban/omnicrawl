@@ -1545,7 +1545,7 @@ impl AppState {
                     self.touch_appended();
                 }
             }
-            // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
+            // 压缩计量与模型观测点只用于宿主侧计量，不改动对话视图；
             // 压缩的可见边界由内核另发的 `turn.notice`（「已压缩：N Token」）落到会话流。
             HostEvent::ModelResponseAfter(_) | HostEvent::ModelRequestError(_) => {}
         }

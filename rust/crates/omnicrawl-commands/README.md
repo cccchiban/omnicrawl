@@ -20,8 +20,7 @@
    实现的方法），因此本 crate 不依赖任何宿主，也不会与 `omnicrawl-host` 互相引用。
    宿主缺哪项能力就必须显式返回 `AgentError`（如「会话列表读取失败：…」），只有 Python
    本身写了兜底的分支才给默认实现：`config_environment`（进程环境）、`compaction_notice`
-   （空串）、`skill_metas`（`None` → 「Skill 子系统未启用。」）、`plugins_status`（`None`
-   → 「插件状态接口不可用。」）。
+   （空串）、`skill_metas`（`None` → 「Skill 子系统未启用。」）。
 
 2. **延迟执行把宿主当参数**。Python 的 `deferred` 是无参闭包（闭包捕获了 agent）；
    Rust 的 `DeferredCommand = Box<dyn FnOnce(&dyn CommandAgent) -> CommandResult + Send>`
@@ -73,4 +72,4 @@ cd rust && cargo test -p omnicrawl-commands && cargo clippy -p omnicrawl-command
 `src/framework.rs` 与 `src/slash.rs` 的 `#[cfg(test)] mod tests` 覆盖：注册与别名冲突、
 解析与整词别名、未命中哨兵、延迟执行的惰性、候选菜单（`insert` 与命令名一致、Skill 候选不带
 `parameters` 键）、帮助文本、工具确认文案、`/review` 报告渲染与前置检查、会话/历史/Skill/
-插件/子任务的展示文案、远端通道对 `/approval:auto`、`/quit`、`/settings` 的拒绝。
+子任务的展示文案、远端通道对 `/approval:auto`、`/quit`、`/settings` 的拒绝。

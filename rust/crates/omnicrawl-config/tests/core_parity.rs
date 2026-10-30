@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omnicrawl_config::core::bootstrap::{self as B, NodeProbe, PluginRow, StartupPorts};
+use omnicrawl_config::core::bootstrap::{self as B, StartupPorts};
 use omnicrawl_config::core::runtime as R;
 use omnicrawl_config::core::settings as S;
 use omnicrawl_config::core::workspace as W;
@@ -353,68 +353,6 @@ fn settings_mcp_matches_python() {
 }
 
 #[test]
-fn bootstrap_node_matches_python() {
-    let data = fixture();
-    for case in data["bootstrap_node"].as_array().unwrap() {
-        let name = case["name"].as_str().unwrap();
-        let probe_case = &case["case"];
-        let probe = match probe_case.get("node") {
-            None | Some(Json::Null) => NodeProbe::Missing,
-            Some(_) => match probe_case.get("raise") {
-                Some(Json::String(error)) => NodeProbe::Failed {
-                    error: error.clone(),
-                },
-                _ => NodeProbe::Version {
-                    version: probe_case["output"].as_str().unwrap().trim().to_string(),
-                    npm_available: !matches!(probe_case.get("npm"), None | Some(Json::Null)),
-                },
-            },
-        };
-        let check = B::check_node(&|| probe.clone());
-        let expected = case["check"].as_array().unwrap();
-        assert_eq!(check.name, expected[0].as_str().unwrap(), "{name}");
-        assert_eq!(check.status, expected[1].as_str().unwrap(), "{name}");
-        assert_eq!(check.message, expected[2].as_str().unwrap(), "{name}");
-    }
-}
-
-#[test]
-fn bootstrap_plugin_matches_python() {
-    let data = fixture();
-    for case in data["bootstrap_plugin"].as_array().unwrap() {
-        let name = case["name"].as_str().unwrap();
-        let config = json_object_to_table(&case["config"]);
-        let rows: Vec<PluginRow> = case["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| PluginRow {
-                error: row
-                    .get("error")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                enabled: row
-                    .get("enabled")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-            })
-            .collect();
-        let failing = case["raise"].as_bool().unwrap();
-        let check = B::check_plugin_state(&config, &|| {
-            if failing {
-                Err("注册表不可读".to_string())
-            } else {
-                Ok(rows.clone())
-            }
-        });
-        let expected = case["check"].as_array().unwrap();
-        assert_eq!(check.name, expected[0].as_str().unwrap(), "{name}");
-        assert_eq!(check.status, expected[1].as_str().unwrap(), "{name}");
-        assert_eq!(check.message, expected[2].as_str().unwrap(), "{name}");
-    }
-}
-
-#[test]
 fn bootstrap_report_matches_python() {
     let data = fixture();
     let setup = |overrides: &Json| -> B::StartupSetup {
@@ -485,11 +423,7 @@ fn report_case_descriptor(index: usize) -> Json {
         }),
         4 => json!({
             "api_key_prompted": true,
-            "checks": [
-                ["模型配置", "ok", "默认模型：GPT-5 (gpt-5)"],
-                ["Node.js", "warning", "未检测到 Node.js；插件功能暂不可用。"],
-                ["插件状态", "ok", "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"],
-            ],
+            "checks": [["模型配置", "ok", "默认模型：GPT-5 (gpt-5)"]],
         }),
         other => panic!("用例 {other} 缺少构造参数"),
     }
@@ -540,11 +474,6 @@ fn bootstrap_initialize_matches_python() {
         let prompt_value = case["prompt"].as_str().map(str::to_string);
         let prompt_port = move |_message: &str| -> Option<String> { prompt_value.clone() };
 
-        let node_probe = || NodeProbe::Version {
-            version: "v20.11.0".to_string(),
-            npm_available: true,
-        };
-        let plugin_rows = || -> Result<Vec<PluginRow>, String> { Ok(Vec::new()) };
         let ports = StartupPorts {
             read_template: &read_template,
             channel_setup: if channel_setup {
@@ -557,8 +486,6 @@ fn bootstrap_initialize_matches_python() {
             } else {
                 Some(&prompt_port)
             },
-            node_probe: &node_probe,
-            plugin_rows: &plugin_rows,
         };
 
         let setup = B::initialize_user_configuration(&env, Some(&case_dir), &ports)

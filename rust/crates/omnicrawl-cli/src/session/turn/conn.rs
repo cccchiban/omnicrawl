@@ -35,8 +35,6 @@ pub(crate) struct Conn {
     pub(crate) model: Option<KernelModelConfig>,
     /// 宿主交来的会话配置：有它内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
     pub(crate) session: Option<KernelSession>,
-    /// 宿主是否支持插件模型 Hook：声明后才发 `model.hook` 请求（否则不阻住回合）。
-    pub(crate) plugin_model_hooks: bool,
     /// 宿主是否支持工具调用淘汰裁决：声明后才发 `context.prune`（否则不阻住回合）。
     pub(crate) tool_call_prune: bool,
     /// 本回合模型请求的用量累计与最近一次请求消息（压缩判定与前缀复用都要用）。
@@ -272,7 +270,6 @@ impl Conn {
                 if let Some(config) = model_config_of(frame.params.as_ref()) {
                     self.model = Some(*config);
                 }
-                self.plugin_model_hooks = plugin_model_hooks_of(frame.params.as_ref());
                 self.tool_call_prune = tool_call_prune_of(frame.params.as_ref());
                 if let Some(settings) = session_config_of(frame.params.as_ref()) {
                     match KernelSession::open(*settings) {

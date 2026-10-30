@@ -174,7 +174,6 @@ fn runner_with_custody(
         tool_timeout_seconds: 5,
         attach_vision_images: false,
         client_name: "omnicrawl-host-test".to_string(),
-        plugins: None,
         review: None,
         custody,
         // 不做工具调用淘汰：测试只关心提问托管的分支。
@@ -311,7 +310,6 @@ fn runner_with_both_suggestions(
         tool_timeout_seconds: 5,
         attach_vision_images: false,
         client_name: "omnicrawl-host-test".to_string(),
-        plugins: None,
         review: None,
         custody: None,
         prune: None,
@@ -1215,7 +1213,6 @@ fn skill_runner_options(
         tool_timeout_seconds: 5,
         attach_vision_images: false,
         client_name: "omnicrawl-host-test".to_string(),
-        plugins: None,
         review: None,
         custody: None,
         prune: None,

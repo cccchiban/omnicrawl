@@ -6,7 +6,7 @@ use super::model_port::{ActiveAssistantSlot, build_model_runtime, parse_options,
 
 use super::protocol::{PortFailure};
 
-use super::turn::{Conn, serve_model_hook};
+use super::turn::Conn;
 
 /// 工具端口：整批交给宿主执行，按调用顺序取回观察。
 pub(super) struct RemoteTools {

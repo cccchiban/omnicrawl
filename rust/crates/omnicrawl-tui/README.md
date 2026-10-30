@@ -17,7 +17,7 @@
 | `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
 | `src/image_archive.rs` | 粘贴图片的落盘：发送时把 `Ctrl+V` 的剪贴板位图写进 `.omnicrawl/.agent_tmp/images/`，路径追加进提问正文 |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：本地 Kokoro-82M ONNX 推理（`onnx` feature，宿主固定开启，需系统 espeak-ng 做音素化）、音频 I/O、音色库、模型下载与本地播放 |
-| `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
+| `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表 |
 | `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`form.rs` 表单页字段表、`picker.rs` 模型发现状态与 token 折算） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
 
@@ -297,8 +297,8 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 - **候选来源**：`src/commands.rs` 的 `command_options()` 取统一命令源的 `registry().options(false)`，启动时交给输入框（`Composer::set_commands`）；输入框每次文本变化自己重刷菜单，不必在每个改动点手动同步。
 - **选择键**：菜单开着时 `Up`/`Down` 在候选间移动、`Enter`/`Tab` 只补全而**完整命令放行提交**（否则 `/settings` 这类无参数命令永远打不开）；菜单收起时这些键照旧归输入框与消息区。
 - **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
-- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
-- **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 插件 `workspace.switch.before`（拒绝即中止，旧 Worker 不动；失败时补发 `workspace.switch.error`）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。与 Python 的已知差异：`before`/`after` 由 `PluginHost::switch_workspace` 一次发出，因此钩子相对「候选装配」的先后与 Python 不同源（见「本阶段的边界」）。
+- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
+- **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。切换是事务式的：候选装配失败时旧运行态原样保留。
 - **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 窗口受理提示与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` 可覆盖。握手时下发的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled` 缺省开启时），`compaction` 由 `[context_compaction]` 整段映射（触发阈值优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）—— 内核不读配置文件，不给就等于回落默认值（摘要预算 2000 token、记忆回写关闭），用户配置形同没写。
   内核按 Python 的口径把工具事件一并落进转录：每次模型请求工具先落 `tool_call_requested`（公开参数 + 本批 assistant 原文的 `assistant_content` / 思考回传字段 / `function_name`），整批执行且输出预算/视觉/压缩处理过之后落 `tool_result`（`output` 展示全文、`model_output` 模型可见输出，超长输出由会话存储落 artifact），被拒绝的调用另有 `tool_call_denied`；因此回放出的历史页能还原工具卡，`/undo` 的 `event_ids` 也自然覆盖这些事件。已知缺口只剩两处：`tool_call_approved` 仍未落盘（审批在宿主侧完成，协议里还没有宿主→内核的审批通知），以及宿主协议观察不带 `ui_artifact`，事件里按 Python 缺省写 `{}`。子代理内部的工具调用**不落父会话**（Python 的 `persist_session_events=False` 口径）。
 - **异步内核往返**：命令层的接口是同步的、内核链路是异步帧，因此 `/undo`、`/compact` 与 `/review` 由宿主在进命令层之前拦下、异步下发（响应按请求 id 回填，状态行随回执收起）。`/review` 必须走异步：评审子 Agent 的工具批次要回到宿主执行，同步等待会与 `tool.batch` 互相卡死；它先在宿主侧跑 git 预检（复用命令层的 `check_review_preconditions`），回执到了先渲染报告、再发一条 `session.append` 把报告注入内核上下文（下一轮请求可见）。
@@ -380,8 +380,8 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 `Backspace` / `Delete` 碰到它就整块删掉，`←` / `→` 也整块跳（用户要求，改起来更顺手）。
 
 **启动页**：准备完成后的停留从 0.5s 调到 **1s**（`SPLASH_HOLD_AFTER_DONE_SECONDS`），方便看清日志；
-插件加载诊断（如「已加载 0 个插件，0 个 Handler。」`）与工具声明数一样进启动页右侧的日志框，
-**不再写进对话流**——以前它们会作为 notice 记入消息流，把首屏的 OmniCrawl 块状 Logo 顶掉。
+工具声明数进启动页右侧的日志框，**不写进对话流**——否则会作为 notice 记入消息流，
+把首屏的 OmniCrawl 块状 Logo 顶掉。
 
 **终端不支持 bracketed paste 时的粘贴兜底**（`src/paste.rs`）：conhost 等终端不发 bracketed paste 序列，
 粘贴会退化成一串普通按键，其中的换行被当成 `Enter`——于是「第一行被提交、后面的行逐条排队」。
@@ -575,7 +575,7 @@ Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，
 
 尚未接线（一律给出「暂不可用＋原因」，不退化成一次模型对话）：无。
 已接线的更新：`/workspace` 走宿主的运行中切换（解析校验 → 子 Agent 排空与 worktree 拦阻 →
-工作线程装配新工具表/MCP/提示词运行时 → 插件 `workspace.switch.before`（拒绝即中止）→
+工作线程装配新工具表/MCP/提示词运行时 →
 收尾旧工作区的 MCP 与后台任务 → 提交并下发 `session.settings`，再请内核在同一会话转录
 `workspace_switched`）；
 `/mcp` 走宿主工具表的 `McpClientManager::format_status()`（工作线程读）；
@@ -635,7 +635,6 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 会话管理 | 已实现 | 列出当前工作区最近会话（标题 + 条数），`↑↓` 选、`D` **连按两次**确认删除、`R` 刷新、`Esc` 返回。删除走内核 `session.delete`（转录 + 关联 artifact + 索引条目一并移除），**不可逆**；当前会话标 `（当前）` 且拒绝删除，界面先给出原因而不是按了没反应。列表在进入该页时按需读取一次（`session.list`），删除成功后就地摘行并回执，失败原因写在状态行 |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
-| 插件功能 | 已实现 | 写回 `plugins.enabled`，随即走 `PluginHost::set_enabled` 事务式重建 Worker 与执行计划（与 API 的 `PUT /settings/features` 同一入口），本会话即刻生效；重建诊断显示在状态行 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭（只画名称与 `已启用`/`已关闭`，不带括号说明），写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调） |
 | 联网搜索 | 已实现 | 左栏独立一级项（不再挂在工具设置页里）：`搜索引擎`（duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / anysearch / tinyfish / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key` + `AnySearch API Key` + `TinyFish API Key` + `GitHub Token`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，保存后留在本页；凭据只渲染掩码（未配显示 `（未配置）`），**留空或保持掩码＝不改动**（AnySearch 与 GitHub Token 留空即走匿名额度 / 公开搜索页），刚录入的明文在保存回填时立即换回掩码 |
 | 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://jevtypesafeai.com/api` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，两项：`jev`（Jev 原生接口，`POST {base_url}/v1/decide`）与 `chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前九项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索按渠道排序**：每一路渠道结果单独处理（先本地 BM25 定基序，再把这 10 条交给决策模型重排），定序后每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄（见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；联网搜索的 BM25 排序**不是开关**：它固定启用（本地按 k1=1.2 / b=0.75 算分，中文按二字片段切分，每路留 5 条），不需要模型渠道；该路候选一个查询词都没命中时，BM25 没有可依据的名次，基序退化为引擎原顺序；开关关着时只用 BM25，开关开着但决策服务不可用时同样落回 BM25，搜索不会失败（见 `omnicrawl-host/src/tools/web_search.rs` 的 `channel_ranking` 与 `omnicrawl-extensions` 的 `bm25` 模块）；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；`tool_suggestion`（新提问自动建议工具）开启后你每发一条新提问，宿主先只拿这条提问的正文（不带历史）与工具表里全部已启用工具（每项为名字 + 描述首句，截断 24 字）问决策模型「本次该用哪些工具」，概率 ≥0.5 进建议名单并在提问尾部追加一行「当前请求建议调用tool：…」（会话区把这一行挂在 `user：` 标签之后，正文另起行），兜底判定为普通对话时不插入任何内容，决策服务不可用时提问原文照发；`subagent_suggestion`（新提问自动建议子代理）与它形状相同、互相独立：候选换成与 `subagent` 工具参数枚举同源的角色清单（角色名 + 描述首句，截断 24 字），兜底判定为普通对话时不插入任何内容，建议行是「当前请求建议使用子代理：explore、plan。」；**两项同时开启时两条请求并发发起，总耗时取两者的较大者而不是相加**（见 `omnicrawl-host/src/tools/decision_suggest.rs`），任一开关变更即时重建建议运行期 |
@@ -708,7 +707,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    `CancelToken` 带过去，否则一次开关会把在跑的后台任务从宿主账上抹掉。思考显示改的是界面状态本身。
 3. 内核侧：发协议 v1 的 `session.settings` 做热更新（模型与整条渠道、工具声明、上下文窗口与压缩阈值、
    推理强度）。内核拒绝（如未持有模型配置）时，状态行如实追加「内核未接受即时更新（原因），将在下次会话生效。」
-   ——配置已落盘、宿主侧已生效，不回滚也不掩饰。没有对应协议字段的项（思考显示、记忆/插件开关）不发帧。
+   ——配置已落盘、宿主侧已生效，不回滚也不掩饰。没有对应协议字段的项（思考显示、记忆开关）不发帧。
 
 已知差异：左栏列表与工具列表超出可视高度时按选中项滚动，不做 Python 的滚动条与实际滚动动画；
 右侧面板状态文本按面板各自保存（Python 是每个面板实例各存一份，效果一致）；
@@ -799,12 +798,12 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    点击工具卡省略提示行展开完整正文、展开态点击卡片收起、点击思考段切换折叠（见上文「生成期间的
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）；子代理改走独立窗口（见上文「子代理独立窗口」）。
-   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
+   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
    `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/programming`、`/workspace` 能真正执行；
    `/mcp` 已接线（见上文）；
    `/skill:<名>` 是运行期命令（Skill 不在注册表里）：命中时先经 `session.settings` 把技能正文下发为本轮上下文、
    回合收尾再换回常规上下文，未命中时把带可用名称的说明当本轮文本；菜单候选与实际可执行的清单同源（`command_options_with_skills`）；设置面板的一级菜单全部落地
-   （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、插件、顾问、工具输出压缩、视觉、
+   （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、顾问、工具输出压缩、视觉、
    图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP）；
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
    自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的
@@ -849,7 +848,7 @@ debug 27 s，实测很像是卡死）。
 
 测试分五层：
 
-- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、轮播装配与底部行截断、消息流各消息类型（用户标签/思考底色/工具卡无边框 + 正文来源与折叠规律）、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；**渲染热路径另有四条专门的回归**：
+- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、轮播装配与底部行截断、消息流各消息类型（用户标签/思考底色/工具卡无边框 + 正文来源与折叠规律）、面板高度、路径安全、命令采样、工具执行体、命令能力面；**渲染热路径另有四条专门的回归**：
   `ui::conversation::tests::cache_matches_a_full_rebuild_across_every_mutation` 把真实会话里会出现的
   变化逐步对拍「增量显示行 == 从零重算」（哪个变更点漏打脏标记就会在这里失败）；
   `cache_recomputes_only_the_stale_records` 钉住「流式追加只重算一条记录、空转刷新一次都不重算」；

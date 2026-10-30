@@ -826,7 +826,6 @@ fn schemas() -> Value {
             "type": "object",
             "properties": {
                 "memory": {"type": "boolean"},
-                "plugins": {"type": "boolean"},
                 "subagents": {"type": "boolean"},
                 "show_thinking": {"type": "boolean"},
             },

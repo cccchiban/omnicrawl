@@ -1,8 +1,7 @@
 # 宿主桥接协议 v1
 
 内核（Rust）与宿主（Node/TS 启动器、TUI、过渡期的 Python 宿主）是两个进程，只用一条
-NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`omnicrawl/extensions/node_runner.mjs`）
-相同，宿主不必为内核另写一套解帧逻辑。
+NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
 
 实现与类型定义：`rust/crates/omnicrawl-ipc`（`frame` / `version` / `bridge`）。
 
@@ -44,7 +43,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
-| `initialize` | 请求 | `{protocol_version, client?, model?, session?, plugin_model_hooks?}` | `{protocol_version, session_id}` |
+| `initialize` | 请求 | `{protocol_version, client?, model?, session?, tool_call_prune?}` | `{protocol_version, session_id}` |
 | `turn.submit` | 请求 | `{turn_id, user_text, images?}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `turn.undo` | 请求 | `{}` | `{kind, message_count, side_effects_reverted, unrestorable, history}` |
@@ -79,9 +78,8 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 `config.toml` 里那条渠道的明文密钥，内核发请求时原样使用，不再读环境变量；留空表示未配置
 凭据，内核会在每回合开始就以「缺少 API Key」失败。
 
-`initialize` 的 `plugin_model_hooks`（缺省 false）是宿主对插件模型 Hook 的能力声明：声明后内核
-在每次模型请求前发 `model.hook`（见「内核 → 宿主」请求表），未声明则不发，因此只实现协议最小集
-的兼容宿主不受影响。TUI 与本地 API 都声明。
+`initialize` 的 `tool_call_prune`（缺省 false）是宿主对工具调用淘汰裁决的能力声明：声明后内核
+会把「刚变老」的那批调用交回来裁决，未声明则不发，因此只实现协议最小集的兼容宿主不受影响。
 
 ```json
 {"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key": "<密钥>",
@@ -248,12 +246,6 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | --- | --- | --- |
 | `tool.batch` | `{turn_id, step, calls: [ToolCall], workspace_root?}` | `{observations: [AgentLoopObservation]}` |
 | `model.reply` | `{turn_id, messages: [Value]}` | AgentModelReply：`{message, content, tool_calls, reasoning, content_streamed}` |
-| `model.hook` | `{messages: [Value], model}` | `{messages: [Value]}`（插件改写后的消息）；拒绝时回错误响应 |
-
-`model.hook` 只在宿主于 `initialize` 声明 `plugin_model_hooks: true` 时使用：内核在发出模型请求前
-请宿主跑 `model.request.before`（transform + guard）。插件放行时宿主回（可改写的）消息；插件拒绝时
-宿主回错误响应，`error.message` 就是插件的拒绝文案，内核据此中止本轮（与 Python `_plugin_denial_error`
-同口径）。未声明的宿主不会收到该请求，也就不会因等不到响应而阻住回合。
 
 `tool.batch` 是刻意保留的批次边界：宿主必须先完成整批规范化与审批，再按 `calls` 顺序返回**同数量**
 的观察。数量不符时内核按协议错误处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
@@ -364,11 +356,6 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   `-32601` 而不是断开连接。
 - v1 只协商版本，不协商能力位；等真的出现可选能力再加，避免空壳字段。
 
-## 与插件通路的关系
-
-插件走自己的 NDJSON JSON-RPC（`hook.invoke` / `hook.cancel` 等），由内核的插件宿主拉起独立 Node
-进程；宿主不与插件直接通信。两条通路的帧形状相同，但方法空间互相独立。
-
 ## 当前实现：`omnicrawl-cli`
 
 `rust/crates/omnicrawl-cli` 提供 `omnicrawl` 二进制，已实现握手状态机（未握手前其他请求回 `-32600`）、
@@ -392,9 +379,7 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 - **内核自产的收尾事件**：`turn.finished`、`turn.context_compaction`、`turn.model_response_after`、
   `turn.model_request_error`。`turn.context_compaction` 的触发点在回合收尾的压缩判定
   （`_trigger_context_compaction_after_turn`）：只有 `trigger_reached` 的回合才发，载荷是压缩前的
-  上下文计量。模型的两条分别对应一次模型请求成功返回与以协议错误终结。宿主收到这些通知后
-  分发同名插件 Hook（`context.compaction.after_turn` / `model.response.after` / `model.request.error`）
-  ——插件运行期在宿主侧，而触发点在 agent runtime（内核侧）。
+  上下文计量。模型的两条分别对应一次模型请求成功返回与以协议错误终结。
 - **压缩后的上下文计量**（`post_compaction_context_tokens`，可选字段）：压缩发生在回合收尾之后，
   此后不会再发模型请求，`turn.token_usage` 会一直停在压缩前那次的用量上。内核在两条压缩路径上
   把这个数发给宿主，宿主据此把上下文占用刷成压缩后的真实大小：

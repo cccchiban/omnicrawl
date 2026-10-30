@@ -5,8 +5,8 @@ use super::*;
 impl AppState {
         /// 待决审批对应的调用（工具名 + 当前参数）；没有待决审批时 `None`。
         ///
-        /// 拒绝时的 MCP 审计要用它，而且要用批次里的**当前**参数：插件可能在
-        /// `tool.call.before` 里改写过参数，审计应与用户看到的、执行层拿到的版本一致。
+        /// 拒绝时的 MCP 审计要用它，而且要用批次里的**当前**参数——审计应与用户看到的、
+        /// 执行层拿到的版本一致。
         pub fn pending_approval_call(&self) -> Option<omnicrawl_core::ToolCall> {
             let batch = self.batch.as_ref()?;
             if !matches!(batch.waiting(), Some(host::Waiting::Approval(_))) {
@@ -89,77 +89,6 @@ impl AppState {
             self.batch = Some(batch);
             self.touch_composer();
             Some(step)
-        }
-
-        /// 插件改写调用参数（`tool.call.before` 的 transform 结局）；无批次时返回 `false`。
-        pub fn rewrite_call_arguments(
-            &mut self,
-            index: usize,
-            arguments: serde_json::Map<String, serde_json::Value>,
-        ) -> bool {
-            let changed = match self.batch.as_mut() {
-                Some(batch) => batch.rewrite_arguments(index, arguments),
-                None => false,
-            };
-            self.touch_composer();
-            changed
-        }
-
-        /// 插件守卫当前待决审批。
-        ///
-        /// `guard` 返回 `Ok(Some(arguments))` 表示插件改写了参数（回写完继续弹审批面板）；
-        /// `Ok(None)` 表示放行；`Err(reason)` 表示拒绝（写入插件给出的文案并推进批次，
-        /// 与 `decide_approval(false)` 的差别只在拒绝文案来源）。返回值 `Some(step)` 表示
-        /// 批次已被推进，调用方要接着按新步骤处理。
-        pub fn guard_pending_approval<F>(&mut self, guard: F) -> Option<host::BatchStep>
-        where
-            F: FnOnce(
-                &omnicrawl_core::ToolCall,
-            ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String>,
-        {
-            // 插件改写参数或拒绝都会重绘待决面板：包一层统一置脏。
-            let step = self.guard_pending_approval_inner(guard);
-            self.touch_composer();
-            step
-        }
-
-        pub(super) fn guard_pending_approval_inner<F>(&mut self, guard: F) -> Option<host::BatchStep>
-        where
-            F: FnOnce(
-                &omnicrawl_core::ToolCall,
-            ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String>,
-        {
-            let mut batch = self.batch.take()?;
-            let current = match batch.current() {
-                Some((index, call)) if matches!(batch.waiting(), Some(host::Waiting::Approval(_))) => {
-                    Some((index, call.clone()))
-                }
-                _ => None,
-            };
-            let Some((index, call)) = current else {
-                self.batch = Some(batch);
-                return None;
-            };
-            match guard(&call) {
-                Ok(Some(arguments)) => {
-                    batch.rewrite_arguments(index, arguments);
-                    self.batch = Some(batch);
-                    None
-                }
-                Ok(None) => {
-                    self.batch = Some(batch);
-                    None
-                }
-                Err(reason) => {
-                    batch.record_result(index, host::denied_with_reason(&reason), None);
-                    let step = {
-                        let mut ctx = self.context();
-                        batch.decide(true, &mut ctx)
-                    };
-                    self.batch = Some(batch);
-                    step
-                }
-            }
         }
 
         /// 执行层回填一个调用的结果；返回是否整批就绪。

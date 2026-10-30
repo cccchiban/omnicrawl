@@ -308,7 +308,7 @@ fn builtin_roles_are_discovered_without_any_user_definition() {
     .expect("内置角色目录");
     // 隔离 home 下不放任何用户定义：角色清单只能来自内置层。
     let mut registry = AgentDefinitionRegistry::new(builtin, Some(base.join("home")));
-    registry.discover(&base.join("ws"), &[]);
+    registry.discover(&base.join("ws"));
     let mut names: Vec<String> = registry
         .list_all()
         .iter()
@@ -349,20 +349,8 @@ fn discovery_matches_python() {
         }
         std::fs::write(&target, content.as_str().expect("内容")).expect("写文件");
     }
-    let plugins: Vec<(String, PathBuf)> = data["plugins"]
-        .as_array()
-        .expect("plugins")
-        .iter()
-        .map(|item| {
-            (
-                item["name"].as_str().expect("name").to_string(),
-                base.join(item["path"].as_str().expect("path")),
-            )
-        })
-        .collect();
-
     let mut registry = AgentDefinitionRegistry::new(base.join("builtin"), Some(base.join("home")));
-    registry.discover(&base.join("ws"), &plugins);
+    registry.discover(&base.join("ws"));
 
     let expected_definitions = data["definitions"].as_array().expect("definitions");
     let actual: Vec<(String, String, String)> = registry
@@ -925,7 +913,7 @@ fn build_registry(paths: &Paths, data: &Value) -> AgentDefinitionRegistry {
             .expect("写定义文件");
     }
     let mut registry = AgentDefinitionRegistry::new(builtin, Some(base.join("home")));
-    registry.discover(&base.join("ws"), &[]);
+    registry.discover(&base.join("ws"));
     registry
 }
 

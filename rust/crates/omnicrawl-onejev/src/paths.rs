@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 
+/// 载荷目录的环境变量名：显式指定时优先于所有自动搜索。
+pub const RUNNER_DIR_ENV: &str = "OMNICRAWL_RUNNER_DIR";
+
 /// 默认数据根目录（`<home>/.omnicrawl/onejev`）。
 pub fn default_root(env: &ConfigEnvironment) -> PathBuf {
     env.home()
@@ -63,15 +66,55 @@ pub fn venv_qev(root: &Path) -> PathBuf {
     }
 }
 
-/// 本地判定 worker 的文件名（与插件 Worker 同放 `extensions/`，随宿主载荷分发）。
+/// 本地判定 worker 的文件名（放在 `extensions/` 下，随宿主载荷分发）。
 pub const WORKER_FILENAME: &str = "onejev_worker.py";
 
-/// worker 脚本路径：按插件 Worker 同一套目录约定找 `extensions/onejev_worker.py`。
+/// worker 脚本所在目录的搜索顺序（去重后按序探测）：
+///
+/// 1. `OMNICRAWL_RUNNER_DIR`（npm 启动器与打包脚本用它注入）；
+/// 2. 可执行文件目录及其各级祖先下的 `extensions/`，以及仓库检出里的
+///    `rust/assets/extensions/` 与旧布局的 `omnicrawl/extensions/`；
+/// 3. 进程工作目录下的同三级（开发联调时直接从仓库根运行）。
+fn runner_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |dir: PathBuf| {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+
+    if let Some(value) = std::env::var_os(RUNNER_DIR_ENV) {
+        let text = value.to_string_lossy().trim().to_string();
+        if !text.is_empty() {
+            push(PathBuf::from(text));
+        }
+    }
+
+    if let Ok(executable) = std::env::current_exe() {
+        let mut current = executable.parent().map(Path::to_path_buf);
+        while let Some(directory) = current {
+            push(directory.join("extensions"));
+            push(directory.join("rust").join("assets").join("extensions"));
+            push(directory.join("omnicrawl").join("extensions"));
+            current = directory.parent().map(Path::to_path_buf);
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        push(cwd.join("extensions"));
+        push(cwd.join("rust").join("assets").join("extensions"));
+        push(cwd.join("omnicrawl").join("extensions"));
+    }
+
+    dirs
+}
+
+/// worker 脚本路径：在 [`runner_search_dirs`] 里找 `extensions/onejev_worker.py`。
 ///
 /// 本机服务不再用官方 `qev serve`，而是由这个脚本直接驱动引擎并在管道上服务，
 /// 所以它必须与二进制一起分发；找不到时返回候选路径，由调用方给出可读报错。
 pub fn worker_script_path() -> PathBuf {
-    omnicrawl_extensions::protocol::runner_search_dirs()
+    runner_search_dirs()
         .into_iter()
         .map(|directory| directory.join(WORKER_FILENAME))
         .find(|candidate| candidate.is_file())

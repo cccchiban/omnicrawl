@@ -158,13 +158,6 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
   旧快照缺 `owner_pid` 时按 0 处理，与 `pid_is_running(0)` 为假一致，仍会被收敛。
 - 管理面读的是磁盘上的 `config.toml` 与运行期管理器，Python 读的是 Agent 内存态；两者只在
   「有别的进程改过配置」时有差别。
-- 设置写端点没有「运行态」可回滚（先校验、再原子落盘）；`PUT /settings/features` 的 `plugins`
-  写盘之后会调 `AgentService::set_plugins_enabled` 热切换运行期（事务式重建 Worker 与执行计划，
-  失败回 `502 PLUGIN_RUNTIME_FAILED`；未装配插件运行期的嵌入模式回 `503 PLUGIN_RUNTIME_UNAVAILABLE`），
-  响应里多出 `plugins`（运行态摘要：`enabled` / `handlers` / `diagnostics` / 插件表）与 `diagnostics`。
-  `GET /settings` 的 `features.plugins` 现在是**运行期**是否生效（原先是配置值），运行态细节在
-  同响应的 `plugins` 字段；插件运行期在 `AgentService::spawn` 装配（`options.plugins`），
-  嵌入模式（`with_runner`）默认没有。
 - `PUT /settings/mcp` 是本移植**新增**的端点：Python 侧 MCP 设置只由 Textual 工作台在进程内改，
   宿主自持 MCP 之后需要一个能写 `[mcp]` 段并立刻重连的入口。语义与同一组设置端点一致：字段全部
   可选（`enabled` / `default_timeout_seconds` / `policy` / `servers` 整表替换 /

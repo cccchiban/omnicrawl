@@ -18,11 +18,11 @@ OmniCrawl 是纯 Rust 构建的本地 AI 编程终端工作台，提供全屏 TU
 - **HTTP/SSE API**：本地服务可直接对接 Web 或桌面前端，内置 `Swagger UI` 接口文档。
 - **工具与安全**：内置文件读写、文本搜索、本地图片读取、视觉模型代理、Bash/PowerShell、Windows 桌面控制、记忆与 SubAgent 等工具，可在 `config.toml` 的 `tools` 段逐项开关。SubAgent 支持独立 Git worktree 隔离执行，其全局设置与模型配置独立存放于 `subagents.toml`（模板见 `rust/assets/config-templates/subagents.example.toml`，不再读取 `config.toml` 的 `[subagents]` 段）。
 - **统一工具分发**：Provider 顶层直接注册当前 Agent 的全部可见工具，模型以真实工具名原生调用；Host 侧统一维护完整 Schema、审批策略、MCP 能力与执行器并做二次校验（详见 `rust/assets/docs/TOOL_CALLING.md`）。
-- **扩展能力**：支持 NPM Hook 插件、Skill 技能、MCP Server 接入及自定义 `models.toml` 模型目录。
+- **扩展能力**：支持 Skill 技能、MCP Server 接入及自定义 `models.toml` 模型目录。
 
 ## 环境要求
 
-- 本体为纯 Rust 二进制，无额外运行时依赖；启用插件功能需 Node.js 20+
+- 本体为纯 Rust 二进制，无额外运行时依赖
 - 从源码构建需 Rust 1.90+（工作区 MSRV）
 
 ## 安装
@@ -56,7 +56,6 @@ omnicrawl
 `omnicrawl` 为统一命令入口（由 npm 启动器解析至当前平台的 Rust 宿主），同时提供以下子命令：
 - `omnicrawl api`：启动本地 HTTP/SSE 服务
 - `omnicrawl decision`：启动本地结构化决策模型服务
-- `omnicrawl plugin`：管理插件
 - `omnicrawl kernel`：直接运行协议内核
 
 **首次配置**：首次启动将进入命令行向导，引导填写渠道名、Provider（OpenAI / Anthropic / Gemini）、协议、Base URL、模型 ID 及凭据环境变量名。配置保存在 `~/.OmniCrawl`，配置好启用且含有效 Key 的默认渠道后即可进入工作台，其余选项可在 `/settings` 中修改。
@@ -69,7 +68,7 @@ omnicrawl
 - `Enter` 发送，`Ctrl+J` 换行，`Esc` 取消当前回合或清空输入
 - `/model <key|profile/model_id|model_id>` 切换模型；`/settings` 打开设置与渠道管理；`/approval:auto|manual|review` 切换审批模式
 - `/new` 新建对话，`/sessions` 会话列表，`/compact` 压缩上下文，`/undo` 事务级回退上一轮
-- `/skills`、`/mcp`、`/plugins` 查看技能、MCP 与插件状态
+- `/skills`、`/mcp` 查看技能与 MCP 状态
 - `Ctrl+L` 清屏，`Ctrl+Q` 退出
 
 ### 本地 HTTP/SSE API
@@ -96,7 +95,7 @@ omnicrawl api
 ```text
 omnicrawl/
 ├── rust/                       # 核心源码：内核 + 宿主 + TUI + API + MCP（纯 Rust）
-│   ├── crates/omnicrawl-entry/     # 统一入口（omnicrawl-host）：路由 TUI / api / decision / plugin / kernel / connector
+│   ├── crates/omnicrawl-entry/     # 统一入口（omnicrawl-host）：路由 TUI / api / decision / fetch / kernel / connector
 │   ├── crates/omnicrawl-cli/       # 内核进程（协议 v1 NDJSON）
 │   ├── crates/omnicrawl-tui/       # 全屏终端工作台
 │   ├── crates/omnicrawl-host/      # 宿主：工具执行、审批、审查
@@ -105,9 +104,9 @@ omnicrawl/
 │   ├── crates/omnicrawl-decision/  # 结构化决策模型本地服务
 │   ├── crates/omnicrawl-tts/       # 语音合成
 │   └── assets/docs/                # 内置技术文档（omnicrawl://docs/）
-├── packages/                   # npm 分发：启动器（平台包在发布时生成）、插件 SDK/Host
+├── packages/                   # npm 分发：启动器（平台包在发布时生成）
 ├── assets/                     # 仓库静态资源（Logo 等）
-└── tests/                      # npm 插件测试夹具
+└── tests/                      # npm 端到端测试夹具
 ```
 
 ## 开源协议

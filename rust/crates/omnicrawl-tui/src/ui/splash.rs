@@ -715,13 +715,13 @@ mod tests {
             &layout,
             &[
                 (LogLevel::Info, "加载配置".to_string()),
-                (LogLevel::Warning, "插件初始化失败".to_string()),
+                (LogLevel::Warning, "MCP 连接失败".to_string()),
             ],
         );
         let rendered = String::from_utf8(content).unwrap();
         assert!(rendered.contains("- 加载配置"), "{rendered:?}");
         assert!(
-            rendered.contains(&format!("{FG_YELLOW}! 插件初始化失败")),
+            rendered.contains(&format!("{FG_YELLOW}! MCP 连接失败")),
             "{rendered:?}"
         );
     }

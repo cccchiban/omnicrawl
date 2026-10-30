@@ -59,7 +59,6 @@ pub const ROW_ORDER: [&str; 20] = [
     "agent_workspace",
     "desensitization",
     "memory",
-    "plugins",
     "subagents",
     "sessions",
     "show_thinking",
@@ -84,7 +83,6 @@ pub fn row_label(key: &str) -> String {
         "agent_workspace" => "隔离工作区",
         "desensitization" => "消息脱敏",
         "memory" => "记忆功能",
-        "plugins" => "插件功能",
         "subagents" => "子任务设置",
         "sessions" => "会话管理",
         "show_thinking" => "思考显示",
@@ -223,12 +221,12 @@ pub fn reasoning_label(effort: &str) -> String {
 
 /// 某个单选页的候选（文案 + 取值）。
 ///
-/// 三个单选页都是开关，候选与 Python 的 SelectPane 一致；候选随环境变化的字段
+/// 两个单选页都是开关，候选与 Python 的 SelectPane 一致；候选随环境变化的字段
 /// （渠道与模型、上下文与推理档位）挂在模型管理页与表单页上，不在静态表里。
 pub fn choice_field_options(kind: ChoiceKind) -> Vec<(String, OptionValue)> {
     match kind {
-        // 「思考显示 / 记忆 / 插件」都是开关，候选与 Python 的 SelectPane 一致。
-        ChoiceKind::ShowThinking | ChoiceKind::Memory | ChoiceKind::Plugins => vec![
+        // 「思考显示 / 记忆」都是开关，候选与 Python 的 SelectPane 一致。
+        ChoiceKind::ShowThinking | ChoiceKind::Memory => vec![
             ("开启".to_string(), OptionValue::Flag(true)),
             ("关闭".to_string(), OptionValue::Flag(false)),
         ],
@@ -288,11 +286,7 @@ mod tests {
 
     #[test]
     fn choice_options_cover_every_kind() {
-        for kind in [
-            ChoiceKind::ShowThinking,
-            ChoiceKind::Memory,
-            ChoiceKind::Plugins,
-        ] {
+        for kind in [ChoiceKind::ShowThinking, ChoiceKind::Memory] {
             assert_eq!(
                 choice_field_options(kind),
                 vec![

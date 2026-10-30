@@ -39,7 +39,7 @@ impl App {
     ///
     /// 上下文取自「命令行/环境显式给定 > config.toml 的 llm 段」，压缩阈值优先用配置里记着的
     /// 百分比，没有就按阈值 Token 反推（与 Python 的 `_context_compaction_percent` 同口径）；
-    /// 记忆开关取运行期现值（`registry_options.memory_enabled`），插件开关取配置值。
+    /// 记忆开关取运行期现值（`registry_options.memory_enabled`）。
     pub(super) fn settings_values(&self) -> Result<SettingsValues, String> {
         let environment = ConfigEnvironment::from_process();
         let llm = load_llm_config(&environment)
@@ -55,8 +55,6 @@ impl App {
             ),
         };
         let show_thinking = load_show_thinking(&environment, None).unwrap_or(true);
-        let plugins =
-            load_feature_enabled(&environment, "plugins", false, None, None).unwrap_or(false);
         let model_key = self.active_model_key(&environment, &llm);
         let (channel_rows, default_channel_key) = self.channel_views(&environment);
         // 决策模型页的初值：渠道、功能开关与自部署分区（读不出来就用配置默认值）。
@@ -121,7 +119,6 @@ impl App {
             &llm.reasoning_effort,
             show_thinking,
             self.registry_options.memory_enabled,
-            plugins,
         )
         .with_form(
             FormKind::Advisor,

@@ -21,9 +21,9 @@ use omnicrawl_core::diagnostics;
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
     Command, ContextPruneRequest, ContextPruneResult, HostEvent,
-    InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelHookRequest,
-    ModelHookResult, SessionModelSettings, SessionSettingsParams, SubagentQueryParams,
-    TodoUpdatePayload, ToolBatch, ToolEventPayload, ToolStartedPayload,
+    InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
+    SessionModelSettings, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch,
+    ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
     error_code, Frame, Id, ToolBatchResult, TurnCancelParams, TurnSubmitParams, PROTOCOL_VERSION,
@@ -33,7 +33,6 @@ use serde_json::{json, Map, Value};
 use crate::approval::ApprovalMode;
 use crate::host::{self, BatchContext, BatchStep, PendingBatch, TodoItem, VisionPayload, Waiting};
 use crate::kernel::KernelClient;
-use crate::plugins::PluginHost;
 use crate::prompt::PromptRuntime;
 use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
@@ -67,8 +66,6 @@ pub struct RunnerOptions {
     pub attach_vision_images: bool,
     /// 握手时报出的宿主名，供内核诊断。
     pub client_name: String,
-    /// 插件运行期；`None` 表示无插件模式，所有 Hook 节点都退化为原样放行。
-    pub plugins: Option<Arc<PluginHost>>,
     /// 审查模型（`approval.mode = review` 时用）；`None` 表示没有审查运行期，
     /// 此模式下需审查的调用会 fail-closed 拒绝。
     pub review: Option<ReviewOptions>,
@@ -118,9 +115,6 @@ pub enum TurnError {
     KernelExited,
     /// 内核返回了错误响应。
     Rejected(String),
-    /// 插件 Hook 拒绝本轮：守卫类 Hook 的显式 deny，或 fail-closed 策略下的分发故障。
-    /// 文案已由插件控制器生成（区分「插件拒绝」与「插件超时/通信错误」），原样展示。
-    PluginDenied(String),
 }
 
 impl std::fmt::Display for TurnError {
@@ -129,7 +123,6 @@ impl std::fmt::Display for TurnError {
             Self::Cancelled => write!(formatter, "已取消当前回合。"),
             Self::KernelExited => write!(formatter, "内核进程已退出。"),
             Self::Rejected(detail) => write!(formatter, "内核拒绝该操作：{detail}"),
-            Self::PluginDenied(detail) => write!(formatter, "{detail}"),
         }
     }
 }
@@ -246,12 +239,7 @@ impl TurnRunner {
             let tool_count = model.tools.len();
             model.system_prompt = prompt.system_prompt();
             model.context_messages = prompt
-                .context_messages_with_plugins(
-                    tool_count > 0,
-                    self.options.plugins.as_deref(),
-                    None,
-                    None,
-                )
+                .context_messages(tool_count > 0)
                 .map_err(|error| format!("上下文装配失败：{error}"))?;
         }
         // 稳定前缀身份必须在工具表就位后组装：`tool_schema_hash` 参与哈希，而
@@ -265,8 +253,6 @@ impl TurnRunner {
             }),
             model: Some(Box::new(model)),
             session: self.options.session.clone().map(Box::new),
-            // 有插件运行期就声明能力：内核才会在模型请求前发 `model.hook`。
-            plugin_model_hooks: self.options.plugins.is_some(),
             // 淘汰运行期只有在装配出配置时才声明：未声明时内核永不发 `context.prune`，
             // 也就不会为一次无效裁决阻住回合。
             tool_call_prune: self
@@ -421,15 +407,8 @@ impl TurnRunner {
         prompt: Arc<PromptRuntime>,
         on_event: &mut dyn FnMut(HostEvent),
     ) -> Result<(), String> {
-        let session_id = self.session_id();
-        let plugins = self.options.plugins.clone();
         let has_tools = !self.registry.declarations().is_empty();
-        let messages = prompt.context_messages_with_plugins(
-            has_tools,
-            plugins.as_deref(),
-            session_id.as_deref(),
-            None,
-        )?;
+        let messages = prompt.context_messages(has_tools)?;
         let settings = SessionModelSettings {
             system_prompt: Some(prompt.system_prompt()),
             context_messages: Some(messages),
@@ -485,8 +464,7 @@ impl TurnRunner {
     ) -> Result<TurnOutcome, TurnError> {
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn += 1;
-        let session_id = self.session_id();
-        // `/skill:<名> [余下文本]` 在 `turn.start` 之前处理（与 Python 的
+        // `/skill:<名> [余下文本]` 在提交给内核之前处理（与 Python 的
         // `_apply_skill_command` 同位）：命中就把本轮上下文换成技能正文，未命中就换成
         // 带可用列表的说明文本。
         let mut restore_skill_context = false;
@@ -510,24 +488,7 @@ impl TurnRunner {
             Some((task, None)) => task,
             None => text.to_string(),
         };
-        let text = text.as_str();
-        // `turn.start` 在提交给内核之前分发：transform 类 Handler 可以改写 `userText`，
-        // 守卫类 Handler 拒绝时本轮根本不进内核（与 Python 的 `turn_payload` 同上位）。
-        // 拒绝时会先恢复常规上下文再返回：已经下发的活动 Skill 正文不能留到下一轮。
-        let user_text = match self.options.plugins.as_ref() {
-            Some(plugins) => {
-                match plugins.turn_start(text, session_id.as_deref(), Some(&turn_id)) {
-                    Ok(rewritten) => rewritten,
-                    Err(error) => {
-                        if restore_skill_context {
-                            self.restore_skill_context(on_event);
-                        }
-                        return Err(TurnError::PluginDenied(error.to_string()));
-                    }
-                }
-            }
-            None => text.to_string(),
-        };
+        let user_text = text.to_string();
         // 审查闸的意图摘要取本轮提交的原文（与 Python 从消息快照取的最近一条用户消息同义）。
         self.review_context.record_user_text(&user_text);
         // 提问托管的上下文按回合刷新：用户请求取本轮原文，顾问答复只算本回合的。
@@ -540,17 +501,6 @@ impl TurnRunner {
         let result = self.run_turn(&turn_id, &user_text, control, interactor, on_event);
         if restore_skill_context {
             self.restore_skill_context(on_event);
-        }
-        if let Some(plugins) = self.options.plugins.as_ref() {
-            match &result {
-                Ok(_) => plugins.turn_end(session_id.as_deref(), Some(&turn_id)),
-                Err(TurnError::Cancelled) => {
-                    plugins.turn_cancelled(session_id.as_deref(), Some(&turn_id))
-                }
-                Err(error) => {
-                    plugins.turn_error(&error.to_string(), session_id.as_deref(), Some(&turn_id))
-                }
-            }
         }
         result
     }
@@ -588,12 +538,7 @@ impl TurnRunner {
             return;
         };
         let has_tools = !self.registry.declarations().is_empty();
-        let Ok(messages) = prompt.context_messages_with_plugins(
-            has_tools,
-            self.options.plugins.as_deref(),
-            self.session_id().as_deref(),
-            None,
-        ) else {
+        let Ok(messages) = prompt.context_messages(has_tools) else {
             return;
         };
         let params = SessionSettingsParams {
@@ -790,31 +735,6 @@ impl TurnRunner {
                     }
                 }
             }
-            Some(method) if method == omnicrawl_ipc::bridge::method::MODEL_HOOK => {
-                match ModelHookRequest::from_frame(&frame) {
-                    Ok(request) => match self.run_model_hook(request) {
-                        Ok(result) => {
-                            if let Err(error) = self.kernel.respond(&id, result.to_result()) {
-                                diagnostics::warn(format!("[host] 回 model.hook 失败：{error}"));
-                            }
-                        }
-                        Err(message) => {
-                            let _ = self.kernel.respond_error(
-                                &id,
-                                error_code::INVALID_REQUEST,
-                                &message,
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        let _ = self.kernel.respond_error(
-                            &id,
-                            error_code::INVALID_PARAMS,
-                            &format!("model.hook 负载不符：{error}"),
-                        );
-                    }
-                }
-            }
             Some(method) if method == omnicrawl_ipc::bridge::method::CONTEXT_PRUNE => {
                 match ContextPruneRequest::from_frame(&frame) {
                     Ok(request) => {
@@ -838,30 +758,6 @@ impl TurnRunner {
             }
             None => {}
         }
-    }
-
-    /// `model.request.before`：插件可改写消息；拒绝时以错误响应回填拒绝文案。
-    ///
-    /// 无插件运行期时原样放行（不会走到这里：未声明能力时内核不发该请求，
-    /// 这里只是把两条路径都收在一个地方，避免以后能力判定漂移）。
-    fn run_model_hook(&mut self, request: ModelHookRequest) -> Result<ModelHookResult, String> {
-        let ModelHookRequest {
-            mut messages,
-            model,
-        } = request;
-        let Some(plugins) = self.options.plugins.clone() else {
-            return Ok(ModelHookResult { messages });
-        };
-        let session_id = self
-            .options
-            .session
-            .as_ref()
-            .map(|session| session.session_id.clone())
-            .filter(|id| !id.is_empty());
-        plugins
-            .model_request_before(&mut messages, &model, session_id.as_deref())
-            .map_err(|error| error.message().to_string())?;
-        Ok(ModelHookResult { messages })
     }
 
     /// `context.prune`：把内核送来的「刚变老」那批调用交决策模型裁决，回可以移除的调用 ID。
@@ -918,10 +814,6 @@ impl TurnRunner {
         // 与真跑过的调用都要有卡片，且不能重复。
         let mut started = vec![false; batch.calls.len()];
         let mut finished = vec![false; batch.calls.len()];
-        // 每个调用只过一次插件守卫：人工审批路径与直接执行路径共享这份标记。
-        let mut guarded = vec![false; batch.calls.len()];
-        // 审批结论只通知一次插件（人工决定已发过的，不再在执行前重复发）。
-        let mut decided = vec![false; batch.calls.len()];
         // 审批判定要读工具说明与参数 schema：先把工具表借出来（用局部 Arc 避开 `&mut self`）。
         let registry = Arc::clone(&self.registry);
         let facts: Option<&dyn host::ToolFacts> = Some(&*registry as &dyn host::ToolFacts);
@@ -955,78 +847,31 @@ impl TurnRunner {
                     };
                     let next = match waiting {
                         Waiting::Approval(panel) => {
-                            // 与 Python 同一顺序：`tool.call.before` → `tool.approval.before` →
-                            // 人工决定 → `tool.approval.after`；被插件挡下时不再打扰用户。
-                            let mut denial: Option<String> = None;
-                            if !guarded[index] {
-                                guarded[index] = true;
-                                match self.plugin_tool_call_before(&call) {
-                                    Ok(Some(rewritten)) => {
-                                        pending.rewrite_arguments(index, rewritten);
-                                    }
-                                    Ok(None) => {}
-                                    Err(reason) => denial = Some(reason),
-                                }
-                                if denial.is_none() {
-                                    let current_arguments = pending
-                                        .calls()
-                                        .get(index)
-                                        .map(|item| item.arguments.clone())
-                                        .unwrap_or_else(|| call.arguments.clone());
-                                    if let Err(reason) = self.plugin_approval_before(
-                                        &call,
-                                        &current_arguments,
-                                        true,
-                                        batch_approval.as_str(),
-                                    ) {
-                                        denial = Some(reason);
-                                    }
-                                }
-                            }
-                            // 参数可能已被插件改写：审批面板与人工决定看改写后的版本。
                             let arguments = pending
                                 .calls()
                                 .get(index)
                                 .map(|item| item.arguments.clone())
                                 .unwrap_or(arguments);
-                            if let Some(reason) = denial {
-                                pending.record_result(
-                                    index,
-                                    host::denied_with_reason(&reason),
-                                    None,
-                                );
-                                self.plugin_approval_after(&panel.tool, false, &reason);
-                                decided[index] = true;
-                                pending.decide(
-                                    true,
-                                    &mut context(batch_approval, &mut todos, &mut paused, facts),
-                                )
+                            let approved =
+                                interactor.decide(&panel.tool, &arguments).unwrap_or(false);
+                            let reason = if approved {
+                                String::new()
                             } else {
-                                let approved =
-                                    interactor.decide(&panel.tool, &arguments).unwrap_or(false);
-                                let reason = if approved {
-                                    String::new()
-                                } else {
-                                    omnicrawl_controllers::approval::user_cancelled_reason(
-                                        &panel.tool,
-                                    )
-                                };
-                                if !approved {
-                                    // 人工拒绝的 MCP 调用落审计（与 Python 同粒度）。
-                                    host::record_mcp_denial(
-                                        &self.registry,
-                                        &panel.tool,
-                                        &arguments,
-                                        &reason,
-                                    );
-                                }
-                                self.plugin_approval_after(&panel.tool, approved, &reason);
-                                decided[index] = true;
-                                pending.decide(
-                                    approved,
-                                    &mut context(batch_approval, &mut todos, &mut paused, facts),
-                                )
+                                omnicrawl_controllers::approval::user_cancelled_reason(&panel.tool)
+                            };
+                            if !approved {
+                                // 人工拒绝的 MCP 调用落审计（与 Python 同粒度）。
+                                host::record_mcp_denial(
+                                    &self.registry,
+                                    &panel.tool,
+                                    &arguments,
+                                    &reason,
+                                );
                             }
+                            pending.decide(
+                                approved,
+                                &mut context(batch_approval, &mut todos, &mut paused, facts),
+                            )
                         }
                         Waiting::Question(panel) => {
                             // 提问托管：有选项且决策服务可用时自动作答，不再打扰用户；
@@ -1059,45 +904,10 @@ impl TurnRunner {
                     step = next;
                 }
                 BatchStep::Execute(mut jobs) => {
-                    // 逐调用按 Python 的顺序过闸：`tool.call.before` → `tool.approval.before`
-                    // →〔审查模型〕→ `tool.approval.after` → `tool.execute.before`；
-                    // 任一惊拒绝就不进执行层，直接按拒绝结果回填。
+                    // 逐调用的闸只剩审查模型：判定为 Review 的调用（删除类、下载并执行类、
+                    // 高风险 Git）被拒就不进执行层，直接按拒绝结果回填。
                     let mut blocked: Vec<usize> = Vec::new();
                     for (index, call) in jobs.iter_mut() {
-                        if !guarded[*index] {
-                            guarded[*index] = true;
-                            match self.plugin_tool_call_before(call) {
-                                Ok(Some(rewritten)) => {
-                                    pending.rewrite_arguments(*index, rewritten);
-                                }
-                                Ok(None) => {}
-                                Err(reason) => {
-                                    pending.record_result(
-                                        *index,
-                                        host::denied_with_reason(&reason),
-                                        None,
-                                    );
-                                    blocked.push(*index);
-                                    continue;
-                                }
-                            }
-                            if let Err(reason) = self.plugin_approval_before(
-                                call,
-                                &call.arguments,
-                                false,
-                                batch_approval.as_str(),
-                            ) {
-                                pending.record_result(
-                                    *index,
-                                    host::denied_with_reason(&reason),
-                                    None,
-                                );
-                                blocked.push(*index);
-                                continue;
-                            }
-                        }
-                        // 审查只在 `review` 模式且判定为 Review 的调用上发生（删除类、
-                        // 下载并执行类、高风险 Git）；其余模式下它是空操作。
                         if let Err(reason) = self.review_gate(call, facts) {
                             // 审查拒绝与人工拒绝同属「未批准」：同样落 MCP 审计。
                             host::record_mcp_denial(
@@ -1106,17 +916,6 @@ impl TurnRunner {
                                 &call.arguments,
                                 &reason,
                             );
-                            pending.record_result(*index, host::denied_with_reason(&reason), None);
-                            self.plugin_approval_after(&call.name, false, &reason);
-                            decided[*index] = true;
-                            blocked.push(*index);
-                            continue;
-                        }
-                        if !decided[*index] {
-                            decided[*index] = true;
-                            self.plugin_approval_after(&call.name, true, "");
-                        }
-                        if let Err(reason) = self.plugin_execute_before(call) {
                             pending.record_result(*index, host::denied_with_reason(&reason), None);
                             blocked.push(*index);
                         }
@@ -1167,13 +966,7 @@ impl TurnRunner {
         let deadline =
             Instant::now() + Duration::from_secs(self.options.tool_timeout_seconds.max(1) as u64);
         for (index, call) in jobs {
-            run_job(
-                Arc::clone(&self.registry),
-                self.options.plugins.clone(),
-                sender.clone(),
-                index,
-                call,
-            );
+            run_job(Arc::clone(&self.registry), sender.clone(), index, call);
         }
         loop {
             match completions.recv_timeout(POLL_INTERVAL) {
@@ -1228,74 +1021,6 @@ impl TurnRunner {
         panel.options.get(index).cloned()
     }
 
-    /// `tool.call.before`：可改写调用参数，也可拒绝整个调用。
-    ///
-    /// 返回 `Ok(Some(arguments))` 表示插件改写了参数，调用方要回写到批次里；
-    /// `Err(reason)` 的文案与 Python 的 `插件拒绝工具调用：{tool}。` 逐字一致。
-    fn plugin_tool_call_before(
-        &self,
-        call: &ToolCall,
-    ) -> Result<Option<Map<String, Value>>, String> {
-        let Some(plugins) = self.options.plugins.as_ref() else {
-            return Ok(None);
-        };
-        let mut arguments = call.arguments.clone();
-        if let Err(error) = plugins.tool_call_before(&call.name, &mut arguments) {
-            diagnostics::warn(format!(
-                "[host] {0} 被插件挡下（tool.call.before）：{error}",
-                call.name
-            ));
-            return Err(omnicrawl_controllers::approval::plugin_call_denied_reason(
-                &call.name,
-            ));
-        }
-        if arguments == call.arguments {
-            Ok(None)
-        } else {
-            Ok(Some(arguments))
-        }
-    }
-
-    /// `tool.approval.before`：只能拒绝，不能代表用户批准。
-    ///
-    /// `arguments` 必须是当时生效的参数（`tool.call.before` 改写后的版本）。
-    fn plugin_approval_before(
-        &self,
-        call: &ToolCall,
-        arguments: &Map<String, Value>,
-        requires_confirmation: bool,
-        mode: &str,
-    ) -> Result<(), String> {
-        let Some(plugins) = self.options.plugins.as_ref() else {
-            return Ok(());
-        };
-        if let Err(error) =
-            plugins.tool_approval_before(&call.name, arguments, requires_confirmation, mode)
-        {
-            diagnostics::warn(format!(
-                "[host] {0} 被插件挡下（tool.approval.before）：{error}",
-                call.name
-            ));
-            return Err(omnicrawl_controllers::approval::plugin_approval_denied_reason(&call.name));
-        }
-        Ok(())
-    }
-
-    /// `tool.execute.before`：执行前守卫（在审查与审批之后）。
-    fn plugin_execute_before(&self, call: &ToolCall) -> Result<(), String> {
-        let Some(plugins) = self.options.plugins.as_ref() else {
-            return Ok(());
-        };
-        if let Err(error) = plugins.tool_execute_before(&call.name, &call.arguments) {
-            diagnostics::warn(format!(
-                "[host] {0} 被插件挡下（tool.execute.before）：{error}",
-                call.name
-            ));
-            return Err(omnicrawl_controllers::approval::plugin_execute_denied_reason(&call.name));
-        }
-        Ok(())
-    }
-
     /// 审查闸：`review` 模式下判定为 Review 的调用交给审查模型（[`crate::review`]）。
     ///
     /// 返回 `Err(reason)` 表示拒绝，`reason` 是可直接展示的文案（审查模型不可用、请求
@@ -1340,26 +1065,6 @@ impl TurnRunner {
         )
     }
 
-    /// `tool.approval.after`：审批结论通知（无插件时为空操作）。
-    fn plugin_approval_after(&self, tool: &str, approved: bool, reason: &str) {
-        if let Some(plugins) = self.options.plugins.as_ref() {
-            plugins.tool_approval_after(tool, approved, reason, self.options.approval.as_str());
-        }
-    }
-
-    /// 会话建立/恢复完成后的 `session.*` 生命周期 Hook。
-    ///
-    /// 由宿主在握手拿到会话标识后调用：新建会话发 `session.start.after`，恢复路径发
-    /// `session.resume.before`（守卫）+ `session.resume.after`。
-    pub fn notify_session_lifecycle(&self, session_id: &str) -> Result<(), TurnError> {
-        let Some(plugins) = self.options.plugins.as_ref() else {
-            return Ok(());
-        };
-        let resume_session_id = self.session_id().unwrap_or_default();
-        plugins
-            .session_lifecycle(&resume_session_id, session_id)
-            .map_err(|error| TurnError::PluginDenied(error.to_string()))
-    }
 }
 
 /// 把「刚定调」的调用补成工具生命周期事件：清单工具、被拒的调用与已作答的提问
@@ -1423,12 +1128,8 @@ fn context<'a>(
 }
 
 /// 一个调用一条线程：执行体的 panic 必须转成失败观察，否则整批永远凑不齐。
-///
-/// 插件在两头参与：panic 时发 `tool.execute.error`（通知类），有结果时发
-/// `tool.execute.after` 并接受它对 `displayText` 的改写。模型看到的 `output` 不变。
 fn run_job(
     registry: Arc<ToolRegistry>,
-    plugins: Option<Arc<PluginHost>>,
     sender: Sender<JobDone>,
     index: usize,
     call: ToolCall,
@@ -1438,7 +1139,7 @@ fn run_job(
         let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             registry.execute_with_vision(&call)
         }));
-        let (mut result, vision) = match executed {
+        let (result, vision) = match executed {
             Ok(Some(execution)) => {
                 let vision = if execution.images.is_empty() {
                     None
@@ -1451,21 +1152,8 @@ fn run_job(
                 (execution.result, vision)
             }
             Ok(None) => (host::unavailable_result(&tool_name), None),
-            Err(_) => {
-                if let Some(plugins) = plugins.as_ref() {
-                    plugins.tool_execute_error(&tool_name, "工具执行线程 panic");
-                }
-                (host::panicked_result(&tool_name), None)
-            }
+            Err(_) => (host::panicked_result(&tool_name), None),
         };
-        if let Some(plugins) = plugins.as_ref() {
-            let base = if result.full_output.is_empty() {
-                result.output.clone()
-            } else {
-                result.full_output.clone()
-            };
-            result.full_output = plugins.tool_execute_after(&tool_name, result.ok, &base);
-        }
         let _ = sender.send(JobDone {
             index,
             tool: tool_name,

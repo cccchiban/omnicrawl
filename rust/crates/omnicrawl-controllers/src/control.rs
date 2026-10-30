@@ -1,88 +1,14 @@
 //! `omnicrawl/agent/controllers/session/control.py` 的判定层。
 //!
-//! 收进来的是可判定的部分：插件子系统状态文案、退出时的会话收尾决策、关闭/停用
-//! SubAgent 前的排空决策。真正的资源关闭（MCP Manager、Monitor、临时目录、Runtime、
-//! 关闭回调）与隔离区收尾仍是宿主的活。
+//! 收进来的是可判定的部分：退出时的会话收尾决策、关闭/停用 SubAgent 前的排空决策。
+//! 真正的资源关闭（MCP Manager、Monitor、临时目录、Runtime、关闭回调）与隔离区收尾
+//! 仍是宿主的活。
 
 use crate::error::AgentError;
 use crate::settings::{SUBAGENTS_DISABLE_FAILED, SUBAGENTS_DISABLE_REASON};
 use crate::shared::SUBAGENT_LIFECYCLE_WAIT_SECONDS;
 
 pub const AGENT_CLOSE_REASON: &str = "Agent 正在关闭，当前子任务已取消。";
-
-/// `/plugins` 展示用的一行 Worker 状态（对应 `manager.list_status()` 的元素）。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PluginWorkerRow {
-    pub name: String,
-    pub version: String,
-    pub scope: String,
-    pub active: bool,
-    pub circuit_open: bool,
-    pub dev_mode: bool,
-    pub handlers: Vec<String>,
-    pub last_error: String,
-}
-
-/// 插件子系统只读状态；`None` 表示宿主未注入 Plugin Runtime。
-pub fn plugins_status_text(manager: Option<&(bool, Vec<PluginWorkerRow>)>) -> String {
-    let Some((enabled, rows)) = manager else {
-        return "插件子系统：未注入 PluginManager（无插件模式）。\n\
-                管理命令：ocl plugin doctor / list / install ..."
-            .to_string();
-    };
-
-    let mut lines = vec![format!(
-        "插件系统：{}",
-        if *enabled {
-            "已启用"
-        } else {
-            "已关闭（plugins.enabled=false）"
-        }
-    )];
-    if rows.is_empty() {
-        lines.push("当前工作区没有已加载的插件 Worker。".to_string());
-        lines.push("管理命令：ocl plugin list".to_string());
-        return lines.join("\n");
-    }
-
-    lines.push(format!("已加载 Worker：{}", rows.len()));
-    for row in rows {
-        let name = if row.name.is_empty() { "?" } else { &row.name };
-        let version = if row.version.is_empty() {
-            "?"
-        } else {
-            &row.version
-        };
-        let scope = if row.scope.is_empty() {
-            "?"
-        } else {
-            &row.scope
-        };
-        let active = if row.active { "active" } else { "inactive" };
-        let circuit = if row.circuit_open {
-            " circuit-open"
-        } else {
-            ""
-        };
-        let dev = if row.dev_mode { " [dev]" } else { "" };
-        lines.push(format!(
-            "  - {name}@{version} ({scope}) {active}{circuit}{dev}"
-        ));
-        if !row.handlers.is_empty() {
-            lines.push(format!("    handlers: {}", row.handlers.join(", ")));
-        }
-        let last_error = row.last_error.trim();
-        if !last_error.is_empty() {
-            let head: String = last_error.chars().take(160).collect();
-            lines.push(format!("    lastError: {head}"));
-        }
-    }
-    lines.push(
-        "管理命令：ocl plugin list|info|enable|disable|install|update|rollback|uninstall ..."
-            .to_string(),
-    );
-    lines.join("\n")
-}
 
 /// 正常退出时对当前会话的收尾动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,9 +78,7 @@ pub fn close_guard(closed: bool, closing: bool) -> bool {
 /// 关闭流程的阶段序列：顺序即契约。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClosePhase {
-    PluginHookBefore,
     SessionClosedEvent,
-    PluginHookAfter,
     McpManager,
     MonitorManager,
     TempWorkspace,
@@ -167,9 +91,7 @@ impl ClosePhase {
     /// 与对照数据集共用的阶段标签。
     pub fn label(self) -> &'static str {
         match self {
-            ClosePhase::PluginHookBefore => "plugin_hook_before",
             ClosePhase::SessionClosedEvent => "session_closed_event",
-            ClosePhase::PluginHookAfter => "plugin_hook_after",
             ClosePhase::McpManager => "mcp_manager",
             ClosePhase::MonitorManager => "monitor_manager",
             ClosePhase::TempWorkspace => "temp_workspace",
@@ -180,13 +102,11 @@ impl ClosePhase {
     }
 }
 
-/// 关闭阶段：插件 Hook 与事件收尾成组，之后逐个关资源，最后跑回调。
+/// 关闭阶段：先做事件收尾，之后逐个关资源，最后跑回调。
 ///
 /// 每步失败只记录、不中断后续步骤，全部走完后才把第一个错误抛给调用方。
-pub const CLOSE_PHASES: [ClosePhase; 9] = [
-    ClosePhase::PluginHookBefore,
+pub const CLOSE_PHASES: [ClosePhase; 7] = [
     ClosePhase::SessionClosedEvent,
-    ClosePhase::PluginHookAfter,
     ClosePhase::McpManager,
     ClosePhase::MonitorManager,
     ClosePhase::TempWorkspace,

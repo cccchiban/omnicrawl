@@ -98,7 +98,7 @@ stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
   这个写端点在 Python 侧没有对应物（Textual 在进程内改配置），是宿主自持 MCP 后的新增面；
 - `/mcp` 状态命令与 HUD 的 `MCP n` 段（`McpClientManager::format_status()` 直接输出）；
 - 审批拒绝的审计编排：`omnicrawl-host` 的 `host::record_mcp_denial` 在「人工拒绝」与「审查拒绝」
-  两条路径上写 `approval_result=denied`（与 Python `_approve_tool_call` 同粒度：插件挡下的调用不写）。
+  两条路径上写 `approval_result=denied`（与 Python `_approve_tool_call` 同粒度）。
 
 内核侧 MCP 接口按 Python 公开面逐项核对无缺口：配置读写、能力发现、工具/资源/提示调用、
 注册表与安全策略、审计、状态查询、stdio 与 HTTP 传输都在 `src/` 落地。

@@ -213,13 +213,6 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
-        Command::new("plugins", handle_plugins_command)
-            .description("查看 Hook 插件加载与 Worker 状态（只读）。")
-            .usage("/plugins")
-            .command_type(CommandType::Query),
-    )?;
-
-    registry.register(
         Command::new("new", handle_new_command)
             .description("开启一个空白会话。")
             .usage("/new")

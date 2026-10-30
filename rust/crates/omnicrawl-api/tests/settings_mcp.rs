@@ -230,7 +230,6 @@ fn runner_options(root: &Path) -> RunnerOptions {
         tool_timeout_seconds: 5,
         attach_vision_images: false,
         client_name: "omnicrawl-api-test".to_string(),
-        plugins: None,
         review: None,
         custody: None,
         prune: None,

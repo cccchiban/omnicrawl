@@ -1,4 +1,4 @@
-//! 审批、推理强度、模型、顾问、模式、说话风格、Skill/记忆/MCP/插件、新建/退出/设置类命令。
+//! 审批、推理强度、模型、顾问、模式、说话风格、Skill/记忆/MCP、新建/退出/设置类命令。
 //!
 //! 从 `slash.rs` 拆出。
 
@@ -477,11 +477,6 @@ pub fn handle_mcp_command(_ctx: &CommandContext<'_>) -> CommandResult {
         CommandResult::message(format_mcp_status(agent))
     };
     CommandResult::message("正在读取 MCP 状态").with_deferred(Box::new(read_status))
-}
-
-/// 读取插件子系统只读状态。
-pub fn handle_plugins_command(ctx: &CommandContext<'_>) -> CommandResult {
-    CommandResult::message(format_plugins_status(ctx.agent))
 }
 
 /// 清空当前对话并开启新会话。

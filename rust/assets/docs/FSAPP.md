@@ -411,7 +411,7 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | `/approval:review` | 切换为自动审查 |
 | `/reasoning [级别]` | 查看或设置推理强度（下一次请求生效） |
 | `/model [选择]` | 查看或切换模型（选择支持 models.toml key、profile/model_id 或裸 model_id；下一次请求生效） |
-| `/tasks`、`/mcp`、`/plugins`、`/skills` | 查看对应子系统状态 |
+| `/tasks`、`/mcp`、`/skills` | 查看对应子系统状态 |
 
 > **运行中切换**：`/model` 与 `/reasoning` 都可在任务进行中切换，当前回合
 > 继续使用旧配置，从修改后的下一次请求开始生效（不会中断正在执行的任务）。

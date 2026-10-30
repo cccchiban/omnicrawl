@@ -37,7 +37,6 @@ use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_extensions::skill::SkillManager;
 use omnicrawl_host::approval::ApprovalMode;
 use omnicrawl_host::kernel::KernelClient;
-use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_host::tools::monitor::{MonitorManager, MonitorPollView, MonitorTaskView};
 use omnicrawl_host::tools::{MemoryOptions, RegistryOptions};
@@ -134,8 +133,6 @@ pub struct ServiceOptions {
     pub mcp: Option<Arc<McpClientManager>>,
     /// 后台任务管理器：`/monitors` 与 `monitor` 工具共用同一个句柄；缺省为 `None`。
     pub monitors: Option<MonitorManager>,
-    /// 插件运行期：进程级 `PluginRuntime` 的持有者；`None` 表示本进程不装插件。
-    pub plugins: Option<Arc<PluginHost>>,
     /// 审查运行期（`approval.mode = review` 时用）；`None` 表示没有审查运行期，
     /// 此时需审查的调用按 fail-closed 拒绝。
     pub review: Option<omnicrawl_host::review::ReviewOptions>,
@@ -181,7 +178,6 @@ impl ServiceOptions {
             env: ConfigEnvironment::from_process(),
             mcp: None,
             monitors: None,
-            plugins: None,
             review: None,
             custody: None,
             prune: None,
@@ -372,8 +368,6 @@ impl AgentService {
         // Agent 临时目录：建分类子目录、按 `[agent_temp]` 间隔补清理并起后台线程。
         // 此前这部分只有对照测试在调，无头服务从不回收临时产物。
         service.install_agent_temp();
-        // 插件在服务装配完成后启动：Worker 起来之后才能接住第一个回合的 Hook。
-        service.start_plugins(&session_id);
         Ok(service)
     }
 
@@ -496,29 +490,15 @@ impl AgentService {
                 installation.close();
             }
         }
-        // `session.close.before`：内核据此在补写 `session_closed` 与丢弃空占位前
-        // 得到一次观察机会。会话 id 未知（内核未回填）时跳过。
-        let session_id = self.current_session_id();
-        let plugins = self.options.plugins.clone();
-        let notify_close = |before: bool| {
-            if session_id.is_empty() {
-                return;
-            }
-            if let Some(plugins) = plugins.as_ref() {
-                plugins.session_close(&session_id, before);
-            }
-        };
-        notify_close(true);
         let Ok(mut guard) = self.runner.lock() else {
             return;
         };
         if let Some(runner) = guard.as_mut() {
             runner.shutdown();
-            // 等内核把 `session_closed` 落盘后进程退出，再发 after——否则通知会早于事件。
+            // 等内核把 `session_closed` 落盘后再退出，确保收尾事件先落地。
             runner.wait_for_exit(SHUTDOWN_WAIT);
         }
         *guard = None;
-        notify_close(false);
     }
 
     /// 当前工作区根：`POST /projects/switch` 之后即为新根。
@@ -538,7 +518,6 @@ impl AgentService {
 mod catalog;
 mod mcp;
 mod monitors;
-mod plugins;
 mod runs;
 mod sessions;
 mod settings;
@@ -953,11 +932,6 @@ fn options_from_process_profile(
     options.registry_options.fetcher.tls_session_cache =
         omnicrawl_host::tools::tls_session_cache_from_config(env);
     options.monitors = Some(monitors);
-    // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
-    options.plugins = Some(Arc::new(PluginHost::from_environment(
-        env,
-        &options.workspace_root,
-    )));
     // 审查运行期：与 TUI 同源（`approval.review_model` 为空时回落主模型，凭据与基地址
     // 沿用主渠道，脱敏旁路按 `[desensitization]` 配置构造）。
     options.review = build_review_options(&llm, env);
@@ -1040,7 +1014,6 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         // 图片交出去，内核再按优先级决定直送主模型还是交给代理。
         attach_vision_images: options.native_vision || vision_proxy_configured(&options.env),
         client_name: "omnicrawl-api".to_string(),
-        plugins: options.plugins.clone(),
         // 审查运行期与 `options_from_process` 装配的那份同源（嵌入与测试可直接填 `None`）。
         review: options.review.clone(),
         // 提问托管同源：与审查一样走决策渠道，失败一律退回人工提问。

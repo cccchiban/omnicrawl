@@ -7,9 +7,6 @@
 //! 与 TUI 的分工：这里没有任何终端渲染与按键处理，界面状态留在 TUI。
 //! 语义基准是 Python 侧的 `omnicrawl/agent/toolkit/` 与 `omnicrawl/workspace/`。
 //!
-//! [`plugins`] 是插件 Hook 的宿主编排层：进程级 `PluginRuntime` 的持有者、
-//! 会话/回合/工具各节点的载荷拼装，以及安装器与运行期热更新的入口。
-//!
 //! [`review`] 是审查模型（`approval.mode = review`）的运行期：把删除类、下载并执行类与
 //! 高风险 Git 调用交给独立审查模型，失败一律 fail-closed。
 
@@ -20,7 +17,6 @@ pub mod embedding_client;
 pub mod embedding_wire;
 pub mod host;
 pub mod kernel;
-pub mod plugins;
 pub mod process_control;
 pub mod prompt;
 // 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的组装方。

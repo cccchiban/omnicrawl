@@ -3,7 +3,7 @@
 //!
 //! Python 把这些接线写在 `run_stream` 里：13 个回调形参、两个循环端口（`request_reply` /
 //! `execute_tool_batch`）与两个守卫（`cancel_check` / `stop_check`），以及收尾时「最终回复
-//! 是否需要补发」的判定。插件钩子、会话落盘、回合快照、压缩触发、run_guard 续跑与上下文
+//! 是否需要补发」的判定。会话落盘、回合快照、压缩触发、run_guard 续跑与上下文
 //! 超限恢复仍由宿主持有。
 
 use std::cell::RefCell;

@@ -410,33 +410,4 @@ pub(crate) fn drain_inbound_during_turn(conn: &Rc<RefCell<Conn>>) -> bool {
     connection.cancel.load(Ordering::SeqCst) || connection.exit_requested
 }
 
-/// 主循环代子代理跑 `model.request.before`：宿主声明支持时才发请求。
-///
-/// 与主端口同口径：宿主未声明能力（或插件未启用）时原样放行；拒绝时把宿主给的文案带回去，
-/// 由子代理端口折算成中止本轮的错误。
-pub(crate) fn serve_model_hook(
-    conn: &Rc<RefCell<Conn>>,
-    messages: Vec<Value>,
-    model: String,
-) -> Result<Vec<Value>, String> {
-    if !conn.borrow().plugin_model_hooks {
-        return Ok(messages);
-    }
-    let request = ModelHookRequest { messages, model };
-    let params =
-        serde_json::to_value(&request).expect("model.hook 负载是 Value 字段，必须可序列化");
-    let value = conn
-        .borrow_mut()
-        .request(method::MODEL_HOOK, params)
-        .map_err(|failure| match failure {
-            PortFailure::Cancelled(message) => message,
-            PortFailure::Shutdown => "收到 shutdown，回合中止。".to_string(),
-            PortFailure::Remote(error) => error.message,
-            PortFailure::Disconnected => "宿主连接已关闭。".to_string(),
-            PortFailure::Io(detail) => format!("写请求失败：{detail}"),
-        })?;
-    ModelHookResult::from_result(&value)
-        .map(|result| result.messages)
-        .map_err(|error| format!("宿主返回的 model.hook 结果无法解析：{error}"))
-}
 

@@ -97,7 +97,6 @@ test('shouldCheckUpdate 只认工作台路径，逃生口与已知子命令都�
   assert.equal(shouldCheckUpdate(['--resume', 's1'], {}), true)
   assert.equal(shouldCheckUpdate(['api'], {}), false)
   assert.equal(shouldCheckUpdate(['kernel', '--version'], {}), false)
-  assert.equal(shouldCheckUpdate(['plugin', 'list'], {}), false)
   assert.equal(shouldCheckUpdate([], { OMNICRAWL_BINARY: '/tmp/x' }), false)
   assert.equal(shouldCheckUpdate([], { OMNICRAWL_HOST: '/tmp/x' }), false)
 })

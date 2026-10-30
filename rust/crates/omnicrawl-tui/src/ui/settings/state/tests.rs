@@ -113,7 +113,7 @@ use super::*;
         assert!(state.embedding_switch_selected());
     }
 
-    /// 单选页的初始值：推理强度 medium、思考显示开启、记忆开启、插件关闭。
+    /// 单选页的初始值：推理强度 medium、思考显示开启、记忆开启。
     fn choice_state() -> SettingsState {
         SettingsState::new(
             SettingsValues::new(128_000, 80, tool_rows()).with_choices("medium", true, true, false),
@@ -557,11 +557,7 @@ use super::*;
 
     #[test]
     fn shown_choice_pages_keep_their_option_lists() {
-        for kind in [
-            ChoiceKind::ShowThinking,
-            ChoiceKind::Memory,
-            ChoiceKind::Plugins,
-        ] {
+        for kind in [ChoiceKind::ShowThinking, ChoiceKind::Memory] {
             let options = choice_field_options(kind);
             assert_eq!(
                 options,
@@ -612,29 +608,6 @@ use super::*;
     }
 
     #[test]
-    fn plugins_toggle_starts_from_current_value() {
-        let mut state = choice_state();
-        goto(&mut state, "plugins");
-        assert_eq!(state.choice_value(), "关闭", "初始关闭");
-
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(
-            state.dropdown().map(|dropdown| dropdown.selected),
-            Some(1),
-            "关闭是第 2 个候选"
-        );
-        state.handle_key(KeyCode::Up);
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::Apply(SettingsChange::Feature {
-                key: "plugins".to_string(),
-                enabled: true,
-            }))
-        );
-    }
-
-    #[test]
     fn choice_pages_keep_their_own_status() {
         let mut state = choice_state();
         goto(&mut state, "memory");
@@ -642,9 +615,9 @@ use super::*;
         state.apply_failed("设置未完成：磁盘只读。".to_string());
         assert_eq!(state.status(), "设置未完成：磁盘只读。");
 
-        state.handle_key(KeyCode::Down); // 焦点仍在左侧：换到插件行
-        assert_eq!(state.selected_key(), "plugins");
-        assert_eq!(state.status(), "", "插件页还没有状态文本");
+        state.handle_key(KeyCode::Down); // 焦点仍在左侧：换到下一行
+        assert_eq!(state.selected_key(), "subagents");
+        assert_eq!(state.status(), "", "别的页还没有状态文本");
         state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "memory");
         assert_eq!(

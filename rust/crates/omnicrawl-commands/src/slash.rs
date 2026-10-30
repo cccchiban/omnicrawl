@@ -48,7 +48,7 @@ mod workspace_commands;
 pub use registry::{build_registry, registry};
 pub use render::{
     format_archived_sessions_list, format_dangerous_tool_detail, format_mcp_status,
-    format_memory_clean_result, format_plugins_status, format_prompt_history,
+    format_memory_clean_result, format_prompt_history,
     format_sessions_list, format_skills_list, format_skills_list_brief, format_subagent_task,
     format_subagent_tasks_list, format_tool_confirmation, render_subagent_task,
 };
@@ -76,7 +76,7 @@ pub use agent_commands::{
     handle_approval_query_command, handle_approval_manual_command, handle_approval_auto_command,
     handle_approval_review_command, handle_reasoning_command, handle_model_command,
     handle_advisor_command, handle_mode_command, handle_speaking_style_command,
-    handle_skills_command, handle_memory_clean_command, handle_mcp_command, handle_plugins_command,
+    handle_skills_command, handle_memory_clean_command, handle_mcp_command,
     handle_new_command, handle_quit_command, handle_settings_command,
     persist_workspace_root, workspace_switch_success_message, WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
@@ -510,12 +510,6 @@ mod tests {
                 .unwrap_or_default();
             assert!(text.contains("提取 B 站内容"), "{channel:?}: {text}");
         }
-    }
-
-    #[test]
-    fn plugins_status_falls_back_to_interface_hint() {
-        let agent = FakeAgent::default();
-        assert_eq!(format_plugins_status(&agent), "插件状态接口不可用。");
     }
 
     #[test]

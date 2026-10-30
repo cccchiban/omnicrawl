@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// OmniCrawl 启动器：按 platform/arch 选出平台分包，默认启动完整宿主（工作台 / api / plugin 指令），
+// OmniCrawl 启动器：按 platform/arch 选出平台分包，默认启动完整宿主（工作台 / api 指令），
 // `kernel` 子命令把 stdio 交给内核二进制（协议调试与 e2e）。
 //
 // 两个逃生口（开发与协议测试用）：
@@ -92,7 +92,6 @@ function printHelp() {
     `用法：omnicrawl [选项] [指令]\n\n\
   无参数        启动工作台（TUI）\n\
   api           启动本地 HTTP 服务（无头/服务器场景）\n\
-  plugin ...    插件管理\n\
   kernel ...    直连内核进程（协议调试）\n\n\
   --resume <会话 ID>   启动时恢复指定会话\n\
   --version, -V        打印启动器、平台包、宿主与内核版本\n\

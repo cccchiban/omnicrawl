@@ -167,8 +167,8 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 TUI 与本地 API 共用该模块，避免入口之间的工作区判定漂移。
 
 **`core/bootstrap`**：首次启动编排——模板落盘、Profile 与模型配置读取、API Key 收集、
-三项启动检查与启动提示文案。模板资源、渠道向导、API Key 输入、Node 探测与插件注册表都走
-`StartupPorts` 注入；`check_node` / `check_plugin_state` 是公开的判定入口。
+启动检查与启动提示文案。模板资源、渠道向导与 API Key 输入都走 `StartupPorts` 注入；
+`check_model_config` 是公开的判定入口。
 
 **`models/channels`**：渠道集合的成对读写（`config.toml` 的 profile ＋ `models.toml` 的条目）、
 `unique_channel_key`、渠道校验（key 形状、协议与 Provider 匹配、Base URL、User-Agent 换行、
@@ -217,7 +217,7 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
 - `tests/fixtures/config_core_parity.json`：workspace 读取 5 例 + 写回 1 例、
   设置开关 6 例、窗口写回（配置 3 例 / 模型目录 3 例）、压缩阈值 5 例、
   显示思考 3 例、SubAgent 参数 4 例、MCP 写回 1 例、Node 判定 6 例、
-  插件状态 5 例、启动提示 5 例、首次启动编排 7 例。
+  启动提示 5 例、首次启动编排 7 例。
 - `tests/fixtures/config_channels_parity.json`：默认草稿 4 例、key 归一化 7 例、
   标签 9 例、渠道读取 7 例、写回文本 2 例、渠道校验 11 例、凭据判定 2 例（只认明文 key）。
 - `tests/fixtures/config_catalog_parity.json`：`/models` 探测 18 例（含请求头与 endpoint）、

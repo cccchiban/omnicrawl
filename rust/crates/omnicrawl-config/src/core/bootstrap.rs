@@ -1,7 +1,7 @@
 //! 首次启动时创建用户配置并输出运行环境诊断（对应 `omnicrawl/config/core/bootstrap.py`）。
 //!
-//! 与 Python 的差别集中在端口化：模板资源、交互式输入、渠道向导、Node 探测与插件注册表
-//! 都由 [`StartupPorts`] 注入，内核只保留编排与判定。
+//! 与 Python 的差别集中在端口化：模板资源、交互式输入与渠道向导都由 [`StartupPorts`]
+//! 注入，内核只保留编排与判定。
 
 use std::path::{Path, PathBuf};
 
@@ -15,27 +15,6 @@ use crate::error::ConfigError;
 use crate::models::model_store::{load_model_store, ModelStore};
 use crate::toml::{Table, Value};
 use crate::value::python_str;
-
-/// Node.js 运行时探测结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeProbe {
-    /// 未检测到 `node`。
-    Missing,
-    /// `node --version` 的输出（已 strip）与 npm 是否可用。
-    Version {
-        version: String,
-        npm_available: bool,
-    },
-    /// 版本检查本身失败。
-    Failed { error: String },
-}
-
-/// 插件注册表的一行（`extensions.plugin_install.list_plugins` 的投影）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginRow {
-    pub error: Option<String>,
-    pub enabled: bool,
-}
 
 /// 渠道配置向导端口：写入渠道配置并返回是否完成。
 pub type ChannelSetupFn<'a> = &'a dyn Fn(&Path, &Path) -> Result<bool, String>;
@@ -51,8 +30,6 @@ pub struct StartupPorts<'a> {
     pub channel_setup: Option<ChannelSetupFn<'a>>,
     /// 交互式索取 API Key；`None` 表示无交互终端，按「直接跳过」处理。
     pub prompt: Option<ApiKeyPromptFn<'a>>,
-    pub node_probe: &'a dyn Fn() -> NodeProbe,
-    pub plugin_rows: &'a dyn Fn() -> Result<Vec<PluginRow>, String>,
 }
 
 /// 一次启动检查的可展示结果。
@@ -209,11 +186,7 @@ pub fn initialize_user_configuration(
         }
     }
 
-    let checks = vec![
-        check_model_config(&config_data, &model_store, &errors),
-        check_node(ports.node_probe),
-        check_plugin_state(&config_data, ports.plugin_rows),
-    ];
+    let checks = vec![check_model_config(&config_data, &model_store, &errors)];
     Ok(StartupSetup {
         config_dir: resolved_dir,
         config_path,
@@ -474,94 +447,6 @@ fn check_model_config(
         "模型配置",
         "ok",
         format!("默认模型：{} ({})", record.display_name, record.model_id),
-    )
-}
-
-/// Node.js 可用性判定（探测结果由端口给出，便于启动诊断与测试复用）。
-pub fn check_node(probe: &dyn Fn() -> NodeProbe) -> StartupCheck {
-    match probe() {
-        NodeProbe::Missing => {
-            StartupCheck::new("Node.js", "warning", "未检测到 Node.js；插件功能暂不可用。")
-        }
-        NodeProbe::Failed { error } => {
-            StartupCheck::new("Node.js", "warning", format!("版本检查失败：{error}"))
-        }
-        NodeProbe::Version {
-            version,
-            npm_available,
-        } => {
-            let major = version
-                .trim_start_matches('v')
-                .split('.')
-                .next()
-                .unwrap_or_default()
-                .parse::<i64>();
-            let Ok(major) = major else {
-                let head = version
-                    .trim_start_matches('v')
-                    .split('.')
-                    .next()
-                    .unwrap_or_default();
-                return StartupCheck::new(
-                    "Node.js",
-                    "warning",
-                    format!("版本检查失败：invalid literal for int() with base 10: '{head}'"),
-                );
-            };
-            if major < 20 {
-                return StartupCheck::new(
-                    "Node.js",
-                    "warning",
-                    format!("需要 Node.js >=20，当前为 {version}。"),
-                );
-            }
-            if !npm_available {
-                return StartupCheck::new(
-                    "Node.js",
-                    "warning",
-                    format!("Node.js {version} 可用，但未找到 npm。"),
-                );
-            }
-            StartupCheck::new("Node.js", "ok", format!("Node.js {version} / npm 可用。"))
-        }
-    }
-}
-
-/// 插件注册表状态判定（注册表读取由端口给出，避免启动诊断被外部依赖阻塞）。
-pub fn check_plugin_state(
-    config_data: &Table,
-    plugin_rows: &dyn Fn() -> Result<Vec<PluginRow>, String>,
-) -> StartupCheck {
-    let enabled = config_data
-        .get("plugins")
-        .and_then(|value| value.as_table())
-        .and_then(|plugins| plugins.get("enabled"))
-        .map(crate::value::truthy)
-        .unwrap_or(false);
-    let rows = match plugin_rows() {
-        Ok(rows) => rows,
-        Err(error) => {
-            return StartupCheck::new(
-                "插件状态",
-                "warning",
-                format!("读取插件注册表失败：{error}"),
-            )
-        }
-    };
-
-    let errors: Vec<String> = rows.iter().filter_map(|row| row.error.clone()).collect();
-    let enabled_count = rows.iter().filter(|row| row.enabled).count();
-    let state = if enabled { "已启用" } else { "已禁用" };
-    if !errors.is_empty() {
-        return StartupCheck::new("插件状态", "warning", errors.join("; "));
-    }
-    StartupCheck::new(
-        "插件状态",
-        "ok",
-        format!(
-            "插件系统{state}，已注册 {} 个插件，当前启用 {enabled_count} 个。",
-            rows.len()
-        ),
     )
 }
 

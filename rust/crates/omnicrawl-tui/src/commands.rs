@@ -3,7 +3,7 @@
 //! 命令层（`omnicrawl-commands`）不认宿主，处理器要的宿主能力全经 [`CommandAgent`]
 //! 注入。本模块按「**有什么能力就报什么、没有就显式报错**」实现这份能力面：
 //!
-//! - 本进程真正拥有的能力（审批模式、模型与推理强度、插件状态、出任务查询、
+//! - 本进程真正拥有的能力（审批模式、模型与推理强度、任务查询、
 //!   工作区根、只读 git 探测）如实实现；
 //! - 会话生命周期（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、
 //!   `/resume`）由宿主各走一次内核往返：会话状态在内核进程里，宿主只负责投影与视图同步；
@@ -24,7 +24,6 @@ use omnicrawl_commands::framework::CommandOption;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::advisor::AdvisorConfig;
 use omnicrawl_config::models::llm::LlmConfig;
-use omnicrawl_controllers::control::PluginWorkerRow;
 use omnicrawl_controllers::tool_impl::MemoryScope;
 use omnicrawl_extensions::skill::SkillMeta;
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
@@ -311,7 +310,7 @@ impl CommandAgent for TuiHostAgent<'_> {
         clean_expired_memory_scopes(app.registry().memory()).map_err(AgentError::new)
     }
 
-    // ── MCP / 插件 ────────────────────────────────────────────
+    // ── MCP ───────────────────────────────────────────────────
 
     fn mcp_status(&self) -> String {
         // MCP 清单由宿主工具表持有连接，`McpClientManager::format_status()` 已能
@@ -322,10 +321,6 @@ impl CommandAgent for TuiHostAgent<'_> {
             Some(manager) => manager.format_status(),
             None => "MCP 未配置：在 config.toml 的 [mcp] 段添加 Server 后可查看详情。".to_string(),
         }
-    }
-
-    fn plugins_status(&self) -> Option<String> {
-        Some(self.app.borrow().command_plugins_status())
     }
 
     // ── SubAgent ──────────────────────────────────────────────
@@ -445,68 +440,9 @@ pub fn run_git(workspace_root: &Path, args: &[&str]) -> Option<GitOutput> {
     })
 }
 
-/// 插件状态行：把运行期快照转成命令层用的只读行。
-///
-/// 字段名与 `omnicrawl-extensions` 的 `list_status()` 一致；缺字段按未知处理。
-pub fn plugin_row(row: &Map<String, Value>) -> PluginWorkerRow {
-    let text = |key: &str| {
-        row.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(false);
-    PluginWorkerRow {
-        name: text("name"),
-        version: text("version"),
-        scope: text("scope"),
-        active: flag("active"),
-        circuit_open: flag("circuitOpen"),
-        dev_mode: flag("devMode"),
-        handlers: row
-            .get("handlers")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        last_error: text("lastError"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn plugin_rows_keep_field_names_of_runtime_snapshot() {
-        let row: Map<String, Value> = serde_json::from_str(
-            r#"{"name":"demo","version":"1.2.3","scope":"workspace","active":true,
-                "circuitOpen":false,"devMode":true,"handlers":["turn.start","tool.call.before"],
-                "lastError":""}"#,
-        )
-        .expect("测试 JSON 应当合法");
-        let row = plugin_row(&row);
-        assert_eq!(row.name, "demo");
-        assert_eq!(row.version, "1.2.3");
-        assert_eq!(row.scope, "workspace");
-        assert!(row.active && !row.circuit_open && row.dev_mode);
-        assert_eq!(row.handlers.len(), 2);
-        assert!(row.last_error.is_empty());
-    }
-
-    #[test]
-    fn plugin_rows_tolerate_missing_fields() {
-        let row: Map<String, Value> = Map::new();
-        let row = plugin_row(&row);
-        assert!(row.name.is_empty());
-        assert!(!row.active && !row.circuit_open && !row.dev_mode);
-        assert!(row.handlers.is_empty());
-    }
 
     #[test]
     fn unavailable_flag_is_read_from_kernel_reply() {

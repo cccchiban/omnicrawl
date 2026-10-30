@@ -158,14 +158,10 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
             "trigger_tokens": compaction.trigger_context_tokens,
         },
         "show_thinking": load_show_thinking(env, None).unwrap_or(true),
-        // 插件运行态：与 `features.plugins` 的区别在于这里给的是运行期实际装上的
-        // Worker、执行计划与诊断，供设置页与排障展示。
-        "plugins": service.plugins_status(),
         "features": {
             // 语义基准：Python `entry.py` 用 `load_feature_enabled("memory", default=True)`，
             // 即记忆默认**开启**；本处早先传 false，会让未配置的用户看到「记忆关闭」。
             "memory": load_feature_enabled(env, "memory", true, None, None).unwrap_or(true),
-            "plugins": service.plugins_enabled(),
             "subagents": load_feature_enabled(env, "subagents", false, None, None).unwrap_or(false),
             "mcp": service.mcp_enabled(),
         },
@@ -268,14 +264,13 @@ async fn put_features(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let mut changes: Vec<(&'static str, bool)> = Vec::new();
-    for key in ["memory", "plugins", "subagents", "show_thinking"] {
+    for key in ["memory", "subagents", "show_thinking"] {
         if let Some(raw) = provided(&body, key) {
             changes.push((key, body_required_bool(key, Some(raw))?));
         }
     }
     let service = state.service()?;
     let env = service.environment();
-    let mut diagnostics: Vec<String> = Vec::new();
     for (key, value) in changes {
         let saved = if key == "show_thinking" {
             save_show_thinking(env, value, None)
@@ -290,11 +285,6 @@ async fn put_features(
                 None,
             )
         })?;
-        // 插件总开关写盘之后立刻切运行期：Worker 与执行计划当场重建，
-        // 不必重启服务（与 Python 设置面板的事务式重建同一语义）。
-        if key == "plugins" {
-            diagnostics = service.set_plugins_enabled(value)?;
-        }
         // 记忆是一整组工具（四个 `memory_*`），开关直接决定它们进不进表：写盘后
         // 同样要重建工具表，否则要等下次启动才从模型可见面里消失。
         // `subagents` 的运行期在内核侧、按每次调用现读 `subagents.toml`，这里无需动手。
@@ -306,12 +296,9 @@ async fn put_features(
         "features": {
             // 同 GET：记忆默认开启（Python `entry.py` 的 `default=True`）。
             "memory": load_feature_enabled(env, "memory", true, None, None).unwrap_or(true),
-            "plugins": service.plugins_enabled(),
             "subagents": load_feature_enabled(env, "subagents", false, None, None).unwrap_or(false),
             "show_thinking": load_show_thinking(env, None).unwrap_or(true),
         },
-        "plugins": service.plugins_status(),
-        "diagnostics": diagnostics,
     })))
 }
 

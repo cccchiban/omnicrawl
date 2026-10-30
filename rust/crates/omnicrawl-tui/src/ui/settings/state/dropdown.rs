@@ -237,13 +237,12 @@ impl SettingsState {
             (DropdownField::Choice(kind), OptionValue::Flag(enabled)) => {
                 let key = match kind {
                     ChoiceKind::Memory => "memory",
-                    ChoiceKind::Plugins => "plugins",
-                    // 其余单选页没有布尔开关；走到这里说明面板映射写错了。
+                    // 思考显示走独立分支；走到这里说明面板映射写错了。
                     ChoiceKind::ShowThinking => return None,
                 };
                 let current = match kind {
                     ChoiceKind::Memory => self.choices.memory,
-                    _ => self.choices.plugins,
+                    ChoiceKind::ShowThinking => self.choices.show_thinking,
                 };
                 if enabled == current {
                     return None;

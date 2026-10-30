@@ -1,7 +1,7 @@
 //! 内核自带连接器宿主：`omnicrawl --connector <name>` 时在进程内驱动消息平台接入。
 //!
 //! 连接器只做平台 I/O 与显示映射，回合、命令与工作区由这里的 [`AgentDriver`] 实现承担。
-//! 模型请求由 `omnicrawl-llm` 直接发出；本模式不向模型宣告工具（工具实现在宿主与插件侧），
+//! 模型请求由 `omnicrawl-llm` 直接发出；本模式不向模型宣告工具（工具实现在宿主侧），
 //! 若模型仍请求工具，批次按「本模式不可用」回观察，而不是静默丢弃。
 
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ const KERNEL_HELP_TEXT: &str =
     "/status 查看工作区与会话；/new 开启新会话；/workspace <路径> 切换工作区";
 
 /// 内核连接器模式自持的工具名，与 Python 侧 `omnicrawl/agent/toolkit/tools.py` 的常量一致。
-/// 文件、shell、git、知识库与记忆等工具仍由宿主与插件侧提供，内核只挂不需要额外执行器的三个。
+/// 文件、shell、git、知识库与记忆等工具仍由宿主提供，内核只挂不需要额外执行器的三个。
 const TODO_TOOL_NAME: &str = "update_todos";
 const ASK_USER_TOOL_NAME: &str = "ask_user";
 const PAUSE_WORK_TOOL_NAME: &str = "pause_work";

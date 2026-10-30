@@ -1,6 +1,6 @@
 # omnicrawl-cli
 
-OmniCrawl 启动器：按 `platform-arch` 选平台分包，默认启动**完整宿主**（工作台 / `api` / 插件 CLI）；
+OmniCrawl 启动器：按 `platform-arch` 选平台分包，默认启动**完整宿主**（工作台 / `api`）；
 `kernel` 子命令把 stdio 交给内核二进制（协议调试与 e2e）。
 
 ## 分发形态
@@ -26,7 +26,6 @@ OmniCrawl 启动器：按 `platform-arch` 选平台分包，默认启动**完整
 ```
 omnicrawl                 启动工作台（TUI）
 omnicrawl api             启动本地 HTTP 服务（无头/服务器场景）
-omnicrawl plugin ...      插件管理
 omnicrawl kernel ...      直连内核进程（协议调试）
 omnicrawl --version       打印启动器、平台包、宿主与内核版本
 ```
@@ -43,7 +42,7 @@ npm registry、升级方式换成 `npm install -g`。
 - 版本结果缓存 24 小时（`~/.OmniCrawl/npm-version-check.json`），过期才请求 registry（3 秒超时）。
 - `[update].enabled = false`（`~/.OmniCrawl/config.toml`）可关闭；缺省开启。
 - 护栏：源码检出（祖先目录含 `.git`）、`OMNICRAWL_HOST` / `OMNICRAWL_BINARY` 逃生口、
-  已知子命令（`api` / `kernel` / `plugin`）都不做更新检查。
+  已知子命令（`api` / `kernel`）都不做更新检查。
 - `OMNICRAWL_SKIP_AUTO_UPDATE=1` 彻底关闭；升级尝试后写 `OMNICRAWL_AUTO_UPDATE_ATTEMPTED=1`
   让重启的子进程不再重复尝试，避免升级失败时无限重启。
 - 任何失败（离线、npm 不可用、安装报错）只打印原因与手动升级命令，继续用当前版本启动。

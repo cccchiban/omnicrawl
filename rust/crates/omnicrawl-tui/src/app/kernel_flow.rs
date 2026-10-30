@@ -42,41 +42,10 @@ impl App {
                 Ok(event) => {
                     // 回合落地后按 FIFO 排空排队消息（对映 Python `_finish` 里的排空调用）。
                     let finished = matches!(event, HostEvent::TurnFinished(_));
-                    // 回合 id 要在 `apply` 之前取：落地处理会把当前回合卸下。
-                    let turn_id = self.current_turn_id();
-                    // 内核发来的插件 Hook 触发点：宿主在此分发，对映 Python 在 agent runtime
-                    // 内的同名派发（压缩计量、模型请求前后）。
-                    let session_id = self.current_session_id();
-                    let session_id = (!session_id.is_empty()).then_some(session_id);
-                    match &event {
-                        HostEvent::ContextCompaction(payload) => {
-                            self.plugins.compaction_after_turn(
-                                payload.post_turn_context_tokens,
-                                payload.trigger_context_tokens,
-                                session_id.as_deref(),
-                                (!payload.turn_id.is_empty()).then_some(payload.turn_id.as_str()),
-                            )
-                        }
-                        HostEvent::ModelResponseAfter(payload) => {
-                            self.plugins.model_response_after(
-                                &payload.model,
-                                &payload.content,
-                                payload.tool_call_count,
-                                session_id.as_deref(),
-                            )
-                        }
-                        HostEvent::ModelRequestError(payload) => self.plugins.model_request_error(
-                            &payload.error,
-                            &payload.model,
-                            session_id.as_deref(),
-                        ),
-                        _ => {}
-                    }
                     self.state.apply(&event, Instant::now());
                     if finished {
                         // `/skill:` 的上下文消息只覆盖本轮：落地后换回常规装配。
                         self.restore_skill_context();
-                        self.plugins.turn_end(None, turn_id.as_deref());
                         if let HostEvent::TurnFinished(payload) = &event {
                             self.speak_reply(&payload.final_text);
                         }
@@ -98,9 +67,6 @@ impl App {
             Some(method) if method == omnicrawl_ipc::method::MODEL_REPLY => {
                 // 内核自带 provider runtime 发模型请求，宿主代答路径不再需要。
                 let _ = self.kernel.respond_unsupported(&id, method);
-            }
-            Some(method) if method == omnicrawl_ipc::method::MODEL_HOOK => {
-                self.handle_model_hook(id, &frame);
             }
             Some(method) if method == omnicrawl_ipc::method::CONTEXT_PRUNE => {
                 self.handle_context_prune(id, &frame);
@@ -133,42 +99,6 @@ impl App {
                         self.apply_settings_response(&change, &frame);
                     }
                 }
-            }
-        }
-    }
-
-    /// 服务内核的 `model.hook`：跑 `model.request.before`，回改写后的消息或拒绝文案。
-    pub(super) fn handle_model_hook(&mut self, id: Id, frame: &Frame) {
-        let request = match ModelHookRequest::from_frame(frame) {
-            Ok(request) => request,
-            Err(error) => {
-                let _ = self.kernel.respond_error(
-                    &id,
-                    error_code::INVALID_PARAMS,
-                    &format!("model.hook 负载不符：{error}"),
-                );
-                return;
-            }
-        };
-        let ModelHookRequest {
-            mut messages,
-            model,
-        } = request;
-        let session_id = self.current_session_id();
-        let session_id = (!session_id.is_empty()).then_some(session_id);
-        match self
-            .plugins
-            .model_request_before(&mut messages, &model, session_id.as_deref())
-        {
-            Ok(()) => {
-                let result = ModelHookResult { messages }.to_result();
-                let _ = self.kernel.respond(&id, result);
-            }
-            // 插件拒绝：错误响应带上拒绝文案，内核据此中止本轮。
-            Err(error) => {
-                let _ =
-                    self.kernel
-                        .respond_error(&id, error_code::INVALID_REQUEST, error.message());
             }
         }
     }
@@ -329,16 +259,6 @@ impl App {
         self.state.settle_internal_batch_calls();
         match step {
             BatchStep::Awaiting => {
-                // 插件守卫先于人工审批：被拒的调用不再弹审批面板。
-                let plugins = Arc::clone(&self.plugins);
-                let mode = self.options.approval.as_str();
-                if let Some(next) = self
-                    .state
-                    .guard_pending_approval(|call| plugin_tool_guards(&plugins, call, true, mode))
-                {
-                    self.handle_batch_step(request_id, next);
-                    return;
-                }
                 // 提问托管：开关打开且提问带选项时，先让决策模型替你选一项，
                 // 选出来就跳过面板（并在会话流里留一条提示）。任何失败都退回人工提问。
                 if let Some(next) = self.try_custody_pending_question() {
@@ -353,39 +273,17 @@ impl App {
                 // 本批的工具属于当前回合：回合取消时只回收它自己的后台任务。
                 self.refresh_advisor_context();
                 self.batch().set_monitor_scope(self.state.turn.turn_id());
-                let mode = self.options.approval.as_str();
-                for (index, mut call) in jobs {
-                    // 插件守卫先于执行：被挡下的调用不进执行层，按拒绝结果回填。
-                    match plugin_tool_guards(&self.plugins, &call, false, mode) {
-                        Ok(Some(arguments)) => {
-                            self.state.rewrite_call_arguments(index, arguments.clone());
-                            call.arguments = arguments;
-                        }
-                        Ok(None) => {}
-                        Err(reason) => {
-                            self.state.begin_tool_run(&call, Instant::now());
-                            self.plugin_approval_after(&call.name, false, &reason);
-                            let _ = self.completion_sender.send(ToolCompletion {
-                                index,
-                                call,
-                                result: host::denied_with_reason(&reason),
-                                vision: None,
-                            });
-                            continue;
-                        }
-                    }
+                for (index, call) in jobs {
                     // 审查闸：`review` 模式下判定为 Review 的调用交给审查模型（与
                     // `omnicrawl-host::turn` 同序）。审查是一次网络请求，同步跑会卡界面，
                     // 因此这里只做判定：需要审查的调用单独起一个后台线程跑模型，
                     // 结果经 [`ToolCompletion`] 通道回填（拒绝时写拒绝结果）。
                     if self.needs_review_gate(&call) {
-                        self.plugin_approval_after(&call.name, true, "");
                         self.state.begin_tool_run(&call, Instant::now());
                         self.spawn_review_job(index, call);
                         continue;
                     }
                     // 走到执行层的调用都已被放行（需人工审批的调用已在 `Awaiting` 分支消费）。
-                    self.plugin_approval_after(&call.name, true, "");
                     self.state.begin_tool_run(&call, Instant::now());
                     self.spawn_tool_job(index, call);
                 }
@@ -463,7 +361,6 @@ impl App {
         let review = self.review.clone();
         let context = self.review_context.clone();
         let registry = Arc::clone(self.batch());
-        let plugins = Arc::clone(&self.plugins);
         let sender = self.completion_sender.clone();
         let workspace_root = self.workspace.to_string_lossy().to_string();
         thread::spawn(move || {
@@ -492,12 +389,11 @@ impl App {
             };
             match verdict {
                 Ok(()) => {
-                    // 批准：接着走正常执行（插件执行前守卫与工具执行体）。
-                    plugins.tool_approval_after(&call.name, true, "", "review");
+                    // 批准：接着走正常执行。
                     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         registry.execute_with_vision(&call)
                     }));
-                    let (mut result, vision) = match executed {
+                    let (result, vision) = match executed {
                         Ok(Some(execution)) => {
                             let vision = if execution.images.is_empty() {
                                 None
@@ -510,17 +406,8 @@ impl App {
                             (execution.result, vision)
                         }
                         Ok(None) => (host::unavailable_result(&call.name), None),
-                        Err(_) => {
-                            plugins.tool_execute_error(&call.name, "工具执行线程 panic");
-                            (host::panicked_result(&call.name), None)
-                        }
+                        Err(_) => (host::panicked_result(&call.name), None),
                     };
-                    let base = if result.full_output.is_empty() {
-                        result.output.clone()
-                    } else {
-                        result.full_output.clone()
-                    };
-                    result.full_output = plugins.tool_execute_after(&call.name, result.ok, &base);
                     let _ = sender.send(ToolCompletion {
                         index,
                         call,
@@ -531,7 +418,6 @@ impl App {
                 Err(reason) => {
                     // 审查拒绝也属「未批准」：MCP 调用落一条拒绝审计。
                     host::record_mcp_denial(&registry, &call.name, &call.arguments, &reason);
-                    plugins.tool_approval_after(&call.name, false, &reason, "review");
                     let _ = sender.send(ToolCompletion {
                         index,
                         call,
@@ -549,14 +435,13 @@ impl App {
     /// 内核就会一直等这个 `tool.batch` 的响应。
     pub(super) fn spawn_tool_job(&self, index: usize, call: ToolCall) {
         let registry = Arc::clone(self.batch());
-        let plugins = Arc::clone(&self.plugins);
         let sender = self.completion_sender.clone();
         thread::spawn(move || {
             let tool_name = call.name.clone();
             let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 registry.execute_with_vision(&call)
             }));
-            let (mut result, vision) = match executed {
+            let (result, vision) = match executed {
                 Ok(Some(execution)) => {
                     let vision = if execution.images.is_empty() {
                         None
@@ -569,18 +454,8 @@ impl App {
                     (execution.result, vision)
                 }
                 Ok(None) => (host::unavailable_result(&tool_name), None),
-                Err(_) => {
-                    plugins.tool_execute_error(&tool_name, "工具执行线程 panic");
-                    (host::panicked_result(&tool_name), None)
-                }
+                Err(_) => (host::panicked_result(&tool_name), None),
             };
-            // `tool.execute.after` 可改写展示文本（`displayText`）；模型看到的输出不变。
-            let base = if result.full_output.is_empty() {
-                result.output.clone()
-            } else {
-                result.full_output.clone()
-            };
-            result.full_output = plugins.tool_execute_after(&tool_name, result.ok, &base);
             let _ = sender.send(ToolCompletion {
                 index,
                 call,
@@ -588,12 +463,6 @@ impl App {
                 vision,
             });
         });
-    }
-
-    /// `tool.approval.after`：审批结论通知。
-    pub(super) fn plugin_approval_after(&self, tool: &str, approved: bool, reason: &str) {
-        self.plugins
-            .tool_approval_after(tool, approved, reason, self.options.approval.as_str());
     }
 
     /// 批次执行超过 `tool_timeout_seconds` 时按超时收口：未回填的调用写成超时结果，

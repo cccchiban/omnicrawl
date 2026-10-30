@@ -144,7 +144,7 @@ Bot 启动时会用 `setMyCommands` 把宿主承载方的命令表发布成 Tele
 `/programming`（启用主 Agent 编程模式，后续任务追加 `templates/programming.md`）、
 `/speaking-style [on|off]`（开关简洁回复模式，回复不超过十行；默认关闭）、
 `/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/model`、`/advisor`、
-`/skills`、`/memory:clean`、`/mcp`、`/plugins` 等。
+`/skills`、`/memory:clean`、`/mcp` 等。
 `/review` 例外：它要派生子 Agent 且子任务的工具批次必须回到宿主执行，连接器的同步
 路径会在等待中阻塞事件循环，因此返回明确的「暂不可用」而不是悄悄变成一次对话。
 

@@ -18,6 +18,5 @@ path = "src/main.rs"
 [dependencies]
 omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-connectors = { path = "../omnicrawl-connectors" }
-omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 omnicrawl-workspace = { path = "../omnicrawl-workspace" }
 serde_json = { workspace = true }

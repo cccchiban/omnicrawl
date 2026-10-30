@@ -128,9 +128,6 @@ fn run() -> Result<ExitCode, String> {
     let result = event_loop(&mut terminal, &mut app, &mut guard);
     app.shutdown();
     app.kernel.wait_or_kill(SHUTDOWN_TIMEOUT);
-    // 内核已退出（或已被强杀）：补发 `session.close.after`，与 Python
-    // `close()` 里 before → 写事件 → after 的顺序对齐。
-    app.finish_session_close();
     // 收尾诊断已经进过日志文件，这里摘掉接收端：之后的写入回落 stderr（此时已不占画布）。
     omnicrawl_tui::diagnostics::uninstall();
     drop(timer_resolution);
@@ -178,10 +175,6 @@ fn prepare_startup(
     };
     if let Some(session) = isolation {
         app.attach_isolation_session(session);
-    }
-    // 插件加载诊断写在启动页日志框里（不进对话流，否则首屏欢迎 Logo 会被顶掉）。
-    for line in &app.startup_plugin_lines {
-        sink.write_line(&format!("插件：{line}"), LogLevel::Info);
     }
     // 自部署决策服务：渠道启用后随实例自启动（本机已有服务时只复用，不重复拉起）。
     app.autostart_local_decision_service();

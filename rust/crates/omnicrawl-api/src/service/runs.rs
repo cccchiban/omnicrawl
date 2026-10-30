@@ -432,40 +432,11 @@ impl AgentService {
                 }
                 // 回合收尾由 `submit` 的返回值负责，通知本身不重复成事件。
                 HostEvent::TurnFinished(_) => return,
-                // 压缩计量不进 SSE：它只用来在宿主侧分发 `context.compaction.after_turn`。
-                HostEvent::ContextCompaction(payload) => {
-                    if let Some(plugins) = self.options.plugins.as_ref() {
-                        plugins.compaction_after_turn(
-                            payload.post_turn_context_tokens,
-                            payload.trigger_context_tokens,
-                            (!session_id.is_empty()).then_some(session_id.as_str()),
-                            (!payload.turn_id.is_empty()).then_some(payload.turn_id.as_str()),
-                        );
-                    }
-                    return;
-                }
-                // 模型 Hook 的两个触发点也不进 SSE：只在宿主侧分发插件事件。
-                HostEvent::ModelResponseAfter(payload) => {
-                    if let Some(plugins) = self.options.plugins.as_ref() {
-                        plugins.model_response_after(
-                            &payload.model,
-                            &payload.content,
-                            payload.tool_call_count,
-                            (!session_id.is_empty()).then_some(session_id.as_str()),
-                        );
-                    }
-                    return;
-                }
-                HostEvent::ModelRequestError(payload) => {
-                    if let Some(plugins) = self.options.plugins.as_ref() {
-                        plugins.model_request_error(
-                            &payload.error,
-                            &payload.model,
-                            (!session_id.is_empty()).then_some(session_id.as_str()),
-                        );
-                    }
-                    return;
-                }
+                // 压缩计量与模型请求的两个观测点不进 SSE：它们只用于宿主侧计量，
+                // 不构成对外事件契约。
+                HostEvent::ContextCompaction(_)
+                | HostEvent::ModelResponseAfter(_)
+                | HostEvent::ModelRequestError(_) => return,
                 // 界面增量渲染专用的事件都不进 SSE：隐藏推理、工具输出增量，以及流式工具卡的
                 // 三段（`tool_call_started` / `tool_call_arguments` / `tool_output_compression`）。
                 // 后者是内核为了让 TUI 在模型还在写参数时就把卡片立起来而新增的协议通知，

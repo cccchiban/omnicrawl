@@ -16,14 +16,13 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/workspace/switching.py`、`toolbox.py` | `src/workspace.rs` | 切换目标校验与拒绝文案、内部目录保护提示、截图目录 |
 | `controllers/memory/stores.py` | `src/memory.rs` | 三类作用域记忆目录解析、会话级记忆清理 |
 | `controllers/session/settings.py`、`config/features/{approval,tools,subagents}.py` | `src/settings.rs` | 审批模式与推理强度归一化、压缩阈值换算、工具开关名与禁用集合、SubAgent 资源参数校验、`set_model` 选择串 |
-| `controllers/session/control.py` | `src/control.rs` | 插件子系统状态文案、退出收尾动作、关闭/停用前的排空决策、关闭阶段顺序与关闭回调处置、隔离收尾摘要、父 Session 切换排空 |
+| `controllers/session/control.py` | `src/control.rs` | 退出收尾动作、关闭/停用前的排空决策、关闭阶段顺序与关闭回调处置、隔离收尾摘要、父 Session 切换排空 |
 | `controllers/tools/approval.py`、`agent/toolkit/approval_policy.py` | `src/approval.rs` | 审批归属判定、shell 命令分流、git 风险分级、删除意图、审查结论解析与失败文案、审批/执行阶段顺序、落盘事件载荷、生效模式与展示文本 |
 | `agent/context_compaction/*.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、投影、测量账本、摘要授权的事件证据恢复、结构化摘要生成与压缩编排 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
-| `controllers/plugins.py` | `src/plugins.rs` | Hook fail-closed 判定、拒绝事实与文案、分发结局归一化、会话生命周期 Hook 名与标识、分发上下文冻结归一化、回合 Hook 处置 |
 | `controllers/turn/loop.py`（接线面） | `src/turn/turn_loop.rs` | 13 回调面与缺省回落（重试提示回落状态回调）、`request_reply` / `execute_tool_batch` 两个循环端口与守门回调、进入循环前的取消检查、最终回复的收尾补发、用量累计与失败分类、运行时视觉能力与原生视觉开关 |
 | `controllers/turn/loop.py`（文本规则） | `src/turn/turn_text.rs` | 短「继续/重试」识别与上一轮任务还原、被取消回合的历史摘要、助手消息的推理字段 |
-| `agent/context/prompt_context.py`、`controllers/turn/loop.py`（上下文消息） | `src/turn/context_messages.rs` | 项目规范消息外壳（来源 + 权限边界）、插件 `context.build.before` 附加上下文的注入规则与收尾载荷 |
+| `agent/context/prompt_context.py`、`controllers/turn/loop.py`（上下文消息） | `src/turn/context_messages.rs` | 项目规范消息外壳（来源 + 权限边界） |
 | `agent/context/environment.py` | `src/turn/environment.rs` | 运行环境摘要（`runtime_environment_context`）、Agent 运行窗口/终端线索探测、Windows 进程链（Toolhelp API + 进程级缓存）；「Python 版本」两行改写为「内核」两行 |
 | `controllers/turn/loop.py`（工具调用事件） | `src/turn/tool_events.rs` | 原始 assistant 消息里取 `arguments_json`/`function_name`（按 ID 或函数名匹配首个命中）、协议原文不落盘的字段边界，以及 `tool_call_requested` / `tool_result` 两个落盘载荷的构造（键序与 Python 内联字典一致，Rust 侧单测自检，见模块内 `mod tests`） |
 | `controllers/turn/loop.py`（技能命令） | `src/turn/skill_command.rs` | `/skill:<名> [任务]` 的解析与加载文案（未命中带可用列表、命中无任务给默认提示） |
@@ -48,9 +47,8 @@ git 快照能力由宿主实现，crate 内不起子进程。
 这些编排段依赖宿主对象或多子系统协作，最初留在 Python 侧；内核 / 宿主拆分完成后各归其位。
 本 crate 仍只放判定与文案，下表的落点才是真实的钩子调用、模型请求与落盘：
 
-- `tools/approval.py` 的编排段：插件钩子（`tool.call.before` / `tool.approval.before` /
-  `tool.execute.before` 等）在 `omnicrawl-host/src/plugins.rs`，审查模型的 Responses 请求与
-  脱敏旁路在 `omnicrawl-host/src/review.rs`，确认面板由宿主 `Interactor` 承接
+- `tools/approval.py` 的编排段：审查模型的 Responses 请求与脱敏旁路在
+  `omnicrawl-host/src/review.rs`，确认面板由宿主 `Interactor` 承接
   （TUI 与本地 API 各一实现），会话事件持久化走会话存储。
 - `tools/building.py` 的 `_build_tools` / `_build_mcp_tools`：工具表构建在
   `omnicrawl-host/src/tools/registry.rs`（含 MCP 三类的声明与适配工具），注册规则与导出数据
@@ -62,20 +60,17 @@ git 快照能力由宿主实现，crate 内不起子进程。
 - `toolkit/tools.py` 的执行函数绑定：同一张注册表按 `agent_tools.json` 绑定；内核向模型声明的
   工具面由 `session.settings.model.tools` 与宿主执行表同步。
 - `turn/loop.py` 的编排壳：回合循环在 `omnicrawl-host/src/turn.rs`（13 回调面、两个循环端口与守卫、
-  收尾补发、失败分类在 `src/turn/turn_loop.rs`），插件钩子、事件与历史落盘、压缩触发由宿主与
+  收尾补发、失败分类在 `src/turn/turn_loop.rs`），事件与历史落盘、压缩触发由宿主与
   内核各自的会话实现承接。
 - `turn/compaction.py` 的会话与模型编排已搬到 `omnicrawl-compaction`（`driver.rs` 落事件、
   归档、写记忆、自动召回、重建历史；`adapter.rs` 走内核运行时发摘要请求）；内核回合收尾会调用
-  `compact_after_turn`，触发压缩的回合把计量交回宿主分发 `context.compaction.after_turn`
-  （`omnicrawl-host/src/plugins.rs`）。
+  `compact_after_turn`。
 - `subagents/{orchestration,worktrees}.py` 的进程面：任务生命周期在 `src/subagents/tasks.rs`
   （`SubAgentTaskManager`）与 `src/subagents/execution.rs`，模型运行时引导与线程池在宿主
   `omnicrawl-cli/src/subagent.rs`，worktree 的 git 创建 / 应用 / 清理在
   `omnicrawl-cli/src/worktree.rs`，定义刷新随工具表重建一起做。
 - `advisor.py` 的模型面：`omnicrawl-host/src/tools/advisor.rs`（独立 Runtime 引导 + 协议单轮补全 +
   用量回调）；判定、消息分支与信封已在 `src/advisor.rs`。
-- `plugins.py` 的进程面：`omnicrawl-extensions`（Plugin Manager / Worker 生命周期、
-  `HOOK_POLICIES` 表与配置读写），分发后的判定、文案与处置决策在 `src/plugins.rs`。
 - `session/{settings,store,control}.py`：setter 事务（重建工具表 / Runtime / MCP Manager，失败回滚）
   与运行期重载在 `omnicrawl-api/src/service.rs`（`apply_session_settings` / `reload_mcp`）
   以及 TUI 的设置面板；存取门面在 `omnicrawl-session` 与本地 API 的会话路由；资源关闭与
@@ -83,10 +78,9 @@ git 快照能力由宿主实现，crate 内不起子进程。
   事件投影编排在 `src/store.rs`。
 - `undo.py` 的 git 应用段：`omnicrawl-cli/src/undo.rs`。
 
-仍留在宿主侧的零星项：`/workspace` 的运行中切换——宿主负责预备新工具表/MCP/提示词运行时、插件
-`workspace.switch.before`/`after`、旧资源收尾与内核 `workspace.switch` 下发，TUI 已按窄口径接线；
-缺的是切换前的子 Agent 排空与 pending worktree 阻止（决策层已就位，宿主还拿不到 worktree 清单）
-与准备失败时的 `workspace.switch.error` 钩子。
+仍留在宿主侧的零星项：`/workspace` 的运行中切换——宿主负责预备新工具表/MCP/提示词运行时、
+旧资源收尾与内核 `workspace.switch` 下发，TUI 已按窄口径接线；缺的是切换前的子 Agent 排空与
+pending worktree 阻止（决策层已就位，宿主还拿不到 worktree 清单）。
 
 `/memory:clean` 已不需要内核入口：记忆工具的执行体在宿主（`omnicrawl-host`），
 宿主的 `TuiHostAgent::clean_memory` 直接按三个作用域调 `omnicrawl-session` 的
@@ -105,8 +99,7 @@ cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐�
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 42 例（选取/摘要/展示 + 提示词、采样、回包清洗、标签行、截断、取消判定、思考深度），模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
 判定、命令分流、删除意图、审查结论解析与审批归属）、会话侧 92 例（设置层 76 例与控制面
-16 例），以及顾问 23 例（消息分支、工具清单、黑名单、调用与信封）与插件 49 例
-（`HOOK_POLICIES` 全表 fail-closed、拒绝事实与文案、分发结局），以及工具参数层 73 例
+16 例），以及顾问 23 例（消息分支、工具清单、黑名单、调用与信封），以及工具参数层 73 例
 （标识符/工具名/参数名归一化、参数投影、Schema 压缩与校验、结果信封、MCP 结果文本、读取助手），
 工具目录 14 例（11 组 runner/开关组合的注册结果 + MCP 三类名称与说明模板），上下文压缩 79 例（Token 估算、用量累计、预算快照与校验、触发决策、批次选择、事件投影），
 编排层另有 13 例（`tests/compaction_orchestration_parity.rs`：测量账本、证据恢复、摘要解析/分块/生成、压缩编排、回合判定面；
@@ -122,14 +115,12 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 清单投影与输出文本、`ask_user` 三条拒绝文案与回答信封、记忆 `scope` 解析与未启用文案），
 以及审批编排 12 例（`tests/approval_flow_parity.rs`：真跑 `_approve_tool_for_batch` /
 `_execute_approved_tool` 得到的阶段轨迹与短路点、落盘事件载荷、生效模式、展示文本回落），
-以及插件运行期 15 例（`tests/plugin_runtime_parity.rs`：分发上下文冻结的三种形态
-（标准上下文原样、普通对象归一化、拿不到 freeze 时空上下文）、回合 Hook 处置与异常吞掉、
-会话生命周期 Hook 名与会话标识回落），以及回合文本规则 28 例（`tests/turn_text_parity.rs`：
+以及回合文本规则 28 例（`tests/turn_text_parity.rs`：
 短「继续/重试」的标点归一化识别、上一轮任务还原文案、被取消回合的摘要（含工具计数）、
 助手消息的推理字段），以及视觉能力判定 11 例（`tests/vision_capability_parity.rs`：
 运行时快照缺能力/缺 runtime/缺快照三种退化、显式开关盖过能力、未配置时回落能力），
 以及上下文消息装配 10 例（`tests/context_messages_parity.rs`：项目规范消息的空白退化与外壳、
-插件附加上下文的字符串包装/字典归一化/非法项忽略/非数组忽略，以及构建后钩子的条数载荷），
+
 以及工具调用事件字段 12 例（`tests/tool_events_parity.rs`：按 ID 或函数名匹配首个命中、
 `arguments` 非字符串时不带协议原文、函数名为空不写字段、以及落盘前剔除协议原文的边界），
 以及技能命令 9 例（`tests/skill_command_parity.rs`：无管理器/非命令原样放行、命中加载并带出任务

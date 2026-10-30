@@ -187,7 +187,6 @@ impl Pane {
             "vision" => Self::Vision,
             "show_thinking" => Self::Choice(ChoiceKind::ShowThinking),
             "memory" => Self::Choice(ChoiceKind::Memory),
-            "plugins" => Self::Choice(ChoiceKind::Plugins),
             "tts" => Self::Tts,
             "sessions" => Self::Sessions,
             _ => Self::Pending,
@@ -202,8 +201,6 @@ pub enum ChoiceKind {
     ShowThinking,
     /// 记忆功能：开启 / 关闭。
     Memory,
-    /// 插件功能：开启 / 关闭。
-    Plugins,
 }
 
 impl ChoiceKind {
@@ -211,7 +208,6 @@ impl ChoiceKind {
         match self {
             Self::ShowThinking => 0,
             Self::Memory => 1,
-            Self::Plugins => 2,
         }
     }
 
@@ -220,7 +216,6 @@ impl ChoiceKind {
         match self {
             Self::ShowThinking => OptionValue::Flag(choices.show_thinking),
             Self::Memory => OptionValue::Flag(choices.memory),
-            Self::Plugins => OptionValue::Flag(choices.plugins),
         }
     }
 }
@@ -540,7 +535,6 @@ pub struct SettingsValues {
     pub decision_local: DecisionLocalValues,
     pub show_thinking: bool,
     pub memory_enabled: bool,
-    pub plugins_enabled: bool,
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
@@ -564,7 +558,7 @@ impl SettingsValues {
     /// 上下文长度与压缩比例都折算到候选档位后再进界面。
     ///
     /// 单选页取与 Python 侧一致的缺省值（推理强度 `none`、思考显示开启、
-    /// 记忆与插件关闭），由 [`SettingsValues::with_choices`] / [`SettingsValues::with_model`]
+    /// 记忆关闭），由 [`SettingsValues::with_choices`] / [`SettingsValues::with_model`]
     /// 按当前配置覆盖。
     pub fn new(
         context_window_tokens: i64,
@@ -590,7 +584,6 @@ impl SettingsValues {
             decision_local: DecisionLocalValues::default(),
             show_thinking: true,
             memory_enabled: false,
-            plugins_enabled: false,
             tools,
             approval_mode: APPROVAL_MODE_REVIEW.to_string(),
             web_search: WebSearchRow::default(),
@@ -705,12 +698,10 @@ impl SettingsValues {
         reasoning_effort: &str,
         show_thinking: bool,
         memory_enabled: bool,
-        plugins_enabled: bool,
     ) -> Self {
         self.reasoning_effort = normalize_reasoning(reasoning_effort);
         self.show_thinking = show_thinking;
         self.memory_enabled = memory_enabled;
-        self.plugins_enabled = plugins_enabled;
         self
     }
 
@@ -835,7 +826,7 @@ pub enum SettingsChange {
     Reasoning { effort: String },
     /// 思考显示的开关。
     ShowThinking { enabled: bool },
-    /// 功能开关：`key` 取 `memory` / `plugins`。
+    /// 功能开关：`key` 目前只有 `memory`。
     Feature { key: String, enabled: bool },
     /// 保存整份渠道配置（渠道列表 + 默认渠道 key）。
     Channels {
@@ -1119,7 +1110,6 @@ impl SettingsState {
             choices: ChoicesState {
                 show_thinking: values.show_thinking,
                 memory: values.memory_enabled,
-                plugins: values.plugins_enabled,
                 status: Default::default(),
             },
             model_management: ModelManagementState {

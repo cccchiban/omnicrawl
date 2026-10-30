@@ -2,7 +2,7 @@
 //! `omnicrawl/agent/toolkit/approval_policy.py` 的判定层。
 //!
 //! 这里只收「谁需要审查、谁直接放行」的静态规则：shell 命令分类、结构化 git 工具分级、
-//! 删除意图识别、审查结论解析、审查请求与失败文案。插件钩子、审查模型请求、用户确认面板、
+//! 删除意图识别、审查结论解析、审查请求与失败文案。审查模型请求、用户确认面板、
 //! 会话事件与 schema 校验都留给宿主。
 //!
 //! 规则原样对应 Python 的正则；Rust 侧不引入 `regex` 依赖（lookbehind 也不被支持），
@@ -549,18 +549,6 @@ pub fn decide(
         return ApprovalDecision::Approve;
     }
     ApprovalDecision::Confirm
-}
-
-pub fn plugin_call_denied_reason(tool_name: &str) -> String {
-    format!("插件拒绝工具调用：{tool_name}。")
-}
-
-pub fn plugin_approval_denied_reason(tool_name: &str) -> String {
-    format!("插件在审批前拒绝：{tool_name}。")
-}
-
-pub fn plugin_execute_denied_reason(tool_name: &str) -> String {
-    format!("插件在执行前拒绝：{tool_name}。")
 }
 
 pub fn user_cancelled_reason(tool_name: &str) -> String {
@@ -1486,63 +1474,46 @@ fn read_subcommand(chars: &[char], from: usize) -> Option<(String, usize)> {
 /// 审批流程的阶段序列：顺序即契约，宿主按此推进并在失败点短路。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalPhase {
-    /// `tool.call.before`：插件可改参数或拒绝。
-    PluginCallBefore,
     /// Host Schema 校验。
     SchemaValidation,
-    /// `tool.approval.before`：插件只能拒绝，不能代表用户批准。
-    PluginApprovalBefore,
     /// 审批结论：自动放行 / 交审查模型 / 人工确认。
     Decision,
-    /// `tool.approval.after`：通知审批结果（批准与拒绝各一次）。
-    PluginApprovalAfter,
 }
 
 impl ApprovalPhase {
     pub fn label(self) -> &'static str {
         match self {
-            ApprovalPhase::PluginCallBefore => "plugin_call_before",
             ApprovalPhase::SchemaValidation => "schema_validation",
-            ApprovalPhase::PluginApprovalBefore => "plugin_approval_before",
             ApprovalPhase::Decision => "decision",
-            ApprovalPhase::PluginApprovalAfter => "plugin_approval_after",
         }
     }
 }
 
-pub const APPROVAL_PHASES: [ApprovalPhase; 5] = [
-    ApprovalPhase::PluginCallBefore,
+pub const APPROVAL_PHASES: [ApprovalPhase; 2] = [
     ApprovalPhase::SchemaValidation,
-    ApprovalPhase::PluginApprovalBefore,
     ApprovalPhase::Decision,
-    ApprovalPhase::PluginApprovalAfter,
 ];
 
-/// 已批准工具的执行阶段；工具抛错时在 `ToolRun` 之后插入 `PluginExecuteError`。
+/// 已批准工具的执行阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionPhase {
-    PluginExecuteBefore,
     ToolRun,
-    PluginExecuteError,
-    PluginExecuteAfter,
+    /// 工具抛错时的收尾阶段。
+    ToolError,
 }
 
 impl ExecutionPhase {
     pub fn label(self) -> &'static str {
         match self {
-            ExecutionPhase::PluginExecuteBefore => "plugin_execute_before",
             ExecutionPhase::ToolRun => "tool_run",
-            ExecutionPhase::PluginExecuteError => "plugin_execute_error",
-            ExecutionPhase::PluginExecuteAfter => "plugin_execute_after",
+            ExecutionPhase::ToolError => "tool_error",
         }
     }
 }
 
-/// 正常执行路径；异常路径在此之上多一个 `PluginExecuteError`。
-pub const EXECUTION_PHASES: [ExecutionPhase; 3] = [
-    ExecutionPhase::PluginExecuteBefore,
+/// 正常执行路径；异常路径在此之上多一个 `ToolError`。
+pub const EXECUTION_PHASES: [ExecutionPhase; 2] = [
     ExecutionPhase::ToolRun,
-    ExecutionPhase::PluginExecuteAfter,
 ];
 
 /// 当前线程实际生效的审批模式：线程本地覆盖优先，其次配置值，配置缺失回落 review。

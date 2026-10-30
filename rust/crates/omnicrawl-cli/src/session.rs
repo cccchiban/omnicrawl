@@ -47,7 +47,7 @@ use omnicrawl_ipc::bridge::{
     initialize_result, method, unsupported_version_error, BridgeError, Command,
     ContextCompactionPayload, ContextPruneGroup, ContextPruneRequest, ContextPruneResult,
     HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload,
-    ModelHookRequest, ModelHookResult, ModelRequest, ModelRequestErrorPayload,
+    ModelRequest, ModelRequestErrorPayload,
     ModelResponseAfterPayload, SessionAppendParams, SessionDeleteParams, SessionHistoryParams,
     SessionListParams, SessionModelSettings, SessionRenameParams, SessionResumeParams,
     SessionSettingsParams,

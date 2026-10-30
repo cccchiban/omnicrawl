@@ -1,6 +1,6 @@
 //! 工作区切换与慢命令：装配候选子系统、排空子 Agent、提交新状态。
 //!
-//! 事务性约定：候选子系统先在本地装配，插件切换通过后才提交；任一步失败都不动当前
+//! 事务性约定：候选子系统先在本地装配，装配通过后才提交；任一步失败都不动当前
 //! 工作区与工具表，候选 MCP/后台任务在失败路径上主动 close，不留孤儿进程。
 
 use super::*;
@@ -10,19 +10,15 @@ impl App {
     ///
     /// 窄口径对映 Python `WorkspaceSwitchingMixin.switch_workspace` 的主体：
     /// 解析校验 → 子 Agent 排空（仍有活跃任务且超期时拒绝）→ pending worktree 拦阻
-    /// → 准备新子系统（工具表 / MCP 连接 / 提示词运行时）→ 插件
+    /// → 准备新子系统（工具表 / MCP 连接 / 提示词运行时）→
     /// `workspace.switch.before`（拒绝即中止）→ 收尾旧资源（旧工作区的 MCP 与
     /// 后台任务）→ 提交新状态 → 内核侧同一会话补写 `workspace_switched`。
     ///
     /// TUI 的 `/workspace` 走 [`Self::start_workspace_switch`]（装配在工作线程，界面
     /// 不冻）；这一条是同步实现，供不接管慢命令的宿主（测试替身等）使用。
     ///
-    /// 与 Python 的已知差异（见 README「本阶段的边界」）：before/after 钩子由
-    /// `PluginHost::switch_workspace` 一次发出，因此钩子相对「准备候选子系统」的
-    /// 先后与 Python 不同源。
-    ///
-    /// 事务性：候选子系统先在本地装配，插件切换通过后才提交；任一步失败都不动
-    /// 当前工作区与工具表（候选 MCP/后台任务在失败路径上主动 close，不留孤儿进程）。
+    /// 事务性：候选子系统先在本地装配，装配成功后才提交；任一步失败都不动当前工作区
+    /// 与工具表（候选 MCP/后台任务在失败路径上主动 close，不留孤儿进程）。
     pub(crate) fn command_switch_workspace(&mut self, path: &str) -> Result<PathBuf, String> {
         let Some(new_root) = self.workspace_switch_target(path)? else {
             // 目标就是当前工作区：Python 同样直接返回，不重建、不转录事件。
@@ -160,7 +156,7 @@ impl App {
                     }
                 }
                 Err(message) => {
-                    // 装配阶段失败：通知插件 `workspace.switch.error`（对映 Python
+                    // 装配阶段失败：如实回报，不动当前运行态。
                     // `_prepare_workspace_switch` 的 except），旧工作区一律不动。
                     self.notify_workspace_switch_error(&root, &message);
                     self.state.notice(message);
@@ -234,7 +230,7 @@ impl App {
         )
     }
 
-    /// 提交候选子系统：插件门禁 → 收尾旧资源 → 换状态 → 内核下发。
+    /// 提交候选子系统：收尾旧资源 → 换状态 → 内核下发。
     ///
     /// 失败路径上候选 MCP/后台任务主动 close，不留孤儿进程；提交开始后不再有可失败步骤。
     pub(super) fn commit_workspace_switch(
@@ -247,17 +243,6 @@ impl App {
             registry: candidate,
             prompt,
         } = prepared;
-        // 插件侧重建是事务式的：`workspace.switch.before` 拒绝时保持旧 Worker 不动，
-        // 工作区的 before/after 钩子也都在这一调用里（与 Python 不同源，但与
-        // `PluginHost::switch_workspace` 的既定契约一致）。
-        let diagnostics = match self.plugins.switch_workspace(new_root) {
-            Ok(diagnostics) => diagnostics,
-            Err(error) => {
-                candidate.close_monitors();
-                candidate.close_mcp();
-                return Err(format!("工作区切换失败：{error}"));
-            }
-        };
         let mut options = self.registry_options.clone();
         options.monitors = None;
         options.cancel = Some(self.registry.cancel_token());
@@ -304,12 +289,7 @@ impl App {
         // 内核侧：先把新工具表与上下文消息推给内核（与新工作区的稳定前缀一致），
         // 再让它在同一会话里转录 `workspace_switched`。两者都不等回包：
         // `handle_frame` 对未匹配的响应帧只丢弃，不阻断界面。
-        let context_messages = match self.prompt.context_messages_with_plugins(
-            true,
-            Some(self.plugins.as_ref()),
-            None,
-            None,
-        ) {
+        let context_messages = match self.prompt.context_messages(true) {
             Ok(messages) => messages,
             Err(error) => {
                 // 同上：切完工作区装不出上下文时，界面必须看得到原因。
@@ -331,9 +311,6 @@ impl App {
                 path: new_root.to_string_lossy().to_string(),
             },
         ));
-        for line in diagnostics {
-            self.state.notice(format!("插件：{line}"));
-        }
         let message = workspace_switch_success_message(new_root);
         self.state.notice(message);
         Ok(new_root.to_path_buf())
@@ -436,17 +413,4 @@ impl App {
             .collect())
     }
 
-    /// 准备阶段失败时通知插件 `workspace.switch.error`（对映 Python
-    /// `_prepare_workspace_switch` 的 except 分支）。钩子是 NOTIFY 语义，失败不抛错。
-    pub(super) fn notify_workspace_switch_error(&self, root: &std::path::Path, error: &str) {
-        let mut payload = serde_json::Map::new();
-        payload.insert(
-            "workspace".to_string(),
-            Value::String(root.to_string_lossy().to_string()),
-        );
-        payload.insert("error".to_string(), Value::String(error.to_string()));
-        let _decision = self
-            .plugins
-            .dispatch("workspace.switch.error", payload, None, None);
-    }
 }

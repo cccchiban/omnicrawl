@@ -593,7 +593,7 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 ### 18.1 门面与组合
 
 - `rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs`（约 390 行）：`AgentConfig` 配置模型、`LocalToolAgent.__init__` 与 16 个领域 Mixin 的组合继承。
-- `rust/crates/omnicrawl-controllers/src/`：按类别分目录存放领域实现（session / memory / workspace / subagents / tools / turn / plugins / undo）。
+- `rust/crates/omnicrawl-controllers/src/`：按类别分目录存放领域实现（session / memory / workspace / subagents / tools / turn / undo）。
 
 ```text
 LocalToolAgent(
@@ -611,7 +611,6 @@ LocalToolAgent(
     ToolBuildingMixin,          # 工具表构建、system prompt 加载
     ToolImplementationsMixin,   # _tool_* 实现
     ToolOutputMixin,            # 工具输出预算/落盘/格式化
-    PluginHooksMixin,           # 插件 Hook 分发
     UndoMixin,                  # /undo 回合快照与回滚
 )
 ```
@@ -635,7 +634,6 @@ LocalToolAgent(
 | 工具 | `controllers/tools/building.py` | 工具表构建、system prompt 加载 |
 | 工具 | `controllers/tools/implementations.py` | `_tool_*` 实现 |
 | 工具 | `controllers/tools/output.py` | 工具输出预算/落盘/结果格式化 |
-| 插件 | `controllers/plugins.py` | 插件 Hook 分发 |
 | 撤销 | `controllers/undo.py` | `/undo` 回合快照与回滚 |
 
 上述路径相对 `omnicrawl/agent/`。`core.py` 保留对外门面，所有方法仍可在 `LocalToolAgent` 实例上直接访问；需要改动某个领域实现时，直接定位对应文件即可。
@@ -749,8 +747,7 @@ HTTP 400 The `reasoning_content` in the thinking mode must be passed back to the
 以下内容按设计**不进入**历史，它们只在当前回合内可见：
 
 - 子代理完成通知（`_inject_subagent_notifications`，原地附加到当前 user 消息）；
-- 视觉模型的图片 followup 消息（含 Base64，体量与安全都不适合长期保存）；
-- `context.build` 系列插件的临时上下文。
+- 视觉模型的图片 followup 消息（含 Base64，体量与安全都不适合长期保存）。
 
 ### 19.8 验证
 

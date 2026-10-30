@@ -166,8 +166,7 @@ impl SettingsState {
                     self.choices.memory = *enabled;
                     ChoiceKind::Memory
                 } else {
-                    self.choices.plugins = *enabled;
-                    ChoiceKind::Plugins
+                    ChoiceKind::ShowThinking
                 };
                 self.choices.status[kind.index()] = message;
             }
@@ -314,7 +313,7 @@ impl SettingsState {
                 let kind = if key == "memory" {
                     ChoiceKind::Memory
                 } else {
-                    ChoiceKind::Plugins
+                    ChoiceKind::ShowThinking
                 };
                 self.choices.status_mut(kind).push_str(note);
             }

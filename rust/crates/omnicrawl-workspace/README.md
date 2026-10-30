@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | `slug.py::is_safe_slug` / `validate_slug` | `src/slug.rs` 同名 | 空白检查用 `strip()` 真值、长度与字符集用原始值，两条口径都照搬 |
 | `slug.py::SlugSafetyError` | `src/slug.rs::SlugSafetyError` | 只承载文案 |
-| `Path.home()` / `expanduser()` / `resolve()` | `src/paths.rs` | 与 `omnicrawl-extensions::path` 同一口径；两处各持一份是因为插件 crate 的这套工具是私有的，工作区层不该反向依赖插件子系统 |
+| `Path.home()` / `expanduser()` / `resolve()` | `src/paths.rs` | 与 `omnicrawl-extensions::path` 同一口径；两处各持一份是因为 Skill crate 的这套工具是私有的，工作区层不该反向依赖它 |
 | `agent_isolation.py::IsolationSession` | `src/agent_isolation.rs::IsolationSession` | 字段与默认值逐个对齐（`created_at` 秒、`branch_name` 空） |
 | `agent_isolation.py::create_isolation_session` | `src/agent_isolation.rs::create_isolation_session` | 参数面收进 `IsolationOptions`（`new` / `with_instance_id` / `with_config` / `with_worktrees_root`） |
 | `prepare_isolated_workspace` / `finalize_isolation_session` / `finalize_subagent_worktrees` | 同名 | 收尾摘要文案与 Python 逐字一致 |

@@ -2,7 +2,7 @@
 //!
 //! 内核与宿主是两个进程：内核持有协议层、回合循环与 Provider 流解析，宿主持有传输、
 //! 工具、审批、会话与界面。两侧只用一条 NDJSON 流通信，一行一个 JSON-RPC 2.0 帧；
-//! 形状与插件通路（`omnicrawl/extensions/node_runner.mjs`）一致，宿主不必为内核另写解帧。
+//! 宿主不必为内核另写一套解帧逻辑。
 //!
 //! - 帧与错误码：`frame`
 //! - 版本协商：`version`
@@ -16,9 +16,9 @@ pub mod version;
 
 pub use bridge::{
     method, BridgeError, Command, ContextPruneGroup, ContextPruneRequest, ContextPruneResult,
-    HostEvent, InitializeParams, KernelCompactionConfig, KernelSessionConfig, ModelHookRequest,
-    ModelHookResult, ModelRequest, PendingCommand, ToolBatch, ToolBatchResult, TurnCancelParams,
-    TurnImageAttachment, TurnSubmitParams, DENIED_ERROR_CODE,
+    HostEvent, InitializeParams, KernelCompactionConfig, KernelSessionConfig, ModelRequest,
+    PendingCommand, ToolBatch, ToolBatchResult, TurnCancelParams, TurnImageAttachment,
+    TurnSubmitParams, DENIED_ERROR_CODE,
 };
 pub use frame::{error_code, ErrorObject, Frame, FrameError, Id, JSONRPC_VERSION};
 pub use version::{negotiate_version, VersionError, PROTOCOL_VERSION, SUPPORTED_MAJOR};

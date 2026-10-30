@@ -17,7 +17,7 @@ png = "0.17"
 omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
 omnicrawl-core = { path = "../omnicrawl-core" }
-# 插件运行期：宿主是 Hook 编排的落点，Worker 生命周期与安装器都在扩展内核里。
+# Skill 子系统：Skill 发现、索引与匹配（插件已移除，本 crate 只提供 Skill）。
 omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 omnicrawl-ipc = { path = "../omnicrawl-ipc" }
 omnicrawl-llm = { path = "../omnicrawl-llm" }

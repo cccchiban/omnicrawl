@@ -350,7 +350,6 @@ pub(super) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
 pub(super) fn feature_label(key: &str) -> String {
     match key {
         "memory" => "记忆功能".to_string(),
-        "plugins" => "插件功能".to_string(),
         other => other.to_string(),
     }
 }
@@ -872,7 +871,7 @@ pub(super) fn subagent_roles() -> Vec<(String, String)> {
     let mut registry =
         AgentDefinitionRegistry::with_located_builtin(Some(env.home().to_path_buf()));
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    registry.discover(&workspace, &[]);
+    registry.discover(&workspace);
     registry
         .list_all()
         .iter()

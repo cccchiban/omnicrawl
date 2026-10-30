@@ -16,15 +16,12 @@ use omnicrawl_controllers::building::{
     advisor_guidelines_block, normalize_mode_name, system_prompt_with_mode,
 };
 use omnicrawl_controllers::shared::AGENTS_INSTRUCTIONS_FILE;
-use omnicrawl_controllers::turn::context_messages::plugin_context_messages;
 use omnicrawl_controllers::turn::prompt_context::{
     build_context_messages, build_system_prompt, format_active_skills_for_context, ActiveSkill,
     ContextMessageInputs,
 };
 use omnicrawl_extensions::skill::{Skill, SkillManager, SkillMeta};
 use serde_json::Value;
-
-use crate::plugins::PluginHost;
 
 /// 模板目录覆盖。
 /// Agent 临时目录的默认展示路径（与 Python `_agent_temp_dir_display` 的兜底同值）。
@@ -134,7 +131,7 @@ impl PromptRuntime {
     /// 已发现的 Skill 索引条目。
     ///
     /// prompt cache 身份的 `skill_index_hash` 直接用这份列表，因此它必须与
-    /// [`Self::context_messages_with_plugins`] 拼进 Skill 索引段的来源是**同一份**
+    /// [`Self::context_messages`] 拼进 Skill 索引段的来源是**同一份**
     /// （同一个 `SkillManager::list_all()`），否则身份哈希会与实际发给模型的前缀脱节。
     pub fn skill_metas(&self) -> Vec<SkillMeta> {
         self.skill_manager
@@ -233,9 +230,8 @@ impl PromptRuntime {
     /// system 之外的上下文消息：项目规范、Skill、工具能力说明与运行环境。
     ///
     /// `has_tools` 由调用方按当前工具表给出（工具开关会改这张表）。
-    /// 不带插件钩子，等价于 [`Self::context_messages_with_plugins`] 传 `None`。
     pub fn context_messages(&self, has_tools: bool) -> Result<Vec<Value>, String> {
-        self.context_messages_with_plugins(has_tools, None, None, None)
+        self.build_context_messages_with(has_tools, None)
     }
 
     /// 本轮命中活动 Skill 时的上下文消息（`/skill:<名>` 手动调用用）。
@@ -244,22 +240,7 @@ impl PromptRuntime {
         has_tools: bool,
         active_skill_context: &str,
     ) -> Result<Vec<Value>, String> {
-        self.build_context_messages_with(has_tools, None, None, None, Some(active_skill_context))
-    }
-
-    /// 上下文消息装配的完整路径（含插件 Hook）。
-    ///
-    /// 与 Python `_context_messages` 同序：先跑 `context.build.before` 取插件附加上下文，
-    /// 装配稳定/动态消息后追加插件消息，最后发 `context.build.after` 报最终条数。
-    /// 插件缺失或 Hook 被拒（fail-open）时与 `context_messages` 结果一致。
-    pub fn context_messages_with_plugins(
-        &self,
-        has_tools: bool,
-        plugins: Option<&PluginHost>,
-        session_id: Option<&str>,
-        turn_id: Option<&str>,
-    ) -> Result<Vec<Value>, String> {
-        self.build_context_messages_with(has_tools, plugins, session_id, turn_id, None)
+        self.build_context_messages_with(has_tools, Some(active_skill_context))
     }
 
     /// 上下文消息装配的统一实现：`active_skill_context` 非空时以活动 Skill 正文
@@ -270,13 +251,10 @@ impl PromptRuntime {
     fn build_context_messages_with(
         &self,
         has_tools: bool,
-        plugins: Option<&PluginHost>,
-        session_id: Option<&str>,
-        turn_id: Option<&str>,
         active_skill_context: Option<&str>,
     ) -> Result<Vec<Value>, String> {
         let project_instructions = self.project_instructions()?;
-        let mut messages = build_context_messages(&ContextMessageInputs {
+        let messages = build_context_messages(&ContextMessageInputs {
             workspace_root: &self.workspace_root.to_string_lossy(),
             project_instructions: &project_instructions,
             active_skill_context,
@@ -284,11 +262,6 @@ impl PromptRuntime {
             agent_temp_dir: &self.agent_temp_dir,
             workspace_detection_summary: &self.workspace_detection_summary,
         });
-        if let Some(plugins) = plugins {
-            let additional = plugins.context_build_before(session_id, turn_id);
-            messages.extend(plugin_context_messages(additional.as_ref()));
-            plugins.context_build_after(messages.len(), session_id, turn_id);
-        }
         Ok(messages)
     }
 
@@ -381,7 +354,6 @@ pub fn builtin_mode_prompt(mode: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omnicrawl_extensions::models::PluginsConfig;
 
     fn options() -> PromptOptions {
         let mut options = PromptOptions::new(std::env::temp_dir().join("oc-prompt-ws"));
@@ -495,33 +467,6 @@ mod tests {
         // 没有工具面时不注入工具能力说明。
         let without_tools = runtime.context_messages(false).expect("上下文消息");
         assert_eq!(without_tools.len(), messages.len() - 1);
-    }
-
-    #[test]
-    fn context_messages_without_plugins_matches_plain_path() {
-        let env = ConfigEnvironment::from_process();
-        let runtime = PromptRuntime::load(&env, options()).expect("装配");
-        let plain = runtime.context_messages(true).expect("上下文消息");
-        let hooked = runtime
-            .context_messages_with_plugins(true, None, None, None)
-            .expect("上下文消息");
-        assert_eq!(plain, hooked);
-    }
-
-    #[test]
-    fn disabled_plugin_host_injects_nothing() {
-        let env = ConfigEnvironment::from_process();
-        let runtime = PromptRuntime::load(&env, options()).expect("装配");
-        // 未启用（无 Manager）的插件宿主走 fail-open：附加上下文为空，消息集合不变。
-        let plugins = PluginHost::new(
-            &std::env::temp_dir().join("oc-prompt-ws"),
-            PluginsConfig::default(),
-        );
-        let plain = runtime.context_messages(true).expect("上下文消息");
-        let hooked = runtime
-            .context_messages_with_plugins(true, Some(&plugins), Some("session-1"), Some("turn-1"))
-            .expect("上下文消息");
-        assert_eq!(plain, hooked);
     }
 
     #[test]

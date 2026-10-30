@@ -12,7 +12,7 @@ const FIXTURE: &str = include_str!("fixtures/host_bridge.json");
 ///
 /// `turn.finished` 对应 `run_stream` 的返回值；其余三个由 agent runtime 内部的触发点
 /// （压缩计量、模型请求前后）产生，Python 侧不经宿主回调下发，而在 Rust 里由宿主
-/// 收到通知后分发同名插件 Hook。
+/// 收到通知后按同一份口径处理。
 const KERNEL_ORIGIN_EVENTS: &[&str] = &[
     method::TURN_FINISHED,
     method::TURN_CONTEXT_COMPACTION,
@@ -134,7 +134,7 @@ fn context_compaction_is_a_kernel_origin_event() {
 fn method_spaces_do_not_overlap() {
     // 需要宿主响应的请求、单向通知、宿主命令三者方法名不得重叠，
     // 否则两侧会把同一条帧理解成不同方向的消息。
-    for request in [method::TOOL_BATCH, method::MODEL_REPLY, method::MODEL_HOOK] {
+    for request in [method::TOOL_BATCH, method::MODEL_REPLY] {
         assert!(
             !HostEvent::METHODS.contains(&request),
             "{request} 需要宿主响应，不能同时是单向通知"

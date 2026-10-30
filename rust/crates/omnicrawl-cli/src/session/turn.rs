@@ -2,7 +2,7 @@
 
 use super::*;
 
-use super::model_port::{ActiveAssistantSlot, KernelModelPort, KernelModelRuntime, RemoteModelPort, RuntimeBuildKey, TurnUsage, model_config_of, plugin_model_hooks_of, provider_warning_event, read_api_key, session_config_of, settings_without_prune_is_empty, tool_call_prune_of};
+use super::model_port::{ActiveAssistantSlot, KernelModelPort, KernelModelRuntime, RemoteModelPort, RuntimeBuildKey, TurnUsage, model_config_of, provider_warning_event, read_api_key, session_config_of, settings_without_prune_is_empty, tool_call_prune_of};
 
 use super::protocol::{Inbound, PortFailure, handle_workspace_switch, protocol_version_of};
 
@@ -20,7 +20,6 @@ pub(crate) use conn::Conn;
 pub(crate) use conn::ProtocolSink;
 pub(crate) use turn_run::run_turn;
 pub(crate) use turn_run::drain_inbound_during_turn;
-pub(crate) use turn_run::serve_model_hook;
 pub(crate) use settle::TurnRunGuard;
 pub(crate) use settle::cancelled_turn_summary;
 pub(crate) use settle::is_context_overflow;

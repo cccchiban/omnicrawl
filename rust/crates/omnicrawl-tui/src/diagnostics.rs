@@ -11,7 +11,7 @@
 //!   （与连接器日志同目录、同目录约定）。
 //!
 //! 只搬 TUI 进程内的写点（`omnicrawl-host` 与 `omnicrawl-tui` 自身）；子进程那条线本来
-//! 就隔离好了（内核 stderr 走管道 + 过滤进会话流，连接器/服务/插件/MCP 各走文件或管道）。
+//! 就隔离好了（内核 stderr 走管道 + 过滤进会话流，连接器/服务/MCP 各走文件或管道）。
 
 use std::fs::OpenOptions;
 use std::io::Write;

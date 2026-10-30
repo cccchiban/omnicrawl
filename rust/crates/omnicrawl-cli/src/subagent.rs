@@ -73,7 +73,7 @@ impl SubAgentRuntime {
         let home = env.home().to_path_buf();
         let mut registry = AgentDefinitionRegistry::with_located_builtin(Some(home));
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        registry.discover(&workspace, &[]);
+        registry.discover(&workspace);
         Ok(Self { config, registry })
     }
 

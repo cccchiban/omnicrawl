@@ -36,7 +36,7 @@ export const USER_CONFIG_DIRNAME = '.OmniCrawl'
 export const CONFIG_FILENAME = 'config.toml'
 
 /** 已识别的子命令：这些路径不做启动更新（工作台才是自动更新的入口）。 */
-const DISPATCH_COMMANDS = new Set(['api', 'kernel', 'plugin'])
+const DISPATCH_COMMANDS = new Set(['api', 'kernel'])
 /** `npm install -g` 的附加参数（减少噪音与交互）。 */
 const NPM_QUIET_ARGS = ['--no-fund', '--no-audit']
 

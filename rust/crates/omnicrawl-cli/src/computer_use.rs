@@ -132,7 +132,7 @@ fn load_definition(env: &ConfigEnvironment) -> Result<AgentDefinition, String> {
     let home = env.home().to_path_buf();
     let mut registry = AgentDefinitionRegistry::with_located_builtin(Some(home));
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    registry.discover(&workspace, &[]);
+    registry.discover(&workspace);
     if registry.get(COMPUTER_USE_ROLE).is_none() || !is_reserved_role(COMPUTER_USE_ROLE) {
         return Err(disabled_text());
     }

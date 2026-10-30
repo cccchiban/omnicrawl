@@ -123,27 +123,7 @@ impl App {
     }
 
 
-    /// `session.close.before` / `after`：内核补写 `session_closed` 的观察与通知钩子。
-    ///
-    /// 顺序与 Python `LocalToolAgent.close` 一致：退出收尾后先发 before，内核据此
-    /// 在写事件与丢空占位之前得到一次观察机会；进程退出后再发 after。会话 id 未知
-    /// （握手尚未回填、或本来就不自持会话）时跳过。
-    pub(super) fn dispatch_session_close(&self, before: bool) {
-        let session_id = self.current_session_id();
-        if session_id.is_empty() {
-            return;
-        }
-        self.plugins.session_close(&session_id, before);
-    }
-
-
-    /// 内核退出后的 `session.close.after`：由 `main` 在 `wait_or_kill` 之后调用。
-    pub fn finish_session_close(&self) {
-        self.dispatch_session_close(false);
-    }
-
-
-    pub(super) fn start_shutdown(&mut self) {
+        pub(super) fn start_shutdown(&mut self) {
         // 退出前丢开未提交的排队消息（对映 Python `_pending_inputs.clear()`）。
         self.state.clear_pending();
         self.request_shutdown();
@@ -155,11 +135,6 @@ impl App {
     pub fn request_shutdown(&mut self) {
         if self.kernel.is_closed() {
             return;
-        }
-        // 只在真正下发 shutdown 的那一次发 before 钩子。
-        if !self.session_close_before_sent {
-            self.session_close_before_sent = true;
-            self.dispatch_session_close(true);
         }
         self.send(Command::Shutdown);
     }

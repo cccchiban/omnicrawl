@@ -415,7 +415,7 @@ pub(crate) fn run_session_tail(
                 );
             }
             // 触发压缩的回合把计量发给宿主：宿主据此分发 `context.compaction.after_turn`
-            // 插件 Hook（Python 在同一位置由 agent runtime 内部派发）。未触发则不发。
+            // 压缩计量通知（Python 在同一位置由 agent runtime 内部派发）。未触发则不发。
             if report
                 .measurement_payload
                 .get("trigger_reached")

@@ -3,7 +3,7 @@
 //! 与 `omnicrawl-extensions::path` 同一套口径（解析符号链接、展开 Windows 短名、剥掉
 //! `\\?\` 前缀、把正斜杠折回平台分隔符；路径不存在时解析最近的已存在祖先再拼回剩余片段）。
 //! 两处各自持有一份是因为 `omnicrawl-extensions` 的这套工具是 crate 内私有，
-//! 而工作区层不该反向依赖插件子系统。
+//! 而工作区层不该反向依赖 Skill 子系统。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

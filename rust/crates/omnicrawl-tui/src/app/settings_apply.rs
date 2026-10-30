@@ -133,8 +133,7 @@ impl App {
         ))
     }
 
-    /// 功能开关：`memory` 立即重建工具表（记忆整组进/出表），`plugins` 立即重建插件
-    /// 运行期（Worker 与执行计划一并回收 / 装配，对应 Python 设置面板的即时生效）。
+    /// 功能开关：`memory` 立即重建工具表（记忆整组进/出表）。
     pub(super) fn apply_feature(&mut self, key: &str, enabled: bool) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let path = save_feature_enabled(&environment, key, enabled, None, None)
@@ -153,25 +152,7 @@ impl App {
                     path.display()
                 ))
             }
-            "plugins" => {
-                // 运行期热更新：与 API 的 `PUT /settings/features` 同一入口
-                // （`PluginHost::set_enabled` 事务式重建 Worker 与执行计划）。
-                let diagnostics = self
-                    .plugins
-                    .set_enabled(enabled)
-                    .map_err(|error| format!("设置未完成：{error}"))?;
-                let detail = if diagnostics.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", diagnostics.join("\n"))
-                };
-                Ok(format!(
-                    "{label}已{}，已保存到 {}。{detail}",
-                    if enabled { "开启" } else { "关闭" },
-                    path.display()
-                ))
-            }
-            // 面板上只有「记忆」与「插件」两个功能开关，两支都已即时重建运行期；
+            // 面板上只有「记忆」一个功能开关，该支已即时重建运行期；
             // 走到这里说明面板加了新的开关行却没有配套的重建逻辑，如实报告而不是假装已生效。
             other => Err(format!(
                 "设置未完成：功能开关 {other} 已写盘，但本进程没有配套的重建逻辑，需要补齐后再试。"
@@ -603,7 +584,7 @@ impl App {
     /// 工具输出压缩：写 `config.toml [tool_output_compression]`。
     ///
     /// 压缩发生在内核侧的工具批次收口时，宿主这边没有运行期句柄，所以这里只写盘，
-    /// 并在状态文本里说明生效时机（与「插件功能」同款处理）。
+    /// 并在状态文本里说明生效时机。
     pub(super) fn apply_compression_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let enabled = values.first().map(|value| value.flag()).unwrap_or(false);

@@ -315,168 +315,6 @@
       "text": "[llm]\nmodel = \"keep\"\n\n[mcp]\nenabled = true\ndefault_timeout_seconds = 30\n\n[mcp.servers.files]\nenabled = true\ntransport = \"stdio\"\ncommand = \"node\"\nargs = [\n    \"server.js\",\n]\nurl = \"\"\ntimeout_seconds = 15\nrisk_level = \"read\"\n\n[mcp.servers.files.env]\nA = \"1\"\n\n[mcp.servers.files.headers]\nX = \"y\"\n\n[mcp.policy]\nrequire_confirmation_for_write = true\nrequire_confirmation_for_command = false\nallow_external_network_tools = false\naudit_log_enabled = true\n"
     }
   ],
-  "bootstrap_node": [
-    {
-      "name": "未检测到 node",
-      "case": {
-        "node": null,
-        "npm": null
-      },
-      "check": [
-        "Node.js",
-        "warning",
-        "未检测到 Node.js；插件功能暂不可用。"
-      ]
-    },
-    {
-      "name": "版本过低",
-      "case": {
-        "node": "C:\\node.exe",
-        "npm": "C:\\npm.cmd",
-        "output": "v18.20.4\n"
-      },
-      "check": [
-        "Node.js",
-        "warning",
-        "需要 Node.js >=20，当前为 v18.20.4。"
-      ]
-    },
-    {
-      "name": "版本可用",
-      "case": {
-        "node": "C:\\node.exe",
-        "npm": "C:\\npm.cmd",
-        "output": "v20.11.0\n"
-      },
-      "check": [
-        "Node.js",
-        "ok",
-        "Node.js v20.11.0 / npm 可用。"
-      ]
-    },
-    {
-      "name": "缺少 npm",
-      "case": {
-        "node": "C:\\node.exe",
-        "npm": null,
-        "output": "v20.11.0\n"
-      },
-      "check": [
-        "Node.js",
-        "warning",
-        "Node.js v20.11.0 可用，但未找到 npm。"
-      ]
-    },
-    {
-      "name": "版本输出异常",
-      "case": {
-        "node": "C:\\node.exe",
-        "npm": "C:\\npm.cmd",
-        "output": "not-a-version\n"
-      },
-      "check": [
-        "Node.js",
-        "warning",
-        "版本检查失败：invalid literal for int() with base 10: 'not-a-version'"
-      ]
-    },
-    {
-      "name": "执行失败",
-      "case": {
-        "node": "C:\\node.exe",
-        "npm": "C:\\npm.cmd",
-        "raise": "OSError: 拒绝访问"
-      },
-      "check": [
-        "Node.js",
-        "warning",
-        "版本检查失败：OSError: 拒绝访问"
-      ]
-    }
-  ],
-  "bootstrap_plugin": [
-    {
-      "name": "插件禁用无注册项",
-      "config": {},
-      "rows": [],
-      "raise": false,
-      "check": [
-        "插件状态",
-        "ok",
-        "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
-      ]
-    },
-    {
-      "name": "插件启用",
-      "config": {
-        "plugins": {
-          "enabled": true
-        }
-      },
-      "rows": [
-        {
-          "enabled": true
-        },
-        {
-          "enabled": false
-        },
-        {
-          "enabled": true
-        }
-      ],
-      "raise": false,
-      "check": [
-        "插件状态",
-        "ok",
-        "插件系统已启用，已注册 3 个插件，当前启用 2 个。"
-      ]
-    },
-    {
-      "name": "注册项报错",
-      "config": {},
-      "rows": [
-        {
-          "enabled": true,
-          "error": "清单损坏"
-        },
-        {
-          "error": "缺少入口"
-        }
-      ],
-      "raise": false,
-      "check": [
-        "插件状态",
-        "warning",
-        "清单损坏; 缺少入口"
-      ]
-    },
-    {
-      "name": "读取失败",
-      "config": {},
-      "rows": [],
-      "raise": true,
-      "check": [
-        "插件状态",
-        "warning",
-        "读取插件注册表失败：注册表不可读"
-      ]
-    },
-    {
-      "name": "启用开关非布尔",
-      "config": {
-        "plugins": {
-          "enabled": "yes"
-        }
-      },
-      "rows": [],
-      "raise": false,
-      "check": [
-        "插件状态",
-        "ok",
-        "插件系统已启用，已注册 0 个插件，当前启用 0 个。"
-      ]
-    }
-  ],
   "bootstrap_report": [
     {
       "name": "一切正常",
@@ -508,8 +346,6 @@
       "name": "检查项齐全",
       "lines": [
         "[通过] 模型配置：默认模型：GPT-5 (gpt-5)",
-        "[警告] Node.js：未检测到 Node.js；插件功能暂不可用。",
-        "[通过] 插件状态：插件系统已禁用，已注册 0 个插件，当前启用 0 个。",
         "模型渠道和 API Key 已保存到本机配置目录。"
       ]
     }
@@ -538,16 +374,6 @@
             "模型配置",
             "warning",
             "配置文件存在错误，请修复后重试。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": [
@@ -580,16 +406,6 @@
             "模型配置",
             "warning",
             "models.toml 中没有可用模型。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": []
@@ -621,16 +437,6 @@
             "模型配置",
             "ok",
             "默认模型：GPT-5 (gpt-5)"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": []
@@ -663,16 +469,6 @@
             "模型配置",
             "warning",
             "models.toml 中没有可用模型。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": []
@@ -703,16 +499,6 @@
             "模型配置",
             "warning",
             "配置文件存在错误，请修复后重试。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": [
@@ -743,16 +529,6 @@
             "模型配置",
             "warning",
             "models.toml 中没有可用模型。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": []
@@ -783,16 +559,6 @@
             "模型配置",
             "warning",
             "models.toml 中没有可用模型。"
-          ],
-          [
-            "Node.js",
-            "ok",
-            "Node.js v20.11.0 / npm 可用。"
-          ],
-          [
-            "插件状态",
-            "ok",
-            "插件系统已禁用，已注册 0 个插件，当前启用 0 个。"
           ]
         ],
         "errors": []

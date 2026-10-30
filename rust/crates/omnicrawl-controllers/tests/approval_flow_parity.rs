@@ -29,46 +29,27 @@ fn strings(value: &Value) -> Vec<String> {
 
 /// 用内核阶段表推导本节拍的期望轨迹；短路点由对照输入（拒绝钩子、Schema 结果、是否被拒）决定。
 fn expected_trace(case: &Value) -> Vec<String> {
-    let denied_hook = case["denied_hook"].as_str();
     let schema_failed = !case["schema_issues"]
         .as_array()
         .expect("schema_issues")
         .is_empty();
     let rejected = case["rejected"].as_bool().expect("rejected");
 
-    let mut trace = vec![ApprovalPhase::PluginCallBefore.label().to_string()];
-    if denied_hook == Some("tool.call.before") {
-        trace.push("event:tool_call_denied".to_string());
-        return trace;
-    }
-    trace.push(ApprovalPhase::SchemaValidation.label().to_string());
+    let mut trace = vec![ApprovalPhase::SchemaValidation.label().to_string()];
     if schema_failed {
-        trace.push("event:tool_call_denied".to_string());
-        return trace;
-    }
-    trace.push(ApprovalPhase::PluginApprovalBefore.label().to_string());
-    if denied_hook == Some("tool.approval.before") {
         trace.push("event:tool_call_denied".to_string());
         return trace;
     }
     trace.push(ApprovalPhase::Decision.label().to_string());
     if rejected {
         trace.push("event:tool_call_denied".to_string());
-        trace.push(ApprovalPhase::PluginApprovalAfter.label().to_string());
         return trace;
     }
-    trace.push(ApprovalPhase::PluginApprovalAfter.label().to_string());
     trace.push("event:tool_call_approved".to_string());
-    trace.push(ExecutionPhase::PluginExecuteBefore.label().to_string());
-    if denied_hook == Some("tool.execute.before") {
-        return trace;
-    }
     trace.push(ExecutionPhase::ToolRun.label().to_string());
     if case["run_failure"].is_string() {
-        trace.push(ExecutionPhase::PluginExecuteError.label().to_string());
-        return trace;
+        trace.push(ExecutionPhase::ToolError.label().to_string());
     }
-    trace.push(ExecutionPhase::PluginExecuteAfter.label().to_string());
     trace
 }
 
@@ -150,7 +131,7 @@ fn display_text_matches_python() {
         if !case["executed"].as_bool().expect("executed") {
             continue;
         }
-        // 只有工具成功返回的路径才有展示文本：插件拒绝或工具抛错的结果里没有 full_output。
+        // 只有工具成功返回的路径才有展示文本：审查拒绝或工具抛错的结果里没有 full_output。
         if !case["result_ok"].as_bool().unwrap_or(false) {
             continue;
         }

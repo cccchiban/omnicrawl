@@ -249,47 +249,10 @@ cargo clippy -p omnicrawl-host --all-targets -- -D warnings
 提问作答、提问托管、工具建议（含无建议）、取消、取消后继续与内核退出等路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
 `crates/omnicrawl-tui/tests/*_parity.rs`（按原路径驱动本 crate 的工具表）。
 
-## 插件运行期
-
-[`plugins::PluginHost`] 是插件 Hook 的宿主编排层：进程级 `PluginRuntime`（Worker 生命周期、
-执行计划、熔断与审计）加各节点的载荷拼装，判定层复用 `omnicrawl-controllers::plugins`
-（fail-closed 判定、拒绝事实、拒绝文案）。
-
-```rust
-let plugins = Arc::new(PluginHost::from_environment(&env, &workspace));
-let diagnostics = plugins.start();          // 拉 Worker、建执行计划、发 app.start.before
-plugins.notify_app_started();               // app.start.after
-let text = plugins.turn_start(text, session, Some(&turn_id))?;   // 可改写 userText
-// 工具批次：tool.call.before / approval.before / approval.after / execute.before / execute.after
-```
-
-- **Hook 落点**：`turn.start` / `turn.end` / `turn.error` / `turn.cancelled` 在 `TurnRunner::submit`
-  的回合边界上分发；`tool.*` 在批次定调与执行线程里分发（每个调用只过一次守卫）；
-  `session.*` 由宿主在握手拿到会话标识后调 `notify_session_lifecycle`。
-- **`PluginHost` 归宿主持有**：TUI 与 API 各自建一个（`app.start.*` 的时机在服务装配完成后），
-  运行期开关走 `set_enabled`（事务式重建，对应 Python 设置面板），安装 / 启停 / 卸载走
-  `install` / `set_plugin_enabled` / `uninstall` / `rollback` 后自动 `reload`。
-- **无插件时零开销**：`plugins: None` 或总开关关闭时所有方法原样放行，不产生额外分支。
-- **Worker 启动路径**由 `omnicrawl-extensions::protocol::WorkerLauncher::resolve()` 统一解析，
-  与 CLI 的安装期冒烟测试同一份（`OMNICRAWL_RUNNER_DIR` → 可执行文件祖先的 `extensions/`
-  与 `rust/assets/extensions/`（仓库检出）或 `omnicrawl/extensions/` → 工作目录）；解析失败只留一条「无插件模式」诊断，
-  不再逐个插件报「握手失败」。
-
 ## 已知差异
 
-- TUI 的回合循环实现在 `omnicrawl-tui` 内部（历史原因），工具级 Hook 在 TUI 侧按同一顺序、
-  同一文案实现了一份（`app.rs` 的 `plugin_tool_guards`），两处改动需同步；
-  参数改写（`tool.call.before` 的 transform 结局）在 TUI 侧走 `PendingBatch::rewrite_arguments` 回写，
-  审批面板的摘要仍按改写前的参数渲染。
-- 插件对 `context.build.*` / `model.request.*` / `model.response.*` / `context.compaction.after_turn`
-  这些回合内节点**已接线**（`context_build_before` / `context_build_after` / `model_request_before` /
-  `model_response_after` / `model_request_error` / `compaction_after_turn`）：内核（`omnicrawl-core`
-  与 `omnicrawl-cli` 的回合循环）不持有 Plugins 配置，事件与扇出仍由宿主分发——压缩计量由内核在
-  回合收尾回传，宿主据此触发 `context.compaction.after_turn`。
-- `session.close.before` / `session.close.after` 已接线：TUI 在 `request_shutdown()` 前发 before、
-  进程退出后（`main` 的 `wait_or_kill` 之后）发 after；本地 API 在 `close()` 里 `shutdown()` 前发 before、
-  等内核退出后发 after。内核在两者之间补写 `session_closed` 并丢弃空占位。会话切换走的是重建内核
-  （不是关闭当前会话），因此不触发这对钩子。
+- TUI 的回合循环实现在 `omnicrawl-tui` 内部（历史原因），审批与审查闸在 TUI 侧按同一顺序、
+  同一文案实现了一份，两处改动需同步。
 - `initialize.model.prompt_cache_identity` 在 `TurnRunner::handshake` 里装配：工具表就位后按
   system prompt / 工作区 / 项目规范 / Skill 索引 / 工具声明算出七字段身份。`RunnerOptions.prompt`
   有值（API 与 TUI 都走这条路）时用**真实的**项目规范与 Skill 索引参与哈希；嵌入了自备

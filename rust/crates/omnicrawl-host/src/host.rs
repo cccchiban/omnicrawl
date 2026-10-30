@@ -288,19 +288,6 @@ impl PendingBatch {
         self.cursor
     }
 
-    /// 插件改写调用参数（`tool.call.before` 的 transform 结局）：索引按批次调用顺序编号。
-    ///
-    /// 返回是否命中；未命中（越界）时静默忽略，分发本身不做假设。
-    pub fn rewrite_arguments(&mut self, index: usize, arguments: Map<String, Value>) -> bool {
-        match self.calls.get_mut(index) {
-            Some(call) => {
-                call.arguments = arguments;
-                true
-            }
-            None => false,
-        }
-    }
-
     /// 执行层回填一个调用的结果；返回是否整批就绪。
     pub fn record_result(
         &mut self,
@@ -516,7 +503,7 @@ pub fn denied_result(tool: &str) -> ToolResult {
 /// `if mcp_manager is not None and tool.name in mcp_manager.registry.tools:
 /// mcp_manager.record_denied_tool_call(tool.name, arguments, reason)`。
 ///
-/// 粒度刻意与 Python 对齐：只在「未批准」这条路径上调用——被插件在
+/// 粒度刻意与 Python 对齐：只在「未批准」这条路径上调用——被
 /// `tool.call.before` / `approval.before` / `execute.before` 挡下的调用在 Python 里走
 /// 提前返回，不写这条审计；非 MCP 工具与未配置 MCP 时是空操作。
 /// `reason` 用与拒绝结果同一句文案，审计记录与模型看到的观察因此一致。
@@ -535,7 +522,7 @@ pub fn record_mcp_denial(
     manager.record_denied_tool_call(tool, arguments, reason);
 }
 
-/// 指定原因的拒绝结果：插件守卫在 `tool.call.before` / `approval.before` /
+/// 指定原因的拒绝结果：审查闸与人工拒绝共用同一条路径。
 /// `execute.before` 挡下调用时用它，文案由调用方给出（与 Python 的三条分支一致）。
 pub fn denied_with_reason(reason: &str) -> ToolResult {
     ToolResult {

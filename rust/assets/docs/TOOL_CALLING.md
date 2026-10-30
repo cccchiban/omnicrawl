@@ -13,7 +13,7 @@ OmniCrawl 采用 Provider 原生支持的「顶层注册所有工具」方案：
 ```text
 Provider -> 顶层 tools = [read, bash, grep, ...]（全部可见工具，压缩声明）
 模型 -> 直接原生调用真实工具（例如 read / bash）
-Host -> 读取 name / arguments / call_id -> 完整 Schema 校验 -> 插件钩子 -> 审批 -> 执行
+Host -> 读取 name / arguments / call_id -> 完整 Schema 校验 -> 审批 -> 执行
 Host -> role=tool 结果（tool_call_id 回填模型发起的 call_id）
 模型 -> 继续调用或输出最终答案
 ```
@@ -51,7 +51,7 @@ Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被
 
 ## Host 侧边界
 
-分发顺序：读取 `tool_calls` → 按名称解析（含哈希名宽容反查）→ 完整 Schema 校验 → 插件钩子 → 审批 → 执行 → 按 `call_id` 回传。
+分发顺序：读取 `tool_calls` → 按名称解析（含哈希名宽容反查）→ 完整 Schema 校验 → 审批 → 执行 → 按 `call_id` 回传。
 
 校验失败返回结构化错误：
 

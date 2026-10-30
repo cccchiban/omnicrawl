@@ -386,7 +386,7 @@ pub fn format_tool_confirmation(tool_name: &str, arguments: &Map<String, Value>)
     lines.join("\n")
 }
 
-// ── Skill / 记忆 / MCP / 插件展示 ─────────────────────────────
+// ── Skill / 记忆 / MCP 展示 ───────────────────────────────────
 
 /// 格式化 Skill 列表为可展示文本。
 pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
@@ -457,13 +457,6 @@ pub fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
 /// 格式化 MCP 状态为可展示文本。
 pub fn format_mcp_status(agent: &dyn CommandAgent) -> String {
     agent.mcp_status()
-}
-
-/// 格式化插件子系统只读状态。
-pub fn format_plugins_status(agent: &dyn CommandAgent) -> String {
-    agent
-        .plugins_status()
-        .unwrap_or_else(|| "插件状态接口不可用。".to_string())
 }
 
 // ── 会话 / 历史展示 ───────────────────────────────────────────

@@ -87,7 +87,7 @@ try {
   if (!version.includes(`@omnicrawl/${platformPackage}`)) fail(`--version 没有报出平台包：\n${version}`)
 
   const help = execFileSync(process.execPath, [launcher, '--help'], { encoding: 'utf8', cwd: app })
-  for (const command of ['api', 'kernel', 'plugin']) {
+  for (const command of ['api', 'kernel']) {
     if (!help.includes(command)) fail(`--help 没有列出 ${command} 指令：\n${help}`)
   }
 

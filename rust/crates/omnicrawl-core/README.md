@@ -13,7 +13,7 @@ Provider 无关的 Agent 回合循环。语义基准是 Python 侧的
 
 不搬（留在 Python 或由 Host 通过 trait 实现）：
 
-- `omnicrawl/agent/controllers/turn/loop.py::run_stream` 的编排壳：插件钩子、会话事件落盘、
+- `omnicrawl/agent/controllers/turn/loop.py::run_stream` 的编排壳：会话事件落盘、
   回合快照、压缩触发、run_guard 续跑、上下文溢出恢复、取消摘要。
 - 工具批次的规范化与审批顺序、denied 短路、未知工具结果、线程池并发、批次共享截止时间、
   超时结果与后续丢弃、输出预算与压缩、视觉 followup 构造。

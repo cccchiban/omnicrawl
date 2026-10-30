@@ -1278,7 +1278,7 @@ const HELP_TEXT: &str = "🤖 OmniCrawl 远程控制\n\n\
   /history [关键词]  提示历史\n\n\
 子系统状态：\n\
   /tasks / /task <id> [cancel]  后台子任务\n\
-  /mcp   /plugins   /skills\n\
+  /mcp   /skills\n\
   /memory:clean  清理过期记忆\n\
   /reasoning [级别]  推理强度\n\
   /approval  查看审批模式\n\

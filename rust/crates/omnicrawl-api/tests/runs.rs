@@ -214,8 +214,6 @@ fn runner_options(root: &Path) -> RunnerOptions {
         tool_timeout_seconds: 5,
         attach_vision_images: false,
         client_name: "omnicrawl-api-test".to_string(),
-        // 测试进程不装插件运行期：所有 Hook 节点都退化为原样放行。
-        plugins: None,
         // 无审查模型：review 模式下的需审查调用按 fail-closed 拒绝。
         review: None,
         // 不托管提问：有选项的提问照旧由 HTTP 提交答案。

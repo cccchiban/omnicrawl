@@ -29,7 +29,7 @@ impl ApprovalMode {
         }
     }
 
-    /// 插件 Hook 载荷与配置里的模式名（与 Python `config.approval_mode` 同形）。
+    /// 审批载荷与配置里的模式名（与 Python `config.approval_mode` 同形）。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",

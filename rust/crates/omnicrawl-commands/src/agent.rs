@@ -8,7 +8,7 @@
 //!
 //! - **不做静默降级**：宿主没有这项能力时显式返回 [`AgentError`]，命令层按 Python 的
 //!   同款文案包一层（如「会话列表读取失败：…」）；只有 Python 本身写了兜底的分支
-//!   （`skill_metas` / `plugins_status` / `compaction_notice`）才给默认实现。
+//!   （`skill_metas` / `compaction_notice`）才给默认实现。
 //! - **返回值与 Python 同形**：会话与提示历史直接复用 `omnicrawl-session` 的条目类型，
 //!   子代理任务快照沿用 `omnicrawl-controllers` 的 `Value` 形状（`SubAgentTaskSnapshot::as_dict`），
 //!   避免命令层再造一套数据契约。
@@ -175,19 +175,10 @@ pub trait CommandAgent {
     /// 清理过期长期记忆，返回被删除的记忆路径。
     fn clean_memory(&self) -> Result<Vec<String>, AgentError>;
 
-    // ── MCP / 插件 ────────────────────────────────────────────
+    // ── MCP ───────────────────────────────────────────────────
 
     /// MCP 子系统状态文本（`/mcp` 展示用）。
     fn mcp_status(&self) -> String;
-
-    /// 插件子系统只读状态；`None` 表示宿主没有插件状态接口。
-    ///
-    /// 有接口但没注入 PluginManager 时，宿主应返回
-    /// `omnicrawl_controllers::control::plugins_status_text(None)` 的结果，与 Python
-    /// `format_plugins_status` 的两条分支一一对应。
-    fn plugins_status(&self) -> Option<String> {
-        None
-    }
 
     // ── SubAgent ──────────────────────────────────────────────
 
@@ -244,7 +235,6 @@ pub(crate) mod testing {
         pub subagent_report: String,
         pub memory_paths: Vec<String>,
         pub mcp_status: String,
-        pub plugins_status: Option<String>,
         pub compaction_notice: String,
         pub reasoning_effort: Option<String>,
         pub current_model: String,
@@ -274,7 +264,6 @@ pub(crate) mod testing {
                 subagent_report: String::new(),
                 memory_paths: Vec::new(),
                 mcp_status: String::new(),
-                plugins_status: None,
                 compaction_notice: String::new(),
                 reasoning_effort: None,
                 current_model: String::new(),
@@ -476,10 +465,6 @@ pub(crate) mod testing {
 
         fn mcp_status(&self) -> String {
             self.mcp_status.clone()
-        }
-
-        fn plugins_status(&self) -> Option<String> {
-            self.plugins_status.clone()
         }
 
         fn list_subagent_tasks(&self) -> Result<Vec<Value>, AgentError> {

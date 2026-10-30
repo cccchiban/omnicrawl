@@ -1,8 +1,7 @@
 //! OmniCrawl 统一启动入口：对齐 Python `omnicrawl/entry.py` 的路由职责。
 //!
 //! 业务实现仍由独立的 Rust TUI、API 和内核二进制提供；本程序只负责选择目标、
-//! 继承标准输入输出并传播子进程退出码。`plugin ...` 在进程内由 [`omnicrawl_entry::cli`]
-//! 处理（对应 Python `omnicrawl/cli.py`），不再转发给其他进程。
+//! 继承标准输入输出并传播子进程退出码。
 
 use std::env;
 use std::ffi::OsString;
@@ -11,14 +10,12 @@ use std::process::{Command, ExitCode, Stdio};
 
 use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
-use omnicrawl_entry::cli::{run_plugin_cli, EXIT_USAGE};
 use omnicrawl_entry::startup;
 
 const KERNEL_COMMAND: &str = "kernel";
 const API_COMMAND: &str = "api";
 const DECISION_COMMAND: &str = "decision";
 const FETCH_COMMAND: &str = "fetch";
-const PLUGIN_COMMAND: &str = "plugin";
 const BINARY_ENV: &str = "OMNICRAWL_BINARY";
 const TUI_ENV: &str = "OMNICRAWL_TUI_BINARY";
 const API_ENV: &str = "OMNICRAWL_API_BINARY";
@@ -69,13 +66,6 @@ fn run(args: Vec<OsString>) -> Result<i32, String> {
     }
 
     match args_text.first().map(String::as_str) {
-        // 插件 CLI 在进程内执行：退出码直接透传，不启动子进程。
-        Some(PLUGIN_COMMAND) => {
-            Ok(
-                run_plugin_cli(&args_text, &environment, Some(&context.workspace_root))
-                    .unwrap_or(EXIT_USAGE),
-            )
-        }
         Some(KERNEL_COMMAND) => {
             let target = resolve_target(KERNEL_ENV, "omnicrawl", None)?;
             run_child(&target, &args[1..], &context.workspace_root)
@@ -208,8 +198,6 @@ fn print_help() {
          api           启动 Rust 本地 HTTP 服务\n\
          decision ...  决策接口（serve / ensure / stop / status）\n\
          fetch ...     抓取接口（serve / ensure / stop / status）\n\
-         plugin ...    插件管理（install / list / info / enable / disable / update /\n\
-                       rollback / uninstall / system / doctor）\n\
          kernel ...    直连 Rust 内核进程\n\
          connector <平台>  启动宿主承载的连接器\n\n\
          --resume <id>  启动终端工作台时恢复指定会话\n\

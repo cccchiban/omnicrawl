@@ -10,7 +10,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use omnicrawl_config::core::bootstrap::{
-    format_startup_report, initialize_user_configuration, NodeProbe, PluginRow, StartupPorts,
+    format_startup_report, initialize_user_configuration, StartupPorts,
     StartupSetup,
 };
 use omnicrawl_config::core::runtime::ConfigEnvironment;
@@ -18,7 +18,6 @@ use omnicrawl_connectors::autostart::{
     default_connector_specs, start_configured_connectors, ConnectorProcessManager, ConnectorSpec,
     MQTT_PLATFORM,
 };
-use omnicrawl_extensions::install::list_plugins;
 
 use crate::channel_setup::{run_channel_setup, unavailable_outcome};
 
@@ -83,16 +82,12 @@ pub fn bootstrap(env: &ConfigEnvironment, interactive: bool) -> Result<StartupOu
             .map(str::to_string)
             .ok_or_else(|| format!("找不到模板 {resource}"))
     };
-    let node_probe = probe_node;
-    let plugin_rows = probe_plugin_rows;
 
     let ports = StartupPorts {
         read_template: &read_template,
         channel_setup: wizard_port,
         // 交互式 API Key 索取由渠道向导承担；这里不再单独开一路 prompt。
         prompt: None,
-        node_probe: &node_probe,
-        plugin_rows: &plugin_rows,
     };
     let setup = initialize_user_configuration(env, None, &ports)
         .map_err(|error| error.message().to_string())?;
@@ -209,71 +204,6 @@ fn embedded_template(resource: &str) -> Option<&'static str> {
         "subagents.example.toml" => Some(SUBAGENTS_TEMPLATE),
         _ => None,
     }
-}
-
-/// Node 探测：`node --version` 与 `npm` 是否可用（超时 5 秒，与 Python 一致）。
-fn probe_node() -> NodeProbe {
-    let Some(node) = which("node") else {
-        return NodeProbe::Missing;
-    };
-    let output = std::process::Command::new(&node).arg("--version").output();
-    let npm_available = which("npm").is_some();
-    match output {
-        Ok(output) => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let version = if version.is_empty() {
-                String::from_utf8_lossy(&output.stderr).trim().to_string()
-            } else {
-                version
-            };
-            NodeProbe::Version {
-                version,
-                npm_available,
-            }
-        }
-        Err(error) => NodeProbe::Failed {
-            error: error.to_string(),
-        },
-    }
-}
-
-/// 插件注册表投影（user + project 两份，读取失败按错误行上报）。
-fn probe_plugin_rows() -> Result<Vec<PluginRow>, String> {
-    let workspace = std::env::current_dir().ok();
-    let rows = list_plugins("all", workspace.as_deref());
-    Ok(rows
-        .into_iter()
-        .map(|row| PluginRow {
-            error: row
-                .get("error")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-            enabled: row
-                .get("enabled")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false),
-        })
-        .collect())
-}
-
-/// `which`：在 PATH 上找可执行文件（带平台后缀），不做 shell 展开。
-fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if cfg!(windows) {
-            for suffix in [".exe", ".cmd", ".bat"] {
-                let candidate = directory.join(format!("{name}{suffix}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

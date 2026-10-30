@@ -367,13 +367,12 @@ pub(super) struct VisionState {
     pub(crate) status: String,
 }
 
-/// 三个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
+/// 两个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
 #[derive(Debug, Clone)]
 pub(super) struct ChoicesState {
     pub(crate) show_thinking: bool,
     pub(crate) memory: bool,
-    pub(crate) plugins: bool,
-    pub(crate) status: [String; 3],
+    pub(crate) status: [String; 2],
 }
 
 impl ChoicesState {

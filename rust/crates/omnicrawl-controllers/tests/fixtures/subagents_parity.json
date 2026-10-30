@@ -758,19 +758,8 @@
         "home/.OmniCrawl/agents/dup.md": "---\nname: dup\ndescription: 用户级同名\n---\n正文。\n",
         "builtin/dup.md": "---\nname: dup\ndescription: 内置同名\n---\n正文。\n",
         "builtin/shared.md": "---\nname: shared\ndescription: 内置被覆盖\n---\n正文。\n",
-        "builtin/builtin-only.md": "---\nname: builtin-only\ndescription: 仅内置\n---\n正文。\n",
-        "plugin/plug.md": "---\nname: plug\ndescription: 插件定义\n---\n正文。\n"
+        "builtin/builtin-only.md": "---\nname: builtin-only\ndescription: 仅内置\n---\n正文。\n"
       },
-      "plugins": [
-        {
-          "name": "alpha",
-          "path": "plugin/plug.md"
-        },
-        {
-          "name": "beta",
-          "path": "home/.OmniCrawl/agents/user-only.md"
-        }
-      ],
       "definitions": [
         {
           "name": "builtin-only",
@@ -786,11 +775,6 @@
           "name": "dup",
           "source": "user",
           "source_path": "<ROOT>/discover/home/.OmniCrawl/agents/dup.md"
-        },
-        {
-          "name": "plug",
-          "source": "plugin:alpha",
-          "source_path": "<ROOT>/discover/plugin/plug.md"
         },
         {
           "name": "project-only",
@@ -843,10 +827,6 @@
         {
           "key": "dup",
           "name": "dup"
-        },
-        {
-          "key": "plug",
-          "name": "plug"
         },
         {
           "key": "missing",

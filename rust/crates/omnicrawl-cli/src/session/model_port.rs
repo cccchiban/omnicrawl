@@ -207,9 +207,6 @@ impl TurnRequestParts {
 
 impl ReplySource for KernelModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
-        // model.request.before：宿主声明支持时才发请求，允许插件改写消息或拒绝本轮。
-        // 必须在体检与记录「最近一次请求消息」之前：压缩前缀复用取的是改写后的消息（与 Python 同序）。
-        self.run_request_hook(messages)?;
         // 工具调用 id 的线上体检：同一次请求里 assistant `tool_calls` 的 id 必须互不重复、
         // `tool` 结果必须与之逐一双向配对。网关会把「同一请求重复提交相同的 call_id」直接判成
         // HTTP 400（`type: invalid_tool_state`），整段会话就此断掉。修复只做在**发出去的副本**上：
@@ -387,44 +384,6 @@ impl KernelModelPort {
         self.conn
             .borrow_mut()
             .notify(HostEvent::RetryStatus(MessagePayload { message }));
-    }
-
-    /// `model.request.before`：宿主声明支持时才发请求；插件拒绝时中止本轮。
-    ///
-    /// 拒绝文案由宿主的 `HookDecision` 生成并放在错误响应里，这里原样上抛（与 Python
-    /// `_plugin_denial_error("model.request.before")` 同口径）。
-    fn run_request_hook(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
-        if !self.conn.borrow().plugin_model_hooks {
-            return Ok(());
-        }
-        let request = ModelHookRequest {
-            messages: messages.clone(),
-            model: self.config.model.clone(),
-        };
-        let params =
-            serde_json::to_value(&request).expect("model.hook 负载是 Value 字段，必须可序列化");
-        let value = self
-            .conn
-            .borrow_mut()
-            .request(method::MODEL_HOOK, params)
-            .map_err(|failure| match failure {
-                PortFailure::Cancelled(message) => LoopError::Cancelled(message),
-                PortFailure::Shutdown => {
-                    LoopError::Cancelled("收到 shutdown，回合中止。".to_string())
-                }
-                PortFailure::Remote(error) => LoopError::ReplySource(error.message),
-                PortFailure::Disconnected => LoopError::ReplySource("宿主连接已关闭。".to_string()),
-                PortFailure::Io(detail) => LoopError::ReplySource(format!("写请求失败：{detail}")),
-            })?;
-        match ModelHookResult::from_result(&value) {
-            Ok(result) => {
-                *messages = result.messages;
-                Ok(())
-            }
-            Err(error) => Err(LoopError::ReplySource(format!(
-                "宿主返回的 model.hook 结果无法解析：{error}"
-            ))),
-        }
     }
 
     /// `model.request.error`：一次模型请求以协议错误终结时的通知（取消不算）。
@@ -653,14 +612,6 @@ pub(super) fn session_config_of(params: Option<&Value>) -> Option<Box<KernelSess
     serde_json::from_value::<KernelSessionConfig>(value.clone())
         .ok()
         .map(Box::new)
-}
-
-/// 从 `initialize` 参数里取「宿主支持插件模型 Hook」的能力声明；缺省 false。
-pub(super) fn plugin_model_hooks_of(params: Option<&Value>) -> bool {
-    params
-        .and_then(|value| value.get("plugin_model_hooks"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
 }
 
 /// 从 `initialize` 参数里取「宿主支持工具调用淘汰裁决」的能力声明；缺省 false。

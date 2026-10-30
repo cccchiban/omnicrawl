@@ -203,8 +203,8 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 内核据此补一条 `tool_call_denied` 事件（载荷 `tool` / `arguments` / `reason`，参数按
 `public_tool_arguments` 投影，不把 shell 全文写进转录）。会话投影与历史靠这个事件还原「用户拒绝执行」，
 因此拒绝只走观察、不额外加协议方法（错误码常量见 `omnicrawl_ipc::DENIED_ERROR_CODE`，
-`tool.batch` 的响应负载约定记在协议文档里）。批准事实（`tool_call_approved`）与插件钩子
-`tool.approval.after` 仍由宿主侧编排，内核不参与。
+`tool.batch` 的响应负载约定记在协议文档里）。批准事实（`tool_call_approved`）仍由宿主侧编排，
+内核不参与。
 
 ## 独立视觉模型代理
 

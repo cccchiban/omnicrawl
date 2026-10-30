@@ -4,7 +4,7 @@
 // payload 的内容会被 prepare.mjs 直接搬进平台包的 `host/`，因此 payload 里放的就是
 // 「宿主二进制 + 它依赖的同目录二进制 + 可编辑的模板资源」：
 //
-//   payload/omnicrawl-host[.exe]   统一入口（默认路由到 TUI，另有 api / plugin / kernel）
+//   payload/omnicrawl-host[.exe]   统一入口（默认路由到 TUI，另有 api / kernel）
 //   payload/omnicrawl[.exe]        内核（协议 v1 服务端，宿主按同目录查找）
 //   payload/omnicrawl-tui[.exe]    终端工作台
 //   payload/omnicrawl-api[.exe]    本地 HTTP/SSE 服务
@@ -13,7 +13,6 @@
 //   payload/omnicrawl-mcp-server[.exe]
 //   payload/rust/assets/templates/          提示词与模式模板（源在 rust/assets/templates；缺失时用内嵌副本）
 //   payload/rust/assets/config-templates/   首次配置的三份 TOML 模板（源在 rust/assets/config-templates）
-//   payload/rust/assets/extensions/node_runner.mjs   插件 Worker 的 JS 端点（源在 rust/assets/extensions）
 //
 // 资源必须放在 `rust/assets/*` 这一层：它同时是运行期搜索的第一候选
 // （`omnicrawl-extensions` 的 `runner_search_dirs`、`omnicrawl-host` 的模板搜索、

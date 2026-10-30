@@ -797,58 +797,6 @@ impl CommandAgent for ServiceCommandAgent {
         self.service.mcp_status()
     }
 
-    fn plugins_status(&self) -> Option<String> {
-        let status = self.service.plugins_status();
-        let rows: Vec<omnicrawl_controllers::control::PluginWorkerRow> = status
-            .get("plugins")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| omnicrawl_controllers::control::PluginWorkerRow {
-                        name: text_field(item, "name"),
-                        version: text_field(item, "version"),
-                        scope: text_field(item, "scope"),
-                        active: item.get("active").and_then(Value::as_bool).unwrap_or(false),
-                        circuit_open: item
-                            .get("circuitOpen")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        dev_mode: item
-                            .get("devMode")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        handlers: item
-                            .get("handlers")
-                            .and_then(Value::as_array)
-                            .map(|names| {
-                                names
-                                    .iter()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_string)
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        last_error: text_field(item, "lastError"),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let enabled = status
-            .get("enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let configured = status
-            .get("configured")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Some(if configured {
-            omnicrawl_controllers::control::plugins_status_text(Some(&(enabled, rows)))
-        } else {
-            omnicrawl_controllers::control::plugins_status_text(None)
-        })
-    }
-
     fn list_subagent_tasks(&self) -> Result<Vec<Value>, AgentError> {
         self.service
             .list_subagent_tasks()
@@ -927,14 +875,6 @@ fn run_git(workspace_root: &std::path::Path, args: &[&str]) -> Option<GitOutput>
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
     })
-}
-
-fn text_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// `Map` 形状的字段读取（`skills()` 给的是 JSON 对象映射）。

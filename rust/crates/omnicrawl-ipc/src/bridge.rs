@@ -75,10 +75,6 @@ pub mod method {
     pub const TURN_TOOL_CALL_ARGUMENTS: &str = "turn.tool_call_arguments";
     pub const TURN_TOOL_OUTPUT_COMPRESSION: &str = "turn.tool_output_compression";
 
-    /// 内核在发出模型请求前请宿主运行 `model.request.before` 插件 Hook。
-    ///
-    /// 只在宿主于 `initialize` 声明 `plugin_model_hooks` 时使用；未声明的宿主永远收不到。
-    pub const MODEL_HOOK: &str = "model.hook";
     /// 内核请宿主裁决「刚变老的那一批」工具调用里哪些已无用、可以从上下文里移除。
     ///
     /// 只在宿主于 `initialize` 声明 `tool_call_prune` 时使用；未声明的宿主永远收不到。
@@ -217,7 +213,7 @@ pub struct TurnFinishedPayload {
 }
 
 /// 回合收尾的上下文压缩计量：对应 Python `_trigger_context_compaction_after_turn`
-/// 在 `snapshot.trigger_reached` 时发给插件的载荷。只在真正触发压缩的回合发出。
+/// 在 `snapshot.trigger_reached` 时发给宿主的载荷。只在真正触发压缩的回合发出。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextCompactionPayload {
     /// 压缩前测得的回合结束后实际上下文 Token。
@@ -284,7 +280,7 @@ pub enum HostEvent {
     TodoUpdate(TodoUpdatePayload),
     /// 回合结束。
     TurnFinished(TurnFinishedPayload),
-    /// 回合收尾触发了上下文压缩（携带计量，宿主据此分发插件 Hook）。
+    /// 回合收尾触发了上下文压缩（携带计量）。
     ContextCompaction(ContextCompactionPayload),
     /// 一次模型请求成功返回（宿主据此分发 `model.response.after`）。
     ModelResponseAfter(ModelResponseAfterPayload),
@@ -423,17 +419,10 @@ pub struct InitializeParams {
     /// 可选的会话配置：给了就让内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Box<KernelSessionConfig>>,
-    /// 宿主是否支持插件模型 Hook（内核据此决定是否发 `model.hook` 请求）。
-    ///
-    /// 缺省 false：未声明的宿主（如只实现协议最小集的兼容宿主）永远收不到该请求，
-    /// 内核也就不会因等不到响应而阻住回合。false 时不序列化该字段，保持与旧宿主的
-    /// 帧形状逐字一致。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub plugin_model_hooks: bool,
     /// 宿主是否支持工具调用淘汰裁决（内核据此决定是否发 `context.prune` 请求）。
     ///
-    /// 缺省 false，语义与 [`InitializeParams::plugin_model_hooks`] 相同：未声明的宿主收不到，
-    /// 内核也就不会为此阻住回合。false 时不序列化，旧宿主的帧形状逐字不变。
+    /// 缺省 false：未声明的宿主收不到，内核也就不会为此阻住回合。
+    /// false 时不序列化，旧宿主的帧形状逐字不变。
     #[serde(default, skip_serializing_if = "is_false")]
     pub tool_call_prune: bool,
 }
@@ -1015,53 +1004,6 @@ impl ModelRequest {
             Some(other) => Err(BridgeError::UnknownMethod(other.to_string())),
             None => Err(BridgeError::NotARequest),
         }
-    }
-}
-
-/// 内核在发出模型请求前，请宿主运行 `model.request.before` 插件 Hook。
-///
-/// 载荷与 Python 同形（`{messages, model}`）；仅当宿主在 `initialize` 声明
-/// `plugin_model_hooks` 时才发出。宿主拒绝时以错误响应回填插件的拒绝文案。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelHookRequest {
-    pub messages: Vec<Value>,
-    pub model: String,
-}
-
-impl ModelHookRequest {
-    pub fn to_frame(&self, id: Id) -> Frame {
-        Frame::request(id, method::MODEL_HOOK, payload_value(self))
-    }
-
-    pub fn from_frame(frame: &Frame) -> Result<Self, BridgeError> {
-        if !frame.is_request() {
-            return Err(BridgeError::NotARequest);
-        }
-        match frame.method() {
-            Some(method::MODEL_HOOK) => {
-                from_params(frame.params.clone().unwrap_or_else(|| json!({})))
-            }
-            Some(other) => Err(BridgeError::UnknownMethod(other.to_string())),
-            None => Err(BridgeError::NotARequest),
-        }
-    }
-}
-
-/// 宿主对 `model.hook` 的响应：Hook 放行后的最终消息集（可被插件改写）。
-///
-/// 插件拒绝时不走这里：宿主以错误响应回填 `HookDecision` 的拒绝文案，内核据此中止本轮。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelHookResult {
-    pub messages: Vec<Value>,
-}
-
-impl ModelHookResult {
-    pub fn to_result(&self) -> Value {
-        payload_value(self)
-    }
-
-    pub fn from_result(result: &Value) -> Result<Self, BridgeError> {
-        from_params(result.clone())
     }
 }
 

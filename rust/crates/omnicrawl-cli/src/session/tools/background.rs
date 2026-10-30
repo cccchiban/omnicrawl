@@ -192,8 +192,6 @@ pub(crate) struct BackgroundModelPort {
 
 impl ReplySource for BackgroundModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
-        // 子代理的模型请求同样先过 `model.request.before`（由主循环代跑）。
-        self.run_request_hook(messages)?;
         self.model_turns += 1;
         if self.runtime.is_none() {
             self.runtime = Some(build_model_runtime(&self.config)?);
@@ -260,26 +258,6 @@ impl ReplySource for BackgroundModelPort {
 }
 
 impl BackgroundModelPort {
-    /// `model.request.before`：在子回合所在的线程里直接跑。
-    ///
-    /// 以前这里要把消息经通道递回主循环，因为子回合在别的线程；现在就地在同一线程，
-    /// 直接调 `serve_model_hook` 即可，不必绕一圈。
-    pub(crate) fn run_request_hook(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
-        match serve_model_hook(&self.conn, messages.clone(), self.config.model.clone()) {
-            Ok(rewritten) => {
-                *messages = rewritten;
-                Ok(())
-            }
-            Err(detail) => {
-                if self.cancel.is_set() {
-                    Err(LoopError::Cancelled(detail))
-                } else {
-                    Err(LoopError::ReplySource(detail))
-                }
-            }
-        }
-    }
-
     /// `model.request.error`：一次子代理模型请求以错误终结时的通知。
     pub(crate) fn notify_model_error(&self, message: &str) {
         self.conn
