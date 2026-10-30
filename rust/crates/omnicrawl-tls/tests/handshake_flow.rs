@@ -178,13 +178,16 @@ fn grease_values_from_the_profile_are_legal_and_present() {
 }
 
 /// 档案里 GREASE 占位符不能在最终字节里残留。
+///
+/// 公钥用固定字节而不是随机密钥对：真实公钥是 32 个随机字节，其中约 30 个两字节窗口
+/// 有约万分之五的概率撞上 `0xFEFE`，会让这条断言随机失败。GREASE 标记是否会泄漏
+/// 只取决于编码逻辑，与公钥取什么值无关，钉死一份字节即可稳定复现。
 #[test]
 fn the_grease_placeholder_never_reaches_the_wire() {
-    let exchange = X25519Exchange::generate(&rng()).expect("生成");
     let spec = spec_for(
         Family::Chrome,
         "example.com",
-        &[(group::X25519, exchange.public_key.clone())],
+        &[(group::X25519, vec![0x5a; 32])],
     );
     let session_id = spec.empty_session_id();
     let encoded = spec
