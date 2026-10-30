@@ -26,6 +26,17 @@ pub const EVENT_GROUP_MESSAGE: &str = "GROUP_MESSAGE_CREATE";
 /// 频道内 @机器人 事件。
 pub const EVENT_GUILD_AT_MESSAGE: &str = "AT_MESSAGE_CREATE";
 
+/// 被引用的消息（`message_type=103` 时由 `msg_elements[]` 携带，可嵌套）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Quoted {
+    /// 被引用消息的发送者昵称：平台可能不给。
+    pub author: String,
+    /// 被引用消息的正文；只发了一张图时为空。
+    pub content: String,
+    /// 被引用消息里的附件（`(url, 建议文件名)`）。
+    pub attachments: Vec<(String, String)>,
+}
+
 /// 一条入站消息的落点与身份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inbound {
@@ -40,6 +51,10 @@ pub struct Inbound {
     pub content: String,
     /// 附件 URL 列表（`(url, 建议文件名)`）。
     pub attachments: Vec<(String, String)>,
+    /// 本消息的引用索引（`message_scene.ext` 的 `msg_idx`）：最终回答据此挂上引用。
+    pub ref_idx: String,
+    /// 用户引用了哪条消息：被引用内容由平台装进 `msg_elements[]`。
+    pub quoted: Vec<Quoted>,
     /// 事件名，用于日志与区分群聊/单聊的回复窗口。
     pub event: String,
 }
@@ -171,6 +186,8 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
         .unwrap_or_default();
     let content = raw_content.trim().to_string();
     let attachments = attachments_of(data);
+    let ref_idx = scene_index(data, "msg_idx");
+    let quoted = quoted_of(data);
     match event {
         EVENT_C2C_MESSAGE => {
             let openid = string_of(
@@ -187,6 +204,8 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
                 message_id,
                 content,
                 attachments,
+                ref_idx,
+                quoted,
                 event: event.to_string(),
             })
         }
@@ -213,6 +232,8 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
                 message_id,
                 content,
                 attachments,
+                ref_idx,
+                quoted,
                 event: event.to_string(),
             })
         }
@@ -230,10 +251,106 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
                 message_id,
                 content: strip_mention(&content),
                 attachments,
+                ref_idx,
+                quoted,
                 event: event.to_string(),
             })
         }
         _ => None,
+    }
+}
+
+/// `message_scene.ext` 里的 `key=value`：单聊与群聊用它带 `msg_idx` / `ref_msg_idx`。
+pub fn scene_index(data: &Value, key: &str) -> String {
+    let prefix = format!("{key}=");
+    let list = match data
+        .get("message_scene")
+        .and_then(|scene| scene.get("ext"))
+        .and_then(Value::as_array)
+    {
+        Some(list) => list,
+        None => return String::new(),
+    };
+    for item in list {
+        let text = item.as_str().unwrap_or_default().trim();
+        if let Some(value) = text.strip_prefix(&prefix) {
+            return value.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+/// 被引用/转发的内容：`message_type=103` 时平台把它装进 `msg_elements[]`。
+///
+/// 每个元素自带 `content`、`attachments` 与 `author`，并且可以嵌套（引用一条引用消息），
+/// 因此按深度展开，遇到没有正文也没有附件的元素就当没有引用。
+pub fn quoted_of(data: &Value) -> Vec<Quoted> {
+    let mut items = Vec::new();
+    collect_quoted(data, &mut items, 0);
+    items
+}
+
+fn collect_quoted(node: &Value, out: &mut Vec<Quoted>, depth: usize) {
+    if depth > 3 {
+        return;
+    }
+    let Some(list) = node.get("msg_elements").and_then(Value::as_array) else {
+        return;
+    };
+    for item in list {
+        let content = item
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let attachments = attachments_of(item);
+        if !content.is_empty() || !attachments.is_empty() {
+            out.push(Quoted {
+                author: sender_name_of(item),
+                content,
+                attachments,
+            });
+        }
+        collect_quoted(item, out, depth + 1);
+    }
+}
+
+/// 被引用内容的文字摘要：附件按「[图片]/[文件]」占位，供任务文本使用。
+pub fn quoted_text(quoted: &Quoted) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !quoted.content.is_empty() {
+        parts.push(quoted.content.clone());
+    }
+    for (url, name) in &quoted.attachments {
+        let label = attachment_label(name, url);
+        parts.push(format!("[{label}]"));
+    }
+    let body = parts.join(" ");
+    if quoted.author.is_empty() {
+        body
+    } else {
+        format!("{}：{body}", quoted.author)
+    }
+}
+
+/// 附件种类标签：图片 / 语音 / 视频 / 文件。
+fn attachment_label(name: &str, url: &str) -> &'static str {
+    let lower = name.to_lowercase();
+    let url = url.to_lowercase();
+    let is = |extensions: &[&str]| {
+        extensions
+            .iter()
+            .any(|extension| lower.ends_with(extension) || url.contains(extension))
+    };
+    if is(&[".png", ".jpg", ".jpeg", ".gif", "image/"]) {
+        "图片"
+    } else if is(&[".mp4", "video/"]) {
+        "视频"
+    } else if is(&[".silk", ".mp3", ".wav", "voice"]) {
+        "语音"
+    } else {
+        "文件"
     }
 }
 
@@ -790,5 +907,112 @@ mod tests {
             workspace_argument("/workspace D:/demo"),
             Some("D:/demo".to_string())
         );
+    }
+
+    /// 引用消息的真实报文形状（`message_type=103`）：被引用内容在 `msg_elements[]` 里。
+    fn quoted_message() -> Value {
+        json!({
+            "id": "m-30",
+            "content": "@奶酪 你怎么这么多稀奇古怪的东西",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9", "username": "塔斯汀"},
+            "message_type": 103,
+            "msg_elements": [{
+                "msg_idx": "REFIDX_quote==",
+                "message_type": 0,
+                "author": {"member_openid": "M-1", "username": "奶酪"},
+                "content": "这是我新买的酒",
+                "attachments": [{
+                    "content_type": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "url": "https://multimedia.nt.qq.com.cn/download/photo.jpg",
+                }],
+            }],
+            "message_scene": {
+                "source": "default",
+                "ext": ["ref_msg_idx=REFIDX_quote==", "msg_idx=REFIDX_self=="],
+            },
+        })
+    }
+
+    #[test]
+    fn quoted_message_carries_the_referenced_content_and_attachments() {
+        let data = quoted_message();
+        match route_event(EVENT_GROUP_AT_MESSAGE, &data, &allowed(&["M-9"])) {
+            EventRoute::Message(inbound) => {
+                assert_eq!(inbound.ref_idx, "REFIDX_self==");
+                assert_eq!(inbound.quoted.len(), 1);
+                assert_eq!(inbound.quoted[0].author, "奶酪");
+                assert_eq!(inbound.quoted[0].content, "这是我新买的酒");
+                assert_eq!(
+                    inbound.quoted[0].attachments,
+                    vec![(
+                        "https://multimedia.nt.qq.com.cn/download/photo.jpg".to_string(),
+                        "photo.jpg".to_string()
+                    )]
+                );
+                assert_eq!(quoted_text(&inbound.quoted[0]), "奶酪：这是我新买的酒 [图片]");
+            }
+            other => panic!("应为消息：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn quoted_message_with_only_an_image_keeps_a_placeholder() {
+        let data = json!({
+            "id": "m-31",
+            "content": "",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "message_type": 103,
+            "msg_elements": [{
+                "author": {"member_openid": "M-1", "username": "奶酪"},
+                "attachments": [{
+                    "content_type": "image/png",
+                    "filename": "a.png",
+                    "url": "https://multimedia.nt.qq.com.cn/download/a.png",
+                }],
+            }],
+        });
+        let inbound = parse_message(EVENT_GROUP_AT_MESSAGE, &data).expect("可解析");
+        assert_eq!(inbound.quoted.len(), 1);
+        assert_eq!(quoted_text(&inbound.quoted[0]), "奶酪：[图片]");
+    }
+
+    #[test]
+    fn nested_quotes_are_flattened() {
+        let data = json!({
+            "id": "m-32",
+            "content": "接着上面说",
+            "author": {"user_openid": "F6A8"},
+            "message_type": 103,
+            "msg_elements": [{
+                "author": {"user_openid": "F6A9", "username": "小明"},
+                "content": "第二层引用",
+                "msg_elements": [{
+                    "author": {"user_openid": "F6A7", "username": "小红"},
+                    "content": "第一层原文",
+                }],
+            }],
+        });
+        let inbound = parse_message(EVENT_C2C_MESSAGE, &data).expect("可解析");
+        let bodies: Vec<&str> = inbound
+            .quoted
+            .iter()
+            .map(|item| item.content.as_str())
+            .collect();
+        assert_eq!(bodies, vec!["第二层引用", "第一层原文"]);
+    }
+
+    #[test]
+    fn plain_message_has_no_quote_and_no_index() {
+        let data = json!({
+            "id": "m-33",
+            "content": "看看目录",
+            "author": {"user_openid": "F6A8"},
+        });
+        let inbound = parse_message(EVENT_C2C_MESSAGE, &data).expect("可解析");
+        assert!(inbound.quoted.is_empty());
+        assert!(inbound.ref_idx.is_empty());
     }
 }

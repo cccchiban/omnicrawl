@@ -23,8 +23,10 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// 令牌提前续期的余量。
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(300);
 
-/// 被动回复窗口内的回复条数上限（单聊与群聊同值）。
-pub const MAX_REPLIES_PER_MESSAGE: usize = 5;
+/// 被动回复窗口内的回复条数上限：按场景不同，群聊 5 条、单聊 4 条（见 [`Target::max_replies`]）。
+pub const MAX_REPLIES_PER_GROUP_MESSAGE: usize = 5;
+/// 单聊的回复条数上限：平台给私聊 60 分钟窗口，但条数比群聊更紧。
+pub const MAX_REPLIES_PER_C2C_MESSAGE: usize = 4;
 
 /// 消息类型：0 纯文本、2 Markdown、7 富媒体（`msg_type` 决定哪个内容字段生效）。
 pub const MSG_TYPE_TEXT: i64 = 0;
@@ -70,6 +72,14 @@ impl Target {
     /// 频道场景不使用 `msg_seq`（官方只对单聊与群聊要求递增序号）。
     pub fn uses_seq(&self) -> bool {
         !matches!(self, Target::Channel(_))
+    }
+
+    /// 同一条入站消息最多能回几条：群聊 5、单聊 4；频道没有条数限制，按群聊口径保守处理。
+    pub fn max_replies(&self) -> usize {
+        match self {
+            Target::User(_) => MAX_REPLIES_PER_C2C_MESSAGE,
+            Target::Group(_) | Target::Channel(_) => MAX_REPLIES_PER_GROUP_MESSAGE,
+        }
     }
 }
 
@@ -310,17 +320,20 @@ impl QqApi {
     }
 
     /// 被动回复一条文本：`msg_id` 是触发消息，`msg_seq` 是同一条消息的第几条回复。
+    ///
+    /// `reference` 非空时以引用形式展示（值是 `message_scene.ext` 的 `msg_idx`）。
     pub fn send_text(
         &self,
         target: &Target,
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, QqApiError> {
         let mut body = serde_json::Map::new();
         body.insert("content".to_string(), json!(content));
         body.insert("msg_type".to_string(), json!(MSG_TYPE_TEXT));
-        self.post_message(target, body, msg_id, msg_seq)
+        self.post_message(target, body, msg_id, msg_seq, reference)
     }
 
     /// 被动回复一条 Markdown：`msg_type=2`，正文放在 `markdown.content`。
@@ -332,11 +345,12 @@ impl QqApi {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, QqApiError> {
         let mut body = serde_json::Map::new();
         body.insert("msg_type".to_string(), json!(MSG_TYPE_MARKDOWN));
         body.insert("markdown".to_string(), json!({ "content": content }));
-        self.post_message(target, body, msg_id, msg_seq)
+        self.post_message(target, body, msg_id, msg_seq, reference)
     }
 
     /// 被动回复一条富媒体：`msg_type=7`，`file_info` 来自 [`QqApi::upload_media`]。
@@ -346,26 +360,34 @@ impl QqApi {
         file_info: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, QqApiError> {
         let mut body = serde_json::Map::new();
         body.insert("msg_type".to_string(), json!(MSG_TYPE_MEDIA));
         body.insert("media".to_string(), json!({ "file_info": file_info }));
-        self.post_message(target, body, msg_id, msg_seq)
+        self.post_message(target, body, msg_id, msg_seq, reference)
     }
 
-    /// 统一下发：补 `msg_id` / `msg_seq` 后 POST 到目标场景的消息路径。
+    /// 统一下发：补 `msg_id` / `msg_seq` / `message_reference` 后 POST 到目标场景的消息路径。
     fn post_message(
         &self,
         target: &Target,
         mut body: serde_json::Map<String, Value>,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, QqApiError> {
         if !msg_id.is_empty() {
             body.insert("msg_id".to_string(), json!(msg_id));
             if target.uses_seq() {
                 body.insert("msg_seq".to_string(), json!(msg_seq));
             }
+        }
+        if !reference.is_empty() {
+            body.insert(
+                "message_reference".to_string(),
+                json!({ "message_id": reference }),
+            );
         }
         let url = format!("{}{}", self.base_url, target.messages_path());
         let payload = self.authorized(
@@ -565,7 +587,7 @@ mod tests {
     #[test]
     fn passive_reply_carries_msg_id_and_seq() {
         let (api, transport) = api();
-        api.send_text(&Target::User("F6A8".to_string()), "你好", "m-1", 2)
+        api.send_text(&Target::User("F6A8".to_string()), "你好", "m-1", 2, "")
             .expect("发送");
         let requests = transport.requests.lock().unwrap();
         let send = requests
@@ -575,6 +597,32 @@ mod tests {
         assert!(send.2.contains("\"msg_id\": \"m-1\""), "{}", send.2);
         assert!(send.2.contains("\"msg_seq\": 2"), "{}", send.2);
         assert!(send.2.contains("\"msg_type\": 0"), "{}", send.2);
+        assert!(
+            !send.2.contains("message_reference"),
+            "不引用时不能带 message_reference：{}",
+            send.2
+        );
+    }
+
+    #[test]
+    fn reference_reply_carries_message_reference() {
+        let (api, transport) = api();
+        api.send_text(
+            &Target::Group("A1B2".to_string()),
+            "看过了",
+            "m-1",
+            2,
+            "REFIDX_zzz==",
+        )
+        .expect("发送");
+        let requests = transport.requests.lock().unwrap();
+        let send = requests
+            .iter()
+            .find(|(_method, url, _body)| url.contains("/v2/groups/A1B2/messages"))
+            .expect("应有发送请求");
+        let body: Value = serde_json::from_str(&send.2).expect("请求体是 JSON");
+        assert_eq!(body["message_reference"]["message_id"], json!("REFIDX_zzz=="));
+        assert_eq!(body["msg_id"], json!("m-1"));
     }
 
     #[test]
@@ -587,7 +635,7 @@ mod tests {
     #[test]
     fn markdown_reply_uses_msg_type_2_and_no_content_field() {
         let (api, transport) = api();
-        api.send_markdown(&Target::Group("A1B2".to_string()), "# 标题", "m-2", 2)
+        api.send_markdown(&Target::Group("A1B2".to_string()), "# 标题", "m-2", 2, "")
             .expect("发送");
         let requests = transport.requests.lock().unwrap();
         let send = requests
@@ -608,7 +656,7 @@ mod tests {
     #[test]
     fn rich_media_reply_uses_msg_type_7_and_file_info() {
         let (api, transport) = api();
-        api.send_media(&Target::User("F6A8".to_string()), "FILE-INFO", "m-3", 3)
+        api.send_media(&Target::User("F6A8".to_string()), "FILE-INFO", "m-3", 3, "")
             .expect("发送");
         let requests = transport.requests.lock().unwrap();
         let send = requests

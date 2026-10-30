@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use omnicrawl_session::{redact_sensitive_text, redact_sensitive_values};
 
-use super::api::{QqApi, Target, MAX_REPLIES_PER_MESSAGE};
+use super::api::{QqApi, Target, MAX_REPLIES_PER_GROUP_MESSAGE};
 use super::config::{effective_confirm_timeout, validate_config, AccessPolicy, QqBotConfig};
 use super::dispatch::{
     classify, parse_thinking_command, route_event_with_bot, workspace_argument, BotIdentity,
@@ -52,8 +52,8 @@ use crate::text::{clean_text, resolve_final_text};
 /// 单条文本消息的安全上限（协议没有下发上限，社区实现普遍按 2000 字符保守处理）。
 pub const MAX_CONTENT_CHARS: usize = 1800;
 
-/// 中间过程最多占用的额度：留 1 条给最终回答（平台总上限 5 条）。
-pub const MAX_INTERMEDIATE_REPLIES: usize = MAX_REPLIES_PER_MESSAGE - 1;
+/// 中间过程占用的额度：留 1 条给最终回答（总额度按场景取，见 [`Target::max_replies`]）。
+pub const MAX_INTERMEDIATE_REPLIES: usize = MAX_REPLIES_PER_GROUP_MESSAGE - 1;
 
 /// 断线重连的退避上限（秒）。
 const MAX_BACKOFF_SECONDS: f64 = 30.0;
@@ -77,6 +77,7 @@ pub trait QqPort: Send + Sync {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String>;
 
     /// 发一条 Markdown（`msg_type=2`）。
@@ -86,6 +87,7 @@ pub trait QqPort: Send + Sync {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String>;
 
     /// 上传一个文件并作为富媒体（`msg_type=7`）发出去。
@@ -95,6 +97,7 @@ pub trait QqPort: Send + Sync {
         upload: &MediaUpload,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String>;
 
     fn download(&self, url: &str) -> Result<Vec<u8>, String>;
@@ -107,8 +110,9 @@ impl QqPort for QqApi {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
-        self.send_text(target, content, msg_id, msg_seq)
+        self.send_text(target, content, msg_id, msg_seq, reference)
             .map_err(|error| error.to_string())
     }
 
@@ -118,8 +122,9 @@ impl QqPort for QqApi {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
-        QqApi::send_markdown(self, target, content, msg_id, msg_seq)
+        QqApi::send_markdown(self, target, content, msg_id, msg_seq, reference)
             .map_err(|error| error.to_string())
     }
 
@@ -129,11 +134,12 @@ impl QqPort for QqApi {
         upload: &MediaUpload,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
         let file_info = self
             .upload_media(target, upload.file_type(), &upload.file_name, &upload.bytes)
             .map_err(|error| error.to_string())?;
-        QqApi::send_media(self, target, &file_info, msg_id, msg_seq)
+        QqApi::send_media(self, target, &file_info, msg_id, msg_seq, reference)
             .map_err(|error| error.to_string())
     }
 
@@ -144,8 +150,8 @@ impl QqPort for QqApi {
 
 /// 一条入站消息的被动回复句柄：`msg_seq` 递增、额度硬性递减。
 ///
-/// 额度口径：平台对同一条入站消息最多接受 5 条回复，其中**中间过程最多 4 条**
-/// （[`ReplyHandle::send_intermediate`]），第 5 条留给最终回答
+/// 额度口径按场景取（[`Target::max_replies`]）：群聊 5 条、单聊 4 条；其中**中间过程最多
+/// 占总额度减 1 条**（[`ReplyHandle::send_intermediate`]），最后 1 条留给最终回答
 /// （[`ReplyHandle::send_final`]）。中间额度用尽后 [`ReplyHandle::can_send_intermediate`]
 /// 返回 false，调用方必须继续攒内容、直到最终文本才下发。
 pub struct ReplyHandle {
@@ -153,6 +159,8 @@ pub struct ReplyHandle {
     pub target: Target,
     /// 触发本次回复的入站消息 ID。
     pub msg_id: String,
+    /// 最终回答要挂的引用（`message_scene.ext` 的 `msg_idx`）：过程消息不带引用。
+    reference: String,
     seq: AtomicI64,
     slots_left: AtomicUsize,
     intermediate_left: AtomicUsize,
@@ -160,14 +168,22 @@ pub struct ReplyHandle {
 
 impl ReplyHandle {
     pub fn new(port: Arc<dyn QqPort>, target: Target, msg_id: &str) -> ReplyHandle {
+        let total = target.max_replies();
         ReplyHandle {
             port,
             target,
             msg_id: msg_id.to_string(),
+            reference: String::new(),
             seq: AtomicI64::new(1),
-            slots_left: AtomicUsize::new(MAX_REPLIES_PER_MESSAGE),
-            intermediate_left: AtomicUsize::new(MAX_INTERMEDIATE_REPLIES),
+            slots_left: AtomicUsize::new(total),
+            intermediate_left: AtomicUsize::new(total - 1),
         }
+    }
+
+    /// 让最终回答以引用形式挂到用户那条消息上（过程消息保持干净）。
+    pub fn with_reference(mut self, reference: &str) -> ReplyHandle {
+        self.reference = reference.to_string();
+        self
     }
 
     /// 剩余总额度。
@@ -190,31 +206,46 @@ impl ReplyHandle {
     /// 返回实际发出的条数；`0` 表示额度已用尽或平台报错。内容里的 Markdown 语法走
     /// `msg_type=2`，`[FILE:…]` 标记转成富媒体。
     pub fn send_intermediate(&self, text: &str) -> usize {
-        self.send_parts(text, true)
+        self.send_parts(text, true, false)
     }
 
-    /// 发最终回答：只受总额度约束（最多两段，末段写满即止）。
+    /// 发最终回答：只受总额度约束（最多两段，末段写满即止），并挂上对用户那条消息的引用。
     pub fn send_final(&self, text: &str) -> usize {
-        self.send_parts(text, false)
+        self.send_parts(text, false, true)
+    }
+
+    /// 发过程提示（回执、附件通知等）：额度口径同最终回答，但不挂引用。
+    pub fn send_notice(&self, text: &str) -> usize {
+        self.send_parts(text, false, false)
     }
 
     /// 按上限切段并逐段下发（富媒体标记先摘出来单独发）。
     ///
     /// 每发一条都在下发前预扣额度（[`ReplyHandle::reserve`]），这样一次调用切成多段
     /// 也不会越过中间过程的上限。
-    fn send_parts(&self, text: &str, intermediate: bool) -> usize {
+    fn send_parts(&self, text: &str, intermediate: bool, quote: bool) -> usize {
         let mut sent = 0_usize;
         let stripped: String;
         let mut text = text;
+        // 引用只挂在本次下发第一条成功的消息上：后面的段跟着首段的上下文就够了。
+        let mut referenced = false;
         if media::supports(&self.target) {
             let mut any_sent = false;
             let mut all_sent = true;
             for path in media::marker_paths(text) {
                 match media::load(&path) {
                     Ok(upload) => {
-                        if self.deliver_media(&upload, intermediate) {
+                        let reference = if quote && !referenced {
+                            self.reference.as_str()
+                        } else {
+                            ""
+                        };
+                        if self.deliver_media(&upload, intermediate, reference) {
                             any_sent = true;
                             sent += 1;
+                            if quote {
+                                referenced = true;
+                            }
                         } else {
                             all_sent = false;
                         }
@@ -234,8 +265,13 @@ impl ReplyHandle {
         }
         let parts = split_content(text);
         for (index, part) in parts.iter().enumerate() {
-            match self.deliver_text(part, intermediate) {
-                Some(true) => sent += 1,
+            match self.deliver_text(part, intermediate, quote && !referenced) {
+                Some(true) => {
+                    if quote {
+                        referenced = true;
+                    }
+                    sent += 1;
+                }
                 Some(false) => break,
                 None => {
                     eprintln!(
@@ -287,11 +323,17 @@ impl ReplyHandle {
 
     /// 纯文本还是 Markdown：单聊/群聊且正文含平台支持的语法时走 `markdown.content`。
     ///
+    /// `referenced` 表示这一段要挂引用（只有最终回答的首段会带）。
     /// 返回 `None` 表示额度已用尽，`Some(false)` 表示平台报错或额度在重试时耗尽。
-    fn deliver_text(&self, text: &str, intermediate: bool) -> Option<bool> {
+    fn deliver_text(&self, text: &str, intermediate: bool, referenced: bool) -> Option<bool> {
         if !self.reserve(intermediate) {
             return None;
         }
+        let reference = if referenced {
+            self.reference.as_str()
+        } else {
+            ""
+        };
         let markdown = if markdown::supports(&self.target) {
             markdown::to_markdown(text)
         } else {
@@ -301,7 +343,7 @@ impl ReplyHandle {
         match markdown {
             Some(body) => match self
                 .port
-                .send_markdown(&self.target, &body, &self.msg_id, seq)
+                .send_markdown(&self.target, &body, &self.msg_id, seq, reference)
             {
                 Ok(_id) => Some(true),
                 Err(error) => {
@@ -311,16 +353,19 @@ impl ReplyHandle {
                     if !self.reserve(intermediate) {
                         return Some(false);
                     }
-                    Some(self.send_plain(text))
+                    Some(self.send_plain(text, reference))
                 }
             },
-            None => Some(self.send_plain(text)),
+            None => Some(self.send_plain(text, reference)),
         }
     }
 
-    fn send_plain(&self, text: &str) -> bool {
+    fn send_plain(&self, text: &str, reference: &str) -> bool {
         let seq = self.next_seq();
-        match self.port.send(&self.target, text, &self.msg_id, seq) {
+        match self
+            .port
+            .send(&self.target, text, &self.msg_id, seq, reference)
+        {
             Ok(_id) => true,
             Err(error) => {
                 eprintln!("[qqbot] 发送消息失败：{error}");
@@ -329,14 +374,14 @@ impl ReplyHandle {
         }
     }
 
-    fn deliver_media(&self, upload: &MediaUpload, intermediate: bool) -> bool {
+    fn deliver_media(&self, upload: &MediaUpload, intermediate: bool, reference: &str) -> bool {
         if !self.reserve(intermediate) {
             return false;
         }
         let seq = self.next_seq();
         match self
             .port
-            .send_media(&self.target, upload, &self.msg_id, seq)
+            .send_media(&self.target, upload, &self.msg_id, seq, reference)
         {
             Ok(_id) => true,
             Err(error) => {
@@ -794,19 +839,18 @@ impl<D: AgentDriver> QqBot<D> {
     }
 
     /// 一条入站消息：先回答挂起的提问，再分发命令或启动任务。
+    ///
+    /// 用户引用了某条消息时，被引用的正文/附件先落成本地附件再一起交给 Agent，
+    /// 这样「你引用的这张图」才有东西可看。
     fn handle_message(self: &Arc<Self>, inbound: &Inbound) {
-        let reply = Arc::new(ReplyHandle::new(
-            Arc::clone(&self.port),
-            inbound.target.clone(),
-            &inbound.message_id,
-        ));
+        let reply = Arc::new(self.reply_for(inbound));
         if self.resolve_pending_question(inbound) {
             return;
         }
-        if inbound.content.is_empty() && inbound.attachments.is_empty() {
+        if inbound.content.is_empty() && inbound.attachments.is_empty() && inbound.quoted.is_empty() {
             return;
         }
-        if !inbound.attachments.is_empty() {
+        if !inbound.attachments.is_empty() || !quoted_attachments(inbound).is_empty() {
             self.spawn_file_task(inbound.clone(), reply);
             return;
         }
@@ -897,6 +941,7 @@ impl<D: AgentDriver> QqBot<D> {
             inbound.target.clone(),
             &inbound.message_id,
         )
+        .with_reference(&inbound.ref_idx)
     }
 
     /// 单活动校验后，在后台线程执行 Agent 任务。
@@ -912,7 +957,7 @@ impl<D: AgentDriver> QqBot<D> {
             }
             let task = Arc::new(ActiveTask {
                 sender: inbound.sender.clone(),
-                text: inbound.content.clone(),
+                text: task_text_of(&inbound),
                 reply: Arc::clone(&reply),
                 cancel: Arc::new(AtomicBool::new(false)),
                 started_at: Instant::now(),
@@ -1115,57 +1160,85 @@ impl<D: AgentDriver> QqBot<D> {
         let temp_root = self.driver.temp_root();
         let workspace_root = PathBuf::from(self.driver.status().workspace_root);
         let stamp = super::files::unix_seconds();
-        let mut saved: Vec<String> = Vec::new();
-        for (index, (url, name)) in inbound.attachments.iter().enumerate() {
-            let content = match self.port.download(url) {
-                Ok(content) => content,
-                Err(error) => {
-                    eprintln!("[qqbot] 附件下载失败：{error}");
-                    reply.send_final(&format!(
-                        "❌ 附件下载失败：{}",
-                        redact_sensitive_text(&error)
-                    ));
-                    return;
-                }
-            };
-            let file_name = safe_name(name, url, stamp + index as i64, "");
+        let mut index = 0_usize;
+        let mut save_one = |url: &str, name: &str| -> Result<String, String> {
+            let position = stamp + index as i64;
+            index += 1;
+            let content = self.port.download(url).map_err(|error| {
+                format!("❌ 附件下载失败：{}", redact_sensitive_text(&error))
+            })?;
+            let file_name = safe_name(name, url, position, "");
             let subdir = classify_file_name(&file_name);
-            let destination = match super::files::destination(&temp_root, subdir, &file_name) {
-                Ok(path) => path,
-                Err(error) => {
-                    eprintln!("[qqbot] 附件保存失败：{error}");
-                    reply.send_final(&format!(
-                        "❌ 附件保存失败：{}",
-                        redact_sensitive_text(&error.to_string())
-                    ));
+            let destination = super::files::destination(&temp_root, subdir, &file_name)
+                .map_err(|error| format!("❌ 附件保存失败：{}", redact_sensitive_text(&error.to_string())))?;
+            fs::write(&destination, &content).map_err(|error| {
+                format!("❌ 附件保存失败：{}", redact_sensitive_text(&error.to_string()))
+            })?;
+            Ok(relative_display_path(&destination, &workspace_root))
+        };
+
+        // 本次消息带的附件与被引用消息里的附件分开记，任务文本里才好区分。
+        let mut saved: Vec<String> = Vec::new();
+        for (url, name) in inbound.attachments.iter() {
+            match save_one(url, name) {
+                Ok(path) => saved.push(path),
+                Err(text) => {
+                    eprintln!("[qqbot] 附件处理失败：{text}");
+                    reply.send_notice(&text);
                     return;
                 }
-            };
-            if let Err(error) = fs::write(&destination, &content) {
-                eprintln!("[qqbot] 附件保存失败：{error}");
-                reply.send_final(&format!(
-                    "❌ 附件保存失败：{}",
-                    redact_sensitive_text(&error.to_string())
-                ));
-                return;
             }
-            saved.push(relative_display_path(&destination, &workspace_root));
         }
-        if saved.is_empty() {
+        let mut quoted_files: Vec<String> = Vec::new();
+        for (url, name) in quoted_attachments(&inbound) {
+            match save_one(&url, &name) {
+                Ok(path) => quoted_files.push(path),
+                Err(text) => {
+                    eprintln!("[qqbot] 引用附件处理失败：{text}");
+                    reply.send_notice(&text);
+                    return;
+                }
+            }
+        }
+
+        let mut notices: Vec<String> = Vec::new();
+        if !saved.is_empty() {
+            notices.push(format!(
+                "✅ 已收到 {} 个附件：\n{}",
+                saved.len(),
+                saved.join("\n")
+            ));
+        }
+        if !quoted_files.is_empty() {
+            notices.push(format!(
+                "✅ 引用消息里的 {} 个附件：\n{}",
+                quoted_files.len(),
+                quoted_files.join("\n")
+            ));
+        }
+        if notices.is_empty() {
             return;
         }
-        reply.send_final(&format!(
-            "✅ 已收到 {} 个附件：\n{}",
-            saved.len(),
-            saved.join("\n")
-        ));
+        reply.send_notice(&notices.join("\n\n"));
         if self.is_stopped() {
             eprintln!("[qqbot] 服务已停止，跳过附件任务启动。");
             return;
         }
-        let mut task_text = format!("已收到附件：位于 {}", saved.join("、"));
+        let mut task_text = String::new();
+        if !saved.is_empty() {
+            task_text.push_str(&format!("已收到附件：位于 {}", saved.join("、")));
+        }
+        if let Some(quoted) = quoted_context(&inbound, &quoted_files) {
+            if !task_text.is_empty() {
+                task_text.push_str("\n\n");
+            }
+            task_text.push_str(&quoted);
+        }
         if !inbound.content.is_empty() {
-            task_text.push_str(&format!("\n\n用户补充说明：{}", inbound.content));
+            if !task_text.is_empty() {
+                task_text.push_str("\n\n");
+            }
+            task_text.push_str(&format!("用户补充说明：{}", inbound.content));
         }
         self.start_task(
             Inbound {
@@ -1175,6 +1248,8 @@ impl<D: AgentDriver> QqBot<D> {
                 message_id: inbound.message_id.clone(),
                 content: task_text,
                 attachments: Vec::new(),
+                ref_idx: inbound.ref_idx.clone(),
+                quoted: Vec::new(),
                 event: inbound.event.clone(),
             },
             reply,
@@ -1330,6 +1405,64 @@ fn match_answer(options: &[String], text: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+/// 被引用消息的附件（展平所有嵌套层级）。
+fn quoted_attachments(inbound: &Inbound) -> Vec<(String, String)> {
+    let mut items: Vec<(String, String)> = Vec::new();
+    for quoted in &inbound.quoted {
+        for (url, name) in &quoted.attachments {
+            if items.iter().any(|(known, _)| known == url) {
+                continue;
+            }
+            items.push((url.clone(), name.clone()));
+        }
+    }
+    items
+}
+
+/// 任务文本里的引用上下文：被引用内容的原文，附件换成已落盘的本地路径。
+fn quoted_context(inbound: &Inbound, saved: &[String]) -> Option<String> {
+    if inbound.quoted.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["用户引用的消息：".to_string()];
+    let mut file_index = 0_usize;
+    for quoted in &inbound.quoted {
+        let mut body = quoted.content.clone();
+        for _ in &quoted.attachments {
+            let path = saved
+                .get(file_index)
+                .map(|path| path.as_str())
+                .unwrap_or("（下载失败）");
+            file_index += 1;
+            if !body.is_empty() {
+                body.push(' ');
+            }
+            body.push_str(&format!("[文件:{path}]"));
+        }
+        let who = if quoted.author.is_empty() {
+            "引用".to_string()
+        } else {
+            quoted.author.clone()
+        };
+        lines.push(format!("- {who}：{body}"));
+    }
+    Some(lines.join("\n"))
+}
+
+/// 交给 Agent 的完整任务文本：被引用的内容 + 用户这句话。
+fn task_text_of(inbound: &Inbound) -> String {
+    if inbound.quoted.is_empty() {
+        return inbound.content.clone();
+    }
+    let mut lines = vec!["用户引用的消息：".to_string()];
+    for quoted in &inbound.quoted {
+        lines.push(format!("- {}", super::dispatch::quoted_text(quoted)));
+    }
+    lines.push(String::new());
+    lines.push(format!("用户消息：{}", inbound.content));
+    lines.join("\n")
 }
 
 /// 单个回合的显示装配：正文段在工具边界封口，工具/计划/子任务攒成一段进度。

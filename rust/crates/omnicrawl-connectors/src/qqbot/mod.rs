@@ -17,8 +17,8 @@ pub mod media;
 pub use crate::http::{HttpReply, HttpTransport, UreqTransport};
 pub use api::{
     QqApi, QqApiError, Target, FILE_TYPE_FILE, FILE_TYPE_IMAGE, FILE_TYPE_VIDEO, FILE_TYPE_VOICE,
-    MAX_DIRECT_UPLOAD_BYTES, MAX_REPLIES_PER_MESSAGE, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
-    MSG_TYPE_TEXT, USER_AGENT,
+    MAX_DIRECT_UPLOAD_BYTES, MAX_REPLIES_PER_C2C_MESSAGE, MAX_REPLIES_PER_GROUP_MESSAGE,
+    MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA, MSG_TYPE_TEXT, USER_AGENT,
 };
 pub use bind::{
     bind_with, bind_with_console, build_connect_url, create_bind_task, credentials_from,
@@ -35,10 +35,11 @@ pub use config::{
     SANDBOX_BASE_URL,
 };
 pub use dispatch::{
-    attachments_of, classify, command_name, parse_message, parse_message_with_bot,
-    parse_thinking_command, route_event, route_event_with_bot, strip_mention, workspace_argument,
-    BotIdentity, Command, EventRoute, Inbound, ThinkingCommand, EVENT_C2C_MESSAGE,
-    EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE, EVENT_GUILD_AT_MESSAGE,
+    attachments_of, classify, command_name, parse_message, parse_message_with_bot, quoted_of,
+    quoted_text, parse_thinking_command, route_event, route_event_with_bot, scene_index,
+    strip_mention, workspace_argument, BotIdentity, Command, EventRoute, Inbound, Quoted,
+    ThinkingCommand, EVENT_C2C_MESSAGE, EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE,
+    EVENT_GUILD_AT_MESSAGE,
 };
 pub use files::{
     classify_file_name, destination, fallback_name, relative_display_path, safe_name,

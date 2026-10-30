@@ -1,8 +1,9 @@
 //! QQ 机器人连接器的编排测试：被动回复额度、正文/进度分段、命令与审批/提问桥。
 //!
 //! 只起进程内桩件：平台端口记录下发并把附件回放成固定字节，宿主用可编程的
-//! `AgentDriver` 代替。重点是 QQ 的平台约束——不能编辑、同一条入站消息只有 5 次回复，
-//! 因此这里钉住「正文段在工具边界封口」「工具合并成一段进度」「最终回答一定发得出去」。
+//! `AgentDriver` 代替。重点是 QQ 的平台约束——不能编辑、同一条入站消息的回复条数有硬上限
+//! （群聊 5 条、单聊 4 条），因此这里钉住「正文段在工具边界封口」「工具合并成一段进度」
+//! 「最终回答一定发得出去」。
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,6 +38,8 @@ enum Msg {
 #[derive(Default)]
 struct MockPort {
     sent: Mutex<Vec<(Target, Msg, String, i64)>>,
+    /// 每条下发带的引用（空串表示没有引用）。
+    references: Mutex<Vec<String>>,
     downloads: Mutex<Vec<String>>,
     fail_after: Mutex<Option<usize>>,
 }
@@ -58,12 +61,17 @@ impl MockPort {
         self.sent.lock().expect("发送锁中毒").clone()
     }
 
+    fn references(&self) -> Vec<String> {
+        self.references.lock().expect("引用锁中毒").clone()
+    }
+
     fn pushes(
         &self,
         target: &Target,
         message: Msg,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
         let mut sent = self.sent.lock().expect("发送锁中毒");
         if let Some(limit) = *self.fail_after.lock().expect("阈值锁中毒") {
@@ -72,6 +80,10 @@ impl MockPort {
             }
         }
         sent.push((target.clone(), message, msg_id.to_string(), msg_seq));
+        self.references
+            .lock()
+            .expect("引用锁中毒")
+            .push(reference.to_string());
         Ok(format!("m-{}", sent.len()))
     }
 }
@@ -83,6 +95,7 @@ impl QqPort for MockPort {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
         self.pushes(
             target,
@@ -92,6 +105,7 @@ impl QqPort for MockPort {
             },
             msg_id,
             msg_seq,
+            reference,
         )
     }
 
@@ -101,6 +115,7 @@ impl QqPort for MockPort {
         content: &str,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
         self.pushes(
             target,
@@ -110,6 +125,7 @@ impl QqPort for MockPort {
             },
             msg_id,
             msg_seq,
+            reference,
         )
     }
 
@@ -119,6 +135,7 @@ impl QqPort for MockPort {
         upload: &MediaUpload,
         msg_id: &str,
         msg_seq: i64,
+        reference: &str,
     ) -> Result<String, String> {
         self.pushes(
             target,
@@ -129,6 +146,7 @@ impl QqPort for MockPort {
             },
             msg_id,
             msg_seq,
+            reference,
         )
     }
 
@@ -537,9 +555,9 @@ fn tools_are_merged_into_a_single_progress_message() {
         progress.is_some(),
         "三次工具调用应合并成一条进度消息：{contents:?}"
     );
-    // 不能编辑，因此每次下发都是一条新消息：合并才让额度够用。
+    // 不能编辑，因此每次下发都是一条新消息：合并才让额度够用（单聊 4 条）。
     assert!(
-        port.calls().len() <= 5,
+        port.calls().len() <= 4,
         "总下发条数不能超出额度：{contents:?}"
     );
 }
@@ -567,9 +585,10 @@ fn final_answer_is_still_sent_when_the_budget_runs_short() {
             .iter()
             .any(|text| text.contains("全部完成，结论在最后。"))
     });
+    // 单聊额度是 4 条：回执 + 正文段 + 结论必须装得下。
     assert!(
-        port.calls().len() <= 5,
-        "被动回复额度是 5 条：{:?}",
+        port.calls().len() <= 4,
+        "单聊被动回复额度是 4 条：{:?}",
         port.contents()
     );
 }
@@ -779,11 +798,11 @@ fn attachments_are_downloaded_and_saved_into_agent_tmp() {
 }
 
 #[test]
-fn intermediate_process_stops_after_four_replies_and_keeps_the_last_slot() {
+fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() {
     let driver = Arc::new(MockDriver::default());
     let port = Arc::new(MockPort::default());
     let bot = bot_with(driver.clone(), port.clone());
-    // 每个 pass 都有正文与工具调用：中间消息必须严格停在 4 条，第 5 条留给结论。
+    // 单聊额度是 4 条：中间消息严格停在 3 条，最后 1 条留给结论。
     let mut events = Vec::new();
     for index in 0..8 {
         events.push(json!({"kind": "delta", "text": format!("第 {index} 段。")}));
@@ -807,13 +826,13 @@ fn intermediate_process_stops_after_four_replies_and_keeps_the_last_slot() {
     });
 
     let contents = port.contents();
-    assert_eq!(contents.len(), 5, "总下发条数必须是 5：{contents:?}");
+    assert_eq!(contents.len(), 4, "总下发条数必须是 4：{contents:?}");
     assert_eq!(
         contents.last().map(String::as_str),
         Some("全部完成，结论在最后。"),
-        "第 5 条必须是最终文本：{contents:?}"
+        "第 4 条必须是最终文本：{contents:?}"
     );
-    let intermediate = &contents[..4];
+    let intermediate = &contents[..3];
     assert_eq!(
         intermediate[0], "✅ 已收到任务，开始执行（/cancel 可取消）。",
         "{contents:?}"
@@ -823,13 +842,13 @@ fn intermediate_process_stops_after_four_replies_and_keeps_the_last_slot() {
             .iter()
             .filter(|text| text.starts_with("◇"))
             .count(),
-        3,
-        "回执占 1 条，正文段最多再占 3 条：{contents:?}"
+        2,
+        "回执占 1 条，正文段最多再占 2 条：{contents:?}"
     );
     assert!(
         !intermediate
             .iter()
-            .any(|text| text.contains("第 4 段") || text.contains("第 5 段")),
+            .any(|text| text.contains("第 2 段") || text.contains("第 3 段")),
         "中间额度用尽后不能再发正文或进度：{contents:?}"
     );
 }
@@ -980,9 +999,9 @@ fn channel_targets_never_send_markdown_or_rich_media() {
 }
 
 #[test]
-fn reply_handle_hard_caps_intermediate_at_four_and_total_at_five() {
+fn reply_handle_hard_caps_group_intermediate_at_four_and_total_at_five() {
     let port = Arc::new(MockPort::default());
-    let handle = ReplyHandle::new(port.clone(), Target::User("F6A8".to_string()), "m-1");
+    let handle = ReplyHandle::new(port.clone(), Target::Group("A1B2".to_string()), "m-1");
     assert_eq!(handle.intermediate_left(), 4);
     assert_eq!(handle.slots_left(), 5);
 
@@ -999,6 +1018,26 @@ fn reply_handle_hard_caps_intermediate_at_four_and_total_at_five() {
     assert_eq!(contents.last().map(String::as_str), Some("最终回答"));
     assert_eq!(handle.slots_left(), 0);
     assert_eq!(handle.send_final("第六条"), 0, "第六条必须被拒");
+}
+
+#[test]
+fn reply_handle_uses_the_c2c_budget_for_private_chats() {
+    let port = Arc::new(MockPort::default());
+    let handle = ReplyHandle::new(port.clone(), Target::User("F6A8".to_string()), "m-1");
+    // 单聊上限比群聊更紧：4 条，其中中间 3 条，最后 1 条留给最终回答。
+    assert_eq!(handle.intermediate_left(), 3);
+    assert_eq!(handle.slots_left(), 4);
+
+    for index in 0..5 {
+        handle.send_intermediate(&format!("中间第 {index} 条"));
+    }
+    assert_eq!(port.contents().len(), 3, "单聊中间过程最多 3 条");
+    assert!(!handle.can_send_intermediate());
+
+    assert_eq!(handle.send_final("最终回答"), 1);
+    assert_eq!(port.contents().len(), 4);
+    assert_eq!(handle.slots_left(), 0);
+    assert_eq!(handle.send_final("第五条"), 0, "单聊第五条必须被拒");
 }
 
 #[test]
@@ -1192,4 +1231,140 @@ fn a_misspelled_command_is_answered_with_the_closest_one() {
     );
     // 只提示、不执行：拼错的命令不会真的切模式。
     assert!(driver.activations().is_empty(), "不应替用户执行命令");
+}
+
+/// 带引用的入站消息：正文在 `content`，被引用内容在 `msg_elements[]`。
+fn quoting(openid: &str, content: &str, message_id: &str) -> Value {
+    json!({
+        "id": message_id,
+        "content": content,
+        "author": {"user_openid": openid},
+        "message_type": 103,
+        "msg_elements": [{
+            "author": {"user_openid": "F6A7", "username": "奶酪"},
+            "content": "这是我新买的酒",
+            "attachments": [{
+                "content_type": "image/jpeg",
+                "filename": "photo.jpg",
+                "url": "https://multimedia.nt.qq.com.cn/download/photo.jpg",
+            }],
+        }],
+        "message_scene": {"source": "default", "ext": ["msg_idx=REFIDX_self=="]},
+    })
+}
+
+#[test]
+fn the_final_answer_quotes_the_message_while_progress_does_not() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({
+        "events": [
+            {"kind": "delta", "text": "先看看目录。"},
+            {"kind": "tool_start", "name": "list", "id": "c1", "arguments": {"path": "."}},
+            {"kind": "tool_finish", "name": "list", "id": "c1", "output": "a.py"},
+        ],
+        "reply": "目录里有 a.py。",
+    }));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &quoting("F6A8", "你怎么这么多稀奇古怪的东西", "m-40"),
+    );
+    wait_for(5.0, || {
+        port.contents().iter().any(|text| text.contains("目录里有 a.py"))
+    });
+
+    let contents = port.contents();
+    let references = port.references();
+    assert_eq!(contents.len(), references.len(), "每次下发都该有一条记录");
+    let final_index = contents
+        .iter()
+        .position(|text| text.contains("目录里有 a.py"))
+        .expect("应有最终回答");
+    assert_eq!(
+        references[final_index], "REFIDX_self==",
+        "最终回答要挂引用：{references:?}"
+    );
+    assert!(
+        references
+            .iter()
+            .enumerate()
+            .all(|(index, reference)| index == final_index || reference.is_empty()),
+        "过程消息不应带引用：{references:?} / {contents:?}"
+    );
+}
+
+#[test]
+fn a_plain_message_sends_no_reference() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({"reply": "好了。"}));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "看看目录", "m-41"),
+    );
+    wait_for(5.0, || port.contents().iter().any(|text| text == "好了。"));
+    assert!(
+        port.references().iter().all(String::is_empty),
+        "{:?}",
+        port.references()
+    );
+}
+
+#[test]
+fn a_quoted_image_is_saved_and_described_to_the_agent() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({"reply": "看清了。"}));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &quoting("F6A8", "这是什么酒", "m-42"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+
+    // 被引用消息里的图片要真的下载下来。
+    assert_eq!(
+        port.downloads.lock().expect("下载锁中毒").as_slice(),
+        &["https://multimedia.nt.qq.com.cn/download/photo.jpg".to_string()]
+    );
+    let contents = port.contents();
+    assert!(
+        contents
+            .iter()
+            .any(|text| text.contains("引用消息里的 1 个附件")),
+        "{contents:?}"
+    );
+    let turns = driver.turns();
+    assert!(turns[0].contains("用户引用的消息"), "{turns:?}");
+    assert!(turns[0].contains("这是我新买的酒"), "{turns:?}");
+    assert!(turns[0].contains("images/photo"), "{turns:?}");
+    assert!(turns[0].contains("这是什么酒"), "{turns:?}");
+}
+
+#[test]
+fn a_quoted_text_message_needs_no_download() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({"reply": "同意。"}));
+    let inbound = json!({
+        "id": "m-43",
+        "content": "你说得对",
+        "author": {"user_openid": "F6A8"},
+        "message_type": 103,
+        "msg_elements": [{
+            "author": {"user_openid": "F6A7", "username": "奶酪"},
+            "content": "明天早点下班",
+        }],
+        "message_scene": {"source": "default", "ext": ["msg_idx=REFIDX_x=="]},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE, &inbound);
+    wait_for(5.0, || driver.turns().len() == 1);
+
+    assert!(port.downloads.lock().expect("下载锁中毒").is_empty());
+    let turns = driver.turns();
+    assert!(turns[0].contains("奶酪：明天早点下班"), "{turns:?}");
+    assert!(turns[0].contains("用户消息：你说得对"), "{turns:?}");
 }
