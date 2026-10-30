@@ -30,8 +30,6 @@ pub const ACCENT_RED: &str = "red";
 /// 工具进行中的边框色（白色）：与成功/失败语义色区分开，不引入新色相。
 pub const ACCENT_WHITE: &str = "white";
 
-/// 用户消息背景：Python 侧是 26% 透明紫，由 Textual 与终端底色混合。
-pub const USER_BACKGROUND: &str = "rgba(170, 80, 210, 0.26)";
 pub const TOOL_TEXT: &str = "bright_black";
 
 /// 思考区沿用代码块同款灰色背景与灰色前景（字体由终端自身提供）。
@@ -180,16 +178,6 @@ pub fn parse_color(spec: &str) -> Option<Color> {
     Some(Color::Rgb(red, green, blue))
 }
 
-/// 用户消息背景色（rgba 只取 RGB 分量，见 [`parse_color`]）。
-pub fn user_background() -> Color {
-    parse_color(USER_BACKGROUND).unwrap_or(Color::Reset)
-}
-
-/// 思考区背景色。
-pub fn reasoning_background() -> Color {
-    parse_color(REASONING_BACKGROUND).unwrap_or(Color::Reset)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,8 +241,6 @@ mod tests {
 
     #[test]
     fn token_colors_resolve() {
-        assert_eq!(user_background(), Color::Rgb(170, 80, 210));
-        assert_eq!(reasoning_background(), Color::Rgb(0x27, 0x28, 0x22));
         assert_eq!(rich_style(TOOL_TEXT), Style::default().fg(Color::DarkGray));
     }
 }

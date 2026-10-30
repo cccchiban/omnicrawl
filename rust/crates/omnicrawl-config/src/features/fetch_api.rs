@@ -120,6 +120,9 @@ pub fn load_fetch_api_configuration(
 }
 
 /// 把 `[fetch_api]` 写回 `config.toml`，保留其它段。
+///
+/// 设置面板没有「抓取接口」页，`[fetch_api]` 目前由用户手改 `config.toml`；本函数是
+/// 配置域对称读写的完整面（`load_*` 的写回侧），供后续接线或外部工具调用。
 pub fn save_fetch_api_configuration(
     env: &ConfigEnvironment,
     configuration: &FetchApiConfig,

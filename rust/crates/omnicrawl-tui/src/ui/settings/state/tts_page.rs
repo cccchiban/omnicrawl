@@ -201,21 +201,21 @@ pub struct TtsRowView {
 }
 
 /// TTS 页的编辑草稿。
-struct TtsState {
-    enabled: bool,
-    auto_play: bool,
-    speak_replies: bool,
-    provider: String,
-    openai: TtsChannelValues,
-    gemini: TtsChannelValues,
-    focused: usize,
+pub struct TtsState {
+    pub(crate) enabled: bool,
+    pub(crate) auto_play: bool,
+    pub(crate) speak_replies: bool,
+    pub(crate) provider: String,
+    pub(crate) openai: TtsChannelValues,
+    pub(crate) gemini: TtsChannelValues,
+    pub(crate) focused: usize,
     /// 文本输入态：`(行号, 缓冲)`，对映 Python 的 `Input` 获得焦点。
-    input: Option<(usize, Composer)>,
-    status: String,
+    pub(crate) input: Option<(usize, Composer)>,
+    pub(crate) status: String,
 }
 
 impl TtsState {
-    fn new(values: TtsValues) -> Self {
+    pub(crate) fn new(values: TtsValues) -> Self {
         Self {
             enabled: values.enabled,
             auto_play: values.auto_play,
@@ -230,7 +230,7 @@ impl TtsState {
     }
 
     /// 当前服务商的那一份通道草稿。
-    fn channel(&self) -> &TtsChannelValues {
+    pub(crate) fn channel(&self) -> &TtsChannelValues {
         if self.is_gemini() {
             &self.gemini
         } else {
@@ -239,7 +239,7 @@ impl TtsState {
     }
 
     /// 当前服务商那一份通道草稿的可变引用。
-    fn channel_mut(&mut self) -> &mut TtsChannelValues {
+    pub(crate) fn channel_mut(&mut self) -> &mut TtsChannelValues {
         if self.is_gemini() {
             &mut self.gemini
         } else {
@@ -247,18 +247,18 @@ impl TtsState {
         }
     }
 
-    fn is_gemini(&self) -> bool {
+    pub(crate) fn is_gemini(&self) -> bool {
         self.provider == "gemini"
     }
 
     /// 当前服务商可见的行（Gemini 没有语速）。
-    fn visible_rows(&self) -> Vec<usize> {
+    pub(crate) fn visible_rows(&self) -> Vec<usize> {
         (0..TTS_ROW_COUNT)
             .filter(|row| *row != TTS_ROW_SPEED || !self.is_gemini())
             .collect()
     }
 
-    fn current_voices(&self) -> Vec<String> {
+    pub(crate) fn current_voices(&self) -> Vec<String> {
         if self.is_gemini() {
             TTS_GEMINI_VOICES
                 .iter()
@@ -272,7 +272,7 @@ impl TtsState {
         }
     }
 
-    fn draft(&self) -> TtsDraft {
+    pub(crate) fn draft(&self) -> TtsDraft {
         let channel = self.channel();
         let channel = if self.is_gemini() {
             TtsChannelDraft::Gemini {
@@ -301,7 +301,7 @@ impl TtsState {
         }
     }
 
-    fn row_text(&self, row: usize) -> String {
+    pub(crate) fn row_text(&self, row: usize) -> String {
         // 输入态：该行显示缓冲文本与光标。
         if let Some((input_row, composer)) = &self.input {
             if *input_row == row {
@@ -333,7 +333,7 @@ impl TtsState {
         }
     }
 
-    fn rows(&self) -> Vec<TtsRowView> {
+    pub(crate) fn rows(&self) -> Vec<TtsRowView> {
         self.visible_rows()
             .into_iter()
             .enumerate()
@@ -348,7 +348,7 @@ impl TtsState {
     }
 
     /// 把选中行挪到相邻的可见行（隐藏行的位置会被跳过）。
-    fn move_focus(&mut self, delta: isize) {
+    pub(crate) fn move_focus(&mut self, delta: isize) {
         let rows = self.visible_rows();
         let Some(index) = rows.iter().position(|row| *row == self.focused) else {
             self.focused = rows.first().copied().unwrap_or(TTS_ROW_ENABLED);
@@ -358,7 +358,7 @@ impl TtsState {
         self.focused = rows[next];
     }
 
-    fn cycle(&mut self, row: usize, direction: isize) {
+    pub(crate) fn cycle(&mut self, row: usize, direction: isize) {
         // 切换服务商后原来选中的行可能不再可见，落回第一行。
         let gemini = self.is_gemini();
         match row {
@@ -392,7 +392,7 @@ impl TtsState {
     }
 
     /// 保存成功：把草稿回落到新配置（界面显示值跟着更新）。
-    fn apply_saved(&mut self, draft: &TtsDraft) {
+    pub(crate) fn apply_saved(&mut self, draft: &TtsDraft) {
         self.enabled = draft.enabled;
         self.auto_play = draft.auto_play;
         self.speak_replies = draft.speak_replies;
@@ -436,14 +436,14 @@ impl TtsState {
     }
 
     /// 该行是否有输入态（只有文本行才有；开关候选类行就地切档）。
-    fn editable(&self, row: usize) -> bool {
+    pub(crate) fn editable(&self, row: usize) -> bool {
         matches!(
             row,
             TTS_ROW_BASE_URL | TTS_ROW_MODEL | TTS_ROW_INSTRUCTIONS | TTS_ROW_API_KEY
         )
     }
 
-    fn begin_input(&mut self, row: usize) {
+    pub(crate) fn begin_input(&mut self, row: usize) {
         if !self.editable(row) {
             return;
         }
@@ -455,7 +455,7 @@ impl TtsState {
         self.input = Some((row, composer));
     }
 
-    fn commit_input(&mut self) {
+    pub(crate) fn commit_input(&mut self) {
         let Some((row, composer)) = self.input.take() else {
             return;
         };
@@ -477,7 +477,7 @@ impl TtsState {
     }
 
     /// 粘贴：文本行直接落到输入态（没有输入态就先按当前行进；动作行不接收）。
-    fn paste(&mut self, text: &str) -> bool {
+    pub(crate) fn paste(&mut self, text: &str) -> bool {
         if self.input.is_none() {
             self.begin_input(self.focused);
             if self.input.is_none() {

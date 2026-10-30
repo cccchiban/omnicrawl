@@ -83,17 +83,19 @@ mod sessions_page_tests;
 pub use sessions_page::{PendingDelete, SessionRow, SessionsState};
 
 pub use tts_page::{
-    TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues,
+    TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsState, TtsValues,
     TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS,
     TTS_SPEED_OPTIONS,
 };
 
 // 行号只被同目录的 `tts.rs` 与 `tests.rs` 读，不进 `state` 的对外名字空间。
 pub(super) use tts_page::{
-    TTS_ROW_API_KEY, TTS_ROW_AUTO_PLAY, TTS_ROW_BASE_URL, TTS_ROW_ENABLED, TTS_ROW_INSTRUCTIONS,
-    TTS_ROW_MODEL, TTS_ROW_PROVIDER, TTS_ROW_SAVE, TTS_ROW_SPEAK_REPLIES, TTS_ROW_SPEED,
-    TTS_ROW_VOICE,
+    TTS_ROW_AUTO_PLAY, TTS_ROW_ENABLED, TTS_ROW_PROVIDER, TTS_ROW_SAVE, TTS_ROW_SPEAK_REPLIES,
+    TTS_ROW_SPEED, TTS_ROW_VOICE,
 };
+// 只有 `tests.rs` 读这两行，非测试构建下不引入。
+#[cfg(test)]
+pub(super) use tts_page::{TTS_ROW_API_KEY, TTS_ROW_MODEL};
 
 mod pages;
 

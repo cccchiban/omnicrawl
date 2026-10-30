@@ -1,6 +1,6 @@
 //! 版本比较与缓存有效期：两条最容易静默出错、又最不该出错的地方。
 
-use super::*;
+use omnicrawl_update::*;
 use std::path::PathBuf;
 
 /// 每个用例一个独立目录，避免并行测试互相覆盖缓存文件。

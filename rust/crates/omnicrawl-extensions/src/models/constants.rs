@@ -2,8 +2,6 @@
 //!
 //! 从 `models.rs` 按职责拆出。
 
-use super::*;
-
 pub const HOOK_API_VERSION: &str = "1";
 /// 需与 pyproject.toml 的 version 保持同步（与 Python 侧 `OMNICRAWL_VERSION` 同源）。
 pub const OMNICRAWL_VERSION: &str = "0.1.66";
@@ -143,4 +141,4 @@ pub const HOOK_PATCH_ALLOWLIST: &[(&str, &[&str])] = &[
 /// 不能被 replace / tombstone 的 sealed Handler 前缀。
 pub const SEALED_HANDLER_PREFIX: &str = "core/";
 
-const POLICY_VALUES: [&str; 3] = ["reject-operation", "ignore", "skip-handler"];
+pub(crate) const POLICY_VALUES: [&str; 3] = ["reject-operation", "ignore", "skip-handler"];

@@ -2,7 +2,7 @@
 
 use super::*;
 use super::model_port::{TurnUsage};
-use super::session_query::{SessionQuery, no_session_error, respond_compact, respond_session_append, respond_session_archive, respond_session_new, respond_session_query, respond_session_rename, respond_session_resume, respond_undo};
+use super::session_query::{SessionQuery, no_session_error, respond_compact, respond_session_append, respond_session_archive, respond_session_delete, respond_session_new, respond_session_query, respond_session_rename, respond_session_resume, respond_undo};
 use super::subagent_run::{respond_subagent_run};
 use super::tools::{subagent_query_value};
 use super::turn::{Conn, run_turn};

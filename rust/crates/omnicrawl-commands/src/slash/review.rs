@@ -17,7 +17,7 @@ pub const REVIEW_DEFAULT_SCOPE: &str = "工作区未提交改动（git diff）";
 /// 覆盖两类「无意义评审」：工作区不是 git 仓库、工作区没有可评审的改动（无提交 +
 /// 无未提交改动）。不做精确范围校验——非法范围由子 Agent 的 git 工具在收集 diff 时
 /// 给出明确错误。
-pub(super) fn check_review_preconditions(
+pub fn check_review_preconditions(
     agent: &dyn CommandAgent,
     workspace_root: &Path,
     scope: &str,
@@ -59,7 +59,7 @@ pub(super) fn check_review_preconditions(
 }
 
 /// 构造评审子 Agent 的任务 prompt：只描述评审范围，评审标准由定义注入。
-pub(super) fn build_review_task_prompt(scope: &str) -> String {
+pub fn build_review_task_prompt(scope: &str) -> String {
     let scope_text = if scope.is_empty() {
         format!(
             "评审范围：{REVIEW_DEFAULT_SCOPE}。\
@@ -83,7 +83,7 @@ pub(super) fn build_review_task_prompt(scope: &str) -> String {
 }
 
 /// 从子 Agent 输出中提取评审 JSON 对象；带围栏/前后缀时宽容解析。
-pub(super) fn extract_review_json(text: &str) -> Option<Map<String, Value>> {
+pub fn extract_review_json(text: &str) -> Option<Map<String, Value>> {
     let stripped = text.trim();
     if stripped.is_empty() {
         return None;
@@ -122,7 +122,7 @@ fn review_fence_pattern() -> &'static Regex {
 }
 
 /// 把 JSON 中的 priority 数值映射为 `[P0]`-`[P3]` 标签。
-pub(super) fn format_priority_tag(priority: Option<&Value>) -> String {
+pub fn format_priority_tag(priority: Option<&Value>) -> String {
     let Some(priority) = priority else {
         return String::new();
     };
@@ -147,7 +147,7 @@ pub(super) fn format_priority_tag(priority: Option<&Value>) -> String {
 }
 
 /// Python `format(value, "g")`：6 位有效数字、去掉尾随零、超出范围走科学计数法。
-pub(super) fn python_general_float(value: f64) -> String {
+pub fn python_general_float(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_string();
     }
@@ -183,7 +183,7 @@ fn strip_trailing_zeros(text: &str) -> String {
 }
 
 /// 把评审子 Agent 返回的 JSON 渲染为可读报告；解析失败时原样展示。
-pub(super) fn format_review_report(review_text: &str) -> String {
+pub fn format_review_report(review_text: &str) -> String {
     let Some(data) = extract_review_json(review_text) else {
         let stripped = review_text.trim();
         return if stripped.is_empty() {

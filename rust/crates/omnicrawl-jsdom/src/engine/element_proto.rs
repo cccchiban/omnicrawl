@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn build_element_prototype(context: &mut Context) -> JsObject {
+pub(crate) fn build_element_prototype(context: &mut Context) -> JsObject {
     // 同一函数要挂到多个名字上时复用同一个对象：先统一转成 JsFunction 再进场。
     let realm = context.realm().clone();
     let text_get = NativeFunction::from_fn_ptr(el_get_text_content).to_js_function(&realm);

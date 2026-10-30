@@ -711,3 +711,173 @@ connectors/src/
 ### 10.13 下一步
 
 榜首 `settings/state/tests.rs`（2,221）整份是内联测试，按 §5.6 口径应外移到 `tests/`，不占生产红线；其后 `tui/src/ui/conversation.rs`（1,795，但总行 4,051 里 3,200 行是测试，实际生产仅 471）、`workspace/src/agent_isolation.rs`（1,756）、`tui/src/ui/settings/render.rs`（1,741）、`extensions/src/manager.rs`（1,715）。
+
+---
+
+## 十一、执行记录（2026-10-30，第四轮：冗余与陈旧逻辑复查）
+
+前几轮的扫描脚本本身有两处系统性误判，本轮先修脚本、再取结论，因此**数字全变了**，以本节为准。
+
+### 11.1 先修工具：旧脚本的两处误报
+
+| 脚本 | 症状 | 原因 |
+| --- | --- | --- |
+| `dead.py` §5.1/§9.3 | 把 `commands/src/slash.rs` 里 40 个**测试函数**报成「生产零引用」 | 剥离测试块的判据是「行首无缩进且以 `#[cfg(test)]` 开头」，而该处是 `mod tests {`（属性行在前）或属性被拆分改动丢失，导致整段测试被当成生产代码 |
+| `dead3.py`（本轮新） | 把「只被 `tests/` 目录引用」的正确契约面混进同一档 | 只统计了「生产引用」，没有单独统计「测试引用是否来自 `tests/`」 |
+
+本轮新增三档口径（`.omnicrawl/.agent_tmp/scripts/dead3.py`）：按「除定义行自身之外的剩余出现数」判定，并把 `tests/` 目录与内联 `#[cfg(test)]` 块分别归入测试语料。结果：
+
+- **真死码 17 项**（生产与测试都零引用）；
+- **仅测试引用 119 项**，其中 **93 项被 `tests/` 下的 parity 对照用例引用**（属契约面，不动），**26 项只在同文件内联测试里出现**（真正的候选）。
+
+另新增 `cfg_test_gate.py`（`mod tests` 缺 `#[cfg(test)]` 巡检）与 `dup2.py`（全 crate 函数体逐字重复）。
+
+### 11.2 本轮修掉的一个编译级回归（由上一轮拆分引入）
+
+`commands/src/slash.rs` 的 `mod tests` **丢了 `#[cfg(test)]`**。后果不只是测试残留进产物：该模块 `use crate::agent::testing::FakeAgent`，而 `agent::testing` 本身是 `#[cfg(test)]`——测试构建下能编过，**非测试构建必然报「找不到 `crate::agent::testing`」**。已补回，`cfg_test_gate.py` 全仓复扫为 0。
+
+这条是 §10.11「机械切分会留下下一项的文档注释与属性」的补充：**属性不只会掉到上一个文件尾部，还会原地丢失**。切分后必须逐文件核对原文件里的 `#[cfg(test)]`、`#[allow(..)]`、`#[derive(..)]` 是否都还在。
+
+### 11.3 真死码 17 项（逐条 grep 交叉验证）
+
+| 位置 | 符号 | 判定 |
+| --- | --- | --- |
+| `controllers/src/subagents/orchestration.rs:12-32` | `NOTIFICATION_PREVIEW_ITEMS`(16)、`NOTIFICATION_PREVIEW_CHARS`(12000)、`WORKTREE_MARKER`、`WORKTREE_ARTIFACT_CHARS`(8000)、`SUMMARY_TRUNCATED_SUFFIX`、`PublicResult` | 6 项全零引用，且 `tasks.rs:1019` 与 `recovery.rs:249` 用的是裸字面量 `16`、`6000`。**常量表成了不会被读的注释** |
+| `controllers/src/subagents/batch.rs:21,24,191` | `BACKGROUND_DISABLED_MESSAGE`、`BACKGROUND_FAIL_FAST_MESSAGE`、`SharedBatch` | 前者两条文案没人引用；`SharedBatch` 只是 `Arc<ActiveBatch>` 别名，宿主用 `ActiveBatch` 本身 |
+| `controllers/src/compression.rs:329,330` | `REPLIES_OPEN`、`REPLIES_CLOSE` | 双段压缩已下线（同文件 `join_compaction_sections` 的注释自认「供需要时回接」） |
+| `config/src/features/tls_resumption.rs` | `save_tls_resumption_configuration` | 见 §11.5，属**刻意保留**而非死码 |
+| `connectors/src/mqtt/prompt.rs:121` | `action_at` | 决策通道的 `o0/o1` 反解在 `api/src/mqtt.rs:270` 用 `request.actions.get(index)` 自己做了一遍 |
+| `extensions/src/protocol.rs:857` | `invoke_and_parse` | `manager.rs:459-466` 内联了同一套「取耗时 → `parse_hook_result`」，重复且无人调用 |
+| `extensions/src/skill.rs:19` | `DEFAULT_MATCH_THRESHOLD` | 阈值常量零引用 |
+| `host/src/tools/image_gen.rs:27,30` | `DEFAULT_OUTPUT_DIR`、`DEFAULT_API_KEY_ENV` | 输出目录实际由 `default_output_dir()` 逐段 `join` 拼出（注释自述「避免常量里的 `/` 与 Windows 分隔符混用」），常量只剩自证测试 |
+| `tui/src/ui/fullscreen/terminal/theme.rs:11` | `TRANSPARENT` | `parse_color` 内部用的是字面量 `"transparent"` |
+
+### 11.4 只在同文件内联测试里出现的 26 项（按处置分三组）
+
+**A. 应当删除（实现已改道，测试在自证死代码）**
+
+| 符号 | 依据 |
+| --- | --- |
+| `tui/src/ui/settings/picker.rs` 的 `token_for` / `channel_matches` / `model_matches` | 设置面板**没有**搜索过滤入口（`grep` 全仓无调用）；`token_for` 的职责由 `ChannelRow::label()`（`state.rs:409`）自己 `format!("{}/{}")` 承担 |
+| `tui/src/ui/fullscreen/status/hud.rs` 的 `pending_queue_text` / `gradient_text` | 排队条实际由 `ui/queue.rs` 渲染，HUD 用的是 `context_summary_text` / `token_telemetry_text` |
+| `tui/src/ui/fullscreen/terminal/theme.rs` 的 `user_background` / `reasoning_background` | 渲染路径直接用 `USER_BACKGROUND` / `REASONING_BACKGROUND` 风格串（`conversation.rs:1413`、`markdown.rs:17/22`），两个 `-> Color` 包装没人调 |
+| `onejev/src/sizes.rs` 的 `size_keys` / `nearest_size` / `ONEJEV_REPO_PREFIX` | `size_keys` 还被 `lib.rs:36` 重导出成公开 API，但全仓无消费者；`nearest_size` 被 `find_size` 取代；`ONEJEV_REPO_PREFIX` 只在断言里拼过 |
+
+**B. 应当接线而不是删（逻辑是对的，调用点丢了）**
+
+| 符号 | 现状 | 建议 |
+| --- | --- | --- |
+| `controllers/src/subagents/orchestration.rs` 的 5 个常量 | `tasks.rs` / `recovery.rs` 里是裸字面量 | 把字面量换成常量，一处定义两处读 |
+| `config/src/features/{fetch_api,decision_model}.rs` 的 `save_*_configuration` | 启动自启走 `load_*`，但设置面板与 API 路由都没写回入口——`[fetch_api]` / `[api]` 目前只能手改 TOML | 若要支持界面改，接上；否则在文档写明「手工编辑」 |
+| `config/src/features/decision_model.rs:643` 的 `decision_switch_default` | TUI 侧 `support.rs:399` 自己写了 `switches.get(key).copied().unwrap_or(spec.default)` | 二选一，别留两份默认值口径 |
+
+**C. 属 parity 契约或内部助手，保留**：`host/src/tools/registry.rs:775` 的 `declared_names`（11 个测试文件共用）、`tls` 系列的 `split_data` / `round_trips` / `split_records` / `signed_message`、`decision_suggest.rs` 的 `suggested_tools` / `suggested_subagents`、`web_search.rs` 的 `channel_rerank_order`。
+
+### 11.5 陈旧/悬空逻辑（不是死码，但注释与事实不符）
+
+| 位置 | 问题 |
+| --- | --- |
+| `controllers/src/subagents/batch.rs:21-24` | 两条「后台 SubAgent 默认关闭 / 不支持 fail_fast」文案完好，但**子代理工具参数里根本没有 `background` 与 `fail_fast` 字段**（`agent_tools.json` 与 `tool_catalog` 均无），`SubAgentConfig.allow_background`（`config/src/features/subagents.rs:37`）也无任何消费方。这是一整条**配置 + 文案 + 分支都没有落地**的半成品链 |
+| `tui/src/ui/fullscreen/status/indicators.rs:139` | `can_withdraw_pending` 与 `state/composer_flow.rs:89` 的真实守卫逐条重复（「回合在跑 / 下标有效 / 无待答提问」），测试都在测这个影子函数 |
+| `host/src/tools/registry.rs:109` | `TTS_RUNNERS = ["tts"]` 与工具名 `tts_synthesize` 不同名，靠 `agent_tools.json` 里 `"runner": "tts"` 显式映射——**这不是 bug，但极易被下一轮误判成不一致**，已在此备案 |
+| `host/src/tools/image_gen.rs:27` | 常量 `DEFAULT_OUTPUT_DIR` 与 `default_output_dir()` 拼出的路径是两份事实 |
+
+### 11.6 重复实现（本轮全仓扫描，`dup2.py` 取体长 ≥200 字符）
+
+本轮报 **同 crate 32 组 / 跨 crate 10 组**，但绝大多数是**假重复**：FFI 函数声明（`windows/ffi.rs` 24 个）、trait 默认方法体（`mcp/client.rs`）、`-> Self` 构造链，函数体天然一致。真正值得处理的只有：
+
+| 重复 | 位置 | 处置 |
+| --- | --- | --- |
+| `mask_secret` | `connectors/src/feishu/config.rs:86` 与 `qqbot/config.rs:234` | 逐字相同，同 crate，可无损合并到 `connectors` 公共位置 |
+| `ToolRecord::finish` / `abort` / `running` / `duration_seconds` / `text_of` | `connectors/src/feishu/timeline.rs` 与 `telegram/timeline.rs` | 5 个函数逐字相同（710 字符），结构体字段也同构 |
+| `string_list_field` | `config/src/features/agent_workspace.rs:185` 与 `skills.rs:33` | 逐字相同，同 crate |
+| `python_truthy` | `session/src/history.rs:656` 与 `projection.rs:697` | 逐字相同，同 crate |
+| `truthy` | `host/src/tools/knowledge.rs:880` 与 `read_image.rs:116` | 逐字相同，同 crate |
+| `resolve_proxy` | `host/src/tools/fetcher.rs:608` 与 `image_gen.rs:476` | 逐字相同，同 crate（`web_transport.rs` 已是公共传输层，是天然落点） |
+| `overlaps` | `llm/src/desensitization/gitleaks.rs:689` 与 `rules.rs:393` | 逐字相同，同 crate |
+| `el_set_node_value` / `el_set_text_content` | `jsdom/src/engine.rs:573 / 890` | 逐字相同，同 crate |
+| `resolve_path` / `normalize_path` | `extensions/src/path.rs` 与 `workspace/src/paths.rs` | 跨 crate，**不并**（要新增 crate 依赖） |
+| `expand_user` ×3 | `controllers/workspace.rs`、`session/project.rs`、`tts/audio.rs` | 跨 crate，**不并** |
+| `log_has_ready_line` / `open_log` | `decision/src/server.rs` 与 `fetch/src/server.rs` | 属 §10.2 已记录的「同构但不同宿主」常驻服务骨架问题，**不并** |
+
+### 11.7 刻意保留（记录理由，避免下一轮重复讨论）
+
+- `config/features/tls_resumption.rs` 的 `save_tls_resumption_configuration`：`[tls_resumption]` 的**读取侧**已由 TUI 与 API 两处注入（§9.1），写回入口的既有形态就是手工编辑 `config.toml`。
+- 93 项「只被 `tests/` 引用」的公开项：`*_parity` 系列钉住与 Python 的等价，删了等于放弃对照。
+- `host/src/tools/registry.rs` 的 `IMPLEMENTED_TOOLS`、`TTS_RUNNERS` 等常量表：`agent_tools.json` 与它们的差异（`ask_user`/`subagent`/`update_todos`/`recall_session_evidence` 由内核自持、不在宿主执行分支）是设计而非漏洞。
+
+### 11.8 规模基线（本轮实测，口径 = 剥离内联测试后的生产行）
+
+生产行 >1000 的文件 **36 个**（§10.12 记的 32 个是旧口径，未计入本轮后新增/增长的文件）。前列：`tui/ui/conversation.rs`(1,892)、`tui/ui/settings/render.rs`(1,885)、`workspace/agent_isolation.rs`(1,871)、`extensions/manager.rs`(1,822)、`host/tools/web_search.rs`(1,803)。
+
+内联测试占比 >50% 且总行 >800 的文件 6 个：`tui/ui/conversation.rs`(54%)、`tui/state/tests.rs`(99%)、`host/tools/registry.rs`(54%)、`host/tools/decision_suggest.rs`(53%)、`host/tools/decision_search.rs`(53%)、`commands/slash.rs`(90%)。
+
+### 11.9 本轮验证方式
+
+按项目约定未跑 `cargo build/check/test`。全部结论来自只读静态取证：
+
+- 17 项真死码逐条 `grep -rn` 全文确认「除定义行外 0 次出现」；
+- 26 项内联测试项逐条确认「无跨文件引用，且生产路径已有替代实现」；
+- `cfg_test_gate.py` 全仓复扫 0（修复后）；
+- `orphans.py` 全仓孤儿文件 0；
+- 重复实现按「归一化函数体逐字相等」判定，并单独标注跨 crate 不可并项。
+
+**待用户执行**：`cargo check --workspace --all-targets`（重点看 `omnicrawl-commands` 的测试模块是否恢复）、`cargo test -p omnicrawl-commands -p omnicrawl-controllers -p omnicrawl-host -p omnicrawl-tui`。
+
+### 11.10 建议的处置顺序
+
+1. **先删 11.4-A 的 10 项**（纯死代码，零风险，且能让「测试通过」不再掩盖事实）；
+2. **再接 11.4-B 的三处**（常量收口、默认值口径二选一），收益是消除「两份事实」；
+3. **11.6 的 8 组同 crate 重复**按 crate 批量做，每组都要跑一次该 crate 的 parity 测试；
+4. `background` / `fail_fast` 半成品链（11.5 第一条）需要产品决策：接线还是整条删除，**不要继续悬着**。
+
+## 十二、执行记录（2026-10-30，第五轮：A/B 两组落地）
+
+按 §11.10 的处置顺序做掉 A 组（删死码）与 B 组（消「两份事实」）。**执行中发现 §11 的三处判断有误，已就地更正**，见 §12.4。
+
+### 12.1 A 组：删除项
+
+| 位置 | 符号 | 备注 |
+| --- | --- | --- |
+| `tui/ui/settings/picker.rs` | `token_for`、`channel_matches`、`model_matches` | 一并删掉只服务它们的测试 `token_and_matching_helpers_follow_python`，把 `model_part` 的唯一断言提成 `model_part_extracts_the_model_segment` |
+| `tui/ui/fullscreen/status/hud.rs` | `pending_queue_text`、`gradient_text` | 连带移除只有 `gradient_text` 用的 `ACCENT_GREEN` import |
+| `tui/ui/fullscreen/terminal/theme.rs` | `user_background`、`reasoning_background` | 见 §12.3 |
+| `onejev/sizes.rs` | `size_keys`、`nearest_size`、`ONEJEV_REPO_PREFIX` | `every_size_points_at_an_official_repo` 里的前缀断言改成字面量 `"OmniJev/OneJev-{}"`，保留「repo_id 与 key 对得上」这条真断言 |
+
+### 12.2 B 组：三处「两份事实」的消解
+
+**① `orchestration.rs` 的 5 个常量 —— 不是接线，是删除加改名。**
+上一轮说「把字面量换成常量」，实测后不成立：`NOTIFICATION_PREVIEW_ITEMS = 16` 与 `NOTIFICATION_PREVIEW_CHARS = 12000` 描述的是一套**从未实现的**通知注入截断（`drain_notifications` 直接返回全部事件，没有任何条数或字符限制）；`WORKTREE_MARKER`、`WORKTREE_ARTIFACT_CHARS`、`SUMMARY_TRUNCATED_SUFFIX` 对应的机制在 Rust 侧也不存在。真正存在的两个数是 `tasks.rs::bound_result` 与 `recovery.rs` 里的 `6000`（summary 字符上限）与 `16`（artifacts 条数上限），它们此前是裸字面量。
+
+处置：删掉 5 个虚设常量与同样零引用的 `PublicResult`，新增 `RESULT_SUMMARY_CHARS = 6000`、`RESULT_ARTIFACTS_LIMIT = 16`，两处调用点（共 4 个字面量）改为读常量。
+
+**② `decision_switch_default` —— TUI 改为复用它。**
+`config` 侧有 `decision_switch_default(key)`，TUI 的 `decision_switch_rows` 却写 `switches.get(spec.key).copied().unwrap_or(spec.default)`。后者取的是「当前 spec 的默认值」，前者取的是「按 key 查到的默认值」——同一张表两种取法。已把 TUI 侧改为 `unwrap_or_else(|| decision_switch_default(spec.key))`。
+
+> 注意不要反过来改：曾试过让 `decision_switch_default` 复用 `default_decision_switches()`，但那会每次调用都构造一个 `BTreeMap`，而这条路径在设置页渲染的每帧都会走，已撤回。函数本体保持查表实现。
+
+**③ `save_fetch_api_configuration` —— 保留并注明。**
+`save_decision_model_configuration` 有生产调用点（`app/onejev.rs:130`、`app/settings_pages.rs:126`），**不是**死码（§11 判断有误）。真正没有生产调用点的只有 `save_fetch_api_configuration`：设置面板没有「抓取接口」页，`[fetch_api]` 由用户手改 `config.toml`。它是配置域「读有写回侧」的对称面，保留，并在文档注释里写明现状，避免下一轮再被当死码。
+
+### 12.3 删除 `user_background` 时连带发现的事
+
+删掉 `user_background()` 后 `USER_BACKGROUND` 变成新的孤立项。查 `git log -S` 与当前渲染路径后确认：自 `d0a1936`（config 域移植收尾）起，这个常量就只有自己的包装函数和测试在用，**从未进入渲染路径**——用户消息是「白色正文 + 左侧青色竖条」（`conversation.rs::push_user`），Python 侧那条 `.user-message` 的半透明紫底早就被 `pipeline.py` 的改写取代。属同一批未接线的移植残留，一并删除。
+
+`rgba(r,g,b,a)` 的解析分支**保留**：`parse_color` 是通用样式解析器，该分支有独立测试，且 `rich_style` 的 `on <颜色>` 语法依赖它。
+
+### 12.4 对 §11 的三处更正
+
+1. §11.4-B 说 `decision_model` 的 `save_*` 无写入口 —— **错**，`save_decision_model_configuration` 在 TUI 有两处调用。
+2. §11.4-B 说 `orchestration.rs` 的常量「应接线」—— **部分错**，其中 4 个描述的机制不存在，只有 2 个数值对应真实限制（且数值与常量名对不上：实际是 6000 而非 12000）。
+3. §11.4-A 说 `onejev/sizes.rs` 的 `size_keys` 被 `lib.rs:36` 重导出 —— **错**，`lib.rs:36` 重导出的是 `find_size`、`size_labels`；`size_keys` 只是 `pub mod sizes` 的公开面，无消费者。
+
+教训：`pub` 不等于「被外部依赖」，「上一轮的描述提到」也不等于「重导出」。判定死码前要查定义处的模块可见性链，而不是只看 `lib.rs` 的 `pub use` 列表。
+
+### 12.5 复扫结果
+
+- 真死码 **17 → 11 项**，剩余 11 项全是刻意保留或需产品决策（§11.7、§11.5 第一条）；
+- A 组 10 项 + `USER_BACKGROUND` + `PublicResult` + 5 个虚设常量，全仓 `grep -rn` 均为 0；
+- `cfg_test_gate.py` 全仓 0；
+- 11 个改动文件全部通过 `rustfmt --check`（无失败项）。
+
+未跑 `cargo check/test`（项目约定）。**待用户执行**：`cargo check --workspace --all-targets`，重点看 `omnicrawl-tui`、`omnicrawl-onejev`、`omnicrawl-controllers`、`omnicrawl-config` 四个 crate 是否有未使用 import 或类型不匹配。

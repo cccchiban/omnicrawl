@@ -10,7 +10,7 @@ use super::*;
 ///
 /// 表本身在 [`build_registry`] 里声明并当场校验（重名、别名冲突、空命令名）；
 /// 内置表由本文件固定，非法即视为编码错误，因此在首次使用时直接暴露。
-pub(super) fn registry() -> &'static CommandRegistry {
+pub fn registry() -> &'static CommandRegistry {
     static REGISTRY: OnceLock<CommandRegistry> = OnceLock::new();
     REGISTRY
         .get_or_init(|| build_registry().unwrap_or_else(|error| panic!("内置命令表非法：{error}")))
@@ -19,7 +19,7 @@ pub(super) fn registry() -> &'static CommandRegistry {
 /// 构造内置命令表；注册期失败（重名/别名冲突/空命令名）即返回错误。
 ///
 /// 与 Python 的 `@REGISTRY.command(...)` 装饰器一一对应，声明顺序即注册顺序。
-pub(super) fn build_registry() -> Result<CommandRegistry, CommandParseError> {
+pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     let mut registry = CommandRegistry::new();
 
     registry.register(

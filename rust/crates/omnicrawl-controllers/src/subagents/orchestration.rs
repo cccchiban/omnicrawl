@@ -8,16 +8,10 @@ use serde_json::{json, Map, Value};
 
 use crate::error::AgentError;
 
-/// 后台终态通知一次注入的最大条数。
-pub const NOTIFICATION_PREVIEW_ITEMS: usize = 16;
-/// 后台终态通知注入文本的最大字符数。
-pub const NOTIFICATION_PREVIEW_CHARS: usize = 12000;
-/// 子任务结果里的 worktree 产物标记。
-pub const WORKTREE_MARKER: &str = "[worktree]";
-/// 单条 worktree 产物的字符上限。
-pub const WORKTREE_ARTIFACT_CHARS: usize = 8000;
-/// 摘要超限时的截断后缀。
-pub const SUMMARY_TRUNCATED_SUFFIX: &str = "\n... 子任务结果已截断。";
+/// 公开结果里 `summary` 的字符上限（脱敏后再截断）。
+pub const RESULT_SUMMARY_CHARS: usize = 6000;
+/// 公开结果里 `artifacts` 的条数上限。
+pub const RESULT_ARTIFACTS_LIMIT: usize = 16;
 /// 候选错误里找不到可展示细节时的通用失败文案。
 pub const SUBAGENT_FAILURE_FALLBACK: &str = "子任务执行失败。";
 /// `subagent` 工具在协调器缺席时的结果文案。
@@ -26,13 +20,6 @@ pub const SUBAGENT_DISABLED: &str = "SubAgent 功能未启用。";
 pub const SUBAGENT_UNPARSABLE: &str = "子任务返回结果无法解析。";
 /// 批次返回但没有任何子任务结果时的错误文案。
 pub const SUBAGENT_EMPTY_RESULT: &str = "子任务未返回结果。";
-
-/// 子任务结果的公开投影（`SubAgentPublicResult` 的数据面）。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PublicResult {
-    pub summary: String,
-    pub artifacts: Vec<Value>,
-}
 
 /// `_describe_subagent_run_failure`：把失败投影为有信息量且已脱敏的文案。
 pub fn describe_run_failure(payload: &Value, task: Option<&Value>) -> String {

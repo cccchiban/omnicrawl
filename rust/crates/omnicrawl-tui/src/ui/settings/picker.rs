@@ -10,17 +10,6 @@
 
 use super::ChannelRow;
 
-/// 选择器写回表单的模型引用（对映 Python `_selection_token`）。
-pub fn token_for(profile_id: &str, model_id: &str) -> String {
-    let model_id = model_id.trim();
-    let profile_id = profile_id.trim();
-    if profile_id.is_empty() {
-        model_id.to_string()
-    } else {
-        format!("{profile_id}/{model_id}")
-    }
-}
-
 /// 从 `profile/model_id` 形式的引用里取出模型段；纯渠道 key 没有模型段。
 pub fn model_part(token: &str) -> Option<&str> {
     match token.trim().split_once('/') {
@@ -77,32 +66,6 @@ pub fn split_token(token: &str, channels: &[ChannelRow]) -> (String, String) {
             .unwrap_or_default(),
         model_part(token).unwrap_or(token).to_string(),
     )
-}
-
-/// 过滤：搜索串命中渠道的任一可见字段（对映 Python 的 haystack 拼法）。
-pub fn channel_matches(channel: &ChannelRow, query: &str) -> bool {
-    if query.trim().is_empty() {
-        return true;
-    }
-    let haystack = format!(
-        "{} {} {} {} {} {}",
-        channel.key,
-        channel.name,
-        channel.profile_id,
-        channel.provider,
-        channel.protocol,
-        channel.model_id
-    )
-    .to_lowercase();
-    haystack.contains(query.trim())
-}
-
-/// 过滤：搜索串命中模型 id。
-pub fn model_matches(model: &str, query: &str) -> bool {
-    if query.trim().is_empty() {
-        return true;
-    }
-    model.to_lowercase().contains(query.trim())
 }
 
 /// 渲染窗口：返回 `(起点, 终点)`，选中项尽量居中（对映 Python 的 window 计算）。
@@ -262,25 +225,9 @@ mod tests {
     }
 
     #[test]
-    fn token_and_matching_helpers_follow_python() {
-        assert_eq!(
-            token_for("channel-2", "Qwen/Qwen3.5"),
-            "channel-2/Qwen/Qwen3.5"
-        );
-        assert_eq!(token_for("", "bare-model"), "bare-model");
+    fn model_part_extracts_the_model_segment() {
         assert_eq!(model_part("channel-2/Qwen/Qwen3.5"), Some("Qwen/Qwen3.5"));
         assert_eq!(model_part("channel-2"), None, "纯渠道 key 没有模型段");
-
-        let row = channel("channel-2", "硅基流动", "channel-2", "");
-        assert!(channel_matches(&row, ""), "空搜索串命中所有渠道");
-        assert!(channel_matches(&row, "硅基"), "中文名参与匹配");
-        assert!(channel_matches(&row, "channel-2"), "key 参与匹配");
-        assert!(
-            !channel_matches(&row, "anthropic"),
-            "没命中的关键字要过滤掉"
-        );
-        assert!(model_matches("Qwen/Qwen3.5-35B-A3B", "qwen"), "大小写无关");
-        assert!(!model_matches("Qwen/Qwen3.5-35B-A3B", "llama"));
     }
 
     #[test]

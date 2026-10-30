@@ -42,7 +42,7 @@ pub struct UpdateStatus {
 }
 
 impl UpdateStatus {
-    fn new(current: &str, latest: &str) -> Self {
+    pub fn new(current: &str, latest: &str) -> Self {
         Self {
             current: current.to_string(),
             latest: latest.to_string(),

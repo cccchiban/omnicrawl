@@ -2189,6 +2189,7 @@ dependencies = [
  "omnicrawl-protocol",
  "omnicrawl-session",
  "omnicrawl-tts",
+ "omnicrawl-update",
  "omnicrawl-version",
  "omnicrawl-workspace",
  "pulldown-cmark",
@@ -2197,6 +2198,17 @@ dependencies = [
  "regex",
  "serde_json",
  "unicode-width",
+]
+
+[[package]]
+name = "omnicrawl-update"
+version = "0.4.2"
+dependencies = [
+ "chrono",
+ "omnicrawl-version",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

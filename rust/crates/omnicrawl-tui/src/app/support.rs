@@ -397,7 +397,10 @@ pub(super) fn decision_switch_rows(switches: &DecisionSwitches) -> Vec<DecisionS
         .map(|spec| DecisionSwitchRow {
             key: spec.key.to_string(),
             label: spec.label.to_string(),
-            enabled: switches.get(spec.key).copied().unwrap_or(spec.default),
+            enabled: switches
+                .get(spec.key)
+                .copied()
+                .unwrap_or_else(|| decision_switch_default(spec.key)),
         })
         .collect()
 }

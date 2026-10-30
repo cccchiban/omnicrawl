@@ -5,7 +5,7 @@
 
 use super::*;
 
-fn el_to_data_url(
+pub(crate) fn el_to_data_url(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -17,7 +17,7 @@ fn el_to_data_url(
 ///
 /// 同一元素反复取同一类型必须返回同一个对象（Canvas 规范），否则
 /// 「先画再取上下文读像素」的探测序列会读到空画布。
-fn el_get_context(
+pub(crate) fn el_get_context(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -85,7 +85,7 @@ fn el_get_context(
     Ok(created.into())
 }
 
-fn canvas_element_dimension(
+pub(crate) fn canvas_element_dimension(
     this: &JsValue,
     context: &mut Context,
     key: &str,
@@ -104,7 +104,7 @@ fn canvas_element_dimension(
         .unwrap_or(fallback)
 }
 
-fn set_canvas_dimension(this: &JsValue, args: &[JsValue], context: &mut Context, key: &str) {
+pub(crate) fn set_canvas_dimension(this: &JsValue, args: &[JsValue], context: &mut Context, key: &str) {
     let Some(object) = this.as_object() else {
         return;
     };
@@ -125,7 +125,7 @@ fn set_canvas_dimension(this: &JsValue, args: &[JsValue], context: &mut Context,
     }
 }
 
-fn el_canvas_get_width(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_canvas_get_width(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(canvas_element_dimension(
         this,
         context,
@@ -134,12 +134,12 @@ fn el_canvas_get_width(this: &JsValue, _args: &[JsValue], context: &mut Context)
     )))
 }
 
-fn el_canvas_set_width(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_canvas_set_width(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     set_canvas_dimension(this, args, context, "Width");
     Ok(JsValue::undefined())
 }
 
-fn el_canvas_get_height(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_canvas_get_height(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(canvas_element_dimension(
         this,
         context,
@@ -148,7 +148,7 @@ fn el_canvas_get_height(this: &JsValue, _args: &[JsValue], context: &mut Context
     )))
 }
 
-fn el_canvas_set_height(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_canvas_set_height(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     set_canvas_dimension(this, args, context, "Height");
     Ok(JsValue::undefined())
 }

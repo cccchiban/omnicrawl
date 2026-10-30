@@ -10,7 +10,7 @@ use super::*;
 ///
 /// 内置命令直接来自 [`registry`]，不再手写维护；只有运行时发现的 Skill
 /// 需在此按 agent 动态拼接。
-pub(super) fn build_slash_commands(agent: &dyn CommandAgent) -> Vec<String> {
+pub fn build_slash_commands(agent: &dyn CommandAgent) -> Vec<String> {
     let mut commands = registry().display_names(true);
     if let Some(metas) = agent.skill_metas() {
         for meta in metas {
@@ -26,7 +26,7 @@ pub(super) fn build_slash_commands(agent: &dyn CommandAgent) -> Vec<String> {
 /// `parameters` 是命令声明的可选参数 `(参数, 说明)`，供输入框提示参数名。
 /// 内置命令的说明与是否接受参数都由注册表声明派生，只有运行时 Skill 在此拼接，
 /// 避免不同交互入口的命令不一致。
-pub(super) fn build_slash_command_options(agent: &dyn CommandAgent) -> Vec<CommandOption> {
+pub fn build_slash_command_options(agent: &dyn CommandAgent) -> Vec<CommandOption> {
     let mut options = registry().options(false);
     if let Some(metas) = agent.skill_metas() {
         for meta in metas {

@@ -40,26 +40,24 @@ mod sandbox;
 mod scripts;
 
 pub(super) use canvas::{
-    canvas_element_dimension, el_canvas_get_height, el_canvas_get_width, el_canvas_set_height,
-    el_canvas_set_width, el_get_context, el_to_data_url, set_canvas_dimension,
+    el_canvas_get_height, el_canvas_get_width, el_canvas_set_height, el_canvas_set_width,
+    el_get_context, el_to_data_url,
 };
 use document::build_document;
 pub(super) use document_ops::{
-    create_element_node, doc_create_comment, doc_create_element, doc_create_element_ns,
-    doc_create_range, doc_create_text_node, doc_get_body, doc_get_element_by_id,
-    doc_get_elements_by_class_name, doc_get_elements_by_tag_name, doc_get_head, doc_get_selection,
-    doc_has_focus, doc_query_command_state, doc_query_command_supported, doc_query_selector,
-    doc_query_selector_all, doc_write, el_owner_document, noop_returning_undefined,
-    range_get_client_rects,
+    doc_create_comment, doc_create_element, doc_create_element_ns, doc_create_range,
+    doc_create_text_node, doc_get_body, doc_get_element_by_id, doc_get_elements_by_class_name,
+    doc_get_elements_by_tag_name, doc_get_head, doc_get_selection, doc_has_focus,
+    doc_query_command_state, doc_query_command_supported, doc_query_selector, doc_query_selector_all,
+    doc_write, el_owner_document, noop_returning_undefined,
 };
 pub(super) use element_ops::{
-    cl_add, cl_contains, cl_mutate, cl_remove, cl_toggle, class_list_node, el_add_listener,
-    el_class_list, el_get_elements_by_class_name, el_get_elements_by_tag_name, el_insert_adjacent,
-    el_noop, el_remove_listener, el_resolve_promise, el_zero,
+    el_add_listener, el_class_list, el_get_elements_by_class_name, el_get_elements_by_tag_name,
+    el_insert_adjacent, el_noop, el_remove_listener, el_resolve_promise, el_zero,
 };
 use element_proto::build_element_prototype;
 pub(super) use sandbox::run_in_process;
-pub(super) use scripts::{collect_scripts, resolve_script_url, split_origin};
+pub(super) use scripts::collect_scripts;
 
 /// 执行脚本的专用线程栈上限：解释器递归比原生栈帧更深，给足 8 MiB；
 /// 真溢出了也只影响这个线程，由 [`run_inline_scripts`] 兜成「没拿到内容」。

@@ -7,8 +7,6 @@
 //! 删除不可逆，因此按两次才真正发出：第一次按 `D` 进入待确认状态并把删除键名与目标
 //! 会话都记进来，再按一次 `D`（或 `Y`）才产出事件；`Esc` 或移动选择会取消待确认。
 
-use super::*;
-
 /// 删除确认的待确认目标。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDelete {
@@ -18,10 +16,10 @@ pub struct PendingDelete {
 
 #[derive(Debug, Default)]
 pub struct SessionsState {
-    rows: Vec<SessionRow>,
-    selected: usize,
+    pub(crate) rows: Vec<SessionRow>,
+    pub(crate) selected: usize,
     /// 待确认的删除：`None` 表示没有在确认中。
-    confirming: Option<PendingDelete>,
+    pub(crate) confirming: Option<PendingDelete>,
     /// 最近一次操作的结果文案。
     pub status: String,
 }

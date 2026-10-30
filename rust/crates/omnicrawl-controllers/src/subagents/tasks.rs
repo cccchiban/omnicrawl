@@ -20,6 +20,7 @@ use omnicrawl_session::redaction::redact_sensitive_text;
 
 use crate::error::AgentError;
 use crate::shared::{python_str, python_truthy};
+use crate::subagents::orchestration::{RESULT_ARTIFACTS_LIMIT, RESULT_SUMMARY_CHARS};
 
 const TERMINAL: [&str; 3] = ["completed", "failed", "cancelled"];
 const RESULT_FIELDS: [&str; 10] = [
@@ -1010,14 +1011,14 @@ pub fn bound_result(result: Option<&Map<String, Value>>) -> Option<Map<String, V
             "summary".to_string(),
             Value::String(take_chars(
                 &redact_sensitive_text(&python_str(&value)),
-                6000,
+                RESULT_SUMMARY_CHARS,
             )),
         );
     }
     if let Some(value) = bounded.get("artifacts").cloned() {
         if let Some(items) = value.as_array() {
             let mut items = items.clone();
-            items.truncate(16);
+            items.truncate(RESULT_ARTIFACTS_LIMIT);
             bounded.insert("artifacts".to_string(), Value::Array(items));
         }
     }

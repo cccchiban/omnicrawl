@@ -4,9 +4,6 @@
 //! 界面与配置都不再各留一份硬编码表。体积取仓库实际文件总量（权重 + 分词器 + 配置），
 //! 用于下载前的空间提示与进度百分比。
 
-/// OneJev 官方组织下的模型仓库前缀。
-pub const ONEJEV_REPO_PREFIX: &str = "OmniJev/OneJev-";
-
 /// 一个可部署尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OneJevSize {
@@ -70,19 +67,9 @@ pub fn find_size(key: &str) -> Option<OneJevSize> {
         .find(|size| size.key.eq_ignore_ascii_case(key))
 }
 
-/// 清单里的尺寸键（配置校验与界面候选共用）。
-pub fn size_keys() -> Vec<&'static str> {
-    ONEJEV_SIZES.iter().map(|size| size.key).collect()
-}
-
 /// 清单里的界面文案。
 pub fn size_labels() -> Vec<&'static str> {
     ONEJEV_SIZES.iter().map(|size| size.label).collect()
-}
-
-/// 把任意尺寸值折算到清单里的一项：命中即取，否则回落到最小的一档。
-pub fn nearest_size(key: &str) -> OneJevSize {
-    find_size(key).unwrap_or(ONEJEV_SIZES[0])
 }
 
 #[cfg(test)]
@@ -92,7 +79,7 @@ mod tests {
     #[test]
     fn every_size_points_at_an_official_repo() {
         for size in ONEJEV_SIZES {
-            assert_eq!(size.repo_id, format!("{ONEJEV_REPO_PREFIX}{}", size.key));
+            assert_eq!(size.repo_id, format!("OmniJev/OneJev-{}", size.key));
             assert!(size.total_bytes > 0, "{} 缺少体积", size.key);
             assert!(size.label.contains(size.key), "文案里应带上尺寸键");
         }
@@ -101,8 +88,6 @@ mod tests {
     #[test]
     fn lookup_is_lenient_and_never_empty() {
         assert_eq!(find_size(" 0.8b ").map(|size| size.key), Some("0.8B"));
-        assert_eq!(nearest_size("没有这个尺寸").key, ONEJEV_SIZES[0].key);
-        assert_eq!(size_keys().len(), ONEJEV_SIZES.len());
         assert_eq!(size_labels().len(), ONEJEV_SIZES.len());
     }
 }

@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn build_document(context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn build_document(context: &mut Context) -> JsResult<JsValue> {
     let body_id = with_session(|session| {
         session
             .dom

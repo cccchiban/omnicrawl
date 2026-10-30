@@ -7,7 +7,7 @@ use super::*;
 
 /// 元素内的 `getElementsByTagName`：返回数组（真实 DOM 是 HTMLCollection，
 /// 但探针只按索引与 `length` 使用，数组足够且索引可靠）。
-pub(super) fn el_get_elements_by_tag_name(
+pub(crate) fn el_get_elements_by_tag_name(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -30,7 +30,7 @@ pub(super) fn el_get_elements_by_tag_name(
 }
 
 /// 元素内的 `getElementsByClassName`。
-pub(super) fn el_get_elements_by_class_name(
+pub(crate) fn el_get_elements_by_class_name(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -49,7 +49,7 @@ pub(super) fn el_get_elements_by_class_name(
 }
 
 /// 元素上的 `addEventListener`：把监听器存成元素对象的自有属性。
-pub(super) fn el_add_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_add_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let Some(object) = this.as_object() else {
         return Ok(JsValue::undefined());
     };
@@ -66,7 +66,7 @@ pub(super) fn el_add_listener(this: &JsValue, args: &[JsValue], context: &mut Co
     Ok(JsValue::undefined())
 }
 
-pub(super) fn el_remove_listener(
+pub(crate) fn el_remove_listener(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -87,12 +87,12 @@ pub(super) fn el_remove_listener(
 }
 
 /// 元素的布局尺寸占位：`0` 是「无布局引擎」下最诚实的值，同时不会让脚本抛错。
-pub(super) fn el_zero(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_zero(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(0))
 }
 
 /// 立即兑现的 Promise：给「必须返回 thenable」的 API 用。
-pub(super) fn el_resolve_promise(
+pub(crate) fn el_resolve_promise(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -101,12 +101,12 @@ pub(super) fn el_resolve_promise(
 }
 
 /// 元素上的空实现方法（`requestFullscreen` / `click` / `focus`）。
-pub(super) fn el_noop(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_noop(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::undefined())
 }
 
 /// `element.classList`：读写在 `class` 属性上，形状与真实 `DOMTokenList` 一致。
-pub(super) fn el_class_list(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn el_class_list(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let index = node_id(this, context);
     let classes = index
         .and_then(|node| {
@@ -160,7 +160,7 @@ pub(super) fn el_class_list(this: &JsValue, _args: &[JsValue], context: &mut Con
 }
 
 /// 从 `classList` 对象上取出所属元素的节点号。
-pub(super) fn class_list_node(this: &JsValue, context: &mut Context) -> Option<usize> {
+pub(crate) fn class_list_node(this: &JsValue, context: &mut Context) -> Option<usize> {
     let object = this.as_object()?;
     object
         .get(js_string!("__ornNode"), context)
@@ -169,7 +169,7 @@ pub(super) fn class_list_node(this: &JsValue, context: &mut Context) -> Option<u
         .map(|number| number as usize)
 }
 
-pub(super) fn cl_mutate(
+pub(crate) fn cl_mutate(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -205,15 +205,15 @@ pub(super) fn cl_mutate(
     Ok(JsValue::undefined())
 }
 
-pub(super) fn cl_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn cl_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     cl_mutate(this, args, context, true)
 }
 
-pub(super) fn cl_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn cl_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     cl_mutate(this, args, context, false)
 }
 
-pub(super) fn cl_contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn cl_contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let Some(node) = class_list_node(this, context) else {
         return Ok(JsValue::from(false));
     };
@@ -230,7 +230,7 @@ pub(super) fn cl_contains(this: &JsValue, args: &[JsValue], context: &mut Contex
     Ok(JsValue::from(present))
 }
 
-pub(super) fn cl_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn cl_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let present = cl_contains(this, args, context)?;
     let now_present = !present.to_boolean();
     cl_mutate(this, args, context, now_present)?;
@@ -238,7 +238,7 @@ pub(super) fn cl_toggle(this: &JsValue, args: &[JsValue], context: &mut Context)
 }
 
 /// `element.insertAdjacentHTML(position, html)`：只支持最常见的 `beforeend` / `afterbegin`。
-pub(super) fn el_insert_adjacent(
+pub(crate) fn el_insert_adjacent(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,

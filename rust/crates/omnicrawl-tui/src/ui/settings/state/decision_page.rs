@@ -66,7 +66,7 @@ impl DecisionField {
         !matches!(self, Self::Mode | Self::Enabled)
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         Self::ORDER
             .iter()
             .position(|field| *field == self)
@@ -84,20 +84,20 @@ pub struct DecisionDropdown {
 
 /// 决策渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
 #[derive(Debug, Clone)]
-pub(super) struct DecisionForm {
-    row: DecisionRow,
-    field: DecisionField,
-    dropdown: Option<DecisionDropdown>,
+pub(crate) struct DecisionForm {
+    pub(crate) row: DecisionRow,
+    pub(crate) field: DecisionField,
+    pub(crate) dropdown: Option<DecisionDropdown>,
     /// 文本字段的输入缓冲（`None` 表示只在字段之间移动）。
-    input: Option<Composer>,
+    pub(crate) input: Option<Composer>,
     /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
-    index: Option<usize>,
-    is_new: bool,
+    pub(crate) index: Option<usize>,
+    pub(crate) is_new: bool,
 }
 
 impl DecisionForm {
     /// 粘贴：文本字段直接落到输入态（没有输入态就先按当前字段进）。
-    fn paste(&mut self, text: &str) -> bool {
+    pub(crate) fn paste(&mut self, text: &str) -> bool {
         if self.input.is_none() {
             if !self.field.is_text() {
                 return false;
@@ -166,7 +166,7 @@ impl EmbeddingField {
         !matches!(self, Self::Enabled)
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         Self::ORDER
             .iter()
             .position(|field| *field == self)
@@ -176,17 +176,17 @@ impl EmbeddingField {
 
 /// 向量渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
 #[derive(Debug, Clone)]
-pub(super) struct EmbeddingForm {
-    row: EmbeddingRow,
-    field: EmbeddingField,
-    input: Option<Composer>,
+pub(crate) struct EmbeddingForm {
+    pub(crate) row: EmbeddingRow,
+    pub(crate) field: EmbeddingField,
+    pub(crate) input: Option<Composer>,
     /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
-    index: Option<usize>,
-    is_new: bool,
+    pub(crate) index: Option<usize>,
+    pub(crate) is_new: bool,
 }
 
 impl EmbeddingForm {
-    fn paste(&mut self, text: &str) -> bool {
+    pub(crate) fn paste(&mut self, text: &str) -> bool {
         if self.input.is_none() {
             if !self.field.is_text() {
                 return false;
@@ -199,30 +199,30 @@ impl EmbeddingForm {
 
 /// 向量模型页：顶部总开关（向量召回）+ 渠道列表 + 单条渠道表单。
 #[derive(Debug, Clone)]
-pub(super) struct EmbeddingModelsState {
-    rows: Vec<EmbeddingRow>,
-    default_key: String,
+pub(crate) struct EmbeddingModelsState {
+    pub(crate) rows: Vec<EmbeddingRow>,
+    pub(crate) default_key: String,
     /// 顶部总开关：`config.toml` 的 `[memory_embedding] enabled`。
-    enabled: bool,
+    pub(crate) enabled: bool,
     /// 行游标：开关区在前，渠道随后。
-    selected: usize,
-    form: Option<EmbeddingForm>,
+    pub(crate) selected: usize,
+    pub(crate) form: Option<EmbeddingForm>,
     /// 「新建」用的模板（宿主从配置的默认向量渠道生成）。
-    template: EmbeddingRow,
-    status: String,
+    pub(crate) template: EmbeddingRow,
+    pub(crate) status: String,
 }
 
 impl EmbeddingModelsState {
     /// 向量召回总开关占第 0 行。
-    const MEMORY_SWITCH_ROW: usize = 0;
+    pub(crate) const MEMORY_SWITCH_ROW: usize = 0;
     /// 开关行数：渠道从这一行开始。
-    const SWITCH_ROWS: usize = 1;
+    pub(crate) const SWITCH_ROWS: usize = 1;
 
-    fn channel_index(selected: usize) -> Option<usize> {
+    pub(crate) fn channel_index(selected: usize) -> Option<usize> {
         selected.checked_sub(Self::SWITCH_ROWS)
     }
 
-    fn total_rows(&self) -> usize {
+    pub(crate) fn total_rows(&self) -> usize {
         Self::SWITCH_ROWS + self.rows.len()
     }
 }
@@ -338,40 +338,40 @@ pub struct DecisionSwitchRow {
 /// 列表态的行由「决策渠道 + 功能开关 + 自部署分区」拼成：渠道在前、开关随后、
 /// 自部署行在最后；表单态只编辑渠道。
 #[derive(Debug, Clone)]
-pub(super) struct DecisionModelsState {
-    rows: Vec<DecisionRow>,
-    switches: Vec<DecisionSwitchRow>,
+pub(crate) struct DecisionModelsState {
+    pub(crate) rows: Vec<DecisionRow>,
+    pub(crate) switches: Vec<DecisionSwitchRow>,
     /// 自部署分区：尺寸/设备/已下载状态 + 环境与服务状态。
-    local: DecisionLocalState,
-    default_key: String,
-    selected: usize,
-    form: Option<DecisionForm>,
+    pub(crate) local: DecisionLocalState,
+    pub(crate) default_key: String,
+    pub(crate) selected: usize,
+    pub(crate) form: Option<DecisionForm>,
     /// 「新建」用的模板（宿主从配置的默认决策渠道生成）。
-    template: DecisionRow,
-    status: String,
+    pub(crate) template: DecisionRow,
+    pub(crate) status: String,
 }
 
 /// 自部署分区的界面状态。
 #[derive(Debug, Clone, Default)]
-pub(super) struct DecisionLocalState {
-    size: String,
-    device: String,
-    root: String,
-    sizes: Vec<(String, String, bool)>,
-    env_ready: bool,
-    env_status: String,
-    service_status: String,
-    service_running: bool,
+pub(crate) struct DecisionLocalState {
+    pub(crate) size: String,
+    pub(crate) device: String,
+    pub(crate) root: String,
+    pub(crate) sizes: Vec<(String, String, bool)>,
+    pub(crate) env_ready: bool,
+    pub(crate) env_status: String,
+    pub(crate) service_status: String,
+    pub(crate) service_running: bool,
     /// 后台任务进行中（由宿主给出的 `task` 推导）：界面据此守卫重复动作。
-    busy: bool,
+    pub(crate) busy: bool,
     /// 当前任务名（如「下载 0.8B」「准备运行环境」），无任务时为空。
-    task: String,
+    pub(crate) task: String,
     /// 后台任务的进度快照（每帧由宿主刷新）。
-    progress: ProgressSnapshot,
+    pub(crate) progress: ProgressSnapshot,
 }
 
 impl DecisionLocalState {
-    fn new(values: DecisionLocalValues) -> Self {
+    pub(crate) fn new(values: DecisionLocalValues) -> Self {
         let sizes = if values.sizes.is_empty() {
             // 清单由宿主给出；缺失时至少留一行提示，不让分区变成空白。
             Vec::new()
@@ -395,7 +395,7 @@ impl DecisionLocalState {
     }
 
     /// 进度行的文案：阶段说明 + 量化细节；没任务时为空（渲染层不画这行）。
-    fn progress_text(&self) -> String {
+    pub(crate) fn progress_text(&self) -> String {
         if !self.busy {
             return String::new();
         }
@@ -414,7 +414,7 @@ impl DecisionLocalState {
     }
 
     /// 当前尺寸在清单里的下标（找不到时 0）。
-    fn size_index(&self) -> usize {
+    pub(crate) fn size_index(&self) -> usize {
         self.sizes
             .iter()
             .position(|(key, _, _)| key == &self.size)
@@ -422,7 +422,7 @@ impl DecisionLocalState {
     }
 
     /// 当前尺寸的界面文案（清单里取，取不到就给键本身）。
-    fn size_label(&self) -> String {
+    pub(crate) fn size_label(&self) -> String {
         self.sizes
             .get(self.size_index())
             .map(|(_, label, _)| label.clone())
@@ -430,7 +430,7 @@ impl DecisionLocalState {
     }
 
     /// 当前尺寸是否已下载。
-    fn size_downloaded(&self) -> bool {
+    pub(crate) fn size_downloaded(&self) -> bool {
         self.sizes
             .get(self.size_index())
             .map(|(_, _, ready)| *ready)
@@ -438,7 +438,7 @@ impl DecisionLocalState {
     }
 
     /// 「已下载尺寸」行的值：列出全部已下载的档位。
-    fn downloaded_text(&self) -> String {
+    pub(crate) fn downloaded_text(&self) -> String {
         let ready: Vec<&str> = self
             .sizes
             .iter()
@@ -453,7 +453,7 @@ impl DecisionLocalState {
     }
 
     /// 设备行的文案。
-    fn device_text(&self) -> String {
+    pub(crate) fn device_text(&self) -> String {
         match self.device.as_str() {
             "cpu" => "CPU".to_string(),
             "cuda" => "CUDA".to_string(),
@@ -462,7 +462,7 @@ impl DecisionLocalState {
     }
 
     /// 环境行的文案。
-    fn env_text(&self) -> String {
+    pub(crate) fn env_text(&self) -> String {
         if self.env_ready {
             "已就绪".to_string()
         } else if self.env_status.trim().is_empty() {
@@ -473,7 +473,7 @@ impl DecisionLocalState {
     }
 
     /// 按方向键循环尺寸（在清单里滚动）。
-    fn cycle_size(&mut self, direction: isize) {
+    pub(crate) fn cycle_size(&mut self, direction: isize) {
         if self.sizes.is_empty() {
             return;
         }
@@ -483,7 +483,7 @@ impl DecisionLocalState {
     }
 
     /// 按行号循环该行的档位（尺寸 / 设备）。
-    fn cycle(&mut self, row: usize, direction: isize) {
+    pub(crate) fn cycle(&mut self, row: usize, direction: isize) {
         match row {
             DECISION_LOCAL_ROW_SIZE => self.cycle_size(direction),
             DECISION_LOCAL_ROW_DEVICE => self.cycle_device(direction),
@@ -492,7 +492,7 @@ impl DecisionLocalState {
     }
 
     /// 按方向键循环设备档位。
-    fn cycle_device(&mut self, direction: isize) {
+    pub(crate) fn cycle_device(&mut self, direction: isize) {
         let options = DECISION_LOCAL_DEVICE_OPTIONS;
         let count = options.len() as isize;
         let current = options
@@ -507,7 +507,7 @@ impl DecisionLocalState {
     ///
     /// 只有「任务进度」一行带进度条：`progress` 为 `Some` 时画实心条，
     /// 为 `None` 但任务在跑时画沿轨道循环滑动的滑块（如等服务绑端口）。
-    fn rows(&self) -> Vec<DecisionLocalRow> {
+    pub(crate) fn rows(&self) -> Vec<DecisionLocalRow> {
         let row = |index: usize, value: String, action: bool| DecisionLocalRow {
             label: DECISION_LOCAL_ROW_LABELS[index],
             value,

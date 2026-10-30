@@ -4,9 +4,7 @@
 //! 保持同样的纯函数形状，输出 [`StyledText`]，样式串、分隔符与空格位置逐字对齐。
 
 use crate::ui::fullscreen::round_half_even;
-use crate::ui::fullscreen::terminal::theme::{
-    ACCENT_GREEN, BORDER_MUTED, TEXT_MUTED, TEXT_PRIMARY,
-};
+use crate::ui::fullscreen::terminal::theme::{BORDER_MUTED, TEXT_MUTED, TEXT_PRIMARY};
 use crate::ui::fullscreen::text::StyledText;
 
 /// 使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。
@@ -108,20 +106,6 @@ pub fn token_telemetry_text(
     rendered
 }
 
-/// 生成顶部右段状态卡片中的 FIFO 排队数量文本。
-pub fn pending_queue_text(pending_count: i64) -> StyledText {
-    let pending_count = pending_count.max(0);
-    let mut rendered = StyledText::new();
-    rendered.push("QUE ", TEXT_MUTED);
-    rendered.push(&pending_count.to_string(), &format!("{TEXT_PRIMARY} bold"));
-    rendered
-}
-
-/// 保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。
-pub fn gradient_text(text: &str) -> StyledText {
-    StyledText::styled(text, &format!("{ACCENT_GREEN} bold"))
-}
-
 /// 压缩 HUD 字段，避免长模型名把整行挤乱。
 ///
 /// 终端按字符截断；超长时保留首尾可读片段，中间用省略号。
@@ -209,20 +193,6 @@ mod tests {
     fn token_telemetry_text_caps_cache_percent() {
         let rendered = token_telemetry_text(100, 0, 500, 1_000, 0.0);
         assert!(rendered.plain().contains("CH100%"));
-    }
-
-    #[test]
-    fn pending_queue_text_prefixes_count() {
-        let rendered = pending_queue_text(4);
-        assert_eq!(rendered.plain(), "QUE 4");
-        assert_eq!(rendered.spans()[1].style, "default bold");
-    }
-
-    #[test]
-    fn gradient_text_uses_accent_green_bold() {
-        let rendered = gradient_text("OmniCrawl");
-        assert_eq!(rendered.plain(), "OmniCrawl");
-        assert_eq!(rendered.spans()[0].style, "green bold");
     }
 
     #[test]

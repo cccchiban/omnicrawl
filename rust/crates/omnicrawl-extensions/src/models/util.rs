@@ -150,14 +150,14 @@ pub fn sort_handlers(handlers: &[ResolvedHandler]) -> Vec<ResolvedHandler> {
     sorted
 }
 
-fn version_ref_value(reference: Option<&PluginVersionRef>) -> Value {
+pub(crate) fn version_ref_value(reference: Option<&PluginVersionRef>) -> Value {
     match reference {
         Some(item) => Value::Object(item.to_dict()),
         None => Value::Null,
     }
 }
 
-fn option_value(value: &Option<String>) -> Value {
+pub(crate) fn option_value(value: &Option<String>) -> Value {
     match value {
         Some(text) => Value::from(text.clone()),
         None => Value::Null,
@@ -251,7 +251,7 @@ pub(crate) fn string_list_alias(
 }
 
 /// Python 的真值测试：空容器、0、空串、null、false 都是假。
-fn is_falsy(value: &Value) -> bool {
+pub(crate) fn is_falsy(value: &Value) -> bool {
     match value {
         Value::Null => true,
         Value::Bool(flag) => !*flag,
@@ -263,7 +263,7 @@ fn is_falsy(value: &Value) -> bool {
 }
 
 /// `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`
-fn is_valid_handler_id(text: &str) -> bool {
+pub(crate) fn is_valid_handler_id(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() || chars.len() > 64 {
         return false;
@@ -277,7 +277,7 @@ fn is_valid_handler_id(text: &str) -> bool {
 }
 
 /// `^plugin\.[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62})+$`
-fn is_valid_custom_event(text: &str) -> bool {
+pub(crate) fn is_valid_custom_event(text: &str) -> bool {
     let parts: Vec<&str> = text.split('.').collect();
     if parts.len() < 3 || parts[0] != "plugin" {
         return false;

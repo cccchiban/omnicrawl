@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn run_in_process(
+pub(crate) fn run_in_process(
     html: &str,
     profile: &Profile,
     loader: Option<&(dyn ScriptSource + '_)>,

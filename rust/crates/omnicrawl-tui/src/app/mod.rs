@@ -98,12 +98,12 @@ use omnicrawl_controllers::settings::{
 };
 // `context.prune` 的送审形状在控制层：宿主只负责把它换算成裁决输入并回调用 ID。
 use omnicrawl_config::features::decision_model::{
-    load_decision_model_configuration, load_decision_switches, load_local_deployment,
-    save_decision_model_configuration, save_decision_switch, save_local_deployment,
-    DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches, LocalDeploymentConfig,
-    SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES, DECISION_SWITCH_KB_SEARCH,
-    DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH, DECISION_SWITCH_WEB_SEARCH,
-    DEFAULT_DECISION_RETRY_COUNT, DEFAULT_LOCAL_DECISION_BASE_URL,
+    decision_switch_default, load_decision_model_configuration, load_decision_switches,
+    load_local_deployment, save_decision_model_configuration, save_decision_switch,
+    save_local_deployment, DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches,
+    LocalDeploymentConfig, SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
+    DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
+    DECISION_SWITCH_WEB_SEARCH, DEFAULT_DECISION_RETRY_COUNT, DEFAULT_LOCAL_DECISION_BASE_URL,
     DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
 };
 use omnicrawl_config::features::embedding::{

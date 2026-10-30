@@ -525,7 +525,7 @@ pub fn handle_settings_command(ctx: &CommandContext<'_>) -> CommandResult {
 ///
 /// Python 的 `Path.__str__` 在 Windows 上输出 `\`，因此同一段路径在两侧的文案不同；
 /// 界面文案要与 Python 逐字一致就得跟这条规则走（不是简单的 `display()`）。
-fn path_text(path: &Path) -> String {
+pub(crate) fn path_text(path: &Path) -> String {
     let text = path.display().to_string();
     if cfg!(windows) {
         text.replace('/', "\\")

@@ -5,21 +5,21 @@
 
 use super::*;
 
-pub(super) fn doc_get_body(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn doc_get_body(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(this
         .as_object()
         .and_then(|object| object.get(js_string!("__ornBody"), context).ok())
         .unwrap_or(JsValue::null()))
 }
 
-pub(super) fn doc_get_head(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn doc_get_head(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(this
         .as_object()
         .and_then(|object| object.get(js_string!("__ornHead"), context).ok())
         .unwrap_or(JsValue::null()))
 }
 
-pub(super) fn doc_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn doc_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let html = args_string(args, 0, context);
     with_session(|session| {
         session.touched = true;
@@ -33,7 +33,7 @@ pub(super) fn doc_write(_this: &JsValue, args: &[JsValue], context: &mut Context
     Ok(JsValue::undefined())
 }
 
-pub(super) fn doc_query_selector(
+pub(crate) fn doc_query_selector(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -47,7 +47,7 @@ pub(super) fn doc_query_selector(
     })
 }
 
-pub(super) fn doc_query_selector_all(
+pub(crate) fn doc_query_selector_all(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -63,7 +63,7 @@ pub(super) fn doc_query_selector_all(
     Ok(array.into())
 }
 
-pub(super) fn doc_get_element_by_id(
+pub(crate) fn doc_get_element_by_id(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -82,7 +82,7 @@ pub(super) fn doc_get_element_by_id(
     })
 }
 
-pub(super) fn doc_get_elements_by_tag_name(
+pub(crate) fn doc_get_elements_by_tag_name(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -107,7 +107,7 @@ pub(super) fn doc_get_elements_by_tag_name(
     Ok(array.into())
 }
 
-pub(super) fn doc_query_command_supported(
+pub(crate) fn doc_query_command_supported(
     _this: &JsValue,
     _args: &[JsValue],
     _context: &mut Context,
@@ -116,7 +116,7 @@ pub(super) fn doc_query_command_supported(
     Ok(JsValue::from(false))
 }
 
-pub(super) fn doc_query_command_state(
+pub(crate) fn doc_query_command_state(
     _this: &JsValue,
     _args: &[JsValue],
     _context: &mut Context,
@@ -124,11 +124,11 @@ pub(super) fn doc_query_command_state(
     Ok(JsValue::from(false))
 }
 
-pub(super) fn doc_has_focus(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn doc_has_focus(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(true))
 }
 
-pub(super) fn noop_returning_undefined(
+pub(crate) fn noop_returning_undefined(
     _this: &JsValue,
     _args: &[JsValue],
     _context: &mut Context,
@@ -137,7 +137,7 @@ pub(super) fn noop_returning_undefined(
 }
 
 /// `document.createRange()`：返回带常用成员的选区对象。
-pub(super) fn doc_create_range(
+pub(crate) fn doc_create_range(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -183,7 +183,7 @@ pub(super) fn doc_create_range(
         .into())
 }
 
-pub(super) fn range_get_client_rects(
+pub(crate) fn range_get_client_rects(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -191,7 +191,7 @@ pub(super) fn range_get_client_rects(
     Ok(JsArray::new(context)?.into())
 }
 
-pub(super) fn doc_get_selection(
+pub(crate) fn doc_get_selection(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -210,7 +210,7 @@ pub(super) fn doc_get_selection(
         )
 }
 
-pub(super) fn doc_create_comment(
+pub(crate) fn doc_create_comment(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -218,7 +218,7 @@ pub(super) fn doc_create_comment(
     doc_create_text_node(_this, _args, context)
 }
 
-pub(super) fn doc_get_elements_by_class_name(
+pub(crate) fn doc_get_elements_by_class_name(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,
@@ -226,7 +226,7 @@ pub(super) fn doc_get_elements_by_class_name(
     Ok(JsArray::new(context)?.into())
 }
 
-pub(super) fn doc_create_element(
+pub(crate) fn doc_create_element(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -236,7 +236,7 @@ pub(super) fn doc_create_element(
 
 /// `document.createElementNS(ns, tag)`：React 用全小写名 + `xlink:href` 处理 SVG，
 /// 沙箱不分命名空间，按普通元素建即可。
-pub(super) fn doc_create_element_ns(
+pub(crate) fn doc_create_element_ns(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -253,7 +253,7 @@ pub(super) fn doc_create_element_ns(
     })
 }
 
-pub(super) fn create_element_node(args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn create_element_node(args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let tag = args_string(args, 0, context);
     let created = with_session(|session| {
         session.touched = true;
@@ -270,7 +270,7 @@ pub(super) fn create_element_node(args: &[JsValue], context: &mut Context) -> Js
     })
 }
 
-pub(super) fn doc_create_text_node(
+pub(crate) fn doc_create_text_node(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -294,7 +294,7 @@ pub(super) fn doc_create_text_node(
 ///
 /// 元素实例本身没有指向 document 的句柄，全局 document 是唯一正确的答案
 /// （沙箱只有一份文档），也避免了把 `undefined` 交给 React 的事件系统。
-pub(super) fn el_owner_document(
+pub(crate) fn el_owner_document(
     _this: &JsValue,
     _args: &[JsValue],
     context: &mut Context,

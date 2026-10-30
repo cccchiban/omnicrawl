@@ -52,6 +52,13 @@ pub use util::{
     mode_rank, new_event_id, normalize_plugin_namespace, scope_rank, sort_handlers, stable_hash,
     utc_now_iso,
 };
+// 兄弟子模块靠 `use super::*` 取这些内部辅助，因此必须在父模块重导出为可见。
+pub(crate) use constants::POLICY_VALUES;
+pub(crate) use util::{
+    alias_text, bool_alias, bool_of, decode_utf8_sig, int_alias, int_of, is_falsy,
+    is_valid_custom_event, is_valid_handler_id, option_value, string_list_alias, text_of,
+    version_ref_value,
+};
 pub use validation::{
     path_matches_allowlist, validate_payload_against_schema,
 };

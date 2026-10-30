@@ -52,6 +52,8 @@ pub use render::{
     format_sessions_list, format_skills_list, format_skills_list_brief, format_subagent_task,
     format_subagent_tasks_list, format_tool_confirmation, render_subagent_task,
 };
+// 子模块共用的小工具：各文件靠 `use super::*` 取用，因此要在父模块重导出。
+pub(crate) use render::{python_falsy, text_of, text_or, title_or_unnamed};
 pub use review::{
     build_review_task_prompt, check_review_preconditions, extract_review_json,
     format_priority_tag, format_review_report, handle_review_command, python_general_float,
@@ -59,8 +61,7 @@ pub use review::{
 };
 pub use skill_suggestions::{build_slash_command_options, build_slash_commands};
 pub use workspace_commands::{
-    handle_workspace_command, persist_workspace_root, workspace_switch_success_message,
-    WORKSPACE_SWITCH_PENDING_MESSAGE,
+    handle_workspace_command,
 };
 
 // 处理器保持对外可见：它们原先是 `slash.rs` 的 `pub fn`，宿主虽然只经
@@ -77,9 +78,12 @@ pub use agent_commands::{
     handle_advisor_command, handle_mode_command, handle_speaking_style_command,
     handle_skills_command, handle_memory_clean_command, handle_mcp_command, handle_plugins_command,
     handle_new_command, handle_quit_command, handle_settings_command,
+    persist_workspace_root, workspace_switch_success_message, WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
+pub(crate) use agent_commands::path_text;
 
 
+#[cfg(test)]
 mod tests {
     // 测试里逐字段填充假 Agent 比一次性结构体字面量更贴近用例语义，保留这种写法。
     #![allow(clippy::field_reassign_with_default)]
@@ -87,6 +91,7 @@ mod tests {
     use crate::agent::testing::FakeAgent;
     use crate::agent::GitOutput;
     use crate::framework::Channel;
+    use crate::slash::render::truncate_for_display;
     use chrono::{TimeZone, Utc};
     use omnicrawl_extensions::skill::SkillMeta;
     use omnicrawl_session::index::SessionIndexEntry;
@@ -553,7 +558,7 @@ mod tests {
 
     #[test]
     fn mode_commands_activate_their_template() {
-        let mut agent = FakeAgent::default();
+        let agent = FakeAgent::default();
         let plan = registry().dispatch("/plan", &agent, Channel::Tui, None);
         assert!(plan
             .message

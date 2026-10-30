@@ -37,7 +37,7 @@ fn tool_human_description(tool_name: &str) -> Option<&'static str> {
 }
 
 /// 截断过长文本，保留可读的关键部分（按字符数，与 Python 的 `len()` 同口径）。
-fn truncate_for_display(text: &str, max_len: usize) -> String {
+pub(crate) fn truncate_for_display(text: &str, max_len: usize) -> String {
     let count = text.chars().count();
     if count <= max_len {
         return text.to_string();
@@ -57,7 +57,7 @@ fn python_str(value: &Value) -> String {
 }
 
 /// Python 的真值判定（`or` 的短路口径）。
-fn python_falsy(value: &Value) -> bool {
+pub(crate) fn python_falsy(value: &Value) -> bool {
     match value {
         Value::Null => true,
         Value::Bool(flag) => !flag,
@@ -69,7 +69,7 @@ fn python_falsy(value: &Value) -> bool {
 }
 
 /// Python `str(value or fallback)`。
-fn text_or(value: Option<&Value>, fallback: &str) -> String {
+pub(crate) fn text_or(value: Option<&Value>, fallback: &str) -> String {
     match value {
         None => fallback.to_string(),
         Some(Value::String(text)) if text.is_empty() => fallback.to_string(),
@@ -85,7 +85,7 @@ fn text_or(value: Option<&Value>, fallback: &str) -> String {
 }
 
 /// Python `str(value or "")`。
-fn text_of(value: Option<&Value>) -> String {
+pub(crate) fn text_of(value: Option<&Value>) -> String {
     text_or(value, "")
 }
 
@@ -117,7 +117,7 @@ fn flag_argument(arguments: &Map<String, Value>, key: &str) -> bool {
 /// 对写入/修改/执行类工具，提取关键内容供用户审查。
 ///
 /// 只读类工具（读取、搜索、列出）不展示参数，保持界面简洁。
-fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Value>) -> String {
+pub fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Value>) -> String {
     if matches!(tool_name, "bash" | "powershell") {
         let command = string_field(arguments, "command");
         if !command.trim().is_empty() {
@@ -362,7 +362,7 @@ fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Value>)
 /// 把工具调用格式化为行内 UI 的确认提示。
 ///
 /// 只读工具仅显示描述，写入/执行工具额外展示关键内容供审查。
-pub(super) fn format_tool_confirmation(tool_name: &str, arguments: &Map<String, Value>) -> String {
+pub fn format_tool_confirmation(tool_name: &str, arguments: &Map<String, Value>) -> String {
     let public_arguments = public_tool_arguments(tool_name, arguments);
     let public_arguments = public_arguments.as_object().cloned().unwrap_or_default();
     let description = match tool_human_description(tool_name) {
@@ -389,12 +389,12 @@ pub(super) fn format_tool_confirmation(tool_name: &str, arguments: &Map<String, 
 // ── Skill / 记忆 / MCP / 插件展示 ─────────────────────────────
 
 /// 格式化 Skill 列表为可展示文本。
-pub(super) fn format_skills_list(agent: &dyn CommandAgent) -> String {
+pub fn format_skills_list(agent: &dyn CommandAgent) -> String {
     format_skills_list_with(agent, true)
 }
 
 /// 只列 Skill 名称，不带 description：给单条消息有字数上限的入口（QQ 机器人）用。
-pub(super) fn format_skills_list_brief(agent: &dyn CommandAgent) -> String {
+pub fn format_skills_list_brief(agent: &dyn CommandAgent) -> String {
     format_skills_list_with(agent, false)
 }
 
@@ -435,7 +435,7 @@ fn format_skills_list_with(agent: &dyn CommandAgent, with_description: bool) -> 
 }
 
 /// 执行过期记忆清理，并返回适合终端展示的结果。
-pub(super) fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
+pub fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
     let deleted_paths = match agent.clean_memory() {
         Ok(paths) => paths,
         Err(error) => return format!("记忆清理失败：{error}"),
@@ -455,12 +455,12 @@ pub(super) fn format_memory_clean_result(agent: &dyn CommandAgent) -> String {
 }
 
 /// 格式化 MCP 状态为可展示文本。
-pub(super) fn format_mcp_status(agent: &dyn CommandAgent) -> String {
+pub fn format_mcp_status(agent: &dyn CommandAgent) -> String {
     agent.mcp_status()
 }
 
 /// 格式化插件子系统只读状态。
-pub(super) fn format_plugins_status(agent: &dyn CommandAgent) -> String {
+pub fn format_plugins_status(agent: &dyn CommandAgent) -> String {
     agent
         .plugins_status()
         .unwrap_or_else(|| "插件状态接口不可用。".to_string())
@@ -485,7 +485,7 @@ fn format_local_millis(value: i64) -> String {
 }
 
 /// 格式化当前工作区最近会话列表。
-pub(super) fn format_sessions_list(agent: &dyn CommandAgent) -> String {
+pub fn format_sessions_list(agent: &dyn CommandAgent) -> String {
     let sessions = match agent.list_sessions(10) {
         Ok(sessions) => sessions,
         Err(error) => return format!("会话列表读取失败：{error}"),
@@ -516,7 +516,7 @@ pub(super) fn format_sessions_list(agent: &dyn CommandAgent) -> String {
 }
 
 /// 格式化当前工作区已归档会话列表。
-pub(super) fn format_archived_sessions_list(agent: &dyn CommandAgent) -> String {
+pub fn format_archived_sessions_list(agent: &dyn CommandAgent) -> String {
     let sessions = match agent.list_archived_sessions(10) {
         Ok(sessions) => sessions,
         Err(error) => return format!("归档会话列表读取失败：{error}"),
@@ -542,7 +542,7 @@ pub(super) fn format_archived_sessions_list(agent: &dyn CommandAgent) -> String 
     lines.join("\n")
 }
 
-fn title_or_unnamed(title: &str) -> String {
+pub(crate) fn title_or_unnamed(title: &str) -> String {
     if title.is_empty() {
         "未命名会话".to_string()
     } else {
@@ -551,7 +551,7 @@ fn title_or_unnamed(title: &str) -> String {
 }
 
 /// 格式化当前项目用户提示历史；只展示，不注入模型上下文。
-pub(super) fn format_prompt_history(agent: &dyn CommandAgent, query: &str) -> String {
+pub fn format_prompt_history(agent: &dyn CommandAgent, query: &str) -> String {
     let entries = match agent.search_prompt_history(query, 20) {
         Ok(entries) => entries,
         Err(error) => return format!("提示历史读取失败：{error}"),
@@ -596,7 +596,7 @@ pub(super) fn format_prompt_history(agent: &dyn CommandAgent, query: &str) -> St
 // ── SubAgent 任务展示 ─────────────────────────────────────────
 
 /// 格式化当前会话可见的后台 SubAgent 任务，不展示原始 prompt 或完整结果。
-pub(super) fn format_subagent_tasks_list(agent: &dyn CommandAgent) -> String {
+pub fn format_subagent_tasks_list(agent: &dyn CommandAgent) -> String {
     let tasks = match agent.list_subagent_tasks() {
         Ok(tasks) => tasks,
         Err(error) => return format!("子任务查询失败：{error}"),
@@ -623,7 +623,7 @@ pub(super) fn format_subagent_tasks_list(agent: &dyn CommandAgent) -> String {
 }
 
 /// 格式化单个安全任务快照，供终端和全屏 TUI 共享使用。
-pub(super) fn format_subagent_task(agent: &dyn CommandAgent, task_id: &str) -> String {
+pub fn format_subagent_task(agent: &dyn CommandAgent, task_id: &str) -> String {
     let task = match agent.get_subagent_task(task_id) {
         Ok(task) => task,
         Err(error) => return format!("子任务查询失败：{error}"),
@@ -635,7 +635,7 @@ pub(super) fn format_subagent_task(agent: &dyn CommandAgent, task_id: &str) -> S
 }
 
 /// 安全任务快照 → 展示文本（纯函数，便于对照与单测）。
-pub(super) fn render_subagent_task(task: &Value) -> String {
+pub fn render_subagent_task(task: &Value) -> String {
     let object = task.as_object();
     let mut lines = vec![
         format!(

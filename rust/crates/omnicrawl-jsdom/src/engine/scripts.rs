@@ -8,7 +8,7 @@ use super::*;
 /// 收集脚本：按文档顺序保留内联与外链，跳过非 JS 数据块与空体。
 ///
 /// `base` 用于把 `src` 解析成绝对地址；解析失败的外链直接丢弃（浏览器同样不会去取）。
-fn collect_scripts(html: &str, base: &str) -> Vec<ScriptRef> {
+pub(crate) fn collect_scripts(html: &str, base: &str) -> Vec<ScriptRef> {
     let Ok(pattern) = regex::Regex::new(r"(?is)<script\b([^>]*)>(.*?)</script\s*>") else {
         return Vec::new();
     };
@@ -63,7 +63,7 @@ fn collect_scripts(html: &str, base: &str) -> Vec<ScriptRef> {
 ///
 /// 外链脚本是唯一会被沙箱「再去取一次」的东西，因此协议白名单在这里就收紧：
 /// `javascript:`、`data:`、`file:` 一律不认，避免把本地文件或脚本协议当成取数目标。
-fn resolve_script_url(base: &str, target: &str) -> Option<String> {
+pub(crate) fn resolve_script_url(base: &str, target: &str) -> Option<String> {
     let target = target.trim();
     if target.is_empty() {
         return None;
@@ -102,7 +102,7 @@ fn resolve_script_url(base: &str, target: &str) -> Option<String> {
 }
 
 /// 拆出 `scheme:` 与 `authority`（`host[:port]`）。
-fn split_origin(url: &str) -> Option<(String, &str)> {
+pub(crate) fn split_origin(url: &str) -> Option<(String, &str)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = format!("{scheme}:");
     let authority = rest.split(['/', '?', '#']).next()?;

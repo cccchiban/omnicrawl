@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn secret_draft(draft: &str) -> String {
+pub(crate) fn secret_draft(draft: &str) -> String {
     let trimmed = draft.trim();
     if trimmed == MASKED_SECRET {
         String::new()
@@ -38,7 +38,7 @@ pub(crate) fn mask_api_key(api_key: &str) -> String {
 }
 
 /// 在候选表里按方向循环取值；当前值不在候选表里时从首项起步。
-pub(super) fn cycle_text(options: &[String], current: &str, direction: isize) -> String {
+pub(crate) fn cycle_text(options: &[String], current: &str, direction: isize) -> String {
     if options.is_empty() {
         return current.to_string();
     }

@@ -14,6 +14,7 @@ use serde_json::{json, Map, Value};
 use omnicrawl_session::redaction::redact_sensitive_text;
 
 use crate::shared::{python_str, python_truthy};
+use crate::subagents::orchestration::{RESULT_ARTIFACTS_LIMIT, RESULT_SUMMARY_CHARS};
 
 /// 会话事件的只读投影；`created_at_seconds` 是事件自身的 `created_at`（datetime → epoch 秒）。
 #[derive(Debug, Clone)]
@@ -231,7 +232,7 @@ fn terminal_result(payload: &Map<String, Value>, status: &str) -> Value {
         .unwrap_or_default();
     let mut summary = String::new();
     if let Some(result) = payload.get("result").and_then(Value::as_object) {
-        summary = safe_text(result.get("summary"), 6000);
+        summary = safe_text(result.get("summary"), RESULT_SUMMARY_CHARS);
         if artifacts.is_empty() {
             if let Some(items) = result.get("artifacts").and_then(Value::as_array) {
                 artifacts = items.clone();
@@ -244,9 +245,9 @@ fn terminal_result(payload: &Map<String, Value>, status: &str) -> Value {
         }
     }
     if summary.is_empty() {
-        summary = safe_text(payload.get("summary"), 6000);
+        summary = safe_text(payload.get("summary"), RESULT_SUMMARY_CHARS);
     }
-    artifacts.truncate(16);
+    artifacts.truncate(RESULT_ARTIFACTS_LIMIT);
     json!({
         "status": status,
         "summary": summary,
