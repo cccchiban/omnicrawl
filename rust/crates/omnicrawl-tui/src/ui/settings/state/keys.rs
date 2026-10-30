@@ -102,6 +102,7 @@ impl SettingsState {
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
+            Pane::Sessions => self.handle_sessions_key(key),
             Pane::Pending => match key {
                 KeyCode::Esc | KeyCode::Left => {
                     self.back_to_list();

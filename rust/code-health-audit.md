@@ -580,3 +580,134 @@ connectors/src/
 ### 9.6 剩余工作
 
 前 6 名还剩 4 个：`cli/src/session.rs`（4,835）、`tui/src/state.rs`（5,966）、`api/src/service.rs`（3,261）、`jsdom/src/browser_env.rs`（3,161）。它们与 `ui/settings/state.rs` 的拆法同构——按「变更理由」切子模块树，`mod.rs` 只留装配——可按原 §2.4 / §2.3 / §2.5 / §2.8 的规划继续。
+
+---
+
+## 十、执行记录（2026-10-30，第二轮：孤儿文件与同 crate 重复）
+
+### 10.1 清理 8 个未参与编译的孤儿文件（-1,976 行）
+
+`omnicrawl-tui/src/ui/settings/state/` 下有 8 个 `*_types.rs` **从未被任何 `mod` 声明引入**——它们是 49c0398 那轮拆分留下的陈旧快照，内容已被后来的功能改动（如联网搜索独立设置页）追平而分叉：
+
+| 文件 | 行数 |
+| --- | --- |
+| `decision_types.rs` | 545 |
+| `tts_types.rs` | 503 |
+| `mcp_types.rs` | 353 |
+| `tools_types.rs` | 167 |
+| `embedding_types.rs` | 134 |
+| `channel_types.rs` | 119 |
+| `model_types.rs` | 82 |
+| `vision_types.rs` | 73 |
+
+判断依据不是「行数超限」，而是三条同时成立：①全仓零引用（含测试）；②逐项比对后 **1,524 行**与 `state.rs` 中的定义逐字重复；③剩下的差异项是**陈旧内容**（`TOOLS_WEB_SEARCH_ROW`、`WEB_SEARCH_SWITCH_ROW` 等符号在 `state.rs` 中已改形或迁走），因此接线它们会引入回归，删除才是唯一正确解。
+
+新增 `orphans.py`（`.omnicrawl/.agent_tmp/scripts/`）做「未声明 `mod` 的 .rs」全仓巡检，当前结果为 0，可作为常驻检查。
+
+### 10.2 消除同一 crate 内可无损合并的重复
+
+按「同一 crate 内、语义完全一致、不新增依赖」三条筛选后收口 6 组：
+
+| 重复项 | 原位置 | 收口到 |
+| --- | --- | --- |
+| `expand_user` ×2 | `tools/image_gen.rs`、`tools/read_image.rs` | `tools/paths.rs`（既有路径助手模块） |
+| `split_authority` + `default_port` ×2 | `tools/referrer.rs`、`tools/fetch_metadata.rs` | `tools/web_transport.rs`（补 IPv6 字面量语义注释） |
+| `origin_of` ×2 | `tools/robots_cache.rs`、`tools/client_hints.rs` | 复用 `client_hints::origin_of`，测试一并迁移 |
+| `Last-Event-ID` 解析 ×2 | `routes/monitors.rs`、`routes/subagents.rs` | `routes/query.rs`（既有取值校验模块） |
+| `text_result` / `text_success` | `host.rs`、`tools/error.rs` | 统一走 `tools::error::text_success` |
+
+刻意**不做**的四组（记录理由，避免下一轮重复讨论）：
+
+- `PythonStyleFormatter` 的 `begin_array_value` / `begin_object_key`：横跨 `omnicrawl-llm`、`omnicrawl-session` 三个文件，抽公共层要新增 crate 依赖。
+- `format_line_stats`：`connectors` 与 `tui` 各一份，TUI 未依赖 `connectors`，为 12 行引入跨 crate 依赖不划算。
+- `features/{embedding,decision_model}.rs` 的 `active_channel` / `normalize_default_key`：两处渠道结构体字段集不同，泛型化要引入 trait，属于过度设计。
+- `decision/src/server.rs` 与 `fetch/src/server.rs`（约 420 行、115 处差异）：差异是服务名、PID/日志文件名、就绪行与设置类型，属于「同构但不同宿主」；合并需先抽常驻服务骨架，应与 §6 Phase 3 的结构性问题一并立项。
+
+### 10.3 验证
+
+按项目约定未运行 `cargo build/check/test`（编译类命令会大量占用磁盘并触发杀毒软件）。全部改动以只读手段复核：
+
+- 每个改动文件的花括号配平差值均为 0；
+- 被调用的共享符号在目标模块均为 `pub`，且无模块循环依赖（`client_hints` 不依赖 `robots_cache`）；
+- 删除私有函数后，原调用点的导入仍被其他代码使用（`ToolResult`、`HeaderMap`、`PathBuf` 均已核对）；
+- 新增行不超过 100 列（无 rustfmt 配置，取默认值）；
+- 行尾按 `core.autocrlf=true` 的检出约定恢复 CRLF；`git diff --stat` 为 105 插入 / 2,158 删除，无整文件重写。
+
+**待用户执行**：`cargo check --workspace --all-targets`，以及 `cargo test -p omnicrawl-host -p omnicrawl-api -p omnicrawl-tui`。
+
+### 10.4 剩余
+
+生产行数 >1000 的文件仍有 **35** 个（本轮清理前 37 个）。本轮只做减法、未继续拆文件；下一个收益最大的目标是 `omnicrawl-tui/src/ui/settings/state.rs`（2,430 生产行）与 `omnicrawl-jsdom/src/engine.rs`（2,273 生产行），拆法沿用 §2.1 / §2.10 的规划。
+
+### 10.5 第二轮继续：两个最大遗留文件的拆分（同日）
+
+§10.1 清掉孤儿文件后，`ui/settings/state.rs` 与 `jsdom/engine.rs` 仍是最大的两个遗留项。本轮按「变更理由」把它们切成子模块树，`mod.rs`/根文件只留导航骨架与重导出。
+
+| 文件 | 拆前（总行 / 生产行） | 拆后根文件 | 新子模块 |
+| --- | --- | --- | --- |
+| `tui/src/ui/settings/state.rs` | 2,636 / 2,430 | **1,135 / 855** | `shared.rs`(40) `pages.rs`(306) `tts_page.rs`(410) `decision_page.rs`(494) |
+| `jsdom/src/engine.rs` | 2,405 / 2,273 | **1,057 / 841** | `canvas.rs`(126) `document.rs`(122) `document_ops.rs`(268) `element_ops.rs`(225) `element_proto.rs`(287) `sandbox.rs`(103) `scripts.rs`(94) |
+
+拆分判据（沿用 §6 原则）：
+
+- **按变更理由切，不按行数切**。`shared.rs` 是跨页复用的取值助手（凭据掩码、选项循环）；`pages.rs` 是工具/联网搜索/MCP 三页的行表与状态；`tts_page.rs` 与 `decision_page.rs` 各自一页；`element_ops.rs` 是「参数解包 → 调 DOM → 包回 JS」那一类，`element_proto.rs` 是方法表登记，`sandbox.rs` 是一次 run 的编排。
+- **可见性只放到需要的那一层**：页内辅助函数用 `pub(crate)`（供 `state/` 子模块与 `app/` 用），只被同目录子模块读的行号常量用 `pub(super)`，其余保持私有。
+
+### 10.6 本轮踩到并修掉的三个问题（记录以免重犯）
+
+1. **`secret_draft*` 不是 TTS 专属**：它被 `web_search.rs` 使用。按「TTS 页整段搬走」的直觉操作会打断 `web_search.rs` 的 `use super::*` 链路，因此先抽到 `shared.rs` 再搬页面。
+2. **`use super::*` 只覆盖 `state` 自身的名字空间**：把项挪到平级子模块后，父模块必须显式 `pub(super) use` 才能让兄弟模块看到（`pub(crate) use` 对子模块无效）。这轮为 TTS 行号、`cycle_text`、`secret_draft`、三个页面状态结构体都补了重导出。
+3. **按花括号计数切函数在 Rust 签名上不可靠**：`fn f(\n a: &str,\n) -> R {` 这类签名的 `(` 与 `{` 混排会让深度提前归零。第一次切 `run_in_process` 只搬走 1 行、把函数体留在原地，随后又误删相邻的 `run_with_scripts` / `run_with_sources` / `panic_message`。修正方式是**从 `git show HEAD:` 取原文重建**，再用两个独立脚本做双向校验：函数名集合比对（无缺失/无新增）+ 函数体归一化后逐字比对。
+
+### 10.7 验证方式升级
+
+除 §10.3 的只读复核外，本轮增加一项**不触发编译**的语法校验：`rustup run <toolchain> rustfmt --edition 2021 --emit stdout <crate>/src/lib.rs`。它只做解析（不产出目标文件、不跑 `rustc`），能发现括号/分隔符类破坏，四个改动 crate 当前均为 0 语法错误。
+
+完整性校验脚本（建议保留）：
+
+- `函数名集合比对`：HEAD 版与新文件集合相等 → 没有误删也没有凭空新增。
+- `函数体归一化比对`：去空白/去可见性前缀后逐字相同 → 搬移没有改语义。
+
+### 10.8 验证
+
+- `omnicrawl-tui` / `omnicrawl-jsdom` / `omnicrawl-host` / `omnicrawl-api`：`rustfmt` 解析 0 错误。
+- 两个拆分目标的函数名集合与函数体内容与 HEAD 完全一致（见 §10.7）。
+- 生产行数 >1000 的文件：**37 → 34**；`ui/settings/state.rs` 与 `jsdom/engine.rs` 均已落到千行以下。
+
+**仍待用户执行**：`cargo check --workspace --all-targets`，以及 `cargo test -p omnicrawl-tui -p omnicrawl-jsdom -p omnicrawl-host -p omnicrawl-api`。
+
+### 10.9 下一步建议
+
+`settings/state/tests.rs`（2,221 生产行字面的测试文件）是当前榜首，但它整份都是内联测试——按 §5.6 的口径应当外移到 `tests/`，不与生产代码共用行数红线。其后按收益排序：`commands/src/slash.rs`（1,885）、`extensions/src/models.rs`（1,877）、`workspace/src/agent_isolation.rs`（1,756）、`tui/src/ui/settings/render.rs`（1,741）。
+
+### 10.10 第三轮：`slash.rs` 与 `models.rs` 拆成模块树（同日）
+
+| 文件 | 拆前（总 / 生产） | 拆后根文件 | 新子模块（生产行） |
+| --- | --- | --- | --- |
+| `commands/src/slash.rs` | 2,768 / 2,059 | **801 / 717** | `agent_commands`(462) `render`(598) `review`(261) `registry`(203) `session_commands`(127) `workspace_commands`(22) `skill_suggestions`(19) |
+| `extensions/src/models.rs` | 1,984 / 1,877 | **46**（只剩 `mod` + 重导出） | `manifest`(419) `parsing`(388) `util`(352) `patch`(180) `validation`(136) `constants`(126) `hooks`(100) `hook_result`(99) |
+
+两个文件的对外路径都保持不变，这是本轮最需要守住的一点：
+
+- `slash.rs` 是 `pub mod slash`，改成 `slash/` 目录后由 `slash/mod.rs`（即 `slash.rs` 本身）重新导出。外部只经 `slash::` 取 8 个符号（`registry`、`build_slash_command_options`、`build_review_task_prompt`、`check_review_preconditions`、`format_review_report`、`workspace_switch_success_message`、`REVIEW_TASK_DESCRIPTION`、`WORKSPACE_SWITCH_PENDING_MESSAGE`），但 29 个 `handle_*` 原本也是 `pub fn`，**已全部保留 `pub` 并重导出**——它们虽然只经 `registry().dispatch(..)` 调用，路径变化仍是破坏性改动。
+- `models.rs` 被 `crate::models::X`、`models::*`、`omnicrawl_extensions::models::*` 三种写法引用（含 8 处外部 crate 引用与 `tests/extensions_parity.rs` 的整表对照测试），全部公开项重新导出后这三种写法都无需改动。
+
+### 10.11 本轮修掉的两个系统性切分缺陷
+
+这两类问题是**机械切分必然产生**的，已固化成检查项：
+
+1. **切分点会留下下一项的文档注释与属性**。按「下一个顶层项的起始行」切片时，`/// ...` 与 `#[derive(..)]` 属于下一项却停在上一个文件的尾部，表现为 `error: expected item after doc comment` / `expected item after attributes`。本轮 `session_commands.rs`、`constants.rs`、`hooks.rs` 等 7 个文件都命中。修法是**从尾部剥离**连续的 `///`、`#[`、空行，再从 `git show HEAD:` 取该首项的原始前置块补回新文件开头——两边都不能凭记忆写。
+2. **`pub(super)` 降级会改变对外 API**。`slash.rs` 里的处理器原本是 `pub fn`，机械替换成 `pub(super) fn` 后「外部零引用」的静态扫描会误判为安全。判定标准必须是「原可见性是否 `pub`」，而不是「当前有没有人调」。
+
+### 10.12 验证
+
+- 七个改动 crate（extensions / commands / tui / jsdom / host / api / entry）：`rustfmt` 解析 0 错误。
+- `slash.rs`：符号集合无缺失无新增、29 个原 `pub fn` 全部重导出、47 个函数体去空白后逐字一致。
+- `models.rs`：47 个函数体逐字一致，公开项全部重导出。
+- 生产行 >1000 的文件：**37 → 32**（本轮再降 2 个）。
+
+**仍待用户执行**：`cargo check --workspace --all-targets`，以及 `cargo test -p omnicrawl-commands -p omnicrawl-extensions -p omnicrawl-entry`。
+
+### 10.13 下一步
+
+榜首 `settings/state/tests.rs`（2,221）整份是内联测试，按 §5.6 口径应外移到 `tests/`，不占生产红线；其后 `tui/src/ui/conversation.rs`（1,795，但总行 4,051 里 3,200 行是测试，实际生产仅 471）、`workspace/src/agent_isolation.rs`（1,756）、`tui/src/ui/settings/render.rs`（1,741）、`extensions/src/manager.rs`（1,715）。

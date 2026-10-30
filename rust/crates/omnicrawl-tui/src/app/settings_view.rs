@@ -28,6 +28,8 @@ impl App {
                 let mut settings = SettingsState::new(values);
                 settings.select_key(key);
                 self.settings = Some(settings);
+                // 直接落到会话管理页时同样要读一次列表（否则是空列表 + 空状态行）。
+                self.load_sessions_if_needed();
             }
             Err(message) => self.state.notice(format!("设置面板打不开：{message}")),
         }
@@ -256,6 +258,22 @@ impl App {
             .as_mut()
             .and_then(|settings| settings.handle_key(key.code));
         self.dispatch_settings_event(event);
+        // 右侧可能刚切到「会话管理」页：两条入口（按键与鼠标）都汇到这里，统一按需载入列表。
+        self.load_sessions_if_needed();
+    }
+
+    /// 右侧挂上「会话管理」页时按需加载列表。
+    ///
+    /// 只在刚进入该页时读一次：每次方向键都读会让内核往返淹没按键反馈。
+    /// `Enter` 进页与鼠标点页都经过这里，因此以「当前 pane 是会话页且列表还没载入」判定。
+    pub(super) fn load_sessions_if_needed(&mut self) {
+        let Some(settings) = self.settings.as_ref() else {
+            return;
+        };
+        if !settings.is_sessions_pane() || !settings.session_rows().is_empty() {
+            return;
+        }
+        self.reload_session_rows();
     }
 
     /// 面板事件 → 宿主动作：关闭，或执行一次设置变更并回填结果。
@@ -325,6 +343,54 @@ impl App {
                 api_key,
                 user_agent,
             ),
+            Some(SettingsEvent::DeleteSession { session_id }) => {
+                self.delete_session_from_settings(&session_id)
+            }
+            Some(SettingsEvent::RefreshSessions) => self.reload_session_rows(),
+        }
+    }
+
+    /// 设置面板「会话管理」页：从内核读会话列表并回填。
+    ///
+    /// 列表读取失败只落到该页的状态行，不弹全局提示——面板还开着，状态行就在眼前。
+    pub(super) fn reload_session_rows(&mut self) {
+        // 先取列表与当前 id 再借面板：`command_session_list` 要可变借用 `self`，
+        // 不能与 `settings` 的借用重叠。
+        let loaded = self.command_session_list(false, 100);
+        let current = self.session_id.clone();
+        let Some(settings) = self.settings.as_mut() else {
+            return;
+        };
+        match loaded {
+            Ok(entries) => {
+                let rows: Vec<SessionRow> = entries
+                    .into_iter()
+                    .map(|entry| SessionRow {
+                        is_current: entry.session_id == current,
+                        title: entry.title,
+                        message_count: entry.message_count as usize,
+                        session_id: entry.session_id,
+                    })
+                    .collect();
+                settings.set_sessions(rows);
+            }
+            Err(message) => settings.set_sessions_status(&format!("会话列表读取失败：{message}")),
+        }
+    }
+
+    /// 删除一个会话并就地更新列表；失败原因写回该页状态行。
+    pub(super) fn delete_session_from_settings(&mut self, session_id: &str) {
+        match self.command_session_delete(session_id) {
+            Ok(removed) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.remove_session_row(&removed);
+                }
+            }
+            Err(message) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.set_sessions_status(&format!("删除失败：{message}"));
+                }
+            }
         }
     }
 

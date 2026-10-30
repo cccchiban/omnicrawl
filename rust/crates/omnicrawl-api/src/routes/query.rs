@@ -4,9 +4,28 @@
 //! `VALIDATION_ERROR`（422），字段名进 `loc`，客户端能按字段定位。查询参数与请求体
 //! 分开写，因为 Pydantic 对两者的 `loc` 前缀与 `type` 取值不同（`query` / `body`）。
 
+use axum::http::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
+
+/// `Last-Event-ID` → 游标；空头按未提供处理，负数按 0 处理。
+pub fn last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
+    let Some(raw) = headers.get("last-event-id") else {
+        return Ok(None);
+    };
+    let text = raw.to_str().unwrap_or_default().trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<i64>() {
+        Ok(value) => Ok(Some(value.max(0) as u64)),
+        Err(_) => Err(ApiError::bad_request(
+            "INVALID_EVENT_ID",
+            "Last-Event-ID 必须是整数。",
+        )),
+    }
+}
 
 /// 查询参数里的布尔值；取值与 FastAPI 一致（真：true/1/yes/on，假：false/0/no/off）。
 pub fn query_bool(name: &str, raw: Option<&str>, default: bool) -> Result<bool, ApiError> {

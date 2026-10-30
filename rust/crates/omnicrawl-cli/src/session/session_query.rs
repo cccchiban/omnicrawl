@@ -482,6 +482,50 @@ pub(super) fn respond_session_archive(conn: &Rc<RefCell<Conn>>, id: Id) {
     conn.borrow_mut().respond(id, result);
 }
 
+/// `session.delete`：彻底删除指定会话（转录 + artifact + 索引条目）。
+///
+/// 拒绝删除当前会话：转录正被写入，删掉会让运行中的会话失去落点；前端应先切走再删。
+pub(super) fn respond_session_delete(
+    conn: &Rc<RefCell<Conn>>,
+    id: Id,
+    params: &SessionDeleteParams,
+) {
+    let Some((store, current)) = session_handle(&conn.borrow()) else {
+        respond_no_session(conn, id);
+        return;
+    };
+    let target = params.session_id.trim();
+    if target.is_empty() {
+        conn.borrow_mut().respond_error(
+            id,
+            ErrorObject::new(error_code::INVALID_PARAMS, "会话 id 不能为空。".to_string()),
+        );
+        return;
+    }
+    if target == current.as_str() {
+        conn.borrow_mut().respond_error(
+            id,
+            ErrorObject::new(
+                error_code::INVALID_REQUEST,
+                "不能删除当前会话，请先切换到其他会话。".to_string(),
+            ),
+        );
+        return;
+    }
+    match store.delete_session(target) {
+        Ok(()) => conn
+            .borrow_mut()
+            .respond(id, json!({ "session_id": target })),
+        Err(error) => conn.borrow_mut().respond_error(
+            id,
+            ErrorObject::new(
+                error_code::INVALID_REQUEST,
+                format!("删除会话失败：{}", error.message()),
+            ),
+        ),
+    }
+}
+
 /// `session.new`：清空当前对话并开启新会话。
 pub(super) fn respond_session_new(conn: &Rc<RefCell<Conn>>, id: Id) {
     let started = conn

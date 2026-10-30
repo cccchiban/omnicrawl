@@ -12,7 +12,7 @@ use omnicrawl_controllers::types::ToolImageAttachment;
 use serde_json::{json, Map, Value};
 
 use super::error::ToolError;
-use super::paths::{resolve_lenient, WorkspacePaths};
+use super::paths::{expand_user, resolve_lenient, WorkspacePaths};
 
 const SIGNATURES: [(&[u8], &str); 4] = [
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -152,27 +152,6 @@ fn resolve_image_path(raw_path: &str, workspace_root: &Path) -> Result<PathBuf, 
         )));
     }
     Ok(resolved)
-}
-
-/// `Path.expanduser()` 的可用子集：`~` 与 `~/...`、`~\...` 展开为用户主目录。
-fn expand_user(path: &str) -> String {
-    let home = || -> PathBuf {
-        for name in ["USERPROFILE", "HOME"] {
-            if let Ok(value) = std::env::var(name) {
-                if !value.trim().is_empty() {
-                    return PathBuf::from(value);
-                }
-            }
-        }
-        PathBuf::from(".")
-    };
-    if path == "~" {
-        return home().to_string_lossy().to_string();
-    }
-    match path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        Some(rest) => home().join(rest).to_string_lossy().to_string(),
-        None => path.to_string(),
-    }
 }
 
 fn read_bytes(path: &Path, raw_path: &str) -> Result<Vec<u8>, ToolError> {

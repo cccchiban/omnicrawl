@@ -1,4 +1,6 @@
-//! 由 `settings/state.rs` 按页面拆出：行定义与常量，语义未变。
+//! 结构化决策模型页：渠道行、自部署分区与它们的界面状态。
+//!
+//! 从 `state.rs` 拆出。键位与动作在 `decision.rs`，本文件只放「这一页有什么」。
 
 use super::*;
 
@@ -16,7 +18,6 @@ pub struct DecisionRow {
     pub base_url: String,
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时的写回，界面从不渲染明文。
     pub api_key: String,
-    pub api_key_env: String,
     pub model: String,
     /// 请求失败后的重试次数（不含首次请求）。
     pub retry_count: i64,
@@ -30,7 +31,6 @@ pub enum DecisionField {
     Mode,
     BaseUrl,
     ApiKey,
-    ApiKeyEnv,
     ModelId,
     RetryCount,
     Enabled,
@@ -38,12 +38,11 @@ pub enum DecisionField {
 
 impl DecisionField {
     /// 表单里的字段顺序。
-    pub const ORDER: [DecisionField; 8] = [
+    pub const ORDER: [DecisionField; 7] = [
         DecisionField::Name,
         DecisionField::Mode,
         DecisionField::BaseUrl,
         DecisionField::ApiKey,
-        DecisionField::ApiKeyEnv,
         DecisionField::ModelId,
         DecisionField::RetryCount,
         DecisionField::Enabled,
@@ -56,7 +55,6 @@ impl DecisionField {
             Self::Mode => "请求方式",
             Self::BaseUrl => "Base URL",
             Self::ApiKey => "API Key",
-            Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
             Self::RetryCount => "失败重试次数",
             Self::Enabled => "启用",
@@ -86,7 +84,7 @@ pub struct DecisionDropdown {
 
 /// 决策渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
 #[derive(Debug, Clone)]
-struct DecisionForm {
+pub(super) struct DecisionForm {
     row: DecisionRow,
     field: DecisionField,
     dropdown: Option<DecisionDropdown>,
@@ -111,6 +109,124 @@ impl DecisionForm {
     }
 }
 
+/// 一条向量渠道（对应 `embedding_models.toml` 的 `channels.<key>`）。
+///
+/// 比决策渠道少一个「请求方式」：向量接口只有 OpenAI 兼容一种形状，全部走云端。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EmbeddingRow {
+    pub key: String,
+    pub name: String,
+    pub base_url: String,
+    /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时写回，界面从不渲染明文。
+    pub api_key: String,
+    pub model: String,
+    /// 期望维度；0 表示由服务端决定。
+    pub dimensions: i64,
+    pub timeout_seconds: i64,
+    pub enabled: bool,
+}
+
+/// 向量渠道表单的字段顺序（与渲染、`Tab` 顺序一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingField {
+    Name,
+    BaseUrl,
+    ApiKey,
+    ModelId,
+    Dimensions,
+    TimeoutSeconds,
+    Enabled,
+}
+
+impl EmbeddingField {
+    pub const ORDER: [EmbeddingField; 7] = [
+        EmbeddingField::Name,
+        EmbeddingField::BaseUrl,
+        EmbeddingField::ApiKey,
+        EmbeddingField::ModelId,
+        EmbeddingField::Dimensions,
+        EmbeddingField::TimeoutSeconds,
+        EmbeddingField::Enabled,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "渠道名称",
+            Self::BaseUrl => "Base URL",
+            Self::ApiKey => "API Key",
+            Self::ModelId => "模型 ID",
+            Self::Dimensions => "向量维度",
+            Self::TimeoutSeconds => "超时秒数",
+            Self::Enabled => "启用",
+        }
+    }
+
+    /// 文本字段（可进入编辑态）；开关不是。
+    pub fn is_text(self) -> bool {
+        !matches!(self, Self::Enabled)
+    }
+
+    fn index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0)
+    }
+}
+
+/// 向量渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
+#[derive(Debug, Clone)]
+pub(super) struct EmbeddingForm {
+    row: EmbeddingRow,
+    field: EmbeddingField,
+    input: Option<Composer>,
+    /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
+    index: Option<usize>,
+    is_new: bool,
+}
+
+impl EmbeddingForm {
+    fn paste(&mut self, text: &str) -> bool {
+        if self.input.is_none() {
+            if !self.field.is_text() {
+                return false;
+            }
+            self.input = Some(embedding_input_composer(&self.row, self.field));
+        }
+        paste_into(self.input.as_mut(), text)
+    }
+}
+
+/// 向量模型页：顶部总开关（向量召回）+ 渠道列表 + 单条渠道表单。
+#[derive(Debug, Clone)]
+pub(super) struct EmbeddingModelsState {
+    rows: Vec<EmbeddingRow>,
+    default_key: String,
+    /// 顶部总开关：`config.toml` 的 `[memory_embedding] enabled`。
+    enabled: bool,
+    /// 行游标：开关区在前，渠道随后。
+    selected: usize,
+    form: Option<EmbeddingForm>,
+    /// 「新建」用的模板（宿主从配置的默认向量渠道生成）。
+    template: EmbeddingRow,
+    status: String,
+}
+
+impl EmbeddingModelsState {
+    /// 向量召回总开关占第 0 行。
+    const MEMORY_SWITCH_ROW: usize = 0;
+    /// 开关行数：渠道从这一行开始。
+    const SWITCH_ROWS: usize = 1;
+
+    fn channel_index(selected: usize) -> Option<usize> {
+        selected.checked_sub(Self::SWITCH_ROWS)
+    }
+
+    fn total_rows(&self) -> usize {
+        Self::SWITCH_ROWS + self.rows.len()
+    }
+}
+
 /// 决策模型页的「功能开关」分区标题（开关行画在渠道列表下方）。
 pub const DECISION_SWITCH_SECTION: &str = "功能开关";
 
@@ -119,35 +235,21 @@ pub const DECISION_LOCAL_SECTION: &str = "自部署 OneJev";
 
 /// 自部署分区里的行号（顺序即界面顺序）。
 pub const DECISION_LOCAL_ROW_SIZE: usize = 0;
-
 pub const DECISION_LOCAL_ROW_DEVICE: usize = 1;
-
 pub const DECISION_LOCAL_ROW_ROOT: usize = 2;
-
 pub const DECISION_LOCAL_ROW_DOWNLOADED: usize = 3;
-
 pub const DECISION_LOCAL_ROW_ENV: usize = 4;
-
 /// 后台任务进度行：无任务在跑时不画（行仍占位，但值为空）。
 pub const DECISION_LOCAL_ROW_PROGRESS: usize = 5;
-
 pub const DECISION_LOCAL_ROW_PREPARE: usize = 6;
-
 pub const DECISION_LOCAL_ROW_DOWNLOAD: usize = 7;
-
 pub const DECISION_LOCAL_ROW_DELETE: usize = 8;
-
 /// 删除专用虚拟环境（venv），保留权重与下载缓存。
 pub const DECISION_LOCAL_ROW_REMOVE_ENV: usize = 9;
-
 pub const DECISION_LOCAL_ROW_CHANNEL: usize = 10;
-
 pub const DECISION_LOCAL_ROW_SERVICE: usize = 11;
-
 pub const DECISION_LOCAL_ROW_START: usize = 12;
-
 pub const DECISION_LOCAL_ROW_STOP: usize = 13;
-
 /// 自部署分区的行数。
 pub const DECISION_LOCAL_ROW_COUNT: usize = 14;
 
@@ -236,7 +338,7 @@ pub struct DecisionSwitchRow {
 /// 列表态的行由「决策渠道 + 功能开关 + 自部署分区」拼成：渠道在前、开关随后、
 /// 自部署行在最后；表单态只编辑渠道。
 #[derive(Debug, Clone)]
-struct DecisionModelsState {
+pub(super) struct DecisionModelsState {
     rows: Vec<DecisionRow>,
     switches: Vec<DecisionSwitchRow>,
     /// 自部署分区：尺寸/设备/已下载状态 + 环境与服务状态。
@@ -251,7 +353,7 @@ struct DecisionModelsState {
 
 /// 自部署分区的界面状态。
 #[derive(Debug, Clone, Default)]
-struct DecisionLocalState {
+pub(super) struct DecisionLocalState {
     size: String,
     device: String,
     root: String,
@@ -537,9 +639,3 @@ pub enum DecisionLocalChange {
     /// 停止本地服务并释放显存。
     StopService,
 }
-
-const DECISION_LIST_HINT: &str =
-    "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
-
-const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
-

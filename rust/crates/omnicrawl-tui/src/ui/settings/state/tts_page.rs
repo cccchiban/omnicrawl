@@ -1,4 +1,6 @@
-//! 由 `settings/state.rs` 按页面拆出：行定义与常量，语义未变。
+//! TTS 设置页：行表、草稿与保存载荷。
+//!
+//! 从 `state.rs` 按页拆出：一页的行号、候选与草稿只在改动这一页时才需要看。
 
 use super::*;
 
@@ -6,32 +8,22 @@ use super::*;
 
 /// TTS 页的行号。前 4 行与通道无关，随后 6 行属于当前服务商。
 pub const TTS_ROW_ENABLED: usize = 0;
-
 pub const TTS_ROW_PROVIDER: usize = 1;
-
 pub const TTS_ROW_AUTO_PLAY: usize = 2;
-
 /// 回合结束后朗读助手回复（不经工具面，因此不触发审批）。
 pub const TTS_ROW_SPEAK_REPLIES: usize = 3;
 
 /// 通道字段区起点：以下行按当前服务商取值，含义随 `provider` 变。
 pub const TTS_ROW_BASE_URL: usize = 4;
-
 pub const TTS_ROW_MODEL: usize = 5;
-
 pub const TTS_ROW_VOICE: usize = 6;
-
 /// OpenAI 的 `instructions` / Gemini 的语气指令（作为正文前缀）。
 pub const TTS_ROW_INSTRUCTIONS: usize = 7;
-
 /// OpenAI 的 `speed`；Gemini 没有该参数，该行在 Gemini 下不显示。
 pub const TTS_ROW_SPEED: usize = 8;
-
 /// 当前服务商的 API Key：直接填明文，保存时写进对应段的 `api_key`。
 pub const TTS_ROW_API_KEY: usize = 9;
-
 pub const TTS_ROW_SAVE: usize = 10;
-
 /// TTS 页的行数。
 pub const TTS_ROW_COUNT: usize = 11;
 
@@ -498,6 +490,3 @@ impl TtsState {
         }
     }
 }
-
-const TTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Enter 执行  Ctrl+S 保存  Esc 返回";
-

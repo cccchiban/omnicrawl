@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use super::client_hints::origin_of;
 use super::error::ToolError;
 use super::robots::{request_path, Robots, Verdict};
 use super::web_transport::{WebRequest, WebTransport};
@@ -30,18 +31,6 @@ enum Cached {
 fn cache() -> &'static Mutex<HashMap<String, Cached>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Cached>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// origin 键：`scheme://host[:port]`。解析不出 host 时返回 `None`（调用方直接放行）。
-fn origin_of(url: &str) -> Option<String> {
-    let (scheme, rest) = url.split_once("://")?;
-    let scheme = scheme.to_ascii_lowercase();
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let authority = authority.rsplit('@').next()?;
-    if authority.is_empty() {
-        return None;
-    }
-    Some(format!("{scheme}://{}", authority.to_ascii_lowercase()))
 }
 
 /// 取该站点的 robots.txt（命中缓存则复用）。
@@ -204,22 +193,5 @@ mod tests {
             "TestBot/1.0",
         )
         .expect("robots.txt 不可用时按允许处理");
-    }
-
-    #[test]
-    fn origin_key_keeps_scheme_and_port() {
-        assert_eq!(
-            origin_of("https://Example.com/a?b=1").as_deref(),
-            Some("https://example.com")
-        );
-        assert_eq!(
-            origin_of("http://example.com:8080/x").as_deref(),
-            Some("http://example.com:8080")
-        );
-        assert_eq!(
-            origin_of("https://user:pw@e.com/x"),
-            Some("https://e.com".into())
-        );
-        assert_eq!(origin_of("not a url"), None);
     }
 }

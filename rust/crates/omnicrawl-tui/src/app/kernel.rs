@@ -206,6 +206,7 @@ impl App {
             self.handle_frame(frame);
         }
         self.drain_completions();
+        self.drain_update_check();
         self.drain_prune_results();
         self.drain_suggest_results();
         self.drain_kernel_logs();

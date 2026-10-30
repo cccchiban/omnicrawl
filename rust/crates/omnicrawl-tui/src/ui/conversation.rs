@@ -1261,6 +1261,9 @@ const ASSISTANT_RENDER_MAX_CHARS: usize = 1_000_000;
 /// latex_to_text(body)))`，行首的 `◇ ` 也算在 Markdown 文本里。渲染出来的富文本按真实列宽
 /// 软折行（行首保留 CSS `.message { padding: 0 1 }` 的 1 格内边距），以便滚动窗口的行数
 /// 计算保持准确。
+///
+/// 渲染器按「扣掉内边距与首行 `◇ ` 前缀」的列宽排版：分隔线才不会铺满后又被迫折一格，
+/// 表格也才能按真实可用宽度分配列宽。
 fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
     // 正文先 LaTeX 归一（行首数学围栏要求 `$`/`$$` 从行首开始），再整段走 Markdown 渲染。
     let body = text.strip_prefix("◇ ").unwrap_or(text);
@@ -1278,7 +1281,11 @@ fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
     } else {
         (Cow::Borrowed(body), false)
     };
-    let block = markdown::render_markdown(&latex::latex_to_text(&body));
+    // 首行行首要放 `◇ `，先按扣除它的窄预算排版，避免分隔线/表格首行被撑出屏幕再折一次。
+    let head_width = width
+        .saturating_sub(display_width(MESSAGE_PAD) + display_width(ASSISTANT_PREFIX))
+        .max(1);
+    let block = markdown::render_markdown_with_width(&latex::latex_to_text(&body), head_width);
     push_markdown(lines, &block, width, ASSISTANT_PREFIX);
     if over_limit {
         lines.push(DisplayLine::plain(Line::raw(format!(
@@ -1292,14 +1299,31 @@ fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
 /// `prefix` 会捕到**第一行的行首**。这一点与 Python 略有不同：Python 把 `◇ `
 /// 直接拼在 Markdown 源码前面（`RichMarkdown("◇ " + …)`），于是首行的 `#` 不在行首，
 /// 「首行就是标题」这类语法解析不出来。这里改成渲染后再补前缀（见 README 已知差异）。
+///
+/// 折行时续行按行首结构前缀（列表圆点、序号、引用竖线）缩进对齐，悬挂缩进不会被折行打断。
 fn push_markdown(lines: &mut Vec<DisplayLine>, block: &StyledText, width: usize, prefix: &str) {
     let pad = display_width(MESSAGE_PAD);
     let body = width.saturating_sub(pad).max(1);
+    // 首行行首要放 `◇ `：首行预算相应收窄，否则整行会被撑出屏幕再被终端折一次。
+    let head = body
+        .saturating_sub(display_width(prefix))
+        .max(1)
+        .min(body);
     for (index, line) in block.split_lines().iter().enumerate() {
-        for (row_index, row) in wrap_spans(&line.to_spans(), body, body).iter().enumerate() {
+        // 代码块里的 `• ` / `1. ` 是内容，不是列表标记：不给它算悬挂缩进。
+        let indent = if markdown::is_code_line(line) {
+            0
+        } else {
+            markdown::hanging_indent(&line.plain())
+        };
+        let first = if index == 0 { head } else { body };
+        let rest = body.saturating_sub(indent).max(1);
+        for (row_index, row) in wrap_spans(&line.to_spans(), first, rest).iter().enumerate() {
             let mut cells: Vec<Span<'static>> = vec![Span::raw(MESSAGE_PAD.to_string())];
             if index == 0 && row_index == 0 && !prefix.is_empty() {
                 cells.push(Span::raw(prefix.to_string()));
+            } else if row_index > 0 && indent > 0 {
+                cells.push(Span::raw(" ".repeat(indent)));
             }
             cells.extend(row.spans.iter().cloned());
             lines.push(DisplayLine::plain(Line::from(cells)));
@@ -1392,7 +1416,7 @@ fn push_reasoning(
     // 思考正文同样走对映层 Markdown 渲染，只是颜色统一成灰（Python `uniform_gray`）：
     // 取渲染后的纯文本再套思考块的暗底灰字斜体样式，正文里的 `**`/`#` 等标记就会被去掉。
     let shown = truncate_chars(text, visible);
-    let body = markdown::uniform_gray(&latex::latex_to_text(shown)).plain();
+    let body = markdown::uniform_gray_with_width(&latex::latex_to_text(shown), body_width).plain();
     // Markdown 收尾常见一条空行（段落分隔）——留着会在思考块末尾多出一整行空白。
     let wrapped = wrap_display(body.trim_end_matches('\n'), body_width);
     let folded = if expanded {
@@ -2013,6 +2037,93 @@ mod tests {
             Some(Some(Color::Yellow)),
             "悬停时 ESC 要变黄"
         );
+    }
+
+    #[test]
+    fn assistant_table_renders_as_aligned_columns_within_the_width() {
+        // 表格以前被压成一串文本（`Tag::Table` 没分支），在终端里完全读不出列关系。
+        let (_state, display) = assistant_lines("| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 12 |\n| 香蕉 | 3 |");
+        let rendered = plain(&display);
+        let table: Vec<&String> = rendered
+            .iter()
+            .filter(|line| line.contains('│') || line.contains('─'))
+            .collect();
+        assert!(!table.is_empty(), "表格应画出列分隔：{rendered:?}");
+        // 每行都不超过消息宽度（60 列），否则终端会自己折，列对齐全乱。
+        assert!(
+            rendered.iter().all(|line| display_width(line) <= 60),
+            "表格行不得超出消息宽度：{rendered:?}"
+        );
+        let data: Vec<&&String> = table
+            .iter()
+            .filter(|line| line.contains("苹果") || line.contains("香蕉"))
+            .collect();
+        assert_eq!(data.len(), 2, "两行数据都要在：{rendered:?}");
+    }
+
+    #[test]
+    fn assistant_list_continuation_keeps_the_hanging_indent() {
+        // 长列表项折行后要停在圆点右边，不能落回行首。
+        let item = format!("- {}", "很长的条目内容".repeat(8));
+        let (_state, display) = assistant_lines(&item);
+        let rendered = plain(&display);
+        let body: Vec<&String> = rendered
+            .iter()
+            .filter(|line| line.contains("很长的条目内容") || line.contains('•'))
+            .collect();
+        assert!(body.len() > 1, "长条目应折成多行：{rendered:?}");
+        assert!(body[0].contains('•'), "首行带圆点：{body:?}");
+        // 续行 = 1 格内边距 + 2 格悬挂缩进（与圆点同宽），落点是 3 个空格。
+        assert!(
+            body[1].starts_with("   "),
+            "续行应缩进到圆点右边（1 格内边距 + 2 格缩进）：{body:?}"
+        );
+        // 折行后的任何一行都不能超出消息宽度。
+        assert!(
+            rendered.iter().all(|line| display_width(line) <= 60),
+            "列表折行后不得超宽：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_rule_spans_the_message_width() {
+        let (_state, display) = assistant_lines("上面\n\n---\n\n下面");
+        let rendered = plain(&display);
+        let rule = rendered
+            .iter()
+            .find(|line| line.contains('─') && !line.contains('上') && !line.contains('下'))
+            .expect("分隔线应被渲染");
+        let columns = display_width(rule.trim());
+        // 消息宽 60：扣掉一格内边距与首行的 `◇ ` 前缀，分隔线铺满剩下的 57 列。
+        assert_eq!(columns, 57, "分隔线应铺满正文宽度：{rule:?}");
+        assert!(
+            rendered.iter().all(|line| display_width(line) <= 60),
+            "任何一行都不得超出消息宽度：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_table_never_overflows_the_message_width() {
+        // 表格按列宽排好后不能再被渲染层折一次，否则列关系会被折断。
+        for width in [40u16, 60, 100] {
+            let mut state =
+                AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+            state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+            state.apply(
+                &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                    text: "| 名称 | 说明 |\n| --- | --- |\n| 甲 | 一段很长的说明文字需要被处理 |"
+                        .to_string(),
+                }),
+                Instant::now(),
+            );
+            let rendered = plain(&display_lines(&state, width));
+            assert!(
+                rendered
+                    .iter()
+                    .all(|line| display_width(line) <= usize::from(width)),
+                "{width} 列下表格行溢出：{rendered:?}"
+            );
+        }
     }
 
     #[test]

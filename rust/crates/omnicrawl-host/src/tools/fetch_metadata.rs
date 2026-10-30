@@ -10,6 +10,8 @@
 //!
 //! 因此本模块只做一件事：给定「发起方 + 目标 + 方法的用途」，算出该发的四个值。
 
+use super::web_transport::split_authority;
+
 /// 这次请求的用途。抓取工具只有两类：取文档（导航）与调 API（非导航）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
@@ -124,33 +126,6 @@ impl Endpoint {
 
     fn origin(&self) -> String {
         format!("{}://{}:{}", self.scheme, self.host, self.port)
-    }
-}
-
-fn default_port(scheme: &str) -> u16 {
-    match scheme {
-        "https" => 443,
-        "http" => 80,
-        _ => 0,
-    }
-}
-
-fn split_authority<'a>(authority: &'a str, scheme: &str) -> Option<(&'a str, u16)> {
-    // IPv6 字面量：`[::1]:8080`。
-    if let Some(rest) = authority.strip_prefix('[') {
-        let end = rest.find(']')?;
-        let host = &rest[..end];
-        let port = match rest[end + 1..].strip_prefix(':') {
-            Some(value) => value.parse::<u16>().ok()?.max(1),
-            None => default_port(scheme).max(1),
-        };
-        return Some((host, port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => {
-            Some((host, port.parse::<u16>().ok()?.max(1)))
-        }
-        _ => Some((authority, default_port(scheme).max(1))),
     }
 }
 

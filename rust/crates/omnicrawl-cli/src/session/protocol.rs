@@ -171,6 +171,10 @@ pub(super) fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             respond_session_archive(conn, id);
             false
         }
+        Command::SessionDelete(params) => {
+            respond_session_delete(conn, id, &params);
+            false
+        }
         Command::SessionHistory(params) => {
             respond_session_query(conn, id, &SessionQuery::History(params));
             false

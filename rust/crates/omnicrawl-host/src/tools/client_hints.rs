@@ -138,6 +138,20 @@ mod tests {
     }
 
     #[test]
+    fn origin_key_keeps_scheme_and_port() {
+        assert_eq!(
+            origin_of("https://Example.com/a?b=1").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            origin_of("http://example.com:8080/x").as_deref(),
+            Some("http://example.com:8080")
+        );
+        assert_eq!(origin_of("https://user:pw@e.com/x"), Some("https://e.com".into()));
+        assert_eq!(origin_of("not a url"), None);
+    }
+
+    #[test]
     fn hints_are_sent_only_after_the_site_declares_them() {
         let _serial = super::test_guard();
         reset();

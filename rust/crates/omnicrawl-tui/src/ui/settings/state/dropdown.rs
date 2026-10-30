@@ -30,6 +30,7 @@ impl SettingsState {
             | Pane::EmbeddingModels
             | Pane::Vision
             | Pane::Tts
+            | Pane::Sessions
             | Pane::Pending => None,
         }
     }

@@ -13,6 +13,7 @@ use omnicrawl_ipc::Id;
 use serde_json::{json, Map, Value};
 
 use crate::approval::ApprovalMode;
+use crate::tools::error::text_success;
 use crate::tools::ToolRegistry;
 
 pub const TODO_TOOL: &str = "update_todos";
@@ -214,12 +215,12 @@ impl PendingBatch {
                 TODO_TOOL => {
                     *ctx.todos = parse_todos(&call.arguments);
                     let summary = format!("已更新任务清单（{} 项）。", ctx.todos.len());
-                    self.results[self.cursor] = Some(text_result(summary));
+                    self.results[self.cursor] = Some(text_success(summary));
                     self.cursor += 1;
                 }
                 PAUSE_WORK_TOOL => {
                     *ctx.paused = true;
-                    self.results[self.cursor] = Some(text_result(
+                    self.results[self.cursor] = Some(text_success(
                         "已请求暂停：本回合结束后不再自动继续。".to_string(),
                     ));
                     self.cursor += 1;
@@ -546,16 +547,6 @@ pub fn denied_with_reason(reason: &str) -> ToolResult {
     }
 }
 
-fn text_result(output: String) -> ToolResult {
-    ToolResult {
-        ok: true,
-        full_output: output.clone(),
-        output,
-        error_code: None,
-        retryable: false,
-    }
-}
-
 /// 把 `update_todos` 的参数解成清单；缺字段回落为空值，非法项跳过。
 pub fn parse_todos(arguments: &Map<String, Value>) -> Vec<TodoItem> {
     let Some(items) = arguments.get("todos").and_then(Value::as_array) else {
@@ -780,7 +771,7 @@ mod tests {
             BatchStep::Execute(jobs) => {
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].1.name, "bash");
-                assert!(batch.record_result(jobs[0].0, text_result("文件内容".to_string()), None));
+                assert!(batch.record_result(jobs[0].0, text_success("文件内容".to_string()), None));
             }
             other => panic!("批准后应派发执行，实际：{other:?}"),
         }
@@ -817,8 +808,8 @@ mod tests {
                 assert_eq!(jobs.len(), 2, "整批并发执行，顺序保持模型调用顺序");
                 assert_eq!(jobs[0].1.name, "bash");
                 assert_eq!(jobs[1].1.name, "read");
-                assert!(!batch.record_result(jobs[0].0, text_result("done".to_string()), None));
-                assert!(batch.record_result(jobs[1].0, text_result("ok".to_string()), None));
+                assert!(!batch.record_result(jobs[0].0, text_success("done".to_string()), None));
+                assert!(batch.record_result(jobs[1].0, text_success("ok".to_string()), None));
             }
             other => panic!("auto 模式应直接派发执行，实际：{other:?}"),
         }
@@ -856,7 +847,7 @@ mod tests {
             BatchStep::Execute(jobs) => {
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].1.name, "read");
-                batch.record_result(jobs[0].0, text_result("内容".to_string()), None);
+                batch.record_result(jobs[0].0, text_success("内容".to_string()), None);
             }
             other => panic!("回答后应派发剩余执行，实际：{other:?}"),
         }
@@ -915,7 +906,7 @@ mod tests {
         };
         assert_eq!(batch.pending_jobs().len(), 2, "两个调用都还没结果");
         assert!(
-            !batch.record_result(jobs[0].0, text_result("已有结果".to_string()), None),
+            !batch.record_result(jobs[0].0, text_success("已有结果".to_string()), None),
             "还有一个调用没回填，整批不该就绪"
         );
 
@@ -960,7 +951,7 @@ mod tests {
             BatchStep::Execute(jobs) => jobs,
             other => panic!("应派发执行，实际：{other:?}"),
         };
-        batch.record_result(jobs[0].0, text_result("已有结果".to_string()), None);
+        batch.record_result(jobs[0].0, text_success("已有结果".to_string()), None);
 
         let cancelled = batch.fill_cancelled();
         assert_eq!(
@@ -1038,7 +1029,7 @@ mod tests {
         };
         batch.record_result(
             jobs[0].0,
-            text_result("{\"vision_attachment\":true}".to_string()),
+            text_success("{\"vision_attachment\":true}".to_string()),
             Some(payload),
         );
 

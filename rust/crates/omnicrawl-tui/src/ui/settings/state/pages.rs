@@ -1,116 +1,95 @@
-//! 由 `settings/state.rs` 按页面拆出：行定义与常量，语义未变。
+//! 工具开关页、联网搜索页与 MCP 页的行表、草稿与状态。
+//!
+//! 从 `state.rs` 按页拆出：这三页的条目原先与导航类型混排在同一文件里，
+//! 改动一页要在整份 `state.rs` 里来回找。
 
 use super::*;
 
-/// MCP 设置页的一个 Server 行（对映 Python 的 `MCPServerListPane` 行）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpServerRow {
-    pub name: String,
-    pub enabled: bool,
-    pub transport: String,
-    pub risk_level: String,
+/// 工具开关页的界面状态。
+#[derive(Debug, Clone)]
+pub(super) struct ToolsState {
+    rows: Vec<ToolSwitchRow>,
+    selected: usize,
+    /// 工具调用审查模式（`manual` / `review` / `auto`），与 `[approval] mode` 同源。
+    approval: String,
+    status: String,
 }
 
-/// MCP 设置页的初始值（全局开关/策略 + Server 列表）。
+/// 联网搜索页的初始投影：默认引擎与各凭据的配置状态（凭据本身不进界面）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpSettingsValues {
-    pub enabled: bool,
-    pub allow_external_network_tools: bool,
-    pub require_confirmation_for_write: bool,
-    pub require_confirmation_for_command: bool,
-    pub audit_log_enabled: bool,
-    pub timeout_seconds: i64,
-    pub servers: Vec<McpServerRow>,
+pub struct WebSearchRow {
+    pub engine: String,
+    pub tavily_configured: bool,
+    pub exa_configured: bool,
+    pub firecrawl_configured: bool,
+    pub anysearch_configured: bool,
+    /// TinyFish API Key 是否已配置。它没有匿名通道，缺 Key 时引擎会如实报错。
+    pub tinyfish_configured: bool,
+    /// GitHub Token 是否已配置。它不影响引擎可用性，只影响额度。
+    pub github_configured: bool,
 }
 
-impl Default for McpSettingsValues {
+impl Default for WebSearchRow {
     fn default() -> Self {
         Self {
-            enabled: false,
-            allow_external_network_tools: false,
-            require_confirmation_for_write: true,
-            require_confirmation_for_command: true,
-            audit_log_enabled: true,
-            timeout_seconds: 30,
-            servers: Vec::new(),
+            engine: "duckduckgo".to_string(),
+            tavily_configured: false,
+            exa_configured: false,
+            firecrawl_configured: false,
+            anysearch_configured: false,
+            tinyfish_configured: false,
+            github_configured: false,
         }
     }
 }
 
-/// 一个 MCP Server 的编辑草稿（新增或修改）。
-///
-/// `env` / `headers` 在界面上是大小写敏感的 `KEY=VALUE` 列表（分号分隔），
-/// 原样交给宿主解析；`original_name` 非空表示这是对已有条目的重命名。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct McpServerDraft {
-    pub name: String,
-    pub enabled: bool,
-    pub transport: String,
-    pub command: String,
-    pub args: String,
-    pub url: String,
-    pub timeout_seconds: i64,
-    pub risk_level: String,
-    pub env: String,
-    pub headers: String,
-    pub original_name: Option<String>,
-}
+/// 工具开关页首行的标签（工具调用审查模式）。
+pub const TOOLS_APPROVAL_LABEL: &str = "工具调用审查";
 
-impl McpServerDraft {
-    /// 从已有行建草稿（`原值` 只能拿得到展示字段，其余保持空/默认，宿主保存时补全）。
-    pub fn from_row(row: &McpServerRow) -> Self {
-        Self {
-            name: row.name.clone(),
-            enabled: row.enabled,
-            transport: row.transport.clone(),
-            risk_level: row.risk_level.clone(),
-            original_name: Some(row.name.clone()),
-            ..Self::default()
-        }
+/// 逐工具开关在工具页里的起始行号（首行是审查模式）。
+pub const TOOLS_SWITCH_ROW_OFFSET: usize = 1;
+
+/// 凭据字段在界面上的掩码占位：已配置的凭据都用它显示，草稿值等于它表示「不改动」。
+pub const MASKED_SECRET: &str = "••••••••";
+
+/// 审查模式的候选顺序（对映 Python 的 `_APPROVAL_OPTIONS`）。
+pub const TOOLS_APPROVAL_OPTIONS: [&str; 3] = [
+    APPROVAL_MODE_MANUAL,
+    APPROVAL_MODE_REVIEW,
+    APPROVAL_MODE_AUTO,
+];
+
+/// 把任意审批模式折算到候选档位（不认得的值落到默认的「自动审查」）。
+pub fn nearest_approval_mode(mode: &str) -> &'static str {
+    match normalize_approval_mode(mode) {
+        Ok(normalized) => TOOLS_APPROVAL_OPTIONS
+            .iter()
+            .copied()
+            .find(|option| *option == normalized)
+            .unwrap_or(APPROVAL_MODE_REVIEW),
+        Err(_) => APPROVAL_MODE_REVIEW,
     }
 }
 
-/// MCP 设置的一次变更。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum McpChange {
-    /// 全局开关与策略（Server 列表不动）。
-    Globals {
-        enabled: bool,
-        allow_external_network_tools: bool,
-        require_confirmation_for_write: bool,
-        require_confirmation_for_command: bool,
-        audit_log_enabled: bool,
-        timeout_seconds: i64,
-    },
-    /// 新增/修改一个 Server（按 `original_name` 重命名）。
-    SaveServer(Box<McpServerDraft>),
-    /// 启用/禁用一个 Server。
-    SetServerEnabled { name: String, enabled: bool },
-    /// 删除一个 Server。
-    DeleteServer { name: String },
+/// 在审查模式候选里按方向循环（对映 Python 的 `_change`）。
+pub fn cycle_approval_mode(current: &str, direction: isize) -> &'static str {
+    let current = nearest_approval_mode(current);
+    let index = TOOLS_APPROVAL_OPTIONS
+        .iter()
+        .position(|option| *option == current)
+        .unwrap_or(1);
+    let count = TOOLS_APPROVAL_OPTIONS.len() as isize;
+    TOOLS_APPROVAL_OPTIONS[((index as isize + direction).rem_euclid(count)) as usize]
 }
-
-const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Server  Esc 返回";
-
-const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
-
-const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
 
 /// MCP 设置页的行号（对映 Python `MCPSettingsPane._ROWS`）。
 pub const MCP_ROW_ENABLED: usize = 0;
-
 pub const MCP_ROW_NETWORK: usize = 1;
-
 pub const MCP_ROW_WRITE: usize = 2;
-
 pub const MCP_ROW_COMMAND: usize = 3;
-
 pub const MCP_ROW_AUDIT: usize = 4;
-
 pub const MCP_ROW_TIMEOUT: usize = 5;
-
 pub const MCP_ROW_SERVERS: usize = 6;
-
 /// MCP 全局设置的行数。
 pub const MCP_ROW_COUNT: usize = 7;
 
@@ -130,23 +109,14 @@ pub const MCP_TIMEOUT_OPTIONS: [i64; 5] = [10, 30, 60, 120, 300];
 
 /// Server 编辑器字段序号（渲染与键位处理共用）。
 pub const MCP_EDITOR_NAME: usize = 0;
-
 pub const MCP_EDITOR_TRANSPORT: usize = 1;
-
 pub const MCP_EDITOR_COMMAND: usize = 2;
-
 pub const MCP_EDITOR_ARGS: usize = 3;
-
 pub const MCP_EDITOR_URL: usize = 4;
-
 pub const MCP_EDITOR_TIMEOUT: usize = 5;
-
 pub const MCP_EDITOR_RISK: usize = 6;
-
 pub const MCP_EDITOR_ENV: usize = 7;
-
 pub const MCP_EDITOR_HEADERS: usize = 8;
-
 /// Server 编辑器的字段数。
 pub const MCP_EDITOR_FIELD_COUNT: usize = 9;
 
@@ -165,9 +135,20 @@ pub const MCP_EDITOR_LABELS: [&str; MCP_EDITOR_FIELD_COUNT] = [
 
 /// 传输候选取值（对映 `MCP_TRANSPORT_STDIO` / `MCP_TRANSPORT_STREAMABLE_HTTP`）。
 pub const MCP_TRANSPORT_OPTIONS: [&str; 2] = ["stdio", "streamable_http"];
-
 /// 风险等级候选取值（对映 `MCP_RISK_*`）。
 pub const MCP_RISK_OPTIONS: [&str; 3] = ["trusted", "restricted", "external"];
+
+/// 在 MCP 超时档位表里按方向循环取值（当前值不在表里时先取最近一档）。
+pub fn cycle_mcp_timeout(current: i64, direction: isize) -> i64 {
+    let index = MCP_TIMEOUT_OPTIONS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, option)| (**option - current).abs())
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let count = MCP_TIMEOUT_OPTIONS.len() as isize;
+    MCP_TIMEOUT_OPTIONS[((index as isize + direction).rem_euclid(count)) as usize]
+}
 
 /// MCP 全局设置行的只读视图（渲染层用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +169,7 @@ pub struct McpEditorRowView {
 
 /// Server 的可编辑草稿 + 字段游标。
 #[derive(Debug, Clone)]
-struct McpEditor {
+pub(super) struct McpEditor {
     draft: McpServerDraft,
     focused: usize,
     /// 文本字段的输入缓冲（`None` 表示不在编辑态）。
@@ -285,9 +266,23 @@ impl McpEditor {
     }
 }
 
+/// 在静态字符串候选里按方向循环（当前值不在表里时从首项起步）。
+pub(super) fn cycle_static(options: &[&str], current: &str, direction: isize) -> String {
+    if options.is_empty() {
+        return current.to_string();
+    }
+    let index = options
+        .iter()
+        .position(|option| *option == current)
+        .map(|index| index as isize)
+        .unwrap_or(-direction);
+    let next = (index + direction).rem_euclid(options.len() as isize) as usize;
+    options[next].to_string()
+}
+
 /// MCP 设置页的界面状态（全局行 + Server 列表 + 编辑器）。
 #[derive(Debug, Clone)]
-struct McpState {
+pub(super) struct McpState {
     enabled: bool,
     network: bool,
     write: bool,
@@ -351,3 +346,38 @@ impl McpState {
     }
 }
 
+/// 子任务设置页的界面状态。
+#[derive(Debug, Clone)]
+pub(super) struct SubagentsState {
+    rows: Vec<SubagentRow>,
+    selected: usize,
+    status: String,
+}
+
+/// 视觉设置页的界面状态。
+#[derive(Debug, Clone)]
+pub(super) struct VisionState {
+    enabled: bool,
+    models: Vec<VisionModelRef>,
+    selected: usize,
+    /// 模型原生视觉的三态值：`None` 表示未配置（对映 Python 的 `_NATIVE_CYCLE`）。
+    native: Option<bool>,
+    /// 进面板时的原值：只有真正改过才写回。
+    native_previous: Option<bool>,
+    status: String,
+}
+
+/// 三个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
+#[derive(Debug, Clone)]
+pub(super) struct ChoicesState {
+    show_thinking: bool,
+    memory: bool,
+    plugins: bool,
+    status: [String; 3],
+}
+
+impl ChoicesState {
+    fn status_mut(&mut self, kind: ChoiceKind) -> &mut String {
+        &mut self.status[kind.index()]
+    }
+}

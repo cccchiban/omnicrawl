@@ -272,6 +272,7 @@ impl SettingsState {
                 }
             }
             Pane::Tts => self.tts.status = message,
+            Pane::Sessions => self.sessions.status = message,
             Pane::Pending => {}
         }
         self.dropdown = None;

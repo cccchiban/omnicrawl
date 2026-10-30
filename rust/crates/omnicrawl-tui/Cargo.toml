@@ -41,6 +41,8 @@ omnicrawl-tts = { path = "../omnicrawl-tts" }
 omnicrawl-workspace = { path = "../omnicrawl-workspace" }
 # 出站 User-Agent（`omnicrawl/<产品版本>`）：内核模型请求与其它 AI 网关共用同一身份。
 omnicrawl-version = { path = "../omnicrawl-version" }
+# 新版本检测：查 npm registry 的 omnicrawl-cli 最新版本（结果缓存一小时）。
+omnicrawl-update = { path = "../omnicrawl-update" }
 # 会话回放按事件时间戳计算工具卡耗时（事件里的 `created_at`）。
 chrono = { workspace = true }
 crossterm = { workspace = true }

@@ -270,6 +270,22 @@ impl App {
         session_summary(&result)
     }
 
+    /// 彻底删除指定会话（设置面板「会话管理」页）。
+    ///
+    /// 内核拒绝删除当前会话，这里不做第二道判断：直接把内核的拒绝文案透给调用方，
+    /// 免得两处规则不一致。
+    pub(crate) fn command_session_delete(&mut self, session_id: &str) -> Result<String, String> {
+        let params = SessionDeleteParams {
+            session_id: session_id.to_string(),
+        };
+        let result = self.session_request(Command::SessionDelete(params))?;
+        Ok(result
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or(session_id)
+            .to_string())
+    }
+
     /// 新开会话（`/new`）：返回旧会话 id 之外的新会话 id。
     pub(crate) fn command_session_new(&mut self) -> Result<String, String> {
         let result = self.session_request(Command::SessionNew)?;

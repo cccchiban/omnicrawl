@@ -23,7 +23,7 @@ use crate::app::ApiState;
 use crate::error::{data, ApiError};
 use crate::service::AgentService;
 
-use super::query::query_bool;
+use super::query::{last_event_id, query_bool};
 
 /// SSE 空闲多久发一次 keep-alive（Python 的 `wait_for_subagent_events(..., 15.0)`）。
 const KEEP_ALIVE_SECONDS: u64 = 15;
@@ -146,20 +146,3 @@ fn subagent_not_found() -> ApiError {
     )
 }
 
-/// `Last-Event-ID` → 游标；空头按未提供处理，负数按 0 处理。
-fn last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
-    let Some(raw) = headers.get("last-event-id") else {
-        return Ok(None);
-    };
-    let text = raw.to_str().unwrap_or_default().trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    match text.parse::<i64>() {
-        Ok(value) => Ok(Some(value.max(0) as u64)),
-        Err(_) => Err(ApiError::bad_request(
-            "INVALID_EVENT_ID",
-            "Last-Event-ID 必须是整数。",
-        )),
-    }
-}

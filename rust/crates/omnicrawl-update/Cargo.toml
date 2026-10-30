@@ -1,0 +1,17 @@
+[package]
+name = "omnicrawl-update"
+description = "新版本检测：查询 npm registry 的 omnicrawl-cli 最新版本，结果缓存一小时"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 阻塞式 HTTP/1.1 + rustls：检测跑在后台线程里，不需要异步运行时。
+ureq = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# 产品版本（构建期取自 packages/cli/package.json），用来判断「有没有更新」。
+omnicrawl-version = { path = "../omnicrawl-version" }
+chrono = { workspace = true }

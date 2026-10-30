@@ -139,6 +139,14 @@ impl SettingsState {
                 form.set_focused(target);
                 already
             }
+            Pane::Sessions => {
+                let target = index.min(self.sessions.rows().len().saturating_sub(1));
+                let already = self.sessions.selected() == target;
+                if !already {
+                    self.sessions.select(target);
+                }
+                already
+            }
             Pane::Pending => false,
         }
     }

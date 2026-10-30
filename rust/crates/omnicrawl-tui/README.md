@@ -265,7 +265,7 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 
 | Rust 文件 | 对映 Python | 说明 |
 | --- | --- | --- |
-| `rendering/markdown.rs` | Rich `Markdown`（RichMarkdown） | 用 `pulldown-cmark`（新增依赖，已确认）解析事件流并映射为样式串：标题/段落/列表（含嵌套与任务列表 `☑`/`☐`）/围栏代码块（整块灰底 + 按语言逐 token 高亮，未知语言只加灰底）/行内代码（青字 + 灰底）/粗体/斜体/删除线/链接（下划线 + 蓝）/引用（`│ ` 前缀）/分隔线；`uniform_gray` 对映 `_UniformGrayMarkdown`（保留结构、统一下压为灰阶前景） |
+| `rendering/markdown.rs` | Rich `Markdown`（RichMarkdown） | 用 `pulldown-cmark`（新增依赖，已确认）解析事件流并映射为样式串：标题（**按级差分级**：H1 加粗+下划线、H2 加粗、H3 及以下加粗+暗色）/段落/列表（含嵌套与任务列表 `☑`/`☐`）/围栏代码块（整块灰底 + 按语言逐 token 高亮，未知语言只加灰底）/行内代码（青字 + 灰底）/粗体/斜体/删除线/链接（下划线 + 蓝）/引用（`│ ` 前缀，**续段同样带竖线**）/分隔线（**按可用列宽铺满**）/表格（**按内容定列宽 + 表头加粗 + 表头下横线 + 列对齐 + 按窗口收紧、超宽单元格以 `…` 收尾**）；`uniform_gray` 对映 `_UniformGrayMarkdown`（保留结构、统一下压为灰阶前景）；`render_markdown_with_width` / `uniform_gray_with_width` 让调用方传入可用列宽，`hanging_indent` 给折行续行提供悬挂缩进列数，`is_code_line` 区分代码正文以免把 `• ` 当列表标记 |
 | `rendering/highlight.rs` | Rich `Syntax`（monokai 主题） | 代码块逐 token 高亮：表驱动手写扫描器，色值取 monokai 原值（关键字 `#66d9ef`、函数·类型名 `#a6e22e`、字符串 `#e6db74`、数字 `#ae81ff`、注释 `#75715e` + 斜体、运算符 `#f92672`），覆盖 Rust / Python / JS·TS / JSON / TOML / YAML / Shell / SQL（含别名），块注释与 Python 三引号字符串跨行保留状态；不引入 pygments / syntect |
 | `conversation.rs` / `panels.rs` | `rendering/widgets.py`（同语义） | `AssistantMessage`（全量重绘、流式分块首块补 `◇ ` 前缀）与 `ReasoningDisclosure`（增量累积、折叠 5 行、点击切换展开、收口灰阶重绘）的实际实现已由上两处承接，`widgets.rs` 不再保留这两套状态机 |
 
@@ -349,6 +349,9 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 - `rgba(...)` 令牌（用户消息背景）只取 RGB 分量：ratatui 无 alpha 混合，Python 侧由 Textual 与终端底色混合；
 - `difflib` 等价层自实现（不引入 diff crate）：与 CPython 在 7 组对照用例上 opcodes 逐段一致，未覆盖 `isjunk` / `autojunk` 路径（Python 侧两处均传 `autojunk=False` 且无 junk 函数）；
 - Markdown 渲染为**近似样式映射**：走 `pulldown-cmark` 事件流 + 本项目主题令牌，不复刻 Rich 的 Markdown 主题（各段精确色值、标题色相不同）；代码块已做逐 token 高亮（`rendering/highlight.rs`，色值取 monokai 原值），但分词是手写扫描器、不是 pygments 等价：只覆盖 8 门常见语言（其余语言保持整块灰底），且不处理 f-string 内部表达式、Rust 宏体内部、正则字面量等嵌套分词，未知 token 一律落回纯文本；
+- Markdown 的**表格**是本轮新增的终端原生实现：Rich 那边由 `rich.table` 画真边框（`┏━┳┓` 与列分隔），这里只用 `│` 与表头下一行 `─┼─`，列宽按内容与可用宽度分配、超宽单元格以 `…` 收尾；`ENABLE_GFM` 未开，因此 `> [!NOTE]` 这类告警框按普通引用渲染；脚注、定义列表、上下标同样未开，按普通文本落盘；
+- 段内软换行（段内单换行）在两侧都是宽字符（CJK/全角）时**不补空格**：汉字之间本无词距，插一个空格会让中文正文看起来像被拆成两段。Rich 与 CommonMark 都一律补空格，这是本项目相对 Python 侧的一处**有意差异**；中英混排仍保留英文那一侧的空格，硬换行（行尾两个空格或 `\`）仍是真的换行；
+- 列表项与引用块的续行按行首结构前缀做**悬挂缩进**（圆点/序号换成等宽空白、引用竖线照抄），代码块正文不吃这套缩进；
 - **LaTeX 转换层已接入**（`rendering/latex.rs`）：AI 回复与思考在渲染前都走 `latex_to_text`。两处 Unicode 细节与 Python 有出入，且都只作用于启发式判定：裸公式行的 `str.isdigit()` 用 `char::is_numeric()` 近似、`str.isalpha()` 用 `char::is_alphabetic()`，`str.strip()` 用 `str::trim()`；
 - 启动画面的日志桥改为显式上报：Python 给 root logger 挂 `logging.Handler`（只转发 WARNING/ERROR），Rust 无 logging 框架，由 `report_startup_log` 承担——有桥时写日志框且不落 stderr（避免打乱画面），无桥时回落 stderr（管道/测试下诊断不丢）；`logo_anim` 的随机源同样是内部 xorshift64\*；
 - 终端尺寸不做环境变量回退：`shutil.get_terminal_size` 会先读 `COLUMNS`/`LINES`，Rust 直接问终端（`crossterm::terminal::size`），取不到时同样回落 80x24；
@@ -630,6 +633,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | --- | --- | --- |
 | 模型管理 | 已实现 | 渠道列表 + 单条渠道表单 + 「模型与参数」分区，合并了原「模型」「模型渠道」「上下文」「推理强度」四个一级项。**渠道列表**：两行行式（`› [x] 渠道名 [默认]` + `Provider / 协议  模型 ID  Base URL`），`↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；**渠道表单**（渠道名称 / 请求方式 / 请求协议 / Base URL / **API Key** / 模型 ID / User-Agent（可选） / 启用）：`↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时以明文随帧下发。**模型 ID 自动检测的凭据**：只取该行的明文密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（`window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**「模型与参数」分区**（渠道列表之后，`↑↓` 与渠道行连成一条行序）：当前模型渠道 / 上下文长度 / 上下文阈值 / 推理强度，四项都选中即保存——首行写 `llm.active_model` 并把整条渠道推给内核（本会话即刻生效），后三行分别写 `llm.context_window_tokens`、`context_compaction.trigger_context_*` 与 `llm.reasoning_effort`。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空——留空时启动闸门会拦下并提示补问） |
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
+| 会话管理 | 已实现 | 列出当前工作区最近会话（标题 + 条数），`↑↓` 选、`D` **连按两次**确认删除、`R` 刷新、`Esc` 返回。删除走内核 `session.delete`（转录 + 关联 artifact + 索引条目一并移除），**不可逆**；当前会话标 `（当前）` 且拒绝删除，界面先给出原因而不是按了没反应。列表在进入该页时按需读取一次（`session.list`），删除成功后就地摘行并回执，失败原因写在状态行 |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 插件功能 | 已实现 | 写回 `plugins.enabled`，随即走 `PluginHost::set_enabled` 事务式重建 Worker 与执行计划（与 API 的 `PUT /settings/features` 同一入口），本会话即刻生效；重建诊断显示在状态行 |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭（只画名称与 `已启用`/`已关闭`，不带括号说明），写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调） |

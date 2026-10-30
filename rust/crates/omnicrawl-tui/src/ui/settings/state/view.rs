@@ -290,6 +290,7 @@ impl SettingsState {
             Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
+            Pane::Sessions => &self.sessions.status,
             Pane::Pending => "",
         }
     }
@@ -337,6 +338,7 @@ impl SettingsState {
             Pane::Form(FormKind::WebSearch) => WEB_SEARCH_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
+            Pane::Sessions => SESSIONS_HINT,
             Pane::Pending => "",
         }
     }
@@ -384,5 +386,52 @@ impl SettingsState {
             .iter()
             .position(|row| *row == self.tts.focused)
             .unwrap_or(0)
+    }
+}
+
+/// 会话管理页的对外读写口（渲染层与宿主各用一半）。
+impl SettingsState {
+    /// 右侧当前是否挂在会话管理页（宿主据此决定要不要读列表）。
+    pub fn is_sessions_pane(&self) -> bool {
+        matches!(self.pane, Pane::Sessions)
+    }
+
+    /// 当前列表（宿主注入、渲染读取）。
+    pub fn session_rows(&self) -> &[SessionRow] {
+        self.sessions.rows()
+    }
+
+    pub fn session_selected(&self) -> usize {
+        self.sessions.selected()
+    }
+
+    pub fn session_confirming(&self) -> Option<&PendingDelete> {
+        self.sessions.confirming()
+    }
+
+    /// 宿主回填会话列表：`items` 是内核返回的索引条目，当前会话会被标出来。
+    pub fn set_sessions(&mut self, items: Vec<SessionRow>) {
+        self.sessions.set_rows(items);
+    }
+
+    /// 删除成功后的就地更新：把那一行摘掉，并清掉待确认状态。
+    ///
+    /// 不直接重读列表：删除的回执已经确认过目标 id，就地摘行能立刻反映结果；
+    /// 用户想对齐磁盘现状可以按 `R`。
+    pub fn remove_session_row(&mut self, session_id: &str) {
+        let rows: Vec<SessionRow> = self
+            .sessions
+            .rows()
+            .iter()
+            .filter(|row| row.session_id != session_id)
+            .cloned()
+            .collect();
+        self.sessions.set_rows(rows);
+        self.sessions.status = "已删除该会话。".to_string();
+    }
+
+    /// 进入会话管理页时由宿主记录一次读取失败的原因。
+    pub fn set_sessions_status(&mut self, message: &str) {
+        self.sessions.status = message.to_string();
     }
 }

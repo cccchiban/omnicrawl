@@ -31,6 +31,8 @@ pub mod method {
     pub const SESSION_RENAME: &str = "session.rename";
     /// 归档当前会话，并立即开启一个新的空会话。
     pub const SESSION_ARCHIVE: &str = "session.archive";
+    /// 彻底删除指定会话（不可逆，移除转录与关联 artifact）。
+    pub const SESSION_DELETE: &str = "session.delete";
     /// 查询用户提示历史（只读展示，不注入模型上下文）。
     pub const SESSION_HISTORY: &str = "session.history";
     /// 读取当前会话的有效事件流（只读回放，供宿主重建对话视图）。
@@ -666,6 +668,15 @@ pub struct SessionRenameParams {
     pub title: String,
 }
 
+/// `session.delete` 负载：目标会话 id。
+///
+/// 内核拒绝删除当前会话（删掉正在写入的转录会让运行中的会话失去落点），
+/// 因此这里必须显式带 id，而不是像 `session.archive` 那样隐含「当前」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionDeleteParams {
+    pub session_id: String,
+}
+
 /// `session.history` 负载。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryParams {
@@ -780,6 +791,8 @@ pub enum Command {
     SessionRename(SessionRenameParams),
     /// 归档当前会话并开启新会话。
     SessionArchive,
+    /// 彻底删除指定会话（不可逆）。只允许删非当前会话。
+    SessionDelete(SessionDeleteParams),
     /// 查询用户提示历史。
     SessionHistory(SessionHistoryParams),
     /// 读取当前会话的有效事件流（回退投影后的视图，与 UI 回放同源）。
@@ -818,6 +831,7 @@ impl Command {
         method::SESSION_LIST,
         method::SESSION_RENAME,
         method::SESSION_ARCHIVE,
+        method::SESSION_DELETE,
         method::SESSION_HISTORY,
         method::SESSION_EVENTS,
         method::SESSION_NEW,
@@ -840,6 +854,7 @@ impl Command {
             Self::SessionList(_) => method::SESSION_LIST,
             Self::SessionRename(_) => method::SESSION_RENAME,
             Self::SessionArchive => method::SESSION_ARCHIVE,
+            Self::SessionDelete(_) => method::SESSION_DELETE,
             Self::SessionHistory(_) => method::SESSION_HISTORY,
             Self::SessionEvents(_) => method::SESSION_EVENTS,
             Self::SessionNew => method::SESSION_NEW,
@@ -863,6 +878,7 @@ impl Command {
             Self::SessionList(payload) => payload_value(payload),
             Self::SessionRename(payload) => payload_value(payload),
             Self::SessionArchive => json!({}),
+            Self::SessionDelete(payload) => payload_value(payload),
             Self::SessionHistory(payload) => payload_value(payload),
             Self::SessionEvents(payload) => payload_value(payload),
             Self::SessionNew => json!({}),
@@ -896,6 +912,7 @@ impl Command {
             method::SESSION_LIST => Command::SessionList(from_params(params)?),
             method::SESSION_RENAME => Command::SessionRename(from_params(params)?),
             method::SESSION_ARCHIVE => Command::SessionArchive,
+            method::SESSION_DELETE => Command::SessionDelete(from_params(params)?),
             method::SESSION_HISTORY => Command::SessionHistory(from_params(params)?),
             method::SESSION_EVENTS => Command::SessionEvents(from_params(params)?),
             method::SESSION_NEW => Command::SessionNew,

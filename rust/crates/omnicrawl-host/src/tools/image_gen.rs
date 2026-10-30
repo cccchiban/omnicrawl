@@ -18,6 +18,7 @@ use omnicrawl_controllers::json::python_number_text;
 use serde_json::{Map, Value};
 
 use super::error::{ToolError, ToolOutcome};
+use super::paths::expand_user;
 use super::web_transport::{
     detect_windows_proxy, host_of, is_private_host, WebErrorKind, WebRequest, WebResponse,
     WebTransport, MAX_REDIRECTS,
@@ -630,26 +631,6 @@ fn resolve_local_path(options: &ImageGenOptions, raw: &str) -> PathBuf {
         candidate
     } else {
         options.workspace_root.join(candidate)
-    }
-}
-
-fn expand_user(path: &str) -> String {
-    let home = || -> PathBuf {
-        for name in ["USERPROFILE", "HOME"] {
-            if let Ok(value) = std::env::var(name) {
-                if !value.trim().is_empty() {
-                    return PathBuf::from(value);
-                }
-            }
-        }
-        PathBuf::from(".")
-    };
-    if path == "~" {
-        return home().to_string_lossy().to_string();
-    }
-    match path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        Some(rest) => home().join(rest).to_string_lossy().to_string(),
-        None => path.to_string(),
     }
 }
 

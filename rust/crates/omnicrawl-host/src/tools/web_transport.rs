@@ -325,6 +325,36 @@ pub fn host_of(url: &str) -> Option<String> {
     uri.host().map(|value| value.to_string())
 }
 
+/// scheme 的默认端口；未知 scheme 返回 0（调用方通常会再 `.max(1)`）。
+pub fn default_port(scheme: &str) -> u16 {
+    match scheme {
+        "https" => 443,
+        "http" => 80,
+        _ => 0,
+    }
+}
+
+/// 把 `authority` 拆成主机与端口，支持 IPv6 字面量（`[::1]:8080`）。
+///
+/// 方括号里的冒号不是端口分隔符，因此不能直接用 `rsplit_once(':')`。
+pub fn split_authority<'a>(authority: &'a str, scheme: &str) -> Option<(&'a str, u16)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let host = &rest[..end];
+        let port = match rest[end + 1..].strip_prefix(':') {
+            Some(value) => value.parse::<u16>().ok()?.max(1),
+            None => default_port(scheme).max(1),
+        };
+        return Some((host, port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => {
+            Some((host, port.parse::<u16>().ok()?.max(1)))
+        }
+        _ => Some((authority, default_port(scheme).max(1))),
+    }
+}
+
 /// 内网/本机主机名：localhost、`.local` 与常见内网 IPv4 段（对齐 Python 侧正则）。
 pub fn is_private_host(host: &str) -> bool {
     let lowered = host.trim().to_lowercase();

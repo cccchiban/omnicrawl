@@ -139,6 +139,27 @@ pub fn resolve_lenient(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// `Path.expanduser()` 的可用子集：`~` 与 `~/...`、`~\...` 展开为用户主目录。
+pub fn expand_user(path: &str) -> String {
+    let home = || -> PathBuf {
+        for name in ["USERPROFILE", "HOME"] {
+            if let Ok(value) = std::env::var(name) {
+                if !value.trim().is_empty() {
+                    return PathBuf::from(value);
+                }
+            }
+        }
+        PathBuf::from(".")
+    };
+    if path == "~" {
+        return home().to_string_lossy().to_string();
+    }
+    match path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        Some(rest) => home().join(rest).to_string_lossy().to_string(),
+        None => path.to_string(),
+    }
+}
+
 /// 去掉 Windows 规范化路径的 `\\?\` 前缀（保留 UNC 形式）。
 fn strip_verbatim(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().to_string();

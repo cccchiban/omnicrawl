@@ -238,6 +238,32 @@ impl App {
         });
     }
 
+    /// 取回后台版本检测结果，有新版本就在会话区顶一条提示（整个进程只提示一次）。
+    ///
+    /// 检测失败一律静默：网络不可达、registry 改版都不该变成启动噪音。
+    pub(super) fn drain_update_check(&mut self) {
+        if self.update_notified {
+            // 已经提示过就不必再轮询：句柄丢掉，线程按自己的超时自然结束。
+            self.update_check = None;
+            return;
+        }
+        // 先把结论取出来（`poll` 借用 `self.update_check`），再动 `self` 的其它字段。
+        let notice = match self.update_check.as_mut() {
+            Some(check) => match check.poll() {
+                Some(Ok(status)) => status.notice(),
+                // 失败与「没有更新」同义：都不打扰用户。
+                _ => None,
+            },
+            None => return,
+        };
+        if let Some(notice) = notice {
+            self.state.notice(notice);
+        }
+        // 无论有没有更新都算「本次已处理」：同一进程不再重复插入提示。
+        self.update_notified = true;
+        self.update_check = None;
+    }
+
     /// 取回后台裁决结果并应答内核。
     pub(super) fn drain_prune_results(&mut self) {
         while let Ok(result) = self.prune_results.try_recv() {

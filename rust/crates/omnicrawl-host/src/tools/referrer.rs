@@ -13,6 +13,8 @@
 //! （与浏览器一致，见 [`policy_from_response`]）。唯一不接受的取值是 `unsafe-url`：
 //! 那个档位要求把完整 URL 交给任意目标、连降级都不设防，本实现不提供。
 
+use super::web_transport::{default_port, split_authority};
+
 /// 规范化后的策略取值（不含 `unsafe-url`，见 [`Policy::parse`]）。
 ///
 /// 声明顺序就是**严格程度**：越靠前越严。这个顺序来自 Referrer Policy 规范里
@@ -185,8 +187,8 @@ impl Endpoint {
 
     /// `scheme://host[:port]`；默认端口不写（浏览器就是这么输出的）。
     fn origin(&self) -> String {
-        let default_port = default_port(&self.scheme);
-        if self.port == default_port {
+        let standard_port = default_port(&self.scheme);
+        if self.port == standard_port {
             format!("{}://{}", self.scheme, self.host)
         } else {
             format!("{}://{}:{}", self.scheme, self.host, self.port)
@@ -195,33 +197,6 @@ impl Endpoint {
 
     fn path_and_query(&self) -> String {
         format!("{}{}", self.origin(), self.path_and_query)
-    }
-}
-
-fn default_port(scheme: &str) -> u16 {
-    match scheme {
-        "https" => 443,
-        "http" => 80,
-        _ => 0,
-    }
-}
-
-fn split_authority<'a>(authority: &'a str, scheme: &str) -> Option<(&'a str, u16)> {
-    // IPv6 字面量：`[::1]:8080`。方括号里的冒号不是端口分隔符。
-    if let Some(rest) = authority.strip_prefix('[') {
-        let end = rest.find(']')?;
-        let host = &rest[..end];
-        let port = match rest[end + 1..].strip_prefix(':') {
-            Some(value) => value.parse::<u16>().ok()?.max(1),
-            None => default_port(scheme).max(1),
-        };
-        return Some((host, port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => {
-            Some((host, port.parse::<u16>().ok()?.max(1)))
-        }
-        _ => Some((authority, default_port(scheme).max(1))),
     }
 }
 

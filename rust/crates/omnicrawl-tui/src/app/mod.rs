@@ -25,7 +25,7 @@ use omnicrawl_commands::slash::{
     WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
 use omnicrawl_commands::SessionSummary;
-use omnicrawl_config::core::runtime::{resolve_config_path, ConfigEnvironment};
+use omnicrawl_config::core::runtime::{resolve_config_path, user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
     save_context_window_tokens, save_feature_enabled, save_mcp_config, save_show_thinking,
@@ -129,9 +129,9 @@ use omnicrawl_ipc::{
     bridge::{
         Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
         KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
-        ModelHookResult, SessionAppendParams, SessionEventsParams, SessionHistoryParams,
-        SessionListParams, SessionModelSettings, SessionRenameParams, SessionResumeParams,
-        SessionSettingsParams,
+        ModelHookResult, SessionAppendParams, SessionDeleteParams, SessionEventsParams,
+        SessionHistoryParams, SessionListParams, SessionModelSettings, SessionRenameParams,
+        SessionResumeParams, SessionSettingsParams,
         SubagentRunParams, ToolBatch,
     },
     error_code, Frame, Id, PROTOCOL_VERSION,
@@ -169,7 +169,8 @@ use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
     nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
-    McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SettingsChange, SettingsEvent,
+    McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
+    SettingsEvent,
     SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange,
     TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
     WebSearchRow, SUBAGENT_ADVANCED_SPECS,
@@ -607,6 +608,13 @@ pub struct App {
     suggest_results: Receiver<SuggestTaskResult>,
     /// 仍在后台跑的建议数：>0 时主循环按活动帧率轮询，结果一到就提交回合。
     suggest_in_flight: usize,
+    /// 新版本检测句柄：启动时起一个后台线程查 npm registry（结果缓存一小时）。
+    ///
+    /// 拿到「有新版本」时只往会话区顶一条提示，且**整个进程只提示一次**——
+    /// 检测是附加信息，不该反复出现在对话流里。
+    update_check: Option<omnicrawl_update::UpdateCheck>,
+    /// 本次运行是否已经就新版本提示过（避免同一进程重复插入同一条提示）。
+    update_notified: bool,
 }
 
 /// 工具建议的产出：拼好建议后待提交的提问。
@@ -984,6 +992,13 @@ impl App {
             suggest_sender,
             suggest_results,
             suggest_in_flight: 0,
+            // 启动即触发检测：后台线程读缓存（一小时内直接命中）或查一次 registry。
+            update_check: Some(omnicrawl_update::UpdateCheck::spawn(
+                omnicrawl_update::UpdateCache::in_dir(&user_config_dir(
+                    &ConfigEnvironment::from_process(),
+                )),
+            )),
+            update_notified: false,
         })
     }
     // ---------- 内核同步往返 ----------
