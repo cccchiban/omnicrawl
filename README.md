@@ -14,11 +14,9 @@ OmniCrawl 是纯 Rust 构建的本地 AI 编程终端工作台，提供全屏 TU
 
 ## 功能特性
 
-- **终端 TUI**：全屏工作台（`omnicrawl-tui`），支持键鼠交互、模型热切换、渠道管理、设置面板、审批控制与事务级 `/undo` 回退；取消当前回合仍保留上下文。
-- **HTTP/SSE API**：本地服务可直接对接 Web 或桌面前端，内置 `Swagger UI` 接口文档。
-- **工具与安全**：内置文件读写、文本搜索、本地图片读取、视觉模型代理、Bash/PowerShell、Windows 桌面控制、记忆与 SubAgent 等工具，可在 `config.toml` 的 `tools` 段逐项开关。SubAgent 支持独立 Git worktree 隔离执行，其全局设置与模型配置独立存放于 `subagents.toml`（模板见 `rust/assets/config-templates/subagents.example.toml`，不再读取 `config.toml` 的 `[subagents]` 段）。
-- **统一工具分发**：Provider 顶层直接注册当前 Agent 的全部可见工具，模型以真实工具名原生调用；Host 侧统一维护完整 Schema、审批策略、MCP 能力与执行器并做二次校验（详见 `rust/assets/docs/TOOL_CALLING.md`）。
-- **扩展能力**：支持 Skill 技能、MCP Server 接入及自定义 `models.toml` 模型目录。
+- **上下文压缩机制**：达到模型上下文阈值时自动触发（亦可通过 /compact 手动执行），依次完成测量、摘要、窗口归档、事件落盘、记忆回写与召回，最终重建历史并插入可见的压缩边界提示。摘要阶段禁用工具调用，且逐字复用主请求的系统提示词、消息前缀与工具声明，以最大化命中前缀缓存。被压缩的工具调用原文独立落盘并在摘要中附带路径，供模型按需读取核对。
+- **超轻量化与极低内存**：纯 Rust 单文件二进制交付，零运行时依赖（无需 Python/Node），开箱即用。内核采用阻塞式 HTTP/1.1 与 rustls 传输，剔除异步运行时与重型框架。
+- **分级记忆系统**：按项目、会话、用户三级作用域隔离，采用类文件系统的目录结构与关联网络组织。默认仅暴露调用规范与摘要，按需加载全文以节省 Token；支持基于访问频次的动态留存，高频记忆自动沉淀，低频记忆按规则淘汰。
 
 ## 环境要求
 
