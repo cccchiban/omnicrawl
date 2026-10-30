@@ -973,8 +973,13 @@ mod tests {
             "超宽单元格要截断：{:?}",
             narrow.plain()
         );
-        // 收进来之后各行列数必须一致，否则列关系就断了。
-        let widths: Vec<usize> = narrow.plain().lines().map(text_width).collect();
+        // 收进来之后各行列数必须一致，否则列关系就断了（末尾换行切出的空行不算表格行）。
+        let widths: Vec<usize> = narrow
+            .plain()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(text_width)
+            .collect();
         assert!(
             widths.windows(2).all(|pair| pair[0] == pair[1]),
             "各行应等宽：{widths:?}"
@@ -1055,10 +1060,16 @@ mod tests {
             code_lines.iter().all(is_code_line),
             "代码块每行都应识别为代码行：{code_lines:?}"
         );
-        // 代码行的 `• `/`1. ` 不会被当成结构前缀。
-        assert!(code_lines
+        // 代码行的 `• `/`1. ` 是内容：调用方靠 is_code_line 跳过悬挂缩进，两者必须配合。
+        let prefixes: Vec<String> = code_lines
             .iter()
-            .all(|line| continuation_prefix(&line.plain()).is_empty()));
+            .filter(|line| !is_code_line(line))
+            .map(|line| continuation_prefix(&line.plain()))
+            .collect();
+        assert!(
+            prefixes.is_empty(),
+            "代码行已被 is_code_line 排除，不应再算结构前缀：{prefixes:?}"
+        );
         // 行内代码与代码块共用同一块灰底，但它是正文，不能算代码行（否则列表项会丢悬挂缩进）。
         let inline = render_markdown("`kb_search` 后面还有正文");
         let inline_line = inline.split_lines()[0].clone();
