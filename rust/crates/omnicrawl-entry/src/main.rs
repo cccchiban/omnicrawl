@@ -16,12 +16,14 @@ const KERNEL_COMMAND: &str = "kernel";
 const API_COMMAND: &str = "api";
 const DECISION_COMMAND: &str = "decision";
 const FETCH_COMMAND: &str = "fetch";
+const TRIGGER_COMMAND: &str = "trigger";
 const BINARY_ENV: &str = "OMNICRAWL_BINARY";
 const TUI_ENV: &str = "OMNICRAWL_TUI_BINARY";
 const API_ENV: &str = "OMNICRAWL_API_BINARY";
 const KERNEL_ENV: &str = "OMNICRAWL_KERNEL_BINARY";
 const DECISION_ENV: &str = "OMNICRAWL_DECISION_BINARY";
 const FETCH_ENV: &str = "OMNICRAWL_FETCH_BINARY";
+const TRIGGER_ENV: &str = "OMNICRAWL_TRIGGER_BINARY";
 /// 连接器模式：`omnicrawl-host connector <平台>` 由宿主承载连接器（真实工具表与会话）。
 ///
 /// 与内核的 `--connector <平台>` 并存：无宿主载荷的平台（armv7 等）仍由内核承载，那条
@@ -80,6 +82,10 @@ fn run(args: Vec<OsString>) -> Result<i32, String> {
         }
         Some(FETCH_COMMAND) => {
             let target = resolve_target(FETCH_ENV, "omnicrawl-fetch", None)?;
+            run_child(&target, &args[1..], &context.workspace_root)
+        }
+        Some(TRIGGER_COMMAND) => {
+            let target = resolve_target(TRIGGER_ENV, "omnicrawl-trigger", None)?;
             run_child(&target, &args[1..], &context.workspace_root)
         }
         // 连接器由宿主承载：连接器自身要真实工具表与会话，只有宿主载荷有这一整套。
@@ -198,6 +204,7 @@ fn print_help() {
          api           启动 Rust 本地 HTTP 服务\n\
          decision ...  决策接口（serve / ensure / stop / status）\n\
          fetch ...     抓取接口（serve / ensure / stop / status）\n\
+         trigger ...   触发接口（serve / ensure / stop / status）\n\
          kernel ...    直连 Rust 内核进程\n\
          connector <平台>  启动宿主承载的连接器\n\n\
          --resume <id>  启动终端工作台时恢复指定会话\n\
@@ -217,6 +224,7 @@ mod tests {
         assert_eq!(API_COMMAND, "api");
         assert_eq!(DECISION_COMMAND, "decision");
         assert_eq!(FETCH_COMMAND, "fetch");
+        assert_eq!(TRIGGER_COMMAND, "trigger");
     }
 
     #[test]

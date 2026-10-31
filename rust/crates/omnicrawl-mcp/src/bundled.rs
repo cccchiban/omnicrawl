@@ -40,7 +40,7 @@ struct BundledDoc {
 }
 
 /// 文档表按文件名小写序排列，与 Python 侧 `sorted(names, key=str.lower)` 一致。
-const BUNDLED_DOCS: [BundledDoc; 16] = [
+const BUNDLED_DOCS: [BundledDoc; 17] = [
     BundledDoc {
         name: "advisor_design.md",
         text: include_str!("../../../../rust/assets/docs/advisor_design.md"),
@@ -100,6 +100,10 @@ const BUNDLED_DOCS: [BundledDoc; 16] = [
     BundledDoc {
         name: "tool_output_compression_design.md",
         text: include_str!("../../../../rust/assets/docs/tool_output_compression_design.md"),
+    },
+    BundledDoc {
+        name: "trigger_api.md",
+        text: include_str!("../../../../rust/assets/docs/trigger_api.md"),
     },
     BundledDoc {
         name: "TTS.md",
@@ -166,7 +170,7 @@ mod tests {
         sorted.sort();
         let actual: Vec<String> = names.iter().map(|name| name.to_lowercase()).collect();
         assert_eq!(actual, sorted);
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 17);
     }
 
     #[test]

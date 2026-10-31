@@ -2138,6 +2138,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnicrawl-trigger"
+version = "0.4.3"
+dependencies = [
+ "axum",
+ "chrono",
+ "omnicrawl-api",
+ "omnicrawl-config",
+ "omnicrawl-connectors",
+ "omnicrawl-host",
+ "omnicrawl-session",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "omnicrawl-tts"
 version = "0.4.3"
 dependencies = [

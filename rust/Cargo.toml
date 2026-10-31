@@ -20,6 +20,7 @@ members = [
     "crates/omnicrawl-session",
     "crates/omnicrawl-tui",
     "crates/omnicrawl-tts",
+    "crates/omnicrawl-trigger",
     "crates/omnicrawl-tls",
     "crates/omnicrawl-update",
     "crates/omnicrawl-version",

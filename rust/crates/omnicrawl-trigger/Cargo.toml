@@ -1,0 +1,36 @@
+[package]
+name = "omnicrawl-trigger"
+description = "触发接口：外部事件拉起独立 loop 的回环 REST（无人值守、独立会话）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_trigger"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-trigger"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+# 注入头部的时间戳要带本机时区偏移（`2026-11-01T08:00:12+08:00`），与会话侧同一份 chrono。
+chrono = { workspace = true }
+# 触发回路复用本地 API 的 AgentService：同一个内核子进程、同一张工具表、同一份提示词装配。
+omnicrawl-api = { path = "../omnicrawl-api" }
+omnicrawl-config = { path = "../omnicrawl-config" }
+# 终态投递复用连接器的平台客户端与既有凭据，不新开一份。
+omnicrawl-connectors = { path = "../omnicrawl-connectors" }
+omnicrawl-host = { path = "../omnicrawl-host" }
+# 转录读取：`/transcript` 端点直接读会话 JSONL。
+omnicrawl-session = { path = "../omnicrawl-session" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

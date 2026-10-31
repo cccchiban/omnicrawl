@@ -4849,6 +4849,7 @@
       "TERMINAL_UI.md",
       "TOOL_CALLING.md",
       "tool_output_compression_design.md",
+      "trigger_api.md",
       "TTS.md"
     ],
     "hashes": {
@@ -4867,7 +4868,8 @@
       "TERMINAL_UI.md": "199f53d8d6e2a42f277931d0e5876e2269d461586377a837043d8765f045d14f",
       "TOOL_CALLING.md": "fe807441ab5a12340728df5a372ffcc7effe7277dcce7274bd12be030e62e455",
       "tool_output_compression_design.md": "efab3834a58df6c5aebd0e572b0e17b2a66b3220a887c50cf14ceec46f337af6",
-      "TTS.md": "b655c9b843b14444195033be094be34240b5f48873848a5d9b7cdb09127c71b1"
+      "TTS.md": "b655c9b843b14444195033be094be34240b5f48873848a5d9b7cdb09127c71b1",
+      "trigger_api.md": "ca04ba0cefc59d152bd16a57c696d03c2200ddb2ec2d958d07cf4980b8d58321"
     }
   }
 }

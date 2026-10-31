@@ -23,6 +23,8 @@ pub mod subagents;
 pub mod tls_resumption;
 pub mod tool_output_compression;
 pub mod tools;
+// 触发接口（`[trigger_api]`）：外部事件拉起独立 loop 的回环入口（Rust 侧新增，Python 无对映）。
+pub mod trigger_api;
 pub mod tts;
 // 云端 TTS 的服务商路由与两家接口参数（Rust 侧新增，Python 无对映）。
 pub mod tts_cloud;

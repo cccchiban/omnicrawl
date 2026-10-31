@@ -9,16 +9,17 @@
 //! 编译期内嵌的同一份文本——脱离 Python 宿主分发时不必再带模板目录，行为与 Python 逐字一致。
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use omnicrawl_config::core::runtime::{global_agents_path, ConfigEnvironment};
+use omnicrawl_config::core::runtime::{ConfigEnvironment, global_agents_path};
 use omnicrawl_config::features::skills::load_skills_config;
 use omnicrawl_controllers::building::{
     advisor_guidelines_block, normalize_mode_name, system_prompt_with_mode,
 };
 use omnicrawl_controllers::shared::AGENTS_INSTRUCTIONS_FILE;
 use omnicrawl_controllers::turn::prompt_context::{
-    build_context_messages, build_system_prompt, format_active_skills_for_context, ActiveSkill,
-    ContextMessageInputs,
+    ActiveSkill, ContextMessageInputs, build_context_messages, build_system_prompt,
+    format_active_skills_for_context,
 };
 use omnicrawl_extensions::skill::{Skill, SkillManager, SkillMeta};
 use serde_json::Value;
@@ -75,6 +76,12 @@ pub struct PromptRuntime {
     skill_manager: Option<SkillManager>,
     templates_dir: Option<PathBuf>,
     extra_skill_paths: Vec<String>,
+    /// 无人值守入口追加的额外约束（触发接口的「没有人在终端前」等）。
+    ///
+    /// 放在装配结果之后而不是模板里：模板对所有入口共用，而这条约束只对无人值守入口成立。
+    /// 用 `Mutex` 承载：`system_prompt()` 取 `&self`（它被 `runner_options` 借走），
+    /// 而追加段要能在装配之后单独设置。
+    system_prompt_append: Mutex<String>,
     env: ConfigEnvironment,
 }
 
@@ -109,6 +116,7 @@ impl PromptRuntime {
             extra_skill_paths: load_skills_config(env, None)
                 .map(|config| config.extra_paths)
                 .unwrap_or_default(),
+            system_prompt_append: Mutex::new(String::new()),
             env: env.clone(),
         };
         runtime.discover_skills();
@@ -186,18 +194,20 @@ impl PromptRuntime {
         let file_name = format!("{normalized}.md");
         let prompt = match read_template(self.templates_dir.as_deref(), &file_name) {
             Some(text) => text,
-            None => builtin_mode_prompt(&normalized).map(str::to_string).ok_or_else(|| {
-                // 与 Python 的文案同形：包内模板确实缺这个文件。
-                let path = self
-                    .templates_dir
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("templates"))
-                    .join(&file_name);
-                format!(
-                    "读取模式模板 {normalized}.md 失败：{} 不存在。",
-                    path.display()
-                )
-            })?,
+            None => builtin_mode_prompt(&normalized)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    // 与 Python 的文案同形：包内模板确实缺这个文件。
+                    let path = self
+                        .templates_dir
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from("templates"))
+                        .join(&file_name);
+                    format!(
+                        "读取模式模板 {normalized}.md 失败：{} 不存在。",
+                        path.display()
+                    )
+                })?,
         };
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
@@ -217,14 +227,34 @@ impl PromptRuntime {
         previous
     }
 
-    /// 基础 system prompt + 顾问准则 + 活动模式提示词。
+    /// 基础 system prompt + 顾问准则 + 活动模式提示词 + 调用方追加的约束。
     pub fn system_prompt(&self) -> String {
-        system_prompt_with_mode(
+        let base = system_prompt_with_mode(
             &self.template,
             &self.advisor_block,
             &self.mode_name,
             &self.mode_prompt,
-        )
+        );
+        let append = self
+            .system_prompt_append
+            .lock()
+            .map(|guard| guard.trim().to_string())
+            .unwrap_or_default();
+        if append.is_empty() {
+            return base;
+        }
+        format!("{}\n\n{}", base.trim_end(), append)
+    }
+
+    /// 追加一段只对本入口成立的系统约束（空串表示不追加）。
+    ///
+    /// 已生效的追加段可以再改，后一次覆盖前一次。取 `&self` 是为了能通过
+    /// `Arc<PromptRuntime>` 直接设置，不必重建整份装配结果。
+    pub fn set_system_prompt_append(&self, append: impl Into<String>) {
+        let append = append.into();
+        if let Ok(mut guard) = self.system_prompt_append.lock() {
+            *guard = append;
+        }
     }
 
     /// system 之外的上下文消息：项目规范、Skill、工具能力说明与运行环境。
@@ -379,6 +409,23 @@ mod tests {
     }
 
     #[test]
+    fn append_block_is_tail_of_system_prompt_only_when_set() {
+        let env = ConfigEnvironment::from_process();
+        let runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
+        let base = runtime.system_prompt();
+        assert!(!base.contains("本次会话由外部事件触发"));
+
+        runtime.set_system_prompt_append("本次会话由外部事件触发，没有人在终端前。");
+        let with_append = runtime.system_prompt();
+        assert!(with_append.starts_with(base.trim_end()));
+        assert!(with_append.trim_end().ends_with("没有人在终端前。"));
+
+        // 空串等于撤掉追加段。
+        runtime.set_system_prompt_append("   ");
+        assert_eq!(runtime.system_prompt(), base);
+    }
+
+    #[test]
     fn system_prompt_keeps_embedded_body_and_appends_mode() {
         let env = ConfigEnvironment::from_process();
         let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
@@ -413,7 +460,9 @@ mod tests {
         let base = runtime.system_prompt();
         assert_eq!(runtime.active_mode(), "");
 
-        runtime.activate_mode("speaking-style").expect("启用简洁回复模式");
+        runtime
+            .activate_mode("speaking-style")
+            .expect("启用简洁回复模式");
         assert_eq!(runtime.active_mode(), "speaking-style");
         let with_mode = runtime.system_prompt();
         assert!(with_mode.contains("<active_mode_prompt name=\"speaking-style\">"));
@@ -437,17 +486,21 @@ mod tests {
         let env = ConfigEnvironment::from_process();
         let mut inactive = options();
         inactive.advisor_active = false;
-        assert!(!PromptRuntime::load(&env, inactive)
-            .expect("装配")
-            .system_prompt()
-            .contains("使用准则"));
+        assert!(
+            !PromptRuntime::load(&env, inactive)
+                .expect("装配")
+                .system_prompt()
+                .contains("使用准则")
+        );
 
         let mut active = options();
         active.advisor_active = true;
-        assert!(PromptRuntime::load(&env, active)
-            .expect("装配")
-            .system_prompt()
-            .contains("顾问策略（advisor）使用准则"));
+        assert!(
+            PromptRuntime::load(&env, active)
+                .expect("装配")
+                .system_prompt()
+                .contains("顾问策略（advisor）使用准则")
+        );
     }
 
     #[test]

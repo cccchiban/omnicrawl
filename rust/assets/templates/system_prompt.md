@@ -64,6 +64,7 @@ omnicrawl文档（共 15 篇，均以 `omnicrawl://docs/<文件名>` 读取，�
 - TTS 语音合成（Kokoro-82M ONNX CPU：配置、tts_synthesize 工具、CLI、音素化、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `rust/crates/omnicrawl-tts/` 和 `rust/crates/omnicrawl-config/src/features/tts.rs`。
 - 决策接口（结构化决策模型的本地 REST 服务：启动、无鉴权的回环访问、decide/choice/rank/review 端点、常驻与复用、脱敏与安全边界）：读取 `omnicrawl://docs/decision_api.md`；实现位于 `rust/crates/omnicrawl-decision/` 和 `rust/crates/omnicrawl-config/src/features/decision_model.rs`。
 - 抓取接口（fetcher 的本机 REST 通道：`[fetch_api]` 配置、`/v1/fetch` 端点、无鉴权回环访问、Python 批量脚本调用、与工具同源的抓取语义与安全边界）：读取 `omnicrawl://docs/fetch_api.md`；实现位于 `rust/crates/omnicrawl-fetch/`、`rust/crates/omnicrawl-config/src/features/fetch_api.rs` 和 `rust/crates/omnicrawl-host/src/tools/fetcher.rs`。
+- 触发接口（外部事件拉起独立 loop：`[trigger_api]` 配置、`/v1/triggers` 端点、条件判定留给外部组件、无人值守审批与工具白名单、终态投递与去重）：读取 `omnicrawl://docs/trigger_api.md`；实现位于 `rust/crates/omnicrawl-trigger/` 和 `rust/crates/omnicrawl-config/src/features/trigger_api.rs`。
 - FSAPP 接入（文件系统应用侧的接入约定）：读取 `omnicrawl://docs/FSAPP.md`。
 
 脱敏占位符引用规则：

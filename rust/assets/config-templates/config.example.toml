@@ -297,6 +297,55 @@ impersonate = ""
 # 单次请求的 URL 上限：0 表示用默认上限 20，否则按 1–20 收窄。
 max_urls = 0
 
+# 触发接口：让外部组件（定时任务、传感器脚本、CI、监控告警）在自定条件成立时拉起一个
+# 独立 loop。它们自己判断时间/温度/湿度/构建状态，命中后 POST 一条自定义消息，OmniCrawl
+# 用一次独立会话跑一轮，跑完把结果落盘并按需投递到消息平台。
+#
+#   omnicrawl trigger ensure   # 确保本机有一份可用服务（已就绪则复用）
+#   omnicrawl trigger status   # 打印配置、并发与队列
+#   omnicrawl trigger stop     # 停止本机共用的服务
+#
+#   POST /v1/triggers  {message, data?, title?, session_key?, workspace?,
+#                       timeout_seconds?, wait_seconds?, idempotency_key?,
+#                       notify?, tags?}
+#                      → {trigger_id, state, title, created_at, queue_position?, duplicate}
+#   GET  /v1/triggers[?state=&tag=&limit=]   列表（按创建时间倒序）
+#   GET  /v1/triggers/{id}                   单条状态与结果
+#   GET  /v1/triggers/{id}/events            SSE，事件名与 /api/v1/runs 同源
+#   GET  /v1/triggers/{id}/transcript        会话转录（回看那轮做了什么）
+#   POST /v1/triggers/{id}/cancel            取消（幂等）
+#
+# 与 /api/v1/runs 的区别：那条路是交互式入口，占单活动生成名额且写当前会话；触发接口有
+# 自己的会话根与并发池，无人值守任务不会和用户抢名额，也不污染用户的对话历史。
+#
+# 条件判定完全在外部组件：这里不内置调度器、不解析 cron。
+# 接口不做鉴权，host 只允许回环地址；工具白名单默认只读 + 记忆/知识库 + 联网检索，
+# 审批固定为自动审查（危险调用仍被审查闸拦下）。默认关闭。
+[trigger_api]
+enabled = false
+host = "127.0.0.1"
+# 端口：与本地 API（8765）、决策接口（8767）、抓取接口（8768）错开。
+port = 8769
+# 同时最多跑几个 loop（1–4）。每个 slot 一套独立的内核进程、工具表与会话。
+max_concurrency = 1
+# 排队上限；满了返回 429 QUEUE_FULL，调用方稍后重试。
+queue_limit = 32
+# 单次回合上限（60–7200 秒）；请求可用 timeout_seconds 收窄。
+default_timeout_seconds = 900
+# per_trigger：每次触发新开会话；keyed：允许请求用 session_key 复用持久会话（同名串行）。
+session_mode = "per_trigger"
+# 请求未给 workspace 时的缺省工作区；留空表示用宿主当前工作区。
+default_workspace = ""
+# 无人值守工具白名单（白名单语义：表外的工具既不声明给模型，宿主也不执行）。
+# 要放开 bash / write_file，前提是调用来源可信——报文、日志与网页内容会进模型上下文。
+tools = ["read", "read_image", "list", "find", "grep", "memory_search", "memory_read",
+         "memory_expand_related", "memory_write", "kb_search", "kb_read", "web_search",
+         "fetcher"]
+# 追加到固定无人值守约束之后的部署专属提示（例如「回复用中文，不超过 300 字」）。
+system_prompt_append = ""
+# 触发记录在服务进程内的保留小时数（1–8760）；会话转录另行保留在会话目录里。
+retention_hours = 168
+
 [agent_temp]
 enabled = true
 directory = ".omnicrawl/.agent_tmp"
