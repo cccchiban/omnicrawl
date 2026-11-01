@@ -197,6 +197,11 @@ pub fn stop(environment: &ConfigEnvironment, settings: &TriggerSettings) -> Ensu
 }
 
 /// 拉起常驻服务进程；返回它的 PID。
+///
+/// 三路 stdio 都必须指向 null 或日志文件，**不能**是 `inherit`：Windows 上 Rust 的
+/// `Command` 用 `bInheritHandles=TRUE` 创建进程，任何未显式重定向的槽位都会把调用方的
+/// 管道复制给这个常驻进程。于是调用方（例如 cron 里的 `subprocess.run(capture_output=True)`）
+/// 会一直等 stdout 的 EOF，而 serve 既不写也不关——脚本永久卡死，看着像 ensure 没返回。
 fn spawn_service(environment: &ConfigEnvironment) -> Result<u32, String> {
     let program = resolve_service_program();
     let mut command = Command::new(&program);
@@ -281,7 +286,8 @@ pub fn log_path(environment: &ConfigEnvironment) -> PathBuf {
     user_config_dir(environment).join(LOG_FILENAME)
 }
 
-fn write_pid(environment: &ConfigEnvironment, pid: u32) {
+/// 写入服务 PID 记录（`ensure` 与 `serve` 两侧都写：谁先就绪谁负责登记）。
+pub fn write_pid(environment: &ConfigEnvironment, pid: u32) {
     let path = pid_path(environment);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

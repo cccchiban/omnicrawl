@@ -33,15 +33,17 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 /// 列表缺省条数。
 const DEFAULT_LIST_LIMIT: usize = 20;
 
+/// 列表查询参数（axum 要求公开路由的处理函数签名可见）。
 #[derive(Debug, Deserialize)]
-struct ListQuery {
+pub struct ListQuery {
     state: Option<String>,
     tag: Option<String>,
     limit: Option<usize>,
 }
 
+/// SSE 查询参数。
 #[derive(Debug, Deserialize)]
-struct EventsQuery {
+pub struct EventsQuery {
     follow: Option<String>,
 }
 
@@ -317,7 +319,6 @@ fn produce_events(
                     // 终态后再读一次，确保最后一条终态事件已经送出。
                     if let Ok(events) = store.events_after(&trigger_id, last) {
                         for event in events {
-                            last = event.id;
                             if sender
                                 .blocking_send(Ok(Bytes::from(event.to_sse())))
                                 .is_err()

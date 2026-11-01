@@ -77,6 +77,10 @@ async fn serve() -> ExitCode {
         }
     };
     println!("[trigger] 触发接口监听 http://{address}");
+    // 自己登记 PID：`ensure` 拉起的进程会由调用方写一次，但 `serve` 也可能被直接启动
+    // （前台调试、被别处托起）。只有服务自己写，`stop` / 就绪判定才不会因缺记录而失明——
+    // 那种失灵的表现是「stop 说未运行，服务其实仍在监听，ensure 再拉一份却绑不上端口」。
+    omnicrawl_trigger::server::write_pid(&environment, std::process::id());
 
     let store = Arc::new(TriggerStore::new(
         settings.api.queue_limit.max(1) as usize,

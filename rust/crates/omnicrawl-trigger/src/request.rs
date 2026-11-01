@@ -264,8 +264,12 @@ fn optional_text(body: &Map<String, Value>, key: &str, limit: usize) -> Result<S
 /// 整数：`10`、`10.0` 与 `"10"` 都认——脚本传数字字符串是常态，不该为此报错。
 fn as_integer(value: &Value) -> Option<i64> {
     match value {
-        Value::Integer(number) => Some(*number),
-        Value::Float(number) if number.is_finite() => Some(*number as i64),
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|float| float.is_finite())
+                .map(|float| float as i64)
+        }),
         Value::String(text) => text.trim().parse::<i64>().ok(),
         _ => None,
     }
@@ -275,8 +279,7 @@ fn as_integer(value: &Value) -> Option<i64> {
 fn scalar_to_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
-        Value::Integer(number) => number.to_string(),
-        Value::Float(number) => number.to_string(),
+        Value::Number(number) => number.to_string(),
         _ => String::new(),
     }
 }

@@ -93,15 +93,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let body = json!({
-            "error": {"code": self.code, "message": self.message}
-        });
-        (self.status, Json(body)).into_response()
-    }
-}
-
 /// 成功响应信封。
 pub fn data(value: Value) -> Json<Value> {
     Json(json!({ "data": value }))
