@@ -28,6 +28,7 @@ pub use omnicrawl_config::features::trigger_api::{
 };
 
 /// 已校验的创建请求。
+#[derive(Debug)]
 pub struct CreateRequest {
     pub title: String,
     pub message: String,
