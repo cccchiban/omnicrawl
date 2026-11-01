@@ -2059,6 +2059,12 @@
               "mimeType": "text/markdown"
             },
             {
+              "uri": "omnicrawl://docs/trigger_api.md",
+              "name": "omnicrawl/docs/trigger_api.md",
+              "description": "随 OmniCrawl 安装包提供的只读技术文档。",
+              "mimeType": "text/markdown"
+            },
+            {
               "uri": "omnicrawl://docs/TTS.md",
               "name": "omnicrawl/docs/TTS.md",
               "description": "随 OmniCrawl 安装包提供的只读技术文档。",
