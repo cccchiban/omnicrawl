@@ -1086,6 +1086,9 @@ pub fn hit_test(
 /// 列区间由渲染路径随显示行一起算好（`DisplayLine::button`），这里只做窗口换算，
 /// 因此悬停判定与真正画出来的格子永远一致。两种按钮（「立即结束」/「查看会话」）
 /// 共用这条登记，点哪个由 [`LineHit`] 与按钮归属共同决定。
+///
+/// 只管工具卡标题行右缘的行内按钮：整行可点的按钮（失败的「重试」）走 [`LineHit`] 判定，
+/// 若也登记在这里，`on_card_button` 会把它当成卡片按钮而抢先吞掉点击。
 pub fn card_button_columns(
     state: &AppState,
     area: Rect,
@@ -1381,15 +1384,15 @@ fn push_failure(
         theme::rich_style(theme::ACCENT_BLUE).add_modifier(Modifier::BOLD)
     };
     let indent = MESSAGE_PAD.to_string();
-    let column = display_width(&indent) as u16;
-    let button = (column, display_width(RETRY_BUTTON) as u16);
-    lines.push(DisplayLine::with_button(
+    // 整行就是按钮（缩进 + 文案），因此用 `with_hit` 登记命中，**不**占用 `button` 列区间：
+    // 那个字段表示「工具卡标题行右缘的行内按钮」，`on_card_button` 一旦命中就会跳过
+    // 重试按钮的悬停与点击分派——重试按钮画出来却点不动、也不变淡黄。
+    lines.push(DisplayLine::with_hit(
         Line::from(vec![
             Span::raw(indent),
             Span::styled(RETRY_BUTTON.to_string(), style),
         ]),
         LineHit::RetryTurn { index },
-        button,
     ));
 }
 
@@ -2517,6 +2520,26 @@ mod tests {
             row.line.spans.last().map(|span| span.style.fg),
             Some(Some(Color::Yellow)),
             "悬停时按钮要变黄"
+        );
+    }
+
+    /// 「重试」是整行可点的按钮：命中登记在 `hit` 上，**不**占用工具卡按钮的 `button` 字段。
+    ///
+    /// 回归的对象：它曾与工具卡标题行的行内按钮共用 `button`，而 `on_card_button` 一旦命中
+    /// 就跳过重试按钮的悬停与点击分派——按钮画出来却点不动、悬停也不变色。
+    #[test]
+    fn retry_button_does_not_take_the_tool_card_button_slot() {
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.fail_turn_with("上游错误已达到本回合自动重试上限".to_string(), true);
+
+        let row = display_lines(&state, 60)
+            .into_iter()
+            .find(|line| matches!(line.hit, Some(LineHit::RetryTurn { .. })))
+            .expect("可重试的失败提示要有「重试」按钮");
+        assert!(
+            row.button.is_none(),
+            "重试按钮不能占工具卡的 button 列区间，否则会被 on_card_button 抢先吞掉"
         );
     }
 

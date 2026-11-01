@@ -848,6 +848,24 @@ mod tests {
         assert!(state.take_observations(false).is_none());
     }
 
+    /// 回合失败必须把未决批次一起卸下。
+    ///
+    /// 回归的对象：`fail_turn_with` 只复位回合状态，残留的批次让 `waiting()` 继续返回
+    /// 「等审批」，鼠标事件被整段屏蔽——失败提示上的「重试」按钮画得出来却点不动。
+    #[test]
+    fn failing_a_turn_drops_the_pending_batch() {
+        let mut state = state();
+        state.begin_turn("t1".to_string(), "跑个工具".to_string(), Vec::new());
+        state.start_batch(Id::Number(12), vec![call("c1", "bash")]);
+        assert!(state.waiting().is_some(), "批次应当挂起等审批");
+
+        state.fail_turn_with("上游错误已达到本回合自动重试上限".to_string(), true);
+        assert!(
+            state.waiting().is_none(),
+            "回合已经失败，残留批次不能再把界面留在「等审批」"
+        );
+    }
+
     /// 子代理批次的调用照旧要执行，但卡片属于子代理窗口：主会话里一张都不该多出来。
     #[test]
     fn subagent_batches_never_reach_the_main_conversation() {

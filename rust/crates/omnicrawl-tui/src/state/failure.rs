@@ -16,6 +16,9 @@ impl AppState {
             self.turn = TurnState::Idle;
             self.turn_started = None;
             self.status = None;
+            // 未决批次必须卸下：`waiting()` 还返回它时，`handle_mouse` 会一直判定「等审批」
+            // 而屏蔽点击与拖选——失败提示上的「重试」按钮就画得出来、点不动。
+            self.cancel_batch();
             // 回合失败/取消时不能留下一直转圈的卡片。
             self.close_running_cards("工具调用在回合结束前未收到结果。");
             // 中途停下的思考不再逐帧铺开：当场补全到已到达的长度，免得停在半句。

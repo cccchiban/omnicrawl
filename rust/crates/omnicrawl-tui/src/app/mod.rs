@@ -373,10 +373,13 @@ fn build_review_options(
     omnicrawl_host::review::review_options_from_config(llm, environment)
 }
 
+/// 内核把回合同步失败写到 stderr 时用的前缀；与 `turn.submit` 的错误响应同源，只留后者。
+const KERNEL_TURN_FAILURE_PREFIX: &str = "[kernel] 回合失败：";
+
 /// 内核 stderr 行 → 会话区提示文案；不是报错行时返回 `None`。
 ///
-/// 内核把 `[kernel] 回合失败：…` 一类诊断写到 stderr；只有这些行值得占用会话流，
-/// 常规信息（如「会话已就绪」）直接丢弃。
+/// 内核把非回合级的诊断写到 stderr；只有报错行值得占用会话流，常规信息（如「会话已就绪」）
+/// 直接丢弃。
 ///
 /// `panicked` 必须收：release 档是 `panic = "abort"`，内核 panic 会**直接结束进程**，
 /// Rust 的 panic 首行既不带「失败/错误/异常」也没有任何中文提示词——按老口径过滤掉，
@@ -384,6 +387,12 @@ fn build_review_options(
 fn kernel_error_notice(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
+        return None;
+    }
+    // 回合失败另有权威通道：内核用 `turn.submit` 的错误响应回同一句原因，宿主据此落一条
+    // 带「重试」按钮的失败记录。stderr 这行再进一次会话流，屏幕上就是两条一模一样的报错
+    // （一条灰色提示、一条红色失败），用户只会以为请求失败了两次。
+    if trimmed.starts_with(KERNEL_TURN_FAILURE_PREFIX) {
         return None;
     }
     let is_error = ["失败", "错误", "异常", "无法", "panicked", "RUST_BACKTRACE"]
@@ -1123,6 +1132,24 @@ impl KernelCommand {
 mod tests {
     use super::*;
     use omnicrawl_config::models::llm::provider_options_from_json;
+
+    /// 回合失败只准上报一次：`turn.submit` 的错误响应是权威通道，内核 stderr 的同一句
+    /// 回声必须丢掉，否则屏幕上会出现两条一模一样的报错。
+    #[test]
+    fn the_kernel_echo_of_a_failed_turn_is_not_reported_twice() {
+        let reason =
+            "上游错误已达到本回合自动重试上限，已停止本次请求。错误类型：APIConnectionError。";
+        assert_eq!(
+            kernel_error_notice(&format!("[kernel] 回合失败：{reason}")),
+            None,
+            "回合失败另有 turn.submit 的错误响应，stderr 回声不能进会话流"
+        );
+        // 其它内核诊断照旧入流（panic 首行没有中文关键词，只靠 `panicked` 才收得到）。
+        assert_eq!(
+            kernel_error_notice("[kernel] 会话写入回合终态失败：磁盘已满"),
+            Some("[kernel] 会话写入回合终态失败：磁盘已满".to_string())
+        );
+    }
 
     #[test]
     fn retryable_failures_are_the_ones_worth_resending() {

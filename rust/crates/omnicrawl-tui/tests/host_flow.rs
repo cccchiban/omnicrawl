@@ -2690,3 +2690,156 @@ fn stop_button_on_a_monitor_tool_call_brightens_and_interrupts_the_wait() {
         "点「立即结束」应当针对参数里的任务 id 动作：{notice:?}"
     );
 }
+
+/// 重试按钮：悬停必须点亮、点击必须重发。
+///
+/// 回归的对象：失败提示那行用 `DisplayLine::with_button` 登记「重试」的列区间，而该字段
+/// 原本只服务于工具卡标题行的「立即结束」/「查看会话」——`on_card_button` 一旦命中就
+/// **跳过**重试按钮的命中判定。于是重试按钮永远不悬停（不变淡黄），点击还会先被
+/// 卡片按钮分支吞掉：既不停监控、也不打开子代理窗口，什么都不发生。
+#[test]
+fn retry_button_brightens_on_hover_and_resends_the_turn() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+    harness.app.state.composer.insert("再问一次");
+    harness.press(KeyCode::Enter);
+    let submit_id = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.id().cloned())
+        .expect("应发出 turn.submit");
+    let Id::Number(id) = submit_id else {
+        panic!("id 应当是数字");
+    };
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32603,\"message\":\
+         \"上游错误已达到本回合自动重试上限，已停止本次请求。connection reset\"}}}}\n"
+    ));
+    harness.expect_ready(
+        |app| !app.state.turn.is_running() && app.state.last_failure_slot().is_some(),
+        "失败响应后应当留下一条失败记录",
+    );
+
+    let conversation = omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state)
+        .conversation;
+    let text = omnicrawl_tui::ui::conversation::text_area(conversation);
+    let row = (0..conversation.height as usize)
+        .find(|row| {
+            matches!(
+                omnicrawl_tui::ui::conversation::hit_test(
+                    &harness.app.state,
+                    conversation,
+                    harness.app.state.scroll_from_bottom,
+                    *row,
+                ),
+                Some(omnicrawl_tui::ui::conversation::LineHit::RetryTurn { .. })
+            )
+        })
+        .expect("失败提示上应当画出「重试」按钮");
+    let screen_row = conversation.y + row as u16;
+
+    harness
+        .app
+        .handle_event(mouse(MouseEventKind::Moved, text.x + 2, screen_row));
+    assert!(
+        harness.app.state.retry_button_hover().is_some(),
+        "鼠标停在「重试」上必须记成悬停，否则按钮不会变淡黄"
+    );
+
+    let before = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    harness
+        .app
+        .handle_event(mouse(MouseEventKind::Down(MouseButton::Left), text.x + 2, screen_row));
+    let after = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    assert_eq!(after, before + 1, "点「重试」必须重新发出一条 turn.submit");
+}
+
+/// 回合在工具批次进行中失败：鼠标不能再被「等审批」锁死。
+///
+/// 回归的对象：`fail_turn_with` 只复位回合状态，不卸下未决的工具批次；`state.waiting()`
+/// 仍返回那条批次，`handle_mouse` 的 `interactive` 判据因此恒为假——重试按钮画得出来、
+/// 看着能点，实际点上去毫无反应（拖选、点卡片也同样失效）。
+#[test]
+fn a_turn_failing_mid_batch_does_not_freeze_the_mouse() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+    harness.app.state.composer.insert("跑个工具");
+    harness.press(KeyCode::Enter);
+
+    // 内核派来一批需要审批的调用：界面进入「等审批」，鼠标此刻本就该被锁住。
+    harness.send(&tool_batch(
+        7,
+        "{\"turn_id\":\"turn-0\",\"step\":1,\"calls\":[{\"name\":\"bash\",\"arguments\":\
+         {\"command\":\"echo hi\"},\"id\":\"c1\",\"function_name\":\"bash\"}]}",
+    ));
+    harness.expect_ready(|app| app.state.waiting().is_some(), "应当进入等审批");
+
+    // 这一回合在审批前就因为上游失败而终止（`turn.submit` 的错误响应）。
+    let id = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.id().cloned())
+        .expect("应发出 turn.submit");
+    let Id::Number(id) = id else {
+        panic!("id 应当是数字");
+    };
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32603,\"message\":\
+         \"上游错误已达到本回合自动重试上限，已停止本次请求。connection reset\"}}}}\n"
+    ));
+    harness.expect_ready(
+        |app| !app.state.turn.is_running() && app.state.last_failure_slot().is_some(),
+        "失败响应后应当留下一条失败记录",
+    );
+
+    let conversation = omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state)
+        .conversation;
+    let text = omnicrawl_tui::ui::conversation::text_area(conversation);
+    let row = (0..conversation.height as usize)
+        .find(|row| {
+            matches!(
+                omnicrawl_tui::ui::conversation::hit_test(
+                    &harness.app.state,
+                    conversation,
+                    harness.app.state.scroll_from_bottom,
+                    *row,
+                ),
+                Some(omnicrawl_tui::ui::conversation::LineHit::RetryTurn { .. })
+            )
+        })
+        .expect("失败提示上应当有「重试」按钮");
+    let screen_row = conversation.y + row as u16;
+
+    let before = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        text.x + 2,
+        screen_row,
+    ));
+    let after = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("turn.submit"))
+        .count();
+    assert_eq!(
+        after,
+        before + 1,
+        "回合已经失败，残留的工具批次不该再把鼠标锁在「等审批」上"
+    );
+}
