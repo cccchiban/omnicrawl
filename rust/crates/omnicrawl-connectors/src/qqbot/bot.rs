@@ -546,6 +546,8 @@ pub struct QqBot<D: AgentDriver> {
     access: AccessPolicy,
     confirm_timeout: Duration,
     intents: i64,
+    /// 注入 system prompt 末尾的预设提示词（`[qqbot] persona`）：`READY` 取到昵称后才下发。
+    persona: String,
     state: Mutex<BotState>,
     stopped: AtomicBool,
     show_thinking: AtomicBool,
@@ -570,6 +572,7 @@ impl<D: AgentDriver> QqBot<D> {
                 config.confirm_timeout_seconds,
             )),
             intents: config.intents,
+            persona: config.persona.clone(),
             state: Mutex::new(BotState::default()),
             stopped: AtomicBool::new(false),
             show_thinking: AtomicBool::new(false),
@@ -597,6 +600,18 @@ impl<D: AgentDriver> QqBot<D> {
         // 远程端默认要短回复：平台单条消息有上限、回复条数也有限，长文体验很差。
         self.enable_default_speaking_style();
         self.run_forever()
+    }
+
+    /// 把机器人身份注入 system prompt 末尾：模型因此知道自己在 QQ 上、叫什么名字。
+    ///
+    /// 昵称要等网关 `READY` 才拿到，所以这件事不能在构造时做。宿主不支持提示词装配
+    /// （内核自持的 `omnicrawl --connector qqbot` 等）时只记日志，不影响收发消息。
+    pub fn apply_persona(&self, bot_name: &str) {
+        let append = super::config::persona_prompt(&self.persona, bot_name);
+        match self.driver.set_system_prompt_append(&append) {
+            Ok(()) => eprintln!("[qqbot] 已注入预设提示词：{append}"),
+            Err(error) => eprintln!("[qqbot] 注入预设提示词失败：{error}"),
+        }
     }
 
     /// 启动时默认开启简洁回复模式；已有其他模式时不动，失败只记日志不阻断启动。
@@ -679,75 +694,7 @@ impl<D: AgentDriver> QqBot<D> {
             match signal {
                 GatewaySignal::Dispatch { event, data, .. } => {
                     if event == "READY" {
-                        let session_id = data
-                            .get("session_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        // 全量模式靠机器人自身身份判断哪条群消息 @ 了它：平台把 @ 渲染成
-                        // `@昵称` 文本，所以昵称是关键；openid 用于兼容占位符写法。
-                        // 优先用 READY，缺字段时退回 /users/@me。
-                        let mut id = data
-                            .get("user")
-                            .and_then(|user| user.get("id"))
-                            .and_then(Value::as_str)
-                            .filter(|value| !value.is_empty())
-                            .map(|value| value.to_string());
-                        let mut name = data
-                            .get("user")
-                            .and_then(|user| user.get("username"))
-                            .and_then(Value::as_str)
-                            .filter(|value| !value.is_empty())
-                            .map(|value| value.to_string());
-                        if id.is_none() || name.is_none() {
-                            if let Ok(payload) = self.api.me() {
-                                if id.is_none() {
-                                    id = payload
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .filter(|value| !value.is_empty())
-                                        .map(|value| value.to_string());
-                                }
-                                if name.is_none() {
-                                    name = payload
-                                        .get("username")
-                                        .and_then(Value::as_str)
-                                        .filter(|value| !value.is_empty())
-                                        .map(|value| value.to_string());
-                                }
-                            }
-                        }
-                        {
-                            if let Ok(mut slot) = self.bot_openid.lock() {
-                                *slot = id.unwrap_or_default();
-                            }
-                            if let Ok(mut slot) = self.bot_name.lock() {
-                                *slot = name.unwrap_or_default();
-                            }
-                        }
-                        let id_text = self
-                            .bot_openid
-                            .lock()
-                            .map(|value| value.clone())
-                            .unwrap_or_default();
-                        let name_text = self
-                            .bot_name
-                            .lock()
-                            .map(|value| value.clone())
-                            .unwrap_or_default();
-                        if name_text.is_empty() {
-                            eprintln!(
-                                "[qqbot] 未取到机器人昵称：全量群消息可能无法识别 @（openid={id_text}）"
-                            );
-                        } else {
-                            eprintln!(
-                                "[qqbot] 机器人身份：{name_text}（openid={id_text}），用于识别群内 @"
-                            );
-                        }
-                        if let Ok(mut session) = self.session.lock() {
-                            session.session_id = session_id;
-                        }
-                        eprintln!("[qqbot] 登录成功，开始接收事件。");
+                        self.handle_ready(&data);
                         continue;
                     }
                     if event == "RESUMED" {
@@ -779,6 +726,73 @@ impl<D: AgentDriver> QqBot<D> {
         if let Ok(mut session) = self.session.lock() {
             session.seq = seq;
         }
+    }
+
+    /// 处理网关 `READY`：记住会话、机器人身份，并把平台身份注入 system prompt。
+    pub fn handle_ready(self: &Arc<Self>, data: &Value) {
+        let session_id = data
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // 全量模式靠机器人自身身份判断哪条群消息 @ 了它：平台把 @ 渲染成 `@昵称` 文本，
+        // 所以昵称是关键；openid 用于兼容占位符写法。优先用 READY，缺字段时退回 /users/@me。
+        let mut id = data
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let mut name = data
+            .get("user")
+            .and_then(|user| user.get("username"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        if id.is_none() || name.is_none() {
+            if let Ok(payload) = self.api.me() {
+                if id.is_none() {
+                    id = payload
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string());
+                }
+                if name.is_none() {
+                    name = payload
+                        .get("username")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string());
+                }
+            }
+        }
+        if let Ok(mut slot) = self.bot_openid.lock() {
+            *slot = id.unwrap_or_default();
+        }
+        if let Ok(mut slot) = self.bot_name.lock() {
+            *slot = name.unwrap_or_default();
+        }
+        let id_text = self
+            .bot_openid
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let name_text = self
+            .bot_name
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        if name_text.is_empty() {
+            eprintln!("[qqbot] 未取到机器人昵称：全量群消息可能无法识别 @（openid={id_text}）");
+        } else {
+            eprintln!("[qqbot] 机器人身份：{name_text}（openid={id_text}），用于识别群内 @");
+        }
+        self.apply_persona(&name_text);
+        if let Ok(mut session) = self.session.lock() {
+            session.session_id = session_id;
+        }
+        eprintln!("[qqbot] 登录成功，开始接收事件。");
     }
 
     /// 处理一帧事件（`READY` / `RESUMED` 已在主循环里消化）。
@@ -1240,11 +1254,14 @@ impl<D: AgentDriver> QqBot<D> {
             }
             task_text.push_str(&format!("用户补充说明：{}", inbound.content));
         }
+        // 来源与「同时 @ 了谁」由 `task_text_of` 统一补在最前面：附件任务的正文是上面那段
+        // 拼出来的说明，来源信息不能因此丢失。
         self.start_task(
             Inbound {
                 target: inbound.target.clone(),
                 sender: inbound.sender.clone(),
                 sender_name: inbound.sender_name.clone(),
+                others: inbound.others.clone(),
                 message_id: inbound.message_id.clone(),
                 content: task_text,
                 attachments: Vec::new(),
@@ -1451,18 +1468,42 @@ fn quoted_context(inbound: &Inbound, saved: &[String]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// 交给 Agent 的完整任务文本：被引用的内容 + 用户这句话。
+/// 交给 Agent 的完整任务文本：谁在哪里发来、同时 @ 了谁、引用了什么，最后才是这句话。
+///
+/// 连接器只发用户原话时，模型看不出这句话是在 QQ 群里被 @ 出来的、也不知道发言人是谁，
+/// 于是会拿「用户」当本地终端里的人。这里把来源写成结构化的一行，让模型自己判断语气。
 fn task_text_of(inbound: &Inbound) -> String {
-    if inbound.quoted.is_empty() {
-        return inbound.content.clone();
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(source_line(inbound));
+    let others = super::dispatch::mention_others_text(&inbound.others);
+    if !others.is_empty() {
+        parts.push(others);
     }
-    let mut lines = vec!["用户引用的消息：".to_string()];
-    for quoted in &inbound.quoted {
-        lines.push(format!("- {}", super::dispatch::quoted_text(quoted)));
+    if !inbound.quoted.is_empty() {
+        let mut lines = vec!["用户引用的消息：".to_string()];
+        for quoted in &inbound.quoted {
+            lines.push(format!("- {}", super::dispatch::quoted_text(quoted)));
+        }
+        parts.push(lines.join("\n"));
     }
-    lines.push(String::new());
-    lines.push(format!("用户消息：{}", inbound.content));
-    lines.join("\n")
+    if !inbound.content.trim().is_empty() {
+        parts.push(format!("用户消息：{}", inbound.content));
+    }
+    parts.join("\n\n")
+}
+
+/// 来源行：`来自 QQ 群 <群 openid> 的 <昵称>（<openid>）` 等。
+fn source_line(inbound: &Inbound) -> String {
+    let who = if inbound.sender_name.trim().is_empty() {
+        inbound.sender.clone()
+    } else {
+        format!("{}（{}）", inbound.sender_name.trim(), inbound.sender)
+    };
+    match &inbound.target {
+        Target::User(_) => format!("来自 QQ 单聊的 {who}"),
+        Target::Group(group) => format!("来自 QQ 群 {group} 的 {who}"),
+        Target::Channel(channel) => format!("来自 QQ 频道 {channel} 的 {who}"),
+    }
 }
 
 /// 单个回合的显示装配：正文段在工具边界封口，工具/计划/子任务攒成一段进度。

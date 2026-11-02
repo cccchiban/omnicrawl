@@ -464,6 +464,11 @@ impl AgentDriver for HostConnectorDriver {
             .map_err(|error| error.message)
     }
 
+    /// 连接器注入的平台身份（QQ 的预设提示词）：交给服务补在 system prompt 末尾。
+    fn set_system_prompt_append(&self, append: &str) -> Result<(), String> {
+        self.service.set_prompt_append(append)
+    }
+
     /// 发布到 Telegram 菜单的命令表来自全局命令注册表。
     ///
     /// 只取注册表里“不是纯界面动作”的命令：`/quit`、`/settings` 这类在远程被明确拒绝，

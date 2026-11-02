@@ -42,6 +42,8 @@ pub struct QqBotConfig {
     pub sandbox: bool,
     /// 事件订阅位掩码。
     pub intents: i64,
+    /// 注入 system prompt 末尾的预设提示词（`persona`）；留空时按昵称生成。
+    pub persona: String,
 }
 
 /// 一次消息的来源，决定按哪张白名单判定。
@@ -148,6 +150,20 @@ impl QqBotConfig {
     }
 }
 
+/// 注入 system prompt 末尾的预设提示词：`persona` 原样使用，缺省时按机器人昵称生成一句。
+///
+/// 昵称取网关 `READY.user.username`，拿不到时退化成「QQ 机器人」——文案里出现「我是 xxx」
+/// 比出现空昵称更可读，也不会让模型以为自己还是本地终端里的助手。
+pub fn persona_prompt(persona: &str, bot_name: &str) -> String {
+    let custom = persona.trim();
+    if !custom.is_empty() {
+        return custom.to_string();
+    }
+    let name = bot_name.trim();
+    let name = if name.is_empty() { "QQ 机器人" } else { name };
+    format!("你是 {name}，一个在 QQ 上的 OmniCrawl 机器人。")
+}
+
 /// 读取 `[qqbot]` 段；缺项回落默认值，类型不对返回中文错误。
 pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String> {
     let section = match section {
@@ -182,6 +198,11 @@ pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String>
         None | Some(Value::Null) => DEFAULT_INTENTS,
         Some(raw) => parse_intents(raw)?,
     };
+    let persona = match section.get("persona") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(_) => return Err("qqbot.persona 必须是字符串（注入提示词的预设文案）。".to_string()),
+    };
 
     Ok(QqBotConfig {
         app_id,
@@ -191,6 +212,7 @@ pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String>
         confirm_timeout_seconds,
         sandbox,
         intents,
+        persona,
     })
 }
 
@@ -226,6 +248,7 @@ pub fn check_config(config: &QqBotConfig) -> Value {
         "confirmation_timeout_seconds": config.confirm_timeout_seconds,
         "sandbox": config.sandbox,
         "intents": config.intents,
+        "persona_present": !config.persona.is_empty(),
         "ready": !config.app_id.is_empty() && !config.app_secret.is_empty(),
     })
 }
@@ -515,5 +538,43 @@ mod tests {
     fn timeout_floor_is_one_second() {
         assert_eq!(effective_confirm_timeout(0.2), 1.0);
         assert_eq!(effective_confirm_timeout(300.0), 300.0);
+    }
+
+    #[test]
+    fn persona_defaults_to_the_bot_nickname() {
+        let section = json!({"persona": "  你是小囫囵，说话简短。  "});
+        let config = load_qqbot_config(Some(&section)).expect("配置可解析");
+        assert_eq!(config.persona, "你是小囫囵，说话简短。");
+        assert_eq!(persona_prompt(&config.persona, "小囫囵"), "你是小囫囵，说话简短。");
+
+        // 没配 persona 时按昵称生成一行：昵称缺失退化成「QQ 机器人」。
+        let config = load_qqbot_config(None).expect("配置可解析");
+        assert_eq!(
+            persona_prompt(&config.persona, " 塔斯汀 "),
+            "你是 塔斯汀，一个在 QQ 上的 OmniCrawl 机器人。"
+        );
+        assert_eq!(
+            persona_prompt(&config.persona, ""),
+            "你是 QQ 机器人，一个在 QQ 上的 OmniCrawl 机器人。"
+        );
+    }
+
+    #[test]
+    fn persona_must_be_a_string() {
+        let section = json!({"persona": ["a"]});
+        assert!(load_qqbot_config(Some(&section))
+            .expect_err("类型不对应报错")
+            .contains("persona"));
+        let config = load_qqbot_config(Some(&json!({"persona": "   "}))).expect("配置可解析");
+        assert!(config.persona.is_empty());
+    }
+
+    #[test]
+    fn check_config_reports_the_persona_without_leaking_it() {
+        let config =
+            load_qqbot_config(Some(&json!({"persona": "你是小囫囵"}))).expect("配置可解析");
+        let checked = check_config(&config);
+        assert_eq!(checked["persona_present"], json!(true));
+        assert!(checked.get("persona").is_none(), "{checked}");
     }
 }

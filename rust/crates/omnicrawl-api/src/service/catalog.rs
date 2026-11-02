@@ -34,6 +34,42 @@ impl AgentService {
                 .unwrap_or_default()
         }
 
+        /// 连接器注入 system prompt 追加段（如 QQ 机器人的预设提示词）；空串表示撤掉。
+        ///
+        /// 追加段挂在装配结果上而不是改模板：连接器的平台身份只对这条通道成立，本地 TUI
+        /// 不该跟着变成「你是一个 QQ 机器人」。文案先落在这里，再尝试即时下发——内核在整段
+        /// 回合里都占着连接，`try_lock` 失败时不该把文案丢掉：后续任何一次装配重建
+        /// （切模式、换工作区、重起内核）都会带着它一起发下去。
+        pub fn set_prompt_append(&self, append: &str) -> Result<(), String> {
+            let append = append.trim().to_string();
+            if let Ok(mut slot) = self.prompt_append.lock() {
+                *slot = append.clone();
+            }
+            let mut guard = self
+                .runner
+                .try_lock()
+                .map_err(|_| "生成任务进行中，追加段已记录，将在下次重建提示词时生效。".to_string())?;
+            let Some(runner) = guard.as_mut() else {
+                return Err("提示词装配未启用，无法追加系统提示词。".to_string());
+            };
+            let Some(prompt) = runner.prompt() else {
+                return Err("提示词装配未启用，无法追加系统提示词。".to_string());
+            };
+            prompt.set_system_prompt_append(&append);
+            runner
+                .apply_prompt(prompt, &mut |_| {})
+                .map_err(|error| format!("下发提示词失败：{error}"))?;
+            Ok(())
+        }
+
+        /// 当前生效的追加段（空串表示没有）。
+        pub fn prompt_append(&self) -> String {
+            self.prompt_append
+                .lock()
+                .map(|slot| slot.clone())
+                .unwrap_or_default()
+        }
+
         /// 以当前装配为底重建提示词并下发；`mode` 为空串表示不带模式区块。
         ///
         /// 返回 `(切换前的模式, 切换后的模式)`；第一次查询与重建在同一把锁内完成，
@@ -73,6 +109,11 @@ impl AgentService {
             options.mode = mode.trim().to_string();
             let rebuilt = PromptRuntime::load(&self.options.env, options)
                 .map_err(|error| prompt_failed(error.to_string()))?;
+            // 重建会丢掉追加段（连接器注入的平台身份）：补回去再下发。
+            let append = self.prompt_append();
+            if !append.is_empty() {
+                rebuilt.set_system_prompt_append(append);
+            }
             let activated = mode.trim().to_string();
             runner
                 .apply_prompt(Arc::new(rebuilt), &mut |_| {})

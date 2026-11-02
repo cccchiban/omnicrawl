@@ -37,6 +37,46 @@ pub struct Quoted {
     pub attachments: Vec<(String, String)>,
 }
 
+/// 一条 @ 提及的对象。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Mention {
+    /// 平台标识（openid / 频道成员 id）；正文里手打 `@昵称` 时为空。
+    pub id: String,
+    /// 被 @ 者的昵称；平台可能不给。
+    pub name: String,
+    /// 平台标记的「这是个机器人」：群里别的 bot 也是 true，不代表就是本机器人。
+    pub bot: bool,
+}
+
+impl Mention {
+    /// 展示用标签：昵称 + 括号内的机器人标记与标识。
+    pub fn label(&self) -> String {
+        let name = self.name.trim();
+        let mut tags: Vec<&str> = Vec::new();
+        if self.bot {
+            tags.push("机器人");
+        }
+        if !self.id.trim().is_empty() {
+            tags.push(self.id.trim());
+        }
+        match (name.is_empty(), tags.is_empty()) {
+            (false, false) => format!("{name}（{}）", tags.join("，")),
+            (false, true) => name.to_string(),
+            (true, false) => tags.join("，"),
+            (true, true) => "未知成员".to_string(),
+        }
+    }
+}
+
+/// 一条消息里 @ 到的对象：机器人自己有没有被 @、另外还 @ 了谁。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MentionScan {
+    /// 机器人自己被 @ 了。
+    pub to_bot: bool,
+    /// @ 到的其他成员（已排除机器人自己，按出现顺序去重）。
+    pub others: Vec<Mention>,
+}
+
 /// 一条入站消息的落点与身份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inbound {
@@ -46,6 +86,8 @@ pub struct Inbound {
     pub sender: String,
     /// 发送者昵称：只用于日志辨认，平台可能不给。
     pub sender_name: String,
+    /// 这条消息同时 @ 到的其他成员（不含机器人自己）。
+    pub others: Vec<Mention>,
     /// 平台消息 ID：被动回复必须回传它。
     pub message_id: String,
     pub content: String,
@@ -177,14 +219,14 @@ pub fn parse_message(event: &str, data: &Value) -> Option<Inbound> {
     parse_message_with_bot(event, data, BotIdentity::default())
 }
 
-/// 同上，但提供机器人身份：全量群消息要据此剥掉 `@昵称` 前缀。
+/// 同上，但提供机器人身份：全量群消息要据此剥掉 `@机器人`，并区分 @ 的是谁。
 pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -> Option<Inbound> {
     let message_id = string_of(data.get("id")).unwrap_or_default();
     let raw_content = data
         .get("content")
         .map(|value| value.as_str().unwrap_or("").to_string())
         .unwrap_or_default();
-    let content = raw_content.trim().to_string();
+    let mentions = scan_mentions(data, bot);
     let attachments = attachments_of(data);
     let ref_idx = scene_index(data, "msg_idx");
     let quoted = quoted_of(data);
@@ -201,8 +243,10 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
                 target: Target::User(openid.clone()),
                 sender: openid,
                 sender_name: sender_name_of(data),
+                others: mentions.others,
                 message_id,
-                content,
+                // 单聊没有 @ 语义：正文原样保留，只去掉首尾空白。
+                content: raw_content.trim().to_string(),
                 attachments,
                 ref_idx,
                 quoted,
@@ -219,18 +263,15 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
             if group.is_empty() || member.is_empty() {
                 return None;
             }
-            // 全量模式的正文自带 `@机器人`（文本或占位符）；@ 事件那边平台已去掉。
-            let content = if event == EVENT_GROUP_MESSAGE {
-                strip_bot_mention(&content, bot)
-            } else {
-                content
-            };
             Some(Inbound {
                 target: Target::Group(group),
                 sender: member,
                 sender_name: sender_name_of(data),
+                others: mentions.others,
                 message_id,
-                content,
+                // @ 事件那边平台已去掉机器人前缀；全量模式自带的 `@机器人` 就地剥掉，
+                // 只删提及本身，前后文都保留（`请看 @机器人 这张图` 不能被截成「这张图」）。
+                content: strip_bot_mention(&raw_content, bot),
                 attachments,
                 ref_idx,
                 quoted,
@@ -248,8 +289,10 @@ pub fn parse_message_with_bot(event: &str, data: &Value, bot: BotIdentity<'_>) -
                 target: Target::Channel(channel),
                 sender: author,
                 sender_name: sender_name_of(data),
+                others: mentions.others,
                 message_id,
-                content: strip_mention(&content),
+                // 频道事件本身就是「@ 了机器人」：正文开头的占位符一律算机器人自己。
+                content: strip_mention(&strip_bot_mention(&raw_content, bot)),
                 attachments,
                 ref_idx,
                 quoted,
@@ -334,6 +377,15 @@ pub fn quoted_text(quoted: &Quoted) -> String {
     }
 }
 
+/// 「同时 @ 了谁」的一行说明：没有其他成员时返回空串。
+pub fn mention_others_text(others: &[Mention]) -> String {
+    if others.is_empty() {
+        return String::new();
+    }
+    let labels: Vec<String> = others.iter().map(Mention::label).collect();
+    format!("同时 @ 了：{}", labels.join("、"))
+}
+
 /// 附件种类标签：图片 / 语音 / 视频 / 文件。
 fn attachment_label(name: &str, url: &str) -> &'static str {
     let lower = name.to_lowercase();
@@ -354,27 +406,73 @@ fn attachment_label(name: &str, url: &str) -> &'static str {
     }
 }
 
-/// 全量模式的群消息是否 @ 了机器人。
+/// 扫一条消息里 @ 到的对象：机器人自己被 @ 了没有、另外还 @ 了谁。
 ///
-/// 实测（2026-10-24 真实报文）：平台把 @ 渲染成 `@昵称` 普通文本，`mentions` 为空数组，
-/// 也没有文档所说的 `<@openid>` 占位符。因此昵称匹配是主判据：
-/// - 正文以 `@昵称` 开头（或包含 `@昵称` 后紧跟空白/结尾/标点）即算 @；
-/// - 另外兼容 `mentions[]` 里指向机器人自身（或 `bot: true`）与 `<@openid>` 占位符，
-///   以防平台在某些群/版本上改回结构化写法。
-fn addressed_to_bot(data: &Value, bot: BotIdentity<'_>) -> bool {
+/// 实测（2026-10-24 真实报文）：群里手打的 `@昵称` 是普通文本，`mentions` 为空数组，也没有
+/// 文档所说的 `<@openid>` 占位符；只有用 QQ 的「@ 提及」功能选中成员才会有结构化条目。
+/// 因此三条来源都要看，并按「标识优先」判定归属：
+/// - `mentions[]`：`id` / `member_openid` 与机器人 openid 相同才算 @ 了自己；其余条目算 @ 了
+///   别人（带 id 与昵称）。
+/// - `<@openid>` / `<@!openid>` 占位符：与机器人 openid 相同即算 @ 机器人。
+/// - 正文里的 `@昵称`：昵称后紧跟分隔符才算命中机器人，避免 `@小囫囵的猫` 误判；其余
+///   `@名字` 记为 @ 了别人（只有昵称，没有 id）。
+///
+/// `mentions[].bot` 只说明**被 @ 的对象本身**是机器人（官方 `User.bot`），群里还有别的 bot 时
+/// 它同样是 true，所以不能当成「@ 的是我」——否则群里 @ 另一个 bot 会误触发本机器人。归属按
+/// 三级判定：标识相等 → 自己；缺标识时昵称相等 → 自己；昵称也未知才退回 `bot` 标记（此时无任何
+/// 判据可选，宁可响应）。判为别人的条目保留 `bot` 标记，模型才知道对面是个 bot。
+pub fn scan_mentions(data: &Value, bot: BotIdentity<'_>) -> MentionScan {
+    let mut scan = MentionScan::default();
     if let Some(list) = data.get("mentions").and_then(Value::as_array) {
         for item in list {
-            let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             let member = item
                 .get("member_openid")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            let same = !bot.openid.is_empty() && (id == bot.openid || member == bot.openid);
-            if same || item.get("bot").and_then(Value::as_bool).unwrap_or(false) {
-                return true;
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let name = first_nonempty([
+                item.get("username").and_then(Value::as_str),
+                item.get("nickname").and_then(Value::as_str),
+                item.get("member_username").and_then(Value::as_str),
+            ]);
+            let bot_flag = item.get("bot").and_then(Value::as_bool).unwrap_or(false);
+            let id_known = !bot.openid.is_empty();
+            let same_id = |value: &str| id_known && value == bot.openid;
+            if same_id(&id) || same_id(&member) {
+                scan.to_bot = true;
+                continue;
             }
+            let name_known = !bot.name.is_empty();
+            let same_name = name_known && name == bot.name;
+            let no_ids = id.is_empty() && member.is_empty();
+            // 标识可比时 id 说了算（名字可能有重名）；openid 未知或条目缺标识时才看昵称。
+            if same_name && (!id_known || no_ids) {
+                scan.to_bot = true;
+                continue;
+            }
+            // 什么判据都没有（id 未知、昵称未知、条目也缺标识）：只能靠 bot 标记赌一把。
+            if no_ids && !name_known && bot_flag {
+                scan.to_bot = true;
+                continue;
+            }
+            push_other(
+                &mut scan.others,
+                Mention {
+                    id: if id.is_empty() { member } else { id },
+                    name,
+                    bot: bot_flag,
+                },
+            );
         }
     }
+
     let content = data
         .get("content")
         .and_then(Value::as_str)
@@ -383,63 +481,161 @@ fn addressed_to_bot(data: &Value, bot: BotIdentity<'_>) -> bool {
         && (content.contains(&format!("<@{}>", bot.openid))
             || content.contains(&format!("<@!{}>", bot.openid)))
     {
-        return true;
+        scan.to_bot = true;
     }
-    if bot.name.is_empty() {
-        return false;
-    }
-    mentions_name(content, bot.name)
-}
-
-/// 正文是否以 `@昵称` 形式 @ 了目标。要求昵称后面紧跟分隔符，避免 `@小囫囵的猫` 误判。
-fn mentions_name(content: &str, name: &str) -> bool {
-    let needle = format!("@{name}");
-    let mut rest = content;
-    while let Some(index) = rest.find(&needle) {
-        let after = &rest[index + needle.len()..];
-        let boundary = match after.chars().next() {
-            None => true,
-            Some(char) => {
-                char.is_whitespace()
-                    || char == '\u{3000}'
-                    || matches!(char, ',' | '.' | '!' | '?' | ':' | ';' | '，' | '。' | '！' | '？' | '：' | '；' | '、')
+    for name in text_mentions(content) {
+        if !bot.name.is_empty() {
+            if name == bot.name {
+                scan.to_bot = true;
+                continue;
             }
-        };
-        if boundary {
-            return true;
+            // `@昵称的猫`：以机器人昵称开头但后面还接着字，既不是 @ 机器人（没有分隔符），
+            // 也说不清 @ 的是谁——没有成员名册可核对，当作闲聊里的文字，不报成「@ 了别人」。
+            if name.starts_with(bot.name) {
+                continue;
+            }
         }
-        rest = &after[..];
+        push_other(
+            &mut scan.others,
+            Mention {
+                id: String::new(),
+                name,
+                bot: false,
+            },
+        );
     }
-    false
+    scan
 }
 
-/// 去掉 @机器人 的文本/占位符前缀。
+/// 全量模式的群消息是否 @ 了机器人。
+fn addressed_to_bot(data: &Value, bot: BotIdentity<'_>) -> bool {
+    scan_mentions(data, bot).to_bot
+}
+
+/// 按 id 或昵称去重后追加一条「@ 了别人」。
+///
+/// 同一个人可能同时以三种形式出现：结构化条目（id + 昵称）、正文里手打的 `@昵称` 与手打的
+/// `@openid`。因此 id 与昵称交叉比对，任一命中就当同一个人。
+fn push_other(others: &mut Vec<Mention>, mention: Mention) {
+    if mention.id.is_empty() && mention.name.is_empty() {
+        return;
+    }
+    let duplicate = others.iter().any(|known| {
+        (!mention.id.is_empty() && (known.id == mention.id || known.name == mention.id))
+            || (!mention.name.is_empty() && (known.name == mention.name || known.id == mention.name))
+    });
+    if !duplicate {
+        others.push(mention);
+    }
+}
+
+/// 正文里 `@名字` 形式的提及：按空白与标点切出名字，`<@…>` 占位符不算。
+fn text_mentions(content: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let chars: Vec<char> = content.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        // `<@openid>` / `<@!openid>` 是结构化占位符，不是手打的 @昵称。
+        if chars[index] == '<' && chars.get(index + 1) == Some(&'@') {
+            let mut next = chars.len();
+            for (offset, char) in chars[index..].iter().enumerate() {
+                if *char == '>' {
+                    next = index + offset + 1;
+                    break;
+                }
+            }
+            index = next;
+            continue;
+        }
+        if chars[index] != '@' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        while end < chars.len() && !is_mention_terminator(chars[end]) {
+            end += 1;
+        }
+        if end > start {
+            names.push(chars[start..end].iter().collect::<String>());
+        }
+        index = end.max(index + 1);
+    }
+    names
+}
+
+/// 提及名字的终止字符：空白、全角空格、`<`、`@`、`>` 与中英文标点。
+fn is_mention_terminator(char: char) -> bool {
+    char.is_whitespace()
+        || char == '\u{3000}'
+        || char == '<'
+        || char == '>'
+        || char == '@'
+        || matches!(
+            char,
+            ',' | '.' | '!' | '?' | ':' | ';' | '，' | '。' | '！' | '？' | '：' | '；' | '、'
+        )
+}
+
+/// 去掉正文里对机器人自己的 @（文本与占位符），其余成员与上下文原样保留。
+///
+/// 只删提及本身、不截断后文：`请看 @机器人 这张图` 要变成 `请看 这张图`，而不是「这张图」。
 fn strip_bot_mention(content: &str, bot: BotIdentity<'_>) -> String {
-    let mut rest = strip_mention(content);
+    let mut rest = content.to_string();
     if !bot.openid.is_empty() {
-        for prefix in [format!("<@{}>", bot.openid), format!("<@!{}>", bot.openid)] {
-            if let Some(tail) = rest.strip_prefix(&prefix) {
-                rest = tail.trim_start().to_string();
+        for token in [format!("<@{}>", bot.openid), format!("<@!{}>", bot.openid)] {
+            if rest.contains(&token) {
+                rest = rest.replace(&token, " ");
             }
         }
     }
     if !bot.name.is_empty() {
         let needle = format!("@{}", bot.name);
-        let mut current = rest.clone();
-        while let Some(index) = current.find(&needle) {
-            let after = &current[index + needle.len()..];
-            let boundary = match after.chars().next() {
+        let mut out = String::with_capacity(rest.len());
+        let mut cursor = 0_usize;
+        while let Some(found) = rest[cursor..].find(&needle) {
+            let start = cursor + found;
+            let end = start + needle.len();
+            let after = rest[end..].chars().next();
+            let boundary = match after {
                 None => true,
-                Some(char) => char.is_whitespace() || char == '\u{3000}',
+                Some(char) => char.is_whitespace() || char == '\u{3000}' || is_mention_terminator(char),
             };
             if boundary {
-                rest = after.trim_start().to_string();
-                break;
+                out.push_str(&rest[cursor..start]);
+                // 前后都是空白时补一个空格，避免把两段文字黏在一起。
+                if !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+                cursor = end;
+            } else {
+                out.push_str(&rest[cursor..end]);
+                cursor = end;
             }
-            current = after.to_string();
+        }
+        out.push_str(&rest[cursor..]);
+        rest = out;
+    }
+    collapse_spaces(rest.trim())
+}
+
+/// 多个连续空格压成一个（剥掉提及后常留下两个空格）；换行原样保留，避免改坏多行消息。
+fn collapse_spaces(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut previous_space = false;
+    for char in text.chars() {
+        let horizontal = matches!(char, ' ' | '\t' | '\u{3000}');
+        if horizontal {
+            if !previous_space {
+                out.push(char);
+            }
+            previous_space = true;
+        } else {
+            out.push(char);
+            previous_space = false;
         }
     }
-    rest.trim().to_string()
+    out
 }
 
 /// 未 @ 机器人的群消息诊断串：正文前缀 + mentions 各条目的 id/member_openid/bot。
@@ -458,7 +654,14 @@ fn mention_digest(data: &Value, bot: BotIdentity<'_>) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let bot_flag = item.get("bot").and_then(Value::as_bool).unwrap_or(false);
-            mentions.push(format!("id={id}/member={member}/bot={bot_flag}"));
+            let name = item
+                .get("username")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("nickname").and_then(Value::as_str))
+                .unwrap_or("");
+            mentions.push(format!(
+                "id={id}/member={member}/name={name}/bot={bot_flag}"
+            ));
         }
     }
     format!(
@@ -516,11 +719,21 @@ fn string_of(value: Option<&Value>) -> Option<String> {
 
 /// 发送者昵称（`author.username`）：平台可能不给，缺失时为空串。
 fn sender_name_of(data: &Value) -> String {
-    data.get("author")
-        .and_then(|author| author.get("username"))
-        .and_then(Value::as_str)
+    let author = data.get("author");
+    first_nonempty([
+        author.and_then(|item| item.get("username")).and_then(Value::as_str),
+        author.and_then(|item| item.get("nickname")).and_then(Value::as_str),
+    ])
+}
+
+/// 首个非空文本：提及条目在不同事件里用的昵称字段名不一致。
+fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    candidates
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|text| !text.is_empty())
         .unwrap_or_default()
-        .trim()
         .to_string()
 }
 
@@ -1014,5 +1227,214 @@ mod tests {
         let inbound = parse_message(EVENT_C2C_MESSAGE, &data).expect("可解析");
         assert!(inbound.quoted.is_empty());
         assert!(inbound.ref_idx.is_empty());
+    }
+
+    #[test]
+    fn structured_mention_tells_apart_the_bot_from_other_members() {
+        // 结构化提及：机器人自己按 openid 命中，另一个成员算「@ 了别人」。
+        let data = json!({
+            "id": "m-50",
+            "content": "<@BOT-ID> 帮 @M-1 看看这个目录",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "mentions": [
+                {"id": "BOT-ID", "member_openid": "BOT-ID", "username": "小囫囵", "bot": true},
+                {"id": "M-1", "member_openid": "M-1", "username": "奶酪"},
+            ],
+        });
+        match route_event_with_bot(
+            EVENT_GROUP_AT_MESSAGE,
+            &data,
+            &allowed(&["M-9"]),
+            bot("小囫囵", "BOT-ID"),
+        ) {
+            EventRoute::Message(inbound) => {
+                assert_eq!(inbound.others.len(), 1);
+                assert_eq!(inbound.others[0].id, "M-1");
+                assert_eq!(inbound.others[0].name, "奶酪");
+                assert_eq!(inbound.others[0].label(), "奶酪（M-1）");
+                // 机器人自己的占位符被剥掉，别人的 @ 保留在正文里。
+                assert_eq!(inbound.content, "帮 @M-1 看看这个目录");
+            }
+            other => panic!("应为消息：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn mentioning_only_another_member_is_not_addressing_the_bot() {
+        // 全量模式：只 @ 了别的成员，不算 @ 机器人。
+        let scan = scan_mentions(
+            &json!({
+                "content": "@奶酪 你看这个",
+                "mentions": [{"id": "M-1", "member_openid": "M-1", "username": "奶酪"}],
+            }),
+            bot("小囫囵", "BOT-ID"),
+        );
+        assert!(!scan.to_bot);
+        assert_eq!(scan.others.len(), 1);
+        assert_eq!(scan.others[0].name, "奶酪");
+    }
+
+    #[test]
+    fn hand_typed_mention_names_are_classified_by_nickname() {
+        // 实测里的手打 @：mentions 为空数组，只能按昵称区分是 @ 机器人还是 @ 别人。
+        let data = json!({
+            "id": "m-51",
+            "content": "@小囫囵 帮 @奶酪 查一下，@小囫囵的猫 也要看",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "mentions": [],
+        });
+        match route_event_with_bot(
+            EVENT_GROUP_MESSAGE,
+            &data,
+            &allowed(&["M-9"]),
+            bot("小囫囵", "BOT-ID"),
+        ) {
+            EventRoute::Message(inbound) => {
+                // `@小囫囵的猫` 不是 @ 机器人（昵称后没有分隔符），也不算别人（名字带后缀）。
+                assert_eq!(
+                    inbound.others.iter().map(|item| item.name.clone()).collect::<Vec<_>>(),
+                    vec!["奶酪".to_string()]
+                );
+                assert!(inbound.content.contains("帮 @奶酪 查一下"), "{}", inbound.content);
+                assert!(!inbound.content.contains("@小囫囵 "), "{}", inbound.content);
+            }
+            other => panic!("应为消息：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn stripping_the_bot_mention_keeps_the_surrounding_text() {
+        // 中间位置的 @机器人 只删提及本身，前后文都留着。
+        let data = json!({
+            "id": "m-52",
+            "content": "请看 @小囫囵 这张截图",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+        });
+        let inbound = parse_message_with_bot(
+            EVENT_GROUP_MESSAGE,
+            &data,
+            bot("小囫囵", "BOT-ID"),
+        )
+        .expect("可解析");
+        assert_eq!(inbound.content, "请看 这张截图");
+    }
+
+    #[test]
+    fn mention_others_text_lists_the_other_members() {
+        assert_eq!(mention_others_text(&[]), "");
+        let others = vec![
+            Mention { id: "M-1".to_string(), name: "奶酪".to_string(), bot: false },
+            Mention { id: String::new(), name: "小明".to_string(), bot: false },
+            Mention { id: "B-1".to_string(), name: "别的bot".to_string(), bot: true },
+        ];
+        assert_eq!(
+            mention_others_text(&others),
+            "同时 @ 了：奶酪（M-1）、小明、别的bot（机器人，B-1）"
+        );
+    }
+
+    #[test]
+    fn mentioning_another_bot_is_not_addressing_the_bot() {
+        // 群里还有别的机器人：`bot: true` 只说明对方是 bot，不是「@ 了我」。
+        let data = json!({
+            "id": "m-53",
+            "content": "<@OTHER-BOT> /status",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "mentions": [
+                {"id": "OTHER-BOT", "member_openid": "OTHER-BOT", "username": "别的bot", "bot": true},
+            ],
+        });
+        match route_event_with_bot(
+            EVENT_GROUP_MESSAGE,
+            &data,
+            &allowed(&["M-9"]),
+            bot("小囫囵", "BOT-ID"),
+        ) {
+            EventRoute::NotAddressed { detail, .. } => {
+                assert!(detail.contains("OTHER-BOT"), "诊断串应带被 @ 的 bot：{detail}");
+            }
+            other => panic!("@ 别的 bot 不应触发本机器人：{other:?}"),
+        }
+        let scan = scan_mentions(&data, bot("小囫囵", "BOT-ID"));
+        assert!(!scan.to_bot);
+        assert_eq!(scan.others.len(), 1);
+        assert!(scan.others[0].bot);
+        assert_eq!(scan.others[0].label(), "别的bot（机器人，OTHER-BOT）");
+    }
+
+    #[test]
+    fn another_bot_without_ids_is_judged_by_nickname() {
+        // 结构化条目两个 id 都缺：只能靠昵称，昵称对不上就不算 @ 我。
+        let data = json!({
+            "id": "m-54",
+            "content": "@123456 查一下",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "mentions": [{"username": "123456", "bot": true}],
+        });
+        let scan = scan_mentions(&data, bot("小囫囵", "BOT-ID"));
+        assert!(!scan.to_bot);
+        assert_eq!(scan.others.len(), 1);
+        assert_eq!(scan.others[0].name, "123456");
+    }
+
+    #[test]
+    fn unknown_openid_falls_back_to_the_nickname() {
+        // 网关没给 openid（或 /users/@me 也失败）：标识不可比，昵称相同就是自己。
+        let scan = scan_mentions(
+            &json!({
+                "content": "hi",
+                "mentions": [{"username": "小囫囵", "bot": true}],
+            }),
+            bot("小囫囵", ""),
+        );
+        assert!(scan.to_bot);
+        assert!(scan.others.is_empty());
+    }
+
+    #[test]
+    fn mentioning_the_bot_alongside_another_bot_addresses_the_bot() {
+        // 同时 @ 本机器人与另一个 bot：仍然要响应，并把对方报成「同时 @ 了」。
+        let data = json!({
+            "id": "m-55",
+            "content": "<@BOT-ID> 和 <@OTHER-BOT> 一起看看",
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9"},
+            "mentions": [
+                {"id": "BOT-ID", "member_openid": "BOT-ID", "username": "小囫囵", "bot": true},
+                {"id": "OTHER-BOT", "member_openid": "OTHER-BOT", "username": "别的bot", "bot": true},
+            ],
+        });
+        match route_event_with_bot(
+            EVENT_GROUP_MESSAGE,
+            &data,
+            &allowed(&["M-9"]),
+            bot("小囫囵", "BOT-ID"),
+        ) {
+            EventRoute::Message(inbound) => {
+                assert_eq!(inbound.others.len(), 1);
+                assert!(inbound.others[0].bot);
+                assert_eq!(inbound.others[0].name, "别的bot");
+            }
+            other => panic!("应为消息：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_mentions_are_collapsed() {
+        // 同一个成员既有结构化条目又在正文里手打：只记一次。
+        let scan = scan_mentions(
+            &json!({
+                "content": "@奶酪 看看",
+                "mentions": [{"id": "M-1", "username": "奶酪"}],
+            }),
+            bot("小囫囵", "BOT-ID"),
+        );
+        assert_eq!(scan.others.len(), 1);
+        assert_eq!(scan.others[0].id, "M-1");
     }
 }

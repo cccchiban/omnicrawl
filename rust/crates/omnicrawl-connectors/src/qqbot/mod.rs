@@ -30,16 +30,16 @@ pub use bot::{
     MAX_INTERMEDIATE_REPLIES,
 };
 pub use config::{
-    check_config, load_qqbot_config, mask_secret, validate_config, AccessPolicy, AccessScope,
-    QqBotConfig, DEFAULT_BASE_URL, DEFAULT_CONFIRM_TIMEOUT_SECONDS, DEFAULT_INTENTS,
+    check_config, load_qqbot_config, mask_secret, persona_prompt, validate_config, AccessPolicy,
+    AccessScope, QqBotConfig, DEFAULT_BASE_URL, DEFAULT_CONFIRM_TIMEOUT_SECONDS, DEFAULT_INTENTS,
     SANDBOX_BASE_URL,
 };
 pub use dispatch::{
-    attachments_of, classify, command_name, parse_message, parse_message_with_bot, quoted_of,
-    quoted_text, parse_thinking_command, route_event, route_event_with_bot, scene_index,
-    strip_mention, workspace_argument, BotIdentity, Command, EventRoute, Inbound, Quoted,
-    ThinkingCommand, EVENT_C2C_MESSAGE, EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE,
-    EVENT_GUILD_AT_MESSAGE,
+    attachments_of, classify, command_name, mention_others_text, parse_message,
+    parse_message_with_bot, quoted_of, quoted_text, scan_mentions, parse_thinking_command,
+    route_event, route_event_with_bot, scene_index, strip_mention, workspace_argument, BotIdentity,
+    Command, EventRoute, Inbound, Mention, MentionScan, Quoted, ThinkingCommand, EVENT_C2C_MESSAGE,
+    EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE, EVENT_GUILD_AT_MESSAGE,
 };
 pub use files::{
     classify_file_name, destination, fallback_name, relative_display_path, safe_name,

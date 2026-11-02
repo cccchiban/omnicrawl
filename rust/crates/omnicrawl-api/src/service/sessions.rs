@@ -164,7 +164,14 @@ impl AgentService {
                 let model_name = spawner.runner.model.model.clone();
                 let env = self.options.env.clone();
                 match build_prompt_runtime(&env, &workspace, &model_name) {
-                    Some(rebuilt) => spawner.runner.prompt = Some(rebuilt),
+                    Some(rebuilt) => {
+                        // 连接器注入的追加段（平台身份）与工作区无关，重建后原样补回。
+                        let append = self.prompt_append();
+                        if !append.is_empty() {
+                            rebuilt.set_system_prompt_append(append);
+                        }
+                        spawner.runner.prompt = Some(rebuilt);
+                    }
                     None => {
                         // 装配失败保持旧运行期：它至少还能发模板正文，比整段丢空强。
                         eprintln!("[api] 切换工作区后提示词装配失败，沿用上一份（不含新工作区规范）");

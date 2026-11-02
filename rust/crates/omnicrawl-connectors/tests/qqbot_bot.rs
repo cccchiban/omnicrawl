@@ -170,6 +170,8 @@ struct MockDriver {
     /// 当前模式与「被激活过几次」，用来验证 QQBot 的默认开启行为。
     mode: Mutex<String>,
     activations: Mutex<Vec<String>>,
+    /// 连接器注入的提示词追加段（预设提示词）。
+    prompt_append: Mutex<String>,
     /// 让 `handle_command` 按命令表判定：未登记的命令回 `None`。
     strict: AtomicBool,
 }
@@ -185,6 +187,13 @@ impl MockDriver {
 
     fn activations(&self) -> Vec<String> {
         self.activations.lock().expect("激活记录锁中毒").clone()
+    }
+
+    fn prompt_append(&self) -> String {
+        self.prompt_append
+            .lock()
+            .expect("追加段锁中毒")
+            .clone()
     }
 
     fn set_mode(&self, mode: &str) {
@@ -254,6 +263,11 @@ impl AgentDriver for MockDriver {
     fn deactivate_mode(&self) -> Result<String, String> {
         let previous = std::mem::take(&mut *self.mode.lock().expect("模式锁中毒"));
         Ok(previous)
+    }
+
+    fn set_system_prompt_append(&self, append: &str) -> Result<(), String> {
+        *self.prompt_append.lock().expect("追加段锁中毒") = append.trim().to_string();
+        Ok(())
     }
 
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError> {
@@ -371,6 +385,30 @@ fn bot_with(driver: Arc<MockDriver>, port: Arc<MockPort>) -> Arc<QqBot<MockDrive
         "app_id": "102012345",
         "app_secret": "secret",
         "allowed_user_ids": ["F6A8"],
+        "confirmation_timeout_seconds": 5,
+    });
+    let config = load_qqbot_config(Some(&section)).expect("配置可解析");
+    let api = Arc::new(QqApi::new(
+        &config.app_id,
+        &config.app_secret,
+        config.base_url(),
+        Arc::new(omnicrawl_connectors::http::UreqTransport::new()),
+    ));
+    let bot = QqBot::new(&config, api, driver)
+        .expect("构造 Bot")
+        .with_port(port);
+    let bot = Arc::new(bot);
+    bot.bind_handlers();
+    bot
+}
+
+/// 群聊场景的 Bot：群白名单放行 A1B2，成员 M-9 因此能用。
+fn group_bot_with(driver: Arc<MockDriver>, port: Arc<MockPort>) -> Arc<QqBot<MockDriver>> {
+    let section = json!({
+        "app_id": "102012345",
+        "app_secret": "secret",
+        "allowed_user_ids": ["F6A8"],
+        "allowed_group_ids": ["A1B2"],
         "confirmation_timeout_seconds": 5,
     });
     let config = load_qqbot_config(Some(&section)).expect("配置可解析");
@@ -1367,4 +1405,124 @@ fn a_quoted_text_message_needs_no_download() {
     let turns = driver.turns();
     assert!(turns[0].contains("奶酪：明天早点下班"), "{turns:?}");
     assert!(turns[0].contains("用户消息：你说得对"), "{turns:?}");
+}
+
+#[test]
+fn the_task_text_carries_the_qq_source_and_sender() {
+    // 模型看到的不能只是一句原话：得知道是哪个 QQ 单聊的人发来的。
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({"reply": "好。"}));
+    let inbound = json!({
+        "id": "m-60",
+        "content": "看看目录",
+        "author": {"user_openid": "F6A8", "username": "塔斯汀"},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE, &inbound);
+    wait_for(5.0, || driver.turns().len() == 1);
+
+    let turns = driver.turns();
+    assert!(
+        turns[0].contains("来自 QQ 单聊的 塔斯汀（F6A8）"),
+        "{turns:?}"
+    );
+    assert!(turns[0].contains("用户消息：看看目录"), "{turns:?}");
+}
+
+#[test]
+fn a_group_task_names_the_group_and_the_mentions() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = group_bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({"reply": "查了。"}));
+    let inbound = json!({
+        "id": "m-61",
+        "content": "@小囫囵 帮 @奶酪 看看这个目录",
+        "group_openid": "A1B2",
+        "author": {"member_openid": "M-9", "username": "小明"},
+        "mentions": [
+            {"id": "M-1", "member_openid": "M-1", "username": "奶酪"},
+        ],
+    });
+    // 机器人昵称要先进状态，才能判出 `@小囫囵` 是自己。
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &inbound);
+    wait_for(5.0, || driver.turns().len() == 1);
+
+    let turns = driver.turns();
+    assert!(turns[0].contains("来自 QQ 群 A1B2 的 小明（M-9）"), "{turns:?}");
+    assert!(turns[0].contains("同时 @ 了：奶酪"), "{turns:?}");
+    assert!(turns[0].contains("帮 @奶酪 看看这个目录"), "{turns:?}");
+}
+
+#[test]
+fn ready_injects_the_persona_with_the_bot_nickname() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    assert_eq!(
+        driver.prompt_append(),
+        "你是 小囫囵，一个在 QQ 上的 OmniCrawl 机器人。"
+    );
+}
+
+#[test]
+fn the_configured_persona_wins_over_the_default_line() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let section = json!({
+        "app_id": "102012345",
+        "app_secret": "secret",
+        "allowed_user_ids": ["F6A8"],
+        // 昵称与 persona 不同：验证自定义文案不被昵称覆盖。
+        "persona": "你是塔斯汀家的机器人，只在群里回答。",
+    });
+    let config = load_qqbot_config(Some(&section)).expect("配置可解析");
+    let api = Arc::new(QqApi::new(
+        &config.app_id,
+        &config.app_secret,
+        config.base_url(),
+        Arc::new(omnicrawl_connectors::http::UreqTransport::new()),
+    ));
+    let bot = QqBot::new(&config, api, driver.clone())
+        .expect("构造 Bot")
+        .with_port(port);
+    let bot = Arc::new(bot);
+    bot.bind_handlers();
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    assert_eq!(driver.prompt_append(), "你是塔斯汀家的机器人，只在群里回答。");
+}
+
+#[test]
+fn messages_that_only_mention_other_members_are_ignored() {
+    // 全量群里只 @ 别人的消息不是指令：既不回消息，也不启动回合。
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = group_bot_with(driver.clone(), port.clone());
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    let inbound = json!({
+        "id": "m-62",
+        "content": "@奶酪 你看这个",
+        "group_openid": "A1B2",
+        "author": {"member_openid": "M-9"},
+        "mentions": [{"id": "M-1", "member_openid": "M-1", "username": "奶酪"}],
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &inbound);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(driver.turns().is_empty());
+    assert!(port.calls().is_empty());
 }

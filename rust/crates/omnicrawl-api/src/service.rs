@@ -198,6 +198,11 @@ pub struct AgentService {
     runner: Mutex<Option<TurnRunner>>,
     control: Mutex<Option<TurnControl>>,
     session_id: Mutex<String>,
+    /// 连接器注入的 system prompt 追加段（如 QQ 机器人的预设提示词）。
+    ///
+    /// 装配结果被重建（切模式、换工作区、重起内核）时要原样补回去，否则一次重建就会
+    /// 让「我是谁」的设定悄悄消失。
+    prompt_append: Mutex<String>,
     /// 当前模型：启动时取配置值，运行期切换后立即更新（`PUT /models/current`）。
     model: Mutex<String>,
     /// 当前工作区：`POST /projects/switch` 之后立即更新，工具与会话快照都跟着走。
@@ -415,6 +420,7 @@ impl AgentService {
             runner: Mutex::new(Some(runner)),
             control: Mutex::new(None),
             session_id: Mutex::new(String::new()),
+            prompt_append: Mutex::new(String::new()),
             model: Mutex::new(model),
             workspace: Mutex::new(workspace),
             spawner: Mutex::new(None),

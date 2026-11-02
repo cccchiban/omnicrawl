@@ -286,6 +286,8 @@ struct KernelDriver {
     cancel: Arc<AtomicBool>,
     /// 当前启用的主 Agent 模式标识与提示词（空串 = 未启用）。
     active_mode: Mutex<ActiveMode>,
+    /// 连接器注入的追加段（QQ 机器人的预设提示词等）：排在模式块之后。
+    prompt_append: Mutex<String>,
 }
 
 /// 一条生效中的模式提示词：追加到 system prompt 末尾。
@@ -324,6 +326,7 @@ impl KernelDriver {
             session_id: Mutex::new(new_session_id()),
             cancel: Arc::new(AtomicBool::new(false)),
             active_mode: Mutex::new(ActiveMode::default()),
+            prompt_append: Mutex::new(String::new()),
         }
     }
 
@@ -348,20 +351,27 @@ impl KernelDriver {
         Ok(())
     }
 
-    /// 当前 system prompt：基础文案 + 活动模式块（与宿主侧 `<active_mode_prompt>` 同形）。
+    /// 当前 system prompt：基础文案 + 活动模式块 + 连接器追加段（与宿主侧同形）。
     fn system_prompt(&self) -> String {
-        let base = self.settings.system_prompt.clone();
-        let Ok(mode) = self.active_mode.lock() else {
-            return base;
-        };
-        if mode.prompt.trim().is_empty() {
-            return base;
+        let mut prompt = self.settings.system_prompt.clone();
+        if let Ok(mode) = self.active_mode.lock() {
+            if !mode.prompt.trim().is_empty() {
+                prompt = format!(
+                    "{prompt}\n\n<active_mode_prompt name=\"{}\">\n{}\n</active_mode_prompt>",
+                    mode.name,
+                    mode.prompt.trim()
+                );
+            }
         }
-        format!(
-            "{base}\n\n<active_mode_prompt name=\"{}\">\n{}\n</active_mode_prompt>",
-            mode.name,
-            mode.prompt.trim()
-        )
+        let append = self
+            .prompt_append
+            .lock()
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default();
+        if append.is_empty() {
+            return prompt;
+        }
+        format!("{}\n\n{append}", prompt.trim_end())
     }
 }
 
@@ -487,6 +497,15 @@ impl AgentDriver for KernelDriver {
         let previous = std::mem::take(&mut guard.name);
         guard.prompt.clear();
         Ok(previous)
+    }
+
+    fn set_system_prompt_append(&self, append: &str) -> Result<(), String> {
+        let mut guard = self
+            .prompt_append
+            .lock()
+            .map_err(|_| "提示词追加段被占用。".to_string())?;
+        *guard = append.trim().to_string();
+        Ok(())
     }
 
     /// 内核自持的命令表：这条路径没有 `omnicrawl-commands` 注册表。
