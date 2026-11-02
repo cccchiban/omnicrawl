@@ -85,6 +85,9 @@ impl App {
     }
 
     /// 起一次建议：需要建议时把提问交给后台线程并返回 `None`；不需要时原样返回提问。
+    ///
+    /// 匹配是纯本地的（BM25），但仍放在后台线程：候选项可能有上百条、Skill 还要读一遍
+    /// 正文分词，几个毫秒的停顿也不该压在键盘回显上。
     pub(super) fn start_suggestion(
         &mut self,
         text: String,
@@ -93,7 +96,7 @@ impl App {
         let suggest = self.suggest.clone().unwrap_or_default();
         let subagent_suggest = self.subagent_suggest.clone().unwrap_or_default();
         let skill_suggest = self.skill_suggest.clone().unwrap_or_default();
-        // 三个开关都关着或都没有可用渠道：立即提交，原文照发，连候选清单都不必收集。
+        // 三个开关都关着：立即提交，原文照发，连候选清单都不必收集。
         if !suggest.active() && !subagent_suggest.active() && !skill_suggest.active() {
             return Some((text, images));
         }
@@ -109,14 +112,13 @@ impl App {
                 None => omnicrawl_host::tools::discover_skill_candidates(
                     &self.workspace,
                     self.registry.config_environment(),
-                    &self.skill_suggest_rerank.clone().unwrap_or_default(),
                     &text,
                 ),
             }
         } else {
             Vec::new()
         };
-        // 三路都没有可送审的候选：不必白跑一次网络。
+        // 三路都没有候选：本地匹配无从下手，直接原文提交。
         if !(suggest.active() && !inventory.is_empty())
             && !(subagent_suggest.active() && !subagent_roles.is_empty())
             && !(skill_suggest.active() && !skill_candidates.is_empty())

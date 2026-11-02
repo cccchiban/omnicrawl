@@ -198,6 +198,9 @@ use super::*;
         assert_eq!(state.selected_key(), "advisor");
         assert_eq!(state.pane(), Pane::Form(FormKind::Advisor));
         state.handle_key(KeyCode::Up);
+        assert_eq!(state.selected_key(), "suggestion");
+        assert_eq!(state.pane(), Pane::Suggestion);
+        state.handle_key(KeyCode::Up);
         assert_eq!(state.selected_key(), "embedding_models");
         assert_eq!(state.pane(), Pane::EmbeddingModels);
         state.handle_key(KeyCode::Up);
@@ -1700,6 +1703,75 @@ use super::*;
         assert_eq!(state.subagent_rows()[0].value, "已开启");
         assert!(state.subagent_rows()[0].active, "回填后开关状态跟着翻");
         assert_eq!(state.status(), "子任务功能已开启。");
+    }
+
+    /// 提问建议页的初始值：三个开关全关（与配置默认值一致）。
+    fn suggestion_state() -> SettingsState {
+        SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows()).with_suggestion_switches(vec![
+                SuggestionSwitchRow {
+                    key: "tools".to_string(),
+                    label: "建议工具".to_string(),
+                    enabled: false,
+                },
+                SuggestionSwitchRow {
+                    key: "subagents".to_string(),
+                    label: "建议子代理".to_string(),
+                    enabled: false,
+                },
+                SuggestionSwitchRow {
+                    key: "skills".to_string(),
+                    label: "建议 Skill".to_string(),
+                    enabled: true,
+                },
+            ]),
+        )
+    }
+
+    #[test]
+    fn suggestion_page_toggles_each_switch() {
+        let mut state = suggestion_state();
+        goto(&mut state, "suggestion");
+        assert_eq!(state.pane(), Pane::Suggestion);
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.suggestion_rows().len(), 3);
+
+        // 每一行都产出目标状态（而不是「翻转」），宿主拿到就能直接写盘。
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
+                key: "tools".to_string(),
+                enabled: true,
+            }))
+        );
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.handle_key(KeyCode::Right),
+            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
+                key: "subagents".to_string(),
+                enabled: true,
+            }))
+        );
+        // 末行本来就开着：再切换就是请求关闭。
+        state.handle_key(KeyCode::Down);
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
+                key: "skills".to_string(),
+                enabled: false,
+            }))
+        );
+
+        // 回填后行状态与状态行跟着变。
+        state.apply_succeeded(
+            &SettingsChange::SuggestionSwitch {
+                key: "tools".to_string(),
+                enabled: true,
+            },
+            "建议工具：开启。".to_string(),
+        );
+        assert!(state.suggestion_rows()[0].enabled, "回填后开关状态跟着翻");
+        assert_eq!(state.status(), "建议工具：开启。");
     }
 
     /// 视觉设置页的初始值：代理关闭、一条模型、原生视觉未配置。

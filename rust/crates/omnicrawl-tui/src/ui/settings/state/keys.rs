@@ -95,6 +95,7 @@ impl SettingsState {
             Pane::Tools => self.handle_tools_key(key),
             Pane::Mcp => self.handle_mcp_key(key),
             Pane::Subagents => self.handle_subagents_key(key),
+            Pane::Suggestion => self.handle_suggestion_key(key),
             Pane::Vision => self.handle_vision_key(key),
             Pane::ModelManagement => self.handle_model_management_key(key),
             Pane::DecisionModels => self.handle_decision_models_key(key),

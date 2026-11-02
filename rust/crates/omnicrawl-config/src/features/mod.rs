@@ -20,6 +20,8 @@ pub mod image_gen;
 pub mod run_guard;
 pub mod skills;
 pub mod subagents;
+// 提问建议（`[suggestion]`）：三类建议的开关，纯本地 BM25 匹配，与决策模型解耦。
+pub mod suggestion;
 pub mod tls_resumption;
 pub mod tool_output_compression;
 pub mod tools;

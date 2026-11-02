@@ -170,7 +170,8 @@ use crate::ui::settings::{
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
     McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
     SettingsEvent,
-    SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange,
+    SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSwitchRow, ToolSwitchRow,
+    TtsChange,
     TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
     WebSearchRow, SUBAGENT_ADVANCED_SPECS,
 };
@@ -491,25 +492,21 @@ pub struct App {
     /// 与 `options` 一样对外可见：用例需要把这一步钉成「裁决不可用」，否则结果会随本机
     /// 配置（开关开没开、决策服务在不在）漂移。
     pub prune: Option<omnicrawl_host::tools::PruneOptions>,
-    /// 工具建议运行期（`[decision_models.features] tool_suggestion`）：开启后提交前先问一次决策
-    /// 模型「本次该用哪些工具」，把结果拼进 user 尾部；`None` 或不可用时原文照发。
+    /// 工具建议运行期（`[suggestion] tools`）：开启后用本地 BM25 从工具表候选里挑出本次要用的
+    /// 工具，把结果拼进 user 尾部；`None` 或没有命中时原文照发。
     ///
     /// 与 `prune` 一样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// 子代理建议运行期（`[decision_models.features] subagent_suggestion`）：开启后提交前同样先
-    /// 问一次决策模型「本次该调度哪些子代理」。与工具建议互相独立，可单开也可同时开——同时开时
-    /// 两条请求并发发起，总耗时取较大者而不是相加。
+    /// 子代理建议运行期（`[suggestion] subagents`）：开启后同样按 BM25 从可调度的角色里挑。
+    /// 与工具建议互相独立，可单开也可同时开。
     ///
     /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 建议运行期（`[decision_models.features] skill_suggestion`）：开启后提交前检索本机
-    /// Skill 索引，把命中的池子交给决策模型判定「本次符合哪两个的适用场景」，最多注入两个名称。
-    /// 与工具／子代理建议互相独立，三者同时开就并发发起。
+    /// Skill 建议运行期（`[suggestion] skills`）：开启后检索本机 Skill 索引，把 BM25 命中的
+    /// 前几名注入 user 尾部。与工具／子代理建议互相独立，三类同时开就并发算完。
     ///
     /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub skill_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 建议池子的排序方式：`skill_search_rerank` 开着时用决策模型重排，否则按 BM25 名次。
-    pub skill_suggest_rerank: Option<omnicrawl_host::tools::RerankOptions>,
     /// Skill 建议的候选池覆盖：`None`（默认）表示按提问实时检索本机 Skill 索引。
     ///
     /// 与 `suggest_roles` 同一用意：用例需要钉住候选，否则结果会随本机已装的 Skill 漂移。
@@ -886,22 +883,12 @@ impl App {
         let prune = Some(omnicrawl_host::tools::prune_options_from_config(
             &environment,
         ));
-        // 建议运行期：与审查、检索重排同源（`[decision_models.features] tool_suggestion`、
-        // `subagent_suggestion` 与 `skill_suggestion`；三者独立，可同时开启）。
-        let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
-            &environment,
-        ));
-        let subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
-            &environment,
-        ));
-        let skill_suggest = Some(omnicrawl_host::tools::skill_suggest_options_from_config(
-            &environment,
-        ));
-        // Skill 池子的排序：决策模型排序关着时按 BM25 名次，注入本身不依赖决策服务。
-        let skill_suggest_rerank = Some(omnicrawl_host::tools::rerank_options_from_config(
-            &environment,
-            omnicrawl_config::features::decision_model::DECISION_SWITCH_SKILL_SEARCH,
-        ));
+        // 建议运行期：开关在 `config.toml` 的 `[suggestion]`，匹配纯本地（BM25），不再走决策模型。
+        let [suggest, subagent_suggest, skill_suggest] =
+            omnicrawl_host::tools::suggest_options_from_config(&environment);
+        let suggest = Some(suggest);
+        let subagent_suggest = Some(subagent_suggest);
+        let skill_suggest = Some(skill_suggest);
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
         state
@@ -940,7 +927,6 @@ impl App {
             suggest,
             subagent_suggest,
             skill_suggest,
-            skill_suggest_rerank,
             suggest_roles: None,
             suggest_skills: None,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),

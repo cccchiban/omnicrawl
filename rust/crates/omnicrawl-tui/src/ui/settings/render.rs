@@ -257,6 +257,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::Tools => render_tools(frame, body, state, focused),
         Pane::Mcp => render_mcp(frame, body, state, focused),
         Pane::Subagents => render_subagents(frame, body, state, focused),
+        Pane::Suggestion => render_suggestion(frame, body, state, focused),
         Pane::Vision => render_vision(frame, body, state, focused),
         Pane::ModelManagement => render_model_management(frame, body, state, focused),
         Pane::DecisionModels => render_decision_models(frame, body, state, focused),
@@ -1578,6 +1579,64 @@ fn render_subagents(frame: &mut Frame, area: Rect, state: &SettingsState, focuse
                 area.width as usize,
             ),
             style,
+        ));
+    }
+    Paragraph::new(lines).render(
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.min(list_height.max(1) as u16),
+            ..area
+        },
+        frame.buffer_mut(),
+    );
+
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(reserved),
+        height: reserved,
+        ..area
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+/// 提问建议页：一行一个开关，选中即切换。
+fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let rows = state.suggestion_rows();
+    let reserved = 4u16.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let offset = window_offset(state.suggestion_selected(), rows.len(), list_height);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
+        let current = index == state.suggestion_selected();
+        let style = if current && focused {
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            menu_text_style()
+        };
+        let value = if row.enabled { "开启" } else { "关闭" };
+        lines.push(Line::styled(
+            fit(
+                &format!(
+                    "{} {}：{value}",
+                    if current { "›" } else { " " },
+                    row.label
+                ),
+                area.width as usize,
+            ),
+            style,
+        ));
+    }
+    if rows.is_empty() {
+        lines.push(Line::styled(
+            fit("（未读到建议开关）", area.width as usize),
+            theme::rich_style(theme::TEXT_MUTED),
         ));
     }
     Paragraph::new(lines).render(

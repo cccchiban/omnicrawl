@@ -2,7 +2,7 @@
 
 use super::*;
 
-use super::model_port::{ActiveAssistantSlot, build_model_runtime, parse_options, parse_tools, provider_warning_event, prune_candidate_of, to_agent_reply};
+use super::model_port::{ActiveAssistantSlot, build_model_runtime, is_empty_reply, is_tool_state_rejection, parse_options, parse_tools, provider_warning_event, prune_candidate_of, to_agent_reply};
 
 use super::protocol::{PortFailure};
 

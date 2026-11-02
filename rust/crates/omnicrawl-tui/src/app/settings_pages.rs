@@ -167,6 +167,39 @@ impl App {
         ))
     }
 
+    /// 写回一个提问建议开关（选中即保存），并重建建议运行期。
+    ///
+    /// 建议是宿主侧行为（提交前拼 user 尾部），内核完全不知情，因此写盘后只要换掉运行期，
+    /// 不必推任何帧，也不必重建工具表。
+    pub(super) fn apply_suggestion_switch(
+        &mut self,
+        key: &str,
+        enabled: bool,
+    ) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut config =
+            omnicrawl_config::features::suggestion::load_suggestion_config(&environment, None);
+        let path = omnicrawl_config::features::suggestion::save_suggestion_switch(
+            &environment,
+            &mut config,
+            key,
+            enabled,
+            None,
+        )
+        .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.rebuild_suggest(&environment);
+        let label = omnicrawl_config::features::suggestion::SUGGESTION_SWITCHES
+            .iter()
+            .find(|spec| spec.key == key)
+            .map(|spec| spec.label)
+            .unwrap_or(key);
+        Ok(format!(
+            "{label}：{}，已保存到 {}。",
+            if enabled { "开启" } else { "关闭" },
+            path.display()
+        ))
+    }
+
     /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份）。
     pub(super) fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
         self.registry_options.memory.rerank =

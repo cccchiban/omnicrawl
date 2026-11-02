@@ -354,6 +354,14 @@ pub(super) struct SubagentsState {
     pub(crate) status: String,
 }
 
+/// 提问建议页的界面状态：三个开关，选中即切换并写盘。
+#[derive(Debug, Clone)]
+pub(super) struct SuggestionState {
+    pub(crate) rows: Vec<SuggestionSwitchRow>,
+    pub(crate) selected: usize,
+    pub(crate) status: String,
+}
+
 /// 视觉设置页的界面状态。
 #[derive(Debug, Clone)]
 pub(super) struct VisionState {

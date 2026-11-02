@@ -534,7 +534,7 @@ impl SkillManager {
         self.discover_with_enterprise(cwd.as_deref(), &extra, enterprise.as_deref());
     }
 
-    /// 只读检索索引元数据：按作用域过滤后用 BM25 打分，命中的条目按名称排序取前若干条。
+    /// 只读检索索引元数据：按作用域过滤后用 BM25 打分，命中条目**按相关度从高到低**取前若干条。
     ///
     /// `scope` 取 [`SEARCH_SCOPES`] 中的取值（`all` 表示不过滤）。检索单元是 Skill 的
     /// **名称 + 描述 + 正文**：名称与描述判断「这个 Skill 是做什么的」，正文决定「它具体
@@ -542,6 +542,10 @@ impl SkillManager {
     ///
     /// `user_input` 为空时退化为「按作用域列出全部」，此时不打分也不设门槛，便于模型先
     /// 浏览再决定读哪个正文。
+    ///
+    /// 名次即优先级，不能被别的东西打乱：`bm25::rank` 已按得分降序返回，这里只截断不重排
+    /// ——按名称再排一次会把最相关的 Skill 挤到池子尾部，让下游「送审顺序即优先级」的判定
+    /// （决策模型重排、Skill 建议的候选池）全部失真。
     pub fn search_meta(
         &self,
         user_input: &str,
@@ -581,7 +585,6 @@ impl SkillManager {
                 reason: format!("BM25 命中：{}", hit.matched.join(", ")),
             })
             .collect();
-        ranked.sort_by(|left, right| left.meta.name.cmp(&right.meta.name));
         ranked.truncate(max_results);
         ranked
     }

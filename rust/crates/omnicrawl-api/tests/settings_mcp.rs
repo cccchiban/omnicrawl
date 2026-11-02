@@ -236,7 +236,6 @@ fn runner_options(root: &Path) -> RunnerOptions {
         suggest: None,
         subagent_suggest: None,
         skill_suggest: None,
-        skill_suggest_rerank: None,
         skill_suggest_pinned: None,
         prompt: None,
     }

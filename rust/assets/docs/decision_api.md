@@ -324,5 +324,10 @@ rust/crates/omnicrawl-decision/
 
 **不写第二套决策逻辑**：请求构造、响应解析、脱敏旁路、审查提问都复用
 `rust/crates/omnicrawl-host/src/decision_wire.rs` 与 `rust/crates/omnicrawl-host/src/review.rs`，
-因此这个接口与宿主内部七处调用点（工具调用审查、检索重排、联网搜索排序、提问托管、
-工具调用淘汰、工具建议与子代理建议）在语义上天然一致。
+因此这个接口与宿主内部六处调用点（工具调用审查、检索重排、联网搜索排序、提问托管、
+工具调用淘汰）在语义上天然一致。
+
+> 提问建议（工具／子代理／Skill）已不再走决策模型：那三类建议在**每一轮提问之前**触发，
+> 一次往返 70–500ms 的开销压在最敏感的路径上。现在改为纯本地 BM25 匹配
+> （`rust/crates/omnicrawl-host/src/tools/suggestion.rs`），配置在 `config.toml` 的
+> `[suggestion]` 段，与决策模型完全解耦。

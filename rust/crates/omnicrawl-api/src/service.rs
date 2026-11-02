@@ -142,17 +142,13 @@ pub struct ServiceOptions {
     /// 工具调用淘汰运行期（`[decision_models.features] tool_call_prune`）；`None` 表示不淘汰，
     /// 「刚变老」的那一批调用照旧全部留在上下文里。
     pub prune: Option<omnicrawl_host::tools::PruneOptions>,
-    /// 工具建议运行期（`[decision_models.features] tool_suggestion`）；`None` 表示不建议，
-    /// user 原文照发。
+    /// 工具建议运行期（`[suggestion] tools`）；`None` 表示不建议，user 原文照发。
     pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// 子代理建议运行期（`[decision_models.features] subagent_suggestion`）；与工具建议互相独立，
-    /// 两者同时开启时并发发起，总耗时取较大者而不是相加。
+    /// 子代理建议运行期（`[suggestion] subagents`）；与工具建议互相独立，可单开也可同时开。
     pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 建议运行期（`[decision_models.features] skill_suggestion`）：开启后检索本机 Skill
-    /// 索引，把命中的池子交给决策模型判定，最多注入两个名称；`None` 表示不建议。
+    /// Skill 建议运行期（`[suggestion] skills`）：开启后检索本机 Skill 索引，把 BM25 命中的
+    /// 前几名注入 user 尾部；`None` 表示不建议。
     pub skill_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 池子的排序方式（`skill_search_rerank`）：关着时按 BM25 名次。
-    pub skill_suggest_rerank: Option<omnicrawl_host::tools::RerankOptions>,
     /// 模型发现缓存：跨请求存活，`POST /models/refresh` 清空它。
     pub discovery_cache: Arc<DiscoveryCache>,
     /// 内核可执行文件：运行期重起内核（切换会话 / 工作区）需要它；嵌入模式可以不给。
@@ -189,7 +185,6 @@ impl ServiceOptions {
             suggest: None,
             subagent_suggest: None,
             skill_suggest: None,
-            skill_suggest_rerank: None,
             discovery_cache: Arc::new(DiscoveryCache::new()),
             kernel_program: None,
             isolation: Mutex::new(None),
@@ -952,19 +947,12 @@ fn options_from_process_profile(
     options.custody = Some(omnicrawl_host::tools::custody_options_from_config(env));
     // 工具调用淘汰：与 TUI 同源（`[decision_models.features] tool_call_prune`）。
     options.prune = Some(omnicrawl_host::tools::prune_options_from_config(env));
-    // 建议：与 TUI 同源（`[decision_models.features] tool_suggestion`、`subagent_suggestion`
-    // 与 `skill_suggestion`）。
-    options.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(env));
-    options.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
-        env,
-    ));
-    options.skill_suggest = Some(omnicrawl_host::tools::skill_suggest_options_from_config(
-        env,
-    ));
-    options.skill_suggest_rerank = Some(omnicrawl_host::tools::rerank_options_from_config(
-        env,
-        omnicrawl_config::features::decision_model::DECISION_SWITCH_SKILL_SEARCH,
-    ));
+    // 建议：与 TUI 同源（`config.toml` 的 `[suggestion]`，纯本地 BM25 匹配，不出网）。
+    let [suggest, subagent_suggest, skill_suggest] =
+        omnicrawl_host::tools::suggest_options_from_config(env);
+    options.suggest = Some(suggest);
+    options.subagent_suggest = Some(subagent_suggest);
+    options.skill_suggest = Some(skill_suggest);
     options.isolation = Mutex::new(isolation);
     Ok(options)
 }
@@ -1041,11 +1029,10 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         custody: options.custody.clone(),
         // 工具调用淘汰同源：与审查一样走决策渠道，失败一律保留原文。
         prune: options.prune.clone(),
-        // 建议同源：提交前问一次决策模型该用哪些工具／哪些子代理／哪两个 Skill，失败一律原文照发。
+        // 建议同源：本地 BM25 匹配，开关在 `[suggestion]`；没有命中就原文照发。
         suggest: options.suggest.clone(),
         subagent_suggest: options.subagent_suggest.clone(),
         skill_suggest: options.skill_suggest.clone(),
-        skill_suggest_rerank: options.skill_suggest_rerank.clone(),
         // 无头宿主不钉候选：按本轮提问实时检索本机 Skill 索引。
         skill_suggest_pinned: None,
         // 提示词装配结果：无头宿主与 TUI 共用同一套模板 / AGENTS.md / Skill 装配。

@@ -109,7 +109,7 @@ pub use pages::{
     TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_SWITCH_ROW_OFFSET,
 };
 
-use pages::{ChoicesState, McpState, SubagentsState, ToolsState, VisionState};
+use pages::{ChoicesState, McpState, SubagentsState, SuggestionState, ToolsState, VisionState};
 
 pub(crate) use pages::{cycle_static, McpEditor};
 
@@ -126,6 +126,8 @@ mod vision;
 mod model;
 
 mod decision;
+
+mod suggestion;
 
 mod embedding;
 
@@ -151,6 +153,8 @@ pub enum Pane {
     Subagents,
     /// 视觉：模型原生视觉三态 + 代理开关 + 故障转移列表。
     Vision,
+    /// 提问建议：三个建议开关，选中即切换。
+    Suggestion,
     /// 结构化决策模型：决策渠道列表 + 单条决策渠道表单。
     DecisionModels,
     /// 向量模型：向量渠道列表 + 单条向量渠道表单。
@@ -185,6 +189,7 @@ impl Pane {
             "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
+            "suggestion" => Self::Suggestion,
             "show_thinking" => Self::Choice(ChoiceKind::ShowThinking),
             "memory" => Self::Choice(ChoiceKind::Memory),
             "tts" => Self::Tts,
@@ -281,6 +286,15 @@ pub struct SubagentRow {
     pub active: bool,
     /// 所属分区标题（渲染层在同一分区的第一行前画出来）。
     pub section: &'static str,
+}
+
+/// 提问建议页的一行：一个建议开关（选中即切换并写盘）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestionSwitchRow {
+    /// 配置键（`tools` / `subagents` / `skills`）。
+    pub key: String,
+    pub label: String,
+    pub enabled: bool,
 }
 
 /// 子任务设置的一次变更。
@@ -533,6 +547,8 @@ pub struct SettingsValues {
     pub decision_switches: Vec<DecisionSwitchRow>,
     /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
     pub decision_local: DecisionLocalValues,
+    /// 提问建议页的三个开关初值（键与顺序取自 `[suggestion]` 的开关表）。
+    pub suggestion_switches: Vec<SuggestionSwitchRow>,
     pub show_thinking: bool,
     pub memory_enabled: bool,
     pub tools: Vec<ToolSwitchRow>,
@@ -582,6 +598,7 @@ impl SettingsValues {
             embedding_enabled: false,
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
+            suggestion_switches: Vec::new(),
             show_thinking: true,
             memory_enabled: false,
             tools,
@@ -642,6 +659,12 @@ impl SettingsValues {
     /// 覆盖决策模型页下方的功能开关（未显式给出时按配置域的默认值铺一行一组开关）。
     pub fn with_decision_switches(mut self, switches: Vec<DecisionSwitchRow>) -> Self {
         self.decision_switches = switches;
+        self
+    }
+
+    /// 覆盖提问建议页的三个开关。
+    pub fn with_suggestion_switches(mut self, switches: Vec<SuggestionSwitchRow>) -> Self {
+        self.suggestion_switches = switches;
         self
     }
 
@@ -847,6 +870,8 @@ pub enum SettingsChange {
     EmbeddingEnabled { enabled: bool },
     /// 决策模型页的一个功能开关（键取自配置域的开关表）。
     DecisionSwitch { key: String, enabled: bool },
+    /// 提问建议页的一个开关（键取自 `[suggestion]` 的开关表，写回 `config.toml`）。
+    SuggestionSwitch { key: String, enabled: bool },
     /// 决策模型页的自部署分区：写尺寸/设备、准备环境、下载/删除尺寸、切渠道、启停服务。
     DecisionLocal(DecisionLocalChange),
     /// 保存一页表单：字段值按该页字段表的顺序给出。
@@ -887,6 +912,7 @@ const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Serv
 const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
 const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
 const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
+const SUGGESTION_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
 const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
 const MODEL_LIST_HINT: &str = "↑↓ 选择渠道或参数  Enter 编辑或选择  N 新建  D 删除  Esc 返回";
@@ -1044,6 +1070,8 @@ pub struct SettingsState {
     mcp: McpState,
     subagents: SubagentsState,
     vision: VisionState,
+    /// 提问建议页：三个开关与一次切换后的状态文本。
+    suggestion: SuggestionState,
     choices: ChoicesState,
     model_management: ModelManagementState,
     decision_models: DecisionModelsState,
@@ -1096,6 +1124,11 @@ impl SettingsState {
             },
             subagents: SubagentsState {
                 rows: values.subagents,
+                selected: 0,
+                status: String::new(),
+            },
+            suggestion: SuggestionState {
+                rows: values.suggestion_switches,
                 selected: 0,
                 status: String::new(),
             },

@@ -5,8 +5,8 @@
 //! 检索范围是 Skill 的名称、描述与**正文**，因此「描述写得泛、正文才写清楚」的 Skill 也能
 //! 被检索到。每次调用重扫一次索引，覆盖「本会话内刚装好 Skill」的场景。
 //!
-//! 结果固定取十条：BM25 判定哪些 Skill 命中，命中的按名称排序后截断——同一条查询给同一份
-//! 结果，不受打分幅度影响，模型看到的顺序也稳定。
+//! 结果固定取十条：BM25 判定哪些 Skill 命中，命中的按相关度从高到低截断——名次即优先级，
+//! 最该被使用的 Skill 排在最前面。
 //!
 //! 可选交给结构化决策模型重排（`decision_models.toml` 的 `[features] skill_search_rerank`，
 //! 默认关闭）：此时先取更宽的一池候选送审，最终顺序按决策模型给出的置信度，条数仍是十条。
@@ -278,8 +278,23 @@ mod tests {
             );
         }
 
+        // 送审顺序就是相关度序：先取一次不重排的检索结果作为候选池的基准，
+        // 桩按「整池倒序」给下标，期望值因此跟着池走，而不是假设池是按名称排的。
+        let baseline = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "project", "query": "rust 内核"})),
+        )
+        .expect("检索成功");
+        let pool = names(&baseline);
+        assert_eq!(pool.len(), 3, "三条候选都该命中：{baseline}");
+        let expected: Vec<String> = pool.iter().rev().cloned().collect();
+        assert_ne!(pool, expected, "倒序必须与原池不同才有判据：{pool:?}");
+
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let options = rerank_options(vec![2, 1, 0], std::sync::Arc::clone(&seen));
+        let order: Vec<usize> = (0..pool.len()).rev().collect();
+        let options = rerank_options(order, std::sync::Arc::clone(&seen));
         let output = skill_search(
             &root,
             &env(&root),
@@ -290,9 +305,7 @@ mod tests {
         let hits: Value = serde_json::from_str(&output).expect("结果是 JSON 数组");
         let items = hits.as_array().expect("数组");
         assert_eq!(items.len(), 3, "三条候选都该返回：{output}");
-        assert_eq!(items[0]["name"], "skill-c", "按重排顺序返回：{output}");
-        assert_eq!(items[1]["name"], "skill-b", "{output}");
-        assert_eq!(items[2]["name"], "skill-a", "{output}");
+        assert_eq!(names(&output), expected, "按重排顺序返回：{output}");
 
         let recorded = seen.lock().expect("记录未被毒化").clone();
         assert_eq!(recorded.len(), 3, "候选池比十条上限宽时才需要更宽的池：{recorded:?}");
@@ -370,9 +383,9 @@ mod tests {
         );
     }
 
-    /// 结果按名称排序，且固定只回十条。
+    /// 结果按相关度截断到十条；同分时保持索引扫描顺序（文件名排序）。
     #[test]
-    fn results_are_name_sorted_and_capped_at_ten() {
+    fn results_are_ranked_and_capped_at_ten() {
         let root = temp_root("cap");
         for index in 0..13 {
             let name = format!("skill-{index:02}");
@@ -391,10 +404,38 @@ mod tests {
         .expect("检索成功");
         let listed = names(&output);
         assert_eq!(listed.len(), 10, "固定返回十条：{output}");
-        let mut sorted = listed.clone();
-        sorted.sort();
-        assert_eq!(listed, sorted, "结果按名称排序：{output}");
-        assert_eq!(listed[0], "skill-00", "从最小的名称开始截断：{output}");
+        // 13 个 Skill 的正文完全相同、得分也一样，此时名次由下标稳定决定。
+        assert_eq!(listed[0], "skill-00", "同分时按扫描顺序：{output}");
+    }
+
+    /// 名次即相关度：得分高的排在前面，不被名称字母序打乱。
+    #[test]
+    fn a_higher_score_ranks_first_regardless_of_its_name() {
+        let root = temp_root("rank");
+        // 名称字母序会把 `aaa-weak` 排在前面，但只有 `zzz-strong` 的正文反复命中查询词。
+        write_skill(&root, "aaa-weak", "name: aaa-weak\ndescription: 弱命中");
+        let strong = root.join(".omnicrawl").join("skills").join("zzz-strong");
+        std::fs::create_dir_all(&strong).expect("建 skill 目录");
+        std::fs::write(
+            strong.join("SKILL.md"),
+            format!(
+                "---\nname: zzz-strong\ndescription: 强命中\n---\n\n{}\n",
+                "复盘 复盘 复盘 复盘"
+            ),
+        )
+        .expect("写 SKILL.md");
+        let output = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "project", "query": "复盘"})),
+        )
+        .expect("检索成功");
+        assert_eq!(
+            names(&output).first().map(String::as_str),
+            Some("zzz-strong"),
+            "得分高的该排第一：{output}"
+        );
     }
 
     /// 无交集时结果为空数组，不是报错。

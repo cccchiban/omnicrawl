@@ -64,3 +64,5 @@ unicode-width = { workspace = true }
 # `[dependencies]` 里的 crate 对集成测试 crate 不可见，因此重复声明一份：
 # `host_flow.rs` 需要按 `load_feature_enabled` 读出预期值，再与 `App` 真实装出来的工具表对账。
 omnicrawl-config = { path = "../omnicrawl-config" }
+# `kernel_e2e.rs` 按展示层同一口径拆掉 user 尾部的建议行，再比对正文。
+omnicrawl-host = { path = "../omnicrawl-host" }

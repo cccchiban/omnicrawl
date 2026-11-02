@@ -38,8 +38,7 @@ use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
 use crate::tools::decision_prune::{evicted_call_ids_for, PruneOptions};
-use crate::tools::decision_search::RerankOptions;
-use crate::tools::decision_suggest::{
+use crate::tools::suggestion::{
     discover_skill_candidates, insert_suggestions, suggestion_lines, SuggestOptions,
     SuggestionInputs,
 };
@@ -79,21 +78,15 @@ pub struct RunnerOptions {
     /// 的那一批」调用交回来裁决，判为无用的整组移出上下文；`None` 或不可用时一律保留原文
     /// （fail-open）。
     pub prune: Option<PruneOptions>,
-    /// 工具建议（`decision_models.toml` 的 `tool_suggestion` 开关）：开启后提交回合前先问一次
-    /// 决策模型「本次该用哪些工具」，把结果拼进 user 尾部；`None` 或不可用时原文照发
-    /// （fail-open）。
+    /// 工具建议（`[suggestion] tools`）：开启后用本地 BM25 从工具表候选里挑出本次要用的工具，
+    /// 把结果拼进 user 尾部；`None` 或没有命中时原文照发（fail-open）。
     pub suggest: Option<SuggestOptions>,
-    /// 子代理建议（`decision_models.toml` 的 `subagent_suggestion` 开关）：开启后同样先问一次
-    /// 决策模型「本次该调度哪些子代理」；两者互相独立，可单开也可同时开——同时开启时由
-    /// [`SuggestionInputs`] 并发发起，总耗时取两者的较大者而不是相加。
+    /// 子代理建议（`[suggestion] subagents`）：开启后同样按 BM25 从可调度的角色里挑；
+    /// 三类建议互相独立，可单开也可同时开——同时开启时由 [`SuggestionInputs`] 并发算完。
     pub subagent_suggest: Option<SuggestOptions>,
-    /// Skill 建议（`decision_models.toml` 的 `skill_suggestion` 开关）：开启后检索本机 Skill
-    /// 索引，把命中的池子交给决策模型判定「本次符合哪两个的适用场景」，最多注入两个名称。
-    /// 检索重排（`skill_search_rerank`）也开着时用决策模型给池子排序，否则用 BM25 名次；
-    /// 不可用或没有命中的一律不注入（fail-open）。
+    /// Skill 建议（`[suggestion] skills`）：开启后检索本机 Skill 索引，把 BM25 命中的前几名
+    /// 注入 user 尾部；没有命中的一律不注入（fail-open）。
     pub skill_suggest: Option<SuggestOptions>,
-    /// Skill 建议检索到的池子除 BM25 之外还可用决策模型排序（`skill_search_rerank`）。
-    pub skill_suggest_rerank: Option<RerankOptions>,
     /// Skill 建议的候选池覆盖：`None`（默认）表示按提问实时检索本机 Skill 索引。
     ///
     /// 与 `registry_options.subagent_roles` 同一用意：用例需要钉住候选，否则结果会随本机
@@ -576,23 +569,17 @@ impl TurnRunner {
             .map(|session| session.session_id.clone())
     }
 
-    /// 在 user 尾部拼上决策模型的工具建议、子代理建议与 Skill 建议；开关没开、没有可用渠道或
-    /// 没有建议时原文照发。
+    /// 在 user 尾部拼上工具建议、子代理建议与 Skill 建议；开关没开或没有命中时原文照发。
     ///
     /// 工具与子代理的候选清单直接来自**本宿主的工具表与角色表**：`disabled_tools` 关掉的、当前
     /// 没有运行期的工具，以及内核不能调度的子代理角色，都已经被挡在外面，因此送审的每个名字都是
-    /// 模型真能调到的。Skill 的候选来自本机 Skill 索引（BM25 挑池子），最终只取前两名。
+    /// 模型真能调到的。Skill 的候选来自本机 Skill 索引（BM25 命中前几名）。
     ///
-    /// 三类建议互相独立、可单开也可同时开；同时开启时并发发起，总耗时取三者较大者。
+    /// 三类建议互相独立、可单开也可同时开；匹配全在本地完成（BM25），不出网也不读渠道配置。
     fn with_suggestions(&self, user_text: String) -> String {
         let tools = self.options.suggest.clone().unwrap_or_default();
         let subagents = self.options.subagent_suggest.clone().unwrap_or_default();
         let skills = self.options.skill_suggest.clone().unwrap_or_default();
-        let rerank = self
-            .options
-            .skill_suggest_rerank
-            .clone()
-            .unwrap_or_default();
         let inventory = self.registry.tool_inventory();
         // Skill 候选只在开关真正打开时才去扫索引：关着时这一步是纯浪费。
         let skill_candidates = if skills.active() {
@@ -601,7 +588,6 @@ impl TurnRunner {
                 None => discover_skill_candidates(
                     &self.options.workspace_root,
                     self.registry.config_environment(),
-                    &rerank,
                     &user_text,
                 ),
             }

@@ -61,6 +61,9 @@ impl App {
         let (decision_rows, default_decision_key) = self.decision_views(&environment);
         let decision_template = decision_row_from_config(&DecisionChannelConfig::default());
         let decision_switches = decision_switch_rows(&load_decision_switches(&environment, None));
+        // 提问建议页的初值：三个开关（`[suggestion]`）。
+        let suggestion_config =
+            omnicrawl_config::features::suggestion::load_suggestion_config(&environment, None);
         let decision_local = self.decision_local_values(&environment);
         // 向量模型页的初值：渠道、默认渠道、新建模板与总开关（读不出来就用配置默认值）。
         let embedding_config =
@@ -108,6 +111,7 @@ impl App {
         .with_channels(channel_rows, &default_channel_key, channel_template)
         .with_decision_models(decision_rows, &default_decision_key, decision_template)
         .with_decision_switches(decision_switches)
+        .with_suggestion_switches(suggestion_switch_rows(&suggestion_config))
         .with_embedding_models(
             embedding_rows,
             &default_embedding_key,

@@ -9,9 +9,9 @@ use super::turn::{Conn};
 
 /// `subagent.run`：派生单个子 Agent 并等它跑完，回子 Agent 的**原始输出文本**。
 ///
-/// 与 `subagent` 工具的 `action=run` 同一条执行路径（定义发现、工具白名单、worktree
-/// 隔离都一致），区别只在于：本方法是宿主显式请求的单个任务，结果不回公开摘要，
-/// 而是把子 Agent 的收尾文本原样交给宿主（`/review` 要自己解析 JSON 报告）。
+/// 与 `subagent_run` 工具同一条执行路径（定义发现、工具白名单、worktree 隔离都一致），
+/// 区别只在于：本方法是宿主显式请求的单个任务，结果不回公开摘要，而是把子 Agent 的
+/// 收尾文本原样交给宿主（`/review` 要自己解析 JSON 报告）。
 pub(super) fn respond_subagent_run(conn: &Rc<RefCell<Conn>>, id: Id, params: &SubagentRunParams) {
     let agent_type = params.agent_type.trim();
     if agent_type.is_empty() {
@@ -87,9 +87,8 @@ pub(super) fn run_subagent_request(
     };
     let parent_tools = SubAgentRuntime::parent_tool_names(&model_config);
     let batch_id = next_subagent_batch_id();
-    // 复用 `subagent` 工具的入参形状：校验、工具白名单与错误文案因此完全同源。
+    // 复用 `subagent_run` 工具的入参形状：校验、工具白名单与错误文案因此完全同源。
     let arguments: Map<String, Value> = json!({
-        "action": "run",
         "task": {
             "subagent_type": agent_type,
             "description": description,

@@ -42,6 +42,12 @@ impl SettingsState {
                 self.subagents.selected = target;
                 already
             }
+            Pane::Suggestion => {
+                let target = index.min(self.suggestion.rows.len().saturating_sub(1));
+                let already = self.suggestion.selected == target;
+                self.suggestion.selected = target;
+                already
+            }
             Pane::Vision => {
                 let target = index.min(self.vision.models.len().saturating_sub(1));
                 let already = self.vision.selected == target;

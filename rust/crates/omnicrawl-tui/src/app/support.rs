@@ -404,6 +404,20 @@ pub(super) fn decision_switch_rows(switches: &DecisionSwitches) -> Vec<DecisionS
         .collect()
 }
 
+/// 提问建议开关的界面行：标签与顺序取自 `[suggestion]` 的开关表，值取配置。
+pub(super) fn suggestion_switch_rows(
+    config: &omnicrawl_config::features::suggestion::SuggestionConfig,
+) -> Vec<SuggestionSwitchRow> {
+    omnicrawl_config::features::suggestion::SUGGESTION_SWITCHES
+        .iter()
+        .map(|spec| SuggestionSwitchRow {
+            key: spec.key.to_string(),
+            label: spec.label.to_string(),
+            enabled: config.get(spec.key),
+        })
+        .collect()
+}
+
 /// 配置决策渠道 → 决策页的界面行。
 pub(super) fn decision_row_from_config(channel: &DecisionChannelConfig) -> DecisionRow {
     DecisionRow {

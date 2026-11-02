@@ -77,6 +77,10 @@ enum Entry {
         description: String,
         status: String,
     },
+    /// 重试进度提示（`subagent.retry`）：写进窗口正文，不占主会话状态行。
+    Retry(String),
+    /// 重试前撤销已经显示的半截正文（`subagent.turn.rollback`）。
+    Rollback,
     /// 整个批次收尾：窗口据此自动关闭。
     BatchFinished,
 }
@@ -270,6 +274,11 @@ fn entry_from_event(name: &str, payload: &serde_json::Value) -> Option<Entry> {
             (!body.trim().is_empty()).then_some(Entry::Reasoning(body))
         }
         "subagent.batch.finished" => Some(Entry::BatchFinished),
+        "subagent.turn.rollback" => Some(Entry::Rollback),
+        "subagent.retry" => {
+            let message = text("message");
+            (!message.trim().is_empty()).then_some(Entry::Retry(message))
+        }
         "subagent.tool.started" => Some(Entry::ToolStarted {
             call_id: text("call_id"),
             tool: text("tool"),
@@ -354,6 +363,8 @@ fn entry_to_json(entry: &Entry) -> serde_json::Value {
     match entry {
         Entry::Text(text) => serde_json::json!({ "kind": "text", "text": text }),
         Entry::Reasoning(text) => serde_json::json!({ "kind": "reasoning", "text": text }),
+        Entry::Retry(message) => serde_json::json!({ "kind": "retry", "text": message }),
+        Entry::Rollback => serde_json::json!({ "kind": "rollback" }),
         Entry::BatchFinished => serde_json::json!({ "kind": "batch.finished" }),
         Entry::ToolStarted {
             call_id,
@@ -405,6 +416,8 @@ fn entry_from_json(line: &str) -> Option<Entry> {
     match text("kind").as_str() {
         "text" => Some(Entry::Text(text("text"))),
         "reasoning" => Some(Entry::Reasoning(text("text"))),
+        "retry" => Some(Entry::Retry(text("text"))),
+        "rollback" => Some(Entry::Rollback),
         "batch.finished" => Some(Entry::BatchFinished),
         "tool.started" => Some(Entry::ToolStarted {
             call_id: text("call_id"),
@@ -810,6 +823,13 @@ fn consume(rendered: &mut Rendered, state: &mut crate::state::AppState, line: &s
         Entry::Reasoning(text) => {
             state.subagent_reasoning(text);
         }
+        Entry::Retry(message) => {
+            // 重试进度写在窗口的首行提示区：与「子任务已落定」同一处，不抢过程正文。
+            state.notice(message);
+        }
+        Entry::Rollback => {
+            state.subagent_rollback();
+        }
         Entry::BatchFinished => {
             rendered.finished = true;
         }
@@ -1203,6 +1223,41 @@ mod tests {
         assert_eq!(state.records.len(), 3, "{:?}", state.records);
         assert!(matches!(state.records[1], Record::Reasoning(ref text) if text == "先看一眼"));
         assert!(matches!(state.records[2], Record::Assistant(ref text) if text == "接着读文件"));
+    }
+
+    #[test]
+    fn rollback_drops_the_half_written_text_before_the_retry() {
+        let mut rendered = Rendered::default();
+        let mut state = window_state();
+        for line in [
+            serde_json::json!({"kind": "text", "text": "半截"}),
+            // 重试：先撤掉作废的半截正文（`subagent.turn.rollback`），再报重试进度，
+            // 之后接收重试后的新正文。顺序与内核发出的一致。
+            serde_json::json!({"kind": "rollback"}),
+            serde_json::json!({"kind": "retry", "text": "请求失败，正在自动重试（第1次）"}),
+            serde_json::json!({"kind": "text", "text": "完整回复"}),
+        ] {
+            consume(&mut rendered, &mut state, &line.to_string());
+        }
+
+        // 第 0 条是 `window_state` 的占位提示，末尾那条应只剩重试后的正文。
+        let bodies: Vec<&str> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Assistant(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies, vec!["完整回复"], "{:?}", state.records);
+        assert!(
+            state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Notice(text) if text.contains("正在自动重试"))),
+            "重试进度应写进窗口提示：{:?}",
+            state.records
+        );
     }
 
     #[test]

@@ -178,7 +178,12 @@ impl Harness {
         let mut options = options(approval);
         options.tool_timeout_seconds = tool_timeout_seconds;
         options.system_prompt = system_prompt;
-        let app = App::new(options, kernel, &workspace).expect("工具表应当构建成功");
+        let mut app = App::new(options, kernel, &workspace).expect("工具表应当构建成功");
+        // 建议运行期来自本机配置（含旧决策开关的迁移结果）：用例需要确定性的提交时机，
+        // 一律关掉；需要建议的用例自己按需注入。
+        app.suggest = None;
+        app.subagent_suggest = None;
+        app.skill_suggest = None;
         Self {
             app,
             recorder,
@@ -691,7 +696,7 @@ fn skill_suggestion_lands_in_the_submitted_text() {
     impl omnicrawl_tui::tools::SuggestClient for FixedSuggest {
         fn suggest(
             &self,
-            _request: &omnicrawl_tui::tools::decision_suggest::SuggestRequest<'_>,
+            _request: &omnicrawl_tui::tools::suggestion::SuggestRequest<'_>,
         ) -> Result<Vec<String>, String> {
             Ok(self.names.clone())
         }
@@ -699,36 +704,27 @@ fn skill_suggestion_lands_in_the_submitted_text() {
 
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
-    let channel = || omnicrawl_tui::tools::decision_suggest::SuggestChannel {
-        mode: "jev".to_string(),
-        model: "stub".to_string(),
-        base_url: "http://127.0.0.1:1".to_string(),
-        api_key: "stub".to_string(),
-        retry_count: 0,
+    let enabled = || omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        ..omnicrawl_tui::tools::SuggestOptions::default()
     };
     harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        channel: Some(channel()),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["web_search".to_string()],
         }),
+        ..enabled()
     });
     harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        channel: Some(channel()),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["explore".to_string()],
         }),
+        ..enabled()
     });
     harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        channel: Some(channel()),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["kimi-pdf".to_string(), "kimi-docx".to_string()],
         }),
+        ..enabled()
     });
     harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
     // Skill 候选钉死：生产路径会先扫本机 Skill 索引，结果随环境漂移。
@@ -736,8 +732,6 @@ fn skill_suggestion_lands_in_the_submitted_text() {
         ("kimi-pdf".to_string(), "处理 PDF".to_string()),
         ("kimi-docx".to_string(), "处理 Word".to_string()),
     ]);
-    // 池子的重排关闭：用例只验注入能否落地，不验排序。
-    harness.app.skill_suggest_rerank = None;
 
     harness
         .app
@@ -787,7 +781,7 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
     impl omnicrawl_tui::tools::SuggestClient for SlowSuggestClient {
         fn suggest(
             &self,
-            _request: &omnicrawl_tui::tools::decision_suggest::SuggestRequest<'_>,
+            _request: &omnicrawl_tui::tools::suggestion::SuggestRequest<'_>,
         ) -> Result<Vec<String>, String> {
             thread::sleep(self.delay);
             Ok(self.names.clone())
@@ -796,33 +790,17 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
 
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
-    // 开关打开 + 有渠道：建议真的会被执行（`active()` 要求两者都成立）。
+    // 开关打开：建议真的会被执行（`active()` 只看开关，本地匹配不需要渠道）。
     harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_tui::tools::decision_suggest::SuggestChannel {
-            mode: "jev".to_string(),
-            model: "stub".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "stub".to_string(),
-            retry_count: 1,
-        }),
-        masking: None,
         client: Arc::new(SlowSuggestClient {
             delay: Duration::from_millis(1500),
             names: vec!["web_search".to_string()],
         }),
     });
-    // 子代理建议同时开启：两条请求并发发起，总耗时取较大者。
+    // 子代理建议同时开启：两类并发算完，总耗时取较慢的那一类。
     harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_tui::tools::decision_suggest::SuggestChannel {
-            mode: "jev".to_string(),
-            model: "stub".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "stub".to_string(),
-            retry_count: 1,
-        }),
-        masking: None,
         client: Arc::new(SlowSuggestClient {
             delay: Duration::from_millis(1500),
             names: vec!["explore".to_string()],

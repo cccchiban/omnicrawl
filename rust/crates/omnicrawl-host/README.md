@@ -177,11 +177,11 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - 判定是每个候选一个 `noul` 提问，外加一个兜底提问（工具 `no_tool`、子代理 `no_subagent`：
   本条是否属于普通对话、寒暄或无从判断的异常任务）。阈值 `SUGGEST_THRESHOLD`（0.5）是唯一
   判定面：概率 ≥0.5 进建议名单、<0.5 排除；兜底提问过阈值时该份建议作废。
-- Skill 建议的候选另走一条路：`discover_skill_candidates(workspace, env, rerank, prompt)` 用
-  `SkillManager` 扫一次索引（覆盖本会话内新装的 Skill）、按提问做 BM25 检索挑出池子
-  （`SKILL_SUGGESTION_POOL`，最多 8 条），再交给决策模型判定。最终只注入
-  `SKILL_SUGGESTION_LIMIT`（2）个名字。`skill_search_rerank` 开着时先用决策模型给池子排序，
-  否则用 BM25 名次——注入本身不依赖决策服务，只有「判定哪两个」这一步需要它。
+- Skill 建议的候选另走一条路：`discover_skill_candidates(workspace, env, prompt)` 用
+  `SkillManager` 扫一次索引（覆盖本会话内新装的 Skill）、按提问对「名称 + 描述 + 正文」做 BM25
+  检索挑出池子（`SKILL_SUGGESTION_POOL`，最多 8 条）。池子的顺序**就是**最终名单顺序，直接截到
+  `SUGGESTION_LIMIT`（3）个名字注入：候选项只带截断后的描述，再拿它重算一次 BM25 会丢掉正文的
+  贡献，靠正文命中的 Skill 在二次打分里与提问没有交集，整条建议会被清零。
 - 名单非空时在 user 尾部追加一行（`insert_suggestions`），多条同时命中就各占一行（工具、子代理、
   Skill 依次）；都没有建议时原文照发。展示层用 `split_suggestion` 把尾部连续的建议行拆出来
   （**按行原样返回**，不拼成一句），在 `user：` 标签之后各占一块、用整行宽度渲染。

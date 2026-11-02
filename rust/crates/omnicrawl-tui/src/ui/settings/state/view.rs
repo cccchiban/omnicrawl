@@ -55,6 +55,17 @@ impl SettingsState {
     }
 
 
+    /// 提问建议页的行视图（渲染层用）。
+    pub fn suggestion_rows(&self) -> &[SuggestionSwitchRow] {
+        &self.suggestion.rows
+    }
+
+
+    pub fn suggestion_selected(&self) -> usize {
+        self.suggestion.selected
+    }
+
+
     pub fn subagent_selected(&self) -> usize {
         self.subagents.selected
     }
@@ -283,6 +294,7 @@ impl SettingsState {
             Pane::Tools => &self.tools.status,
             Pane::Mcp => &self.mcp.status,
             Pane::Subagents => &self.subagents.status,
+            Pane::Suggestion => &self.suggestion.status,
             Pane::Vision => &self.vision.status,
             Pane::ModelManagement => &self.model_management.status,
             Pane::DecisionModels => &self.decision_models.status,
@@ -310,6 +322,7 @@ impl SettingsState {
                 }
             }
             Pane::Subagents => SUBAGENTS_HINT,
+            Pane::Suggestion => SUGGESTION_HINT,
             Pane::Vision => VISION_HINT,
             Pane::ModelManagement => {
                 if self.model_management.form.is_some() {

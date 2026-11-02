@@ -196,62 +196,119 @@ impl ReplySource for BackgroundModelPort {
         if self.runtime.is_none() {
             self.runtime = Some(build_model_runtime(&self.config)?);
         }
-        let runtime = self.runtime.as_ref().expect("运行时刚被构建");
         let options = parse_options(&self.config)?;
         // 与主回合同一套线上名收敛（子 Agent 也能拿到 MCP 工具）。
         let (tools, name_map) = conform_tool_names(&parse_tools(&self.config));
-        let conversation = conversation_from_openai_messages(messages);
         let identity = self.config.prompt_cache_identity.clone();
-        let input = ChatRequestInput {
-            model: &self.config.model,
-            system_prompt: &self.config.system_prompt,
-            messages: &conversation,
-            tools: &tools,
-            options: &options,
-            profile_request_timeout_seconds: self
-                .config
-                .request_timeout_seconds
-                .filter(|seconds| *seconds > 0.0)
-                .unwrap_or_default(),
-            prompt_cache_capable: self.config.prompt_cache_capable,
-            prompt_cache_identity: &identity,
-        };
-        let mut sink = BackgroundSink {
-            conn: Rc::clone(&self.conn),
-            cancel: self.cancel.clone(),
-            task_id: self.task_id.clone(),
-            batch_id: self.batch_id.clone(),
-            agent_type: self.agent_type.clone(),
-            stream: self.stream,
-        };
-        match runtime.run_turn(&input, &mut sink) {
-            Ok(reply) => {
-                let mut reply = reply;
-                name_map.restore_reply(&mut reply);
-                let reply = to_agent_reply(reply)?;
-                // 正文已经随流逐片进过窗口；整段返回的通道（无流式增量）补发一次，
-                // 否则窗口里这一段回复会完全缺失。
-                if self.stream && !reply.content.is_empty() && !reply.content_streamed {
-                    emit_subagent_event(
-                        &self.conn,
-                        "subagent.turn.text",
-                        json!({
-                            "task_id": self.task_id,
-                            "batch_id": self.batch_id,
-                            "agent_type": self.agent_type,
-                            "text": reply.content,
-                        }),
-                    );
+        let limit = self.config.request_retry_count.max(1);
+        let mut attempt = 0;
+        // 重试前的 call_id 轮换开关：只有网关明确判过「重复提交相同 call_id」才打开。
+        let mut rotate_ids = false;
+
+        loop {
+            // 轮换只发生在重试路径：网关的重复提交判定按 id 认，原样再发等于再犯一次。
+            let attempt_messages = if rotate_ids {
+                rotate_ids = false;
+                let mut list = messages.clone();
+                let rotated = rotate_tail_call_ids(&mut list, &format!("r{attempt}"));
+                self.notify_retry(format!(
+                    "网关判定工具调用重复提交，重试前已轮换 {rotated} 个 call_id"
+                ));
+                list
+            } else {
+                messages.clone()
+            };
+            let conversation = conversation_from_openai_messages(&attempt_messages);
+            let input = ChatRequestInput {
+                model: &self.config.model,
+                system_prompt: &self.config.system_prompt,
+                messages: &conversation,
+                tools: &tools,
+                options: &options,
+                profile_request_timeout_seconds: self
+                    .config
+                    .request_timeout_seconds
+                    .filter(|seconds| *seconds > 0.0)
+                    .unwrap_or_default(),
+                prompt_cache_capable: self.config.prompt_cache_capable,
+                prompt_cache_identity: &identity,
+            };
+            let mut sink = BackgroundSink {
+                conn: Rc::clone(&self.conn),
+                cancel: self.cancel.clone(),
+                task_id: self.task_id.clone(),
+                batch_id: self.batch_id.clone(),
+                agent_type: self.agent_type.clone(),
+                stream: self.stream,
+            };
+            // 运行时在本段循环里只构建一次，失败重试都借用同一实例。
+            let runtime = self.runtime.as_ref().expect("运行时刚被构建");
+            match runtime.run_turn(&input, &mut sink) {
+                Ok(reply) => {
+                    if is_empty_reply(&reply) {
+                        attempt += 1;
+                        if attempt < limit {
+                            self.notify_retry(format!("正在重试(第{attempt}次)"));
+                            continue;
+                        }
+                        return Err(self.model_error(format!(
+                            "子任务连续 {limit} 次返回空响应，已停止本次请求。"
+                        )));
+                    }
+                    let mut reply = reply;
+                    name_map.restore_reply(&mut reply);
+                    let reply = to_agent_reply(reply)?;
+                    // 正文已经随流逐片进过窗口；整段返回的通道（无流式增量）补发一次，
+                    // 否则窗口里这一段回复会完全缺失。
+                    if self.stream && !reply.content.is_empty() && !reply.content_streamed {
+                        emit_subagent_event(
+                            &self.conn,
+                            "subagent.turn.text",
+                            json!({
+                                "task_id": self.task_id,
+                                "batch_id": self.batch_id,
+                                "agent_type": self.agent_type,
+                                "text": reply.content,
+                            }),
+                        );
+                    }
+                    self.notify_model_response(&reply);
+                    return Ok(reply);
                 }
-                self.notify_model_response(&reply);
-                Ok(reply)
-            }
-            Err(error) => {
-                if error.kind == RuntimeErrorKind::Cancelled {
-                    return Err(LoopError::Cancelled(error.message));
+                Err(error) => {
+                    if error.kind == RuntimeErrorKind::Cancelled {
+                        return Err(LoopError::Cancelled(error.message));
+                    }
+                    attempt += 1;
+                    // 与主代理同一条策略：任何非取消的请求失败都先退避重试；上下文超限例外，
+                    // 它要走压缩恢复路径，不能在这里耗重试次数。
+                    let overflow = error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE);
+                    let retryable = !overflow;
+                    if retryable && attempt < limit {
+                        // 已经推进子代理窗口的半截流要先撤销，否则重试会叠在旧文本上。
+                        if error.kind == RuntimeErrorKind::StreamInterrupted && self.stream {
+                            self.emit_stream_rollback();
+                        }
+                        // 退避期间也要响应取消：子任务被取消后不该再多睡几秒。
+                        if self.cancel.is_set() {
+                            return Err(LoopError::Cancelled("子任务已取消。".to_string()));
+                        }
+                        self.notify_retry(format!("请求失败，正在自动重试（第{attempt}次）"));
+                        // 这次失败是网关在说「同一个 call_id 又提交了一次」：原样重发只会
+                        // 再被拒，下一轮用轮换过的尾部 id 发。
+                        rotate_ids = is_tool_state_rejection(&error.message);
+                        let backoff_ms = (400u64 << (attempt - 1).min(3)).min(2_000);
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                        continue;
+                    }
+                    if retryable {
+                        return Err(self.model_error(format!(
+                            "上游错误已达到自动重试上限，已停止本次请求。{}",
+                            error.message
+                        )));
+                    }
+                    return Err(self.model_error(error.message));
                 }
-                self.notify_model_error(&error.message);
-                Err(LoopError::ReplySource(error.message))
             }
         }
     }
@@ -266,6 +323,45 @@ impl BackgroundModelPort {
                 error: message.to_string(),
                 model: self.config.model.clone(),
             }));
+    }
+
+    /// 记一条错误通知并把它原样折成循环错误。
+    fn model_error(&self, message: String) -> LoopError {
+        self.notify_model_error(&message);
+        LoopError::ReplySource(message)
+    }
+
+    /// 重试进度：走子代理事件而不是 `HostEvent::RetryStatus`。
+    ///
+    /// `RetryStatus` 会顶掉主会话输入框上的状态行；子回合与主回合共用一条连接，
+    /// 用它就等于把「子任务在重试」写成主代理的状态。
+    fn notify_retry(&self, message: String) {
+        emit_subagent_event(
+            &self.conn,
+            "subagent.retry",
+            json!({
+                "task_id": self.task_id,
+                "batch_id": self.batch_id,
+                "agent_type": self.agent_type,
+                "message": message,
+            }),
+        );
+    }
+
+    /// 半截流作废：子代理窗口据此撤掉已经显示的那段正文，再接收重试后的新正文。
+    ///
+    /// 不能发 `HostEvent::StreamRollback`——那是主会话的撤销信号，会连带删掉主代理
+    /// 正在显示的最后一条正文记录。
+    fn emit_stream_rollback(&self) {
+        emit_subagent_event(
+            &self.conn,
+            "subagent.turn.rollback",
+            json!({
+                "task_id": self.task_id,
+                "batch_id": self.batch_id,
+                "agent_type": self.agent_type,
+            }),
+        );
     }
 
     /// `model.response.after`：一次子代理模型请求成功返回后的观察通知。

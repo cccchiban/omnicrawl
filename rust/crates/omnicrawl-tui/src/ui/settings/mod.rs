@@ -28,7 +28,8 @@ pub use state::{
     DecisionRow, DecisionSwitchRow, Dropdown, DropdownField, EmbeddingField, EmbeddingFormView,
     EmbeddingRow, Focus, McpChange, McpEditorRowView, McpRowView, McpServerDraft, McpServerRow,
     McpSettingsValues, ModelParamRow, OptionValue, Pane, SessionRow, SettingsChange, SettingsEvent,
-    SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange,
+    SettingsState, SettingsValues, SuggestionSwitchRow, SubagentChange, SubagentRow, ToolSwitchRow,
+    TtsChange,
     TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues, VisionChange,
     VisionModelRef, WebSearchRow, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION,
     DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION, MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS,
@@ -42,10 +43,11 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 19] = [
+pub const ROW_ORDER: [&str; 20] = [
     "model_management",
     "decision_models",
     "embedding_models",
+    "suggestion",
     "advisor",
     "tool_output_compression",
     "tools",
@@ -70,6 +72,7 @@ pub fn row_label(key: &str) -> String {
         "model_management" => "模型管理",
         "decision_models" => "结构化决策模型",
         "embedding_models" => "向量模型",
+        "suggestion" => "提问建议",
         "advisor" => "顾问设置",
         "tool_output_compression" => "工具输出压缩",
         "tools" => "工具设置",

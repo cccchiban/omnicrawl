@@ -543,15 +543,6 @@ pub const DECISION_SWITCH_ASK_USER_CUSTODY: &str = "ask_user_custody";
 /// 「老一轮工具调用按需淘汰」开关的配置键。
 pub const DECISION_SWITCH_TOOL_PRUNE: &str = "tool_call_prune";
 
-/// 「新提问自动建议工具」开关的配置键。
-pub const DECISION_SWITCH_TOOL_SUGGEST: &str = "tool_suggestion";
-
-/// 「新提问自动建议子代理」开关的配置键。
-pub const DECISION_SWITCH_SUBAGENT_SUGGEST: &str = "subagent_suggestion";
-
-/// 「新提问自动建议 Skill」开关的配置键。
-pub const DECISION_SWITCH_SKILL_SUGGEST: &str = "skill_suggestion";
-
 /// 开关画在哪个设置页。
 ///
 /// 配置位置与开关表都是同一份（`decision_models.toml` 的 `[features]`），这里只决定
@@ -574,7 +565,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 10] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 7] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -614,24 +605,6 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 10] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_PRUNE,
         label: "旧一轮工具调用按需淘汰",
-        default: false,
-        page: SwitchPage::Decision,
-    },
-    DecisionSwitchSpec {
-        key: DECISION_SWITCH_TOOL_SUGGEST,
-        label: "新提问自动建议工具",
-        default: false,
-        page: SwitchPage::Decision,
-    },
-    DecisionSwitchSpec {
-        key: DECISION_SWITCH_SUBAGENT_SUGGEST,
-        label: "新提问自动建议子代理",
-        default: false,
-        page: SwitchPage::Decision,
-    },
-    DecisionSwitchSpec {
-        key: DECISION_SWITCH_SKILL_SUGGEST,
-        label: "新提问自动建议 Skill",
         default: false,
         page: SwitchPage::Decision,
     },
@@ -1318,18 +1291,6 @@ mod tests {
             Some(false)
         );
         assert!(!decision_switch_default(DECISION_SWITCH_ASK_USER_CUSTODY));
-        // 工具建议开关同样默认关闭。
-        assert_eq!(
-            switches.get(DECISION_SWITCH_TOOL_SUGGEST).copied(),
-            Some(false)
-        );
-        assert!(!decision_switch_default(DECISION_SWITCH_TOOL_SUGGEST));
-        // 子代理建议开关同样默认关闭。
-        assert_eq!(
-            switches.get(DECISION_SWITCH_SUBAGENT_SUGGEST).copied(),
-            Some(false)
-        );
-        assert!(!decision_switch_default(DECISION_SWITCH_SUBAGENT_SUGGEST));
 
         let path =
             save_decision_switch(&env, DECISION_SWITCH_TOOL_REVIEW, true, None).expect("写开关");
@@ -1364,10 +1325,6 @@ mod tests {
         save_decision_switch(&env, DECISION_SWITCH_WEB_SEARCH, true, None).expect("写联网搜索开关");
         save_decision_switch(&env, DECISION_SWITCH_ASK_USER_CUSTODY, true, None)
             .expect("写提问托管开关");
-        save_decision_switch(&env, DECISION_SWITCH_TOOL_SUGGEST, true, None)
-            .expect("写工具建议开关");
-        save_decision_switch(&env, DECISION_SWITCH_SUBAGENT_SUGGEST, true, None)
-            .expect("写子代理建议开关");
         let reloaded = load_decision_switches(&env, None);
         assert_eq!(reloaded.get(DECISION_SWITCH_KB_SEARCH).copied(), Some(true));
         assert_eq!(
@@ -1380,14 +1337,6 @@ mod tests {
         );
         assert_eq!(
             reloaded.get(DECISION_SWITCH_ASK_USER_CUSTODY).copied(),
-            Some(true)
-        );
-        assert_eq!(
-            reloaded.get(DECISION_SWITCH_TOOL_SUGGEST).copied(),
-            Some(true)
-        );
-        assert_eq!(
-            reloaded.get(DECISION_SWITCH_SUBAGENT_SUGGEST).copied(),
             Some(true)
         );
         assert_eq!(

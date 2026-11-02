@@ -25,6 +25,7 @@ impl SettingsState {
             Pane::Tools
             | Pane::Mcp
             | Pane::Subagents
+            | Pane::Suggestion
             | Pane::ModelManagement
             | Pane::DecisionModels
             | Pane::EmbeddingModels

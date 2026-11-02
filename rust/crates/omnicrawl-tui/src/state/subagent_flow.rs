@@ -3,6 +3,19 @@
 use super::*;
 
 impl AppState {
+        /// 重试前的回滚：撤掉重试之前已经显示的那段半截正文与思考。
+        ///
+        /// 与主会话的 `StreamRollback` 同义，但作用域只在这条子代理流水里：撤销的是
+        /// 「最近一条还在流式写入的正文」，已经落定的工具卡与更早的回合都不动。
+        pub fn subagent_rollback(&mut self) {
+            if matches!(self.records.last(), Some(Record::Assistant(_))) {
+                self.records.pop();
+                self.touch_conversation();
+            }
+            // 思考段也被截断：显现游标按新长度收敛，免得停在旧位置。
+            self.settle_reasoning_reveal();
+        }
+
         /// 追加一段子代理过程文本（子代理窗口内的 `assistant` 记录）。
         ///
         /// 正文是逐片到达的：合并进末尾那条正文记录，否则每一片都会单开一条消息。

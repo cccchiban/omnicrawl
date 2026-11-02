@@ -396,11 +396,12 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 内核自己作答，不占宿主批次：
 
 - `recall_session_evidence`：只读当前会话，信息本来就在内核侧；
-- `subagent`：子任务要跑独立子回合（子模型请求 + 子工具批次），而模型运行时在内核，因此由内核执行；
+- `subagent_run` / `subagent_list` / `subagent_cancel` / `subagent_apply_worktree` / `subagent_discard_worktree`：
+  子任务要跑独立子回合（子模型请求 + 子工具批次），而模型运行时在内核，因此由内核执行；
   子回合里被允许的工具仍走同一 `tool.batch` 通道，`turn_id` 用子任务号，宿主据此把审批与生命周期分开。
   子代理的生命周期事件（`subagent.event`）也由内核发出。
 
-`subagent` 的可用角色来自内核读到的 `~/.OmniCrawl/subagents.toml` 与四层定义目录——项目
+`subagent_run` 的可用角色来自内核读到的 `~/.OmniCrawl/subagents.toml` 与四层定义目录——项目
 `.omnicrawl/agents`、项目兼容 `.agents/agents`、用户 `~/.OmniCrawl/agents`、
 随二进制分发的内置 `templates/subagents`（可执行文件祖先里的
 `rust/assets/templates/subagents` 或已发布载荷的 `omnicrawl/templates/subagents`）——下的
@@ -408,17 +409,17 @@ Markdown 定义；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`，两侧取同一份
 四层发现结果。
 
-`subagent` 的执行方式：一次调用只提交**一个** `task`，`action=run` 在回合内阻塞到该任务结束。
-需要多个子代理时，在同一条助手消息里并行发起多次 `subagent` 调用——每次调用各自成批
+`subagent_run` 的执行方式：一次调用只提交**一个** `task`，在回合内阻塞到该任务结束。
+需要多个子代理时，在同一条助手消息里并行发起多次 `subagent_run` 调用——每次调用各自成批
 （`batch_id` 不同、各开一个窗口），父回合在全部调用收口后才继续。一次调用塞多个任务的
 `tasks` 数组、`max_concurrency` 与 `fail_fast` 都已移除：它们原先只在一个批次内部串行排队，
 既没有并行语义，也让「一个子代理一个任务」的边界变模糊。子任务与主回合同在一条线程，工具批次
-直接由内核转发宿主，`turn_id` 用子任务号。`list` / `get` / `cancel` 仍可用：
+直接由内核转发宿主，`turn_id` 用子任务号。查询与取消走独立工具 `subagent_list` / `subagent_cancel`：
 任务表只用于查询与工作区切换前的拦阻。
 
 `isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），
-并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent` 的
-`list_worktrees` / `apply_worktree` / `discard_worktree` 审查处理（`discard` 默认受变更保护，
+并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent_list` 的
+`worktrees` 与 `subagent_apply_worktree` / `subagent_discard_worktree` 审查处理（`discard` 默认受变更保护，
 需要 `force=true` 才能丢掉未应用的改动）。已知差异：不做目录复用（残留目录会明确报错），
 也没接共享注册表。残留回收依赖宿主的启动清扫：满一个月（`DEFAULT_SWEEP_MAX_AGE_SECONDS`）
 且最后一次提交也满一个月没有新提交时自动清理（期限按最后一次提交续期）。

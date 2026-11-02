@@ -724,6 +724,48 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 宿主入口 `subagent.run`（`/review` 用它）必须按 `subagent_run` 工具的现行入参形状派生任务。
+///
+/// 工具拆成 5 个之后不再有 `action` 字段，入口若继续拼旧形状会被参数校验直接拒绝
+/// （`subagent_run 不允许参数：action。`），`/review` 因此永远走不到子回合。
+#[test]
+fn host_entry_subagent_run_derives_the_task() {
+    let server = StubServer::spawn(vec![ok_stream(text_stream(CHILD_TEXT))]);
+    let (root, workspace, agents, config) = prepare_root("run-entry", "[subagents]\nenabled = true\n");
+
+    let mut host = Host::start(&workspace, &agents, &config);
+    handshake(
+        &mut host,
+        &server,
+        json!([{"type": "function", "function": {"name": "read"}}]),
+        None,
+    );
+
+    let response = host.request(
+        "subagent.run",
+        json!({
+            "agent_type": "review",
+            "description": "评审当前代码变更",
+            "prompt": "请评审当前工作区的代码变更。",
+        }),
+    );
+    let child_text = host.notifications("subagent.event", Some("subagent.task.completed")).len();
+    host.shutdown();
+
+    assert!(
+        response.get("error").is_none(),
+        "宿主入口不该被参数校验拒绝：{response}"
+    );
+    assert_eq!(
+        response["result"]["output"].as_str().unwrap_or_default().trim(),
+        CHILD_TEXT,
+        "应回子 Agent 的原始输出：{response}"
+    );
+    assert_eq!(child_text, 1, "子任务应正常收尾");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn two_subagent_calls_in_one_batch_run_concurrently() {
     // 并行靠「同一条消息里多次调用」而不是「一次调用塞多个任务」：
@@ -1108,6 +1150,160 @@ fn computer_use_runs_dedicated_subagent_without_subagents_switch() {
     assert!(
         parent_text.contains("shot.png"),
         "父回合应看到截图路径：{parent_text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 子代理的模型请求带自动重试：一次 5xx 之后同一子回合要能自愈。
+///
+/// 判据：
+/// 1. 子任务最终 `completed`（不是 `SUBAGENT_MODEL_ERROR`）；
+/// 2. 子回合确实发出了两次请求（失败一次 + 重试一次）；
+/// 3. 重试进度以 `subagent.retry` 事件外发，且**不**以主会话的 `turn.retry_status` 出现；
+/// 4. 父回合拿到的子任务观察是子 Agent 的收尾文本。
+#[test]
+fn transient_subagent_model_error_is_retried() {
+    let tool_arguments = json!({
+        "task": {
+            "description": "看代码",
+            "prompt": "读一下 a.py",
+            "subagent_type": "review",
+        },
+    })
+    .to_string();
+    let server = StubServer::spawn(vec![
+        ok_stream(tool_call_stream("subagent_run", &tool_arguments)),
+        Reply::Raw(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        ),
+        ok_stream(text_stream(CHILD_TEXT)),
+        ok_stream(text_stream(PARENT_TEXT)),
+    ]);
+    let (root, workspace, agents, config) = prepare_root("retry", "[subagents]\nenabled = true\n");
+
+    let mut host = Host::start(&workspace, &agents, &config);
+    handshake(
+        &mut host,
+        &server,
+        json!([
+            {"type": "function", "function": {"name": "read"}},
+            {"type": "function", "function": {"name": "subagent_run"}}
+        ]),
+        Some(3),
+    );
+
+    let finished = host.run_turn("帮我评审");
+    host.shutdown();
+
+    assert_eq!(finished.len(), 1, "应恰好收到一次 turn.finished");
+    assert_eq!(
+        finished[0]["params"]["final_text"].as_str().unwrap(),
+        PARENT_TEXT,
+        "子回合自愈后父回合应正常收尾"
+    );
+
+    // 1. 子任务完成而不是失败。
+    let completed = host.notifications("subagent.event", Some("subagent.task.completed"));
+    let failed = host.notifications("subagent.event", Some("subagent.task.failed"));
+    assert_eq!(completed.len(), 1, "一次瞬时失败之后子任务应完成：{failed:?}");
+    assert!(failed.is_empty(), "不该有失败事件：{failed:?}");
+
+    // 2. 子回合发了两次请求（第一次 503，第二次成功）。
+    let requests = server.requests.lock().expect("请求锁").clone();
+    let child_requests = requests
+        .iter()
+        .filter(|value| {
+            serde_json::to_string(value)
+                .unwrap_or_default()
+                .contains("subagent_task")
+        })
+        .count();
+    assert_eq!(
+        child_requests, 2,
+        "子回合应重试一次（失败 1 次 + 成功 1 次），实际 {child_requests}"
+    );
+
+    // 3. 重试进度走子代理事件，不占主会话的状态行。
+    let retries = host.notifications("subagent.event", Some("subagent.retry"));
+    assert_eq!(retries.len(), 1, "应有一条子代理重试事件");
+    assert!(
+        host.notifications("turn.retry_status", None).is_empty(),
+        "子代理重试不该写进主会话状态行"
+    );
+
+    // 4. 父回合看到的是子 Agent 的收尾文本。
+    let parent_request = serde_json::to_string(&requests[requests.len() - 1]).unwrap_or_default();
+    assert!(
+        parent_request.contains(CHILD_TEXT),
+        "父回合应带回子任务结果：{parent_request}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 重试次数用尽仍在失败时，子任务以 `SUBAGENT_MODEL_ERROR` 收尾，且请求次数等于上限。
+#[test]
+fn subagent_model_error_stops_at_retry_limit() {
+    let tool_arguments = json!({
+        "task": {
+            "description": "看代码",
+            "prompt": "读一下 a.py",
+            "subagent_type": "review",
+        },
+    })
+    .to_string();
+    let failure = || {
+        Reply::Raw(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        )
+    };
+    let server = StubServer::spawn(vec![
+        ok_stream(tool_call_stream("subagent_run", &tool_arguments)),
+        failure(),
+        failure(),
+        failure(),
+        ok_stream(text_stream(PARENT_TEXT)),
+    ]);
+    let (root, workspace, agents, config) =
+        prepare_root("retry-limit", "[subagents]\nenabled = true\n");
+
+    let mut host = Host::start(&workspace, &agents, &config);
+    handshake(
+        &mut host,
+        &server,
+        json!([
+            {"type": "function", "function": {"name": "read"}},
+            {"type": "function", "function": {"name": "subagent_run"}}
+        ]),
+        Some(2),
+    );
+
+    let finished = host.run_turn("帮我评审");
+    host.shutdown();
+
+    assert_eq!(finished.len(), 1, "父回合本身仍应正常收尾");
+
+    // 上限 2 次：子回合恰好发两次请求，然后放弃。
+    let requests = server.requests.lock().expect("请求锁").clone();
+    let child_requests = requests
+        .iter()
+        .filter(|value| {
+            serde_json::to_string(value)
+                .unwrap_or_default()
+                .contains("subagent_task")
+        })
+        .count();
+    assert_eq!(child_requests, 2, "请求次数应等于重试上限");
+
+    let failed = host.notifications("subagent.event", Some("subagent.task.failed"));
+    assert_eq!(failed.len(), 1, "重试用尽后子任务应失败");
+    let payload = &failed[0]["params"]["payload"];
+    assert_eq!(
+        payload["error"]["code"], "SUBAGENT_MODEL_ERROR",
+        "失败码应指出模型请求失败：{payload}"
     );
 
     let _ = std::fs::remove_dir_all(&root);

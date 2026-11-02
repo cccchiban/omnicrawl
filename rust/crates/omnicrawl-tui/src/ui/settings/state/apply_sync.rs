@@ -140,6 +140,12 @@ impl SettingsState {
                 }
                 self.subagents.status = message;
             }
+            SettingsChange::SuggestionSwitch { key, enabled } => {
+                if let Some(row) = self.suggestion.rows.iter_mut().find(|row| &row.key == key) {
+                    row.enabled = *enabled;
+                }
+                self.suggestion.status = message;
+            }
             SettingsChange::Vision(change) => {
                 self.vision.enabled = change.enabled;
                 self.vision.models = change.models.clone();
@@ -257,6 +263,7 @@ impl SettingsState {
             Pane::Tools => self.tools.status = message,
             Pane::Mcp => self.mcp.status = message,
             Pane::Subagents => self.subagents.status = message,
+            Pane::Suggestion => self.suggestion.status = message,
             Pane::Vision => self.vision.status = message,
             // 模型管理页失败时保留表单，方便就地改错再按 Ctrl+S。
             Pane::ModelManagement => self.model_management.status = message,
@@ -303,6 +310,7 @@ impl SettingsState {
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
+            SettingsChange::SuggestionSwitch { .. } => self.suggestion.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
             SettingsChange::ShowThinking { .. } => {
                 self.choices

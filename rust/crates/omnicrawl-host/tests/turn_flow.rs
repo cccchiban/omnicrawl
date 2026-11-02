@@ -183,7 +183,6 @@ fn runner_with_custody(
         subagent_suggest: None,
         // 不做 Skill 建议：不扫索引、不发请求。
         skill_suggest: None,
-        skill_suggest_rerank: None,
         skill_suggest_pinned: None,
         prompt: None,
     };
@@ -253,7 +252,7 @@ struct FixedSuggest {
 impl omnicrawl_host::tools::SuggestClient for FixedSuggest {
     fn suggest(
         &self,
-        request: &omnicrawl_host::tools::decision_suggest::SuggestRequest<'_>,
+        request: &omnicrawl_host::tools::suggestion::SuggestRequest<'_>,
     ) -> Result<Vec<String>, String> {
         // 建议行与送审字段名都按种类取：`state.tools` / `state.subagents`，兜底名同理。
         *self.seen.lock().expect("记录未被毒化") = Some((
@@ -279,7 +278,7 @@ struct SlowFixedSuggest {
 impl omnicrawl_host::tools::SuggestClient for SlowFixedSuggest {
     fn suggest(
         &self,
-        _request: &omnicrawl_host::tools::decision_suggest::SuggestRequest<'_>,
+        _request: &omnicrawl_host::tools::suggestion::SuggestRequest<'_>,
     ) -> Result<Vec<String>, String> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
@@ -321,7 +320,6 @@ fn runner_with_both_suggestions(
         subagent_suggest: None,
         // 不做 Skill 建议：不扫索引、不发请求。
         skill_suggest: None,
-        skill_suggest_rerank: None,
         skill_suggest_pinned: None,
         prompt: None,
     };
@@ -647,14 +645,6 @@ fn the_suggestion_is_appended_to_the_user_text_sent_to_the_kernel() {
     let seen = Arc::new(Mutex::new(None));
     let suggest = omnicrawl_host::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
-            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
-            model: "jev-latest".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "jv_test".to_string(),
-            retry_count: 0,
-        }),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["web_search".to_string()],
             seen: Arc::clone(&seen),
@@ -733,14 +723,6 @@ fn an_empty_shortlist_sends_the_prompt_untouched() {
     let root = workspace("suggest-empty");
     let suggest = omnicrawl_host::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
-            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
-            model: "jev-latest".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "jv_test".to_string(),
-            retry_count: 0,
-        }),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: Vec::new(),
             seen: Arc::new(Mutex::new(None)),
@@ -788,17 +770,8 @@ fn both_suggestion_kinds_run_concurrently_and_both_land_in_the_user_text() {
     let delay = Duration::from_millis(400);
     let in_flight = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let channel = || omnicrawl_host::tools::decision_suggest::SuggestChannel {
-        mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
-        model: "jev-latest".to_string(),
-        base_url: "http://127.0.0.1:1".to_string(),
-        api_key: "jv_test".to_string(),
-        retry_count: 0,
-    };
     let options = |names: Vec<String>| omnicrawl_host::tools::SuggestOptions {
         enabled: true,
-        channel: Some(channel()),
-        masking: None,
         client: Arc::new(SlowFixedSuggest {
             delay,
             names,
@@ -876,14 +849,6 @@ fn subagent_suggestion_works_without_tool_suggestion() {
     let root = workspace("suggest-subagents-only");
     let subagent_suggest = omnicrawl_host::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
-            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
-            model: "jev-latest".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "jv_test".to_string(),
-            retry_count: 0,
-        }),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["explore".to_string(), "plan".to_string()],
             seen: Arc::new(Mutex::new(None)),
@@ -944,28 +909,20 @@ fn subagent_suggestion_works_without_tool_suggestion() {
 
 /// Skill 建议：候选池由测试钉住（不扫本机索引），注入行是「建议使用skills：」。
 ///
-/// 这条用例只验宿主侧「候选 → 决策模型 → 注入」这一段；池子的检索与排序在
-/// `decision_suggest` 的单测里覆盖。
+/// 这条用例只验宿主侧「候选 → 建议行 → 注入」这一段；候选的检索与排序在
+/// `suggestion` 的单测里覆盖。
 #[test]
 fn skill_suggestion_appends_its_own_line_to_the_user_text() {
     let (client, recorder, pipe) = kernel();
     let root = workspace("suggest-skills");
     let skill_suggest = omnicrawl_host::tools::SuggestOptions {
         enabled: true,
-        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
-            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
-            model: "jev-latest".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            api_key: "jv_test".to_string(),
-            retry_count: 0,
-        }),
-        masking: None,
         client: Arc::new(FixedSuggest {
             names: vec!["pdf".to_string(), "docx".to_string()],
             seen: Arc::new(Mutex::new(None)),
         }),
     };
-    let mut options = RunnerOptions {
+    let options = RunnerOptions {
         workspace_root: root.clone(),
         model: model(),
         session: None,
@@ -980,7 +937,6 @@ fn skill_suggestion_appends_its_own_line_to_the_user_text() {
         suggest: None,
         subagent_suggest: None,
         skill_suggest: Some(skill_suggest),
-        skill_suggest_rerank: None,
         // 候选池直接给：这条用例不碰 Skill 索引。
         skill_suggest_pinned: Some(vec![
             ("pdf".to_string(), "处理 PDF 的 Skill".to_string()),
@@ -1319,7 +1275,6 @@ fn skill_runner_options(
         subagent_suggest: None,
         // 不做 Skill 建议：不扫索引、不发请求。
         skill_suggest: None,
-        skill_suggest_rerank: None,
         skill_suggest_pinned: None,
         prompt: Some(Arc::new(prompt)),
     }

@@ -49,7 +49,7 @@
       },
       {
         "name": "skill_search",
-        "description": "是什么：用 BM25 检索 Skill（索引范围是名称、描述与正文），可按作用域过滤。怎么做：需要判断当前任务该用哪个 Skill 时使用；已知道 Skill 名要读正文时直接用 read 打开它的 SKILL.md。怎样做：query 是关键词，省略时按 scope 列出全部；scope 取 all、project、user、enterprise、path，缺省 all；命中条目按名称排序，固定返回前十条；每项含 name、description、scope、location、score、reason，空结果为 []，失败返回文本错误。建议：先检索再按命中项的 location 读正文；Skill 目录不在工作区内，不要用 find、grep 去找它。",
+        "description": "是什么：用 BM25 检索 Skill（索引范围是名称、描述与正文），可按作用域过滤。怎么做：需要判断当前任务该用哪个 Skill 时使用；已知道 Skill 名要读正文时直接用 read 打开它的 SKILL.md。怎样做：query 是关键词，省略时按 scope 列出全部；scope 取 all、project、user、enterprise、path，缺省 all；命中条目按相关度从高到低排序（名次即优先级），固定返回前十条；每项含 name、description、scope、location、score、reason，空结果为 []，失败返回文本错误。建议：先检索再按命中项的 location 读正文；Skill 目录不在工作区内，不要用 find、grep 去找它。",
         "argument_schema": "{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"scope\": {\"type\": \"string\", \"enum\": [\"all\", \"project\", \"user\", \"enterprise\", \"path\"]}}, \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,

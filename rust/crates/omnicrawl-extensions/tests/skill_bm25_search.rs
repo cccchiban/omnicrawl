@@ -1,4 +1,4 @@
-//! BM25 检索的补充覆盖：正文进索引、名称序截断、中文二字切分与长度归一。
+//! BM25 检索的补充覆盖：正文进索引、相关度排序截断、中文二字切分与长度归一。
 //!
 //! 用例只碰临时目录，不写任何项目文件。
 
@@ -66,9 +66,9 @@ fn chinese_bigrams_match_regardless_of_word_order() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// 命中条目按名称排序，固定最多十条。
+/// 命中条目按相关度排序，固定最多十条。
 #[test]
-fn hits_are_name_sorted_and_capped() {
+fn hits_are_ranked_and_capped() {
     let root = temp_dir("cap");
     for index in 0..12 {
         let name = format!("skill-{index:02}");
@@ -76,10 +76,19 @@ fn hits_are_name_sorted_and_capped() {
     }
     let listed = names(&manager(&root), "检索排序用技能");
     assert_eq!(listed.len(), 10, "{listed:?}");
-    let mut sorted = listed.clone();
-    sorted.sort();
-    assert_eq!(listed, sorted, "按名称排序：{listed:?}");
-    assert_eq!(listed[0], "skill-00", "从最小的名称开始截断：{listed:?}");
+    // 12 个 Skill 的描述与正文完全相同，得分一致；同分时保持索引扫描顺序。
+    assert_eq!(listed[0], "skill-00", "同分时按扫描顺序：{listed:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 名次即相关度：得分高的排前面，不被名称字母序打乱。
+#[test]
+fn a_higher_score_outranks_an_earlier_name() {
+    let root = temp_dir("rank");
+    write_skill(&root, "aaa-weak", "弱命中", "正文");
+    write_skill(&root, "zzz-strong", "强命中", "复盘 复盘 复盘 复盘");
+    let listed = names(&manager(&root), "复盘");
+    assert_eq!(listed.first().map(String::as_str), Some("zzz-strong"), "{listed:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

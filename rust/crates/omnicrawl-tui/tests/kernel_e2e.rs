@@ -219,12 +219,18 @@ fn real_kernel_streams_a_turn_into_the_ui() {
     assert!(!app.quit, "正常结束时不该被判成内核异常退出");
     // 回合结束通知与助手正文是两条独立事件：正文可能先到，复位事件还在队列里。
     // 这里等它落地，而不是要求两者在同一批 drain_frames 里出现。
-    assert!(settled, "回合结束通知应把界面复位：{:?}", app.state.turn);
     assert!(
-        app.state
-            .records
-            .iter()
-            .any(|record| matches!(record, Record::User(message) if message.text == "你好")),
+        settled,
+        "回合结束通知应把界面复位：{:?}",
+        app.state.turn
+    );
+    // 建议行是唱给模型看的提示，会拼在 user 文本尾部；比对正文时按展示层的同一口径拆掉它。
+    assert!(
+        app.state.records.iter().any(|record| match record {
+            Record::User(message) =>
+                omnicrawl_host::tools::split_suggestion(&message.text).0 == "你好",
+            _ => false,
+        }),
         "用户消息应留在消息流里：{:?}",
         app.state.records
     );

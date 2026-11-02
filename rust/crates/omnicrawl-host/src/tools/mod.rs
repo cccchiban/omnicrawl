@@ -20,7 +20,6 @@ pub mod cookies;
 pub mod decision_choice;
 pub mod decision_prune;
 pub mod decision_search;
-pub mod decision_suggest;
 pub mod declarations;
 pub mod edit;
 pub mod error;
@@ -46,6 +45,7 @@ pub mod robots_cache;
 pub mod sample;
 pub mod search_common;
 pub mod skills;
+pub mod suggestion;
 pub mod tls_transport;
 pub mod tts;
 pub mod web_search;
@@ -62,11 +62,10 @@ pub use decision_prune::{
     evicted_call_ids_for, prune_options_from_config, PruneChannel, PruneClient, PruneOptions,
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
-pub use decision_suggest::{
-    discover_skill_candidates, insert_suggestions, skill_suggest_options_from_config,
-    split_suggestion, subagent_suggest_options_from_config, suggest_options_from_config,
-    suggestion_lines, SuggestClient, SuggestKind, SuggestOptions, SuggestionInputs,
-    SKILL_SUGGESTION_LIMIT, SKILL_SUGGESTION_PREFIX,
+pub use suggestion::{
+    discover_skill_candidates, insert_suggestions, skill_names, split_suggestion,
+    suggest_options_from_config, suggestion_lines, SuggestClient, SuggestKind, SuggestOptions,
+    SuggestionInputs, SKILL_SUGGESTION_LIMIT, SKILL_SUGGESTION_PREFIX,
 };
 pub use error::{ToolError, ToolOutcome};
 pub use fetcher::{fetch_batch, tls_session_cache_from_config, FetcherOptions, FetchBatch};
