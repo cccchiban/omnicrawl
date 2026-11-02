@@ -177,6 +177,12 @@ impl App {
             .collect::<Vec<_>>();
         self.state
             .begin_turn(turn_id.clone(), text.clone(), images.clone());
+        // 终端标签页的会话标题按内核同一规则本地跟进（首条用户消息即命名）：
+        // 若等内核回执再查索引，标签页会在整轮请求期间一直停在产品名。
+        if !self.session_has_messages {
+            self.session_title = omnicrawl_session::clean_title(&text);
+            self.session_has_messages = true;
+        }
         // 用户提交的文本是审查模型判断授权边界的最新事实（与 host 侧 `record_user_text` 同位）。
         self.review_context.record_user_text(&text);
         // 新回合开始：清掉上一回合 Esc 留下的取消标记。工具表的取消令牌跨回合沿用

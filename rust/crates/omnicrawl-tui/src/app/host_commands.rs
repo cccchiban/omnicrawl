@@ -170,6 +170,11 @@ impl App {
         self.session_id.clone()
     }
 
+    /// 当前会话标题（未命名时为空串）：终端标签页用它。
+    pub fn current_session_title(&self) -> &str {
+        &self.session_title
+    }
+
     /// 会话类命令的同步往返：内核只在本地会话目录上读写，毫秒级。
     ///
     /// 超时给得比子任务查询宽：`/resume` 要按转录重建历史，大会话的读盘量不小。
@@ -239,7 +244,10 @@ impl App {
             title: title.to_string(),
         };
         let result = self.session_request(Command::SessionRename(params))?;
-        session_summary(&result)
+        let summary = session_summary(&result)?;
+        self.session_title = summary.title.clone();
+        self.session_has_messages = summary.message_count > 0;
+        Ok(summary)
     }
 
     /// 归档当前会话（`/archive`）：内核归档后已自动开好新会话，这里跟上新 id 并清空视图。
@@ -248,6 +256,9 @@ impl App {
         if let Some(new_id) = result.get("new_session_id").and_then(Value::as_str) {
             self.session_id = new_id.to_string();
         }
+        // 新会话没有历史也没有标题：标签页回到「未命名」。
+        self.session_title.clear();
+        self.session_has_messages = false;
         // 新会话没有历史：视图清空是「已归档并新开」的如实投影，不只是提示文案。
         self.state.replay_history(&[]);
         session_summary(&result)
@@ -276,6 +287,8 @@ impl App {
             return Err("内核没有返回新会话 id。".to_string());
         };
         self.session_id = session_id.to_string();
+        self.session_title.clear();
+        self.session_has_messages = false;
         self.state.replay_history(&[]);
         Ok(self.session_id.clone())
     }
@@ -296,9 +309,13 @@ impl App {
             include_history: false,
         };
         let result = self.session_request(Command::SessionResume(params))?;
+        let summary = session_summary(&result)?;
         if let Some(target) = result.get("session_id").and_then(Value::as_str) {
             self.session_id = target.to_string();
         }
+        // 标题属于「当前会话」的一部分：切过去之后标签页要显示被恢复会话的名字。
+        self.session_title = summary.title.clone();
+        self.session_has_messages = summary.message_count > 0;
         // 兼容旧内核/测试桩：它们可能忽略 `include_history=false` 仍然带回历史；
         // 这份历史已经拿到，直接用它，不再额外等一次 `session.events`。
         let inline_history = result

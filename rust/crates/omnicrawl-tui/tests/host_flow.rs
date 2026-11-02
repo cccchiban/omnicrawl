@@ -677,6 +677,100 @@ fn context_prune_is_answered_instead_of_refused() {
     );
 }
 
+/// Skill 建议与工具／子代理建议各占一行，顺序固定为「工具、子代理、Skill」。
+///
+/// 这条覆盖此前缺失的 TUI 侧 Skill 分支：`start_suggestion` 里 Skill 候选的收集与
+/// 送审走的是与另两类不同的路径（先检索索引、再拼进 `skills` 槽），而 TUI 路径
+/// 一直没有用例盯着，出现问题只能靠用户发现。
+#[test]
+fn skill_suggestion_lands_in_the_submitted_text() {
+    struct FixedSuggest {
+        names: Vec<String>,
+    }
+
+    impl omnicrawl_tui::tools::SuggestClient for FixedSuggest {
+        fn suggest(
+            &self,
+            _request: &omnicrawl_tui::tools::decision_suggest::SuggestRequest<'_>,
+        ) -> Result<Vec<String>, String> {
+            Ok(self.names.clone())
+        }
+    }
+
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let channel = || omnicrawl_tui::tools::decision_suggest::SuggestChannel {
+        mode: "jev".to_string(),
+        model: "stub".to_string(),
+        base_url: "http://127.0.0.1:1".to_string(),
+        api_key: "stub".to_string(),
+        retry_count: 0,
+    };
+    harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(channel()),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["web_search".to_string()],
+        }),
+    });
+    harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(channel()),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["explore".to_string()],
+        }),
+    });
+    harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(channel()),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["kimi-pdf".to_string(), "kimi-docx".to_string()],
+        }),
+    });
+    harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
+    // Skill 候选钉死：生产路径会先扫本机 Skill 索引，结果随环境漂移。
+    harness.app.suggest_skills = Some(vec![
+        ("kimi-pdf".to_string(), "处理 PDF".to_string()),
+        ("kimi-docx".to_string(), "处理 Word".to_string()),
+    ]);
+    // 池子的重排关闭：用例只验注入能否落地，不验排序。
+    harness.app.skill_suggest_rerank = None;
+
+    harness
+        .app
+        .state
+        .composer
+        .set_text("把这份 pdf 转成 word");
+    harness.press(KeyCode::Enter);
+    harness.expect_ready(
+        |app| app.state.turn.is_running(),
+        "建议回来后应当进入回合运行态",
+    );
+
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "把这份 pdf 转成 word\n\n\
+         当前请求建议调用tool：web_search。\n\
+         当前请求建议使用子代理：explore。\n\
+         建议使用skills：kimi-pdf、kimi-docx。"
+    );
+}
+
 /// 工具建议必须跑在后台线程：它是网络请求（超时 20s），放在 UI 线程上会冻住界面；
 /// 并且结果回来前**不能**提交回合（否则建议没拼上就发出去了）。
 ///
@@ -1675,7 +1769,92 @@ fn resume_command_asks_the_kernel_and_replays_history() {
     );
 }
 
-/// 内核拒绝会话命令时如实透出原因（不假装成功，也不退化成模型对话）。
+/// 关掉工具／子代理／Skill 建议：本机配置可能启用它们，命中后提交会走后台线程，
+/// 与这些用例要断言的「按 Enter 即提交」不是同一时序。
+fn disable_suggestions(harness: &mut Harness) {
+    harness.app.suggest = None;
+    harness.app.subagent_suggest = None;
+    harness.app.skill_suggest = None;
+}
+
+/// `/resume` 恢复后，终端标签页的标题跟着换成被恢复会话的名字。
+///
+/// 标签页标题由 `App::current_session_title()` 提供：这条断言钉住「恢复会话时标题也恢复」，
+/// 而不只是对话视图被重放。
+#[test]
+fn resuming_a_session_restores_its_title() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    assert_eq!(
+        harness.app.current_session_title(),
+        "",
+        "新会话还没命名，标签页应当退回产品名"
+    );
+    // 回执里带一条历史：宿主拿到历史就不再另外等 `session.events`（那是 30 秒预算）。
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"session_id\":\"{SESSION_ID}\",\
+         \"session\":{},\"history\":[{{\"role\":\"user\",\"content\":\"旧提问\"}}]}}}}\n",
+        session_entry_json()
+    ));
+
+    type_text(&mut harness, &format!("/resume {SESSION_ID}"));
+    harness.press(KeyCode::Enter);
+
+    assert_eq!(
+        harness.app.current_session_title(),
+        "旧会话",
+        "恢复会话后标题也应当恢复"
+    );
+}
+
+/// 首条提问就是会话名（内核同一规则）：标签页在整轮请求期间就已经换掉，不必等回执。
+#[test]
+fn the_first_message_names_the_session() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    disable_suggestions(&mut harness);
+
+    type_text(&mut harness, "修复登录  闪烁");
+    harness.press(KeyCode::Enter);
+
+    assert_eq!(
+        harness.app.current_session_title(),
+        "修复登录 闪烁",
+        "首条消息成为会话名（与内核同一折叠规则）"
+    );
+}
+
+/// `/new` 之后回到未命名：标签页显示产品名而不是上一条会话的标题。
+#[test]
+fn a_new_session_drops_the_previous_title() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    disable_suggestions(&mut harness);
+
+    type_text(&mut harness, "第一件事");
+    harness.press(KeyCode::Enter);
+    assert_eq!(harness.app.current_session_title(), "第一件事");
+
+    // `/new` 要求回合空闲才会派发：先按真实路径收尾这一轮。
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{\"turn_id\":\"turn-1\",\
+         \"final_text\":\"\",\"reasoning\":\"\",\"model_turns\":1,\"tool_calls\":0,\"paused\":false}}\n",
+    );
+    harness.expect_ready(|app| !app.state.turn.is_running(), "回合应当收尾");
+    // 握手占 id=1、`turn.submit` 占 id=2，`/new` 于是是 id=3。
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"session_id\":\"20260101-000001-abcdef\"}}\n",
+    );
+    type_text(&mut harness, "/new");
+    harness.press(KeyCode::Enter);
+
+    assert_eq!(
+        harness.app.current_session_title(),
+        "",
+        "新会话没有标题，标签页应退回产品名"
+    );
+}
+
 #[test]
 fn session_command_failure_is_reported() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);

@@ -553,6 +553,13 @@ pub struct App {
     /// `/new` 的提示文案、`/sessions` 的当前项标记与「`/resume` 是否真换了会话」都看它，
     /// 因此它是宿主侧唯一需要跟着内核走的会话状态。
     session_id: String,
+    /// 当前会话标题：终端标签页显示它，`/resume` 与 `/rename` 的回执是它的来源。
+    ///
+    /// 内核按「首条用户消息」自动命名（见 `omnicrawl-session` 的索引维护），宿主不再
+    /// 额外查询，而是在提交首条消息时按同一规则本地跟进。
+    session_title: String,
+    /// 当前会话是否已有消息：内核只在首条用户消息时自动命名，这里判定同一条边界。
+    session_has_messages: bool,
     /// 慢命令的宿主侧后台任务（`/workspace`、`/mcp`），每帧轮询取回结果。
     slow_task: Option<SlowTask>,
     /// 会话区右缘滚动条正在被按住拖动（松手才结束）。
@@ -948,6 +955,8 @@ impl App {
             monitor_polled_at: Instant::now(),
             isolation: None,
             session_id: String::new(),
+            session_title: String::new(),
+            session_has_messages: false,
             slow_task: None,
             scrollbar_drag: false,
             composer_drag: false,

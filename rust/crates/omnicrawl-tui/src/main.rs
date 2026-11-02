@@ -197,14 +197,22 @@ fn set_terminal_title(text: &str) {
     let _ = execute!(out, SetTitle(text));
 }
 
-/// 当前帧的标题文本：待机 `#`，运行中取旋转序列的当前帧，后面跟产品名。
-fn title_text(running: bool, frame: usize) -> String {
+/// 当前帧的标题文本：待机 `#`，运行中取旋转序列的当前帧，后面跟会话名。
+///
+/// 会话名取内核会话标题（首条提问或 `/rename` 的结果）；尚未命名时退回产品名，
+/// 空会话与新建会话不会出现只剩一个标记的标签页。
+fn title_text(running: bool, frame: usize, name: &str) -> String {
     let glyph = if running {
         TITLE_SPINNER[frame % TITLE_SPINNER.len()]
     } else {
         TITLE_IDLE_GLYPH
     };
-    format!("{glyph} {TITLE_NAME}")
+    let name = name.trim();
+    if name.is_empty() {
+        format!("{glyph} {TITLE_NAME}")
+    } else {
+        format!("{glyph} {name}")
+    }
 }
 
 /// 只在标题真的变了才写 OSC：待机时每帧重写同一个字符串是白花 IO。
@@ -228,7 +236,7 @@ fn event_loop(
     let mut paste_tracker = paste::PasteTracker::new();
     // 终端标签页标题：待机固定 `#`，会话进行中按 100ms 一帧旋转。
     let mut title_frame = 0usize;
-    let mut last_title = title_text(false, 0);
+    let mut last_title = title_text(false, 0, app.current_session_title());
     let mut next_title_at = Instant::now();
     loop {
         if viewport.is_none() {
@@ -236,16 +244,20 @@ fn event_loop(
             app.set_viewport(viewport.expect("刚写入视口"));
         }
         let now = Instant::now();
+        let session_title = app.current_session_title();
         if app.state.turn.is_running() {
             if now >= next_title_at {
-                write_title(&title_text(true, title_frame), &mut last_title);
+                write_title(
+                    &title_text(true, title_frame, session_title),
+                    &mut last_title,
+                );
                 title_frame = title_frame.wrapping_add(1);
                 next_title_at = now + TITLE_FRAME_INTERVAL;
             }
         } else {
             // 回到待机立刻换成 `#`（不等帧点），下一次开跑从 `|` 重新开始。
             title_frame = 0;
-            write_title(&title_text(false, 0), &mut last_title);
+            write_title(&title_text(false, 0, session_title), &mut last_title);
         }
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
@@ -491,7 +503,7 @@ impl TerminalGuard {
         // crossterm 在 Windows 上不发 ANSI 序列，鼠标移动要靠这里补上（见 MOUSE_MOVE_ON）。
         Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
         // 进全屏先给标签页一个静态产品名（待机态），随后事件循环只在会话进行时接上旋转。
-        set_terminal_title(&title_text(false, 0));
+        set_terminal_title(&title_text(false, 0, ""));
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
@@ -553,15 +565,23 @@ mod tests {
 
     #[test]
     fn title_is_a_hash_when_idle_and_rotates_only_while_running() {
-        assert_eq!(title_text(false, 0), "# omnicrawl");
-        assert_eq!(title_text(false, 7), "# omnicrawl", "待机不随帧变化");
+        assert_eq!(title_text(false, 0, ""), "# omnicrawl");
+        assert_eq!(title_text(false, 7, ""), "# omnicrawl", "待机不随帧变化");
 
-        let frames: Vec<String> = (0..4).map(|frame| title_text(true, frame)).collect();
+        let frames: Vec<String> = (0..4).map(|frame| title_text(true, frame, "")).collect();
         assert_eq!(
             frames,
             vec!["| omnicrawl", "/ omnicrawl", "- omnicrawl", "\\ omnicrawl"]
         );
-        assert_eq!(title_text(true, 4), "| omnicrawl", "四帧循环");
+        assert_eq!(title_text(true, 4, ""), "| omnicrawl", "四帧循环");
+    }
+
+    /// 会话有名字之后标签页显示会话名；未命名的新会话退回产品名。
+    #[test]
+    fn title_shows_the_session_name_once_it_has_one() {
+        assert_eq!(title_text(false, 0, "修复登录"), "# 修复登录");
+        assert_eq!(title_text(true, 2, "修复登录"), "- 修复登录");
+        assert_eq!(title_text(false, 0, "  "), "# omnicrawl");
     }
 
     #[test]
