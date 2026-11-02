@@ -178,6 +178,17 @@ impl SuggestKind {
         }
     }
 
+    /// 最终注入的条数上限：Skill 只提示「最该看哪几个」，其余两类沿用决策模型的判定全量。
+    ///
+    /// 送审池（[`SKILL_SUGGESTION_POOL`]）宽是为了不漏掉真正适用的那个，注入端必须收窄，
+    /// 否则一次命中 8 个就成噪声。
+    fn limit(self, names: Vec<String>) -> Vec<String> {
+        match self {
+            SuggestKind::Skills => names.into_iter().take(SKILL_SUGGESTION_LIMIT).collect(),
+            _ => names,
+        }
+    }
+
     /// 建议行的固定前缀：插入文本与展示层拆行共用同一份口径。
     fn line_prefix(self) -> &'static str {
         match self {
@@ -522,11 +533,10 @@ pub fn suggested_skills(
     user_prompt: &str,
 ) -> Option<Vec<String>> {
     let names = suggested_names(SuggestKind::Skills, options, candidates, user_prompt)?;
-    let limited: Vec<String> = names.into_iter().take(SKILL_SUGGESTION_LIMIT).collect();
-    if limited.is_empty() {
+    if names.is_empty() {
         return None;
     }
-    Some(limited)
+    Some(names)
 }
 
 /// 检索本机 Skill 索引，取出 Skill 建议要用的送审候选。
@@ -592,21 +602,33 @@ pub fn insert_suggestions(text: &str, lines: &[String]) -> String {
 /// 一大片，既看不清也读不全。
 pub fn split_suggestion(text: &str) -> (String, Vec<String>) {
     let mut body = text.trim_end_matches(['\n', '\r']).to_string();
-    let mut lines: Vec<String> = Vec::new();
+    let mut suggestions: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     loop {
         let Some((head, last)) = body.rsplit_once('\n') else {
             break;
         };
         let line = last.trim();
-        if !is_suggestion_line(line) {
+        if is_suggestion_line(line) {
+            suggestions.push(line.to_string());
+        } else if line.starts_with(ATTACHMENT_NOTE_PREFIX) {
+            // 提交路径在建议之后追加附件说明，它会把建议行挡在尾部之外：跳过它继续往前拆。
+            notes.push(line.to_string());
+        } else {
             break;
         }
-        lines.push(line.to_string());
         body = head.trim_end_matches(['\n', '\r']).to_string();
     }
-    lines.reverse();
-    (body, lines)
+    suggestions.reverse();
+    notes.reverse();
+    if !notes.is_empty() {
+        body = format!("{body}\n\n{}", notes.join("\n"));
+    }
+    (body, suggestions)
 }
+
+/// 附件说明的固定前缀（`image_archive` 拼在提问末尾的那一段）。
+const ATTACHMENT_NOTE_PREFIX: &str = "已附图片：";
 
 /// 这一行是不是我们拼上去的建议行。
 fn is_suggestion_line(line: &str) -> bool {
@@ -825,6 +847,7 @@ pub fn suggestion_lines(inputs: &SuggestionInputs<'_>) -> Vec<String> {
                 .and_then(|(_, names)| {
                     names
                         .clone()
+                        .map(|names| kind.limit(names))
                         .and_then(|names| suggestion_line(*kind, &names))
                 })
         })
@@ -834,6 +857,7 @@ pub fn suggestion_lines(inputs: &SuggestionInputs<'_>) -> Vec<String> {
 /// 一类建议的结果 → 建议行（无建议时为空列表）。
 fn lines_for(kind: SuggestKind, names: Option<Vec<String>>) -> Vec<String> {
     names
+        .map(|names| kind.limit(names))
         .and_then(|names| suggestion_line(kind, &names))
         .into_iter()
         .collect()
@@ -1227,6 +1251,42 @@ mod tests {
         );
     }
 
+    /// 带图片的提交在建议行之后还追加了附件说明：建议块仍然要拆出来，说明回到正文末尾。
+    ///
+    /// 提交路径的顺序是「建议拼在提问尾部」→「附件说明再拼在其后」，说明会把建议行挡在
+    /// 尾部之外。若不跳过它，Skill 建议就会随带图提问一起从 `user：` 块里消失。
+    #[test]
+    fn the_suggestion_line_survives_the_attachment_note() {
+        assert_eq!(
+            split_suggestion(
+                "请把这份PDF转成Word文档\n\n建议使用skills：kimi-pdf、kimi-docx。\n\n已附图片：a.png"
+            ),
+            (
+                "请把这份PDF转成Word文档\n\n已附图片：a.png".to_string(),
+                vec!["建议使用skills：kimi-pdf、kimi-docx。".to_string()]
+            )
+        );
+        // 三条建议同时命中、后面又带附件说明：三行都拆走，说明保留在正文末尾。
+        assert_eq!(
+            split_suggestion(
+                "改这个页面\n\n当前请求建议调用tool：bash。\n当前请求建议使用子代理：explore。\n建议使用skills：ui-design。\n\n已附图片：a.png、b.png"
+            ),
+            (
+                "改这个页面\n\n已附图片：a.png、b.png".to_string(),
+                vec![
+                    "当前请求建议调用tool：bash。".to_string(),
+                    "当前请求建议使用子代理：explore。".to_string(),
+                    "建议使用skills：ui-design。".to_string(),
+                ]
+            )
+        );
+        // 只有附件说明、没有建议：整段照旧当正文，说明不被吞掉。
+        assert_eq!(
+            split_suggestion("看这张图\n\n已附图片：a.png"),
+            ("看这张图\n\n已附图片：a.png".to_string(), Vec::new())
+        );
+    }
+
     /// 只有当前提问正文与候选清单进 state：不带任何历史，字段名按种类。
     #[test]
     fn the_state_carries_only_the_current_prompt_and_candidates() {
@@ -1471,6 +1531,44 @@ mod tests {
         let names = suggested_skills(&options, &listed, "把 pdf 转成文本").expect("应当有建议");
         assert_eq!(names.len(), SKILL_SUGGESTION_LIMIT);
         assert_eq!(names, vec!["pdf".to_string(), "docx".to_string()]);
+    }
+
+    /// Skill 建议在注入端只留 [`SKILL_SUGGESTION_LIMIT`] 个名字。
+    ///
+    /// 送审池故意放宽到 [`SKILL_SUGGESTION_POOL`] 条，注入端必须收窄：这条钉住主路径
+    /// `suggestion_lines`（而不是只测 `suggested_skills`），避免池子里的名字整批灌进 user。
+    #[test]
+    fn skill_lines_are_capped_on_the_main_path() {
+        struct FixedSuggest(Vec<String>);
+
+        impl SuggestClient for FixedSuggest {
+            fn suggest(&self, _request: &SuggestRequest<'_>) -> Result<Vec<String>, String> {
+                Ok(self.0.clone())
+            }
+        }
+
+        let options = SuggestOptions {
+            enabled: true,
+            channel: Some(channel("http://127.0.0.1:1/api")),
+            client: Arc::new(FixedSuggest(vec![
+                "pdf".to_string(),
+                "docx".to_string(),
+                "xlsx".to_string(),
+            ])),
+            ..SuggestOptions::default()
+        };
+        let skills = vec![
+            ("pdf".to_string(), "处理 PDF".to_string()),
+            ("docx".to_string(), "处理 Word".to_string()),
+            ("xlsx".to_string(), "处理表格".to_string()),
+        ];
+        let lines = suggestion_lines(&SuggestionInputs {
+            tools: (&SuggestOptions::default(), &[]),
+            subagents: (&SuggestOptions::default(), &[]),
+            skills: (&options, &skills),
+            user_prompt: "把这份 pdf 转成 word",
+        });
+        assert_eq!(lines, vec!["建议使用skills：pdf、docx。".to_string()]);
     }
 
     /// Skill 建议行的文案：前缀是「建议使用skills：」，与展示层拆行共用同一口径。
