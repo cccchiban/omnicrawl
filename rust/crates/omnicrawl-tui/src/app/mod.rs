@@ -502,6 +502,18 @@ pub struct App {
     ///
     /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    /// Skill 建议运行期（`[decision_models.features] skill_suggestion`）：开启后提交前检索本机
+    /// Skill 索引，把命中的池子交给决策模型判定「本次符合哪两个的适用场景」，最多注入两个名称。
+    /// 与工具／子代理建议互相独立，三者同时开就并发发起。
+    ///
+    /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
+    pub skill_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
+    /// Skill 建议池子的排序方式：`skill_search_rerank` 开着时用决策模型重排，否则按 BM25 名次。
+    pub skill_suggest_rerank: Option<omnicrawl_host::tools::RerankOptions>,
+    /// Skill 建议的候选池覆盖：`None`（默认）表示按提问实时检索本机 Skill 索引。
+    ///
+    /// 与 `suggest_roles` 同一用意：用例需要钉住候选，否则结果会随本机已装的 Skill 漂移。
+    pub suggest_skills: Option<Vec<(String, String)>>,
     /// 子代理建议的候选角色清单覆盖：`None`（默认）表示取工具表里的角色清单。
     ///
     /// 与 `suggest` 同一用意：用例需要钉住候选清单，否则结果会随本机的 `subagents.toml`
@@ -867,13 +879,21 @@ impl App {
         let prune = Some(omnicrawl_host::tools::prune_options_from_config(
             &environment,
         ));
-        // 建议运行期：与审查、检索重排同源（`[decision_models.features] tool_suggestion` 与
-        // `subagent_suggestion`；两者独立，可同时开启）。
+        // 建议运行期：与审查、检索重排同源（`[decision_models.features] tool_suggestion`、
+        // `subagent_suggestion` 与 `skill_suggestion`；三者独立，可同时开启）。
         let suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
             &environment,
         ));
         let subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
             &environment,
+        ));
+        let skill_suggest = Some(omnicrawl_host::tools::skill_suggest_options_from_config(
+            &environment,
+        ));
+        // Skill 池子的排序：决策模型排序关着时按 BM25 名次，注入本身不依赖决策服务。
+        let skill_suggest_rerank = Some(omnicrawl_host::tools::rerank_options_from_config(
+            &environment,
+            omnicrawl_config::features::decision_model::DECISION_SWITCH_SKILL_SEARCH,
         ));
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
@@ -912,7 +932,10 @@ impl App {
             prune,
             suggest,
             subagent_suggest,
+            skill_suggest,
+            skill_suggest_rerank,
             suggest_roles: None,
+            suggest_skills: None,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),
             review_watch,

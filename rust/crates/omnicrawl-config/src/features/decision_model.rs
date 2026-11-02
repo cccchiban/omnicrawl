@@ -549,6 +549,9 @@ pub const DECISION_SWITCH_TOOL_SUGGEST: &str = "tool_suggestion";
 /// 「新提问自动建议子代理」开关的配置键。
 pub const DECISION_SWITCH_SUBAGENT_SUGGEST: &str = "subagent_suggestion";
 
+/// 「新提问自动建议 Skill」开关的配置键。
+pub const DECISION_SWITCH_SKILL_SUGGEST: &str = "skill_suggestion";
+
 /// 开关画在哪个设置页。
 ///
 /// 配置位置与开关表都是同一份（`decision_models.toml` 的 `[features]`），这里只决定
@@ -571,7 +574,7 @@ pub struct DecisionSwitchSpec {
 }
 
 /// 已落地的决策模型功能开关（顺序即界面顺序）。
-pub const DECISION_SWITCHES: [DecisionSwitchSpec; 9] = [
+pub const DECISION_SWITCHES: [DecisionSwitchSpec; 10] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_TOOL_REVIEW,
         label: "工具调用审查使用决策模型",
@@ -623,6 +626,12 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 9] = [
     DecisionSwitchSpec {
         key: DECISION_SWITCH_SUBAGENT_SUGGEST,
         label: "新提问自动建议子代理",
+        default: false,
+        page: SwitchPage::Decision,
+    },
+    DecisionSwitchSpec {
+        key: DECISION_SWITCH_SKILL_SUGGEST,
+        label: "新提问自动建议 Skill",
         default: false,
         page: SwitchPage::Decision,
     },

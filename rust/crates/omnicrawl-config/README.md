@@ -144,11 +144,14 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`skill_search_rerank`（Skill 检索使用
 决策模型排序）、`web_search_rerank`（联网搜索使用决策模型排序）、`ask_user_custody`（提问由
 决策模型自动作答）、`tool_call_prune`（旧一轮工具调用按需淘汰）、`tool_suggestion`（新提问自动
-建议工具）与 `subagent_suggestion`（新提问自动建议子代理），均默认关闭；读写走
+建议工具）、`subagent_suggestion`（新提问自动建议子代理）与 `skill_suggestion`（新提问自动建议
+Skill，最多注入两个名字），均默认关闭；读写走
 `load_decision_switches` / `save_decision_switch`——前者读不出来时
 按默认值回落，后者保留同段其他键与 `channels` 段。联网搜索的 BM25 排序不在这张表里：
-它固定启用，不需要配置。`tool_suggestion` 与 `subagent_suggestion`
-互相独立、可同时开启，同时开启时两条请求并发发起（总耗时取较大者而不是相加）。
+它固定启用，不需要配置。`tool_suggestion`、`subagent_suggestion` 与
+`skill_suggestion` 互相独立、可同时开启，同时开启时各自并发发起（总耗时取最大者而不是相加）。
+`skill_suggestion` 只决定「注入前要不要问决策模型哪两个 Skill 最合适」；候选池子的排序由
+`skill_search_rerank` 决定，关着时用 BM25 名次，注入本身不依赖决策服务。
 
 `DecisionSwitchSpec.page`（`SwitchPage::Decision` / `SwitchPage::Embedding`）决定界面把开关画
 在哪一页：配置位置与开关表都不变；检索排序开关都标为 `Decision`，画在 TUI 的

@@ -87,13 +87,20 @@ impl App {
     /// 按最新配置重建建议运行期（决策渠道或开关变更后调用）。
     ///
     /// 建议由宿主在提交前发起（它是唯一握得住「用户这一条原文」的一方），因此只需
-    /// 换掉运行期，没有要下发给内核的能力声明。两类建议各有一个开关，一并重建。
+    /// 换掉运行期，没有要下发给内核的能力声明。三类建议各有一个开关，一并重建。
     pub(super) fn rebuild_suggest(&mut self, environment: &ConfigEnvironment) {
         self.suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
             environment,
         ));
         self.subagent_suggest = Some(omnicrawl_host::tools::subagent_suggest_options_from_config(
             environment,
+        ));
+        self.skill_suggest = Some(omnicrawl_host::tools::skill_suggest_options_from_config(
+            environment,
+        ));
+        self.skill_suggest_rerank = Some(omnicrawl_host::tools::rerank_options_from_config(
+            environment,
+            omnicrawl_config::features::decision_model::DECISION_SWITCH_SKILL_SEARCH,
         ));
     }
 

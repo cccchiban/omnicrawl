@@ -39,9 +39,12 @@ use omnicrawl_config::features::decision_model::{
     load_decision_model_configuration, load_decision_switches, DecisionChannelConfig,
 };
 use omnicrawl_core::diagnostics;
+use omnicrawl_extensions::skill::SkillSearchHit;
 use serde_json::{json, Map, Value};
 
 use crate::review::{masking_from_config, ReviewMasking};
+
+use super::decision_search::{reranked_order, RerankOptions};
 
 /// 送审的候选项说明：取描述首句，截断到这么多字符（超出加省略号）。
 ///
@@ -82,7 +85,29 @@ const SUBAGENT_REQUIREMENTS: &str =
   因此只有能拆成相互独立、可并行推进的子任务，或需要隔离视角核查、需要隔离改动时才算用得到；\
   单步问答、小改动、串行依赖的活，以及你自己直接做更省事的任务，一律判为用不到。";
 
-/// 建议种类：两类建议形状相同（一次请求带一组 noul 提问），开关、候选来源与文案不同，
+/// Skill 建议的选择要求。
+///
+/// Skill 的判定面与工具不同：它看的是「这次任务是否落在这个 Skill 的适用场景里」，
+/// 因此要求既要说清适用才判为需要，也要说清与任务无关的一律排除。
+const SKILL_REQUIREMENTS: &str =
+    "本次最多只会用到下列 Skill 中的一两个，请逐个判断：判定概率 ≥0.5 表示本次任务符合该 Skill \
+   的适用场景、用了它会更贴合要求，<0.5 表示不适用。Skill 提供的是特定任务的成体系做法，\
+   只有任务明确落在它的适用场景里才算适用；泛泛的闲聊、与 Skill 无关的小改动，以及只是字面\
+   提到关键词的任务，一律判为不适用。";
+
+/// Skill 建议行的固定前缀（插入文本与展示层拆行共用）。
+pub const SKILL_SUGGESTION_PREFIX: &str = "建议使用skills：";
+
+/// Skill 建议最终注入的条数上限：只提示「最该看哪几个」，再多就成噪声。
+pub const SKILL_SUGGESTION_LIMIT: usize = 2;
+
+/// Skill 建议送审的候选条数上限：先用 BM25 从全部 Skill 里挑池子，再送决策模型判定。
+///
+/// 与 [`SKILL_SUGGESTION_LIMIT`] 分开：送审要宽一些，避免 BM25 名次偏差把真正适用的那个
+/// 挡在门外；最终注入仍只取前两名。
+pub const SKILL_SUGGESTION_POOL: usize = 8;
+
+/// 建议种类：三类建议形状相同（一次请求带一组 noul 提问），开关、候选来源与文案不同，
 /// 因此共用同一套请求、解析与插入代码，只在候选来源、措辞与建议行前缀上分叉。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestKind {
@@ -90,6 +115,8 @@ pub enum SuggestKind {
     Tools,
     /// 子代理建议（`[features] subagent_suggestion`）：候选是本宿主可调度的子代理角色。
     Subagents,
+    /// Skill 建议（`[features] skill_suggestion`）：候选是本机已索引的 Skill（取前几名）。
+    Skills,
 }
 
 impl SuggestKind {
@@ -98,6 +125,7 @@ impl SuggestKind {
         match self {
             SuggestKind::Tools => "no_tool",
             SuggestKind::Subagents => "no_subagent",
+            SuggestKind::Skills => "no_skill",
         }
     }
 
@@ -106,6 +134,7 @@ impl SuggestKind {
         match self {
             SuggestKind::Tools => "tools",
             SuggestKind::Subagents => "subagents",
+            SuggestKind::Skills => "skills",
         }
     }
 
@@ -115,6 +144,9 @@ impl SuggestKind {
             SuggestKind::Tools => format!("本次任务是否需要使用工具 {name}（{summary}）？"),
             SuggestKind::Subagents => {
                 format!("本次任务是否需要调度子代理 {name}（{summary}）？")
+            }
+            SuggestKind::Skills => {
+                format!("本次任务是否符合 Skill {name}（{summary}）的适用场景？")
             }
         }
     }
@@ -130,6 +162,10 @@ impl SuggestKind {
                 "本次任务是否属于普通对话、寒暄或无从判断的异常任务，因而不需要调度 \
                  state.subagents 里的任何子代理？概率 ≥0.5 表示确实无需任何子代理，<0.5 表示需要调度其中某个子代理。"
             }
+            SuggestKind::Skills => {
+                "本次任务是否属于普通对话、寒暄或无从判断的异常任务，因而不符合 \
+                 state.skills 里任何 Skill 的适用场景？概率 ≥0.5 表示确实没有可用的 Skill，<0.5 表示其中某个 Skill 适用。"
+            }
         }
     }
 
@@ -138,6 +174,7 @@ impl SuggestKind {
         match self {
             SuggestKind::Tools => TOOL_REQUIREMENTS,
             SuggestKind::Subagents => SUBAGENT_REQUIREMENTS,
+            SuggestKind::Skills => SKILL_REQUIREMENTS,
         }
     }
 
@@ -146,6 +183,7 @@ impl SuggestKind {
         match self {
             SuggestKind::Tools => "当前请求建议调用tool：",
             SuggestKind::Subagents => "当前请求建议使用子代理：",
+            SuggestKind::Skills => SKILL_SUGGESTION_PREFIX,
         }
     }
 
@@ -154,6 +192,7 @@ impl SuggestKind {
         match self {
             SuggestKind::Tools => "工具建议不可用，按无建议处理",
             SuggestKind::Subagents => "子代理建议不可用，按无建议处理",
+            SuggestKind::Skills => "Skill 建议不可用，按无建议处理",
         }
     }
 }
@@ -262,6 +301,14 @@ pub fn subagent_suggest_options_from_config(environment: &ConfigEnvironment) -> 
     suggest_options_with_switch(
         environment,
         omnicrawl_config::features::decision_model::DECISION_SWITCH_SUBAGENT_SUGGEST,
+    )
+}
+
+/// 按配置装配 Skill 建议运行期（与工具建议同一口径，开关不同）。
+pub fn skill_suggest_options_from_config(environment: &ConfigEnvironment) -> SuggestOptions {
+    suggest_options_with_switch(
+        environment,
+        omnicrawl_config::features::decision_model::DECISION_SWITCH_SKILL_SUGGEST,
     )
 }
 
@@ -383,6 +430,131 @@ pub fn suggested_subagents(
     suggested_names(SuggestKind::Subagents, options, &candidates, user_prompt)
 }
 
+/// Skill 建议的送审候选：先用 BM25 从已索引的 Skill 里挑池子，再（可选）按决策模型名次收窄。
+///
+/// `hits` 是 `SkillManager::search_meta` 的结果——检索范围覆盖名称、描述与正文，因此
+/// 「描述写得泛、正文才写清楚」的 Skill 也能进池子。BM25 在这里只负责挑池子：名次未必准，
+/// 所以先留 [`SKILL_SUGGESTION_POOL`] 条送审，由决策模型判定「这次任务是否落在它的适用场景」。
+///
+/// 决策模型排序（`skill_search_rerank`）开着时先用它重排池子：这一层是可选增强，不可用就
+/// 保留 BM25 名次——与 `skill_search` 工具同一口径，注入本身不依赖决策模型。
+pub fn skill_candidates(
+    hits: &[SkillSearchHit],
+    rerank: &RerankOptions,
+    user_prompt: &str,
+) -> Vec<(String, String)> {
+    let mut ordered: Vec<&SkillSearchHit> = hits.iter().collect();
+    if rerank.active() && hits.len() > 1 && !user_prompt.trim().is_empty() {
+        let state = json!({"query": user_prompt, "scope": "all"});
+        let texts: Vec<String> = hits.iter().map(skill_candidate_text).collect();
+        // 重排返回的是池内下标的最终顺序；拿不到就保留 BM25 名次。
+        if let Some(order) = reranked_order(
+            rerank,
+            state,
+            SKILL_RERANK_INSTRUCTIONS,
+            user_prompt,
+            &texts,
+        ) {
+            let by_index: Vec<&SkillSearchHit> =
+                order.iter().filter_map(|index| hits.get(*index)).collect();
+            // 重排只排送审的那一批，未送审的候选按原序接在后面，因此这里的长度可以小于池子；
+            // 只要重排确实给出了顺序就采用它，剩下的按 BM25 名次补上。
+            if !by_index.is_empty() {
+                let taken: Vec<usize> = order.clone();
+                ordered = by_index
+                    .into_iter()
+                    .chain(
+                        hits.iter()
+                            .enumerate()
+                            .filter(|(index, _)| !taken.contains(index))
+                            .map(|(_, hit)| hit),
+                    )
+                    .collect();
+            }
+        }
+    }
+    ordered
+        .into_iter()
+        .take(SKILL_SUGGESTION_POOL)
+        .map(|hit| (hit.meta.name.clone(), skill_summary(&hit.meta.description)))
+        .collect()
+}
+
+/// Skill 候选的送审文本：名称、作用域与描述足以判断适用场景，不必带正文。
+fn skill_candidate_text(hit: &SkillSearchHit) -> String {
+    format!(
+        "名称：{}\n作用域：{}\n描述：{}",
+        hit.meta.name, hit.meta.scope, hit.meta.description
+    )
+}
+
+/// 重排指令：只要求按相关度排序，不做其他判断（与 `skill_search` 工具同一措辞）。
+const SKILL_RERANK_INSTRUCTIONS: &str =
+    "给定 state 里的检索查询与作用域，判断每个候选项与该查询的相关程度；\
+state 是事实来源，不要根据候选项自身措辞推测查询；候选是一批待选 Skill，排在前面表示更该被使用。";
+
+/// Skill 描述 → 送审用的一句话：压成单空格后截断到 [`CANDIDATE_SUMMARY_MAX_CHARS`] 字。
+///
+/// 与 [`tool_summary`] 的区别在于不剥「是什么：」前缀、也不按句号截半句——Skill 描述常是一整句
+/// 适用场景的说明，截掉后半句会丢掉「什么时候该用它」这个判定依据。
+fn skill_summary(description: &str) -> String {
+    let collapsed = description
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let characters: Vec<char> = collapsed.chars().collect();
+    if characters.len() <= CANDIDATE_SUMMARY_MAX_CHARS {
+        return collapsed;
+    }
+    let head: String = characters[..CANDIDATE_SUMMARY_MAX_CHARS].iter().collect();
+    format!("{head}…")
+}
+
+/// Skill 建议：问一次决策模型「本次是否符合其中某几个 Skill 的适用场景」，最多取前两名。
+///
+/// 决策模型判定失败或全部不适用时不注入任何内容（fail-open）。开关关着时**不检索**：
+/// Skill 建议的语义就是「问决策模型要哪两个」，没有这一层就退化成「把 BM25 前两名硬塞进去」，
+/// 那是另一种功能，不做。
+pub fn suggested_skills(
+    options: &SuggestOptions,
+    candidates: &[(String, String)],
+    user_prompt: &str,
+) -> Option<Vec<String>> {
+    let names = suggested_names(SuggestKind::Skills, options, candidates, user_prompt)?;
+    let limited: Vec<String> = names.into_iter().take(SKILL_SUGGESTION_LIMIT).collect();
+    if limited.is_empty() {
+        return None;
+    }
+    Some(limited)
+}
+
+/// 检索本机 Skill 索引，取出 Skill 建议要用的送审候选。
+///
+/// 复用 `skill_search` 工具那条检索通路：`SkillManager::discover` 扫一次索引（覆盖本会话内
+/// 新装的 Skill），`search_meta` 按 BM25 打分，检索单元是名称 + 描述 + 正文。作用域固定 `all`：
+/// 建议是给模型看的提示，不该因为 Skill 装在用户级还是项目级而漏掉。
+///
+/// `rerank` 开着时用决策模型重排池子；不可用就保留 BM25 名次。检索不到任何 Skill（本机没装、
+/// 或一个查询词都没命中）时返回空清单，调用方据此跳过这次建议。
+pub fn discover_skill_candidates(
+    workspace: &std::path::Path,
+    environment: &ConfigEnvironment,
+    rerank: &RerankOptions,
+    user_prompt: &str,
+) -> Vec<(String, String)> {
+    if user_prompt.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut manager = omnicrawl_extensions::skill::SkillManager::new();
+    let extra_paths = omnicrawl_config::features::skills::load_skills_config(environment, None)
+        .map(|config| config.extra_paths)
+        .unwrap_or_default();
+    manager.discover(Some(workspace), &extra_paths);
+    let hits = manager.search_meta(user_prompt, "all", SKILL_SUGGESTION_POOL);
+    skill_candidates(&hits, rerank, user_prompt)
+}
+
 /// 建议名单拼成的插入行；名单为空时返回 `None`（不插入任何内容）。
 pub fn suggestion_line(kind: SuggestKind, names: &[String]) -> Option<String> {
     let names: Vec<&str> = names
@@ -412,12 +584,13 @@ pub fn insert_suggestions(text: &str, lines: &[String]) -> String {
 /// 从 user 文本里拆出 [`insert_suggestions`] 拼进去的建议行，返回（提问正文，建议行）。
 ///
 /// 建议行是**唱给模型看的提示**，不是用户说的内容，但落进会话流的仍是拼接后的整段文本
-/// （内核与转录都按它走）。展示层在这里把它们拆回两半：建议行挂到 `user：` 标签上，正文照旧
-/// 逐行铺开——重放读到的历史文本同样含这些行，因此实时提交与回放走同一条拆解口径。
+/// （内核与转录都按它走）。展示层在这里把它们拆回两半：建议行单独占一块、正文照旧逐行铺开
+/// ——重放读到的历史文本同样含这些行，因此实时提交与回放走同一条拆解口径。
 ///
-/// 两类建议同时命中时尾部有连续多行，因此这里从末尾**连续**剥离带前缀的行，遇到第一行
-/// 正文就停手（正文里偶尔提到前缀但不以之开头，不会被误拆）。
-pub fn split_suggestion(text: &str) -> (String, Option<String>) {
+/// 多条建议（工具 / 子代理 / Skill 各一行，每行本身还可能折行）同时命中时，**按行原样返回**，
+/// 不再用空格拼成一句：拼成一句会挤在 `user：` 标签右侧的剩余宽度里，三条建议叠起来必然折成
+/// 一大片，既看不清也读不全。
+pub fn split_suggestion(text: &str) -> (String, Vec<String>) {
     let mut body = text.trim_end_matches(['\n', '\r']).to_string();
     let mut lines: Vec<String> = Vec::new();
     loop {
@@ -431,18 +604,19 @@ pub fn split_suggestion(text: &str) -> (String, Option<String>) {
         lines.push(line.to_string());
         body = head.trim_end_matches(['\n', '\r']).to_string();
     }
-    if lines.is_empty() {
-        return (text.to_string(), None);
-    }
     lines.reverse();
-    (body, Some(lines.join(" ")))
+    (body, lines)
 }
 
 /// 这一行是不是我们拼上去的建议行。
 fn is_suggestion_line(line: &str) -> bool {
-    [SuggestKind::Tools, SuggestKind::Subagents]
-        .iter()
-        .any(|kind| line.starts_with(kind.line_prefix()))
+    [
+        SuggestKind::Tools,
+        SuggestKind::Subagents,
+        SuggestKind::Skills,
+    ]
+    .iter()
+    .any(|kind| line.starts_with(kind.line_prefix()))
 }
 
 /// 一次建议请求的 `state`：只有本次提问正文与候选清单，不带任何历史。
@@ -575,75 +749,86 @@ fn parse_suggestions(
     Ok(suggested)
 }
 
-/// 两类建议并发发起，返回要拼进 user 尾部的建议行（顺序固定：工具在前，子代理在后）。
+/// 三类建议并发发起，返回要拼进 user 尾部的建议行（顺序固定：工具、子代理、Skill）。
 ///
-/// 两条请求彼此独立，串行发就要等两次完整往返。这里一次开两条线程并发发起，总耗时取两者
-/// 的较大者而不是相加；任一失败或没有建议都只是少一行（fail-open），不影响另一条，
+/// 三条请求彼此独立，串行发就要等三次完整往返。这里每条各开一线程并发发起，总耗时取三者
+/// 的较大者而不是相加；任一失败或没有建议都只是少一行（fail-open），不影响其它两条，
 /// 也不影响提问本身。
 pub struct SuggestionInputs<'a> {
     /// 工具建议运行期与送审候选（工具表清单）；`options.active()` 为假时不发请求。
     pub tools: (&'a SuggestOptions, &'a [(String, String)]),
     /// 子代理建议运行期与送审候选（角色清单）。
     pub subagents: (&'a SuggestOptions, &'a [(String, String)]),
+    /// Skill 建议运行期与送审候选（BM25 挑出的 Skill 池子）。
+    pub skills: (&'a SuggestOptions, &'a [(String, String)]),
     /// 用户本次的提问正文。
     pub user_prompt: &'a str,
 }
 
-/// 并发发起两类建议，返回拼好顺序的建议行；两者都没有建议时返回空列表。
+/// 并发发起三类建议，返回拼好顺序的建议行；都没有建议时返回空列表。
 pub fn suggestion_lines(inputs: &SuggestionInputs<'_>) -> Vec<String> {
     let prompt = inputs.user_prompt;
     if prompt.trim().is_empty() {
         return Vec::new();
     }
-    let (tool_options, tool_candidates) = inputs.tools;
-    let (subagent_options, subagent_candidates) = inputs.subagents;
-    let tools_enabled = tool_options.active() && !tool_candidates.is_empty();
-    let subagents_enabled = subagent_options.active() && !subagent_candidates.is_empty();
-    if !tools_enabled && !subagents_enabled {
-        return Vec::new();
+    let mut jobs: Vec<(SuggestKind, SuggestOptions, Vec<(String, String)>)> = Vec::new();
+    for (kind, (options, candidates)) in [
+        (SuggestKind::Tools, inputs.tools),
+        (SuggestKind::Subagents, inputs.subagents),
+        (SuggestKind::Skills, inputs.skills),
+    ] {
+        if options.active() && !candidates.is_empty() {
+            jobs.push((kind, options.clone(), candidates.to_vec()));
+        }
     }
-    // 只有一类真正要发时不必起线程：省下一次调度，也不引入无谓的等待。
-    if tools_enabled && !subagents_enabled {
-        return lines_for(
-            SuggestKind::Tools,
-            suggested_names(SuggestKind::Tools, tool_options, tool_candidates, prompt),
-        );
+    match jobs.len() {
+        0 => return Vec::new(),
+        // 只有一类真正要发时不必起线程：省下一次调度，也不引入无谓的等待。
+        1 => {
+            let (kind, options, candidates) = jobs.remove(0);
+            return lines_for(kind, suggested_names(kind, &options, &candidates, prompt));
+        }
+        _ => {}
     }
-    if subagents_enabled && !tools_enabled {
-        return lines_for(
-            SuggestKind::Subagents,
-            suggested_names(
-                SuggestKind::Subagents,
-                subagent_options,
-                subagent_candidates,
-                prompt,
-            ),
-        );
+    // 第一条留在本线程跑，其余并发起线程：几条同时在飞，总耗时取较大者而不是相加。
+    let mut rest = jobs.split_off(1);
+    let (first_kind, first_options, first_candidates) = jobs.remove(0);
+    let prompt_owned = prompt.to_string();
+    let handles: Vec<_> = rest
+        .drain(..)
+        .map(|(kind, options, candidates)| {
+            let prompt = prompt_owned.clone();
+            thread::spawn(move || (kind, suggested_names(kind, &options, &candidates, &prompt)))
+        })
+        .collect();
+    let mut results = vec![(
+        first_kind,
+        suggested_names(first_kind, &first_options, &first_candidates, prompt),
+    )];
+    for handle in handles {
+        if let Ok(result) = handle.join() {
+            results.push(result);
+        }
     }
-    let tools_options = tool_options.clone();
-    let subagent_options = subagent_options.clone();
-    let prompt = prompt.to_string();
-    let tools_candidates = tool_candidates.to_vec();
-    let subagent_candidates = subagent_candidates.to_vec();
-    let tools_task = thread::spawn(move || {
-        suggested_names(
-            SuggestKind::Tools,
-            &tools_options,
-            &tools_candidates,
-            &prompt,
-        )
-    });
-    // 子代理这一条留在本线程跑：两条同时在飞，总耗时取较大者而不是相加。
-    let subagents = suggested_names(
+    // 建议行的顺序固定为「工具、子代理、Skill」，与并发完成的先后无关。
+    let order = [
+        SuggestKind::Tools,
         SuggestKind::Subagents,
-        &subagent_options,
-        &subagent_candidates,
-        inputs.user_prompt,
-    );
-    let tools = tools_task.join().unwrap_or(None);
-    let mut lines = lines_for(SuggestKind::Tools, tools);
-    lines.extend(lines_for(SuggestKind::Subagents, subagents));
-    lines
+        SuggestKind::Skills,
+    ];
+    order
+        .iter()
+        .filter_map(|kind| {
+            results
+                .iter()
+                .find(|(result_kind, _)| result_kind == kind)
+                .and_then(|(_, names)| {
+                    names
+                        .clone()
+                        .and_then(|names| suggestion_line(*kind, &names))
+                })
+        })
+        .collect()
 }
 
 /// 一类建议的结果 → 建议行（无建议时为空列表）。
@@ -1003,31 +1188,33 @@ mod tests {
             split_suggestion("帮我写个小说\n\n当前请求建议调用tool：subagent、fetcher。"),
             (
                 "帮我写个小说".to_string(),
-                Some("当前请求建议调用tool：subagent、fetcher。".to_string())
+                vec!["当前请求建议调用tool：subagent、fetcher。".to_string()]
             )
         );
-        // 两类同时命中：尾部连续两行都拆走，正文不受影响。
+        // 多条同时命中：尾部连续多行都拆走，**每行独立保留**，不再拼成一句。
         assert_eq!(
             split_suggestion(
-                "帮我写个小说\n\n当前请求建议调用tool：subagent。\n当前请求建议使用子代理：explore。"
+                "帮我写个小说\n\n当前请求建议调用tool：subagent。\n当前请求建议使用子代理：explore。\n建议使用skills：pdf。"
             ),
             (
                 "帮我写个小说".to_string(),
-                Some(
-                    "当前请求建议调用tool：subagent。 当前请求建议使用子代理：explore。".to_string()
-                )
+                vec![
+                    "当前请求建议调用tool：subagent。".to_string(),
+                    "当前请求建议使用子代理：explore。".to_string(),
+                    "建议使用skills：pdf。".to_string(),
+                ]
             )
         );
         // 没有建议行（旧转录、开关没开）时整段照旧当正文。
         assert_eq!(
             split_suggestion("帮我写个小说"),
-            ("帮我写个小说".to_string(), None)
+            ("帮我写个小说".to_string(), Vec::new())
         );
         assert_eq!(
             split_suggestion("帮我写个小说\n\n这句话里提到当前请求建议调用tool：但没有换行"),
             (
                 "帮我写个小说\n\n这句话里提到当前请求建议调用tool：但没有换行".to_string(),
-                None
+                Vec::new()
             )
         );
         // 正文中间提到前缀不该被剥：只有末尾连续的建议行才算。
@@ -1035,7 +1222,7 @@ mod tests {
             split_suggestion("当前请求建议使用子代理：explore。\n后面还有正文"),
             (
                 "当前请求建议使用子代理：explore。\n后面还有正文".to_string(),
-                None
+                Vec::new()
             )
         );
     }
@@ -1195,6 +1382,7 @@ mod tests {
         let lines = suggestion_lines(&SuggestionInputs {
             tools: (&options, &tools),
             subagents: (&options, &roles()),
+            skills: (&SuggestOptions::default(), &[]),
             user_prompt: "帮我把这个任务拆成几路并行",
         });
         let elapsed = started.elapsed();
@@ -1227,6 +1415,7 @@ mod tests {
         let lines = suggestion_lines(&SuggestionInputs {
             tools: (&options, &inventory(&["subagent", "fetcher", "read"])),
             subagents: (&SuggestOptions::default(), &roles()),
+            skills: (&SuggestOptions::default(), &[]),
             user_prompt: "帮我把这个任务拆成几路并行",
         });
         assert_eq!(
@@ -1234,6 +1423,127 @@ mod tests {
             vec!["当前请求建议调用tool：subagent、fetcher。".to_string()]
         );
         assert_eq!(cassette.captured().len(), 1);
+    }
+
+    /// Skill 候选：BM25 名次就是送审顺序，最多取 [`SKILL_SUGGESTION_POOL`] 条。
+    #[test]
+    fn skill_candidates_follow_the_bm25_order() {
+        let hits = skill_hits(&["pdf", "docx", "xlsx"]);
+        let plain = RerankOptions::default();
+        let listed = skill_candidates(&hits, &plain, "把 pdf 转成文本");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pdf", "docx", "xlsx"]
+        );
+        assert_eq!(listed[0].1, "处理 pdf 的说明");
+        // 空池子不产生候选。
+        assert!(skill_candidates(&[], &plain, "随便").is_empty());
+    }
+
+    /// Skill 候选超过池子上限时只留前 [`SKILL_SUGGESTION_POOL`] 条：送审要宽，但不无限宽。
+    #[test]
+    fn skill_candidates_are_capped_at_the_pool_size() {
+        let names: Vec<String> = (0..SKILL_SUGGESTION_POOL + 4)
+            .map(|index| format!("skill-{index}"))
+            .collect();
+        let borrowed: Vec<&str> = names.iter().map(|name| name.as_str()).collect();
+        let hits = skill_hits(&borrowed);
+        let listed = skill_candidates(&hits, &RerankOptions::default(), "关键词");
+        assert_eq!(listed.len(), SKILL_SUGGESTION_POOL);
+    }
+
+    /// Skill 建议只注入前两名：决策模型给出三个也截到两个。
+    #[test]
+    fn skill_suggestions_are_capped_at_two_names() {
+        let cassette = SuggestCassette::serve(1, Duration::ZERO);
+        let options = SuggestOptions {
+            enabled: true,
+            channel: Some(channel(&cassette.base_url())),
+            ..SuggestOptions::default()
+        };
+        let listed = skill_hits(&["pdf", "docx", "xlsx"])
+            .iter()
+            .map(|hit| (hit.meta.name.clone(), "说明".to_string()))
+            .collect::<Vec<_>>();
+        let names = suggested_skills(&options, &listed, "把 pdf 转成文本").expect("应当有建议");
+        assert_eq!(names.len(), SKILL_SUGGESTION_LIMIT);
+        assert_eq!(names, vec!["pdf".to_string(), "docx".to_string()]);
+    }
+
+    /// Skill 建议行的文案：前缀是「建议使用skills：」，与展示层拆行共用同一口径。
+    #[test]
+    fn skill_suggestion_line_uses_its_own_prefix() {
+        let line = suggestion_line(
+            SuggestKind::Skills,
+            &["pdf".to_string(), "docx".to_string()],
+        );
+        assert_eq!(line.as_deref(), Some("建议使用skills：pdf、docx。"));
+        // 该行能被展示层认出来并剥掉。
+        let text = format!("把 pdf 转成文本{}", format!("\n\n{}", line.unwrap()));
+        assert_eq!(
+            split_suggestion(&text),
+            (
+                "把 pdf 转成文本".to_string(),
+                vec!["建议使用skills：pdf、docx。".to_string()]
+            )
+        );
+    }
+
+    /// 决策服务不可用时 Skill 建议不注入（fail-open），不影响提问。
+    #[test]
+    fn skill_suggestions_fail_open_when_the_channel_is_down() {
+        let options = SuggestOptions {
+            enabled: true,
+            channel: Some(SuggestChannel {
+                mode: JEV.to_string(),
+                model: "jev-latest".to_string(),
+                // 指向一个没人监听的端口：请求必然失败。
+                base_url: "http://127.0.0.1:1/api".to_string(),
+                api_key: "jv_test".to_string(),
+                retry_count: 0,
+            }),
+            ..SuggestOptions::default()
+        };
+        let listed = vec![("pdf".to_string(), "说明".to_string())];
+        assert!(suggested_skills(&options, &listed, "把 pdf 转成文本").is_none());
+    }
+
+    /// 开关关着时不检索、也不发请求。
+    #[test]
+    fn skill_suggestions_stay_silent_when_disabled() {
+        let options = SuggestOptions::default();
+        let listed = vec![("pdf".to_string(), "说明".to_string())];
+        assert!(suggested_skills(&options, &listed, "把 pdf 转成文本").is_none());
+        // 开关开着但候选为空：同样不注入。
+        let enabled = SuggestOptions {
+            enabled: true,
+            channel: Some(channel("http://127.0.0.1:1/api")),
+            ..SuggestOptions::default()
+        };
+        assert!(suggested_skills(&enabled, &[], "把 pdf 转成文本").is_none());
+    }
+
+    /// 造一批 Skill 命中项：名称即查询词，描述固定格式。
+    fn skill_hits(names: &[&str]) -> Vec<SkillSearchHit> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| SkillSearchHit {
+                meta: omnicrawl_extensions::skill::SkillMeta {
+                    name: (*name).to_string(),
+                    description: format!("处理 {name} 的说明"),
+                    source_path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+                    base_dir: std::path::PathBuf::from(format!("/skills/{name}")),
+                    scope: "project".to_string(),
+                    disable_model_invocation: false,
+                },
+                score: 1.0 - index as f64 * 0.1,
+                reason: "BM25 命中".to_string(),
+            })
+            .collect()
     }
 
     /// 决策服务的本地回环：固定回答概率，并记录收到的请求。

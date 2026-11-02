@@ -511,6 +511,11 @@ impl ToolRegistry {
         &self.subagent_roles
     }
 
+    /// 构建工具表时定下的配置环境（Skill 建议扫索引时要用它读 `extra_paths`）。
+    pub fn config_environment(&self) -> &ConfigEnvironment {
+        &self.config_env
+    }
+
     pub fn is_implemented(&self, name: &str) -> bool {
         IMPLEMENTED_TOOLS.contains(&name)
             || self.mcp_tool_names.contains(name)
@@ -839,7 +844,6 @@ mod tests {
         );
         assert!(names.contains("read"), "其余工具照旧进表：{names:?}");
     }
-
 
     /// 编辑锁不落进工作区：`Edit_file` 的锁文件进用户配置目录，项目树保持干净。
     #[test]

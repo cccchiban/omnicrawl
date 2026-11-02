@@ -63,9 +63,10 @@ pub use decision_prune::{
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
 pub use decision_suggest::{
-    insert_suggestions, split_suggestion, subagent_suggest_options_from_config,
-    suggest_options_from_config, suggestion_lines, SuggestClient, SuggestKind, SuggestOptions,
-    SuggestionInputs,
+    discover_skill_candidates, insert_suggestions, skill_suggest_options_from_config,
+    split_suggestion, subagent_suggest_options_from_config, suggest_options_from_config,
+    suggestion_lines, SuggestClient, SuggestKind, SuggestOptions, SuggestionInputs,
+    SKILL_SUGGESTION_LIMIT, SKILL_SUGGESTION_PREFIX,
 };
 pub use error::{ToolError, ToolOutcome};
 pub use fetcher::{fetch_batch, tls_session_cache_from_config, FetcherOptions, FetchBatch};

@@ -92,8 +92,9 @@ impl App {
     ) -> Option<(String, Vec<PendingImage>)> {
         let suggest = self.suggest.clone().unwrap_or_default();
         let subagent_suggest = self.subagent_suggest.clone().unwrap_or_default();
-        // 两个开关都关着或都没有可用渠道：立即提交，原文照发，连候选清单都不必收集。
-        if !suggest.active() && !subagent_suggest.active() {
+        let skill_suggest = self.skill_suggest.clone().unwrap_or_default();
+        // 三个开关都关着或都没有可用渠道：立即提交，原文照发，连候选清单都不必收集。
+        if !suggest.active() && !subagent_suggest.active() && !skill_suggest.active() {
             return Some((text, images));
         }
         let inventory = self.registry.tool_inventory();
@@ -101,9 +102,24 @@ impl App {
             .suggest_roles
             .clone()
             .unwrap_or_else(|| self.registry.subagent_roles().to_vec());
-        // 两侧都没有可送审的候选：不必白跑一次网络。
+        // Skill 候选要扫一次索引（读每个 SKILL.md 的正文分词），只在开关真开时才做。
+        let skill_candidates = if skill_suggest.active() {
+            match self.suggest_skills.clone() {
+                Some(pinned) => pinned,
+                None => omnicrawl_host::tools::discover_skill_candidates(
+                    &self.workspace,
+                    self.registry.config_environment(),
+                    &self.skill_suggest_rerank.clone().unwrap_or_default(),
+                    &text,
+                ),
+            }
+        } else {
+            Vec::new()
+        };
+        // 三路都没有可送审的候选：不必白跑一次网络。
         if !(suggest.active() && !inventory.is_empty())
             && !(subagent_suggest.active() && !subagent_roles.is_empty())
+            && !(skill_suggest.active() && !skill_candidates.is_empty())
         {
             return Some((text, images));
         }
@@ -115,6 +131,7 @@ impl App {
                 omnicrawl_host::tools::suggestion_lines(&omnicrawl_host::tools::SuggestionInputs {
                     tools: (&suggest, &inventory),
                     subagents: (&subagent_suggest, &subagent_roles),
+                    skills: (&skill_suggest, &skill_candidates),
                     user_prompt: &prompt,
                 });
             let text = omnicrawl_host::tools::insert_suggestions(&prompt, &lines);

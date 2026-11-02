@@ -223,6 +223,9 @@ fn runner_options(root: &Path) -> RunnerOptions {
         // 不做建议：user 原文照发。
         suggest: None,
         subagent_suggest: None,
+        skill_suggest: None,
+        skill_suggest_rerank: None,
+        skill_suggest_pinned: None,
         prompt: None,
     }
 }

@@ -181,6 +181,10 @@ fn runner_with_custody(
         // 不做建议：user 原文照发。
         suggest: None,
         subagent_suggest: None,
+        // 不做 Skill 建议：不扫索引、不发请求。
+        skill_suggest: None,
+        skill_suggest_rerank: None,
+        skill_suggest_pinned: None,
         prompt: None,
     };
     TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成")
@@ -315,6 +319,10 @@ fn runner_with_both_suggestions(
         prune: None,
         suggest: None,
         subagent_suggest: None,
+        // 不做 Skill 建议：不扫索引、不发请求。
+        skill_suggest: None,
+        skill_suggest_rerank: None,
+        skill_suggest_pinned: None,
         prompt: None,
     };
     options.suggest = suggest;
@@ -934,6 +942,97 @@ fn subagent_suggestion_works_without_tool_suggestion() {
     pipe.close();
 }
 
+/// Skill 建议：候选池由测试钉住（不扫本机索引），注入行是「建议使用skills：」。
+///
+/// 这条用例只验宿主侧「候选 → 决策模型 → 注入」这一段；池子的检索与排序在
+/// `decision_suggest` 的单测里覆盖。
+#[test]
+fn skill_suggestion_appends_its_own_line_to_the_user_text() {
+    let (client, recorder, pipe) = kernel();
+    let root = workspace("suggest-skills");
+    let skill_suggest = omnicrawl_host::tools::SuggestOptions {
+        enabled: true,
+        channel: Some(omnicrawl_host::tools::decision_suggest::SuggestChannel {
+            mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
+            model: "jev-latest".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "jv_test".to_string(),
+            retry_count: 0,
+        }),
+        masking: None,
+        client: Arc::new(FixedSuggest {
+            names: vec!["pdf".to_string(), "docx".to_string()],
+            seen: Arc::new(Mutex::new(None)),
+        }),
+    };
+    let mut options = RunnerOptions {
+        workspace_root: root.clone(),
+        model: model(),
+        session: None,
+        approval: ApprovalMode::Manual,
+        command_timeout_seconds: 5,
+        tool_timeout_seconds: 5,
+        attach_vision_images: false,
+        client_name: "omnicrawl-host-test".to_string(),
+        review: None,
+        custody: None,
+        prune: None,
+        suggest: None,
+        subagent_suggest: None,
+        skill_suggest: Some(skill_suggest),
+        skill_suggest_rerank: None,
+        // 候选池直接给：这条用例不碰 Skill 索引。
+        skill_suggest_pinned: Some(vec![
+            ("pdf".to_string(), "处理 PDF 的 Skill".to_string()),
+            ("docx".to_string(), "处理 Word 的 Skill".to_string()),
+        ]),
+        prompt: None,
+    };
+    let mut subject =
+        TurnRunner::new(client, options, &RegistryOptions::default()).expect("工具表应当建成");
+
+    pipe.push(r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}"#);
+    subject.handshake(&mut |_| {}).expect("握手应当成功");
+    pipe.push(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+    pipe.push(
+        r#"{"jsonrpc":"2.0","method":"turn.finished","params":{"turn_id":"turn-1","final_text":"好","reasoning":"","model_turns":1,"tool_calls":0,"paused":false}}"#,
+    );
+
+    let mut interactor = Scripted {
+        approve: true,
+        answer: None,
+        asked: Vec::new(),
+    };
+    subject
+        .submit(
+            "把 pdf 转成文本",
+            &TurnControl::new(),
+            &mut interactor,
+            &mut |_| {},
+        )
+        .expect("回合应当跑完");
+
+    let submitted = recorder
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "把 pdf 转成文本
+
+建议使用skills：pdf、docx。"
+    );
+    pipe.close();
+}
+
 #[test]
 fn cancel_sends_turn_cancel_and_reports_cancelled() {
     let (client, recorder, pipe) = kernel();
@@ -1218,6 +1317,10 @@ fn skill_runner_options(
         prune: None,
         suggest: None,
         subagent_suggest: None,
+        // 不做 Skill 建议：不扫索引、不发请求。
+        skill_suggest: None,
+        skill_suggest_rerank: None,
+        skill_suggest_pinned: None,
         prompt: Some(Arc::new(prompt)),
     }
 }
