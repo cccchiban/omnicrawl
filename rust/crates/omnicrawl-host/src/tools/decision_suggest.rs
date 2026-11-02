@@ -611,8 +611,8 @@ pub fn split_suggestion(text: &str) -> (String, Vec<String>) {
         let line = last.trim();
         if is_suggestion_line(line) {
             suggestions.push(line.to_string());
-        } else if line.starts_with(ATTACHMENT_NOTE_PREFIX) {
-            // 提交路径在建议之后追加附件说明，它会把建议行挡在尾部之外：跳过它继续往前拆。
+        } else if is_attachment_note_line(line) {
+            // 提交路径在建议之后追加图片落盘说明，它会把建议行挡在尾部之外：跳过它继续往前拆。
             notes.push(line.to_string());
         } else {
             break;
@@ -627,8 +627,16 @@ pub fn split_suggestion(text: &str) -> (String, Vec<String>) {
     (body, suggestions)
 }
 
-/// 附件说明的固定前缀（`image_archive` 拼在提问末尾的那一段）。
-const ATTACHMENT_NOTE_PREFIX: &str = "已附图片：";
+/// 图片落盘说明的首行（`image_archive::archive_pasted_images` 拼在提问末尾那一段的开头）。
+const ATTACHMENT_NOTE_HEADER: &str = "粘贴的图片已保存：";
+
+/// 附件说明块里的一行：首行是表头，其余每行是 `[ #n Image ] → 路径`。
+///
+/// 这两类形状都由宿主自己拼上去（见 `omnicrawl_tui::image_archive`），不会与用户正文混淆。
+fn is_attachment_note_line(line: &str) -> bool {
+    line == ATTACHMENT_NOTE_HEADER
+        || (line.starts_with("[ #") && line.contains("] → "))
+}
 
 /// 这一行是不是我们拼上去的建议行。
 fn is_suggestion_line(line: &str) -> bool {
@@ -1251,28 +1259,29 @@ mod tests {
         );
     }
 
-    /// 带图片的提交在建议行之后还追加了附件说明：建议块仍然要拆出来，说明回到正文末尾。
+    /// 带图片的提交在建议行之后还追加了图片落盘说明：建议块仍然要拆出来，说明回到正文末尾。
     ///
-    /// 提交路径的顺序是「建议拼在提问尾部」→「附件说明再拼在其后」，说明会把建议行挡在
-    /// 尾部之外。若不跳过它，Skill 建议就会随带图提问一起从 `user：` 块里消失。
+    /// 提交路径的顺序是「建议拼在提问尾部」→「图片落盘说明再拼在其后」。说明是
+    /// `粘贴的图片已保存：` 加若干 `[ #n Image ] → 路径` 行，它把建议行挡在尾部之外；
+    /// 不跳过它，Skill 建议就会随带图提问一起从 `user：` 块里消失。
     #[test]
     fn the_suggestion_line_survives_the_attachment_note() {
         assert_eq!(
             split_suggestion(
-                "请把这份PDF转成Word文档\n\n建议使用skills：kimi-pdf、kimi-docx。\n\n已附图片：a.png"
+                "请把这份PDF转成Word文档\n\n建议使用skills：kimi-pdf、kimi-docx。\n\n粘贴的图片已保存：\n[ #1 Image ] → .omnicrawl/.agent_tmp/images/pasted_1.png"
             ),
             (
-                "请把这份PDF转成Word文档\n\n已附图片：a.png".to_string(),
+                "请把这份PDF转成Word文档\n\n粘贴的图片已保存：\n[ #1 Image ] → .omnicrawl/.agent_tmp/images/pasted_1.png".to_string(),
                 vec!["建议使用skills：kimi-pdf、kimi-docx。".to_string()]
             )
         );
-        // 三条建议同时命中、后面又带附件说明：三行都拆走，说明保留在正文末尾。
+        // 三条建议同时命中、后面又带两张图的说明：三行都拆走，说明整块保留在正文末尾。
         assert_eq!(
             split_suggestion(
-                "改这个页面\n\n当前请求建议调用tool：bash。\n当前请求建议使用子代理：explore。\n建议使用skills：ui-design。\n\n已附图片：a.png、b.png"
+                "改这个页面\n\n当前请求建议调用tool：bash。\n当前请求建议使用子代理：explore。\n建议使用skills：ui-design。\n\n粘贴的图片已保存：\n[ #1 Image ] → a.png\n[ #2 Image ] → b.png"
             ),
             (
-                "改这个页面\n\n已附图片：a.png、b.png".to_string(),
+                "改这个页面\n\n粘贴的图片已保存：\n[ #1 Image ] → a.png\n[ #2 Image ] → b.png".to_string(),
                 vec![
                     "当前请求建议调用tool：bash。".to_string(),
                     "当前请求建议使用子代理：explore。".to_string(),
@@ -1280,10 +1289,13 @@ mod tests {
                 ]
             )
         );
-        // 只有附件说明、没有建议：整段照旧当正文，说明不被吞掉。
+        // 只有说明、没有建议：整段照旧当正文，说明不被吞掉。
         assert_eq!(
-            split_suggestion("看这张图\n\n已附图片：a.png"),
-            ("看这张图\n\n已附图片：a.png".to_string(), Vec::new())
+            split_suggestion("看这张图\n\n粘贴的图片已保存：\n[ #1 Image ] → a.png"),
+            (
+                "看这张图\n\n粘贴的图片已保存：\n[ #1 Image ] → a.png".to_string(),
+                Vec::new()
+            )
         );
     }
 
