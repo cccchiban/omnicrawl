@@ -341,6 +341,12 @@ impl AgentDriver for MockDriver {
                             answer.unwrap_or_default()
                         )));
                     }
+                    "hold" => {
+                        // 人为拖住这一轮，让后续消息有机会在「忙碌」窗口里进来。
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            step["ms"].as_u64().unwrap_or(0),
+                        ));
+                    }
                     "todos" => {
                         events(TurnEvent::TodoUpdate {
                             todos: step["todos"].clone(),
@@ -469,11 +475,17 @@ fn task_reply_acknowledges_then_sends_the_answer() {
     let mut sorted = seqs.clone();
     sorted.sort_unstable();
     assert_eq!(seqs, sorted, "msg_seq 必须递增：{seqs:?}");
+    // 「已收到任务」回执已移除：入站消息不带来任何确认消息，直接给最终回答。
     assert!(
-        port.contents()
+        !port
+            .contents()
             .iter()
-            .any(|text| text.contains("已收到任务")),
-        "{calls:?}"
+            .any(|text| text.contains("已收到任务") || text.contains("开始执行")),
+        "不应再有开工回执：{calls:?}"
+    );
+    assert!(
+        calls.len() == 1,
+        "即时执行时只发最终回答，一条就够：{calls:?}"
     );
     assert_eq!(calls[0].0, Target::User("F6A8".to_string()));
 }
@@ -509,8 +521,8 @@ fn text_before_and_after_a_tool_are_separate_messages() {
         "{contents:?}"
     );
     assert!(
-        contents.iter().any(|text| text.contains("● list")),
-        "工具调用应出现在进度消息里：{contents:?}"
+        !contents.iter().any(|text| text.contains("● list")),
+        "工具调用不应再作为进度下发：{contents:?}"
     );
     assert!(
         !contents
@@ -559,7 +571,7 @@ fn the_last_answer_segment_is_not_sent_twice() {
 }
 
 #[test]
-fn tools_are_merged_into_a_single_progress_message() {
+fn tool_calls_never_reach_the_chat() {
     let driver = Arc::new(MockDriver::default());
     let port = Arc::new(MockPort::default());
     let bot = bot_with(driver.clone(), port.clone());
@@ -586,14 +598,12 @@ fn tools_are_merged_into_a_single_progress_message() {
     });
 
     let contents = port.contents();
-    let progress = contents
-        .iter()
-        .find(|text| text.contains("● bash") && text.matches("● bash").count() > 1);
+    // 工具调用不再下发：这段用例原本验「三次调用合并成一条进度」，现在改为验「一次都不发」。
     assert!(
-        progress.is_some(),
-        "三次工具调用应合并成一条进度消息：{contents:?}"
+        !contents.iter().any(|text| text.contains("● bash")),
+        "工具调用不应出现在任何消息里：{contents:?}"
     );
-    // 不能编辑，因此每次下发都是一条新消息：合并才让额度够用（单聊 4 条）。
+    // 不能编辑，因此每次下发都是一条新消息：少了进度消息后额度更宽裕（单聊 4 条）。
     assert!(
         port.calls().len() <= 4,
         "总下发条数不能超出额度：{contents:?}"
@@ -864,6 +874,7 @@ fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() 
     });
 
     let contents = port.contents();
+    // 没有回执后，单聊 4 条额度全给正文段与最终回答：3 条中间 + 1 条最终。
     assert_eq!(contents.len(), 4, "总下发条数必须是 4：{contents:?}");
     assert_eq!(
         contents.last().map(String::as_str),
@@ -871,23 +882,25 @@ fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() 
         "第 4 条必须是最终文本：{contents:?}"
     );
     let intermediate = &contents[..3];
-    assert_eq!(
-        intermediate[0], "✅ 已收到任务，开始执行（/cancel 可取消）。",
-        "{contents:?}"
+    assert!(
+        !intermediate
+            .iter()
+            .any(|text| text.contains("已收到任务") || text.contains("开始执行")),
+        "不应再有开工回执占额度：{contents:?}"
     );
     assert_eq!(
         intermediate
             .iter()
             .filter(|text| text.starts_with("◇"))
             .count(),
-        2,
-        "回执占 1 条，正文段最多再占 2 条：{contents:?}"
+        3,
+        "没有回执后正文段可以占满 3 条中间额度：{contents:?}"
     );
     assert!(
         !intermediate
             .iter()
-            .any(|text| text.contains("第 2 段") || text.contains("第 3 段")),
-        "中间额度用尽后不能再发正文或进度：{contents:?}"
+            .any(|text| text.contains("第 3 段") || text.contains("第 4 段")),
+        "中间额度用尽后不能再发正文：{contents:?}"
     );
 }
 
@@ -917,14 +930,17 @@ fn markdown_content_goes_out_as_msg_type_2() {
         })
         .expect("应有一条 Markdown 消息");
     assert!(markdown.contains("- **第二步**完成"), "{markdown}");
-    // 回执这种纯文本不能被当成 Markdown 发。
-    assert!(calls.iter().any(|(_t, message, _m, _s)| matches!(
-        message,
-        Msg::Text {
-            content,
-            markdown: false
-        } if content.contains("已收到任务")
-    )));
+    // 纯文本正文不能被当成 Markdown 发；这里顺带确认没有回执被打成 Markdown。
+    assert!(
+        !calls.iter().any(|(_t, message, _m, _s)| matches!(
+            message,
+            Msg::Text {
+                content,
+                markdown: true
+            } if content.contains("已收到任务")
+        )),
+        "不应再出现开工回执"
+    );
 }
 
 #[test]
@@ -1114,8 +1130,8 @@ fn tool_output_is_not_sent_to_the_user() {
 
     let contents = port.contents();
     assert!(
-        contents.iter().any(|text| text.contains("● bash")),
-        "进度消息里仍应有这次调用：{contents:?}"
+        !contents.iter().any(|text| text.contains("● bash")),
+        "工具调用不再下发：{contents:?}"
     );
     assert!(
         !contents
@@ -1126,7 +1142,7 @@ fn tool_output_is_not_sent_to_the_user() {
 }
 
 #[test]
-fn progress_lines_stay_single_line_per_tool() {
+fn a_tool_only_turn_sends_nothing_but_the_answer() {
     let driver = Arc::new(MockDriver::default());
     let port = Arc::new(MockPort::default());
     let bot = bot_with(driver.clone(), port.clone());
@@ -1145,16 +1161,9 @@ fn progress_lines_stay_single_line_per_tool() {
     wait_for(5.0, || {
         port.contents().iter().any(|text| text.contains("找完了"))
     });
-    let progress = port
-        .contents()
-        .into_iter()
-        .find(|text| text.contains("● grep"))
-        .expect("应有工具进度行");
-    assert_eq!(
-        progress.lines().count(),
-        1,
-        "每次工具调用只占一行：{progress:?}"
-    );
+    let contents = port.contents();
+    // 整轮只有工具调用、没有正文：端上只应看到最终回答这一条。
+    assert_eq!(contents, vec!["找完了。".to_string()], "{contents:?}");
 }
 
 #[test]
@@ -1330,6 +1339,239 @@ fn the_final_answer_quotes_the_message_while_progress_does_not() {
             .all(|(index, reference)| index == final_index || reference.is_empty()),
         "过程消息不应带引用：{references:?} / {contents:?}"
     );
+}
+
+#[test]
+fn a_second_message_is_queued_instead_of_rejected() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    // 第一轮先拖住，让第二条消息在「忙碌」窗口里进来。
+    driver.set_script(json!({
+        "events": [{"kind": "hold", "ms": 250}],
+        "reply": "第一条做完了。",
+    }));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第一条", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    // 此时第一轮还在跑：这条应当入队，而不是被一句「请等待」顶回去。
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第二条", "m-2"),
+    );
+    let queued = port.contents();
+    assert!(
+        queued.iter().any(|text| text.contains("已加入队列")),
+        "忙碌时应当回一条排队回执：{queued:?}"
+    );
+    assert!(
+        !queued
+            .iter()
+            .any(|text| text.contains("当前已有任务正在执行")),
+        "不应再拒绝：{queued:?}"
+    );
+
+    // 第一轮结束后自动接着跑第二条，用户不必重发。
+    driver.set_script(json!({"reply": "第二条也做完了。"}));
+    wait_for(5.0, || driver.turns().len() == 2);
+    wait_for(5.0, || {
+        port.contents()
+            .iter()
+            .any(|text| text.contains("第二条也做完了"))
+    });
+    let turns = driver.turns();
+    assert_eq!(turns.len(), 2, "两条都应跑过：{turns:?}");
+    assert!(turns[0].contains("第一条"), "{turns:?}");
+    assert!(turns[1].contains("第二条"), "{turns:?}");
+}
+
+#[test]
+fn three_queued_messages_run_in_arrival_order() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({
+        "events": [{"kind": "hold", "ms": 200}],
+        "reply": "第一条完成。",
+    }));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第一条", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    // 第一轮还在跑：后面两条都进队，且排位递增。
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第二条", "m-2"),
+    );
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第三条", "m-3"),
+    );
+    let receipts: Vec<String> = port
+        .contents()
+        .into_iter()
+        .filter(|text| text.contains("已加入队列"))
+        .collect();
+    assert_eq!(receipts.len(), 2, "两条都该收到排队回执：{receipts:?}");
+    assert!(receipts[0].contains("前面还有 1 条"), "{receipts:?}");
+    assert!(receipts[1].contains("前面还有 2 条"), "{receipts:?}");
+
+    driver.set_script(json!({"reply": "后续完成。"}));
+    wait_for(10.0, || driver.turns().len() == 3);
+    let turns = driver.turns();
+    assert_eq!(turns.len(), 3, "三条都要跑到：{turns:?}");
+    // 先进先出：顺序不能乱。
+    assert!(turns[0].contains("第一条"), "{turns:?}");
+    assert!(turns[1].contains("第二条"), "{turns:?}");
+    assert!(turns[2].contains("第三条"), "{turns:?}");
+}
+
+#[test]
+fn a_queued_task_still_answers_its_own_sender() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({
+        "events": [{"kind": "hold", "ms": 250}],
+        "reply": "甲的事办完了。",
+    }));
+    // 同一会话里连续两条提问：第二条排队，答复必须分别回到各自的入站消息上。
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "甲的问题", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "乙的问题", "m-2"),
+    );
+    driver.set_script(json!({"reply": "乙的事也办完了。"}));
+    wait_for(5.0, || driver.turns().len() == 2);
+    wait_for(5.0, || {
+        port.contents()
+            .iter()
+            .any(|text| text.contains("乙的事也办完了"))
+    });
+
+    // 每一条下发都必须回给它自己触发的那条入站消息（msg_id 各不相同）。
+    let calls = port.calls();
+    let answered_by = |needle: &str| -> Vec<String> {
+        calls
+            .iter()
+            .filter(|(_t, message, _m, _s)| match message {
+                Msg::Text { content, .. } => content.contains(needle),
+                Msg::Media { name, .. } => name.contains(needle),
+            })
+            .map(|(_t, _m, msg_id, _s)| msg_id.clone())
+            .collect()
+    };
+    assert!(
+        answered_by("甲的事办完了").iter().all(|id| id == "m-1"),
+        "甲的答复只能回 m-1：{:?}",
+        answered_by("甲的事办完了")
+    );
+    assert!(
+        answered_by("乙的事办完了").iter().all(|id| id == "m-2"),
+        "乙的答复只能回 m-2：{:?}",
+        answered_by("乙的事办完了")
+    );
+}
+
+#[test]
+fn a_queued_task_quotes_the_asker_so_replies_do_not_mix() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({
+        "events": [{"kind": "hold", "ms": 250}],
+        "reply": "先处理第一条。",
+    }));
+    // 第一条带引用即时执行；第二条不带引用、排队进来。
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &quoting("F6A8", "第一条", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第二条", "m-2"),
+    );
+    driver.set_script(json!({"reply": "再处理第二条。"}));
+    wait_for(5.0, || driver.turns().len() == 2);
+    wait_for(5.0, || {
+        port.contents()
+            .iter()
+            .any(|text| text.contains("再处理第二条"))
+    });
+
+    // 带引用的入站才有 msg_idx：这里第二条没有，于是它不该凭空带上引用；
+    // 关键是**每条下发都只回它自己的消息**，且引用来路正确。
+    let calls = port.calls();
+    let second = calls
+        .iter()
+        .filter(|(_t, message, msg_id, _s)| {
+            msg_id == "m-2"
+                && matches!(message, Msg::Text { content, .. } if content.contains("第二条"))
+        })
+        .count();
+    assert!(second >= 1, "第二条应当有自己的答复：{:?}", port.contents());
+}
+
+#[test]
+fn a_queued_task_with_a_reference_quotes_every_message_it_sends() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = bot_with(driver.clone(), port.clone());
+    driver.set_script(json!({
+        "events": [{"kind": "hold", "ms": 250}],
+        "reply": "先处理第一条。",
+    }));
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &c2c("F6A8", "第一条", "m-1"),
+    );
+    wait_for(5.0, || driver.turns().len() == 1);
+    // 第二条是带引用的提问，且会排队：它的过程消息与最终回答都要挂上引用。
+    bot.handle_event(
+        omnicrawl_connectors::qqbot::EVENT_C2C_MESSAGE,
+        &quoting("F6A8", "第二条", "m-2"),
+    );
+    driver.set_script(json!({
+        "events": [{"kind": "delta", "text": "先看目录。"}],
+        "reply": "再处理第二条。",
+    }));
+    wait_for(5.0, || driver.turns().len() == 2);
+    wait_for(5.0, || {
+        port.contents()
+            .iter()
+            .any(|text| text.contains("再处理第二条"))
+    });
+
+    let calls = port.calls();
+    let references = port.references();
+    assert_eq!(calls.len(), references.len(), "每次下发都该有一条引用记录");
+    // 凡是回 m-2 的**任务内**下发（排队回执 + 过程段 + 最终回答）都必须带同一个引用。
+    // 附件回执在起任务之前就发了、那时还谈不上排队，因此允许为空。
+    let contents = port.contents();
+    let mut quoted = 0;
+    for (index, (_target, _message, msg_id, _seq)) in calls.iter().enumerate() {
+        if msg_id != "m-2" {
+            continue;
+        }
+        let content = &contents[index];
+        if content.contains("个附件") {
+            continue;
+        }
+        assert_eq!(
+            references[index], "REFIDX_self==",
+            "排队任务的每条下发都该引用提问者那条消息：{references:?} / {contents:?}"
+        );
+        quoted += 1;
+    }
+    assert!(quoted >= 2, "排队回执与最终回答都该回 m-2：{quoted}");
 }
 
 #[test]

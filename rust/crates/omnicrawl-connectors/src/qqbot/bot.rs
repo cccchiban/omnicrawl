@@ -18,6 +18,7 @@
 //! 回复里的 `[FILE:路径]` 标记转成 `msg_type=7` 富媒体。
 
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
@@ -43,9 +44,8 @@ use crate::agent::{
     AgentDriver, AskUserHandler, ConfirmHandler, ToolCall, ToolResult, TurnError, TurnEvent,
 };
 use crate::render::{
-    normalize_todos, operation_of, reasoning_body, subagents_text, todos_text, tool_status_icon,
-    tool_summary, SubagentNode, ASK_USER_TOOL_NAME, SUBAGENT_EVENT_STATUS,
-    SUBAGENT_TERMINAL_STATUSES, TODO_TOOL_NAME,
+    normalize_todos, operation_of, reasoning_body, subagents_text, todos_text, SubagentNode,
+    ASK_USER_TOOL_NAME, SUBAGENT_EVENT_STATUS, SUBAGENT_TERMINAL_STATUSES, TODO_TOOL_NAME,
 };
 use crate::text::{clean_text, resolve_final_text};
 
@@ -60,9 +60,6 @@ const MAX_BACKOFF_SECONDS: f64 = 30.0;
 
 /// 确认提示里参数 JSON 的最大长度。
 const CONFIRM_ARGUMENTS_LIMIT: usize = 1200;
-
-/// 进度段最多列出的工具条目数。
-const MAX_PROGRESS_TOOLS: usize = 12;
 
 /// 简洁回复模式的模式标识（与主 Agent 模板 `templates/speaking-style.md` 同名）。
 const SPEAKING_STYLE_MODE: &str = "speaking-style";
@@ -159,8 +156,15 @@ pub struct ReplyHandle {
     pub target: Target,
     /// 触发本次回复的入站消息 ID。
     pub msg_id: String,
-    /// 最终回答要挂的引用（`message_scene.ext` 的 `msg_idx`）：过程消息不带引用。
+    /// 最终回答要挂的引用（`message_scene.ext` 的 `msg_idx`）：过程消息默认不带引用。
     reference: String,
+    /// 是否让**过程消息也带引用**。
+    ///
+    /// 排队场景必须开：同一会话里可能同时堆着几条提问，后台任务先后跑完，过程消息若不引用，
+    /// 用户分不清这条进度属于谁的哪一句。即时执行（没有排队）时保持关闭，过程消息照旧干净。
+    ///
+    /// 用原子量而不是 `bool`：句柄以 `Arc` 形式在队列里传递，入队时只能就地改这一位。
+    quote_intermediate: AtomicBool,
     seq: AtomicI64,
     slots_left: AtomicUsize,
     intermediate_left: AtomicUsize,
@@ -174,6 +178,7 @@ impl ReplyHandle {
             target,
             msg_id: msg_id.to_string(),
             reference: String::new(),
+            quote_intermediate: AtomicBool::new(false),
             seq: AtomicI64::new(1),
             slots_left: AtomicUsize::new(total),
             intermediate_left: AtomicUsize::new(total - 1),
@@ -184,6 +189,22 @@ impl ReplyHandle {
     pub fn with_reference(mut self, reference: &str) -> ReplyHandle {
         self.reference = reference.to_string();
         self
+    }
+
+    /// 让过程消息也带上引用：排队执行时用，避免几条提问的过程消息混在一起。
+    pub fn with_intermediate_quote(self, quote: bool) -> ReplyHandle {
+        self.quote_intermediate.store(quote, Ordering::SeqCst);
+        self
+    }
+
+    /// 就地打开过程消息的引用（句柄已在 `Arc` 里、无法再走链式构造时用）。
+    pub fn quote_intermediate_in_place(&self, quote: bool) {
+        self.quote_intermediate.store(quote, Ordering::SeqCst);
+    }
+
+    /// 过程消息是否需要引用。
+    fn quotes_intermediate(&self) -> bool {
+        self.quote_intermediate.load(Ordering::SeqCst) && !self.reference.is_empty()
     }
 
     /// 剩余总额度。
@@ -204,9 +225,10 @@ impl ReplyHandle {
     /// 发一段中间内容（正文段、进度、思考）：占中间额度。
     ///
     /// 返回实际发出的条数；`0` 表示额度已用尽或平台报错。内容里的 Markdown 语法走
-    /// `msg_type=2`，`[FILE:…]` 标记转成富媒体。
+    /// `msg_type=2`，`[FILE:…]` 标记转成富媒体。排队执行时同一段会挂上对用户那条消息的引用
+    /// （见 [`ReplyHandle::with_intermediate_quote`]），即时执行时不挂。
     pub fn send_intermediate(&self, text: &str) -> usize {
-        self.send_parts(text, true, false)
+        self.send_parts(text, true, self.quotes_intermediate())
     }
 
     /// 发最终回答：只受总额度约束（最多两段，末段写满即止），并挂上对用户那条消息的引用。
@@ -214,9 +236,10 @@ impl ReplyHandle {
         self.send_parts(text, false, true)
     }
 
-    /// 发过程提示（回执、附件通知等）：额度口径同最终回答，但不挂引用。
+    /// 发过程提示（排队回执、附件通知等）：额度口径同最终回答，默认不挂引用；
+    /// 排队执行时与过程消息一致地挂上引用（[`ReplyHandle::quotes_intermediate`]）。
     pub fn send_notice(&self, text: &str) -> usize {
-        self.send_parts(text, false, false)
+        self.send_parts(text, false, self.quotes_intermediate())
     }
 
     /// 按上限切段并逐段下发（富媒体标记先摘出来单独发）。
@@ -522,11 +545,23 @@ pub struct ActiveTask {
     pub cancel: Arc<AtomicBool>,
     pub started_at: Instant,
     running: Arc<AtomicBool>,
+    /// 入队序号：>0 表示这条任务是排队进来的（不是到来即执行）。
+    pub queued: u64,
+}
+
+/// 排队等待执行的任务。
+pub struct QueuedTask {
+    pub inbound: Inbound,
+    pub reply: Arc<ReplyHandle>,
 }
 
 #[derive(Default)]
 struct BotState {
     active: Option<Arc<ActiveTask>>,
+    /// 等待执行的任务（先进先出）。忙碌时新消息进这里，而不是被拒绝。
+    queue: VecDeque<QueuedTask>,
+    /// 入队计数：只用于给任务编号、判断「这条是不是排队进来的」。
+    queued_total: u64,
     pending: Option<Arc<PendingConfirm>>,
     question: Option<Arc<PendingQuestion>>,
 }
@@ -958,38 +993,93 @@ impl<D: AgentDriver> QqBot<D> {
         .with_reference(&inbound.ref_idx)
     }
 
-    /// 单活动校验后，在后台线程执行 Agent 任务。
+    /// 单活动校验后，在后台线程执行 Agent 任务；已有任务在跑时改为**排队**。
+    ///
+    /// 排队而不是拒绝：QQ 这边一次问一句很常见，直接回一句「请等」会把用户的话丢掉。
+    /// 入队后当前任务一结束就自动接着跑，用户不必重发。队伍的推进全部发生在本函数与
+    /// [`QqBot::execute_task`] 的收尾里，都在同一把状态锁下改 `active`/`queue`。
     pub fn start_task(self: &Arc<Self>, inbound: Inbound, reply: Arc<ReplyHandle>) {
-        {
-            let mut state = self.state.lock().expect("状态锁中毒");
-            if let Some(active) = state.active.clone() {
-                if active.running.load(Ordering::SeqCst) {
-                    drop(state);
-                    reply.send_final("🔄 当前已有任务正在执行，请等待完成或发送 /cancel 取消。");
-                    return;
-                }
-            }
-            let task = Arc::new(ActiveTask {
-                sender: inbound.sender.clone(),
-                text: task_text_of(&inbound),
+        let mut state = self.state.lock().expect("状态锁中毒");
+        let busy = state
+            .active
+            .as_ref()
+            .map(|task| task.running.load(Ordering::SeqCst))
+            .unwrap_or(false);
+        if busy {
+            state.queued_total += 1;
+            let position = state.queue.len() + 1;
+            // 排队后这条提问的过程消息与最终回答都要挂引用：同一会话里可能堆着几条，
+            // 不引用就分不清哪条进度、哪句回答属于谁的提问。
+            reply.quote_intermediate_in_place(true);
+            state.queue.push_back(QueuedTask {
+                inbound,
                 reply: Arc::clone(&reply),
-                cancel: Arc::new(AtomicBool::new(false)),
-                started_at: Instant::now(),
-                running: Arc::new(AtomicBool::new(true)),
             });
-            state.active = Some(Arc::clone(&task));
-            let bot = self.clone();
-            let spawned = thread::Builder::new()
-                .name("omnicrawl-qqbot-task".to_string())
-                .spawn(move || bot.execute_task(task));
-            if let Err(error) = spawned {
+            drop(state);
+            eprintln!("[qqbot] 已有任务在跑，新消息排队（第 {position} 位）。");
+            // 只报「已排队、排在第几位」：既不说「开始执行」（它还没开始），也带上引用，
+            // 让用户一眼认出这条回执对应的是自己哪句话。
+            reply.send_notice(&format!("🕒 已加入队列（前面还有 {position} 条），轮到后自动开始。"));
+            return;
+        }
+        state.queued_total = 0;
+        let _ = self.spawn_task_locked(&mut state, inbound, reply, 0);
+    }
+
+    /// 在已持锁的状态上起一个任务线程（`start_task` 与队首推进共用）。
+    fn spawn_task_locked(
+        self: &Arc<Self>,
+        state: &mut BotState,
+        inbound: Inbound,
+        reply: Arc<ReplyHandle>,
+        queued: u64,
+    ) -> bool {
+        let task = Arc::new(ActiveTask {
+            sender: inbound.sender.clone(),
+            text: task_text_of(&inbound),
+            reply: Arc::clone(&reply),
+            cancel: Arc::new(AtomicBool::new(false)),
+            started_at: Instant::now(),
+            running: Arc::new(AtomicBool::new(true)),
+            queued,
+        });
+        state.active = Some(Arc::clone(&task));
+        let bot = self.clone();
+        let spawned = thread::Builder::new()
+            .name("omnicrawl-qqbot-task".to_string())
+            .spawn(move || bot.execute_task(task));
+        match spawned {
+            Ok(_) => true,
+            Err(error) => {
                 eprintln!("[qqbot] 任务线程启动失败：{error}");
-                self.state.lock().expect("状态锁中毒").active = None;
+                state.active = None;
                 reply.send_final("❌ 任务线程启动失败。");
-                return;
+                false
             }
         }
-        reply.send_intermediate("✅ 已收到任务，开始执行（/cancel 可取消）。");
+    }
+
+    /// 当前任务结束后推进队伍：把队首变成新任务接着跑。
+    ///
+    /// 返回 `true` 表示确实又起了一个任务；`false` 表示队伍空、可以安静收尾。
+    ///
+    /// 队首起线程失败时继续推进下一条：否则 `active` 已清空、队列却没人接着跑，
+    /// 后面排着的消息会永久滞留。
+    fn advance_queue(self: &Arc<Self>) -> bool {
+        loop {
+            let mut state = self.state.lock().expect("状态锁中毒");
+            let Some(QueuedTask { inbound, reply }) = state.queue.pop_front() else {
+                return false;
+            };
+            let queued = state.queued_total;
+            let started = self.spawn_task_locked(&mut state, inbound, reply, queued);
+            drop(state);
+            if started {
+                return true;
+            }
+            // 失败已经发过提示消息，接着试下一条，避免整条队列卡死。
+            eprintln!("[qqbot] 队首任务启动失败，继续推进下一条。");
+        }
     }
 
     /// 任务线程：驱动回合，并把事件映射成按发生顺序发出的消息。
@@ -1002,15 +1092,19 @@ impl<D: AgentDriver> QqBot<D> {
         let cancelled = task.cancel.load(Ordering::SeqCst);
         self.finish_task(task.as_ref(), &mut timeline, result, cancelled);
         task.running.store(false, Ordering::SeqCst);
-        let mut state = self.state.lock().expect("状态锁中毒");
-        let same = state
-            .active
-            .as_ref()
-            .map(|active| Arc::ptr_eq(active, &task))
-            .unwrap_or(false);
-        if same {
-            state.active = None;
+        {
+            let mut state = self.state.lock().expect("状态锁中毒");
+            let same = state
+                .active
+                .as_ref()
+                .map(|active| Arc::ptr_eq(active, &task))
+                .unwrap_or(false);
+            if same {
+                state.active = None;
+            }
         }
+        // 有排队的话立刻接着跑，用户不必重发。
+        self.advance_queue();
     }
 
     fn finish_task(
@@ -1108,6 +1202,14 @@ impl<D: AgentDriver> QqBot<D> {
             }
         }
         reply.send_final("⏹ 已请求取消当前任务，请稍候……");
+        // 队列里还有任务时要说清楚：取消只停当前这条，剩下的会接着跑。
+        let waiting = {
+            let state = self.state.lock().expect("状态锁中毒");
+            state.queue.len()
+        };
+        if waiting > 0 {
+            reply.send_notice(&format!("队列里还有 {waiting} 条会继续执行。"));
+        }
     }
 
     fn handle_thinking(self: &Arc<Self>, text: &str, reply: &ReplyHandle) {
@@ -1340,6 +1442,9 @@ impl<D: AgentDriver> QqBot<D> {
                     task.started_at.elapsed().as_secs()
                 ));
             }
+            if !state.queue.is_empty() {
+                lines.push(format!("排队等待：{} 条", state.queue.len()));
+            }
         }
         lines.join("\n")
     }
@@ -1513,7 +1618,6 @@ struct TaskTimeline<'a, D: AgentDriver> {
     deltas: String,
     all_deltas: String,
     reasoning: String,
-    pending_tools: Vec<String>,
     todos: Vec<(String, bool)>,
     subagent_order: Vec<String>,
     subagent_nodes: BTreeMap<String, SubagentNode>,
@@ -1530,7 +1634,6 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
             deltas: String::new(),
             all_deltas: String::new(),
             reasoning: String::new(),
-            pending_tools: Vec::new(),
             todos: Vec::new(),
             subagent_order: Vec::new(),
             subagent_nodes: BTreeMap::new(),
@@ -1565,29 +1668,20 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
         }
     }
 
+    /// 工具调用不再作为进度下发：只保留正文段，端上不显示「调用了什么、成功与否」。
+    ///
+    /// 仍然要在工具边界把正文封口——模型往往「先说一句 → 调工具 → 再说一句」，
+    /// 不封口就会把两段话粘成一句，用户看不出中间停过。
     fn on_tool_start(&mut self, call: &ToolCall) {
         let operation = operation_of(&call.name);
         if operation == ASK_USER_TOOL_NAME || operation == TODO_TOOL_NAME {
             return;
         }
-        // 工具调用是正文段边界：先把已经说出口的话封口。
         self.flush_text();
     }
 
-    fn on_tool_result(&mut self, call: &ToolCall, result: &ToolResult) {
-        let operation = operation_of(&call.name);
-        if operation == ASK_USER_TOOL_NAME || operation == TODO_TOOL_NAME {
-            return;
-        }
-        // 进度消息只报「调用了什么、结果如何」，工具输出本身不下发。
-        let status = if result.ok { "成功" } else { "失败" };
-        let summary = tool_summary(&call.name, &call.arguments, &result.output);
-        self.pending_tools.push(format!(
-            "● {} · {} {status}",
-            redact_sensitive_text(&summary),
-            tool_status_icon(status)
-        ));
-    }
+    /// 工具结果不参与显示（`pending_tools` 已不再收集），这里只做清理。
+    fn on_tool_result(&mut self, _call: &ToolCall, _result: &ToolResult) {}
 
     fn on_subagent(&mut self, name: &str, payload: &Value) {
         let status = SUBAGENT_EVENT_STATUS
@@ -1664,28 +1758,11 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
         }
     }
 
-    /// 发一段合并后的进度：工具记录、执行计划与子任务树各一条。
+    /// 发一段合并后的进度：执行计划与子任务树各一条。
     ///
-    /// 中间额度用尽后这里什么都不发（攒着的内容直接丢弃），把最后一条留给最终文本。
+    /// 工具调用不再出现在这里（端上不显示调用了什么）。中间额度用尽后什么都不发
+    /// （攒着的内容直接丢弃），把最后一条留给最终文本。
     fn flush_progress(&mut self) {
-        if !self.pending_tools.is_empty() {
-            let total = self.pending_tools.len();
-            let mut lines: Vec<String> = self
-                .pending_tools
-                .iter()
-                .take(MAX_PROGRESS_TOOLS)
-                .cloned()
-                .collect();
-            if total > MAX_PROGRESS_TOOLS {
-                lines.push(format!("…另有 {} 次工具调用", total - MAX_PROGRESS_TOOLS));
-            }
-            self.pending_tools.clear();
-            if self.reply.can_send_intermediate()
-                && self.reply.send_intermediate(&lines.join("\n")) > 0
-            {
-                self.sent_any = true;
-            }
-        }
         if !self.todos.is_empty() {
             let text = todos_text(&self.todos);
             if self.reply.can_send_intermediate() && self.reply.send_intermediate(&text) > 0 {
