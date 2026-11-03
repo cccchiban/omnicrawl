@@ -58,7 +58,7 @@ pub use memory::{
 pub use memory_ranking::{
     classify_storage_directory, directories_overlap, directory_match_score, extract_search_tokens,
     local_now, make_summary, merge_memory_content, normalize_for_compare, score_related_entry,
-    score_search_entry, text_similarity, DEFAULT_STORAGE_DIRECTORIES,
+    score_search_entry, text_similarity, MemoryScorer, SearchQuery, DEFAULT_STORAGE_DIRECTORIES,
 };
 pub use memory_store::{
     migrate_legacy_memory, MemoryMigrationResult, MemoryRecord, MemorySearchResult, MemoryStore,
@@ -82,8 +82,8 @@ pub use projection::{
     format_tool_result_content, function_tool_call, interrupted_tool_result_message,
     recover_run_guard_state, session_title_from_events, tool_result_message,
     tool_result_output_text, user_message_with_images, CANCELLED_TURN_DEFAULT_SUMMARY,
-    INTERRUPTED_TOOL_RESULT_TEXT, RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX,
-    TOOL_RESULT_CONTEXT_PREFIX, TURN_UNDONE_EVENT_TYPE,
+    INTERRUPTED_TOOL_RESULT_TEXT, INTERRUPTED_TURN_DEFAULT_SUMMARY, RUN_GUARD_TODO_TOOL_NAME,
+    TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX, TURN_UNDONE_EVENT_TYPE,
 };
 pub use prompt_history::{
     clean_prompt_display, PromptHistoryEntry, PromptHistoryStore, MAX_PROMPT_HISTORY_DISPLAY_CHARS,

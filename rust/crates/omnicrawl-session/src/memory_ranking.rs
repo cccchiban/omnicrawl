@@ -6,7 +6,7 @@
 //! 这里包含 `text_similarity`：Python 用 `difflib.SequenceMatcher.ratio()` 的
 //! Ratcliff-Obershelp 匹配判断近似重复，本模块按同一算法（含 autojunk 规则）逐位复刻。
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset, Local};
 
@@ -229,44 +229,295 @@ pub fn extract_search_tokens(text: &str) -> BTreeSet<String> {
 }
 
 /// 计算搜索候选分；`now` 可注入，便于对照测试。
+///
+/// 单条打分只是 `MemoryScorer` 的薄封装，批量检索走后者（语料统计只做一次）。
 pub fn score_search_entry(
     entry: &MemoryIndexEntry,
     query: &str,
     candidate_directories: &[String],
     now: DateTime<FixedOffset>,
 ) -> f64 {
-    let mut score = 0.0;
-    let haystack = format!(
+    let scorer = MemoryScorer::new(std::slice::from_ref(entry));
+    scorer.score(entry, &SearchQuery::new(query), candidate_directories, now)
+}
+
+/// BM25+ 的 TF 下界（Lv & Zhai, CIKM'11）。BM25 的长度归一会把长文档里命中项的
+/// 贡献压到接近 0，导致「命中的长文档」反而不如「没命中的短文档」值得排前面；
+/// 补一个下界 δ 让命中项本身就有正贡献。
+const BM25PLUS_DELTA: f64 = 1.0;
+/// 词频饱和参数（Lucene 默认）。
+const BIT_K1: f64 = 1.2;
+/// 长度归一强度（Lucene 默认）。
+const BIT_B: f64 = 0.75;
+
+/// 一条记忆被拆成哪些字段参与检索，以及各自权重。
+///
+/// 摘要最能说明这条记忆讲什么；存储目录是粗分类，关联目录是关系网，二者都只在
+/// 措辞对上时才可信，所以权重更低。逐字段权重叠在同一份词表上，
+/// 等价于 BM25F 的多字段加权 TF。
+const SEARCH_FIELDS: [f64; 3] = [1.0, 0.5, 0.3];
+/// BM25+ 词项分到最终分的放大倍数，让正文相关度明显压过目录与新鲜度偏置。
+const RELEVANCE_WEIGHT: f64 = 10.0;
+/// 目录命中在最终分里的权重。
+const DIRECTORY_WEIGHT: f64 = 3.0;
+/// 整个查询原文出现在候选文本里时的乘性加成。
+const PHRASE_BOOST: f64 = 0.25;
+/// 使用次数与新鲜度的偏置上限：只做同分附近的微调，不盖过相关度。
+const USAGE_BOOST: f64 = 0.02;
+const FRESHNESS_BOOST: f64 = 0.05;
+
+/// 一次检索的查询：分词与原件只在这里算一次。
+pub struct SearchQuery {
+    tokens: Vec<String>,
+    /// 去重后的查询词：打分只按词项遍历一次，重复词不该重复加分。
+    unique: Vec<String>,
+    lowered: String,
+}
+
+impl SearchQuery {
+    pub fn new(query: &str) -> Self {
+        let lowered = query.trim().to_lowercase();
+        let tokens = search_tokens(&lowered);
+        let mut seen: HashSet<&str> = HashSet::new();
+        let unique: Vec<String> = tokens
+            .iter()
+            .filter(|token| seen.insert(token.as_str()))
+            .cloned()
+            .collect();
+        Self {
+            tokens,
+            unique,
+            lowered,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty() && self.lowered.is_empty()
+    }
+}
+
+/// 一条候选的字段加权词频与加权长度。
+#[derive(Debug, Clone)]
+pub struct DocumentProfile {
+    frequencies: HashMap<String, f64>,
+    weighted_length: f64,
+}
+
+/// 批量打分器：语料统计（文档频率、平均长度）只算一次，逐条打分只做查表。
+pub struct MemoryScorer {
+    profiles: Vec<DocumentProfile>,
+    document_frequency: HashMap<String, usize>,
+    average_length: f64,
+}
+
+impl MemoryScorer {
+    /// 直接用已缓存的档案构造：查询之间唯一变化的是查询本身，档案可以复用。
+    pub fn from_profiles(profiles: Vec<DocumentProfile>) -> Self {
+        let average_length = if profiles.is_empty() {
+            0.0
+        } else {
+            profiles
+                .iter()
+                .map(|profile| profile.weighted_length)
+                .sum::<f64>()
+                / profiles.len() as f64
+        };
+        Self {
+            profiles,
+            document_frequency: HashMap::new(),
+            average_length,
+        }
+    }
+
+    /// 取一条候选的档案（写入进程级缓存时用）。
+    pub fn profile_at(&self, index: usize) -> Option<&DocumentProfile> {
+        self.profiles.get(index)
+    }
+
+    pub fn new(entries: &[MemoryIndexEntry]) -> Self {
+        let profiles: Vec<DocumentProfile> = entries.iter().map(profile_of).collect();
+        let average_length = if profiles.is_empty() {
+            0.0
+        } else {
+            profiles
+                .iter()
+                .map(|profile| profile.weighted_length)
+                .sum::<f64>()
+                / profiles.len() as f64
+        };
+        Self {
+            profiles,
+            document_frequency: HashMap::new(),
+            average_length,
+        }
+    }
+
+    /// 按查询词推进文档频率统计：检索前用查询过一次，避免每条候选都重扫语料。
+    pub fn with_query(mut self, query: &SearchQuery) -> Self {
+        for token in &query.unique {
+            let count = self
+                .profiles
+                .iter()
+                .filter(|profile| profile.frequencies.contains_key(token))
+                .count();
+            self.document_frequency.insert(token.clone(), count);
+        }
+        self
+    }
+
+    /// 单条打分：语料只有一条时没有 idf 与平均长度可用，直接就地算档案。
+    /// 批量检索请用 `score_index`。
+    pub fn score(
+        &self,
+        entry: &MemoryIndexEntry,
+        query: &SearchQuery,
+        candidate_directories: &[String],
+        now: DateTime<FixedOffset>,
+    ) -> f64 {
+        let profile = profile_of(entry);
+        self.score_profile(&profile, entry, query, candidate_directories, now)
+    }
+
+    /// 按候选下标打分：批量场景（`search`）走这条，避免再构造一次字段词频。
+    pub fn score_index(
+        &self,
+        index: usize,
+        entry: &MemoryIndexEntry,
+        query: &SearchQuery,
+        candidate_directories: &[String],
+        now: DateTime<FixedOffset>,
+    ) -> f64 {
+        match self.profiles.get(index) {
+            Some(profile) => {
+                self.score_profile(profile, entry, query, candidate_directories, now)
+            }
+            None => 0.0,
+        }
+    }
+
+    fn score_profile(
+        &self,
+        profile: &DocumentProfile,
+        entry: &MemoryIndexEntry,
+        query: &SearchQuery,
+        candidate_directories: &[String],
+        now: DateTime<FixedOffset>,
+    ) -> f64 {
+        let total = self.profiles.len() as f64;
+        let mut relevance = 0.0;
+        for token in &query.unique {
+            let Some(&weighted_tf) = profile.frequencies.get(token) else {
+                continue;
+            };
+            let seen = self.document_frequency.get(token).copied().unwrap_or(0) as f64;
+            let idf = (1.0 + (total - seen + 0.5) / (seen + 0.5)).ln();
+            let norm = if self.average_length > 0.0 {
+                1.0 - BIT_B + BIT_B * profile.weighted_length / self.average_length
+            } else {
+                1.0
+            };
+            let saturated = weighted_tf * (BIT_K1 + 1.0) / (weighted_tf + BIT_K1 * norm);
+            relevance += idf * (saturated + BM25PLUS_DELTA);
+        }
+        relevance *= RELEVANCE_WEIGHT;
+
+        if !query.lowered.is_empty() && haystack_of(entry).contains(&query.lowered) {
+            relevance *= 1.0 + PHRASE_BOOST;
+        }
+
+        let mut directory = 0.0;
+        for candidate in candidate_directories {
+            directory += directory_match_score(entry, candidate) * DIRECTORY_WEIGHT;
+        }
+
+        // 使用次数与新鲜度只做同分附近的微调：相关度为 0 时不靠它把无关条目捞上来。
+        let usage = (entry.touch_count.min(10) as f64) * USAGE_BOOST;
+        let age_days = ((now - entry.timestamp).num_microseconds().unwrap_or(0) as f64
+            / 1e6
+            / 86400.0)
+            .max(0.0);
+        let freshness = (1.0 - age_days.min(30.0) / 30.0).max(0.0) * FRESHNESS_BOOST;
+        let base = relevance + directory;
+        if base <= 0.0 {
+            return usage + freshness * 0.1;
+        }
+        base * (1.0 + usage + freshness)
+    }
+}
+
+/// 条目参与检索的文本（与旧实现同一份语料，保持「搜什么」不变）。
+fn haystack_of(entry: &MemoryIndexEntry) -> String {
+    format!(
         "{} {} {}",
         entry.summary,
         entry.storage_directory,
         entry.related_directories.join(" ")
     )
-    .to_lowercase();
+    .to_lowercase()
+}
 
-    let query_tokens = extract_search_tokens(query);
-    if !query_tokens.is_empty() {
-        let token_hits = query_tokens
-            .iter()
-            .filter(|token| haystack.contains(token.as_str()))
-            .count();
-        score += token_hits as f64 / query_tokens.len() as f64 * 10.0;
-        let lowered_query = query.to_lowercase();
-        if !lowered_query.is_empty() && haystack.contains(&lowered_query) {
-            score += 5.0;
+/// 统计一条候选的字段加权词频与加权长度。
+pub(crate) fn profile_of(entry: &MemoryIndexEntry) -> DocumentProfile {
+    let fields = [
+        entry.summary.clone(),
+        entry.storage_directory.clone(),
+        entry.related_directories.join(" "),
+    ];
+    let mut frequencies: HashMap<String, f64> = HashMap::new();
+    let mut weighted_length = 0.0;
+    for (text, weight) in fields.iter().zip(SEARCH_FIELDS) {
+        for token in search_tokens(text) {
+            *frequencies.entry(token).or_insert(0.0) += weight;
+            weighted_length += weight;
         }
     }
-
-    for directory in candidate_directories {
-        score += directory_match_score(entry, directory) * 3.0;
+    DocumentProfile {
+        frequencies,
+        weighted_length,
     }
+}
 
-    // 轻微倾向被反复使用或较新的记忆，但不让它盖过文本相关度。
-    score += (entry.touch_count.min(10) as f64) * 0.05;
-    let age_days =
-        ((now - entry.timestamp).num_microseconds().unwrap_or(0) as f64 / 1e6 / 86400.0).max(0.0);
-    score += (1.0 - age_days.min(30.0) / 30.0).max(0.0) * 0.1;
-    score
+/// 检索分词：ASCII 词块与 2/3 元中文片段，保留重复项以便计词频。
+fn search_tokens(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
+    let characters: Vec<char> = lowered.chars().collect();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if is_ascii_token_char(characters[index]) {
+            let start = index;
+            while index < characters.len() && is_ascii_token_char(characters[index]) {
+                index += 1;
+            }
+            if index - start >= 2 {
+                tokens.push(characters[start..index].iter().collect());
+            }
+            continue;
+        }
+        index += 1;
+    }
+    index = 0;
+    while index < characters.len() {
+        if is_han(characters[index]) {
+            let start = index;
+            while index < characters.len() && is_han(characters[index]) {
+                index += 1;
+            }
+            let chunk = &characters[start..index];
+            if chunk.len() <= 8 {
+                tokens.push(chunk.iter().collect());
+            }
+            for offset in 0..chunk.len().saturating_sub(1) {
+                tokens.push(chunk[offset..offset + 2].iter().collect());
+            }
+            for offset in 0..chunk.len().saturating_sub(2) {
+                tokens.push(chunk[offset..offset + 3].iter().collect());
+            }
+            continue;
+        }
+        index += 1;
+    }
+    tokens
 }
 
 /// 沿关联目录展开时的候选分：越深越弱。

@@ -6,8 +6,9 @@
 //!
 //! 未搬：`write` / `search` / `expand_related` / `clean_expired_memories` 与旧目录迁移。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, FixedOffset, Local};
 use serde_json::{json, Value};
@@ -20,7 +21,8 @@ use crate::memory::{
 };
 use crate::memory_ranking::{
     classify_storage_directory, directories_overlap, make_summary, merge_memory_content,
-    normalize_for_compare, score_related_entry, score_search_entry, text_similarity,
+    normalize_for_compare, score_related_entry, text_similarity, DocumentProfile, MemoryScorer,
+    SearchQuery,
     DEFAULT_STORAGE_DIRECTORIES,
 };
 
@@ -287,21 +289,32 @@ impl MemoryStore {
         max_results: u32,
     ) -> Result<Vec<MemorySearchResult>, SessionStoreError> {
         let entries = self.load_entries()?;
-        let cleaned_query = query.trim().to_string();
-        let directories = dedupe_directories(candidate_directories);
         let limit = clamp_limit(max_results, 20) as usize;
-
-        let now = Local::now().fixed_offset();
-        let mut scored: Vec<(f64, MemoryIndexEntry)> = Vec::new();
-        for entry in entries {
-            if !self.memory_path(&entry)?.is_file() {
-                continue;
-            }
-            let score = score_search_entry(&entry, &cleaned_query, &directories, now);
-            if score > 0.0 || (cleaned_query.is_empty() && directories.is_empty()) {
-                scored.push((score, entry));
-            }
+        let directories = dedupe_directories(candidate_directories);
+        // 查询分词与目录归一化都只做一次：逐条重算是原先最贵的一段。
+        let query = SearchQuery::new(query);
+        if query.is_empty() && directories.is_empty() {
+            return Ok(self.newest_first(entries, limit));
         }
+
+        let present = self.existing_relative_paths()?;
+        let live: Vec<MemoryIndexEntry> = entries
+            .into_iter()
+            .filter(|entry| present.contains(&entry.path))
+            .collect();
+        let scorer = cached_scorer(&self.index_path, &live).with_query(&query);
+        let now = Local::now().fixed_offset();
+        let mut scored: Vec<(f64, MemoryIndexEntry)> = live
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                (
+                    scorer.score_index(index, entry, &query, &directories, now),
+                    entry.clone(),
+                )
+            })
+            .filter(|(score, _)| *score > 0.0)
+            .collect();
 
         // 稳定排序：分数、时间戳、使用次数依次降序，完全并列时保持索引顺序。
         scored.sort_by(|left, right| {
@@ -318,6 +331,62 @@ impl MemoryStore {
             .map(|(_, entry)| self.to_search_result(&entry))
             .collect())
     }
+
+    /// 无查询时的候选：按新鲜度与使用次数排序，不需要任何打分。
+    fn newest_first(
+        &self,
+        entries: Vec<MemoryIndexEntry>,
+        limit: usize,
+    ) -> Vec<MemorySearchResult> {
+        let Ok(present) = self.existing_relative_paths() else {
+            return Vec::new();
+        };
+        let mut live: Vec<MemoryIndexEntry> = entries
+            .into_iter()
+            .filter(|entry| present.contains(&entry.path))
+            .collect();
+        live.sort_by(|left, right| {
+            right
+                .timestamp
+                .cmp(&left.timestamp)
+                .then_with(|| right.touch_count.cmp(&left.touch_count))
+        });
+        live.into_iter()
+            .take(limit)
+            .map(|entry| self.to_search_result(&entry))
+            .collect()
+    }
+
+    /// 记忆根目录下实际存在的相对路径集合（统一分隔符）。
+    ///
+    /// 逐条 `is_file()` 每次都要解析路径；记忆上百条时这一段是主要的固定开销，
+    /// 一次目录遍历足以回答「哪些条目还活着」。
+    fn existing_relative_paths(&self) -> Result<BTreeSet<String>, SessionStoreError> {
+        let mut present: BTreeSet<String> = BTreeSet::new();
+        let mut stack = vec![self.root.clone()];
+        while let Some(directory) = stack.pop() {
+            let Ok(reader) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in reader.flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let path = entry.path();
+                if kind.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(relative) = path.strip_prefix(&self.root) else {
+                    continue;
+                };
+                present.insert(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        Ok(present)
+    }
+
+
 
     /// 沿关联目录扩展候选摘要，默认只展开一层关系。
     pub fn expand_related(
@@ -967,4 +1036,60 @@ fn normalize_path(path: &Path) -> Result<PathBuf, SessionStoreError> {
         }
     }
     Ok(result)
+}
+
+/// 文档档案的进程级缓存。
+///
+/// `MemoryStore` 每次工具调用都重新构造，所以缓存必须挂在进程上；用索引文件的
+/// 修改时间与长度当签名，索引一变（写入、删除、加深回忆都会重写它）就整份重算。
+/// 记忆检索是无鉴权的本机读写，缓存不引入跨进程一致性问题：别处改了索引，
+/// 签名随之变化，下一次检索自然重读。
+struct CachedProfiles {
+    signature: Option<(PathBuf, u128, u64)>,
+    profiles: Vec<DocumentProfile>,
+}
+
+fn profile_cache() -> &'static Mutex<HashMap<PathBuf, CachedProfiles>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedProfiles>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 索引文件的签名：修改时间（相对 UNIX_EPOCH）与字节长度。
+fn index_signature(path: &Path) -> Option<(u128, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((modified, metadata.len()))
+}
+
+/// 取这批候选的档案：索引没变就直接复用，变了才重新分词。
+fn cached_scorer(index_path: &Path, entries: &[MemoryIndexEntry]) -> MemoryScorer {
+    let signature = index_signature(index_path);
+    let mut guard = profile_cache().lock().unwrap_or_else(|error| error.into_inner());
+    let key = index_path.to_path_buf();
+    if let Some(signature) = signature {
+        if let Some(cached) = guard.get(&key) {
+            if cached.signature.as_ref() == Some(&(key.clone(), signature.0, signature.1))
+                && cached.profiles.len() == entries.len()
+            {
+                return MemoryScorer::from_profiles(cached.profiles.clone());
+            }
+        }
+    }
+    let scorer = MemoryScorer::new(entries);
+    let profiles: Vec<DocumentProfile> = (0..entries.len())
+        .filter_map(|index| scorer.profile_at(index).cloned())
+        .collect();
+    guard.insert(
+        key.clone(),
+        CachedProfiles {
+            signature: signature.map(|(modified, len)| (key, modified, len)),
+            profiles,
+        },
+    );
+    scorer
 }

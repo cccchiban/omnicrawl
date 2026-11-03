@@ -139,6 +139,45 @@ fn normalize_matches_python() {
     }
 }
 
+/// 重新生成 `search_scores` 的期望值：BM25+ 取代词命中占比后，绝对值必须重算。
+///
+/// 运行 `cargo test -p omnicrawl-session --test memory_ranking_parity -- --ignored dump_search_scores`
+/// 得到 JSON，再写回 fixture。
+#[test]
+#[ignore]
+fn dump_search_scores() {
+    let fixture = fixture();
+    let now = parse_memory_datetime(fixture["now"].as_str().expect("now")).expect("now 可解析");
+    let sample_entries: Vec<Value> = fixture["related_scores"]
+        .as_array()
+        .expect("related_scores")
+        .chunks(9)
+        .map(|chunk| chunk[0]["entry"].clone())
+        .collect();
+    let mut out = Vec::new();
+    for case in cases(&fixture, "search_scores") {
+        let query = case["query"].as_str().expect("query");
+        let directories: Vec<String> = case["candidate_directories"]
+            .as_array()
+            .expect("candidate_directories")
+            .iter()
+            .map(|item| item.as_str().expect("目录").to_string())
+            .collect();
+        let entries: Vec<f64> = sample_entries
+            .iter()
+            .map(|spec| score_search_entry(&entry_of(spec), query, &directories, now))
+            .collect();
+        out.push(json!({
+            "query": query,
+            "candidate_directories": directories,
+            "entries": entries,
+        }));
+    }
+    println!("SEARCH_SCORES_FIXTURE_BEGIN");
+    println!("{}", serde_json::to_string_pretty(&out).expect("序列化"));
+    println!("SEARCH_SCORES_FIXTURE_END");
+}
+
 #[test]
 fn search_scores_match_python() {
     let fixture = fixture();

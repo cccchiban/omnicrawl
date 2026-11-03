@@ -182,8 +182,9 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
     if query.is_empty() {
         return Err(ToolError::new("query 不能为空。"));
     }
+    // 重排开启时 reason 才参与判断：关掉重排就不该为它设门槛。
     let reason = argument_text(arguments, "reason");
-    if reason.is_empty() {
+    if reason.is_empty() && options.rerank.active() {
         return Err(ToolError::new("reason 不能为空。"));
     }
     let candidates: Vec<Value> = read_optional_string_list(arguments, "candidate_directories")
@@ -207,7 +208,7 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
     // 混合重排：本地规则分给出初序，向量召回给出语义序，按倒数排名融合两路。
     // 向量不可用（未配置、无凭据、失败、候选不足）时 kept 初序不变，退化成纯粹规则排序。
     let mut ranked: Vec<MemorySearchResult> = results;
-    if options.embedding.active() {
+    if options.embedding.active() && !options.embedding.cooling_down() {
         let texts: Vec<String> = ranked.iter().map(rerank_candidate_text).collect();
         if let Some(channel) = options.embedding.channel.as_ref() {
             if let Some(scored) = semantic_scores(
@@ -470,6 +471,35 @@ mod tests {
     }
 
     #[test]
+    fn reason_is_only_required_when_rerank_is_active() {
+        let (options, _root) = options("reason-optional");
+        memory_write(
+            &options,
+            &arguments(json!({"memories": [{"content": "检索不需要写明意图"}]})),
+        )
+        .expect("写入应当成功");
+
+        // 重排关闭：reason 既不参与判断，也不该拦住检索。
+        let found = memory_search(&options, &arguments(json!({"query": "检索不需要写明意图"})))
+            .expect("重排关闭时缺 reason 应当照常检索");
+        let results: Value = serde_json::from_str(&found).expect("结果是 JSON");
+        assert_eq!(results.as_array().map(Vec::len), Some(1), "{found}");
+
+        // 重排开启：reason 会进 state 供排序判断，缺它就仍是参数错误。
+        let mut reranked = options;
+        reranked.rerank = Arc::new(rerank_options(
+            vec![0],
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+        ));
+        let error = memory_search(
+            &reranked,
+            &arguments(json!({"query": "检索不需要写明意图"})),
+        )
+        .expect_err("重排开启时缺 reason 应当报错");
+        assert_eq!(error.message, "reason 不能为空。");
+    }
+
+    #[test]
     fn write_then_search_round_trips_through_the_store() {
         let (options, _root) = options("round-trip");
         let written = memory_write(
@@ -680,8 +710,8 @@ mod tests {
         let hits: Value = serde_json::from_str(&found).expect("结果是 JSON");
         let id = hits[0]["id"].as_str().expect("有 id").to_string();
 
-        let output = memory_delete(&options, &arguments(json!({"memory_ids": [id]})))
-            .expect("删除应当成功");
+        let output =
+            memory_delete(&options, &arguments(json!({"memory_ids": [id]}))).expect("删除应当成功");
         let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
         assert_eq!(parsed["deleted_count"], 1, "{output}");
         assert_eq!(parsed["deleted"][0].as_str(), Some(id.as_str()), "{output}");
@@ -699,8 +729,8 @@ mod tests {
                 .any(|item| item["id"].as_str() == Some(id.as_str()))),
             "删除后不该再命中：{after}"
         );
-        let read = memory_read(&options, &arguments(json!({"memory_ids": [id]})))
-            .expect("读取不报错");
+        let read =
+            memory_read(&options, &arguments(json!({"memory_ids": [id]}))).expect("读取不报错");
         assert_eq!(read.trim(), "[]", "删除后按 id 读不到：{read}");
     }
 
@@ -708,8 +738,11 @@ mod tests {
     #[test]
     fn deleting_an_unknown_id_reports_zero_deleted() {
         let (options, _root) = options("delete-unknown");
-        let output = memory_delete(&options, &arguments(json!({"memory_ids": ["20200101-000000"]})))
-            .expect("删除未知 id 不算错误");
+        let output = memory_delete(
+            &options,
+            &arguments(json!({"memory_ids": ["20200101-000000"]})),
+        )
+        .expect("删除未知 id 不算错误");
         let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
         assert_eq!(parsed["deleted_count"], 0, "{output}");
         assert_eq!(parsed["requested_count"], 1, "{output}");

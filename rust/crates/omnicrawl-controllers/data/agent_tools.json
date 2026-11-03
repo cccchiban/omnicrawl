@@ -318,7 +318,7 @@
     "memory": [
       {
         "name": "memory_search",
-        "description": "是什么：搜索长期记忆摘要。怎么做：需要恢复项目背景、会话进度或用户偏好时使用；只需完整正文时不用，先搜索再按 id 读取；scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。建议：query 写具体主题并提供 reason；用 scope 与 candidate_directories 缩小范围，命中后再 memory_read，减少上下文。",
+        "description": "是什么：搜索长期记忆摘要。怎么做：需要恢复项目背景、会话进度或用户偏好时使用；只需完整正文时不用，先搜索再按 id 读取；scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。建议：query 写具体主题；重排开启时再用 reason 说明当前意图；用 scope 与 candidate_directories 缩小范围，命中后再 memory_read，减少上下文。",
         "argument_schema": "{\"query\":\"要检索的主题\",\"reason\":\"为什么当前需要该记忆\",\"scope\":\"project\",\"candidate_directories\":[\"project-context/general\"],\"max_results\":5}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,

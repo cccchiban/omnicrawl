@@ -11,9 +11,16 @@
 //!
 //! 向量按「模型 + 文本」缓存，命中即不再请求：记忆条目高度重复出现在多轮检索里，
 //! 这一层缓存把外发次数压到与「新增或变更的文本」同阶。
+//!
+//! 两次往返压成一次：查询向量与候选向量合并进同一批请求。远端端点单次往返就可能十几秒，
+//! 单独为查询多发一次等于把检索延迟翻倍。
+//!
+//! 失败后进冷却（[`FAILURE_COOLDOWN`]）：窗口内直接返回 `None` 走本地规则排序，
+//! 不再每次调用都重付一轮超时；单次请求时限另有 [`REQUEST_TIMEOUT_CAP_SECONDS`] 收口。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::embedding::{
@@ -26,6 +33,17 @@ use crate::embedding_wire::{cosine_similarity, parse_embeddings, request_body};
 const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 /// 单条输入进请求前的截断长度：向量只看语义，不需要整段正文。
 const INPUT_MAX_CHARS: usize = 2000;
+/// 单次向量请求的时长上限（秒）：配置值再大也按此收口。
+///
+/// 检索是每轮都会发生的高频调用，正常端点几百毫秒就返回；允许它占用一分钟，
+/// 意味着端点抖动时整轮对话会被一次可选加速拖住。
+const REQUEST_TIMEOUT_CAP_SECONDS: u64 = 20;
+
+/// 向量召回连续失败后的冷却期：这段时间内直接跳过外发，改用本地规则排序。
+///
+/// 远端向量端点抖动时单次超时可能长达数十秒，而检索是每轮都会发生的高频调用；
+/// 没有冷却窗口时每次调用都要重付一整轮超时成本。
+pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// 一个可用的向量渠道（凭据已解析，配置已归一化）。
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +144,8 @@ fn post_embeddings(channel: &EmbeddingChannel, body_text: &str) -> Result<String
         .http_status_as_error(false)
         .build()
         .into();
-    let timeout = std::time::Duration::from_secs(channel.timeout_seconds);
+    let timeout =
+        std::time::Duration::from_secs(channel.timeout_seconds.min(REQUEST_TIMEOUT_CAP_SECONDS));
     let response = agent
         .post(&channel.endpoint())
         .config()
@@ -163,6 +182,8 @@ pub struct EmbeddingOptions {
     pub cache: Arc<EmbeddingCache>,
     /// 传输实现（测试注入桩）。
     pub client: Arc<dyn EmbeddingClient>,
+    /// 最近一次失败的时刻：冷却期内不再外发（[`FAILURE_COOLDOWN`]）。
+    pub last_failure: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Default for EmbeddingOptions {
@@ -172,6 +193,7 @@ impl Default for EmbeddingOptions {
             channel: None,
             cache: Arc::new(EmbeddingCache::default()),
             client: Arc::new(HttpEmbeddingClient),
+            last_failure: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -195,6 +217,30 @@ impl EmbeddingOptions {
                 .as_ref()
                 .map(|channel| !channel.api_key.trim().is_empty())
                 .unwrap_or(false)
+    }
+
+    /// 是否处在失败冷却期内：是则跳过外发，直接走本地规则排序。
+    pub fn cooling_down(&self) -> bool {
+        self.last_failure
+            .lock()
+            .ok()
+            .and_then(|at| *at)
+            .map(|at| at.elapsed() < FAILURE_COOLDOWN)
+            .unwrap_or(false)
+    }
+
+    /// 记一次失败，开启冷却窗口。
+    pub fn record_failure(&self) {
+        if let Ok(mut at) = self.last_failure.lock() {
+            *at = Some(Instant::now());
+        }
+    }
+
+    /// 一次召回成功后立即解除冷却，不必再等窗口走完。
+    pub fn clear_failure(&self) {
+        if let Ok(mut at) = self.last_failure.lock() {
+            *at = None;
+        }
     }
 }
 
@@ -270,21 +316,15 @@ pub fn semantic_scores(
     if !options.active() || request.candidates.len() < 2 {
         return None;
     }
+    if options.cooling_down() {
+        return None;
+    }
     let channel = request.channel;
     let fingerprint = channel.fingerprint();
 
-    // 查询向量：单独一次请求（不参与批量化，缓存键带 `q:` 前缀以免与候选文本撞键）。
+    // 查询向量同样走缓存；查询词跨轮变化，命中率低，但只要命中就省一次外发。
     let query_key = format!("{fingerprint}|q:{}", clamp_input(request.query));
-    let query_vector = match request.cache.get(&query_key) {
-        Some(vector) => vector,
-        None => {
-            let inputs = vec![clamp_input(request.query)];
-            let vectors = request.client.embed(channel, &inputs).ok()?;
-            let vector = Arc::new(vectors.into_iter().next()?);
-            request.cache.put(query_key, Arc::clone(&vector));
-            vector
-        }
-    };
+    let mut query_vector = request.cache.get(&query_key);
 
     // 候选向量：先查缓存，只把未命中的按渠道批量上限分批送出去。
     let mut resolved: Vec<Option<Arc<Vec<f32>>>> = Vec::with_capacity(request.candidates.len());
@@ -301,12 +341,58 @@ pub fn semantic_scores(
         }
     }
 
+    // 查询与候选合并成一批：向量端点一次往返就要十几秒，单独为查询多发一次请求
+    // 等于把检索延迟翻一倍。查询落在这一批的末位，避免挤掉候选的批内位置。
+    if query_vector.is_none() && !pending.is_empty() {
+        let text = clamp_input(request.query);
+        let capacity = (channel.batch_size.saturating_sub(1)).max(1);
+        let take = capacity.min(pending.len());
+        let mut first: Vec<String> = pending
+            .iter()
+            .take(take)
+            .map(|(_, _, text)| text.clone())
+            .collect();
+        first.push(text.clone());
+        match request.client.embed(channel, &first) {
+            Ok(vectors) if vectors.len() == first.len() => {
+                let query_vec = Arc::new(vectors.last()?.clone());
+                request.cache.put(query_key.clone(), Arc::clone(&query_vec));
+                query_vector = Some(query_vec);
+                for ((index, key, _), vector) in pending
+                    .iter()
+                    .take(take)
+                    .zip(vectors.into_iter().take(take))
+                {
+                    let vector = Arc::new(vector);
+                    request.cache.put(key.clone(), Arc::clone(&vector));
+                    resolved[*index] = Some(vector);
+                }
+            }
+            Ok(vectors) => {
+                diagnostics::warn(format!(
+                    "[host] 向量召回不可用，改用规则排序：返回 {} 条向量，期望 {} 条。",
+                    vectors.len(),
+                    first.len()
+                ));
+                options.record_failure();
+                return None;
+            }
+            Err(error) => {
+                diagnostics::warn(format!("[host] 向量召回不可用，改用规则排序：{error}"));
+                options.record_failure();
+                return None;
+            }
+        }
+        pending.drain(..take);
+    }
+
     for batch in pending.chunks(channel.batch_size) {
         let inputs: Vec<String> = batch.iter().map(|(_, _, text)| text.clone()).collect();
         let vectors = match request.client.embed(channel, &inputs) {
             Ok(vectors) => vectors,
             Err(error) => {
                 diagnostics::warn(format!("[host] 向量召回不可用，改用规则排序：{error}"));
+                options.record_failure();
                 return None;
             }
         };
@@ -316,6 +402,7 @@ pub fn semantic_scores(
                 vectors.len(),
                 batch.len()
             ));
+            options.record_failure();
             return None;
         }
         for ((index, key, _), vector) in batch.iter().zip(vectors.into_iter()) {
@@ -324,6 +411,27 @@ pub fn semantic_scores(
             resolved[*index] = Some(vector);
         }
     }
+    options.clear_failure();
+
+    // 查询向量迟迟没进缓存（候选全部命中缓存、查询未命中）时单独补一次。
+    let query_vector = match query_vector {
+        Some(vector) => vector,
+        None => {
+            let inputs = vec![clamp_input(request.query)];
+            match request.client.embed(channel, &inputs) {
+                Ok(vectors) => {
+                    let vector = Arc::new(vectors.into_iter().next()?);
+                    request.cache.put(query_key, Arc::clone(&vector));
+                    vector
+                }
+                Err(error) => {
+                    diagnostics::warn(format!("[host] 向量召回不可用，改用规则排序：{error}"));
+                    options.record_failure();
+                    return None;
+                }
+            }
+        }
+    };
 
     let mut scored: Vec<(usize, f32)> = Vec::with_capacity(resolved.len());
     for (index, slot) in resolved.iter().enumerate() {
@@ -457,7 +565,7 @@ mod tests {
             enabled: true,
             channel: Some(channel()),
             cache: Arc::new(EmbeddingCache::default()),
-            client: Arc::new(HttpEmbeddingClient),
+            ..EmbeddingOptions::default()
         };
         let order = semantic_scores(
             &options,
@@ -519,9 +627,15 @@ mod tests {
             ("a", vec![1.0, 0.0]),
             ("b", vec![1.0, 0.0]),
             ("c", vec![1.0, 0.0]),
+            ("d", vec![1.0, 0.0]),
         ]);
         let cache = EmbeddingCache::default();
-        let candidates = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let candidates = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
         let options = EmbeddingOptions {
             enabled: true,
             channel: Some(channel()),
@@ -538,8 +652,135 @@ mod tests {
             },
         );
         let calls = client.calls.lock().unwrap();
-        // 1 次查询 + ceil(3/2)=2 批候选。
+        assert!(calls.iter().all(|batch| batch.len() <= 2), "每批不超过渠道上限");
+        // 查询搭上第一批（2 条里留 1 个位置），剩下的候选再分两批：共 3 次而非 1+2=3 次以上。
         assert_eq!(calls.len(), 3);
-        assert!(calls.iter().all(|batch| batch.len() <= 2));
+        assert!(
+            calls[0].contains(&"q".to_string()),
+            "查询应并入第一批，而不是单独一次请求：{:?}",
+            *calls
+        );
+    }
+
+    /// 查询与候选合并成一次往返：端点单次就要十几秒，多发一次等于延迟翻倍。
+    #[test]
+    fn query_rides_along_instead_of_separate_request() {
+        let client = StubClient::new(&[
+            ("q", vec![1.0, 0.0]),
+            ("a", vec![0.9, 0.1]),
+            ("b", vec![0.0, 1.0]),
+        ]);
+        let cache = EmbeddingCache::default();
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let channel = EmbeddingChannel {
+            batch_size: 64,
+            ..channel()
+        };
+        let options = EmbeddingOptions {
+            enabled: true,
+            channel: Some(channel.clone()),
+            ..EmbeddingOptions::default()
+        };
+        let order = semantic_scores(
+            &options,
+            EmbeddingRequest {
+                channel: &channel,
+                cache: &cache,
+                client: &client,
+                query: "q",
+                candidates: &candidates,
+            },
+        )
+        .expect("应当算出顺序");
+        assert_eq!(
+            order.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "查询应与候选同批发出：{:?}", *calls);
+        assert_eq!(calls[0].len(), 3, "一批里含查询 + 两条候选");
+    }
+
+    /// 候选全部命中缓存时，查询仍要单独补一次，不能因为没有待发候选而漏算。
+    #[test]
+    fn query_sent_alone_when_all_candidates_cached() {
+        let client = StubClient::new(&[
+            ("q", vec![1.0, 0.0]),
+            ("a", vec![1.0, 0.0]),
+            ("b", vec![0.0, 1.0]),
+        ]);
+        let cache = EmbeddingCache::default();
+        let channel = EmbeddingChannel {
+            batch_size: 64,
+            ..channel()
+        };
+        let options = EmbeddingOptions {
+            enabled: true,
+            channel: Some(channel.clone()),
+            ..EmbeddingOptions::default()
+        };
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        // 先预热候选缓存。
+        let _ = request_with(&options, &channel, &cache, &client, "warm", &candidates);
+        let before = client.calls.lock().unwrap().len();
+        let order = request_with(&options, &channel, &cache, &client, "q", &candidates);
+        assert!(order.is_some());
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), before + 1, "只有查询需要外发");
+        assert_eq!(calls.last().unwrap().len(), 1);
+    }
+
+    fn request_with(
+        options: &EmbeddingOptions,
+        channel: &EmbeddingChannel,
+        cache: &EmbeddingCache,
+        client: &StubClient,
+        query: &str,
+        candidates: &[String],
+    ) -> Option<Vec<(usize, f32)>> {
+        semantic_scores(
+            options,
+            EmbeddingRequest {
+                channel,
+                cache,
+                client,
+                query,
+                candidates,
+            },
+        )
+    }
+
+    /// 失败后进入冷却期：窗口内不再外发，避免每次检索都重付一整轮超时。
+    #[test]
+    fn failure_starts_cooldown_and_skips_requests() {
+        let client = StubClient::failing();
+        let cache = EmbeddingCache::default();
+        let channel = EmbeddingChannel {
+            batch_size: 64,
+            ..channel()
+        };
+        let options = EmbeddingOptions {
+            enabled: true,
+            channel: Some(channel.clone()),
+            ..EmbeddingOptions::default()
+        };
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        assert!(request_with(&options, &channel, &cache, &client, "q", &candidates).is_none());
+        let after_first = client.calls.lock().unwrap().len();
+        assert!(options.cooling_down(), "失败应开启冷却");
+
+        // 冷却期内：直接返回 None，一次外发都不发。
+        assert!(request_with(&options, &channel, &cache, &client, "q2", &candidates).is_none());
+        assert_eq!(
+            client.calls.lock().unwrap().len(),
+            after_first,
+            "冷却期内不应再发请求"
+        );
+
+        // 手动解除冷却后恢复外发。
+        options.clear_failure();
+        assert!(!options.cooling_down());
+        assert!(request_with(&options, &channel, &cache, &client, "q3", &candidates).is_none());
+        assert!(client.calls.lock().unwrap().len() > after_first);
     }
 }
