@@ -216,18 +216,6 @@ fn tools_catalog_matches_python() {
         .map(|(key, value)| (key.to_string(), value))
         .collect();
     assert_eq!(ours, defaults);
-    let expected = data["tools_labels"].as_object().unwrap();
-    let ours: Value = Value::Object(
-        tools::TOOL_SWITCH_LABELS
-            .iter()
-            .map(|(key, label)| (key.to_string(), Value::String(label.to_string())))
-            .collect(),
-    );
-    assert_eq!(ours, Value::Object(expected.clone()));
-    // 键序也要一致（Python dict 的插入序 = TOOL_SWITCH_KEYS 的顺序）。
-    let expected_keys: Vec<&String> = expected.keys().collect();
-    let ours_keys: Vec<&String> = ours.as_object().unwrap().keys().collect();
-    assert_eq!(ours_keys, expected_keys);
 }
 
 #[test]

@@ -76,9 +76,9 @@ impl App {
             self.state.queue_pending(text, images);
             return;
         }
-        // 建议：先问一次决策模型「本次该用哪些工具／哪些子代理」（网络请求，超时 20s，不能占
-        // UI 线程），结果回来再提交；不可用或没有建议时立即提交，原文照发（fail-open）。
-        // 两类同时开启时由后台线程并发发起，总耗时取较大者而不是相加。
+        // 建议：先由主模型把这条提问识别成「技能词」，再用本地 BM25 检索本机 Skill 索引
+        // （识别要出网，不能占 UI 线程），结果回来再提交；识别不可用或没有建议时立即提交，
+        // 原文照发（fail-open）。
         if let Some((text, images)) = self.start_suggestion(text, images) {
             self.submit_to_kernel(text, images);
         }
@@ -86,56 +86,37 @@ impl App {
 
     /// 起一次建议：需要建议时把提问交给后台线程并返回 `None`；不需要时原样返回提问。
     ///
-    /// 匹配是纯本地的（BM25），但仍放在后台线程：候选项可能有上百条、Skill 还要读一遍
-    /// 正文分词，几个毫秒的停顿也不该压在键盘回显上。
+    /// 关键词识别是一次模型请求（主模型渠道），本地 BM25 则要读一遍候选描述、Skill 还要读
+    /// 正文分词：两者都不该压在键盘回显上，因此整条链路都在后台线程里跑。
     pub(super) fn start_suggestion(
         &mut self,
         text: String,
         images: Vec<PendingImage>,
     ) -> Option<(String, Vec<PendingImage>)> {
-        let suggest = self.suggest.clone().unwrap_or_default();
-        let subagent_suggest = self.subagent_suggest.clone().unwrap_or_default();
         let skill_suggest = self.skill_suggest.clone().unwrap_or_default();
-        // 三个开关都关着：立即提交，原文照发，连候选清单都不必收集。
-        if !suggest.active() && !subagent_suggest.active() && !skill_suggest.active() {
+        // 开关关着：立即提交，原文照发，连索引都不必扫。
+        if !skill_suggest.active() {
             return Some((text, images));
         }
-        let inventory = self.registry.tool_inventory();
-        let subagent_roles = self
-            .suggest_roles
-            .clone()
-            .unwrap_or_else(|| self.registry.subagent_roles().to_vec());
-        // Skill 候选要扫一次索引（读每个 SKILL.md 的正文分词），只在开关真开时才做。
-        let skill_candidates = if skill_suggest.active() {
-            match self.suggest_skills.clone() {
-                Some(pinned) => pinned,
-                None => omnicrawl_host::tools::discover_skill_candidates(
-                    &self.workspace,
-                    self.registry.config_environment(),
-                    &text,
-                ),
-            }
-        } else {
-            Vec::new()
+        // Skill 候选要扫一次索引（读每个 SKILL.md 的正文分词），钉死了就直接用。
+        let skill_source = match self.suggest_skills.clone() {
+            Some(pinned) => omnicrawl_host::tools::SkillSource::Pinned(pinned),
+            None => omnicrawl_host::tools::SkillSource::Live {
+                workspace: self.workspace.clone(),
+                environment: self.registry.config_environment().clone(),
+            },
         };
-        // 三路都没有候选：本地匹配无从下手，直接原文提交。
-        if !(suggest.active() && !inventory.is_empty())
-            && !(subagent_suggest.active() && !subagent_roles.is_empty())
-            && !(skill_suggest.active() && !skill_candidates.is_empty())
-        {
-            return Some((text, images));
-        }
+        let keywords = self.suggest_keywords.clone();
         let sender = self.suggest_sender.clone();
         let prompt = text.clone();
         self.suggest_in_flight += 1;
         thread::spawn(move || {
-            let lines =
-                omnicrawl_host::tools::suggestion_lines(&omnicrawl_host::tools::SuggestionInputs {
-                    tools: (&suggest, &inventory),
-                    subagents: (&subagent_suggest, &subagent_roles),
-                    skills: (&skill_suggest, &skill_candidates),
-                    user_prompt: &prompt,
-                });
+            let lines = omnicrawl_host::tools::suggestion_lines(
+                &skill_suggest,
+                keywords.as_deref(),
+                &skill_source,
+                &prompt,
+            );
             let text = omnicrawl_host::tools::insert_suggestions(&prompt, &lines);
             let _ = sender.send(SuggestTaskResult { text, images });
         });

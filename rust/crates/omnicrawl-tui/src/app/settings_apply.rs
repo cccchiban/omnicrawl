@@ -51,6 +51,10 @@ impl App {
             }
         }
         self.state.model = self.llm.model.clone();
+        // 关键词识别跟着新渠道走：它用的是主模型那条连接。
+        self.suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &self.llm,
+        )));
         Ok(format!(
             "模型已切到 {}（{}），已保存到 {}。",
             channel.name,
@@ -96,6 +100,9 @@ impl App {
                 .notice(format!("保存渠道后重新解析模型配置失败：{error}")),
         }
         self.state.model = self.llm.model.clone();
+        self.suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &self.llm,
+        )));
         let (reloaded, reloaded_default) = self.channel_views(&environment);
         if let Some(settings) = self.settings.as_mut() {
             settings.sync_channels(reloaded, &reloaded_default);
@@ -897,6 +904,10 @@ impl App {
                     .notice(format!("重新解析模型配置失败，沿用当前视图：{error}"));
             }
         }
+        // 关键词识别也吃主模型渠道：视图换了不换它，建议会拿着旧模型去识别。
+        self.suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &self.llm,
+        )));
     }
 
     /// 按当前 `registry_options` 重建工具表。

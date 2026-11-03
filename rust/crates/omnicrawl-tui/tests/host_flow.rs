@@ -181,9 +181,8 @@ impl Harness {
         let mut app = App::new(options, kernel, &workspace).expect("工具表应当构建成功");
         // 建议运行期来自本机配置（含旧决策开关的迁移结果）：用例需要确定性的提交时机，
         // 一律关掉；需要建议的用例自己按需注入。
-        app.suggest = None;
-        app.subagent_suggest = None;
         app.skill_suggest = None;
+        app.suggest_keywords = None;
         Self {
             app,
             recorder,
@@ -682,51 +681,38 @@ fn context_prune_is_answered_instead_of_refused() {
     );
 }
 
-/// Skill 建议与工具／子代理建议各占一行，顺序固定为「工具、子代理、Skill」。
-///
-/// 这条覆盖此前缺失的 TUI 侧 Skill 分支：`start_suggestion` 里 Skill 候选的收集与
-/// 送审走的是与另两类不同的路径（先检索索引、再拼进 `skills` 槽），而 TUI 路径
-/// 一直没有用例盯着，出现问题只能靠用户发现。
-#[test]
-fn skill_suggestion_lands_in_the_submitted_text() {
-    struct FixedSuggest {
-        names: Vec<String>,
-    }
+/// 钉死的关键词识别：让用例的检索词确定下来，不去打真实模型渠道。
+struct StubKeywords {
+    skills: Vec<String>,
+}
 
-    impl omnicrawl_tui::tools::SuggestClient for FixedSuggest {
-        fn suggest(
-            &self,
-            _request: &omnicrawl_tui::tools::suggestion::SuggestRequest<'_>,
-        ) -> Result<Vec<String>, String> {
-            Ok(self.names.clone())
+impl StubKeywords {
+    fn new(skills: &[&str]) -> Self {
+        Self {
+            skills: skills.iter().map(|item| item.to_string()).collect(),
         }
     }
+}
 
+impl omnicrawl_tui::tools::KeywordClient for StubKeywords {
+    fn keywords(
+        &self,
+        _user_prompt: &str,
+    ) -> Result<omnicrawl_tui::tools::SuggestKeywords, String> {
+        Ok(omnicrawl_tui::tools::SuggestKeywords::Words(
+            self.skills.clone(),
+        ))
+    }
+}
+
+/// Skill 建议落到提交文本的尾部，且名单按检索顺序。
+#[test]
+fn skill_suggestion_lands_in_the_submitted_text() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
-    let enabled = || omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        ..omnicrawl_tui::tools::SuggestOptions::default()
-    };
-    harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        client: Arc::new(FixedSuggest {
-            names: vec!["web_search".to_string()],
-        }),
-        ..enabled()
-    });
-    harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        client: Arc::new(FixedSuggest {
-            names: vec!["explore".to_string()],
-        }),
-        ..enabled()
-    });
-    harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        client: Arc::new(FixedSuggest {
-            names: vec!["kimi-pdf".to_string(), "kimi-docx".to_string()],
-        }),
-        ..enabled()
-    });
-    harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
+    harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions { enabled: true });
+    // 关键词钉死：生产路径会先问主模型，结果随模型渠道漂移。
+    harness.app.suggest_keywords = Some(Arc::new(StubKeywords::new(&["pdf", "word"])));
     // Skill 候选钉死：生产路径会先扫本机 Skill 索引，结果随环境漂移。
     harness.app.suggest_skills = Some(vec![
         ("kimi-pdf".to_string(), "处理 PDF".to_string()),
@@ -758,63 +744,56 @@ fn skill_suggestion_lands_in_the_submitted_text() {
         .expect("应当发过 turn.submit");
     assert_eq!(
         submitted,
-        "把这份 pdf 转成 word\n\n\
-         当前请求建议调用tool：web_search。\n\
-         当前请求建议使用子代理：explore。\n\
-         建议使用skills：kimi-pdf、kimi-docx。"
+        "把这份 pdf 转成 word
+
+建议使用skills：kimi-pdf、kimi-docx。"
     );
 }
 
-/// 工具建议必须跑在后台线程：它是网络请求（超时 20s），放在 UI 线程上会冻住界面；
-/// 并且结果回来前**不能**提交回合（否则建议没拼上就发出去了）。
+/// 建议必须跑在后台线程：识别是一次模型请求、检索要读每个 SKILL.md 的正文，放在 UI
+/// 线程上会冻住界面；并且结果回来前**不能**提交回合（否则建议没拼上就发出去了）。
 ///
-/// 桩在建议里睡满 1.5s：`drain_frames` 必须在毫秒级返回且此时还没有 `turn.submit`；
+/// 桩关键词在识别里睡满 1.5s：`drain_frames` 必须在毫秒级返回且此时还没有 `turn.submit`；
 /// 结果回来后 `turn.submit` 到达，且 `user_text` 已带上建议行。
 #[test]
-fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
-    /// 桩建议：睡满指定时长后返回固定名单，用来模拟慢网络。
-    struct SlowSuggestClient {
+fn suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
+    /// 桩识别：睡满指定时长后再给出检索词，用来模拟慢渠道。
+    struct SlowKeywords {
         delay: Duration,
-        names: Vec<String>,
+        skills: Vec<String>,
     }
 
-    impl omnicrawl_tui::tools::SuggestClient for SlowSuggestClient {
-        fn suggest(
+    impl omnicrawl_tui::tools::KeywordClient for SlowKeywords {
+        fn keywords(
             &self,
-            _request: &omnicrawl_tui::tools::suggestion::SuggestRequest<'_>,
-        ) -> Result<Vec<String>, String> {
+            _user_prompt: &str,
+        ) -> Result<omnicrawl_tui::tools::SuggestKeywords, String> {
             thread::sleep(self.delay);
-            Ok(self.names.clone())
+            Ok(omnicrawl_tui::tools::SuggestKeywords::Words(
+                self.skills.clone(),
+            ))
         }
     }
 
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
     // 开关打开：建议真的会被执行（`active()` 只看开关，本地匹配不需要渠道）。
-    harness.app.suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        client: Arc::new(SlowSuggestClient {
-            delay: Duration::from_millis(1500),
-            names: vec!["web_search".to_string()],
-        }),
-    });
-    // 子代理建议同时开启：两类并发算完，总耗时取较慢的那一类。
-    harness.app.subagent_suggest = Some(omnicrawl_tui::tools::SuggestOptions {
-        enabled: true,
-        client: Arc::new(SlowSuggestClient {
-            delay: Duration::from_millis(1500),
-            names: vec!["explore".to_string()],
-        }),
-    });
-    // 候选角色钉死：生产路径取工具表里的角色清单，会随本机 subagents 配置漂移。
-    harness.app.suggest_roles = Some(vec![("explore".to_string(), "快速只读探索".to_string())]);
+    harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions { enabled: true });
+    harness.app.suggest_keywords = Some(Arc::new(SlowKeywords {
+        delay: Duration::from_millis(1500),
+        skills: vec!["pdf".to_string()],
+    }));
+    harness.app.suggest_skills = Some(vec![
+        ("kimi-pdf".to_string(), "处理 PDF".to_string()),
+        ("kimi-docx".to_string(), "处理 Word".to_string()),
+    ]);
 
     // 提一条普通提问：建议在后台跑，UI 线程不该等它。
     harness
         .app
         .state
         .composer
-        .set_text("查一下这个库的最新版本");
+        .set_text("把这份 pdf 读一遍");
     let started = Instant::now();
     harness.press(KeyCode::Enter);
     let elapsed = started.elapsed();
@@ -840,14 +819,68 @@ fn tool_suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
     harness.app.drain_frames();
     assert!(submitted(&harness).is_none(), "建议未回来前不该提交回合");
 
-    // 结果回来：提交到达，且 user 文本尾部带上两行建议（工具在前，子代理在后）。
     harness.expect_ready(
         |app| app.state.turn.is_running(),
         "建议回来后应当进入回合运行态",
     );
     assert_eq!(
         submitted(&harness).expect("应当发过 turn.submit"),
-        "查一下这个库的最新版本\n\n当前请求建议调用tool：web_search。\n当前请求建议使用子代理：explore。"
+        "把这份 pdf 读一遍
+
+建议使用skills：kimi-pdf、kimi-docx。"
+    );
+}
+
+/// 关键词就是 Skill 的检索词：桩把收到的词原样当名单返回，提交文本能直接反映它。
+#[test]
+fn the_keywords_become_the_suggestion_names() {
+    struct EchoSuggest;
+
+    impl omnicrawl_tui::tools::KeywordClient for EchoSuggest {
+        fn keywords(
+            &self,
+            user_prompt: &str,
+        ) -> Result<omnicrawl_tui::tools::SuggestKeywords, String> {
+            Ok(omnicrawl_tui::tools::SuggestKeywords::Raw(
+                user_prompt.to_string(),
+            ))
+        }
+    }
+
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.skill_suggest = Some(omnicrawl_tui::tools::SuggestOptions { enabled: true });
+    harness.app.suggest_keywords = Some(Arc::new(EchoSuggest));
+    harness.app.suggest_skills = Some(vec![("kimi-docx".to_string(), "处理 Word".to_string())]);
+
+    harness
+        .app
+        .state
+        .composer
+        .set_text("帮我把这份文档里的标题批量替换一下");
+    harness.press(KeyCode::Enter);
+    harness.expect_ready(
+        |app| app.state.turn.is_running(),
+        "建议回来后应当进入回合运行态",
+    );
+
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .and_then(|frame| frame.params)
+        .and_then(|params| {
+            params
+                .get("user_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .expect("应当发过 turn.submit");
+    assert_eq!(
+        submitted,
+        "帮我把这份文档里的标题批量替换一下
+
+建议使用skills：kimi-docx。"
     );
 }
 
@@ -1248,7 +1281,8 @@ fn slash_prefix_opens_menu_and_tab_completes() {
         "空输入时菜单不应弹出"
     );
 
-    // 输入 `/set`：候选来自统一命令源，只有 `/settings` 以它开头。
+    // 输入 `/set`：候选来自统一命令源，`/settings` 必须在其中。
+    // Skill 候选随本机安装变化（`/skill:setup-*` 也以 `/s` 开头），因此按前缀断言而不是等值。
     type_text(&mut harness, "/set");
     let names: Vec<&str> = harness
         .app
@@ -1259,7 +1293,10 @@ fn slash_prefix_opens_menu_and_tab_completes() {
         .iter()
         .map(|option| option.command.as_str())
         .collect();
-    assert_eq!(names, vec!["/settings"], "菜单候选应当来自注册表");
+    assert!(
+        names.contains(&"/settings"),
+        "菜单候选应当来自注册表：{names:?}"
+    );
 
     // Tab 只补全、不提交；补全后完整命令会带上参数提示候选。
     harness.press(KeyCode::Tab);
@@ -1750,9 +1787,8 @@ fn resume_command_asks_the_kernel_and_replays_history() {
 /// 关掉工具／子代理／Skill 建议：本机配置可能启用它们，命中后提交会走后台线程，
 /// 与这些用例要断言的「按 Enter 即提交」不是同一时序。
 fn disable_suggestions(harness: &mut Harness) {
-    harness.app.suggest = None;
-    harness.app.subagent_suggest = None;
     harness.app.skill_suggest = None;
+    harness.app.suggest_keywords = None;
 }
 
 /// `/resume` 恢复后，终端标签页的标题跟着换成被恢复会话的名字。

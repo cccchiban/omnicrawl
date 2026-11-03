@@ -327,7 +327,8 @@ rust/crates/omnicrawl-decision/
 因此这个接口与宿主内部六处调用点（工具调用审查、检索重排、联网搜索排序、提问托管、
 工具调用淘汰）在语义上天然一致。
 
-> 提问建议（工具／子代理／Skill）已不再走决策模型：那三类建议在**每一轮提问之前**触发，
-> 一次往返 70–500ms 的开销压在最敏感的路径上。现在改为纯本地 BM25 匹配
-> （`rust/crates/omnicrawl-host/src/tools/suggestion.rs`），配置在 `config.toml` 的
-> `[suggestion]` 段，与决策模型完全解耦。
+> 提问建议（`[suggestion] skills`，只针对 Skill）已不再走决策模型：建议在**每一轮提问之前**
+> 触发，一次决策往返 70–500ms 的开销压在最敏感的路径上。现在改为「主模型识别技能词 + 本地
+> BM25 检索 Skill 索引」（`rust/crates/omnicrawl-host/src/tools/suggestion.rs`），关键词识别走
+> 主模型渠道且思考强度固定 low（那条渠道本来就要收到这条提问），检索纯本地；配置在
+> `config.toml` 的 `[suggestion]` 段，与决策模型完全解耦。

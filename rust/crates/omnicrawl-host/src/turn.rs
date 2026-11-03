@@ -38,10 +38,7 @@ use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::decision_choice::{chosen_option, CustodyContext, CustodyOptions};
 use crate::tools::decision_prune::{evicted_call_ids_for, PruneOptions};
-use crate::tools::suggestion::{
-    discover_skill_candidates, insert_suggestions, suggestion_lines, SuggestOptions,
-    SuggestionInputs,
-};
+use crate::tools::suggestion::{insert_suggestions, suggestion_lines, SuggestOptions};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
 /// 握手响应最多等这么久；内核启动即刻回帧，卡住说明进程有问题。
@@ -78,20 +75,16 @@ pub struct RunnerOptions {
     /// 的那一批」调用交回来裁决，判为无用的整组移出上下文；`None` 或不可用时一律保留原文
     /// （fail-open）。
     pub prune: Option<PruneOptions>,
-    /// 工具建议（`[suggestion] tools`）：开启后用本地 BM25 从工具表候选里挑出本次要用的工具，
-    /// 把结果拼进 user 尾部；`None` 或没有命中时原文照发（fail-open）。
-    pub suggest: Option<SuggestOptions>,
-    /// 子代理建议（`[suggestion] subagents`）：开启后同样按 BM25 从可调度的角色里挑；
-    /// 三类建议互相独立，可单开也可同时开——同时开启时由 [`SuggestionInputs`] 并发算完。
-    pub subagent_suggest: Option<SuggestOptions>,
-    /// Skill 建议（`[suggestion] skills`）：开启后检索本机 Skill 索引，把 BM25 命中的前几名
-    /// 注入 user 尾部；没有命中的一律不注入（fail-open）。
+    /// 提问建议（`[suggestion] skills`）：开启后由主模型识别技能词，再用本地 BM25 检索本机
+    /// Skill 索引，把命中的前几名拼进 user 尾部；`None` 或没有命中时原文照发（fail-open）。
     pub skill_suggest: Option<SuggestOptions>,
-    /// Skill 建议的候选池覆盖：`None`（默认）表示按提问实时检索本机 Skill 索引。
+    /// Skill 建议的候选池覆盖：`None`（默认）表示按技能词实时检索本机 Skill 索引。
     ///
-    /// 与 `registry_options.subagent_roles` 同一用意：用例需要钉住候选，否则结果会随本机
-    /// 已装的 Skill 漂移。
+    /// 用例需要钉住候选，否则结果会随本机已装的 Skill 漂移。
     pub skill_suggest_pinned: Option<Vec<(String, String)>>,
+    /// 关键词识别器（主模型渠道）：开启建议时，先把提问交给它识别「技能词」，再用这组词检索
+    /// Skill。`None` 表示不识别，退化为整句检索。
+    pub suggest_keywords: Option<Arc<dyn crate::tools::KeywordClient>>,
     /// 提示词装配结果（模板 + AGENTS.md + Skill 索引 + 运行环境）。
     ///
     /// 有它时握手用装配出来的 system prompt 与 `context_messages`，并按**真实**的项目规范
@@ -502,8 +495,7 @@ impl TurnRunner {
         self.custody_context.question.clear();
         self.custody_context.user_prompt = user_text.clone();
         self.custody_context.advisor_replies.clear();
-        // 工具建议与子代理建议：把「本次该用哪些工具／哪些子代理」拼进 user 尾部
-        // （不可用或没有建议时原文照发；两者同时开启时并发发起）。
+        // 提问建议：把「本次该用哪些 Skill」拼进 user 尾部（不可用或没有建议时原文照发）。
         let user_text = self.with_suggestions(user_text);
         let result = self.run_turn(&turn_id, &user_text, control, interactor, on_event);
         if restore_skill_context {
@@ -569,37 +561,25 @@ impl TurnRunner {
             .map(|session| session.session_id.clone())
     }
 
-    /// 在 user 尾部拼上工具建议、子代理建议与 Skill 建议；开关没开或没有命中时原文照发。
+    /// 在 user 尾部拼上 Skill 建议；开关没开或没有命中时原文照发。
     ///
-    /// 工具与子代理的候选清单直接来自**本宿主的工具表与角色表**：`disabled_tools` 关掉的、当前
-    /// 没有运行期的工具，以及内核不能调度的子代理角色，都已经被挡在外面，因此送审的每个名字都是
-    /// 模型真能调到的。Skill 的候选来自本机 Skill 索引（BM25 命中前几名）。
-    ///
-    /// 三类建议互相独立、可单开也可同时开；匹配全在本地完成（BM25），不出网也不读渠道配置。
+    /// 候选来自本机 Skill 索引（按技能词检索出的前几名），检索词由主模型识别一次；识别不可用
+    /// 时退化为整条提问。
     fn with_suggestions(&self, user_text: String) -> String {
-        let tools = self.options.suggest.clone().unwrap_or_default();
-        let subagents = self.options.subagent_suggest.clone().unwrap_or_default();
         let skills = self.options.skill_suggest.clone().unwrap_or_default();
-        let inventory = self.registry.tool_inventory();
-        // Skill 候选只在开关真正打开时才去扫索引：关着时这一步是纯浪费。
-        let skill_candidates = if skills.active() {
-            match self.options.skill_suggest_pinned.clone() {
-                Some(pinned) => pinned,
-                None => discover_skill_candidates(
-                    &self.options.workspace_root,
-                    self.registry.config_environment(),
-                    &user_text,
-                ),
-            }
-        } else {
-            Vec::new()
+        let skill_source = match self.options.skill_suggest_pinned.clone() {
+            Some(pinned) => crate::tools::SkillSource::Pinned(pinned),
+            None => crate::tools::SkillSource::Live {
+                workspace: self.options.workspace_root.clone(),
+                environment: self.registry.config_environment().clone(),
+            },
         };
-        let lines = suggestion_lines(&SuggestionInputs {
-            tools: (&tools, &inventory),
-            subagents: (&subagents, self.registry.subagent_roles()),
-            skills: (&skills, &skill_candidates),
-            user_prompt: &user_text,
-        });
+        let lines = suggestion_lines(
+            &skills,
+            self.options.suggest_keywords.as_deref(),
+            &skill_source,
+            &user_text,
+        );
         insert_suggestions(&user_text, &lines)
     }
 
@@ -622,6 +602,7 @@ impl TurnRunner {
             turn_id: turn_id.to_string(),
             user_text: text.to_string(),
             images: Vec::new(),
+            retry: false,
         })
         .to_frame(id.clone());
         self.kernel

@@ -1,127 +1,270 @@
-//! 提问建议：用户发来新提问时，用**本地 BM25** 从候选里挑出最贴合的几个名字，把结果拼进
-//! user 尾部。
+//! 提问建议：用户发来新提问时，先由主模型识别「技能词」，再用**本地 BM25** 检索本机 Skill
+//! 索引，把结果拼进 user 尾部。
 //!
-//! 三类建议各有一个开关（`config.toml` 的 `[suggestion]`），都默认关闭：
+//! 只有一个开关（`config.toml` 的 `[suggestion] skills`），默认关闭。候选是**本机已索引的
+//! Skill**（名称 + 作用域 + 描述 + 正文），检索通路与 `skill_search` 工具完全一致。
 //!
-//! * 工具建议（`[suggestion] tools`）：候选是**本宿主工具表里全部已启用的工具**
-//!   （工具名 + 描述首句截断到 [`CANDIDATE_SUMMARY_MAX_CHARS`] 字）。
-//! * 子代理建议（`[suggestion] subagents`）：候选是**本宿主可调度的全部子代理角色**
-//!   （角色名 + 定义里的一句话描述），与 `subagent_run` 工具的参数枚举同源。
-//! * Skill 建议（`[suggestion] skills`）：候选是**本机已索引的 Skill**（名称 + 作用域 + 描述
-//!   + 正文），检索通路与 `skill_search` 工具完全一致。
+//! 关键词由主模型按提问识别一次（[`KeywordClient`]，提示词见 `suggestion_keywords_system.md`），
+//! 不是把整条提问直接丢给 BM25：整句「帮我修改这份文档」里的「这份」「帮我」对候选表毫无
+//! 区分度，而「文档」恰好就是 Skill 描述与正文里的词。
 //!
-//! 匹配全部在本地完成（[`omnicrawl_extensions::bm25`]，毫秒级、不出网、不读任何渠道配置）。
-//! 这三项原先走决策模型判定：一次往返 70–500ms，而建议发生在**每一轮提问之前**，这个开销
-//! 压在最敏感的路径上；现在按同一份 BM25 打分排序，三类候选一次性并发算完，总耗时由最慢
-//! 的那一类决定。
+//! 匹配全部在本地完成（[`omnicrawl_extensions::bm25`]，毫秒级）：只有关键词识别这一步出网，
+//! 且它用的是主模型渠道——那条渠道本来就要收到这条提问，不额外扩大暴露面。识别请求固定按
+//! [`KEYWORDS_REASONING_EFFORT`]（`low`）发：它只做一次词性归纳，不该在提交前花掉几秒。
 //!
-//! 判定面是一条**相对分数线**：[`score_floor_ratio`]。BM25 的绝对分值随查询与候选集变化，
-//! 用固定阈值会把「一问命中很多」和「只勉强命中一个」判成同一档；这里改取该次查询的最高分
-//! 乘比例作为门槛，低于它的一律排除——分数是相对的，门槛也该相对。
+//! 检索名次即最终名次，不再过第二道分数线：检索单元是「名称 + 描述 + 正文」，靠正文命中的
+//! Skill 与检索词没有交集，再拿截断过的描述重算一次 BM25 会把整条建议清零。
 //!
-//! Skill 这一类不走这条分数线：它的候选来自 `SkillManager::search_meta`，名次本身就是按提问
-//! 对「名称 + 描述 + 正文」打出来的，候选项里只剩截断后的描述。再拿它重算一次 BM25 会丢掉
-//! 正文的贡献，靠正文命中的 Skill 与提问没有交集，整条建议会被清零。
-//!
-//! 名单非空时在 user 尾部追加一行（工具 `当前请求建议调用tool：a、b。`，子代理
-//! `当前请求建议使用子代理：explore、plan。`，Skill `建议使用skills：pdf、docx。`），几类同时
-//! 命中就各占一行。
+//! 名单非空时在 user 尾部追加一行（`建议使用skills：pdf、docx。`）。
 //!
 //! **失败一律 fail-open**：开关没开、没有候选、一个词都没命中都按「本次无建议」处理，user
-//! 原文照发。建议只是提示，值不当为此挡住提问。
+//! 原文照发。关键词识别不可用时退化为「整条提问当检索词」（[`SuggestKeywords::Raw`]），
+//! 建议照旧能出，只是不如识别精确。建议只是提示，值不当为此挡住提问。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_core::diagnostics;
-use omnicrawl_extensions::bm25;
 use omnicrawl_extensions::skill::SkillSearchHit;
-
-use crate::review::masking_from_config;
-
-/// 送审的候选项说明：取描述首句，截断到这么多字符（超出加省略号）。
-pub const CANDIDATE_SUMMARY_MAX_CHARS: usize = 24;
+use omnicrawl_llm::{
+    build_runtime, ChatRequestInput, DiscardSink, ModelDescriptor, ProviderProfile,
+};
+use omnicrawl_protocol::{conversation_from_openai_messages, GenerationOptions, ToolSpec};
+use serde_json::{json, Value};
 
 /// 建议名单的条数上限：只提示「最该看哪几个」，再多就成噪声。
 pub const SUGGESTION_LIMIT: usize = 3;
 
-/// 相对分数线：候选得分须达到该次查询最高分的这个比例才进名单。
-///
-/// 取 0.4：既排除「只碰到一个高频词」的边角命中，又不会因为第一名特别高而把同样贴题的
-/// 第二、三名挤掉。
-pub const SCORE_FLOOR_RATIO: f64 = 0.4;
-
 /// Skill 建议行的固定前缀（插入文本与展示层拆行共用）。
 pub const SKILL_SUGGESTION_PREFIX: &str = "建议使用skills：";
 
-/// 旧的 Skill 送审池上限名（保留给调用方，语义已变成「检索取前几条」）。
+/// Skill 送审池上限：检索多取几条再截到 [`SUGGESTION_LIMIT`]，避免同分项被截断误伤。
 pub const SKILL_SUGGESTION_POOL: usize = 8;
 
-/// 旧的 Skill 注入上限名（保留给调用方，与 [`SUGGESTION_LIMIT`] 同值）。
-pub const SKILL_SUGGESTION_LIMIT: usize = SUGGESTION_LIMIT;
+/// 关键词识别用的系统提示（只输出一个 JSON 对象）。
+const KEYWORDS_SYSTEM_PROMPT: &str =
+    include_str!("../../../../../rust/assets/templates/suggestion_keywords_system.md");
 
-/// 建议种类：三类建议形状相同（都是「从候选里按 BM25 挑几个」），开关、候选来源与文案不同。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SuggestKind {
-    /// 工具建议（`[suggestion] tools`）：候选是本宿主工具表里全部已启用的工具。
-    Tools,
-    /// 子代理建议（`[suggestion] subagents`）：候选是本宿主可调度的子代理角色。
-    Subagents,
-    /// Skill 建议（`[suggestion] skills`）：候选是本机已索引的 Skill。
-    Skills,
+/// 关键词识别的超时（秒）：它挡在每次提交之前，只输出几十个 token，因此按「宁可退化成
+/// 整句检索也不让提问干等」定一个短超时。
+pub const KEYWORDS_TIMEOUT_SECONDS: f64 = 10.0;
+
+/// 关键词识别的输出上限：几个词，几十个 token 就够。
+const KEYWORDS_MAX_TOKENS: u32 = 512;
+
+/// 关键词识别的推理强度：固定最低档——只做一次词性归纳，别在这一步花掉几秒。
+const KEYWORDS_REASONING_EFFORT: &str = "low";
+
+/// 检索词条数上限：词越多，BM25 查询越容易被稀释。
+pub const KEYWORDS_LIMIT: usize = 6;
+
+const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
+
+/// 一次检索用的关键词。
+///
+/// 主模型识别成功时是几个技能词；识别不可用时退化为整条提问。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuggestKeywords {
+    /// 主模型识别出的技能词（word、ppt、文档……）。
+    Words(Vec<String>),
+    /// 识别不可用：整条提问直接当检索词（退化路径）。
+    Raw(String),
 }
 
-impl SuggestKind {
-    /// 建议行的固定前缀：插入文本与展示层拆行共用同一份口径。
-    pub fn line_prefix(self) -> &'static str {
+impl Default for SuggestKeywords {
+    fn default() -> Self {
+        Self::Words(Vec::new())
+    }
+}
+
+impl SuggestKeywords {
+    /// 本次检索词（空格分隔）；空串表示这类建议不必起检索。
+    pub fn query(&self) -> String {
         match self {
-            SuggestKind::Tools => "当前请求建议调用tool：",
-            SuggestKind::Subagents => "当前请求建议使用子代理：",
-            SuggestKind::Skills => SKILL_SUGGESTION_PREFIX,
+            SuggestKeywords::Raw(text) => text.trim().to_string(),
+            SuggestKeywords::Words(words) => words.join(" ").trim().to_string(),
+        }
+    }
+
+    /// 检索词是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.query().is_empty()
+    }
+}
+
+/// 关键词识别器：真实实现走主模型渠道，测试注入桩以便不起网络。
+pub trait KeywordClient: Send + Sync {
+    /// 返回本次提问的检索词；`Err` 表示识别不可用（调用方退化为整句检索）。
+    fn keywords(&self, user_prompt: &str) -> Result<SuggestKeywords, String>;
+}
+
+/// 主模型渠道（关键词识别走这条）：模型、协议、地址与凭据都来自当前主模型视图。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeywordChannel {
+    pub model: String,
+    pub provider: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub timeout_seconds: f64,
+}
+
+impl KeywordChannel {
+    /// 是否可用：模型与地址齐全、凭据非空。
+    pub fn active(&self) -> bool {
+        !self.model.trim().is_empty()
+            && !self.base_url.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+    }
+}
+
+/// 真实实现：一次单轮补全，把返回的 JSON 解成检索词。
+pub struct MainModelKeywordClient {
+    pub channel: KeywordChannel,
+}
+
+impl Default for MainModelKeywordClient {
+    fn default() -> Self {
+        Self {
+            channel: KeywordChannel {
+                timeout_seconds: KEYWORDS_TIMEOUT_SECONDS,
+                ..KeywordChannel::default()
+            },
         }
     }
 }
 
-/// 一次建议计算的输入。
-pub struct SuggestRequest<'a> {
-    /// 建议种类（只影响诊断文案与建议行前缀）。
-    pub kind: SuggestKind,
-    /// 用户本次的提问正文。
-    pub user_prompt: &'a str,
-    /// 候选（`(名称, 说明)`）：工具来自本宿主工具表，子代理来自角色定义，Skill 来自索引。
-    pub candidates: &'a [(String, String)],
+impl KeywordClient for MainModelKeywordClient {
+    fn keywords(&self, user_prompt: &str) -> Result<SuggestKeywords, String> {
+        if user_prompt.trim().is_empty() {
+            return Ok(SuggestKeywords::default());
+        }
+        if !self.channel.active() {
+            return Err("主模型渠道未配置（model / base_url / api_key 缺一）".to_string());
+        }
+        let profile = ProviderProfile {
+            id: String::new(),
+            provider: self.channel.provider.clone(),
+            base_url: self.channel.base_url.clone(),
+            api_key: self.channel.api_key.clone(),
+            user_agent: USER_AGENT.to_string(),
+            default_protocol: self.channel.protocol.clone(),
+        };
+        let descriptor = ModelDescriptor {
+            model_id: self.channel.model.clone(),
+            protocol: self.channel.protocol.clone(),
+            capabilities: None,
+            context_window_tokens: 0,
+            max_output_tokens: Some(KEYWORDS_MAX_TOKENS),
+        };
+        let bundle = build_runtime(&profile, &descriptor)
+            .map_err(|error| format!("关键词识别运行期不可用：{}", error.message))?;
+
+        let timeout_seconds = if self.channel.timeout_seconds > 0.0 {
+            self.channel.timeout_seconds
+        } else {
+            KEYWORDS_TIMEOUT_SECONDS
+        };
+        let generation = GenerationOptions {
+            max_output_tokens: Some(KEYWORDS_MAX_TOKENS),
+            reasoning_effort: KEYWORDS_REASONING_EFFORT.to_string(),
+            request_timeout_seconds: timeout_seconds,
+            request_retry_count: 1,
+            ..GenerationOptions::default()
+        };
+        let messages = vec![json!({
+            "role": "user",
+            "content": format!("用户本次提问：\n{user_prompt}"),
+        })];
+        let conversation = conversation_from_openai_messages(&messages);
+        let tools: Vec<ToolSpec> = Vec::new();
+        let identity = std::collections::BTreeMap::from([
+            ("scope".to_string(), "omnicrawl-suggestion".to_string()),
+            ("model".to_string(), self.channel.model.clone()),
+        ]);
+        let input = ChatRequestInput {
+            model: self.channel.model.as_str(),
+            system_prompt: KEYWORDS_SYSTEM_PROMPT,
+            messages: &conversation,
+            tools: &tools,
+            options: &generation,
+            profile_request_timeout_seconds: timeout_seconds,
+            prompt_cache_capable: false,
+            prompt_cache_identity: &identity,
+        };
+        let mut sink = DiscardSink;
+        let reply = bundle
+            .runtime
+            .run_turn(&input, &mut sink)
+            .map_err(|error| format!("关键词识别请求失败：{error}"))?;
+        let text = reply.content.trim();
+        if text.is_empty() {
+            return Err("关键词识别返回空响应".to_string());
+        }
+        Ok(parse_keywords_reply(text))
+    }
 }
 
-/// 建议执行器：默认实现走本地 BM25；测试注入桩以便钉住名单。
-pub trait SuggestClient: Send + Sync {
-    /// 返回建议使用的候选名（按得分降序）；`Err` 表示本次建议不可用（调用方按无建议处理）。
-    fn suggest(&self, request: &SuggestRequest<'_>) -> Result<Vec<String>, String>;
+/// 按配置装配关键词识别器（无头宿主与测试用：读 `[llm]` 段）。
+///
+/// 配置读不出来时给一份未配置的渠道：`keywords` 返回 `Err`，调用方退化为整句检索，
+/// 不因为缺配置把整条建议链路禁掉。
+pub fn keyword_client_from_config(environment: &ConfigEnvironment) -> Arc<dyn KeywordClient> {
+    let channel = match omnicrawl_config::models::llm::load_llm_config(environment) {
+        Ok(llm) => KeywordChannel {
+            model: llm.model,
+            provider: llm.provider,
+            protocol: llm.protocol,
+            base_url: llm.base_url,
+            api_key: llm.api_key,
+            timeout_seconds: KEYWORDS_TIMEOUT_SECONDS,
+        },
+        Err(_) => KeywordChannel {
+            timeout_seconds: KEYWORDS_TIMEOUT_SECONDS,
+            ..KeywordChannel::default()
+        },
+    };
+    keyword_client(channel)
 }
 
-/// 一类建议的运行期：只有一个开关与一个执行器，不再需要任何渠道配置。
-#[derive(Clone)]
+/// 按给定渠道装配关键词识别器。
+///
+/// TUI 用这条：它握着的模型视图比磁盘更即时（命令行 `--model`、运行期切模型都还没写盘），
+/// 识别必须跟着那条视图走，否则换了模型还在用旧渠道。
+pub fn keyword_client(channel: KeywordChannel) -> Arc<dyn KeywordClient> {
+    let channel = KeywordChannel {
+        timeout_seconds: if channel.timeout_seconds > 0.0 {
+            channel.timeout_seconds
+        } else {
+            KEYWORDS_TIMEOUT_SECONDS
+        },
+        ..channel
+    };
+    Arc::new(MainModelKeywordClient { channel })
+}
+
+/// 求本次检索词；识别器缺失或失败时退化为整条提问（并留一条诊断）。
+pub fn resolve_keywords(client: Option<&dyn KeywordClient>, user_prompt: &str) -> SuggestKeywords {
+    let Some(client) = client else {
+        return SuggestKeywords::Raw(user_prompt.to_string());
+    };
+    match client.keywords(user_prompt) {
+        Ok(keywords) => keywords,
+        Err(error) => {
+            diagnostics::warn(format!(
+                "[host] 提问建议的关键词识别不可用，退化为整句检索：{error}"
+            ));
+            SuggestKeywords::Raw(user_prompt.to_string())
+        }
+    }
+}
+
+/// 一类建议的运行期：只带一个开关，本地匹配不需要任何渠道配置。
+#[derive(Debug, Clone, Default)]
 pub struct SuggestOptions {
     /// 开关状态。
     pub enabled: bool,
-    /// 建议执行器（测试注入桩）。
-    pub client: Arc<dyn SuggestClient>,
-}
-
-impl Default for SuggestOptions {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            client: Arc::new(Bm25SuggestClient),
-        }
-    }
-}
-
-impl std::fmt::Debug for SuggestOptions {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SuggestOptions")
-            .field("enabled", &self.enabled)
-            .finish()
-    }
 }
 
 impl SuggestOptions {
@@ -132,171 +275,11 @@ impl SuggestOptions {
 }
 
 /// 按配置装配建议运行期（TUI 与 API 共用同一口径）。
-pub fn suggest_options_from_config(
-    environment: &omnicrawl_config::core::runtime::ConfigEnvironment,
-) -> [SuggestOptions; 3] {
-    let config = omnicrawl_config::features::suggestion::load_suggestion_config(environment, None);
-    [
-        SuggestOptions {
-            enabled: config.tools,
-            ..SuggestOptions::default()
-        },
-        SuggestOptions {
-            enabled: config.subagents,
-            ..SuggestOptions::default()
-        },
-        SuggestOptions {
-            enabled: config.skills,
-            ..SuggestOptions::default()
-        },
-    ]
-}
-
-/// 脱敏旁路：本地匹配不出网，这里只保留「是否装配成功」的语义以便调用方沿用同一装配路径。
-///
-/// 纯本地匹配不需要脱敏，保留这个函数是为了让 `masking_from_config` 的构造失败不会中断
-/// 建议装配（它原先与服务地址一起装配）。
-pub fn suggest_masking(
-    environment: &omnicrawl_config::core::runtime::ConfigEnvironment,
-) -> Option<Arc<crate::review::ReviewMasking>> {
-    masking_from_config(environment).map(Arc::new)
-}
-
-/// 工具候选：`(名称, 一句话说明)`，说明取描述首句截断。
-pub fn suggest_candidates(inventory: &[(String, String)]) -> Vec<(String, String)> {
-    inventory
-        .iter()
-        .map(|(name, description)| (name.clone(), tool_summary(description)))
-        .collect()
-}
-
-/// 子代理候选：与 [`suggest_candidates`] 同口径（角色描述取首句）。
-pub fn subagent_candidates(roles: &[(String, String)]) -> Vec<(String, String)> {
-    roles
-        .iter()
-        .map(|(name, description)| (name.clone(), tool_summary(description)))
-        .collect()
-}
-
-/// 描述 → 送审用的一句话：剥掉「是什么：」前缀，取首句，压成单空格后截断。
-pub fn tool_summary(description: &str) -> String {
-    let body = description.trim();
-    let body = body.strip_prefix("是什么：").unwrap_or(body);
-    let first_sentence = body.split(['。', '；', '！']).next().unwrap_or(body);
-    let collapsed = first_sentence
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let characters: Vec<char> = collapsed.chars().collect();
-    if characters.len() <= CANDIDATE_SUMMARY_MAX_CHARS {
-        return collapsed;
+pub fn suggest_options_from_config(environment: &ConfigEnvironment) -> SuggestOptions {
+    SuggestOptions {
+        enabled: omnicrawl_config::features::suggestion::load_suggestion_config(environment, None)
+            .enabled(),
     }
-    let head: String = characters[..CANDIDATE_SUMMARY_MAX_CHARS].iter().collect();
-    format!("{head}…")
-}
-
-/// 相对分数线：本次查询最高分 × [`SCORE_FLOOR_RATIO`]。
-///
-/// `top` 为 0（没有任何命中）时返回 `0.0`，调用方据此直接给出空名单。
-pub fn score_floor_ratio(top: f64) -> f64 {
-    if top <= 0.0 {
-        0.0
-    } else {
-        top * SCORE_FLOOR_RATIO
-    }
-}
-
-/// 按 BM25 给候选打分并挑出名单：得分 ≥ 相对分数线者按分数降序，最多 [`SUGGESTION_LIMIT`] 个。
-///
-/// 候选文档是「名称 + 说明」的分词结果——名称本身常常就是最有力的信号（`web_search` 之于
-/// 「联网搜索」），只拿说明去比会把名字里写着答案的候选排到后面。
-pub fn ranked_names(user_prompt: &str, candidates: &[(String, String)]) -> Vec<String> {
-    if user_prompt.trim().is_empty() || candidates.is_empty() {
-        return Vec::new();
-    }
-    let query = bm25::tokenize(user_prompt);
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let documents: Vec<Vec<String>> = candidates
-        .iter()
-        .map(|(name, summary)| bm25::tokenize(&format!("{} {}", name.replace('-', " "), summary)))
-        .collect();
-    let hits = bm25::rank(&query, &documents);
-    let Some(top) = hits.first().map(|hit| hit.score) else {
-        return Vec::new();
-    };
-    let floor = score_floor_ratio(top);
-    hits.into_iter()
-        .filter(|hit| hit.score >= floor)
-        .filter_map(|hit| candidates.get(hit.index).map(|(name, _)| name.clone()))
-        .take(SUGGESTION_LIMIT)
-        .collect()
-}
-
-/// 求建议名单；开关没开、没有候选或一个词都没命中时返回 `None`（不插入任何内容）。
-pub fn suggested_names(
-    kind: SuggestKind,
-    options: &SuggestOptions,
-    candidates: &[(String, String)],
-    user_prompt: &str,
-) -> Option<Vec<String>> {
-    if !options.active() || user_prompt.trim().is_empty() || candidates.is_empty() {
-        return None;
-    }
-    // Skill 的候选来自 `search_meta`：名次已是按提问对「名称 + 描述 + 正文」打出来的，
-    // 这里直接用，不能再拿「名称 + 截断后的描述」重算一遍 BM25——正文命中项在二次打分里
-    // 与提问没有交集，整条建议会被清零（池子非空却不注入任何名字）。
-    if kind == SuggestKind::Skills {
-        let names: Vec<String> = candidates
-            .iter()
-            .take(SUGGESTION_LIMIT)
-            .map(|(name, _)| name.clone())
-            .collect();
-        return Some(names);
-    }
-    let request = SuggestRequest {
-        kind,
-        user_prompt,
-        candidates,
-    };
-    match options.client.suggest(&request) {
-        Ok(names) if names.is_empty() => None,
-        Ok(names) => Some(names),
-        Err(error) => {
-            diagnostics::warn(format!("[host] 提问建议不可用，按无建议处理：{error}"));
-            None
-        }
-    }
-}
-
-/// 工具建议：从工具表候选里按 BM25 挑。
-pub fn suggested_tools(
-    options: &SuggestOptions,
-    inventory: &[(String, String)],
-    user_prompt: &str,
-) -> Option<Vec<String>> {
-    let candidates = suggest_candidates(inventory);
-    suggested_names(SuggestKind::Tools, options, &candidates, user_prompt)
-}
-
-/// 子代理建议：从角色候选里按 BM25 挑。
-pub fn suggested_subagents(
-    options: &SuggestOptions,
-    roles: &[(String, String)],
-    user_prompt: &str,
-) -> Option<Vec<String>> {
-    let candidates = subagent_candidates(roles);
-    suggested_names(SuggestKind::Subagents, options, &candidates, user_prompt)
-}
-
-/// Skill 建议：候选来自 `SkillManager::search_meta` 的 BM25 命中项。
-pub fn suggested_skills(
-    options: &SuggestOptions,
-    candidates: &[(String, String)],
-    user_prompt: &str,
-) -> Option<Vec<String>> {
-    suggested_names(SuggestKind::Skills, options, candidates, user_prompt)
 }
 
 /// 检索本机 Skill 索引，取出 Skill 建议的候选。
@@ -305,15 +288,13 @@ pub fn suggested_skills(
 /// 新装的 Skill），`search_meta` 按 BM25 打分，检索单元是名称 + 描述 + 正文。作用域固定
 /// `all`：建议是给模型看的提示，不该因为 Skill 装在用户级还是项目级而漏掉。
 ///
-/// 这里已经用 BM25 排过序、也截到 [`SKILL_SUGGESTION_POOL`] 条，因此返回的清单本身即名单
-/// 顺序；调用方再走一遍 [`ranked_names`] 只会拿「名称 + 截断后的描述」重算一次，反而丢了
-/// 正文的贡献——所以 Skill 这一类直接把检索结果当名单用。
-pub fn discover_skill_candidates(
+/// 返回的清单本身即名单顺序（名次就是最终名次），调用方只截断不重排。
+fn discover_skill_candidates(
     workspace: &std::path::Path,
-    environment: &omnicrawl_config::core::runtime::ConfigEnvironment,
-    user_prompt: &str,
+    environment: &ConfigEnvironment,
+    query: &str,
 ) -> Vec<(String, String)> {
-    if user_prompt.trim().is_empty() {
+    if query.trim().is_empty() {
         return Vec::new();
     }
     let mut manager = omnicrawl_extensions::skill::SkillManager::new();
@@ -321,44 +302,24 @@ pub fn discover_skill_candidates(
         .map(|config| config.extra_paths)
         .unwrap_or_default();
     manager.discover(Some(workspace), &extra_paths);
-    let hits = manager.search_meta(user_prompt, "all", SKILL_SUGGESTION_POOL);
+    let hits = manager.search_meta(query, "all", SKILL_SUGGESTION_POOL);
     skill_candidates(&hits)
 }
 
-/// Skill 命中项 → 候选清单（名称 + 截断后的描述）。
-pub fn skill_candidates(hits: &[SkillSearchHit]) -> Vec<(String, String)> {
+/// Skill 命中项 → 候选清单（名称 + 描述）；名次即优先级。
+fn skill_candidates(hits: &[SkillSearchHit]) -> Vec<(String, String)> {
     hits.iter()
-        .map(|hit| (hit.meta.name.clone(), skill_summary(&hit.meta.description)))
+        .map(|hit| {
+            (
+                hit.meta.name.clone(),
+                hit.meta.description.trim().to_string(),
+            )
+        })
         .collect()
-}
-
-/// Skill 命中项 → 名单：BM25 名次即优先级，最多 [`SUGGESTION_LIMIT`] 个。
-pub fn skill_names(hits: &[SkillSearchHit]) -> Vec<String> {
-    hits.iter()
-        .take(SUGGESTION_LIMIT)
-        .map(|hit| hit.meta.name.clone())
-        .collect()
-}
-
-/// Skill 描述 → 送审用的一句话：压成单空格后截断到 [`CANDIDATE_SUMMARY_MAX_CHARS`] 字。
-///
-/// 与 [`tool_summary`] 的区别在于不剥「是什么：」前缀、也不按句号截半句——Skill 描述常是一整句
-/// 适用场景的说明，截掉后半句会丢掉「什么时候该用它」这个判定依据。
-fn skill_summary(description: &str) -> String {
-    let collapsed = description
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let characters: Vec<char> = collapsed.chars().collect();
-    if characters.len() <= CANDIDATE_SUMMARY_MAX_CHARS {
-        return collapsed;
-    }
-    let head: String = characters[..CANDIDATE_SUMMARY_MAX_CHARS].iter().collect();
-    format!("{head}…")
 }
 
 /// 建议名单拼成的插入行；名单为空时返回 `None`（不插入任何内容）。
-pub fn suggestion_line(kind: SuggestKind, names: &[String]) -> Option<String> {
+fn suggestion_line(names: &[String]) -> Option<String> {
     let names: Vec<&str> = names
         .iter()
         .map(|name| name.trim())
@@ -367,7 +328,7 @@ pub fn suggestion_line(kind: SuggestKind, names: &[String]) -> Option<String> {
     if names.is_empty() {
         return None;
     }
-    Some(format!("{}{}。", kind.line_prefix(), names.join("、")))
+    Some(format!("{SKILL_SUGGESTION_PREFIX}{}。", names.join("、")))
 }
 
 /// 把建议插入 user 尾部（每个建议各占一行）；没有建议时原样返回。
@@ -422,275 +383,277 @@ fn is_attachment_note_line(line: &str) -> bool {
 
 /// 这一行是不是我们拼上去的建议行。
 fn is_suggestion_line(line: &str) -> bool {
-    [
-        SuggestKind::Tools,
-        SuggestKind::Subagents,
-        SuggestKind::Skills,
-    ]
-    .iter()
-    .any(|kind| line.starts_with(kind.line_prefix()))
+    line.starts_with(SKILL_SUGGESTION_PREFIX)
 }
 
-/// 三类建议的输入。
-pub struct SuggestionInputs<'a> {
-    /// 工具建议运行期与候选（工具表清单）。
-    pub tools: (&'a SuggestOptions, &'a [(String, String)]),
-    /// 子代理建议运行期与候选（角色清单）。
-    pub subagents: (&'a SuggestOptions, &'a [(String, String)]),
-    /// Skill 建议运行期与候选（Skill 索引的 BM25 命中）。
-    pub skills: (&'a SuggestOptions, &'a [(String, String)]),
-    /// 用户本次的提问正文。
-    pub user_prompt: &'a str,
+/// Skill 建议的候选来源。
+#[derive(Debug, Clone)]
+pub enum SkillSource {
+    /// 测试钉死的候选池（不扫本机索引）。
+    Pinned(Vec<(String, String)>),
+    /// 按技能词实时检索本机 Skill 索引。
+    Live {
+        workspace: PathBuf,
+        environment: ConfigEnvironment,
+    },
 }
 
-/// 一类建议的待办：种类、运行期与候选清单。
-type SuggestJob = (SuggestKind, SuggestOptions, Vec<(String, String)>);
-
-/// 并发计算三类建议，返回拼好顺序的建议行；都没有建议时返回空列表。
-///
-/// 三条候选集彼此独立，且本地打分是纯 CPU 计算；这里仍按「各开一线程」并发，
-/// 是因为候选项数可达上百（工具表 + Skill 正文分词），并发能把三份分词开销摊到多核上。
-pub fn suggestion_lines(inputs: &SuggestionInputs<'_>) -> Vec<String> {
-    let prompt = inputs.user_prompt;
-    if prompt.trim().is_empty() {
+/// 计算 Skill 建议，返回拼好顺序的建议行；没有建议时返回空列表。
+pub fn suggestion_lines(
+    options: &SuggestOptions,
+    keywords: Option<&dyn KeywordClient>,
+    source: &SkillSource,
+    user_prompt: &str,
+) -> Vec<String> {
+    if !options.active() || user_prompt.trim().is_empty() {
         return Vec::new();
     }
-    let mut jobs: Vec<SuggestJob> = Vec::new();
-    for (kind, (options, candidates)) in [
-        (SuggestKind::Tools, inputs.tools),
-        (SuggestKind::Subagents, inputs.subagents),
-        (SuggestKind::Skills, inputs.skills),
-    ] {
-        if options.active() && !candidates.is_empty() {
-            jobs.push((kind, options.clone(), candidates.to_vec()));
-        }
+    let keywords = resolve_keywords(keywords, user_prompt);
+    let query = keywords.query();
+    if query.is_empty() {
+        return Vec::new();
     }
-    match jobs.len() {
-        0 => return Vec::new(),
-        // 只有一类真正要算时不必起线程：省下一次调度，也不引入无谓的等待。
-        1 => {
-            let (kind, options, candidates) = jobs.remove(0);
-            return lines_for(kind, suggested_names(kind, &options, &candidates, prompt));
-        }
-        _ => {}
-    }
-    let mut rest = jobs.split_off(1);
-    let (first_kind, first_options, first_candidates) = jobs.remove(0);
-    let prompt_owned = prompt.to_string();
-    let handles: Vec<_> = rest
-        .drain(..)
-        .map(|(kind, options, candidates)| {
-            let prompt = prompt_owned.clone();
-            std::thread::spawn(move || (kind, suggested_names(kind, &options, &candidates, &prompt)))
-        })
-        .collect();
-    let mut results = vec![(
-        first_kind,
-        suggested_names(first_kind, &first_options, &first_candidates, prompt),
-    )];
-    for handle in handles {
-        if let Ok(result) = handle.join() {
-            results.push(result);
-        }
-    }
-    // 建议行的顺序固定为「工具、子代理、Skill」，与并发完成的先后无关。
-    [
-        SuggestKind::Tools,
-        SuggestKind::Subagents,
-        SuggestKind::Skills,
-    ]
-    .iter()
-    .filter_map(|kind| {
-        results
-            .iter()
-            .find(|(result_kind, _)| result_kind == kind)
-            .and_then(|(_, names)| {
-                names
-                    .clone()
-                    .and_then(|names| suggestion_line(*kind, &names))
-            })
-    })
-    .collect()
-}
-
-/// 一类建议的结果 → 建议行（无建议时为空列表）。
-fn lines_for(kind: SuggestKind, names: Option<Vec<String>>) -> Vec<String> {
-    names
-        .and_then(|names| suggestion_line(kind, &names))
+    // 候选：检索单元是「名称 + 描述 + 正文」，检索词是技能词。
+    let candidates = match source {
+        SkillSource::Pinned(pinned) => pinned.clone(),
+        SkillSource::Live {
+            workspace,
+            environment,
+        } => discover_skill_candidates(workspace, environment, &query),
+    };
+    let names: Vec<String> = candidates
         .into_iter()
-        .collect()
+        .take(SUGGESTION_LIMIT)
+        .map(|(name, _)| name)
+        .collect();
+    suggestion_line(&names).into_iter().collect()
 }
 
-/// 真实实现：本地 BM25 打分，不发起任何网络请求。
-pub struct Bm25SuggestClient;
-
-impl SuggestClient for Bm25SuggestClient {
-    fn suggest(&self, request: &SuggestRequest<'_>) -> Result<Vec<String>, String> {
-        Ok(ranked_names(request.user_prompt, request.candidates))
+/// 从模型回复里解出检索词。
+///
+/// 回复可能带代码围栏或前后解释，因此只截取首个 `{` 到末个 `}` 之间的 JSON；解不出来时返回
+/// 空列表（等于本次无建议），不把原文当 JSON 猜。词去空白、去重、截到 [`KEYWORDS_LIMIT`] 条。
+pub fn parse_keywords_reply(text: &str) -> SuggestKeywords {
+    let body = text.trim();
+    let Some(start) = body.find('{') else {
+        return SuggestKeywords::default();
+    };
+    let Some(end) = body.rfind('}') else {
+        return SuggestKeywords::default();
+    };
+    if end <= start {
+        return SuggestKeywords::default();
     }
+    let Ok(value) = serde_json::from_str::<Value>(&body[start..=end]) else {
+        return SuggestKeywords::default();
+    };
+    SuggestKeywords::Words(keyword_list(&value, "skills"))
+}
+
+/// 取关键词数组，去空白、去重并截断。
+fn keyword_list(value: &Value, key: &str) -> Vec<String> {
+    let mut items: Vec<String> = Vec::new();
+    for entry in value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(text) = entry.as_str() else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() || items.iter().any(|item| item == text) {
+            continue;
+        }
+        items.push(text.to_string());
+        if items.len() >= KEYWORDS_LIMIT {
+            break;
+        }
+    }
+    items
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn inventory(names: &[&str]) -> Vec<(String, String)> {
-        names
-            .iter()
-            .map(|name| {
-                (
-                    (*name).to_string(),
-                    format!("是什么：{name} 的说明。怎么做：看情况。"),
-                )
-            })
-            .collect()
+    struct FixedKeywords(SuggestKeywords);
+
+    impl KeywordClient for FixedKeywords {
+        fn keywords(&self, _user_prompt: &str) -> Result<SuggestKeywords, String> {
+            Ok(self.0.clone())
+        }
     }
 
-    fn roles() -> Vec<(String, String)> {
-        vec![
-            ("explore".to_string(), "只读探索代码结构".to_string()),
-            ("plan".to_string(), "先出计划再动手".to_string()),
-            ("review".to_string(), "评审代码变更".to_string()),
-        ]
+    struct BrokenKeywords;
+
+    impl KeywordClient for BrokenKeywords {
+        fn keywords(&self, _user_prompt: &str) -> Result<SuggestKeywords, String> {
+            Err("渠道不可用".to_string())
+        }
     }
 
     fn enabled() -> SuggestOptions {
-        SuggestOptions {
-            enabled: true,
-            ..SuggestOptions::default()
-        }
+        SuggestOptions { enabled: true }
+    }
+
+    fn words(items: &[&str]) -> SuggestKeywords {
+        SuggestKeywords::Words(items.iter().map(|item| item.to_string()).collect())
     }
 
     #[test]
     fn a_disabled_suggestion_produces_nothing() {
-        let tools = inventory(&["web_search"]);
-        assert!(suggested_tools(&SuggestOptions::default(), &tools, "联网搜索").is_none());
-        assert!(suggested_subagents(&SuggestOptions::default(), &roles(), "先探索代码").is_none());
-        assert!(suggested_skills(&SuggestOptions::default(), &tools, "把 pdf 转成文本").is_none());
+        let lines = suggestion_lines(
+            &SuggestOptions::default(),
+            Some(&FixedKeywords(words(&["pdf"]))),
+            &SkillSource::Pinned(vec![("kimi-pdf".to_string(), "处理 PDF".to_string())]),
+            "把这份文档转成 pdf",
+        );
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
     #[test]
-    fn an_empty_prompt_or_candidate_list_is_skipped() {
-        let options = enabled();
-        assert!(suggested_tools(&options, &inventory(&["read"]), "   ").is_none());
-        assert!(suggested_tools(&options, &[], "读文件").is_none());
-        assert!(suggested_subagents(&options, &[], "先探索代码").is_none());
+    fn an_empty_prompt_skips_everything() {
+        let lines = suggestion_lines(
+            &enabled(),
+            Some(&FixedKeywords(words(&["pdf"]))),
+            &SkillSource::Pinned(vec![("kimi-pdf".to_string(), "处理 PDF".to_string())]),
+            "   ",
+        );
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
-    /// 名称本身就是最强信号：`web_search` 该被「联网搜索」选中。
+    /// 检索词为空时不去扫 Skill 索引：那一步要读每个 SKILL.md 的正文。
     #[test]
-    fn a_matching_name_wins() {
-        let tools = vec![
-            ("read".to_string(), "读取文件内容".to_string()),
-            ("web_search".to_string(), "搜索公开资料".to_string()),
-            ("fetcher".to_string(), "抓取页面正文".to_string()),
-        ];
-        let names = suggested_tools(&enabled(), &tools, "帮我联网搜索一下这个报错")
-            .expect("应当有建议");
-        assert_eq!(names.first().map(String::as_str), Some("web_search"), "{names:?}");
+    fn empty_keywords_skip_the_retrieval() {
+        let lines = suggestion_lines(
+            &enabled(),
+            Some(&FixedKeywords(words(&[]))),
+            &SkillSource::Pinned(vec![("kimi-pdf".to_string(), "处理 PDF".to_string())]),
+            "把这段文字替换一下",
+        );
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
-    /// 相对分数线：只留下与最高分同一量级的候选。
+    /// 命中钉死的候选池：名单按池子顺序截断。
     #[test]
-    fn the_floor_is_relative_to_the_top_score() {
-        let candidates = vec![
-            ("pdf".to_string(), "处理 PDF 文件的转换".to_string()),
-            ("docx".to_string(), "处理 Word 文档".to_string()),
-            ("xlsx".to_string(), "电子表格计算".to_string()),
-        ];
-        let names = ranked_names("把 pdf 转成文本", &candidates);
-        assert_eq!(names, vec!["pdf".to_string()], "只有 pdf 贴合：{names:?}");
-    }
-
-    #[test]
-    fn without_any_hit_nothing_is_suggested() {
-        let candidates = inventory(&["read", "write_file"]);
-        assert!(ranked_names("今天天气不错", &candidates).is_empty());
-    }
-
-    #[test]
-    fn the_shortlist_is_capped() {
-        let candidates: Vec<(String, String)> = (0..10)
-            .map(|index| (format!("tool{index}"), "检索代码".to_string()))
-            .collect();
-        assert_eq!(ranked_names("检索代码", &candidates).len(), SUGGESTION_LIMIT);
-    }
-
-    #[test]
-    fn suggestion_lines_keep_a_fixed_order() {
-        let tools = vec![("web_search".to_string(), "搜索公开资料".to_string())];
-        let roles = vec![("explore".to_string(), "只读探索代码结构".to_string())];
-        let lines = suggestion_lines(&SuggestionInputs {
-            tools: (&enabled(), &tools),
-            subagents: (&enabled(), &roles),
-            skills: (&SuggestOptions::default(), &[]),
-            user_prompt: "探索代码并搜索公开资料",
-        });
+    fn the_shortlist_keeps_the_retrieval_order() {
+        let lines = suggestion_lines(
+            &enabled(),
+            Some(&FixedKeywords(words(&["pdf"]))),
+            &SkillSource::Pinned(vec![
+                ("kimi-pdf".to_string(), "处理 PDF".to_string()),
+                ("kimi-docx".to_string(), "处理 Word".to_string()),
+            ]),
+            "把这份文档转成 pdf",
+        );
         assert_eq!(
             lines,
-            vec![
-                "当前请求建议调用tool：web_search。".to_string(),
-                "当前请求建议使用子代理：explore。".to_string(),
-            ]
+            vec!["建议使用skills：kimi-pdf、kimi-docx。".to_string()]
         );
-    }
-
-    #[test]
-    fn skill_lines_use_their_own_prefix() {
-        let line = suggestion_line(SuggestKind::Skills, &["pdf".to_string()])
-            .expect("非空名单应拼出一行");
-        assert_eq!(line, "建议使用skills：pdf。");
-    }
-
-    /// Skill 候选的顺序就是检索名次，不能再被「名称 + 截断描述」的二次打分清零。
-    ///
-    /// 候选池来自 `search_meta`：它按「名称 + 描述 + 正文」打过一次分，而候选项里只留了
-    /// 截断后的描述。这里用一个描述里不含任何提问词的候选复现——旧实现下它会被整条丢弃。
-    #[test]
-    fn skill_candidates_keep_the_retrieval_order_without_rescoring() {
-        let candidates = vec![
-            (
-                "agent-browser-cli".to_string(),
-                "使用 agent-browser-cli 进行浏览器感知与控制".to_string(),
-            ),
-            ("multiplane".to_string(), "用 Multiplane 把 HTML 网页渲染成视频".to_string()),
-        ];
-        let names = suggested_skills(&enabled(), &candidates, "用浏览器打开这个页面并截图")
-            .expect("候选池非空就该给出名单");
-        assert_eq!(names, vec!["agent-browser-cli".to_string(), "multiplane".to_string()]);
     }
 
     /// 名单截断到 [`SUGGESTION_LIMIT`] 条，而不是把整个候选池灌进 user 尾部。
     #[test]
-    fn the_skill_shortlist_is_capped() {
+    fn the_shortlist_is_capped() {
         let candidates: Vec<(String, String)> = (0..10)
             .map(|index| (format!("skill{index}"), "处理文档".to_string()))
             .collect();
-        let names = suggested_skills(&enabled(), &candidates, "处理一下文档").expect("应当有建议");
-        assert_eq!(names.len(), SUGGESTION_LIMIT, "{names:?}");
-        assert_eq!(names.first().map(String::as_str), Some("skill0"), "名次即优先级");
+        let names: Vec<String> = candidates
+            .into_iter()
+            .take(SUGGESTION_LIMIT)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            suggestion_line(&names),
+            Some("建议使用skills：skill0、skill1、skill2。".to_string())
+        );
+    }
+
+    /// 识别失败退化为整句检索：建议照旧能出，只是不如识别精确。
+    #[test]
+    fn a_broken_keyword_client_falls_back_to_the_raw_prompt() {
+        let keywords = resolve_keywords(Some(&BrokenKeywords), "把这份 pdf 转成 word");
+        assert_eq!(
+            keywords,
+            SuggestKeywords::Raw("把这份 pdf 转成 word".to_string())
+        );
+    }
+
+    /// 没有识别器时直接整句检索（旧行为），不因为缺模型渠道把建议关掉。
+    #[test]
+    fn without_a_keyword_client_the_whole_prompt_is_the_query() {
+        let keywords = resolve_keywords(None, "把这份 pdf 转成 word");
+        assert_eq!(
+            keywords.query(),
+            "把这份 pdf 转成 word",
+            "整句就是检索词"
+        );
     }
 
     /// 建议行必须能被展示层原样拆回去（实时提交与回放共用同一口径）。
     #[test]
     fn the_inserted_lines_split_back_off() {
-        let lines = vec!["当前请求建议调用tool：read。".to_string()];
+        let lines = vec!["建议使用skills：kimi-pdf。".to_string()];
         let text = insert_suggestions("读一下这个文件", &lines);
         let (body, suggestions) = split_suggestion(&text);
         assert_eq!(body, "读一下这个文件");
         assert_eq!(suggestions, lines);
     }
 
+    /// 图片落盘说明挡在尾部时，建议行仍要拆得出来。
     #[test]
-    fn a_summary_keeps_only_the_first_sentence() {
+    fn attachment_notes_do_not_block_the_split() {
+        let text = "看这两张图\n\n建议使用skills：kimi-pdf。\n\n\
+                    粘贴的图片已保存：\n[ #1 Image ] → a.png";
+        let (body, suggestions) = split_suggestion(text);
+        assert_eq!(suggestions, vec!["建议使用skills：kimi-pdf。".to_string()]);
+        assert!(body.starts_with("看这两张图"), "{body}");
+        assert!(body.ends_with("a.png"), "{body}");
+    }
+
+    #[test]
+    fn a_reply_is_parsed_into_the_word_list() {
+        let keywords = parse_keywords_reply(r#"{"skills": ["word", "文档"]}"#);
+        assert_eq!(keywords.query(), "word 文档");
+    }
+
+    /// 回复可能带围栏与前后解释：只取首个 `{` 到末个 `}`。
+    #[test]
+    fn a_fenced_reply_is_parsed() {
+        let keywords =
+            parse_keywords_reply("结果如下：\n```json\n{\"skills\": [\"pdf\"]}\n```\n");
+        assert_eq!(keywords.query(), "pdf");
+    }
+
+    #[test]
+    fn unparsable_replies_give_no_words() {
+        assert!(parse_keywords_reply("我觉得应该用 kimi-pdf").is_empty());
+        assert!(parse_keywords_reply("{坏了}").is_empty());
+    }
+
+    #[test]
+    fn the_word_list_is_deduped_and_capped() {
+        let mut entries: Vec<String> = (0..10).map(|index| format!("\"词{index}\"")).collect();
+        entries.push("\"词0\"".to_string());
+        entries.push("\"  \"".to_string());
+        let text = format!("{{\"skills\": [{}]}}", entries.join(","));
+        let SuggestKeywords::Words(items) = parse_keywords_reply(&text) else {
+            panic!("应当解出词表");
+        };
+        assert_eq!(items.len(), KEYWORDS_LIMIT, "{items:?}");
+        assert!(!items.iter().any(|item| item.trim().is_empty()));
+    }
+
+    /// 主模型渠道没配齐时返回 `Err`，由调用方退化为整句检索。
+    #[test]
+    fn an_unconfigured_channel_reports_itself_as_unavailable() {
+        let client = MainModelKeywordClient::default();
+        assert!(client.keywords("帮我改文档").is_err());
         assert_eq!(
-            tool_summary("是什么：搜索公开网页。怎么做：要发现 URL 时用。"),
-            "搜索公开网页"
+            resolve_keywords(Some(&client), "帮我改文档"),
+            SuggestKeywords::Raw("帮我改文档".to_string())
         );
-        let long = tool_summary(&format!(
-            "是什么：{}。",
-            "长".repeat(CANDIDATE_SUMMARY_MAX_CHARS + 5)
-        ));
-        assert_eq!(long.chars().count(), CANDIDATE_SUMMARY_MAX_CHARS + 1);
     }
 }

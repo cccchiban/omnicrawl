@@ -80,7 +80,7 @@ impl App {
             || self.channel_models_task.is_some()
             // 淘汰裁决还在后台跑：结果一到就要应答内核（内核正等这条响应）。
             || self.prune_in_flight > 0
-            // 工具建议还在后台跑：结果一到就要把提问发出去。
+            // 建议还在后台跑：结果一到就要把提问发出去。
             || self.suggest_in_flight > 0
             || self.state.has_running_activity()
             // 思考段还在逐帧铺开：必须按活动帧率短睡，否则显现会一顿一顿。

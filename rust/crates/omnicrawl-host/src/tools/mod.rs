@@ -62,19 +62,19 @@ pub use decision_prune::{
     evicted_call_ids_for, prune_options_from_config, PruneChannel, PruneClient, PruneOptions,
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
-pub use suggestion::{
-    discover_skill_candidates, insert_suggestions, skill_names, split_suggestion,
-    suggest_options_from_config, suggestion_lines, SuggestClient, SuggestKind, SuggestOptions,
-    SuggestionInputs, SKILL_SUGGESTION_LIMIT, SKILL_SUGGESTION_PREFIX,
-};
 pub use error::{ToolError, ToolOutcome};
-pub use fetcher::{fetch_batch, tls_session_cache_from_config, FetcherOptions, FetchBatch};
+pub use fetcher::{fetch_batch, tls_session_cache_from_config, FetchBatch, FetcherOptions};
 pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;
 pub use memory::MemoryOptions;
 pub use monitor::MonitorManager;
 pub use paths::WorkspacePaths;
 pub use registry::{RegistryOptions, ToolRegistry, IMPLEMENTED_TOOLS};
+pub use suggestion::{
+    insert_suggestions, keyword_client, keyword_client_from_config, split_suggestion,
+    suggest_options_from_config, suggestion_lines, KeywordChannel, KeywordClient, SkillSource,
+    SuggestKeywords, SuggestOptions, SKILL_SUGGESTION_PREFIX,
+};
 pub use tls_transport::TlsWebTransport;
 pub use tts::{tts_backend, TtsOptions};
 pub use web_search::{web_search_options_from_config, WebSearchOptions};

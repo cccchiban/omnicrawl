@@ -109,6 +109,10 @@ impl App {
     pub(crate) fn command_apply_model_view(&mut self, llm: LlmConfig) {
         self.llm = llm;
         self.state.model = self.llm.model.clone();
+        // 关键词识别跟着新渠道走：`/model` 切完还没写盘，读配置会拿到旧渠道。
+        self.suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &self.llm,
+        )));
         // 视觉判定随模型一起下发：内核的能力回落读的是握手时那份，只换模型名会让
         // 带图观察继续按旧模型路由（看得见图的模型也拿不到图片）。
         let native_vision = self.native_vision_override();

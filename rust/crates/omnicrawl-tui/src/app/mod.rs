@@ -170,7 +170,7 @@ use crate::ui::settings::{
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
     McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
     SettingsEvent,
-    SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSwitchRow, ToolSwitchRow,
+    SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow, ToolSwitchRow,
     TtsChange,
     TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
     WebSearchRow, SUBAGENT_ADVANCED_SPECS,
@@ -374,6 +374,19 @@ fn build_review_options(
     omnicrawl_host::review::review_options_from_config(llm, environment)
 }
 
+/// 关键词识别渠道：跟着**当前模型视图**走（而不是磁盘），命令行 `--model` 与运行期
+/// 切模型都还没写盘，读配置会让识别继续用旧渠道。
+fn keyword_channel(llm: &LlmConfig) -> omnicrawl_host::tools::KeywordChannel {
+    omnicrawl_host::tools::KeywordChannel {
+        model: llm.model.clone(),
+        provider: llm.provider.clone(),
+        protocol: llm.protocol.clone(),
+        base_url: llm.base_url.clone(),
+        api_key: llm.api_key.clone(),
+        timeout_seconds: omnicrawl_host::tools::suggestion::KEYWORDS_TIMEOUT_SECONDS,
+    }
+}
+
 /// 内核把回合同步失败写到 stderr 时用的前缀；与 `turn.submit` 的错误响应同源，只留后者。
 const KERNEL_TURN_FAILURE_PREFIX: &str = "[kernel] 回合失败：";
 
@@ -492,30 +505,19 @@ pub struct App {
     /// 与 `options` 一样对外可见：用例需要把这一步钉成「裁决不可用」，否则结果会随本机
     /// 配置（开关开没开、决策服务在不在）漂移。
     pub prune: Option<omnicrawl_host::tools::PruneOptions>,
-    /// 工具建议运行期（`[suggestion] tools`）：开启后用本地 BM25 从工具表候选里挑出本次要用的
-    /// 工具，把结果拼进 user 尾部；`None` 或没有命中时原文照发。
+    /// Skill 建议运行期（`[suggestion] skills`）：开启后由主模型识别技能词，再用本地 BM25 检索
+    /// 本机 Skill 索引，把命中的前几名注入 user 尾部；`None` 或没有命中时原文照发。
     ///
     /// 与 `prune` 一样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
-    pub suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// 子代理建议运行期（`[suggestion] subagents`）：开启后同样按 BM25 从可调度的角色里挑。
-    /// 与工具建议互相独立，可单开也可同时开。
-    ///
-    /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
-    pub subagent_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 建议运行期（`[suggestion] skills`）：开启后检索本机 Skill 索引，把 BM25 命中的
-    /// 前几名注入 user 尾部。与工具／子代理建议互相独立，三类同时开就并发算完。
-    ///
-    /// 同样对外可见：用例需要把它钉成「不可用」，否则结果会随本机配置漂移。
     pub skill_suggest: Option<omnicrawl_host::tools::SuggestOptions>,
-    /// Skill 建议的候选池覆盖：`None`（默认）表示按提问实时检索本机 Skill 索引。
+    /// 关键词识别器（主模型渠道）：识别本次提问的「技能词」。
     ///
-    /// 与 `suggest_roles` 同一用意：用例需要钉住候选，否则结果会随本机已装的 Skill 漂移。
+    /// 对外可见：用例钉住它才能让检索词确定下来，否则结果会随本机模型渠道漂移。
+    pub suggest_keywords: Option<Arc<dyn omnicrawl_host::tools::KeywordClient>>,
+    /// Skill 建议的候选池覆盖：`None`（默认）表示按技能词实时检索本机 Skill 索引。
+    ///
+    /// 与 `suggest_keywords` 同一用意：用例需要钉住候选，否则结果会随本机已装的 Skill 漂移。
     pub suggest_skills: Option<Vec<(String, String)>>,
-    /// 子代理建议的候选角色清单覆盖：`None`（默认）表示取工具表里的角色清单。
-    ///
-    /// 与 `suggest` 同一用意：用例需要钉住候选清单，否则结果会随本机的 `subagents.toml`
-    /// 与 `~/.OmniCrawl/agents` 漂移。
-    pub suggest_roles: Option<Vec<(String, String)>>,
     /// 提问托管的上下文：用户本回合的请求 + 本回合已有的顾问答复。
     custody_context: omnicrawl_host::tools::CustodyContext,
     /// 审查载荷里的两条会话事实（最近一条用户消息 + 最近一次 ask_user 问答）。
@@ -580,7 +582,7 @@ pub struct App {
     prune_results: Receiver<PruneTaskResult>,
     /// 仍在后台跑的裁决数：>0 时主循环按活动帧率轮询，结果一到就应答内核。
     prune_in_flight: usize,
-    /// 工具建议的请求通道：建议是网络请求（超时 20s），不能占着 UI 线程等。
+    /// 建议的请求通道：识别是一次模型请求，不能占着 UI 线程等。
     suggest_sender: Sender<SuggestTaskResult>,
     suggest_results: Receiver<SuggestTaskResult>,
     /// 仍在后台跑的建议数：>0 时主循环按活动帧率轮询，结果一到就提交回合。
@@ -594,7 +596,7 @@ pub struct App {
     update_notified: bool,
 }
 
-/// 工具建议的产出：拼好建议后待提交的提问。
+/// 建议的产出：拼好建议后待提交的提问。
 ///
 /// 提交由 UI 线程在 [`App::drain_suggest_results`] 里做——工作线程只负责算，
 /// 不碰内核连接（那是 UI 线程独占的）。
@@ -883,12 +885,14 @@ impl App {
         let prune = Some(omnicrawl_host::tools::prune_options_from_config(
             &environment,
         ));
-        // 建议运行期：开关在 `config.toml` 的 `[suggestion]`，匹配纯本地（BM25），不再走决策模型。
-        let [suggest, subagent_suggest, skill_suggest] =
-            omnicrawl_host::tools::suggest_options_from_config(&environment);
-        let suggest = Some(suggest);
-        let subagent_suggest = Some(subagent_suggest);
-        let skill_suggest = Some(skill_suggest);
+        // 建议运行期：开关在 `config.toml` 的 `[suggestion]`，关键词由主模型识别一次，
+        // 匹配本身纯本地（BM25），不走决策模型。
+        let skill_suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
+            &environment,
+        ));
+        let suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &llm,
+        )));
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
         state
@@ -924,10 +928,8 @@ impl App {
             review,
             custody,
             prune,
-            suggest,
-            subagent_suggest,
             skill_suggest,
-            suggest_roles: None,
+            suggest_keywords,
             suggest_skills: None,
             custody_context: omnicrawl_host::tools::CustodyContext::default(),
             review_context: omnicrawl_host::review::ReviewContext::default(),

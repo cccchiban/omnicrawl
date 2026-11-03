@@ -19,7 +19,7 @@ use super::state::{
     ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, EmbeddingField,
     Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
     DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
-    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
+    SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
 };
 use super::{channel_field_value, decision_field_value, embedding_field_value, row_label};
 use crate::ui::display_width;
@@ -1605,58 +1605,134 @@ fn render_subagents(frame: &mut Frame, area: Rect, state: &SettingsState, focuse
     );
 }
 
-/// 提问建议页：一行一个开关，选中即切换。
+/// 提问建议页：上方一个开关，下方本机 Skill 列表（回车看描述详情）。
+///
+/// ```text
+/// › 建议 Skill：开启
+///
+///   Skills
+///      agent-browser-cli            user
+///   ›  kimi-docx                    user
+/// ```
 fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
-    let rows = state.suggestion_rows();
+    if state.suggestion_detail_open() {
+        render_suggestion_detail(frame, area, state, focused);
+        return;
+    }
     let reserved = 4u16.min(area.height);
     let list_height = area.height.saturating_sub(reserved) as usize;
-    let offset = window_offset(state.suggestion_selected(), rows.len(), list_height);
+    let list_area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(1),
+        height: area.height.min(list_height.max(1) as u16),
+        ..area
+    };
+    let width = list_area.width as usize;
+    let skills = state.suggestion_skills();
+    let selected = state.suggestion_selected();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
-        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
-        let current = index == state.suggestion_selected();
-        let style = if current && focused {
+    // 开关行与「Skills」分区标题固定在上方，滚动只作用在 Skill 行上。
+    let value = if state.suggestion_enabled() { "开启" } else { "关闭" };
+    lines.push(Line::styled(
+        fit(
+            &format!(
+                "{} {}：{value}",
+                if selected == 0 { "›" } else { " " },
+                omnicrawl_config::features::suggestion::SUGGESTION_SKILLS_LABEL
+            ),
+            width,
+        ),
+        if selected == 0 && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
         } else {
             menu_text_style()
-        };
-        let value = if row.enabled { "开启" } else { "关闭" };
+        },
+    ));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        fit("  Skills", width),
+        theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD),
+    ));
+    let body_height = list_height.saturating_sub(lines.len());
+    let selected_skill = selected.saturating_sub(1);
+    let offset = window_offset(selected_skill, skills.len(), body_height);
+    for (index, row) in skills.iter().enumerate().skip(offset).take(body_height) {
+        let current = index + 1 == selected;
+        state.record_hit(row_hit(list_area, lines.len()), HitAction::PaneRow(index + 1));
         lines.push(Line::styled(
             fit(
                 &format!(
-                    "{} {}：{value}",
+                    "{}  {}  {}",
                     if current { "›" } else { " " },
-                    row.label
+                    row.name,
+                    row.scope
                 ),
-                area.width as usize,
+                width,
             ),
-            style,
+            if current && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                menu_text_style()
+            },
         ));
     }
-    if rows.is_empty() {
+    if skills.is_empty() && body_height > 0 {
         lines.push(Line::styled(
-            fit("（未读到建议开关）", area.width as usize),
+            fit("    （未发现 Skill）", width),
             theme::rich_style(theme::TEXT_MUTED),
         ));
     }
-    Paragraph::new(lines).render(
-        Rect {
-            x: area.x + 1,
-            width: area.width.saturating_sub(1),
-            height: area.height.min(list_height.max(1) as u16),
-            ..area
-        },
-        frame.buffer_mut(),
-    );
-
-    let tail = Rect {
-        y: area.y + area.height.saturating_sub(reserved),
-        height: reserved,
-        ..area
-    };
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
     render_pane_tail(
         frame,
-        tail,
+        Rect {
+            y: area.y + area.height.saturating_sub(reserved),
+            height: reserved,
+            ..area
+        },
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+/// Skill 详情：名称与作用域一行，描述折行铺开，只露 [`SUGGESTION_DETAIL_ROWS`] 行，其余靠 ↑↓ 滚。
+fn render_suggestion_detail(frame: &mut Frame, area: Rect, state: &SettingsState, _focused: bool) {
+    let reserved = 4u16.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let list_area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(1),
+        height: area.height.min(list_height.max(1) as u16),
+        ..area
+    };
+    let width = list_area.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(skill) = state.suggestion_detail_skill() {
+        lines.push(Line::styled(
+            fit(&format!("{}  {}", skill.name, skill.scope), width),
+            theme::rich_style(theme::ACCENT_WHITE).add_modifier(Modifier::BOLD),
+        ));
+        let description = if skill.description.is_empty() {
+            "（没有描述）"
+        } else {
+            skill.description.as_str()
+        };
+        let wrapped = crate::ui::wrap_display(description, width);
+        state.set_suggestion_detail_total(wrapped.len());
+        let start = state.suggestion_detail_scroll().min(wrapped.len().saturating_sub(1));
+        for row in wrapped.iter().skip(start).take(SUGGESTION_DETAIL_ROWS) {
+            lines.push(Line::styled(fit(row, width), body_text_style()));
+        }
+    }
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+    render_pane_tail(
+        frame,
+        Rect {
+            y: area.y + area.height.saturating_sub(reserved),
+            height: reserved,
+            ..area
+        },
         state.status(),
         state.pane_hint(),
         theme::rich_style(theme::TEXT_MUTED),

@@ -363,6 +363,14 @@ enabled = true
 [plugins]
 enabled = false
 
+# 提问建议：你每发一条新提问，宿主先让主模型（主渠道，思考强度固定 low）从提问里识别
+# 一组「技能词」（文档、表格、pdf、ppt、网页……），再拿这组词对本机 Skill 索引做本地
+# BM25 检索（检索单元是名称 + 描述 + 正文），命中的前三个在提问尾部追加一行
+# 「建议使用skills：pdf、docx。」再发给模型。匹配全在本地完成，只有识别那一步出网；
+# 识别不可用时退化为整条提问当检索词，一个词都没命中就原文照发，不会挡住你的输入。
+[suggestion]
+skills = false
+
 # SubAgent 设置已完全迁移到独立文件 subagents.toml（模板见 subagents.example.toml），
 # 支持为每个子代理单独指定模型。本段不再从 config.toml 读取，
 # 请直接编辑 subagents.toml 调整子代理全局边界与逐角色模型。

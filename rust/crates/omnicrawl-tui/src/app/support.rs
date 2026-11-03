@@ -404,16 +404,16 @@ pub(super) fn decision_switch_rows(switches: &DecisionSwitches) -> Vec<DecisionS
         .collect()
 }
 
-/// 提问建议开关的界面行：标签与顺序取自 `[suggestion]` 的开关表，值取配置。
-pub(super) fn suggestion_switch_rows(
-    config: &omnicrawl_config::features::suggestion::SuggestionConfig,
-) -> Vec<SuggestionSwitchRow> {
-    omnicrawl_config::features::suggestion::SUGGESTION_SWITCHES
+/// 提问建议页下方列表的 Skill 行（`list_all()` 已按名称排好序）。
+pub(super) fn suggestion_skill_rows(
+    metas: &[omnicrawl_extensions::skill::SkillMeta],
+) -> Vec<SuggestionSkillRow> {
+    metas
         .iter()
-        .map(|spec| SuggestionSwitchRow {
-            key: spec.key.to_string(),
-            label: spec.label.to_string(),
-            enabled: config.get(spec.key),
+        .map(|meta| SuggestionSkillRow {
+            name: meta.name.clone(),
+            scope: meta.scope.clone(),
+            description: meta.description.trim().to_string(),
         })
         .collect()
 }
@@ -870,10 +870,10 @@ pub(super) fn undo_message(result: &Value) -> String {
 }
 
 /// 可用角色（名称 + 定义里的一句话描述）：只有内核侧 SubAgent 启用时才有；宿主据此把
-/// `subagent` 声明给模型，子代理建议也直接拿这份清单当候选。
+/// `subagent` 声明给模型。
 ///
 /// 内置层按 [`AgentDefinitionRegistry::with_located_builtin`] 自行定位（与内核侧同一口径），
-/// 否则内置角色一个都扫不到，`subagent` 的参数枚举与子代理建议的候选都会是空的。
+/// 否则内置角色一个都扫不到，`subagent` 的参数枚举会是空的。
 pub(super) fn subagent_roles() -> Vec<(String, String)> {
     let env = ConfigEnvironment::from_process();
     let Ok(config) = load_subagent_config(&env, None) else {

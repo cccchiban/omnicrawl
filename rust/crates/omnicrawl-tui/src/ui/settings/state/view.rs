@@ -55,14 +55,26 @@ impl SettingsState {
     }
 
 
-    /// 提问建议页的行视图（渲染层用）。
-    pub fn suggestion_rows(&self) -> &[SuggestionSwitchRow] {
-        &self.suggestion.rows
+    /// 提问建议页的开关当前是否开启。
+    pub fn suggestion_enabled(&self) -> bool {
+        self.suggestion.enabled
+    }
+
+
+    /// 提问建议页下方列表里的 Skill（渲染层用）。
+    pub fn suggestion_skills(&self) -> &[SuggestionSkillRow] {
+        &self.suggestion.skills
     }
 
 
     pub fn suggestion_selected(&self) -> usize {
         self.suggestion.selected
+    }
+
+
+    /// 详情态下是否正显示某个 Skill 的描述。
+    pub fn suggestion_detail_open(&self) -> bool {
+        self.suggestion.detail.is_some()
     }
 
 
@@ -322,7 +334,13 @@ impl SettingsState {
                 }
             }
             Pane::Subagents => SUBAGENTS_HINT,
-            Pane::Suggestion => SUGGESTION_HINT,
+            Pane::Suggestion => {
+                if self.suggestion.detail.is_some() {
+                    SUGGESTION_DETAIL_HINT
+                } else {
+                    SUGGESTION_HINT
+                }
+            }
             Pane::Vision => VISION_HINT,
             Pane::ModelManagement => {
                 if self.model_management.form.is_some() {

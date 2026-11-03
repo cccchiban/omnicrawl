@@ -388,9 +388,27 @@ impl App {
 
     /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
     ///
-    /// 面板是整屏模态页，各页的滚动都跟着选中项走，因此滚轮不在这里接管。
+    /// 面板是整屏模态页，各页的滚动都跟着选中项走；唯一例外是提问建议页的 Skill 详情：
+    /// 那段描述本身比窗口长，滚轮直接滚它。
     pub(super) fn handle_settings_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self
+                    .settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.suggestion_detail_open()) =>
+            {
+                let Some(settings) = self.settings.as_mut() else {
+                    return;
+                };
+                settings.scroll_suggestion_detail(
+                    if mouse.kind == MouseEventKind::ScrollUp {
+                        -1
+                    } else {
+                        1
+                    },
+                );
+            }
             MouseEventKind::Moved => {
                 if let Some(settings) = self.settings.as_mut() {
                     let hover = settings.hit_at(mouse.column, mouse.row);

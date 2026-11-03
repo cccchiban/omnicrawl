@@ -140,10 +140,8 @@ impl SettingsState {
                 }
                 self.subagents.status = message;
             }
-            SettingsChange::SuggestionSwitch { key, enabled } => {
-                if let Some(row) = self.suggestion.rows.iter_mut().find(|row| &row.key == key) {
-                    row.enabled = *enabled;
-                }
+            SettingsChange::SuggestionSwitch { enabled } => {
+                self.suggestion.enabled = *enabled;
                 self.suggestion.status = message;
             }
             SettingsChange::Vision(change) => {

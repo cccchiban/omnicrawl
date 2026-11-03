@@ -221,10 +221,9 @@ fn runner_options(root: &Path) -> RunnerOptions {
         // 不做工具调用淘汰：「刚变老」的那批调用全部留在上下文里。
         prune: None,
         // 不做建议：user 原文照发。
-        suggest: None,
-        subagent_suggest: None,
         skill_suggest: None,
         skill_suggest_pinned: None,
+        suggest_keywords: None,
         prompt: None,
     }
 }

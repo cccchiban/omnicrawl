@@ -43,7 +43,9 @@ impl SettingsState {
                 already
             }
             Pane::Suggestion => {
-                let target = index.min(self.suggestion.rows.len().saturating_sub(1));
+                // 详情态下点列表以外的地方没有意义：命中区只画详情，先回列表再定位。
+                self.close_suggestion_detail();
+                let target = index.min(self.suggestion_row_count().saturating_sub(1));
                 let already = self.suggestion.selected == target;
                 self.suggestion.selected = target;
                 already

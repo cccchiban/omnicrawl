@@ -8,19 +8,16 @@ use super::*;
         vec![
             ToolSwitchRow {
                 name: "read".to_string(),
-                label: "读取文件内容".to_string(),
                 enabled: true,
                 registered: true,
             },
             ToolSwitchRow {
                 name: "powershell".to_string(),
-                label: "执行 PowerShell 命令".to_string(),
                 enabled: false,
                 registered: true,
             },
             ToolSwitchRow {
                 name: "tts_synthesize".to_string(),
-                label: "TTS 语音合成".to_string(),
                 enabled: true,
                 registered: false,
             },
@@ -498,10 +495,10 @@ use super::*;
                 name: "read".to_string(),
                 enabled: false,
             },
-            "读取文件内容已关闭。".to_string(),
+            "read已关闭。".to_string(),
         );
         assert!(!state.tool_rows()[0].enabled);
-        assert_eq!(state.status(), "读取文件内容已关闭。");
+        assert_eq!(state.status(), "read已关闭。");
 
         state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Down);
@@ -1705,74 +1702,88 @@ use super::*;
         assert_eq!(state.status(), "子任务功能已开启。");
     }
 
-    /// 提问建议页的初始值：三个开关全关（与配置默认值一致）。
-    fn suggestion_state() -> SettingsState {
-        SettingsState::new(
-            SettingsValues::new(128_000, 80, tool_rows()).with_suggestion_switches(vec![
-                SuggestionSwitchRow {
-                    key: "tools".to_string(),
-                    label: "建议工具".to_string(),
-                    enabled: false,
-                },
-                SuggestionSwitchRow {
-                    key: "subagents".to_string(),
-                    label: "建议子代理".to_string(),
-                    enabled: false,
-                },
-                SuggestionSwitchRow {
-                    key: "skills".to_string(),
-                    label: "建议 Skill".to_string(),
-                    enabled: true,
-                },
-            ]),
-        )
+fn suggestion_skill(name: &str, description: &str) -> SuggestionSkillRow {
+    SuggestionSkillRow {
+        name: name.to_string(),
+        scope: "user".to_string(),
+        description: description.to_string(),
     }
+}
 
-    #[test]
-    fn suggestion_page_toggles_each_switch() {
-        let mut state = suggestion_state();
-        goto(&mut state, "suggestion");
-        assert_eq!(state.pane(), Pane::Suggestion);
-        state.handle_key(KeyCode::Enter);
-        assert_eq!(state.suggestion_rows().len(), 3);
+/// 提问建议页的初始值：开关关闭，列表里两个 Skill。
+fn suggestion_state() -> SettingsState {
+    SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_suggestion(
+        false,
+        vec![
+            suggestion_skill("kimi-docx", "处理 Word 文档：读取、改写、导出。"),
+            suggestion_skill("kimi-pdf", "处理 PDF：抽取正文、转图片。"),
+        ],
+    ))
+}
 
-        // 每一行都产出目标状态（而不是「翻转」），宿主拿到就能直接写盘。
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
-                key: "tools".to_string(),
-                enabled: true,
-            }))
-        );
+/// 开关行选中即切换；下方 Skill 行不参与开关。
+#[test]
+fn the_suggestion_switch_toggles_from_its_own_row() {
+    let mut state = suggestion_state();
+    goto(&mut state, "suggestion");
+    assert_eq!(state.pane(), Pane::Suggestion);
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.suggestion_row_count(), 3, "开关行 + 两个 Skill");
+    assert_eq!(
+        state.handle_key(KeyCode::Enter),
+        Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
+            enabled: true
+        }))
+    );
+    // Skill 行上按左右键不该改开关。
+    state.handle_key(KeyCode::Down);
+    assert!(state.handle_key(KeyCode::Right).is_none());
+
+    state.apply_succeeded(
+        &SettingsChange::SuggestionSwitch { enabled: true },
+        "建议 Skill：开启。".to_string(),
+    );
+    assert!(state.suggestion_enabled(), "回填后开关状态跟着翻");
+    assert_eq!(state.status(), "建议 Skill：开启。");
+}
+
+/// Skill 行回车打开详情，`Esc` 回列表。
+#[test]
+fn a_skill_row_opens_its_description() {
+    let mut state = suggestion_state();
+    goto(&mut state, "suggestion");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
+    assert!(state.handle_key(KeyCode::Enter).is_none(), "只看详情，不改配置");
+    assert!(state.suggestion_detail_open());
+    assert_eq!(
+        state.suggestion_detail_skill().map(|row| row.name.as_str()),
+        Some("kimi-docx")
+    );
+    state.handle_key(KeyCode::Esc);
+    assert!(!state.suggestion_detail_open(), "Esc 回到列表");
+    assert_eq!(state.pane(), Pane::Suggestion);
+}
+
+/// 详情滚动夹在描述总行数之内，不会滚出空白。
+#[test]
+fn the_detail_scroll_stops_at_the_last_line() {
+    let mut state = suggestion_state();
+    goto(&mut state, "suggestion");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Enter);
+    // 渲染层在画的时候回报总行数；这里直接模拟一次 7 行。
+    state.set_suggestion_detail_total(7);
+    for _ in 0..10 {
         state.handle_key(KeyCode::Down);
-        assert_eq!(
-            state.handle_key(KeyCode::Right),
-            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
-                key: "subagents".to_string(),
-                enabled: true,
-            }))
-        );
-        // 末行本来就开着：再切换就是请求关闭。
-        state.handle_key(KeyCode::Down);
-        assert_eq!(
-            state.handle_key(KeyCode::Enter),
-            Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
-                key: "skills".to_string(),
-                enabled: false,
-            }))
-        );
-
-        // 回填后行状态与状态行跟着变。
-        state.apply_succeeded(
-            &SettingsChange::SuggestionSwitch {
-                key: "tools".to_string(),
-                enabled: true,
-            },
-            "建议工具：开启。".to_string(),
-        );
-        assert!(state.suggestion_rows()[0].enabled, "回填后开关状态跟着翻");
-        assert_eq!(state.status(), "建议工具：开启。");
     }
+    assert_eq!(state.suggestion_detail_scroll(), 7 - SUGGESTION_DETAIL_ROWS);
+    for _ in 0..20 {
+        state.handle_key(KeyCode::Up);
+    }
+    assert_eq!(state.suggestion_detail_scroll(), 0);
+}
 
     /// 视觉设置页的初始值：代理关闭、一条模型、原生视觉未配置。
     fn vision_state() -> SettingsState {

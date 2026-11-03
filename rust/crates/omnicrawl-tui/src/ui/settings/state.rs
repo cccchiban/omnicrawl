@@ -288,13 +288,14 @@ pub struct SubagentRow {
     pub section: &'static str,
 }
 
-/// 提问建议页的一行：一个建议开关（选中即切换并写盘）。
+/// 提问建议页下方列表里的一个 Skill（选中回车看详情）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SuggestionSwitchRow {
-    /// 配置键（`tools` / `subagents` / `skills`）。
-    pub key: String,
-    pub label: String,
-    pub enabled: bool,
+pub struct SuggestionSkillRow {
+    pub name: String,
+    /// `project` / `user` / `enterprise` / `path`。
+    pub scope: String,
+    /// frontmatter 里的描述（详情页整段铺开，可滚动查看）。
+    pub description: String,
 }
 
 /// 子任务设置的一次变更。
@@ -547,8 +548,10 @@ pub struct SettingsValues {
     pub decision_switches: Vec<DecisionSwitchRow>,
     /// 决策模型页自部署分区的初值（尺寸清单、环境与服务状态）。
     pub decision_local: DecisionLocalValues,
-    /// 提问建议页的三个开关初值（键与顺序取自 `[suggestion]` 的开关表）。
-    pub suggestion_switches: Vec<SuggestionSwitchRow>,
+    /// 提问建议页的开关初值（`[suggestion] skills`）。
+    pub suggestion_enabled: bool,
+    /// 提问建议页下方列表里的 Skill（本机已索引的那些）。
+    pub suggestion_skills: Vec<SuggestionSkillRow>,
     pub show_thinking: bool,
     pub memory_enabled: bool,
     pub tools: Vec<ToolSwitchRow>,
@@ -598,7 +601,8 @@ impl SettingsValues {
             embedding_enabled: false,
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
-            suggestion_switches: Vec::new(),
+            suggestion_enabled: false,
+            suggestion_skills: Vec::new(),
             show_thinking: true,
             memory_enabled: false,
             tools,
@@ -662,9 +666,14 @@ impl SettingsValues {
         self
     }
 
-    /// 覆盖提问建议页的三个开关。
-    pub fn with_suggestion_switches(mut self, switches: Vec<SuggestionSwitchRow>) -> Self {
-        self.suggestion_switches = switches;
+    /// 覆盖提问建议页的开关与 Skill 列表。
+    pub fn with_suggestion(
+        mut self,
+        enabled: bool,
+        skills: Vec<SuggestionSkillRow>,
+    ) -> Self {
+        self.suggestion_enabled = enabled;
+        self.suggestion_skills = skills;
         self
     }
 
@@ -870,8 +879,8 @@ pub enum SettingsChange {
     EmbeddingEnabled { enabled: bool },
     /// 决策模型页的一个功能开关（键取自配置域的开关表）。
     DecisionSwitch { key: String, enabled: bool },
-    /// 提问建议页的一个开关（键取自 `[suggestion]` 的开关表，写回 `config.toml`）。
-    SuggestionSwitch { key: String, enabled: bool },
+    /// 提问建议页的开关（写回 `config.toml` 的 `[suggestion] skills`）。
+    SuggestionSwitch { enabled: bool },
     /// 决策模型页的自部署分区：写尺寸/设备、准备环境、下载/删除尺寸、切渠道、启停服务。
     DecisionLocal(DecisionLocalChange),
     /// 保存一页表单：字段值按该页字段表的顺序给出。
@@ -912,7 +921,10 @@ const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Serv
 const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
 const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
 const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
-const SUGGESTION_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
+const SUGGESTION_HINT: &str = "↑↓ 选择  Enter 切换或看详情  Esc 返回";
+const SUGGESTION_DETAIL_HINT: &str = "↑↓/滚轮 滚动  Esc 返回列表";
+/// 提问建议页详情区一次显示的描述行数。
+pub const SUGGESTION_DETAIL_ROWS: usize = 4;
 const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
 const MODEL_LIST_HINT: &str = "↑↓ 选择渠道或参数  Enter 编辑或选择  N 新建  D 删除  Esc 返回";
@@ -1070,7 +1082,7 @@ pub struct SettingsState {
     mcp: McpState,
     subagents: SubagentsState,
     vision: VisionState,
-    /// 提问建议页：三个开关与一次切换后的状态文本。
+    /// 提问建议页：一个开关与下方的 Skill 列表。
     suggestion: SuggestionState,
     choices: ChoicesState,
     model_management: ModelManagementState,
@@ -1086,6 +1098,8 @@ pub struct SettingsState {
     sessions: SessionsState,
     /// 本次渲染记录下来的可点区域：渲染只拿 `&self`，所以用 `RefCell`。
     hits: RefCell<Vec<HitRegion>>,
+    /// 提问建议页详情正文上一次折行的总行数（渲染层写，滚轮/按键读）。
+    suggestion_detail_total: std::cell::Cell<usize>,
     /// 鼠标悬停所在的行（事件层写、渲染层读，用来加亮那一行）。
     hover: Option<HitAction>,
 }
@@ -1128,8 +1142,10 @@ impl SettingsState {
                 status: String::new(),
             },
             suggestion: SuggestionState {
-                rows: values.suggestion_switches,
+                enabled: values.suggestion_enabled,
+                skills: values.suggestion_skills,
                 selected: 0,
+                detail: None,
                 status: String::new(),
             },
             vision: VisionState {
@@ -1181,6 +1197,7 @@ impl SettingsState {
             tts: TtsState::new(values.tts),
             sessions: SessionsState::default(),
             hits: RefCell::new(Vec::new()),
+            suggestion_detail_total: std::cell::Cell::new(0),
             hover: None,
         }
     }

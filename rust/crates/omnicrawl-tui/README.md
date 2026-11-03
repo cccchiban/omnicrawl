@@ -499,8 +499,8 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 **标题换行**：工具卡标题（`● bash ls -la …`）超宽时**换行**而不是省略号截断，续行缩进到
 参数起始列（`ls` 正下方），参数列表能对齐着读。
 
-**建议独立成块**：`tool_suggestion` 把「当前请求建议调用tool：…」、`subagent_suggestion` 把
-「当前请求建议使用子代理：…」、`skill_suggestion` 把「建议使用skills：…」拼在 user 文本尾部，
+**建议独立成块**：`[suggestion] tools` 把「当前请求建议调用tool：…」、`subagents` 把
+「当前请求建议使用子代理：…」、`skills` 把「建议使用skills：…」拼在 user 文本尾部，
 会话区由 `split_suggestion` 把尾部连续的建议行**按行**拆出来，在 `user：` 标签之后各占一块渲染
 （提问正文仍另起行铺开）。
 

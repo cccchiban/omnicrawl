@@ -47,8 +47,8 @@ impl App {
             SettingsChange::DecisionSwitch { key, enabled } => {
                 self.apply_decision_switch(key, *enabled)?
             }
-            SettingsChange::SuggestionSwitch { key, enabled } => {
-                self.apply_suggestion_switch(key, *enabled)?
+            SettingsChange::SuggestionSwitch { enabled } => {
+                self.apply_suggestion_switch(*enabled)?
             }
             SettingsChange::DecisionLocal(change) => self.apply_decision_local(change)?,
             SettingsChange::ToolApproval { mode } => self.apply_tool_approval(mode)?,
@@ -86,17 +86,18 @@ impl App {
         ));
     }
 
-
-    /// 按最新配置重建建议运行期（`[suggestion]` 开关变更后调用）。
+    /// 按最新配置重建建议运行期（`[suggestion]` 开关变更或模型视图变更后调用）。
     ///
     /// 建议由宿主在提交前发起（它是唯一握得住「用户这一条原文」的一方），因此只需
-    /// 换掉运行期，没有要下发给内核的能力声明。三类建议各有一个开关，一并重建。
+    /// 换掉运行期，没有要下发给内核的能力声明；关键词识别器跟着 `self.llm` 走——命令行
+    /// `--model` 与运行期切模型都不写字盘，读配置会让识别继续用旧渠道。
     pub(super) fn rebuild_suggest(&mut self, environment: &ConfigEnvironment) {
-        let [suggest, subagent_suggest, skill_suggest] =
-            omnicrawl_host::tools::suggest_options_from_config(environment);
-        self.suggest = Some(suggest);
-        self.subagent_suggest = Some(subagent_suggest);
-        self.skill_suggest = Some(skill_suggest);
+        self.skill_suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
+            environment,
+        ));
+        self.suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
+            &self.llm,
+        )));
     }
 
 
