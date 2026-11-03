@@ -312,7 +312,8 @@ npm 平台包的宿主载荷也换成 Rust 产物：`packages/cli/scripts/build-
 记忆层（格式、排序与相似度、索引与读写、检索入口、写入清理、提示词段落、旧目录迁移）、
 artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，会话生命周期编排
 （重命名 / 导出 Markdown / 归档 / 取消归档 / 删除 / 丢弃空会话 / 带筛选的列表 / 项目路径 / artifact 读回）
-与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；一致性诊断同样是完整链路：
+与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；`/sessions` 一类的用户可见列表
+按 `is_empty_placeholder` 藏起 0 条占位（当前会话仍是例外），反复 `/new` 不再把占位堆进索引。一致性诊断同样是完整链路：
 转录/artifact 发现、条目重建与对照、全量扫描报告、备份与索引回写（`consistency.rs` + `check_consistency` /
 `rebuild_index`），最近一轮回退的存储事务（`undo.rs` 的计划构建 + `prepare_undo_last_turn` / `commit_undo_plan` / `undo_last_turn`）与 `read_active_events` 有效事件视图也已落地。运行期「已发往 Provider 的参数原文」提供者已落到投影器（`with_raw_arguments_provider`）；子任务事件与 Python 一样只落转录，不进会话投影。
 

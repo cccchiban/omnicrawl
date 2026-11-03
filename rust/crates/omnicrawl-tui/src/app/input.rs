@@ -499,7 +499,7 @@ impl App {
             return;
         };
         // 只重发文本：失败的那一轮已经交过一次图，重放图片会让同一张图在上下文里出现两遍。
-        self.submit_to_kernel(text, Vec::new());
+        self.retry_to_kernel(text);
     }
 
     /// 某一行所属的后台任务卡 `call_id`（只有 monitor 卡才算）。

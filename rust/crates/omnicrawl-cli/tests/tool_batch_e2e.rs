@@ -488,6 +488,36 @@ fn session_transcript(root: &Path) -> String {
     text
 }
 
+/// 转录里某类事件的条数：用来验证「同一句话只落一次」。
+fn transcript_count(root: &Path, event_type: &str) -> usize {
+    let mut count = 0;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                continue;
+            }
+            for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+                let Ok(value) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                if value["type"].as_str() == Some(event_type) {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
 /// 转录里指定类型的**第一条**事件（按 JSONL 逐行解析），方便按字段断言。
 fn transcript_event(root: &Path, event_type: &str) -> Value {
     let mut pending = vec![root.to_path_buf()];
@@ -782,6 +812,52 @@ fn run_followup_turn(kernel: &mut Kernel, turn_id: &str, user_text: &str) -> Vec
 }
 
 #[test]
+fn retried_turn_does_not_record_the_user_message_twice() {
+    // 第一次请求直接 5xx → 这一轮失败；随后宿主用 `retry` 重发同一条消息，这次成功。
+    let server = StubServer::spawn(vec![
+        Reply::Status(500, "网关抖动".to_string()),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("retry-turn-no-duplicate-user");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+
+    let frames = run_turn_expecting_error(&mut kernel, "同一条提问");
+    assert!(
+        frames.iter().any(|frame| frame.get("error").is_some()),
+        "上游 5xx 应当让本轮失败：{frames:?}"
+    );
+
+    // 宿主点「重试」：同一个 turn 语义的续跑帧，带 retry 标记。
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "turn.submit",
+        "params": {"turn_id": "turn-1-retry", "user_text": "同一条提问", "retry": true},
+    }));
+    let mut finished = false;
+    while !finished {
+        let frame = kernel.next_frame();
+        finished = frame["method"] == json!("turn.finished");
+    }
+
+    // 1) 转录里这条用户消息只能有一条：重试不是新的提问。
+    let count = transcript_count(&root, "user_message");
+    assert_eq!(count, 1, "重试不该再落一条 user_message");
+
+    // 2) 重试的请求里也不能把这句用户消息塞两遍。
+    let body = server.bodies().last().cloned().expect("第二次请求体");
+    let messages = serde_json::to_string(&body["messages"]).expect("序列化");
+    assert_eq!(
+        messages.matches("同一条提问").count(),
+        1,
+        "重试请求里的用户消息不该出现两遍：{messages}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn failed_turn_still_leaves_context_for_the_next_turn() {
     // 第一次请求直接 5xx（且 `request_retry_count` 缺省 = 1，不重试）→ 这一轮失败。
     let server = StubServer::spawn(vec![
@@ -825,6 +901,29 @@ fn failed_turn_still_leaves_context_for_the_next_turn() {
         messages.contains("第一句（失败那轮）"),
         "下一轮要带上失败那轮的任务：{messages}"
     );
+}
+
+#[test]
+fn repeated_question_without_the_retry_flag_is_a_new_turn() {
+    // 用户手动再发一遍同一句话：这不是重试，转录里就该有两条用户消息。
+    let server = StubServer::spawn(vec![
+        Reply::Text(FINAL_TEXT.to_string()),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("same-question-new-turn");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+
+    kernel.run_turn("同一句话", "忽略");
+    run_followup_turn(&mut kernel, "turn-2", "同一句话");
+
+    assert_eq!(
+        transcript_count(&root, "user_message"),
+        2,
+        "不带 retry 标记的重复提问是新的回合，不能被当成重试吞掉"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

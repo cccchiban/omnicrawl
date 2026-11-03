@@ -43,6 +43,48 @@ pub(crate) fn todo_item_from_value(value: &Value) -> Option<TodoItem> {
     })
 }
 
+/// 摘掉上一回合失败留下的「中断」占位回复。
+///
+/// 失败收尾会写一条 `session_interrupted` 终态，投影把它还原成普通的 assistant 文本；
+/// 重试是接着那句话继续，这个占位（连同它的默认文案）不该出现在重试的请求里。
+fn drop_trailing_interrupted_placeholder(messages: &mut Vec<Value>) {
+    // 连续重试会有多个占位（每次失败都再写一条终态），一起摘掉。
+    while let Some(last) = messages.last() {
+        if last.get("role").and_then(Value::as_str) != Some("assistant") {
+            return;
+        }
+        let content = last.get("content").and_then(Value::as_str).unwrap_or_default();
+        if content.trim() != omnicrawl_session::INTERRUPTED_TURN_DEFAULT_SUMMARY {
+            return;
+        }
+        messages.pop();
+    }
+}
+
+/// 历史末尾那条用户消息是否就是这次重试要续跑的提问。
+///
+/// 对不上（会话里没有它、或用户改过措辞）就当作普通提交，照常插入，免得请求丢了输入。
+fn ends_with_user_message(messages: &[Value], candidates: [&str; 2]) -> bool {
+    let Some(last) = messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+    else {
+        return false;
+    };
+    let text = match last.get("content") {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>()
+            .trim()
+            .to_string(),
+        _ => return false,
+    };
+    candidates.iter().any(|candidate| text == candidate.trim())
+}
+
 /// 本轮用户消息的模型侧形状：没有图片时是纯文本，有图片时是 OpenAI 多模态部件数组。
 ///
 /// 把 `TurnImageAttachment` 转成事件载荷那份 JSON 形状后交给
@@ -73,6 +115,9 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
     conn.borrow().cancel.store(false, Ordering::SeqCst);
 
     let user_text = params.user_text.clone();
+    // 重试上一回合：失败那轮早已把同一条用户消息落盘并放进了历史，这一轮只是接着跑。
+    // 再追加一次会让同一句话在转录、上下文与界面上各出现两遍。
+    let retrying = params.retry;
     // 随本轮提问粘贴的图片（`Ctrl+V`）：既是用户消息的一部分（落盘转录），
     // 也要进这一轮的请求。原生视觉没开时宿主根本不会送来（那边已拦下并提示）。
     let user_images = params.images.clone();
@@ -108,7 +153,16 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
         .as_ref()
         .map(|session| session.history.clone())
         .unwrap_or_default();
-    messages.push(user_message_value(&model_text, &user_images));
+    if retrying {
+        // 重试的是上一回合：它落盘的用户消息与「上一回合中断」占位都已在历史里。
+        // 摘掉占位让请求停在用户那句话上，而不是再插一遍同样的提问。
+        drop_trailing_interrupted_placeholder(&mut messages);
+    }
+    // 重试的那条消息已经在历史里就不再插入；对不上（或被还原过的短「继续」）照常插入，
+    // 否则请求就丢掉了这一轮的输入。
+    if !retrying || !ends_with_user_message(&messages, [&user_text, &model_text]) {
+        messages.push(user_message_value(&model_text, &user_images));
+    }
     // 宿主给了模型配置就由内核自己发请求；没给则维持 model.reply 代答的兼容路径。
     if !context_messages.is_empty() {
         let mut combined: Vec<Value> = Vec::with_capacity(context_messages.len() + messages.len());
@@ -184,11 +238,15 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
     let mut run_guard = TurnRunGuard::begin(&model_text, continue_requested, &recovered_pending);
     // 用户消息**先落盘**再发请求（与 Python `loop.py` 同序）：回合中途失败或被取消时，
     // 下一轮与恢复投影仍然看得到这次提问，而不是把整轮丢在转录之外。
+    //
+    // 重试例外：那条消息在失败那轮就已经落过盘，再写一次就是同一句话在转录里出现两遍。
     run_guard.todos = active_todos.borrow().clone();
-    if let Some(session) = conn.borrow_mut().session.as_mut() {
-        let payload = run_guard.user_message_payload(&user_images);
-        if let Err(detail) = session.append("user_message", payload) {
-            eprintln!("[kernel] 会话写入用户消息失败：{detail}");
+    if !retrying {
+        if let Some(session) = conn.borrow_mut().session.as_mut() {
+            let payload = run_guard.user_message_payload(&user_images);
+            if let Err(detail) = session.append("user_message", payload) {
+                eprintln!("[kernel] 会话写入用户消息失败：{detail}");
+            }
         }
     }
 

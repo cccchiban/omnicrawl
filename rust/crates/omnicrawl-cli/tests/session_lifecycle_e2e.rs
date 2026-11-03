@@ -467,6 +467,48 @@ fn session_lifecycle_commands_round_trip() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 反复 `/new` 不该把 0 条会话堆进列表：切走的上一条占位当场丢掉，
+/// 当前这条（也是占位）仍然要在列表里——否则刚 `/new` 完看不到自己。
+#[test]
+fn repeated_new_sessions_do_not_pile_up_empty_rows() {
+    let root = temp_root("new-placeholders");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({"root": root_param(&root)}));
+
+    let mut ids = Vec::new();
+    for step in 0..3 {
+        let started = kernel.request_ok(2 + step, "session.new", json!({}));
+        let id = started["session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!id.is_empty(), "新会话应当换 id：{started}");
+        ids.push(id);
+    }
+
+    let listed = kernel.request_ok(9, "session.list", json!({"limit": 10}));
+    let sessions = listed["sessions"].as_array().cloned().unwrap_or_default();
+    let visible: Vec<&str> = sessions
+        .iter()
+        .filter_map(|item| item["session_id"].as_str())
+        .collect();
+    let current = listed["current_session_id"].as_str().unwrap_or_default();
+    assert_eq!(
+        visible,
+        vec![current],
+        "只剩当前这条（其它 0 条占位已丢弃）：{listed}"
+    );
+    assert!(
+        sessions
+            .iter()
+            .all(|item| item["message_count"].as_u64() == Some(0)),
+        "当前这条仍是 0 条占位：{listed}"
+    );
+
+    kernel.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `session.append`：只收 assistant，注入的文本必须出现在下一轮的 `model.reply` 消息里。
 #[test]
 fn session_append_injects_assistant_message_into_next_request() {

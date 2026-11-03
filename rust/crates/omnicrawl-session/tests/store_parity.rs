@@ -202,6 +202,11 @@ fn run_step(
                     .get("archived_only")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                exclude_empty_placeholders: step
+                    .get("exclude_empty_placeholders")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                keep_empty_placeholder: step.get("keep_empty_placeholder").and_then(Value::as_str),
             };
             match store.list_sessions_filtered(&query) {
                 Ok(entries) => json!({

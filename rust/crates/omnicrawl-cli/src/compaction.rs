@@ -102,17 +102,21 @@ impl KernelSession {
     /// 在当前存储上新建一条会话并切换过去，返回新会话 id。
     ///
     /// 与 `open` 的新建分支同一口径（工作区缺省取进程当前目录）。
+    /// 切走之后丢掉上一条会话的空占位：反复 `/new` 不该在索引里堆一串 0 条会话。
+    /// 先建新的再丢旧的——建失败时当前会话必须原样留着。
     pub fn start_new(&mut self) -> Result<String, String> {
         let workspace = self.workspace.clone().unwrap_or_else(|| {
             std::env::current_dir()
                 .map(|path| path.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default()
         });
+        let previous = self.session_id.clone();
         let created = self
             .store
             .start_session(&workspace, "", utc_now())
             .map_err(|error| error.message().to_string())?;
         self.session_id = created.session_id;
+        let _ = self.store.discard_empty_session(&previous);
         self.reload_history()?;
         Ok(self.session_id.clone())
     }

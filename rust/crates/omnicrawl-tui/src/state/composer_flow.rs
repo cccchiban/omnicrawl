@@ -10,6 +10,18 @@ impl AppState {
         /// 开始一个回合：用户消息落进消息流，输入框清空，滚动回到底部。
         pub fn begin_turn(&mut self, turn_id: String, text: String, images: Vec<TurnImageAttachment>) {
             self.push_user_message(text, images);
+            self.start_turn(turn_id);
+        }
+
+        /// 重试上一回合：那条用户消息已经在消息流里，这里只把状态切回运行态。
+        ///
+        /// 再推一条用户记录就等于把同一句话显示两遍——重试是接着失败那次跑，
+        /// 不是一次新的提问。
+        pub fn begin_retry_turn(&mut self, turn_id: String) {
+            self.start_turn(turn_id);
+        }
+
+        fn start_turn(&mut self, turn_id: String) {
             self.turn = TurnState::Running { turn_id };
             self.turn_started = Some(Instant::now());
             self.status = None;

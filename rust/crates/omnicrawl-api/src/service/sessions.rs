@@ -18,6 +18,8 @@ impl AgentService {
         }
 
         /// `GET /sessions`：`archived` 为真时只看归档，否则只看活跃（归档默认隐藏）。
+        ///
+        /// 0 条的空占位不算会话：列表里只留恢复得出内容的会话。
         pub fn list_sessions(
             &self,
             limit: usize,
@@ -29,6 +31,8 @@ impl AgentService {
                 limit,
                 include_archived: false,
                 archived_only: archived,
+                exclude_empty_placeholders: true,
+                keep_empty_placeholder: None,
             };
             self.session_store()?
                 .list_sessions_filtered(&query)

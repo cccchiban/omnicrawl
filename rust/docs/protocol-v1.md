@@ -44,7 +44,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
 | `initialize` | 请求 | `{protocol_version, client?, model?, session?, tool_call_prune?}` | `{protocol_version, session_id}` |
-| `turn.submit` | 请求 | `{turn_id, user_text, images?}` | `{}`（回合已结束） |
+| `turn.submit` | 请求 | `{turn_id, user_text, images?, retry?}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `turn.undo` | 请求 | `{}` | `{kind, message_count, side_effects_reverted, unrestorable, history}` |
 | `session.settings` | 请求 | `{model?, compaction?}` | `{applied: [字段路径]}` |
@@ -66,6 +66,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
   这些图**是用户消息的一部分**——内核把它们写进 `user_message` 事件的 `images` 字段（转录、`/resume`
   与重启后的投影因此能重建同一条消息），并按 OpenAI 多模态部件形状放进本轮请求。宿主不应在未开启
   原生视觉时送来图片：图片没有去处（既不直送主模型，也没有 `[vision]` 代理），应就地提示用户。
+- `turn.submit` 的 `retry`（可选，缺省 `false`）声明「这一轮是重试上一回合」：内核**不追加**
+  `user_message` 事件，并把失败那轮留下的「上一回合中断」占位从请求历史里摘掉——同一句用户消息
+  因此在转录与请求里都只有一份。不带这个标记的重复提问仍是新回合。
 - 会话读写方法都要求**内核自持会话**（`initialize.session`），否则回 `-32600` 与「当前会话不受内核
   持有」；会话归属内核是因为转录、压缩边界与运行期历史都在那边，宿主只做投影。
 - `turn.undo` 撤销最近一轮：先把工作区按 `turn_snapshot` 事件的快照换回本轮开始前，再提交会话逻辑回退
@@ -187,6 +190,8 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
 - `session.list`：`archived=false` 列未归档，`archived=true` 只看归档；`limit` 由内核收敛到 1..=100，
   且**不**按工作区过滤（与 Python「列出全部会话，不再绑当前工作区」一致）。`current_session_id` 让宿主
   给当前项打标记，也顺便校准自己记的 id。
+  0 条的空占位（进程被强杀或反复 `/new` 留下、转录里只有 `session_started` / `session_closed`）不进
+  列表——它既恢复不出内容，也不该占「最近会话」的名额；当前会话本身是例外，始终列出。
 - `session.rename`：只改当前会话的标题；索引条目直接回给宿主展示。
 - `session.archive`：归档当前会话**并自动开一条新会话**（新 id 在 `new_session_id` 里，可能缺失——归档
   已成功但新建失败时只在 stderr 记日志，不回滚归档）。归档会话从默认列表隐藏。
@@ -194,7 +199,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
   先自动解除归档，切换前会丢掉当前的空占位会话。`include_history` 缺省 `true`，`history` 一并回给
   宿主做消息回放；宿主已有 `session.events` 时可传 `false`，跳过整份历史的克隆与传输（回包里
   `history` 为空数组）。
-- `session.new`：清空当前对话并开新会话。
+- `session.new`：清空当前对话并开新会话；切走的上一条若是 0 条空占位则当场丢弃（新会话建失败时不动当前会话）。
 - `session.history`：只读的用户提示历史（独立于会话转录），空 `query` 表示不过滤。
 - `session.events`：只读的**回退投影后**的有效事件流（`read_active_events`，被 `turn_undone` 撤掉的轮次
   不出现），与 Python `current_session_events()` 同源。宿主用它重建历史页：消息、工具卡、计划清单、

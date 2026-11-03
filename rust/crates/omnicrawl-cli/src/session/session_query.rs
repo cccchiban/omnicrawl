@@ -223,12 +223,16 @@ impl SessionQuery {
         match self {
             Self::List(params) => {
                 // 不按工作区过滤：与 Python「列出全部会话，不再绑当前工作区」一致。
+                // 0 条的空占位不算会话：进程被强杀留下的占位会话既不占「最近会话」的名额，
+                // 也恢复不出任何内容，列出来只是噪声。
                 let query = SessionListQuery {
                     workspace_root: None,
                     project_path: None,
                     limit: params.limit as usize,
                     include_archived: false,
                     archived_only: params.archived,
+                    exclude_empty_placeholders: true,
+                    keep_empty_placeholder: Some(current.as_str()),
                 };
                 let entries = store.list_sessions_filtered(&query).map_err(|error| {
                     ErrorObject::new(

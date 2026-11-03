@@ -156,6 +156,15 @@ impl App {
 
     /// 把一次提交发给内核：`turn.start` 在进内核之前分发，界面显示最终文本。
     pub(super) fn submit_to_kernel(&mut self, text: String, images: Vec<PendingImage>) {
+        self.submit_turn(text, images, false)
+    }
+
+    /// 重试上一回合：原样重发那条用户消息，但**不再**新增一条用户记录与转录事件。
+    pub(super) fn retry_to_kernel(&mut self, text: String) {
+        self.submit_turn(text, Vec::new(), true)
+    }
+
+    fn submit_turn(&mut self, text: String, images: Vec<PendingImage>, retry: bool) {
         if self.kernel_lost {
             // 内核对不上就不发；顺手丢掉本轮的活动 Skill 上下文，免得落到下一轮。
             self.pending_skill_context = None;
@@ -177,11 +186,16 @@ impl App {
                 detail: String::new(),
             })
             .collect::<Vec<_>>();
-        self.state
-            .begin_turn(turn_id.clone(), text.clone(), images.clone());
+        if retry {
+            // 失败那轮的用户记录还在消息流里，重试只把状态切回运行态。
+            self.state.begin_retry_turn(turn_id.clone());
+        } else {
+            self.state
+                .begin_turn(turn_id.clone(), text.clone(), images.clone());
+        }
         // 终端标签页的会话标题按内核同一规则本地跟进（首条用户消息即命名）：
         // 若等内核回执再查索引，标签页会在整轮请求期间一直停在产品名。
-        if !self.session_has_messages {
+        if !self.session_has_messages && !retry {
             self.session_title = omnicrawl_session::clean_title(&text);
             self.session_has_messages = true;
         }
@@ -206,6 +220,7 @@ impl App {
             turn_id,
             user_text: text,
             images,
+            retry,
         }));
         self.pending_turn_submit = Some(id);
     }

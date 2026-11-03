@@ -173,12 +173,15 @@ impl AgentService {
         }
 
         /// `GET /projects/overview`：显式项目 + 会话索引稳定目录的只读聚合。
+        ///
+        /// 会话计数只算有内容的会话：空占位不该把项目的会话数顶上去。
         pub fn project_overview(&self) -> Result<Vec<ProjectOverview>, ApiError> {
             let sessions = self
                 .session_store()?
                 .list_sessions_filtered(&SessionListQuery {
                     limit: 100,
                     include_archived: true,
+                    exclude_empty_placeholders: true,
                     ..SessionListQuery::default()
                 })
                 .map_err(session_store_error)?;

@@ -69,6 +69,16 @@ pub struct SessionListQuery<'a> {
     pub limit: usize,
     pub include_archived: bool,
     pub archived_only: bool,
+    /// 隐藏还没有任何消息的空占位会话（见 `SessionStore::is_empty_placeholder`）。
+    ///
+    /// 默认关：Python 的 `list_sessions` 会把占位会话一起返回，对照数据集按那个口径固定。
+    /// 面向用户的列表（宿主 `/sessions`、设置面板、HTTP `/sessions`）打开它——占位会话
+    /// 既恢复不出内容，也不该占掉「最近会话」的名额。
+    pub exclude_empty_placeholders: bool,
+    /// `exclude_empty_placeholders` 的例外：这条会话即使是空占位也照列。
+    ///
+    /// 内核传当前会话：刚 `/new` 完还没说话时，列表里看不到自己那条才是怪事。
+    pub keep_empty_placeholder: Option<&'a str>,
 }
 
 impl Default for SessionListQuery<'_> {
@@ -79,6 +89,8 @@ impl Default for SessionListQuery<'_> {
             limit: 10,
             include_archived: false,
             archived_only: false,
+            exclude_empty_placeholders: false,
+            keep_empty_placeholder: None,
         }
     }
 }
@@ -452,10 +464,43 @@ impl SessionStore {
         } else if !query.include_archived {
             entries.retain(|entry| entry.archived_at.is_none());
         }
+        if query.exclude_empty_placeholders {
+            let keep = query.keep_empty_placeholder;
+            entries.retain(|entry| {
+                Some(entry.session_id.as_str()) == keep || !self.is_empty_placeholder(entry)
+            });
+        }
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
         let limit = query.limit.clamp(1, 100);
         entries.truncate(limit);
         Ok(entries)
+    }
+
+    /// 是否为空占位会话：还没有任何消息、未归档，且转录里除了
+    /// `EMPTY_SESSION_EVENT_TYPES` 之外什么都没有。
+    ///
+    /// 与 `discard_empty_session` 同一判据，只是不删文件——列表用它把占位会话藏起来。
+    /// 索引能直接判定的情形（只有 `session_started`）不读转录：会话目录里这类占位
+    /// 动辄上千条，逐条读盘会把 `/sessions` 拖成秒级。
+    pub fn is_empty_placeholder(&self, entry: &SessionIndexEntry) -> bool {
+        if entry.archived_at.is_some() || entry.message_count > 0 {
+            return false;
+        }
+        if entry.event_count == 1 && entry.last_event_type == "session_started" {
+            return true;
+        }
+        if entry.event_count == 0
+            || !EMPTY_SESSION_EVENT_TYPES.contains(&entry.last_event_type.as_str())
+        {
+            // 最后一条是业务事件：不用读转录就能判定不是占位。
+            return entry.event_count == 0;
+        }
+        let Ok(events) = self.read_events_locked(entry) else {
+            return false;
+        };
+        active_session_events_owned(events)
+            .iter()
+            .all(|event| EMPTY_SESSION_EVENT_TYPES.contains(&event.event_type.as_str()))
     }
 
     /// 列出索引中出现过的项目路径：按大小写折叠去重，再按同一折叠键排序。
@@ -1277,6 +1322,82 @@ mod tests {
                 .as_deref(),
             Some("session_started")
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 0 条的空占位不是会话：列表默认不列它，但确实有内容的会话照列。
+    #[test]
+    fn empty_placeholders_are_hidden_from_the_session_list() {
+        let root = std::env::temp_dir().join(format!(
+            "omnicrawl-session-empty-placeholder-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let store = SessionStore::open(&root);
+        store.ensure().expect("会话根应当就绪");
+
+        let placeholder = store
+            .start_session("D:/work", "", Utc::now())
+            .expect("应当能建会话");
+        let closed = store
+            .start_session("D:/work", "", Utc::now())
+            .expect("应当能建会话");
+        store
+            .append_event(
+                &closed.session_id,
+                "session_closed",
+                Map::new(),
+                None,
+                Utc::now(),
+            )
+            .expect("应当能补写关闭事件");
+        let talked = store
+            .start_session("D:/work", "有内容", Utc::now())
+            .expect("应当能建会话");
+        store
+            .append_event(
+                &talked.session_id,
+                "user_message",
+                json!({"content": "问"}).as_object().cloned().unwrap(),
+                None,
+                Utc::now(),
+            )
+            .expect("应当能追加用户消息");
+
+        let visible = store
+            .list_sessions_filtered(&SessionListQuery {
+                limit: 10,
+                exclude_empty_placeholders: true,
+                ..SessionListQuery::default()
+            })
+            .expect("应当能列会话");
+        let ids: Vec<&str> = visible
+            .iter()
+            .map(|entry| entry.session_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![talked.session_id.as_str()],
+            "只应留下有内容的会话"
+        );
+
+        // Python 口径（默认关）照旧把占位一起列出来，对照数据集才不会漂。
+        let all = store
+            .list_sessions_filtered(&SessionListQuery::default())
+            .expect("应当能列会话");
+        assert_eq!(all.len(), 3, "关掉过滤时占位照旧可见");
+        let placeholders: Vec<&str> = all
+            .iter()
+            .filter(|entry| store.is_empty_placeholder(entry))
+            .map(|entry| entry.session_id.as_str())
+            .collect();
+        assert!(
+            placeholders.contains(&placeholder.session_id.as_str())
+                && placeholders.contains(&closed.session_id.as_str()),
+            "只有 session_started 与 session_started+session_closed 算占位：{placeholders:?}"
+        );
+        assert!(!placeholders.contains(&talked.session_id.as_str()));
 
         let _ = fs::remove_dir_all(&root);
     }

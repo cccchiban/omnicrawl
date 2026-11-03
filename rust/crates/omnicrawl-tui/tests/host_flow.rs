@@ -2598,9 +2598,25 @@ fn retry_exhausted_failure_resets_the_status_line_and_offers_retry() {
         "问一句",
         "重试要原样重发那条用户消息"
     );
+    assert_eq!(
+        resent.params.clone().unwrap_or(Value::Null)["retry"],
+        json!(true),
+        "重试帧必须标记 retry，内核据此不再重复落一条 user_message"
+    );
 
     // 用过的失败记录不再提供按钮，避免连点重复重发。
     assert!(!harness.app.state.failure_is_retryable(index));
+
+    // 重试是接着失败那次跑，不是新的提问：消息流里不能出现第二条一模一样的用户消息，
+    // 否则同一句话在界面上显示两遍（内核侧对应地也不再落一条 `user_message`）。
+    let user_messages = harness
+        .app
+        .state
+        .records
+        .iter()
+        .filter(|record| matches!(record, Record::User(user) if user.text == "问一句"))
+        .count();
+    assert_eq!(user_messages, 1, "重试不该再推一条用户消息");
 }
 
 /// 设置面板打开时粘贴要落进当前字段的输入态，且不落到主输入框。

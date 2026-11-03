@@ -636,6 +636,12 @@ pub struct TurnSubmitParams {
     /// 随本轮提问一起送来的图片；空数组表示纯文本提问（旧宿主不给时的行为）。
     #[serde(default)]
     pub images: Vec<TurnImageAttachment>,
+    /// 这一轮是「重试上一回合」而不是新的提问。
+    ///
+    /// 为真时内核**不再追加** `user_message` 事件，也不把它当作新的一轮历史：失败那轮
+    /// 早就落过同一条消息，再落一次会让同一句话在转录与上下文里各出现两遍。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry: bool,
 }
 
 /// `session.list` 负载：`archived` 为真时只看归档，`limit` 由内核收敛到 1..=100。
