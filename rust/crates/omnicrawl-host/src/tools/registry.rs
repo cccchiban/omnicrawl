@@ -229,8 +229,7 @@ pub struct ToolRegistry {
     mcp_tool_names: BTreeSet<String>,
     mcp_resource_names: Vec<(String, String)>,
     mcp_prompt_names: Vec<(String, String)>,
-    /// SubAgent 角色清单（名称 + 定义里的一句话描述）：与 `subagent` 工具的角色枚举同源，
-    /// 子代理建议的候选直接取这里，不需要第二处发现逻辑。
+    /// SubAgent 角色清单（名称 + 定义里的一句话描述）：与 `subagent` 工具的角色枚举同源。
     subagent_roles: Vec<(String, String)>,
     specs: Vec<ToolSpec>,
     cancel: CancelToken,
@@ -1360,7 +1359,11 @@ mode = \"review\"
             .execute(&call("memory_delete", json!({"memory_ids": [memory_id]})))
             .expect("memory_delete 应当被本宿主处理");
         assert!(deleted.ok, "{}", deleted.output);
-        assert!(deleted.output.contains("\"deleted_count\": 1"), "{}", deleted.output);
+        assert!(
+            deleted.output.contains("\"deleted_count\": 1"),
+            "{}",
+            deleted.output
+        );
     }
 
     /// 联网工具的传输桩：搜索端点返回结果页，其余返回普通页面。

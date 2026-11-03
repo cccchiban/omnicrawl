@@ -227,8 +227,13 @@ mod tests {
         .expect("列出成功");
         assert_eq!(names(&project_only), vec!["alpha", "beta"]);
 
-        let all = skill_search(&root, &env(&root), &plain(), &arguments(json!({"scope": "all"})))
-            .expect("列出成功");
+        let all = skill_search(
+            &root,
+            &env(&root),
+            &plain(),
+            &arguments(json!({"scope": "all"})),
+        )
+        .expect("列出成功");
         let all_names = names(&all);
         assert!(all_names.contains(&"alpha".to_string()), "{all}");
         assert!(all_names.contains(&"beta".to_string()), "{all}");
@@ -308,7 +313,11 @@ mod tests {
         assert_eq!(names(&output), expected, "按重排顺序返回：{output}");
 
         let recorded = seen.lock().expect("记录未被毒化").clone();
-        assert_eq!(recorded.len(), 3, "候选池比十条上限宽时才需要更宽的池：{recorded:?}");
+        assert_eq!(
+            recorded.len(),
+            3,
+            "候选池比十条上限宽时才需要更宽的池：{recorded:?}"
+        );
         assert!(
             recorded.iter().all(|text| text.contains("名称：")),
             "候选描述应带名称：{recorded:?}"

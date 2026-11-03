@@ -87,7 +87,8 @@ pub fn tls_session_cache_from_config(
 ) -> Option<Arc<omnicrawl_tls::session_cache::SessionCache>> {
     let configuration =
         omnicrawl_config::features::tls_resumption::load_tls_resumption_configuration(
-            environment, None,
+            environment,
+            None,
         )
         .ok()?;
     if !configuration.enabled {
@@ -731,9 +732,8 @@ fn meta_url_pattern() -> &'static Regex {
 
 fn title_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("title 正则应当合法")
-    })
+    PATTERN
+        .get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("title 正则应当合法"))
 }
 
 fn whitespace_pattern() -> &'static Regex {
@@ -744,9 +744,9 @@ fn whitespace_pattern() -> &'static Regex {
 /// 提取正文文本：优先 `main` → `article` → `body`，剔除脚本与样式后压缩空白。
 pub fn extract_main_text(html_text: &str, max_chars: usize) -> String {
     let document = Html::parse_document(html_text);
-    let container = container_selectors().iter().find_map(|selector| {
-        document.select(selector).next()
-    });
+    let container = container_selectors()
+        .iter()
+        .find_map(|selector| document.select(selector).next());
     let mut text = String::new();
     match container {
         Some(element) => append_text(element, &mut text),

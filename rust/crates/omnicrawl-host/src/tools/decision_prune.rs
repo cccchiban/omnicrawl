@@ -185,9 +185,7 @@ impl PruneClient for DecisionPruneClient {
         let channel = request.channel;
         let api_key = channel.resolve_api_key();
         if api_key.is_empty() && crate::decision_wire::requires_api_key(&channel.mode) {
-            return Err(
-                "缺少 API Key：请填写该决策渠道的 api_key。".to_string(),
-            );
+            return Err("缺少 API Key：请填写该决策渠道的 api_key。".to_string());
         }
         let state = prune_state(request.task, request.groups);
         let questions = prune_questions(request.groups);

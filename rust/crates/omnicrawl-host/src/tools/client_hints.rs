@@ -147,7 +147,10 @@ mod tests {
             origin_of("http://example.com:8080/x").as_deref(),
             Some("http://example.com:8080")
         );
-        assert_eq!(origin_of("https://user:pw@e.com/x"), Some("https://e.com".into()));
+        assert_eq!(
+            origin_of("https://user:pw@e.com/x"),
+            Some("https://e.com".into())
+        );
         assert_eq!(origin_of("not a url"), None);
     }
 
@@ -278,12 +281,18 @@ mod tests {
         let _serial = super::test_guard();
         // 只有 Chromium 系有这套高熵头；Firefox/Safari 必须为空。
         for family in ["firefox", "safari"] {
-            assert!(platform_version(family).is_none(), "{family} 不该有平台版本");
+            assert!(
+                platform_version(family).is_none(),
+                "{family} 不该有平台版本"
+            );
         }
         // 档案模拟的是桌面 Windows Chrome，值与编译平台无关。
         for family in ["chrome", "edge"] {
             let value = platform_version(family).expect("Chromium 系应当有平台版本");
-            assert!(value.starts_with('"') && value.ends_with('"'), "{family} 值需要带引号");
+            assert!(
+                value.starts_with('"') && value.ends_with('"'),
+                "{family} 值需要带引号"
+            );
         }
     }
 }

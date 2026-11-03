@@ -1409,13 +1409,16 @@ mod tests {
         .expect("写入应当成功");
         assert_eq!(base.list_notes().len(), 1);
 
-        let output = kb_delete(&base, &arguments(json!({"path": "topics/gone"})))
-            .expect("删除应当成功");
+        let output =
+            kb_delete(&base, &arguments(json!({"path": "topics/gone"}))).expect("删除应当成功");
         let parsed: Value = serde_json::from_str(&output).expect("结果是 JSON");
         assert_eq!(parsed["deleted"]["title"], "待删", "{output}");
         assert_eq!(parsed["deleted"]["path"], "topics/gone.md", "{output}");
         assert!(base.list_notes().is_empty(), "索引里不该再有这篇");
-        assert!(!root.join("topics").join("gone.md").is_file(), "文件应当已删除");
+        assert!(
+            !root.join("topics").join("gone.md").is_file(),
+            "文件应当已删除"
+        );
         let index = std::fs::read_to_string(root.join("INDEX.md")).expect("索引已重建");
         assert!(!index.contains("待删"), "索引正文不该残留：{index}");
     }
@@ -1441,8 +1444,12 @@ mod tests {
         let base = KnowledgeBase::new(&root);
         base.refresh_index().expect("索引已建立");
         for name in ["INDEX.md", "README.md"] {
-            std::fs::write(root.join(name), "# 由知识库维护
-").expect("写文件");
+            std::fs::write(
+                root.join(name),
+                "# 由知识库维护
+",
+            )
+            .expect("写文件");
             let error = kb_delete(&base, &arguments(json!({"path": name})))
                 .expect_err("不该允许删除自动维护的文件");
             assert!(

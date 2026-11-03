@@ -353,8 +353,7 @@ fn strip_highlight(text: &str) -> String {
 fn highlight_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
-        Regex::new(r"(?i)</?(?:em|b|strong|i|mark|span|u)\b[^>]*>")
-            .expect("高亮标签正则应当合法")
+        Regex::new(r"(?i)</?(?:em|b|strong|i|mark|span|u)\b[^>]*>").expect("高亮标签正则应当合法")
     })
 }
 
@@ -394,10 +393,8 @@ fn parse_github(html_text: &str) -> Vec<WebSearchResult> {
 fn github_anchor_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
-        Regex::new(
-            r#"<div class="search-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
-        )
-        .expect("github 锚点")
+        Regex::new(r#"<div class="search-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#)
+            .expect("github 锚点")
     })
 }
 
@@ -444,8 +441,9 @@ fn parse_arxiv(html_text: &str) -> Vec<WebSearchResult> {
 
 fn arxiv_block_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
-    PATTERN
-        .get_or_init(|| Regex::new(r#"(?s)<li class="arxiv-result">(.*?)</li>"#).expect("arxiv 区块"))
+    PATTERN.get_or_init(|| {
+        Regex::new(r#"(?s)<li class="arxiv-result">(.*?)</li>"#).expect("arxiv 区块")
+    })
 }
 
 fn arxiv_title_pattern() -> &'static Regex {
@@ -780,10 +778,7 @@ fn bm25_order(query: &str, candidates: &[String]) -> Option<Vec<usize>> {
     if query.trim().is_empty() {
         return None;
     }
-    let documents: Vec<Vec<String>> = candidates
-        .iter()
-        .map(|text| bm25::tokenize(text))
-        .collect();
+    let documents: Vec<Vec<String>> = candidates.iter().map(|text| bm25::tokenize(text)).collect();
     let hits = bm25::rank(&bm25::tokenize(query), &documents);
     if hits.is_empty() {
         return None;
@@ -837,7 +832,9 @@ fn decision_order(
     let order = match rerank.client.rank(&request) {
         Ok(order) => order,
         Err(error) => {
-            diagnostics::warn(format!("[host] 联网搜索重排不可用，改用 BM25 排序：{error}"));
+            diagnostics::warn(format!(
+                "[host] 联网搜索重排不可用，改用 BM25 排序：{error}"
+            ));
             return None;
         }
     };
@@ -2844,7 +2841,10 @@ mod tests {
             assert!(normalized.contains(kept), "应保留 {kept}：{normalized}");
         }
         for dropped in ["甲5", "乙5", "乙9"] {
-            assert!(!normalized.contains(dropped), "应截掉 {dropped}：{normalized}");
+            assert!(
+                !normalized.contains(dropped),
+                "应截掉 {dropped}：{normalized}"
+            );
         }
     }
 
@@ -3039,16 +3039,13 @@ mod tests {
                 .lock()
                 .expect("记录未被毒化")
                 .push(request.candidates.len());
-            self.seen_orders
-                .lock()
-                .expect("记录未被毒化")
-                .push(
-                    request
-                        .candidates
-                        .iter()
-                        .map(|text| candidate_index(text))
-                        .collect(),
-                );
+            self.seen_orders.lock().expect("记录未被毒化").push(
+                request
+                    .candidates
+                    .iter()
+                    .map(|text| candidate_index(text))
+                    .collect(),
+            );
             let first = request
                 .candidates
                 .first()

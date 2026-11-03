@@ -156,11 +156,7 @@ fn lock_for(paths: &WorkspacePaths, path: &Path) -> Arc<ProcessFileLock> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .entry(key.clone())
-        .or_insert_with(|| {
-            Arc::new(ProcessFileLock::new(
-                lock_root.join(lock_file_name(&key)),
-            ))
-        })
+        .or_insert_with(|| Arc::new(ProcessFileLock::new(lock_root.join(lock_file_name(&key)))))
         .clone()
 }
 
@@ -189,7 +185,11 @@ fn sweep_lock_root(root: &Path) {
     let _ = sweep_lock_root_once(root, LOCK_SWEEP_MAX_AGE_SECONDS, SystemTime::now());
 }
 
-fn sweep_lock_root_once(root: &Path, max_age_seconds: u64, now: SystemTime) -> std::io::Result<usize> {
+fn sweep_lock_root_once(
+    root: &Path,
+    max_age_seconds: u64,
+    now: SystemTime,
+) -> std::io::Result<usize> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         // 锁目录还没建：第一次编辑自然会建，不需要在这里代劳。
@@ -368,10 +368,7 @@ mod tests {
         // 锁目录单独放在工作区之外（生产同理：用户配置目录），这里用工作区的兄弟目录模拟。
         let lock_root = std::env::temp_dir().join(format!("omnicrawl-tui-edit-{name}-locks"));
         let _ = std::fs::remove_dir_all(&lock_root);
-        (
-            WorkspacePaths::new(&root).with_lock_root(&lock_root),
-            root,
-        )
+        (WorkspacePaths::new(&root).with_lock_root(&lock_root), root)
     }
 
     fn args(value: Value) -> Map<String, Value> {
@@ -398,9 +395,7 @@ mod tests {
             .map(|entry| entry.path())
             .collect();
         assert_eq!(locks.len(), 1, "每个被编辑的文件一把锁：{locks:?}");
-        assert!(locks[0]
-            .to_string_lossy()
-            .ends_with(".omnicrawl.edit.lock"));
+        assert!(locks[0].to_string_lossy().ends_with(".omnicrawl.edit.lock"));
         let content = std::fs::read_to_string(&locks[0]).unwrap_or_default();
         assert!(content.starts_with("pid="), "锁文件应写入持有者：{content}");
     }
