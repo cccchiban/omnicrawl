@@ -49,7 +49,7 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 `load_approval_mode`（`mode` 键 > `auto_review` > `auto_approve` > 默认审查）、
 `save_approval_mode`、`load_approval_review_model`。
 
-**`features/tools`**：27 个内置工具开关的键表与界面文案、默认表（除 `powershell` 全开）、
+**`features/tools`**：32 个内置工具开关的键表、默认表（除 `powershell` 全开）、
 旧版按作用域拆分的记忆工具名归一化、`load_tool_switches` / `load_disabled_tools`、
 批量写回（先全校验再一次性写盘；写回顺序跟调用方给的顺序）。
 
@@ -139,19 +139,20 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 不重试）交由出站落点 `omnicrawl-host::decision_wire::post_body` 消费。
 
 同一文件里的 `[features]` 段是功能开关（`DECISION_SWITCHES` 是唯一来源：读盘、写盘、界面与
-测试都读它；新增开关只需往表里加一项）。当前九项：
+测试都读它；新增开关只需往表里加一项）。当前七项：
 `tool_call_review`（工具调用审查使用决策模型）、`memory_search_rerank`（记忆搜索使用决策模型
 排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`skill_search_rerank`（Skill 检索使用
 决策模型排序）、`web_search_rerank`（联网搜索使用决策模型排序）、`ask_user_custody`（提问由
-决策模型自动作答）、`tool_call_prune`（旧一轮工具调用按需淘汰）、`tool_suggestion`（新提问自动
-建议工具）、`subagent_suggestion`（新提问自动建议子代理）与 `skill_suggestion`（新提问自动建议
-Skill，最多注入两个名字），均默认关闭；读写走
+决策模型自动作答）与 `tool_call_prune`（旧一轮工具调用按需淘汰），均默认关闭；读写走
 `load_decision_switches` / `save_decision_switch`——前者读不出来时
 按默认值回落，后者保留同段其他键与 `channels` 段。联网搜索的 BM25 排序不在这张表里：
-它固定启用，不需要配置。`tool_suggestion`、`subagent_suggestion` 与
-`skill_suggestion` 互相独立、可同时开启，同时开启时各自并发发起（总耗时取最大者而不是相加）。
-`skill_suggestion` 只决定「注入前要不要问决策模型哪两个 Skill 最合适」；候选池子的排序由
-`skill_search_rerank` 决定，关着时用 BM25 名次，注入本身不依赖决策服务。
+它固定启用，不需要配置。
+
+提问建议（`[suggestion] skills`）已从这张表迁出，落在 `config.toml` 的 `[suggestion]` 段：
+它由主模型识别技能词 + 本地 BM25 检索本机 Skill 索引完成，不再经过决策模型，因此也不该
+跟决策渠道的可用性绑在一起。旧的 `tool_suggestion` / `subagent_suggestion` /
+`skill_suggestion` 三个键已删除，只有 `skill_suggestion` 会按旧位置读一次，把老的「已开启」
+状态迁到新段。
 
 `DecisionSwitchSpec.page`（`SwitchPage::Decision` / `SwitchPage::Embedding`）决定界面把开关画
 在哪一页：配置位置与开关表都不变；检索排序开关都标为 `Decision`，画在 TUI 的
@@ -198,7 +199,7 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
   加载 8 例 + 写回 5 例、视觉 16 例 + 三态解析 6 例 + 解析覆盖 6 例 + 写回 8 例、
   多模型加载 20 例 + 模型选择 8 例 + Profile 解析 3 例 + 描述转换 1 例。
 - `tests/fixtures/config_features_parity.json`：审批归一化 15 例 + 标签 4 例 + 读取 12 例 +
-  写回 3 例、工具名校验 9 例 + 键表/默认表/文案表、工具开关读取 6 例 + 写回 4 例、
+  写回 3 例、工具名校验 9 例 + 键表/默认表、工具开关读取 6 例 + 写回 4 例、
   上下文压缩 26 例、运行护栏 24 例 + 写回 1 例。
 
 验证：`cargo test -p omnicrawl-config`（10 个套件 / 59 项全绿，

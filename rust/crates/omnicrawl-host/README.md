@@ -143,8 +143,8 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 - `RerankClient` 是注入点：测试用桩（`memory.rs` / `web_search.rs` 的 `StubRerank`）替换真实 HTTP
   调用，回环用例在 `decision_search.rs` 内部自带。
 
-七个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索排序、提问托管、工具调用淘汰、
-工具建议与子代理建议）共用 `decision_wire`
+六个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索排序、提问托管、
+工具调用淘汰）共用 `decision_wire`
 这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 走
 `POST /v1/decide`；`chat_completions` 走 `POST {base_url}/chat/completions`，基地址按 OpenAI
 兼容口径填到 `/v1`，作为 user 消息发出），并从响应里取出同一形状的 `answers`（后者从
@@ -154,45 +154,39 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 （默认 3）对连接失败、超时与 5xx 做 `0.2s → 0.4s → 0.8s`（封顶 2s）退避重试，4xx 立即回错
 （请求本身的问题），响应读不出可用答案不重试（不猜、不编）。
 
-## 新提问建议（可选，默认关闭，两类可同时开启）
+## 新提问建议（可选，默认关闭）
 
-`tools/decision_suggest.rs` 在你每发一条新提问时先问一次决策模型「本次该用哪些工具／哪些
-子代理／哪两个 Skill」，把结果拼进 user 尾部。三类建议各有一个开关、各是一条独立出站请求：
+`tools/suggestion.rs` 在你每发一条新提问时先由**主模型**识别一组「技能词」，再用本地 BM25 检索
+本机 Skill 索引，把命中的前几名拼进 user 尾部。开关是 `config.toml` 的 `[suggestion] skills`，
+默认关闭；候选与建议行：
 
-| 建议 | 开关（`[features]`） | 送审候选（`state` 字段） | 建议行 |
+| 开关（`[suggestion]`） | 检索词 | 检索单元 | 建议行 |
 | --- | --- | --- | --- |
-| 工具 | `tool_suggestion` | `tools`：工具表全部已启用工具 | `当前请求建议调用tool：a、b。` |
-| 子代理 | `subagent_suggestion` | `subagents`：可调度的子代理角色 | `当前请求建议使用子代理：explore、plan。` |
-| Skill | `skill_suggestion` | `skills`：BM25 挑出的 Skill 池子（最多 8 条） | `建议使用skills：pdf、docx。` |
+| `skills` | 技能词 | 名称 + 描述 + 正文（`search_meta`） | `建议使用skills：pdf、docx。` |
 
-- 装配入口 `suggest_options_from_config(env)` / `subagent_suggest_options_from_config(env)` /
-  `skill_suggest_options_from_config(env)` 由 TUI 与本地 API 共用。
-- 送审只有**当前这条提问的正文**（`state.user_prompt`，不带任何历史）与候选清单（每项是名字 +
-  说明取首句截断到 `CANDIDATE_SUMMARY_MAX_CHARS` 字）。候选不做人工取舍：`disabled_tools`
-  关掉的、当前没有运行期的（语音合成、顾问、Windows 组）都已被工具表挡在外面；子代理角色取
-  与 `subagent` 工具参数枚举同源的那份清单，内核不能调度的角色不会进审。
-- 选择要求由 `SuggestKind::requirements` 给出：工具建议分专用工具与泛化工具（后者除非本次
-  任务明确围绕它展开，否则判为用不到）；子代理建议强调每个角色都是一次开销明显更高的独立
-  子回合，只有能拆成相互独立、可并行推进的子任务，或需要隔离视角核查与隔离改动时才算用得到。
-- 判定是每个候选一个 `noul` 提问，外加一个兜底提问（工具 `no_tool`、子代理 `no_subagent`：
-  本条是否属于普通对话、寒暄或无从判断的异常任务）。阈值 `SUGGEST_THRESHOLD`（0.5）是唯一
-  判定面：概率 ≥0.5 进建议名单、<0.5 排除；兜底提问过阈值时该份建议作废。
-- Skill 建议的候选另走一条路：`discover_skill_candidates(workspace, env, prompt)` 用
-  `SkillManager` 扫一次索引（覆盖本会话内新装的 Skill）、按提问对「名称 + 描述 + 正文」做 BM25
-  检索挑出池子（`SKILL_SUGGESTION_POOL`，最多 8 条）。池子的顺序**就是**最终名单顺序，直接截到
-  `SUGGESTION_LIMIT`（3）个名字注入：候选项只带截断后的描述，再拿它重算一次 BM25 会丢掉正文的
-  贡献，靠正文命中的 Skill 在二次打分里与提问没有交集，整条建议会被清零。
-- 名单非空时在 user 尾部追加一行（`insert_suggestions`），多条同时命中就各占一行（工具、子代理、
-  Skill 依次）；都没有建议时原文照发。展示层用 `split_suggestion` 把尾部连续的建议行拆出来
-  （**按行原样返回**，不拼成一句），在 `user：` 标签之后各占一块、用整行宽度渲染。
-- **三类可同时开启，且无先后顺序**：`suggestion_lines` 并发发起三条请求，总耗时取三者的较大者
-  而不是相加（只开一类时不起线程）；任一条失败或没有建议都只是少一行，互不影响。
-- **失败一律 fail-open**：开关没开、没有可用决策渠道、缺凭据、请求失败、响应不可解析都按
-  「本次无建议」处理（与检索重排、提问托管、工具淘汰同一语义）。
-- 出网脱敏复用审查通道的 `[desensitization]` 旁路；脱敏构造失败按「建议不可用」处理，绝不外发原文。
+- **为什么不是纯 BM25**：整句「帮我修改这份文档里的标题」里的「帮我」「这份」对候选表毫无
+  区分度，而「文档」恰好就是 Skill 描述与正文里的词。识别一次、检索一次，比分词整句更准。
+- 关键词识别走**主模型渠道**（`MainModelKeywordClient`，提示词 `suggestion_keywords_system.md`，
+  输出 `{"skills": [...]}`），推理强度**固定 `low`**（`KEYWORDS_REASONING_EFFORT`）：那条渠道
+  本来就要收到这条提问，不额外扩大暴露面；这一步只做一次词性归纳，不该花掉几秒。最多取 6 个词
+  （`KEYWORDS_LIMIT`）。
+- **识别失败一律 fail-open**：退化为「整条提问当检索词」（`SuggestKeywords::Raw`），建议照旧能
+  出，只是不如识别精确；渠道没配齐时同样走这条退化路径，不会把建议整条关掉。
+- 检索本身纯本地（`omnicrawl_extensions::bm25`，毫秒级）：`SkillSource::Live` 下用 `SkillManager`
+  扫一次索引（覆盖本会话内新装的 Skill）、按技能词对「名称 + 描述 + 正文」做 BM25 检索挑出池子
+  （`SKILL_SUGGESTION_POOL = 8`）。池子的顺序**就是**最终名单顺序，直接截到 3 个名字注入
+  （`SUGGESTION_LIMIT`）：候选项只带描述，再拿它重算一次 BM25 会丢掉正文的贡献，靠正文命中的
+  Skill 在二次打分里与检索词没有交集，整条建议会被清零。技能词为空时不扫索引——那一步要读每个
+  `SKILL.md` 的正文。
+- 名单非空时在 user 尾部追加一行（`insert_suggestions`）；没有建议时原文照发。展示层用
+  `split_suggestion` 把尾部连续的建议行拆出来（**按行原样返回**，不拼成一句），在 `user：`
+  标签之后单独渲染。
+- 装配入口 `suggest_options_from_config(env)`（开关）与 `keyword_client(KeywordChannel)` /
+  `keyword_client_from_config(env)`（识别器）由 TUI 与本地 API 共用。TUI 用 `keyword_client` 传
+  **当前模型视图**：命令行 `--model` 与运行期切模型都还没写盘，读配置会让识别继续用旧渠道。
 - 两个接入点都在提交前：无头宿主的 `TurnRunner::submit` 里就地拼接；TUI 因为不能阻塞 UI 线程，
-  把三条建议一起放到后台线程（`start_suggestion` / `drain_suggest_results`），结果回来才提交回合。
-- 判定与兜底提问的 ID 带种类前缀：`no_tool` / `no_subagent` / `no_skill`。
+  把「识别 + 检索」一起放到后台线程（`start_suggestion` / `drain_suggest_results`），结果回来
+  才提交回合。
 
 ## 提问托管（可选，默认关闭）
 
@@ -253,7 +247,7 @@ cargo clippy -p omnicrawl-host --all-targets -- -D warnings
 ```
 
 `tests/turn_flow.rs` 用一对内存管道做脚本化假内核，钉住握手（含被拒）、整批工具定调、
-提问作答、提问托管、工具建议（含无建议）、取消、取消后继续与内核退出等路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
+提问作答、提问托管、Skill 建议（含无建议）、取消、取消后继续与内核退出等路径；`tools/` 的执行体另有与 Python 真实现的对照测试，见
 `crates/omnicrawl-tui/tests/*_parity.rs`（按原路径驱动本 crate 的工具表）。
 
 ## 已知差异

@@ -44,6 +44,9 @@ Python 侧 `omnicrawl/state/session_models.py`。
   重复归档报 `会话已在归档中：<id>`；取消归档对未归档会话是空操作。
 - `delete_session` / `discard_empty_session`：删转录 + artifact 目录（清理失败不阻塞）+ 索引条目；
   丢弃空会话只在「未归档、`message_count == 0`、且事件全部属于 `EMPTY_SESSION_EVENT_TYPES`」时返回真。
+- `is_empty_placeholder`：同一条判据，但只读不删——`list_sessions_filtered` 用它把 0 条占位藏起来
+  （`exclude_empty_placeholders`，默认关、对照数据集按 Python 口径固定；`keep_empty_placeholder`
+  给内核传当前会话当例外）。索引能直接判定的情形（只有 `session_started`）不读转录。
 - `list_sessions_filtered`：Python `list_sessions` 的工作区/项目过滤、归档可见性、`limit` 收敛（1..100）；
   无参 `list_sessions()` 是内核内部的全量视图（含归档、不截断），两者语义差别写在方法文档里。
 - `list_project_paths`：按大小写折叠去重与排序。
