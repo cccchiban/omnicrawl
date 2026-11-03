@@ -1759,7 +1759,7 @@ fn tool_row_spans(row: &ToolSwitchRow, selected: bool) -> Vec<Span<'static>> {
     let text = format!(
         "{} {}：{state_text}",
         if selected { "›" } else { " " },
-        row.label
+        row.name
     );
     let style = if selected {
         theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)

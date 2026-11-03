@@ -788,7 +788,6 @@ pub(super) fn tool_switch_rows(registry: &ToolRegistry) -> Vec<ToolSwitchRow> {
         .iter()
         .map(|name| ToolSwitchRow {
             name: (*name).to_string(),
-            label: tool_label(name),
             enabled: switches.get(*name).copied().unwrap_or(true),
             registered: registered.contains(*name),
         })
@@ -808,15 +807,6 @@ pub(super) fn registered_tool_names(registry: &ToolRegistry) -> std::collections
                 .map(str::to_string)
         })
         .collect()
-}
-
-/// 工具开关的中文名；未知名字回落为工具名本身。
-pub(super) fn tool_label(name: &str) -> String {
-    TOOL_SWITCH_LABELS
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, label)| (*label).to_string())
-        .unwrap_or_else(|| name.to_string())
 }
 
 /// 压缩配置 → 内核协议字段。

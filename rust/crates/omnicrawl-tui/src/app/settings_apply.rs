@@ -244,8 +244,7 @@ impl App {
             settings.refresh_tools(tool_switch_rows(&self.registry));
         }
         Ok(format!(
-            "{}已{}，已保存到 {}。",
-            tool_label(name),
+            "{name}已{}，已保存到 {}。",
             if enabled { "启用" } else { "关闭" },
             path.display()
         ))

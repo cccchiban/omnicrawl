@@ -267,7 +267,6 @@ pub const TOOLS_APPROVAL_ROW: usize = 0;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSwitchRow {
     pub name: String,
-    pub label: String,
     pub enabled: bool,
     /// 是否已注册进当前工具表；界面只画名称与开关状态，不再单独标注。
     pub registered: bool,

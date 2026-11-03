@@ -65,7 +65,7 @@ use omnicrawl_config::features::tool_output_compression::{
     ToolOutputCompressionConfig,
 };
 use omnicrawl_config::features::tools::{
-    load_disabled_tools, load_tool_switches, save_tool_switch, TOOL_SWITCH_KEYS, TOOL_SWITCH_LABELS,
+    load_disabled_tools, load_tool_switches, save_tool_switch, TOOL_SWITCH_KEYS,
 };
 use omnicrawl_config::features::tts::{
     load_tts_configuration, save_tts_configuration, TtsConfiguration,
@@ -1380,13 +1380,6 @@ mod tests {
                 .contains("不需要压缩"),
             "没有可压缩轮次时要如实说明"
         );
-    }
-
-    #[test]
-    fn tool_label_uses_config_table_then_falls_back() {
-        assert_eq!(tool_label("read"), "读取文件内容");
-        assert_eq!(tool_label("powershell"), "执行 PowerShell 命令");
-        assert_eq!(tool_label("自定义工具"), "自定义工具");
     }
 
     /// 原生视觉的三条来源：命令行/环境显式开启、配置里当前模型的覆盖、都没有时关闭。

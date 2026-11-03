@@ -26,19 +26,16 @@ fn tool_rows() -> Vec<ToolSwitchRow> {
     vec![
         ToolSwitchRow {
             name: "read".to_string(),
-            label: "读取文件内容".to_string(),
             enabled: true,
             registered: true,
         },
         ToolSwitchRow {
             name: "powershell".to_string(),
-            label: "执行 PowerShell 命令".to_string(),
             enabled: false,
             registered: true,
         },
         ToolSwitchRow {
             name: "tts_synthesize".to_string(),
-            label: "TTS 语音合成（云服务）".to_string(),
             enabled: true,
             registered: false,
         },
@@ -260,10 +257,10 @@ fn tools_panel_lists_switch_states() {
     state.handle_key(KeyCode::Enter);
     let screen = text(&draw(&state, WIDTH, HEIGHT));
 
-    assert!(screen.contains("读取文件内容：已启用"), "{screen}");
-    assert!(screen.contains("执行 PowerShell 命令：已关闭"));
+    assert!(screen.contains("read：已启用"), "{screen}");
+    assert!(screen.contains("powershell：已关闭"));
     assert!(
-        screen.contains("TTS 语音合成（云服务）：已启用"),
+        screen.contains("tts_synthesize：已启用"),
         "工具行只画名称与开关状态：{screen}"
     );
     assert!(
@@ -289,11 +286,11 @@ fn status_line_reports_apply_result() {
             name: "read".to_string(),
             enabled: false,
         },
-        "读取文件内容已关闭，已保存到 C:\\Users\\demo\\.OmniCrawl\\config.toml。".to_string(),
+        "read已关闭，已保存到 C:\\Users\\demo\\.OmniCrawl\\config.toml。".to_string(),
     );
     let screen = text(&draw(&state, WIDTH, HEIGHT));
 
-    assert!(screen.contains("读取文件内容：已关闭"));
+    assert!(screen.contains("read：已关闭"));
     assert!(
         screen.contains("已保存到"),
         "状态行要报出保存结果：{screen}"
@@ -312,7 +309,7 @@ fn kernel_rejection_is_appended_without_rolling_back() {
             name: "read".to_string(),
             enabled: false,
         },
-        "读取文件内容已关闭，已保存到 config.toml。".to_string(),
+        "read已关闭，已保存到 config.toml。".to_string(),
     );
     state.note_kernel_rejection(
         &SettingsChange::ToolSwitch {
@@ -324,7 +321,7 @@ fn kernel_rejection_is_appended_without_rolling_back() {
     let screen = text(&draw(&state, WIDTH, HEIGHT));
 
     assert!(screen.contains("将在下次会话生效"));
-    assert!(screen.contains("读取文件内容：已关闭"), "值不回滚");
+    assert!(screen.contains("read：已关闭"), "值不回滚");
 }
 
 #[test]

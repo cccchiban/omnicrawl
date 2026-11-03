@@ -45,42 +45,6 @@ pub const TOOL_SWITCH_KEYS: [&str; 32] = [
     "config_edit",
 ];
 
-/// 开关名 → 界面文案。
-pub const TOOL_SWITCH_LABELS: [(&str, &str); 32] = [
-    ("list", "列出目录内容"),
-    ("find", "按名称或路径查找文件"),
-    ("read", "读取文件内容"),
-    ("read_image", "读取图片"),
-    ("grep", "在文件中搜索文本（grep）"),
-    ("web_search", "web_search"),
-    ("fetcher", "fetcher（浏览器指纹）"),
-    ("image_gen", "图像生成（Image API）"),
-    ("tts_synthesize", "TTS 语音合成（云服务）"),
-    ("Edit_file", "替换文件中的文本"),
-    ("write_file", "写入文件"),
-    ("bash", "执行 Bash 命令"),
-    ("powershell", "执行 PowerShell 命令"),
-    ("monitor", "管理后台命令"),
-    ("recall_session_evidence", "会话证据恢复"),
-    ("windows_window", "操作 Windows 窗口"),
-    ("windows_control", "操作 Windows UI 控件"),
-    ("windows_input", "模拟 Windows 鼠标键盘"),
-    ("windows_clipboard", "操作 Windows 剪贴板"),
-    ("windows_screenshot", "截取 Windows 桌面"),
-    ("subagent_run", "分发受限子任务"),
-    ("subagent_list", "列出子代理任务与工作树"),
-    ("subagent_cancel", "取消子代理任务"),
-    ("subagent_apply_worktree", "应用子代理工作树改动"),
-    ("subagent_discard_worktree", "丢弃子代理工作树"),
-    ("update_todos", "维护自动执行清单"),
-    ("memory_search", "搜索长期记忆（scope 选作用域）"),
-    ("memory_read", "读取长期记忆"),
-    ("memory_expand_related", "展开相关长期记忆"),
-    ("memory_write", "写入长期记忆（scope 选作用域）"),
-    ("memory_delete", "删除长期记忆（scope 选作用域）"),
-    ("config_edit", "读取或修改配置"),
-];
-
 /// 默认开关：除 `powershell` 外全部启用。
 pub fn default_tool_switches() -> BTreeMap<&'static str, bool> {
     let mut switches: BTreeMap<&'static str, bool> = TOOL_SWITCH_KEYS
