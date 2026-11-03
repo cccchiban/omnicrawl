@@ -55,6 +55,28 @@ pub fn optional_bool(arguments: &Map<String, Value>, key: &str, default: bool) -
     }
 }
 
+/// 读字符串列表：接受数组（逐项 trim 去空）与单个字符串；非字符串项忽略。
+pub fn text_list(arguments: &Map<String, Value>, key: &str) -> Vec<String> {
+    match arguments.get(key) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![trimmed.to_string()]
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

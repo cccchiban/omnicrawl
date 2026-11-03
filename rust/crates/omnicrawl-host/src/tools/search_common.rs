@@ -36,22 +36,203 @@ pub fn agent_temp_dir(root: &Path) -> PathBuf {
 
 /// 遍历一个根下的普通文件（含隐藏文件，读忽略文件，剪枝受保护路径）。
 pub fn walk_files(root: &Path, paths: &WorkspacePaths) -> Vec<PathBuf> {
+    walk_files_with(root, paths, &WalkOptions::default())
+}
+
+/// 遍历命中的条目类型：`find` 需要能报目录与符号链接（fd 的 `-t d` / `-t l`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkKind {
+    File,
+    Dir,
+    Symlink,
+}
+
+/// 遍历到的一个条目：路径 + 类型。符号链接按「链接本身」报告，不解析目标。
+#[derive(Debug, Clone)]
+pub struct WalkEntry {
+    pub path: PathBuf,
+    pub kind: WalkKind,
+}
+
+/// 带开关的完整遍历：返回文件、目录与符号链接（供 `find` 使用）。
+///
+/// 与 `walk_files_with` 的差别只有两点：目录也进结果；符号链接单独标记而不是被
+/// `is_file` 过滤掉。忽略规则、受保护路径剪枝与 `WalkOptions` 全部一致。
+pub fn walk_entries_with(
+    root: &Path,
+    paths: &WorkspacePaths,
+    options: &WalkOptions,
+) -> Vec<WalkEntry> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let mut entries: Vec<WalkEntry> = Vec::new();
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(!options.include_hidden)
+        .require_git(false)
+        .git_ignore(options.use_ignore_files && options.use_vcs_ignore)
+        .git_global(options.use_ignore_files && options.use_vcs_ignore)
+        .git_exclude(options.use_ignore_files && options.use_vcs_ignore)
+        .ignore(options.use_ignore_files)
+        .parents(options.use_ignore_files)
+        .follow_links(options.follow_links)
+        .max_depth(options.max_depth)
+        .max_filesize(options.max_filesize);
+    if !options.globs.is_empty() || !options.iglobs.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for glob in &options.globs {
+            let _ = overrides.add(glob);
+        }
+        overrides.case_insensitive(true).ok();
+        for glob in &options.iglobs {
+            let _ = overrides.add(glob);
+        }
+        if let Ok(overrides) = overrides.build() {
+            builder.overrides(overrides);
+        }
+    }
+    let root_owned = root.to_path_buf();
+    builder.filter_entry(move |entry| {
+        let path = entry.path();
+        if path == root_owned {
+            return true;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return true;
+        };
+        !WorkspacePaths::is_protected(path) && !SEARCH_EXCLUDED_DIRS.contains(&name)
+    });
+    for entry in builder.build() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        // 根本身不算候选（fd 也只报根之下的条目）。
+        if path == root {
+            continue;
+        }
+        if should_skip(path, paths) {
+            continue;
+        }
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if let Some(min_depth) = options.min_depth {
+            let depth = path
+                .strip_prefix(root)
+                .map(|rest| rest.components().count())
+                .unwrap_or(0);
+            if depth < min_depth {
+                continue;
+            }
+        }
+        let kind = if file_type.is_symlink() {
+            WalkKind::Symlink
+        } else if file_type.is_dir() {
+            WalkKind::Dir
+        } else if file_type.is_file() {
+            WalkKind::File
+        } else {
+            continue;
+        };
+        entries.push(WalkEntry {
+            path: path.to_path_buf(),
+            kind,
+        });
+    }
+    entries
+}
+
+/// 遍历开关：默认值即 `walk_files` 的历史行为（等价 rg 的 `--hidden --no-require-git`）。
+#[derive(Debug, Clone)]
+pub struct WalkOptions {
+    /// rg 的 `--hidden`：默认包含隐藏文件；`false` 时跳过 `.` 开头的条目。
+    pub include_hidden: bool,
+    /// rg 的 `--no-ignore`：`false` 时不读任何忽略文件（`.gitignore`/`.ignore`/全局）。
+    pub use_ignore_files: bool,
+    /// rg 的 `--no-ignore-vcs`：只关掉 `.gitignore` 与 git 全局忽略，保留 `.ignore`。
+    pub use_vcs_ignore: bool,
+    /// rg 的 `--follow`：跟随符号链接。
+    pub follow_links: bool,
+    /// rg 的 `--max-depth`：从根算起的最大目录层数。
+    pub max_depth: Option<usize>,
+    /// fd 的 `--min-depth`：只报从根算起层数达到该值的条目。
+    pub min_depth: Option<usize>,
+    /// rg 的 `--max-filesize`：超过该字节数的文件不搜。
+    pub max_filesize: Option<u64>,
+    /// rg 的 `-g/--glob`：`!pattern` 表示排除；`--iglob` 的同族条目大小写不敏感。
+    pub globs: Vec<String>,
+    pub iglobs: Vec<String>,
+    /// rg 的 `-t/--type` 与 `-T/--type-not`：按内置类型表筛选。
+    pub types: Vec<String>,
+    pub type_not: Vec<String>,
+}
+
+impl Default for WalkOptions {
+    fn default() -> Self {
+        Self {
+            include_hidden: true,
+            use_ignore_files: true,
+            use_vcs_ignore: true,
+            follow_links: false,
+            max_depth: None,
+            min_depth: None,
+            max_filesize: None,
+            globs: Vec::new(),
+            iglobs: Vec::new(),
+            types: Vec::new(),
+            type_not: Vec::new(),
+        }
+    }
+}
+
+/// 带开关的遍历。
+pub fn walk_files_with(root: &Path, paths: &WorkspacePaths, options: &WalkOptions) -> Vec<PathBuf> {
     if root.is_file() {
         return vec![root.to_path_buf()];
     }
     let mut files: Vec<PathBuf> = Vec::new();
     let mut builder = WalkBuilder::new(root);
     builder
-        // rg 的 `--hidden`：保留隐藏文件。
-        .hidden(false)
+        // rg 的 `--hidden`：`hidden(false)` 表示保留隐藏文件。
+        .hidden(!options.include_hidden)
         // rg 的 `--no-require-git`：非 git 目录也读 .gitignore/.ignore。
         .require_git(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true)
-        .parents(true)
-        .follow_links(false);
+        .git_ignore(options.use_ignore_files && options.use_vcs_ignore)
+        .git_global(options.use_ignore_files && options.use_vcs_ignore)
+        .git_exclude(options.use_ignore_files && options.use_vcs_ignore)
+        .ignore(options.use_ignore_files)
+        .parents(options.use_ignore_files)
+        .follow_links(options.follow_links)
+        .max_depth(options.max_depth)
+        .max_filesize(options.max_filesize);
+    if !options.globs.is_empty() || !options.iglobs.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for glob in &options.globs {
+            let _ = overrides.add(glob);
+        }
+        overrides.case_insensitive(true).ok();
+        for glob in &options.iglobs {
+            let _ = overrides.add(glob);
+        }
+        if let Ok(overrides) = overrides.build() {
+            builder.overrides(overrides);
+        }
+    }
+    if !options.types.is_empty() || !options.type_not.is_empty() {
+        let mut types = ignore::types::TypesBuilder::new();
+        types.add_defaults();
+        for name in &options.types {
+            types.select(name);
+        }
+        for name in &options.type_not {
+            types.negate(name);
+        }
+        if let Ok(types) = types.build() {
+            builder.types(types);
+        }
+    }
     let root_owned = root.to_path_buf();
     builder.filter_entry(move |entry| {
         let path = entry.path();

@@ -156,8 +156,8 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
 | `Edit_file` | 已实现 | count 语义、行尾风格恢复、版本指纹校验、文件锁 + 原子写、错误码 |
 | `bash` / `powershell` | 已实现 | 显式解释器（Windows 上 Bash 优先 Git Bash）、超时回收进程树、输出头尾采样与完整日志落盘 |
 | `list` | 已实现 | 目录（可递归）清单、受保护路径过滤、500 项截断提示 |
-| `find` | 已实现 | 工作区内限定、kind/大小写/glob 与子串匹配、按修改时间倒序、超限落盘 |
-| `grep` | 已实现 | 正则（`regex`，与 rg 同族）或精确子串、上下文行、count / files 模式、include/exclude、二进制与非 UTF-8 处理、超限落盘 |
+| `find` | 已实现 | 参数面对齐 fd：匹配（`glob`/`regex`/`fixed_strings`/`exact`/`ignore_case`/`case_sensitive`/`smart_case`/`full_path`）、类型与扩展名（`type`/`type_not`/`extension`）、过滤（`exclude`/`hidden`/`no_ignore`/`no_ignore_vcs`/`follow_links`）、深度（`max_depth`/`min_depth`/`exact_depth`）、元数据（`size`/`changed_within`/`changed_before`/`empty`）、输出（`absolute_path`/`show_details`/`max_results`）；旧参数 `kind`/`pattern` 语义与输出不变 |
+| `grep` | 已实现 | 参数面对齐 ripgrep：匹配（`-w`/`-x`/`-v`/`-i`/`-S`/`-F`/`-U`/`-m`）、上下文（`-A`/`-B`/`-C`/分隔行）、输出模式（`-c`/`--count-matches`/`-l`/`--files-without-match`/`-o`/`-r`）、展示（`-n`/`--column`/`-b`/`-M`/`--trim`/`--stats`）、文件筛选（`-g`/`--iglob`/`-t`/`-T`/`--hidden`/`--no-ignore`/`--max-depth`/`--max-filesize`/`-L`/`-a`），旧参数 `include`/`exclude`/`context_lines`/`count`/`files_with_matches`/`use_regex` 语义与输出不变；超限落盘 |
 | `skill_search` | 已实现 | 按作用域（`all`/`project`/`user`/`enterprise`/`path`）与关键词检索 Skill 索引，只回元数据（`name`、`description`、`scope`、`location`、`score`、`reason`），正文仍用 `read` 打开 `location`；每次调用重扫索引；可选走决策模型重排（`skill_search_rerank`，只对带关键词的检索送审） |
 | `git` | 已实现 | argv 直调不经 shell、逃逸参数拒绝、输出首尾有界化；风险分级复用 `controllers::approval` |
 | `monitor` | 已实现 | `start` / `poll` / `stop` / `list`（含 `status`/`log`/`logs`/`read` 别名）后台命令：内存环形缓冲（1000 条、单条 4000 字符切块）、游标增量轮询、最多 20 个并发任务、进程树回收；任务随宿主关闭与回合取消终止 |
