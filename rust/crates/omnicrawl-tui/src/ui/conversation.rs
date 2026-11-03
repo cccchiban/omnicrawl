@@ -1171,7 +1171,11 @@ pub fn collapsed_body(
 fn push_user(lines: &mut Vec<DisplayLine>, message: &UserRecord, width: usize, state: &AppState) {
     let stripe = Style::new().bg(Color::Cyan);
     let body_style = theme::rich_style(theme::ACCENT_WHITE);
-    let body_width = width.saturating_sub(display_width(MESSAGE_PAD)).max(1);
+    // 行首是竖条 + 一格内边距：只扣内边距会让整行超宽一格，终端把越界列裁掉，
+    // 每行末尾正好丢一个宽字符（CJK 占两列，放不下就整个不画）。
+    let body_width = width
+        .saturating_sub(display_width(USER_STRIPE) + display_width(MESSAGE_PAD))
+        .max(1);
     let (body, suggestions) = omnicrawl_host::tools::split_suggestion(&message.text);
     lines.push(DisplayLine::plain(striped_line(
         &format!("{MESSAGE_PAD}user："),
@@ -2712,12 +2716,39 @@ mod tests {
         }
     }
 
+    /// 用户正文折行后每行都必须落在文本区内，且一个字都不能少。
+    ///
+    /// 行首是青色竖条 + 一格内边距两列，预算只扣内边距时整行会超宽一格；
+    /// 终端把越界的那列裁掉，末尾若是 CJK（两列）就整个字不画——表现是每行少一个字。
+    #[test]
+    fn user_text_wraps_without_dropping_characters() {
+        let text = "修改提问建议功能：把纯BM25改成先让主模型识别操作关键词与技能关键词再分组检索。".repeat(3);
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), text.clone(), Vec::new());
+        let rendered = plain(&display_lines(&state, 41));
+        for line in &rendered {
+            assert!(
+                display_width(line) <= 41,
+                "行超宽会被终端裁掉末尾字符：{line:?}"
+            );
+        }
+        let label = rendered
+            .iter()
+            .position(|line| line.contains("user："))
+            .unwrap_or_else(|| panic!("应当有 `user：` 标签行：{rendered:?}"));
+        let body: String = rendered[label + 1..]
+            .iter()
+            .map(|line| line.trim_start().to_string())
+            .collect();
+        assert_eq!(body.trim_end(), text, "折行不得吞字");
+    }
+
     #[test]
     fn suggestions_get_their_own_block_above_the_user_text() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
         state.begin_turn(
             "t1".to_string(),
-            "改一下显示\n\n当前请求建议调用tool：read、grep。".to_string(),
+            "改一下显示\n\n建议使用skills：kimi-docx、agent-browser-cli。".to_string(),
             Vec::new(),
         );
         let rendered = plain(&display_lines(&state, 60));
@@ -2727,13 +2758,13 @@ mod tests {
             .unwrap_or_else(|| panic!("应当有 `user：` 标签行：{rendered:?}"));
         // 标签行只放标签本身：建议不再挤在同一行。
         assert!(
-            !rendered[label].contains("当前请求建议调用tool："),
+            !rendered[label].contains("建议使用skills："),
             "建议行不再挂在标签行上：{:?}",
             rendered[label]
         );
         let suggestion = rendered
             .iter()
-            .position(|line| line.trim_start().starts_with("当前请求建议调用tool："))
+            .position(|line| line.trim_start().starts_with("建议使用skills："))
             .unwrap_or_else(|| panic!("建议行应当独立成行：{rendered:?}"));
         assert_eq!(
             suggestion,
@@ -2741,7 +2772,7 @@ mod tests {
             "建议块紧跟在标签之后：{rendered:?}"
         );
         assert!(
-            rendered[suggestion].contains("read、grep"),
+            rendered[suggestion].contains("kimi-docx、agent-browser-cli"),
             "建议内容完整：{:?}",
             rendered[suggestion]
         );
@@ -2753,28 +2784,25 @@ mod tests {
         );
     }
 
-    /// 三条建议同时命中时各占一行，且用整行宽度（不被 `user：` 标签挤压）。
+    /// 建议行用整行宽度（不被 `user：` 标签挤压），长名字也不折行。
     #[test]
-    fn three_suggestions_each_take_a_full_width_line() {
+    fn a_suggestion_line_takes_the_full_width() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
         state.begin_turn(
             "t1".to_string(),
-            "把 pdf 转成文本\n\n当前请求建议调用tool：read、grep、fetcher、bash。\n当前请求建议使用子代理：explore、plan、general-purpose。\n建议使用skills：pdf、docx。".to_string(),
+            "把 pdf 转成文本\n\n建议使用skills：kimi-docx、kimi-pdf、agent-browser-cli。"
+                .to_string(),
             Vec::new(),
         );
         let rendered = plain(&display_lines(&state, 100));
-        for prefix in [
-            "当前请求建议调用tool：",
-            "当前请求建议使用子代理：",
-            "建议使用skills：",
-        ] {
-            let line = rendered
-                .iter()
-                .find(|line| line.trim_start().starts_with(prefix))
-                .unwrap_or_else(|| panic!("缺少建议行 {prefix}：{rendered:?}"));
-            // 整行宽度可用：100 列宽下这几条都应排在一行里，不被标签挤成多行。
-            assert!(line.contains('。'), "建议行应当在一行内排完：{line:?}");
-        }
+        let prefix = "建议使用skills：";
+        let line = rendered
+            .iter()
+            .find(|line| line.trim_start().starts_with(prefix))
+            .unwrap_or_else(|| panic!("缺少建议行 {prefix}：{rendered:?}"));
+        // 整行宽度可用：100 列宽下这条应在一行里排完，不被标签挤成多行。
+        assert!(line.contains('。'), "建议行应当在一行内排完：{line:?}");
+        assert!(line.contains("agent-browser-cli"), "{line:?}");
         assert!(
             rendered
                 .iter()
