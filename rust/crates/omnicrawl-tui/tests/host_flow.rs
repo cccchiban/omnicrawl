@@ -1497,9 +1497,14 @@ fn no_subagents(method: &str, params: &Value, id: i64) -> Option<String> {
     Some(subagent_reply(action, "[]", "[]", id))
 }
 
+/// 每个切换用例一个独立目标目录：三个用例并行跑，共用同一路径会互相删掉对方的目标。
 fn switch_target() -> PathBuf {
-    let target =
-        std::env::temp_dir().join(format!("omnicrawl-tui-ws-switch-{}", std::process::id()));
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let target = std::env::temp_dir().join(format!(
+        "omnicrawl-tui-ws-switch-{}-{seq}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&target);
     std::fs::create_dir_all(&target).expect("建切换目标目录");
     target
