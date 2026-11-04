@@ -168,6 +168,14 @@ impl Conn {
         Ok(runtime)
     }
 
+    /// 丢掉缓存的模型运行时：下一次取用会重建连接池（新 TCP/TLS 连接）。
+    ///
+    /// 中继的账号池按请求挑上游，但 keep-alive 连接上偶尔会黏在同一个坏账号
+    /// （`no_healthy_account` 包着 11129/504）。此时只换 call_id 没用，必须换连接。
+    pub(crate) fn drop_model_runtime(&mut self) {
+        self.runtime_cache = None;
+    }
+
     /// 完成握手：版本不匹配回 `-32001`。
     ///
     /// 回包里带上当前会话 id（`initialize.session` 没给 id 而新建时，这是宿主唯一

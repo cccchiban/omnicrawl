@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 
+use serde_json::Value;
+
 use crate::event::ModelReply;
 use crate::message::{MessageBlock, ToolSpec};
 
@@ -55,6 +57,50 @@ impl ToolNameMap {
 
     pub fn is_empty(&self) -> bool {
         self.wire_to_internal.is_empty()
+    }
+
+    /// 把**即将发出**的历史里的调用名从内部名改回线上名。
+    ///
+    /// 与 [`Self::restore_reply`] 正好相反：内核派发、转录、界面看到的都是内部名
+    /// （`server.tool`），而声明（`tools[].function.name`）用的是线上名（`server_tool`）。
+    /// 两者不一致时，上游会把历史里的函数调用判成「不在声明里」并直接 400；把内部名原样
+    /// 发出去等于每次工具调用之后的下一次请求都必被拒。
+    ///
+    /// 只改传进来的这份副本：运行期消息与转录事件保持内部名，按内部名派发与按内部名
+    /// 投影历史都不受影响。返回改写处数。
+    pub fn restore_wire_names(&self, messages: &mut [Value]) -> usize {
+        if self.internal_to_wire.is_empty() {
+            return 0;
+        }
+        let mut renamed = 0usize;
+        for message in messages.iter_mut() {
+            let Some(object) = message.as_object_mut() else {
+                continue;
+            };
+            let Some(Value::Array(calls)) = object.get_mut("tool_calls") else {
+                continue;
+            };
+            for call in calls.iter_mut() {
+                let Some(function) = call.get_mut("function").and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                let Some(name) = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                let Some(wire) = self.internal_to_wire.get(&name) else {
+                    continue;
+                };
+                if *wire != name {
+                    function.insert("name".to_string(), Value::String(wire.clone()));
+                    renamed += 1;
+                }
+            }
+        }
+        renamed
     }
 
     /// 把模型回复里的工具调用名还原成内部名：既改 `tool_calls`，也改 assistant 原文里的
@@ -262,5 +308,42 @@ mod tests {
         ToolNameMap::default().restore_reply(&mut untouched);
         assert_eq!(untouched, reply);
         let _ = BTreeMap::<String, String>::new();
+    }
+
+    #[test]
+    fn outbound_history_wire_names_are_conformed() {
+        let (_, map) = conform_tool_names(&[spec("fathom.search"), spec("read")]);
+        let mut messages = vec![
+            json!({"role": "user", "content": "看看文档"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "fathom.search", "arguments": "{\"query\": \"x\"}"}
+                }]
+            }),
+            json!({"role": "tool", "tool_call_id": "call-1", "content": "结果"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"}
+                }]
+            }),
+        ];
+
+        assert_eq!(map.restore_wire_names(&mut messages), 1);
+        // 带点的内部名改回线上名，本来就合法的名字逐字不动。
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"]["name"],
+            json!("fathom_search")
+        );
+        assert_eq!(messages[3]["tool_calls"][0]["function"]["name"], json!("read"));
+        // 空对照表是零开销路径。
+        assert_eq!(ToolNameMap::default().restore_wire_names(&mut messages), 0);
     }
 }

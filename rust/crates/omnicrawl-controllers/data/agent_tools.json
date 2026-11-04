@@ -280,8 +280,8 @@
       },
       {
         "name": "windows_control",
-        "description": "是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要操作按钮、输入框或选择控件时使用；非 Windows 或只需鼠标坐标时不用；非 list 必须提供定位条件，多匹配需 index。怎样做：list 返回 JSON：action、matched_count、truncated、controls；其他动作返回 action、index、target，并带 screenshot（操作后的前台窗口画面）作为视觉附件；失败返回文本错误，不返回控件外的任意脚本结果。建议：先 list 再用 name/automation_id/control_type 精确定位，优先语义定位而非坐标；操作结果看返回的 screenshot，不要为此再调 windows_screenshot；set_value 仅用于字符串值。",
-        "argument_schema": "{\"action\":\"list|invoke|set_value|select|toggle|focus\",\"window_handle\":\"0x...\",\"name\":\"精确名称\",\"automation_id\":\"自动化ID\",\"class_name\":\"类名\",\"control_type\":\"button|edit|...\",\"index\":0,\"value\":\"仅 set_value\",\"max_results\":30}",
+        "description": "是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要读窗口结构或操作按钮、输入框、选择控件时使用；非 Windows 或只需鼠标坐标时不用；tree 从窗口根遍历整窗、不接受定位条件，其余非 list 动作必须给定位条件，多匹配需 index。怎样做：list 按定位条件返回匹配控件；tree 返回 node_count、truncated 与紧凑缩进文本 tree（每行含层级、类型、名称、#automation_id，以及 [invoke]/[value]/[select]/[toggle] 可用操作、=值、checked、disabled、offscreen 标记），一次看清整窗语义结构；invoke/set_value/select/toggle/focus 返回 action、index、target 与 state（值、勾选态、可用操作），默认不带截图，需要图时传 screenshot=true 才附一张操作后画面；失败返回文本错误。建议：进窗口先 tree，再用 name/automation_id/control_type 语义定位；核对效果读 state，不要为此截图；节点过多时调小 max_depth 而非反复截屏。",
+        "argument_schema": "{\"action\":\"list|tree|invoke|set_value|select|toggle|focus\",\"window_handle\":\"0x...\",\"name\":\"精确名称\",\"automation_id\":\"自动化ID\",\"class_name\":\"类名\",\"control_type\":\"button|edit|...\",\"index\":0,\"value\":\"仅 set_value\",\"max_results\":30,\"max_depth\":6,\"screenshot\":false}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -307,7 +307,7 @@
       },
       {
         "name": "windows_screenshot",
-        "description": "是什么：用 Windows GDI 截取整个桌面、桌面内的一块区域、屏幕区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只需窗口元数据时用 windows_window；刚用 windows_input、windows_control 或 windows_window 的 activate 改过界面时不用——那几次调用已经带回操作后的画面。怎样做：target=desktop 也接受 x/y/width/height 裁剪——只给 x/y 就从该点裁到桌面右下角，不传则整屏；target=region 要求 x/y/width/height 全部给出。成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；同一画面不要重复截；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
+        "description": "是什么：用 Windows GDI 截取整个桌面、桌面内的一块区域、屏幕区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只想了解窗口结构或控件状态时不用——先取 windows_control 的 tree/state；windows_input 已带回画面，windows_control 只有传 screenshot=true 才带画面。怎样做：target=desktop 也接受 x/y/width/height 裁剪——只给 x/y 就从该点裁到桌面右下角，不传则整屏；target=region 要求 x/y/width/height 全部给出。成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；同一画面不要重复截；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
         "argument_schema": "{\"target\":\"desktop|region|window\",\"window_handle\":\"0x...\",\"x\":0,\"y\":0,\"width\":1280,\"height\":720,\"max_dimension\":2048}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,

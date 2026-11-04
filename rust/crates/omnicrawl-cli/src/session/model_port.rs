@@ -224,12 +224,24 @@ impl ReplySource for KernelModelPort {
                     }));
             }
         }
-        // 运行时在本回合内只构建一次，整段循环（含失败重试）都借用同一实例；
-        // 跨回合仍命中同一实例时连构建都省掉（见 `Conn::runtime_cache`）。
-        let runtime = self.runtime_handle()?;
-        let runtime: &dyn ModelRuntime = runtime.runtime.as_ref();
         let parts = self.request_parts()?;
         let (tools, name_map) = (&parts.tools, &parts.name_map);
+        // 配对缺口与生成名两处收尾，同样只落在发出去的副本上：
+        // 1) 压缩/淘汰/恢复可能把 assistant 调用与它的 tool 结果切开，上游会整请求 400
+        //    （原话是「请开新任务重试」），补齐/摘除后才能重试；
+        // 2) 历史里的调用名是内部名（server.tool），声明用的是线上名（server_tool），
+        //    不改回去上游会把历史调用判成「不在声明里」。
+        let pairing = repair_tool_pairing(&mut wire_messages);
+        if pairing.has_violation() {
+            let detail = pairing.describe();
+            eprintln!("[kernel] 工具调用配对体检：{detail}");
+            self.conn
+                .borrow_mut()
+                .notify(HostEvent::Notice(MessagePayload {
+                    message: format!("工具调用配对修复：{detail}"),
+                }));
+        }
+        name_map.restore_wire_names(&mut wire_messages);
         let options = &parts.options;
         let identity = self.config.prompt_cache_identity.clone();
         let limit = self.config.request_retry_count.max(1);
@@ -276,6 +288,10 @@ impl ReplySource for KernelModelPort {
                 conn: Rc::clone(&self.conn),
                 usage: Rc::clone(&self.usage),
             };
+            // 正常运行期命中跨回合缓存（构造一次）；只有中继账号池/工具定义类拒绝会
+            // 丢掉缓存，让下一次重试换一条连接重新选题上游账号。
+            let runtime = self.runtime_handle()?;
+            let runtime: &dyn ModelRuntime = runtime.runtime.as_ref();
             match runtime.run_turn(&input, &mut sink) {
                 Ok(reply) => {
                     if is_empty_reply(&reply) {
@@ -310,6 +326,16 @@ impl ReplySource for KernelModelPort {
                     let overflow = error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE)
                         || self.usage.borrow().context_overflow;
                     let retryable = !overflow;
+                    // 中继把上游的账号池错误包成 `no_healthy_account`，里面再塞 11129 /
+                    // `invalid_function_parameters`。请求体本身已经验证合规（同一份请求换
+                    // 连接就能成功），属于「换账号即可」的瞬时失败：丢掉缓存的连接池，
+                    // 下一次重试重新选账号，并给账号池留出恢复时间。
+                    let relay_rejected =
+                        omnicrawl_llm::is_relay_account_or_tool_definition_error(&error.message);
+                    if relay_rejected {
+                        self.conn.borrow_mut().drop_model_runtime();
+                        self.runtime.replace(None);
+                    }
                     if retryable && attempt < limit {
                         // 已经推给界面的半截流要先撤销，否则重试会叠在旧文本上。
                         if error.kind == RuntimeErrorKind::StreamInterrupted {
@@ -319,17 +345,31 @@ impl ReplySource for KernelModelPort {
                         if drain_inbound_during_turn(&self.conn) {
                             return Err(LoopError::Cancelled("回合已取消。".to_string()));
                         }
-                        self.notify_retry(format!("请求失败，正在自动重试（第{attempt}次）"));
+                        self.notify_retry(if relay_rejected {
+                            format!("模型中继暂无可用账号，正在换连接重试（第{attempt}次）")
+                        } else {
+                            format!("请求失败，正在自动重试（第{attempt}次）")
+                        });
                         // 这次失败是网关在说「同一个 call_id 又提交了一次」：原样重发只会
                         // 再被拒，下一轮用轮换过的尾部 id 发，这份提交就不再是同一份。
                         rotate_ids = is_tool_state_rejection(&error.message);
-                        let backoff_ms = (400u64 << (attempt - 1).min(3)).min(2_000);
+                        let backoff_ms = if relay_rejected {
+                            // 账号池恢复要几秒到几十秒；快速重试只会继续撞同一个坏账号。
+                            [3_000u64, 6_000, 12_000, 24_000][(attempt - 1).min(3) as usize]
+                        } else {
+                            (400u64 << (attempt - 1).min(3)).min(2_000)
+                        };
                         std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         continue;
                     }
                     if retryable {
+                        let hint = if relay_rejected {
+                            "（模型中继暂无可用账号：中继的上游账号被判定不可用，稍后重试或更换渠道。）"
+                        } else {
+                            ""
+                        };
                         return Err(self.model_error(format!(
-                            "上游错误已达到本回合自动重试上限，已停止本次请求。{}",
+                            "上游错误已达到本回合自动重试上限，已停止本次请求。{hint}{}",
                             error.message
                         )));
                     }

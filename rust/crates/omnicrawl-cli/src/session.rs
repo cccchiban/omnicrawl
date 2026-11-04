@@ -70,8 +70,8 @@ use omnicrawl_llm::{
 };
 use omnicrawl_protocol::{
     conform_tool_names, conversation_from_openai_messages, normalize_call_ids,
-    rotate_tail_call_ids, tool_spec_from_openai_item, GenerationOptions, ModelReply,
-    ModelStreamEvent, ToolNameMap, ToolSpec,
+    repair_tool_pairing, rotate_tail_call_ids, tool_spec_from_openai_item, GenerationOptions,
+    ModelReply, ModelStreamEvent, ToolNameMap, ToolSpec,
 };
 use serde_json::{json, Map, Value};
 

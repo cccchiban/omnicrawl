@@ -3,13 +3,14 @@
 //! 模型没有「发消息」工具——投递由服务在终态之后做，因此不存在「模型忘了发」。凭据一律复用
 //! 已有连接器配置（`[telegram]` / `[feishu]`），触发接口不新开一份凭据。
 //!
-//! 两个平台能主动投递，QQ 不能：
+//! Telegram 与飞书能主动投递，QQ 这条通道暂未接入：
 //!
 //! * Telegram `sendMessage` 只要 `chat_id` 就能主动发；
 //! * 飞书 `im/v1/messages` 用 `receive_id` 主动发；
-//! * **QQ 机器人自 2025-04 起关闭了主动消息**，所有下发都必须是对某条入站消息的被动回复
-//!   （带 `msg_id`，且回复次数有额度）。外部触发没有入站消息，因此这条通道在本接口里
-//!   直接拒绝并说明原因，而不是发出一个注定失败的请求。
+//! * QQ 机器人也支持主动消息（不带 `msg_id`），但需要机器人具备主动消息能力
+//!   （否则 `40034105`），并受 Bot 维度 30/60 qpm、单关系 20 qpm、每会话每天 1000 条
+//!   的限制，用户还可以在客户端关闭接收。触发接口暂未对接这条通道，`type = "qqbot"`
+//!   在投递时直接拒绝并说明原因。
 //!
 //! Telegram 的 `chat_id` 必须落在 `[telegram] allowed_user_ids` 内：本机任何程序都能调这个
 //! 无鉴权接口，不能让它变成「给任意人发任意消息」的跳板。
@@ -41,9 +42,11 @@ pub fn deliver(
     match spec.channel.as_str() {
         "telegram" => deliver_telegram(env, spec, &text),
         "feishu" => deliver_feishu(env, spec, &text),
-        "qqbot" => Err("QQ 机器人已关闭主动消息：平台只允许对入站消息做被动回复，\
-             外部触发没有可回复的消息。请改用 telegram 或 feishu 通道。"
-            .to_string()),
+        "qqbot" => Err(
+            "QQ 机器人暂未接入主动投递：主动消息需要机器人具备相应权限，\
+             且受每分钟条数限制。请改用 telegram 或 feishu 通道。"
+                .to_string(),
+        ),
         // `none` 在 `NotifySpec::matches` 里已经返回假，走不到这里；未知通道同样按不支持处理。
         other => Err(format!("不支持的投递通道：{other}")),
     }
@@ -202,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn qqbot_is_rejected_with_the_platform_reason() {
+    fn qqbot_is_rejected_until_active_delivery_is_supported() {
         let env = ConfigEnvironment::new("C:/oc-trigger-home", "win32");
         let spec = NotifySpec {
             channel: "qqbot".to_string(),
@@ -211,7 +214,7 @@ mod tests {
             max_chars: 4000,
         };
         let error = deliver(&env, &spec, "标题", TriggerState::Completed, "正文", "")
-            .expect_err("QQ 不能主动投递");
-        assert!(error.contains("被动回复"));
+            .expect_err("QQ 主动投递暂未接入");
+        assert!(error.contains("主动投递"), "{error}");
     }
 }

@@ -1,9 +1,13 @@
-//! QQ 开放平台接口客户端：AccessToken、网关地址、被动回复与媒体下载。
+//! QQ 开放平台接口客户端：AccessToken、网关地址、消息下发与媒体下载。
 //!
 //! 协议见 `https://bot.q.qq.com/wiki/develop/api-v2/`：鉴权走 `appId + clientSecret`
 //! 换 AccessToken（7200 秒，提前 5 分钟续期），业务请求带 `Authorization: QQBot <token>`。
-//! 2025-04 起主动消息已下线，**所有消息都必须是携带 `msg_id` 的被动回复**，同一
-//! `msg_id` 的回复次数有上限（单聊 5 条 / 60 分钟，群聊 5 条 / 5 分钟）。
+//! 同一个发送接口承担两种形态，区别只在带不带 `msg_id`：
+//!
+//! - **被动回复**：带触发消息的 `msg_id`（单聊/群聊还要 `msg_seq`），有条数与窗口上限
+//!   （单聊 60 分钟内 5 条、群聊 5 分钟内 5 条）；
+//! - **主动消息**：不带 `msg_id`，没有时效概念，但需要机器人具备主动消息能力，并受频率
+//!   限制（Bot 维度 30 qpm 起、单关系 20 qpm、每个会话每天 1000 条）。
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,6 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::config::TOKEN_URL;
+use super::upload;
 use crate::http::{HttpTransport, UreqTransport};
 use crate::json;
 
@@ -23,10 +28,15 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// 令牌提前续期的余量。
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(300);
 
-/// 被动回复窗口内的回复条数上限：按场景不同，群聊 5 条、单聊 4 条（见 [`Target::max_replies`]）。
+/// 被动回复窗口内的回复条数上限：群聊与单聊都是 5 条（见 [`Target::max_replies`]）。
 pub const MAX_REPLIES_PER_GROUP_MESSAGE: usize = 5;
-/// 单聊的回复条数上限：平台给私聊 60 分钟窗口，但条数比群聊更紧。
-pub const MAX_REPLIES_PER_C2C_MESSAGE: usize = 4;
+/// 单聊的回复条数上限：与群聊同为 5 条，只是窗口更长（60 分钟）。
+pub const MAX_REPLIES_PER_C2C_MESSAGE: usize = 5;
+
+/// 被动回复已不可用的错误码：`msg_id` 过期（40034005）与次数/时间超限（40034128）。
+///
+/// 端口层把平台错误压成字符串，这里按错误码匹配，用于降级成主动消息。
+pub const PASSIVE_UNAVAILABLE_CODES: [&str; 2] = ["40034005", "40034128"];
 
 /// 消息类型：0 纯文本、2 Markdown、7 富媒体（`msg_type` 决定哪个内容字段生效）。
 pub const MSG_TYPE_TEXT: i64 = 0;
@@ -69,12 +79,30 @@ impl Target {
         }
     }
 
+    /// 分片上传预上传路径（只有单聊与群聊有；频道走另一套接口，本连接器不发频道富媒体）。
+    pub fn upload_prepare_path(&self) -> Option<String> {
+        match self {
+            Target::User(openid) => Some(format!("/v2/users/{openid}/upload_prepare")),
+            Target::Group(group) => Some(format!("/v2/groups/{group}/upload_prepare")),
+            Target::Channel(_) => None,
+        }
+    }
+
+    /// 分片上传的单片完成通知路径（与预上传同理，只有单聊与群聊）。
+    pub fn upload_part_finish_path(&self) -> Option<String> {
+        match self {
+            Target::User(openid) => Some(format!("/v2/users/{openid}/upload_part_finish")),
+            Target::Group(group) => Some(format!("/v2/groups/{group}/upload_part_finish")),
+            Target::Channel(_) => None,
+        }
+    }
+
     /// 频道场景不使用 `msg_seq`（官方只对单聊与群聊要求递增序号）。
     pub fn uses_seq(&self) -> bool {
         !matches!(self, Target::Channel(_))
     }
 
-    /// 同一条入站消息最多能回几条：群聊 5、单聊 4；频道没有条数限制，按群聊口径保守处理。
+    /// 同一条入站消息最多能回几条：群聊与单聊都是 5；频道没有条数限制，按同口径保守处理。
     pub fn max_replies(&self) -> usize {
         match self {
             Target::User(_) => MAX_REPLIES_PER_C2C_MESSAGE,
@@ -405,8 +433,23 @@ impl QqApi {
 
     /// 上传富媒体（`srv_send_msg=false`），返回 `file_info` 供后续引用。
     ///
-    /// 二进制直传上限 5MB（平台限制），超过时由调用方降级成文本提示。
+    /// 不超过 [`MAX_DIRECT_UPLOAD_BYTES`] 走二进制直传；更大的走分片上传——平台图片软限
+    /// 20MB、视频 30MB、语音 20MB、其余文件 200MB，直传的 5MB 显然不够用。
     pub fn upload_media(
+        &self,
+        target: &Target,
+        file_type: i64,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<String, QqApiError> {
+        if bytes.len() <= MAX_DIRECT_UPLOAD_BYTES {
+            return self.upload_media_direct(target, file_type, file_name, bytes);
+        }
+        self.upload_media_chunked(target, file_type, file_name, bytes)
+    }
+
+    /// 二进制直传（`file_data`，上限 5MB）。
+    fn upload_media_direct(
         &self,
         target: &Target,
         file_type: i64,
@@ -439,6 +482,105 @@ impl QqApi {
             .and_then(Value::as_str)
             .map(|value| value.to_string())
             .ok_or_else(|| QqApiError::Missing("file_info".to_string()))
+    }
+
+    /// 分片上传：预上传 → 逐片 PUT 到预签名地址并通知完成 → 用 `upload_id` 合并。
+    ///
+    /// 预签名地址指向对象存储，**不能**带平台的 `Authorization` 头（签名会因此失效）。
+    fn upload_media_chunked(
+        &self,
+        target: &Target,
+        file_type: i64,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<String, QqApiError> {
+        let (Some(prepare_path), Some(finish_path)) = (
+            target.upload_prepare_path(),
+            target.upload_part_finish_path(),
+        ) else {
+            return Err(QqApiError::Api {
+                status: 200,
+                code: Some(850031),
+                message: "该场景不支持分片上传".to_string(),
+            });
+        };
+        let prepare_url = format!("{}{prepare_path}", self.base_url);
+        let prepare_body = json::dumps(&upload::prepare_body(file_type, file_name, bytes));
+        let prepared =
+            self.authorized("POST", &prepare_url, Some(&prepare_body), REQUEST_TIMEOUT)?;
+        let upload_id = prepared
+            .get("upload_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| QqApiError::Missing("upload_id".to_string()))?
+            .to_string();
+        let parts = prepared
+            .get("parts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| QqApiError::Missing("parts".to_string()))?;
+
+        let finish_url = format!("{}{finish_path}", self.base_url);
+        // 分片顺序与大小都以响应为准：按 index 升序逐片推进偏移，不假设 block_size 恒定。
+        let mut ordered: Vec<&Value> = parts.iter().collect();
+        ordered.sort_by_key(|part| part.get("index").and_then(Value::as_i64).unwrap_or(0));
+        let mut offset = 0_usize;
+        for part in ordered {
+            let index = part.get("index").and_then(Value::as_i64).unwrap_or(0);
+            let presigned = part
+                .get("presigned_url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| QqApiError::Missing("parts[].presigned_url".to_string()))?;
+            let size = part
+                .get("block_size")
+                .and_then(Value::as_str)
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if size == 0 || offset >= bytes.len() {
+                continue;
+            }
+            let end = (offset + size).min(bytes.len());
+            let chunk = &bytes[offset..end];
+            offset = end;
+            self.put_presigned(presigned, chunk)?;
+            let finish_body = json::dumps(&json!({
+                "upload_id": upload_id,
+                "part_index": index,
+                "block_size": chunk.len().to_string(),
+                "md5": upload::hex(&upload::md5(chunk)),
+            }));
+            self.authorized("POST", &finish_url, Some(&finish_body), REQUEST_TIMEOUT)?;
+        }
+
+        // 全部分片就绪后用 `upload_id` 调一次上传接口完成合并。
+        let body = json::dumps(&json!({
+            "file_type": file_type,
+            "file_name": file_name,
+            "upload_id": upload_id,
+            "srv_send_msg": false,
+        }));
+        let url = format!("{}{}", self.base_url, target.files_path());
+        let payload = self.authorized("POST", &url, Some(&body), DOWNLOAD_TIMEOUT)?;
+        payload
+            .get("file_info")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+            .ok_or_else(|| QqApiError::Missing("file_info".to_string()))
+    }
+
+    /// 把一个分片 PUT 到预签名地址（对象存储，不带平台鉴权头）。
+    fn put_presigned(&self, url: &str, bytes: &[u8]) -> Result<(), QqApiError> {
+        let headers = [("User-Agent".to_string(), USER_AGENT.to_string())];
+        let reply = self
+            .transport
+            .request("PUT", url, &headers, Some(bytes), DOWNLOAD_TIMEOUT)
+            .map_err(QqApiError::Transport)?;
+        if (200..300).contains(&reply.status) {
+            return Ok(());
+        }
+        Err(QqApiError::Api {
+            status: reply.status,
+            code: None,
+            message: "分片上传失败".to_string(),
+        })
     }
 
     /// 主动下载平台给的附件 URL（`multimedia.nt.qq.com.cn`，无需鉴权）。
@@ -492,6 +634,8 @@ mod tests {
     struct MockHttp {
         requests: Mutex<Vec<(String, String, String)>>,
         token_calls: Mutex<usize>,
+        /// 每次对预签名地址发送时携带的 `Authorization` 头（应为空）。
+        presigned_authorizations: Mutex<Vec<String>>,
     }
 
     impl HttpTransport for MockHttp {
@@ -514,6 +658,12 @@ mod tests {
                 .find(|(key, _value)| key == "Authorization")
                 .map(|(_key, value)| value.clone())
                 .unwrap_or_default();
+            if url.starts_with("https://cos.example.com/") {
+                self.presigned_authorizations
+                    .lock()
+                    .expect("锁中毒")
+                    .push(authorization.clone());
+            }
             let payload = if url.contains("getAppAccessToken") {
                 let mut calls = self.token_calls.lock().expect("锁中毒");
                 *calls += 1;
@@ -527,6 +677,20 @@ mod tests {
                     });
                 }
                 json!({"url": "wss://api.bot.qq.com/websocket/"})
+            } else if url.ends_with("/upload_prepare") {
+                // 两个分片：每片 5MB 的固定口径，末片由客户端按实际长度截断。
+                json!({
+                    "upload_id": "upload-1",
+                    "block_size": (5 * 1024 * 1024).to_string(),
+                    "parts": [
+                        {"index": 0, "presigned_url": "https://cos.example.com/p0", "block_size": (5 * 1024 * 1024).to_string()},
+                        {"index": 1, "presigned_url": "https://cos.example.com/p1", "block_size": (5 * 1024 * 1024).to_string()},
+                    ],
+                })
+            } else if url.ends_with("/upload_part_finish") {
+                json!({})
+            } else if url.starts_with("https://cos.example.com/") {
+                json!({})
             } else if url.ends_with("/files") {
                 json!({"file_info": "FILE-INFO", "ttl": 300})
             } else {
@@ -621,7 +785,10 @@ mod tests {
             .find(|(_method, url, _body)| url.contains("/v2/groups/A1B2/messages"))
             .expect("应有发送请求");
         let body: Value = serde_json::from_str(&send.2).expect("请求体是 JSON");
-        assert_eq!(body["message_reference"]["message_id"], json!("REFIDX_zzz=="));
+        assert_eq!(
+            body["message_reference"]["message_id"],
+            json!("REFIDX_zzz==")
+        );
         assert_eq!(body["msg_id"], json!("m-1"));
     }
 
@@ -691,26 +858,113 @@ mod tests {
     }
 
     #[test]
-    fn oversized_upload_is_rejected_before_the_request() {
+    fn oversized_upload_switches_to_chunked_upload() {
         let (api, transport) = api();
-        let big = vec![0_u8; MAX_DIRECT_UPLOAD_BYTES + 1];
-        let error = api
+        let big = vec![7_u8; MAX_DIRECT_UPLOAD_BYTES + 1];
+        let info = api
             .upload_media(
                 &Target::User("F6A8".to_string()),
                 FILE_TYPE_FILE,
                 "big.bin",
                 &big,
             )
-            .expect_err("超限应报错");
-        assert!(error.to_string().contains("直传上限"), "{error}");
+            .expect("超 5MB 应改走分片上传");
+        assert_eq!(info, "FILE-INFO");
+
+        let requests = transport.requests.lock().expect("锁中毒");
+        let prepare = requests
+            .iter()
+            .find(|(_method, url, _body)| url.ends_with("/upload_prepare"))
+            .expect("应先预上传");
+        let body: Value = serde_json::from_str(&prepare.2).expect("请求体是 JSON");
+        assert_eq!(body["file_type"], json!(FILE_TYPE_FILE));
+        assert_eq!(body["file_name"], json!("big.bin"));
+        assert_eq!(body["file_size"], json!(big.len().to_string()));
+        assert_eq!(body["md5"].as_str().map(str::len), Some(32));
+        assert_eq!(body["sha1"].as_str().map(str::len), Some(40));
+        assert_eq!(body["md5_10m"].as_str().map(str::len), Some(32));
+
+        // 两片各自 PUT 到预签名地址，且**不带**平台鉴权头。
+        let puts: Vec<_> = requests
+            .iter()
+            .filter(|(method, url, _body)| method == "PUT" && url.starts_with("https://cos."))
+            .collect();
+        assert_eq!(puts.len(), 2, "两片都该 PUT：{requests:?}");
+        assert_eq!(puts[0].1, "https://cos.example.com/p0");
+
+        // 每片完成后都要通知，最后用 upload_id 合并。
+        let finishes = requests
+            .iter()
+            .filter(|(_method, url, _body)| url.ends_with("/upload_part_finish"))
+            .count();
+        assert_eq!(finishes, 2, "每片都要通知完成：{requests:?}");
+        let merge = requests
+            .iter()
+            .find(|(method, url, _body)| method == "POST" && url.ends_with("/files"))
+            .expect("最后要合并");
+        let body: Value = serde_json::from_str(&merge.2).expect("请求体是 JSON");
+        assert_eq!(body["upload_id"], json!("upload-1"));
+        assert_eq!(body["file_type"], json!(FILE_TYPE_FILE));
         assert!(
-            !transport
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_method, url, _body)| url.ends_with("/files")),
-            "超限时不应发出上传请求"
+            body.get("file_data").is_none(),
+            "分片上传不能再带 file_data"
+        );
+    }
+
+    #[test]
+    fn chunked_upload_sends_every_part_but_the_last_full() {
+        let (api, transport) = api();
+        let big = vec![3_u8; MAX_DIRECT_UPLOAD_BYTES + 11];
+        api.upload_media(
+            &Target::Group("A1B2".to_string()),
+            FILE_TYPE_VIDEO,
+            "big.mp4",
+            &big,
+        )
+        .expect("分片上传");
+        let requests = transport.requests.lock().expect("锁中毒");
+        // 桩件把请求体按 UTF-8 有损记录，这里只核分片数量与顺序；
+        // 「字节一一对应」由下面的完成通知 md5 用例钉住。
+        let puts: Vec<_> = requests
+            .iter()
+            .filter(|(method, url, _body)| method == "PUT" && url.starts_with("https://cos."))
+            .collect();
+        assert_eq!(puts.len(), 2, "两片各 PUT 一次：{requests:?}");
+        assert_eq!(puts[0].1, "https://cos.example.com/p0");
+        assert_eq!(puts[1].1, "https://cos.example.com/p1");
+        assert!(!puts[0].2.is_empty());
+        // 分片完成通知里带的是该片自己的 MD5（首片是完整的 5MB 整块）。
+        let finish = requests
+            .iter()
+            .find(|(_method, url, _body)| url.ends_with("/upload_part_finish"))
+            .expect("应有完成通知");
+        let body: Value = serde_json::from_str(&finish.2).expect("请求体是 JSON");
+        assert_eq!(body["upload_id"], json!("upload-1"));
+        assert_eq!(
+            body["md5"],
+            json!(crate::qqbot::upload::hex(&crate::qqbot::upload::md5(
+                &big[..5 * 1024 * 1024]
+            )))
+        );
+        assert_eq!(body["block_size"], json!((5 * 1024 * 1024).to_string()));
+    }
+
+    #[test]
+    fn presigned_put_carries_no_platform_authorization() {
+        let (api, transport) = api();
+        let big = vec![0_u8; MAX_DIRECT_UPLOAD_BYTES + 1];
+        api.upload_media(
+            &Target::User("F6A8".to_string()),
+            FILE_TYPE_FILE,
+            "big.bin",
+            &big,
+        )
+        .expect("分片上传");
+        let recorded = transport.presigned_authorizations.lock().expect("锁中毒");
+        assert_eq!(recorded.len(), 2, "两片都要走预签名地址：{recorded:?}");
+        assert!(
+            recorded.iter().all(String::is_empty),
+            "预签名地址带 Authorization 会让签名失效：{recorded:?}"
         );
     }
 

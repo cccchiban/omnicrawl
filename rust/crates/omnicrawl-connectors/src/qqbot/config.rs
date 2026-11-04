@@ -160,8 +160,20 @@ pub fn persona_prompt(persona: &str, bot_name: &str) -> String {
         return custom.to_string();
     }
     let name = bot_name.trim();
-    let name = if name.is_empty() { "QQ 机器人" } else { name };
+    let name = if name.is_empty() {
+        "QQ 机器人"
+    } else {
+        name
+    };
     format!("你是 {name}，一个在 QQ 上的 OmniCrawl 机器人。")
+}
+
+/// 媒体发送约定：不写进提示词，模型就不知道 `[FILE:…]` 这个约定存在，等于发不出图。
+pub const MEDIA_HINT: &str = "发图片、视频、语音或文件时，在回复里单独写一行 [FILE:路径]（工作区相对路径或绝对路径），连接器会把它换成真正的媒体消息。格式与上限：图片 png/jpg ≤20MB，视频 mp4 ≤30MB，语音 silk/mp3/wav/flac/ogg ≤20MB，其余按文件发 ≤200MB；超出格式限制的一律按文件发送。只在用户确实需要成品时发。";
+
+/// 真正的提示词追加段：预设提示词 + 媒体约定。
+pub fn prompt_append(persona: &str, bot_name: &str) -> String {
+    format!("{}\n\n{}", persona_prompt(persona, bot_name), MEDIA_HINT)
 }
 
 /// 读取 `[qqbot]` 段；缺项回落默认值，类型不对返回中文错误。
@@ -175,17 +187,16 @@ pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String>
     let app_id = text_of(section.get("app_id"));
     let app_secret = text_of(section.get("app_secret"));
     let allowed_user_ids = coerce_string_set(section.get("allowed_user_ids"));
-    let allowed_group_ids = match section.get("allowed_group_ids") {
-        // 空表等价于空数组：`[qqbot.allowed_group_ids]` 这种写法常由配置工具生成。
-        Some(Value::Object(map)) if map.is_empty() => BTreeSet::new(),
-        Some(Value::Object(_)) => {
-            return Err(
+    let allowed_group_ids =
+        match section.get("allowed_group_ids") {
+            // 空表等价于空数组：`[qqbot.allowed_group_ids]` 这种写法常由配置工具生成。
+            Some(Value::Object(map)) if map.is_empty() => BTreeSet::new(),
+            Some(Value::Object(_)) => return Err(
                 "qqbot.allowed_group_ids 必须是群 openid 字符串数组（如 [\"A1B2\"]），不能写成表。"
                     .to_string(),
-            )
-        }
-        other => coerce_string_set(other),
-    };
+            ),
+            other => coerce_string_set(other),
+        };
     let confirm_timeout_seconds = match section.get("confirmation_timeout_seconds") {
         None | Some(Value::Null) => DEFAULT_CONFIRM_TIMEOUT_SECONDS,
         Some(raw) => parse_seconds(raw)?,
@@ -545,7 +556,10 @@ mod tests {
         let section = json!({"persona": "  你是小囫囵，说话简短。  "});
         let config = load_qqbot_config(Some(&section)).expect("配置可解析");
         assert_eq!(config.persona, "你是小囫囵，说话简短。");
-        assert_eq!(persona_prompt(&config.persona, "小囫囵"), "你是小囫囵，说话简短。");
+        assert_eq!(
+            persona_prompt(&config.persona, "小囫囵"),
+            "你是小囫囵，说话简短。"
+        );
 
         // 没配 persona 时按昵称生成一行：昵称缺失退化成「QQ 机器人」。
         let config = load_qqbot_config(None).expect("配置可解析");

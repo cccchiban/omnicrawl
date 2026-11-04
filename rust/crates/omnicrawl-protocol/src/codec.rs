@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::message::{
     ConversationMessage, ImageBlock, ImageDetail, MessageBlock, Role, TextBlock, ToolCallBlock,
@@ -515,6 +515,132 @@ pub fn normalize_call_ids(messages: &mut [Value]) -> CallIdReport {
     report
 }
 
+/// 配对修复的结果：摘掉了几条孤儿结果、补齐了几处缺失结果。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ToolPairingReport {
+    /// 没有对应 assistant 调用、被摘掉的 `tool` 消息数。
+    pub dropped_orphans: usize,
+    /// 有 assistant 调用却没有结果、被补了占位结果的处数。
+    pub filled_calls: usize,
+}
+
+impl ToolPairingReport {
+    /// 这条请求是否本来就不自洽（摘过或补过东西）。
+    pub fn has_violation(&self) -> bool {
+        self.dropped_orphans > 0 || self.filled_calls > 0
+    }
+
+    /// 单行中文摘要：直接进日志或宿主提示。
+    pub fn describe(&self) -> String {
+        if !self.has_violation() {
+            return "工具调用配对无异常".to_string();
+        }
+        format!(
+            "摘掉无调用的结果 {} 条；补齐缺失结果 {} 处",
+            self.dropped_orphans, self.filled_calls
+        )
+    }
+}
+
+/// 缺失结果的占位正文：明说是占位，绝不伪造工具输出。
+pub const MISSING_TOOL_RESULT_PLACEHOLDER: &str =
+    "（该工具调用在上下文里没有结果记录，此处为占位。）";
+
+/// 工具调用与 `tool` 结果的配对修复，**只作用于即将发出的副本**。
+///
+/// 上游（DeepSeek 等）要求每个 assistant `tool_calls[].id` 都能在紧随其后的 `tool`
+/// 消息里找到同 id 的结果，反之亦然。压缩、淘汰、`/resume` 投影一旦切在两者之间，留下的
+/// 缺口会让整请求 400（上游的原话就是「请开新任务重试」），重试再多次也不会好。
+///
+/// 处理口径：
+/// - 孤儿结果（有 `tool` 消息、找不到调用）：摘掉。它没有调用方，留着必然被拒。
+/// - 缺失结果（有调用、没有 `tool` 消息）：在该批结果的末尾补一条**明标占位**的
+///   `tool` 消息，让协议自洽；占位正文如实说明「这里没有结果」，不冒充实测输出。
+pub fn repair_tool_pairing(messages: &mut Vec<Value>) -> ToolPairingReport {
+    let mut report = ToolPairingReport::default();
+    let call_ids: HashSet<String> = collect_call_spots(messages)
+        .into_iter()
+        .map(|spot| spot.id)
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    // 第一遍：摘掉孤儿结果。
+    let mut kept: Vec<Value> = Vec::with_capacity(messages.len());
+    for message in messages.drain(..) {
+        let orphan = is_tool_message(&message) && !call_ids.contains(&result_id(&message));
+        if orphan {
+            report.dropped_orphans += 1;
+        } else {
+            kept.push(message);
+        }
+    }
+    *messages = kept;
+
+    // 第二遍：给没有结果的调用补占位，位置紧跟该批已有结果之后。
+    // 判定用「全列表范围内的结果 id」：结果偶尔会跟调用隔开几条消息，那时不该再补一份。
+    let mut answered: HashSet<String> = messages
+        .iter()
+        .filter(|message| is_tool_message(message))
+        .map(result_id)
+        .collect();
+    let mut index = 0usize;
+    while index < messages.len() {
+        let calls: Vec<String> = messages[index]
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_string))
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if calls.is_empty() {
+            index += 1;
+            continue;
+        }
+        // 只用来定位插入点：该批结果之后，仍属于这一批的那个位置。
+        let mut cursor = index + 1;
+        while cursor < messages.len() && is_tool_message(&messages[cursor]) {
+            cursor += 1;
+        }
+        let mut insert_at = cursor;
+        for id in calls {
+            if answered.contains(&id) {
+                continue;
+            }
+            messages.insert(
+                insert_at,
+                json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": MISSING_TOOL_RESULT_PLACEHOLDER,
+                }),
+            );
+            answered.insert(id);
+            insert_at += 1;
+            cursor += 1;
+            report.filled_calls += 1;
+        }
+        index = cursor.max(index + 1);
+    }
+    report
+}
+
+/// 是否是 `role: tool` 的结果消息。
+fn is_tool_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("tool")
+}
+
+/// 结果消息指向的调用 id（缺失记成空串）。
+fn result_id(message: &Value) -> String {
+    message
+        .as_object()
+        .map(|object| first_non_empty_str(object, &["tool_call_id", "id"]))
+        .unwrap_or_default()
+}
+
 /// 轮换**尾部一批**工具调用的 id：最近一条带 `tool_calls` 的 assistant 消息及其后所有
 /// 指向这批 id 的 `tool` 结果，逐一声明成 `call_{tag}{n}`。
 ///
@@ -739,5 +865,79 @@ mod call_id_tests {
     fn rotation_skips_when_tail_has_no_named_call() {
         let mut messages = vec![json!({"role": "user", "content": "你好"})];
         assert_eq!(rotate_tail_call_ids(&mut messages, "rt"), 0);
+    }
+
+    #[test]
+    fn clean_history_needs_no_pairing_repair() {
+        let mut messages = vec![
+            assistant("call_a", "bash"),
+            result("call_a"),
+            assistant("call_b", "read"),
+            result("call_b"),
+        ];
+        let before = messages.clone();
+        let report = repair_tool_pairing(&mut messages);
+        assert_eq!(messages, before);
+        assert!(!report.has_violation());
+    }
+
+    #[test]
+    fn orphan_result_is_dropped() {
+        // 淘汰/压缩只留下了上一批的结果，调用已被剔除：留着必被上游拒。
+        let mut messages = vec![
+            assistant("call_a", "bash"),
+            result("call_a"),
+            result("call_ghost"),
+            json!({"role": "user", "content": "继续"}),
+        ];
+        let report = repair_tool_pairing(&mut messages);
+        assert_eq!(report.dropped_orphans, 1);
+        assert_eq!(report.filled_calls, 0);
+        assert_eq!(messages.len(), 3);
+        assert!(messages
+            .iter()
+            .all(|message| result_id(message) != "call_ghost"));
+    }
+
+    #[test]
+    fn result_separated_from_its_call_is_not_duplicated() {
+        // 结果与调用之间夹了别的消息：已有结果就够，不能再补一份占位。
+        let mut messages = vec![
+            assistant("call_a", "bash"),
+            json!({"role": "user", "content": "插一句"}),
+            result("call_a"),
+        ];
+        let before = messages.clone();
+        let report = repair_tool_pairing(&mut messages);
+        assert_eq!(messages, before);
+        assert!(!report.has_violation());
+    }
+
+    #[test]
+    fn dangling_call_gets_a_placeholder_result_at_the_block_end() {
+        let mut messages = vec![
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+                ],
+            }),
+            result("call_a"),
+            json!({"role": "user", "content": "继续"}),
+        ];
+        let report = repair_tool_pairing(&mut messages);
+        assert_eq!(report.filled_calls, 1);
+        assert_eq!(report.dropped_orphans, 0);
+        assert_eq!(messages.len(), 4);
+        // 占位结果必须紧跟该批已有结果，且如实标注是占位。
+        assert_eq!(messages[2]["role"], json!("tool"));
+        assert_eq!(messages[2]["tool_call_id"], json!("call_b"));
+        assert_eq!(messages[2]["content"], json!(MISSING_TOOL_RESULT_PLACEHOLDER));
+        assert_eq!(messages[3]["role"], json!("user"));
+        // 补齐后两侧完全配对。
+        let (calls, results) = ids(&messages);
+        assert_eq!(calls, results);
     }
 }

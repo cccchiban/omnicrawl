@@ -1,16 +1,21 @@
-//! QQ 机器人服务：网关事件接入、命令分发、被动回复与工具确认桥。
+//! QQ 机器人服务：网关事件接入、命令分发、消息下发与工具确认桥。
 //!
-//! 与另外两个连接器最大的差别是**平台形态**：2025-04 起 QQ 关闭了主动消息，所有下发都
-//! 必须是对某条入站消息的被动回复（携带 `msg_id`），而且同一条入站消息只有 5 次回复
-//! 额度（单聊 60 分钟、群聊 5 分钟）。因此：
+//! 与另外两个连接器最大的差别是**平台形态**：同一个发送接口既能做被动回复又能发主动
+//! 消息，区别只在带不带 `msg_id`。本连接器默认走被动回复，因为被动回复带上下文、
+//! 不占主动消息额度：
 //!
+//! - 被动回复带触发消息的 `msg_id`，同一条入站消息的额度是硬限制（群聊 5 条 / 5 分钟，
+//!   单聊 5 条 / 60 分钟），超出会被平台拒绝（`40034128`）；
 //! - 消息**不能编辑**，也没有流式预览：正文段在工具边界处封口成一条完整消息；
 //! - 工具调用不各自成条，而是攒成一段「进度」消息，避免几次调用就用光额度；
 //! - 进度消息只报「调用了什么、结果如何」，**不下发工具输出**——输出属于内部过程，
 //!   端上只留一行 `● 摘要 · ✓ 成功`；
 //! - 额度按「每条入站消息最多 5 条」硬性计数，其中**中间过程最多 4 条**，第 5 条固定
 //!   留给最终回答（[`ReplyHandle::send_intermediate`] 与 [`ReplyHandle::send_final`]）。
-//!   中间过程用满 4 条之后不再发送任何内容，直到最终文本出现。
+//!   中间过程用满 4 条之后不再发送任何内容，直到最终文本出现；
+//! - 被动不可用时**最终回答降级成主动消息**（不带 `msg_id`）：本地额度用尽或平台报
+//!   `40034005`（`msg_id` 过期）/ `40034128`（次数超限）都会触发，受
+//!   [`ActiveBudget`] 的每分钟条数约束。过程消息不降级，免得进度把限流额度耗光。
 //!
 //! 除这些平台限制外，显示口径与 Telegram/飞书一致：摘要与正文的生成规则仍共用
 //! `crate::render`，正文段与进度段各自独立、按发生顺序出现。含 Markdown 语法的段走
@@ -30,7 +35,7 @@ use serde_json::Value;
 
 use omnicrawl_session::{redact_sensitive_text, redact_sensitive_values};
 
-use super::api::{QqApi, Target, MAX_REPLIES_PER_GROUP_MESSAGE};
+use super::api::{QqApi, Target, MAX_REPLIES_PER_GROUP_MESSAGE, PASSIVE_UNAVAILABLE_CODES};
 use super::config::{effective_confirm_timeout, validate_config, AccessPolicy, QqBotConfig};
 use super::dispatch::{
     classify, parse_thinking_command, route_event_with_bot, workspace_argument, BotIdentity,
@@ -54,6 +59,52 @@ pub const MAX_CONTENT_CHARS: usize = 1800;
 
 /// 中间过程占用的额度：留 1 条给最终回答（总额度按场景取，见 [`Target::max_replies`]）。
 pub const MAX_INTERMEDIATE_REPLIES: usize = MAX_REPLIES_PER_GROUP_MESSAGE - 1;
+
+/// 主动消息的分钟额度：按未认证 Bot 的保守口径（认证后是 60 qpm）。
+pub const MAX_ACTIVE_PER_MINUTE: usize = 30;
+
+/// 主动消息的滑动窗口限流器：所有会话共用一份。
+///
+/// 平台按 Bot 维度计主动消息频率（未认证 30 qpm），并发任务各自降级时很容易一起打满，
+/// 所以额度必须集中记账；单关系 20 qpm 与每天 1000 条由这个上限间接兜住。
+pub struct ActiveBudget {
+    limit: usize,
+    window: Duration,
+    sent: Mutex<VecDeque<Instant>>,
+}
+
+impl ActiveBudget {
+    pub fn new(limit: usize, window: Duration) -> ActiveBudget {
+        ActiveBudget {
+            limit,
+            window,
+            sent: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// 按未认证 Bot 的保守口径：每分钟 [`MAX_ACTIVE_PER_MINUTE`] 条。
+    pub fn per_minute() -> ActiveBudget {
+        ActiveBudget::new(MAX_ACTIVE_PER_MINUTE, Duration::from_secs(60))
+    }
+
+    /// 取一个额度：窗口内还有余量就记账并返回 true。
+    fn take(&self) -> bool {
+        let mut sent = self.sent.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        while let Some(front) = sent.front() {
+            if now.duration_since(*front) >= self.window {
+                sent.pop_front();
+            } else {
+                break;
+            }
+        }
+        if sent.len() >= self.limit {
+            return false;
+        }
+        sent.push_back(now);
+        true
+    }
+}
 
 /// 断线重连的退避上限（秒）。
 const MAX_BACKOFF_SECONDS: f64 = 30.0;
@@ -147,7 +198,7 @@ impl QqPort for QqApi {
 
 /// 一条入站消息的被动回复句柄：`msg_seq` 递增、额度硬性递减。
 ///
-/// 额度口径按场景取（[`Target::max_replies`]）：群聊 5 条、单聊 4 条；其中**中间过程最多
+/// 额度口径按场景取（[`Target::max_replies`]）：群聊与单聊都是 5 条；其中**中间过程最多
 /// 占总额度减 1 条**（[`ReplyHandle::send_intermediate`]），最后 1 条留给最终回答
 /// （[`ReplyHandle::send_final`]）。中间额度用尽后 [`ReplyHandle::can_send_intermediate`]
 /// 返回 false，调用方必须继续攒内容、直到最终文本才下发。
@@ -168,6 +219,12 @@ pub struct ReplyHandle {
     seq: AtomicI64,
     slots_left: AtomicUsize,
     intermediate_left: AtomicUsize,
+    /// 被动不可用时改发主动消息的额度；`None` 表示不降级。
+    active_budget: Option<Arc<ActiveBudget>>,
+    /// 被动通道已判定不可用（`msg_id` 过期或次数超限）：后续下发直接走主动。
+    passive_dead: AtomicBool,
+    /// Agent 工作区根：`[FILE:相对路径]` 按它解析，而不是连接器进程的当前目录。
+    workspace_root: Option<PathBuf>,
 }
 
 impl ReplyHandle {
@@ -182,7 +239,22 @@ impl ReplyHandle {
             seq: AtomicI64::new(1),
             slots_left: AtomicUsize::new(total),
             intermediate_left: AtomicUsize::new(total - 1),
+            active_budget: None,
+            passive_dead: AtomicBool::new(false),
+            workspace_root: None,
         }
+    }
+
+    /// 指定 Agent 工作区根：`[FILE:相对路径]` 按它解析。
+    pub fn with_workspace_root(mut self, root: PathBuf) -> ReplyHandle {
+        self.workspace_root = Some(root);
+        self
+    }
+
+    /// 允许被动回复不可用时降级成主动消息，额度与所有会话共用。
+    pub fn with_active_budget(mut self, budget: Arc<ActiveBudget>) -> ReplyHandle {
+        self.active_budget = Some(budget);
+        self
     }
 
     /// 让最终回答以引用形式挂到用户那条消息上（过程消息保持干净）。
@@ -256,7 +328,7 @@ impl ReplyHandle {
             let mut any_sent = false;
             let mut all_sent = true;
             for path in media::marker_paths(text) {
-                match media::load(&path) {
+                match media::load(&path, self.workspace_root.as_deref()) {
                     Ok(upload) => {
                         let reference = if quote && !referenced {
                             self.reference.as_str()
@@ -344,14 +416,58 @@ impl ReplyHandle {
         }
     }
 
+    /// 本次下发是否已被平台判死：被动通道失效后改走主动消息。
+    fn passive_dead(&self) -> bool {
+        self.passive_dead.load(Ordering::SeqCst)
+    }
+
+    /// 下发用的消息 ID：主动消息不带 `msg_id`。
+    fn delivery_id(&self, active: bool) -> &str {
+        if active {
+            ""
+        } else {
+            self.msg_id.as_str()
+        }
+    }
+
+    /// 取一份主动消息额度；没有配置降级时恒为 false。
+    fn take_active(&self) -> bool {
+        match &self.active_budget {
+            Some(budget) => budget.take(),
+            None => false,
+        }
+    }
+
+    /// 平台是否明确告知这条 `msg_id` 不能再回（过期或次数超限）。
+    fn passive_unavailable(error: &str) -> bool {
+        PASSIVE_UNAVAILABLE_CODES
+            .iter()
+            .any(|code| error.contains(code))
+    }
+
+    /// 本次下发的放行与形态：`Some(false)` 被动、`Some(true)` 主动、`None` 丢弃。
+    ///
+    /// 被动优先；被动额度用尽或已判死时，只有最终回答/通知降级成主动消息，
+    /// 过程消息照旧丢弃，免得进度把每分钟额度耗光。
+    fn admit(&self, intermediate: bool) -> Option<bool> {
+        if !self.passive_dead() && self.reserve(intermediate) {
+            return Some(false);
+        }
+        if intermediate {
+            return None;
+        }
+        self.take_active().then_some(true)
+    }
+
     /// 纯文本还是 Markdown：单聊/群聊且正文含平台支持的语法时走 `markdown.content`。
     ///
     /// `referenced` 表示这一段要挂引用（只有最终回答的首段会带）。
     /// 返回 `None` 表示额度已用尽，`Some(false)` 表示平台报错或额度在重试时耗尽。
     fn deliver_text(&self, text: &str, intermediate: bool, referenced: bool) -> Option<bool> {
-        if !self.reserve(intermediate) {
-            return None;
-        }
+        let mut active = match self.admit(intermediate) {
+            Some(active) => active,
+            None => return None,
+        };
         let reference = if referenced {
             self.reference.as_str()
         } else {
@@ -364,51 +480,98 @@ impl ReplyHandle {
         };
         let seq = self.next_seq();
         match markdown {
-            Some(body) => match self
-                .port
-                .send_markdown(&self.target, &body, &self.msg_id, seq, reference)
-            {
+            Some(body) => match self.port.send_markdown(
+                &self.target,
+                &body,
+                self.delivery_id(active),
+                seq,
+                reference,
+            ) {
                 Ok(_id) => Some(true),
                 Err(error) => {
                     // Markdown 被拒（无权限、内容违规等）时按纯文本再试一次，正文不能丢。
-                    // 重试同样要占额度：先预扣再发，扣不到就当作本条没发出去。
+                    // 重试同样要占额度：被动再扣一条，被动已不可用则改扣主动额度。
                     eprintln!("[qqbot] Markdown 消息发送失败：{error}");
-                    if !self.reserve(intermediate) {
+                    if !active && Self::passive_unavailable(&error) {
+                        self.passive_dead.store(true, Ordering::SeqCst);
+                        active = true;
+                    }
+                    let admitted = if active {
+                        self.take_active()
+                    } else {
+                        self.reserve(intermediate)
+                    };
+                    if !admitted {
                         return Some(false);
                     }
-                    Some(self.send_plain(text, reference))
+                    Some(self.send_plain(text, reference, active))
                 }
             },
-            None => Some(self.send_plain(text, reference)),
+            None => Some(self.send_plain(text, reference, active)),
         }
     }
 
-    fn send_plain(&self, text: &str, reference: &str) -> bool {
+    fn send_plain(&self, text: &str, reference: &str, active: bool) -> bool {
         let seq = self.next_seq();
         match self
             .port
-            .send(&self.target, text, &self.msg_id, seq, reference)
+            .send(&self.target, text, self.delivery_id(active), seq, reference)
         {
             Ok(_id) => true,
             Err(error) => {
                 eprintln!("[qqbot] 发送消息失败：{error}");
+                // 被动过期/超限：同一条改用主动消息补发一次，别把回答丢掉。
+                if !active && Self::passive_unavailable(&error) && self.active_budget.is_some() {
+                    self.passive_dead.store(true, Ordering::SeqCst);
+                    if self.take_active() {
+                        let seq = self.next_seq();
+                        return match self.port.send(&self.target, text, "", seq, reference) {
+                            Ok(_id) => true,
+                            Err(error) => {
+                                eprintln!("[qqbot] 主动消息补发失败：{error}");
+                                false
+                            }
+                        };
+                    }
+                }
                 false
             }
         }
     }
 
     fn deliver_media(&self, upload: &MediaUpload, intermediate: bool, reference: &str) -> bool {
-        if !self.reserve(intermediate) {
-            return false;
-        }
+        let active = match self.admit(intermediate) {
+            Some(active) => active,
+            None => return false,
+        };
         let seq = self.next_seq();
-        match self
-            .port
-            .send_media(&self.target, upload, &self.msg_id, seq, reference)
-        {
+        match self.port.send_media(
+            &self.target,
+            upload,
+            self.delivery_id(active),
+            seq,
+            reference,
+        ) {
             Ok(_id) => true,
             Err(error) => {
                 eprintln!("[qqbot] 富媒体发送失败（{}）：{error}", upload.file_name);
+                // 被动过期/超限：同一条改用主动消息补发一次。
+                if !active && Self::passive_unavailable(&error) && self.active_budget.is_some() {
+                    self.passive_dead.store(true, Ordering::SeqCst);
+                    if self.take_active() {
+                        let seq = self.next_seq();
+                        return match self
+                            .port
+                            .send_media(&self.target, upload, "", seq, reference)
+                        {
+                            Ok(_id) => true,
+                            Err(error) => {
+                                eprintln!("[qqbot] 富媒体主动补发失败：{error}");
+                                false
+                            }
+                        };
+                    }
+                }
                 false
             }
         }
@@ -591,6 +754,8 @@ pub struct QqBot<D: AgentDriver> {
     bot_openid: Mutex<String>,
     /// 机器人昵称（`READY.user.username`）：全量群消息把 @ 渲染成 `@昵称` 文本。
     bot_name: Mutex<String>,
+    /// 主动消息额度：被动回复不可用时所有会话共用这一份。
+    active_budget: Arc<ActiveBudget>,
 }
 
 impl<D: AgentDriver> QqBot<D> {
@@ -614,6 +779,7 @@ impl<D: AgentDriver> QqBot<D> {
             session: Mutex::new(GatewaySession::default()),
             bot_openid: Mutex::new(String::new()),
             bot_name: Mutex::new(String::new()),
+            active_budget: Arc::new(ActiveBudget::per_minute()),
         })
     }
 
@@ -642,7 +808,7 @@ impl<D: AgentDriver> QqBot<D> {
     /// 昵称要等网关 `READY` 才拿到，所以这件事不能在构造时做。宿主不支持提示词装配
     /// （内核自持的 `omnicrawl --connector qqbot` 等）时只记日志，不影响收发消息。
     pub fn apply_persona(&self, bot_name: &str) {
-        let append = super::config::persona_prompt(&self.persona, bot_name);
+        let append = super::config::prompt_append(&self.persona, bot_name);
         match self.driver.set_system_prompt_append(&append) {
             Ok(()) => eprintln!("[qqbot] 已注入预设提示词：{append}"),
             Err(error) => eprintln!("[qqbot] 注入预设提示词失败：{error}"),
@@ -848,7 +1014,10 @@ impl<D: AgentDriver> QqBot<D> {
             name: &bot_name,
         };
         match route_event_with_bot(event, data, &access, bot) {
-            EventRoute::NotAMessage { event, conversation } => {
+            EventRoute::NotAMessage {
+                event,
+                conversation,
+            } => {
                 if conversation.is_empty() {
                     eprintln!("[qqbot] 忽略非消息事件：{event}");
                 } else {
@@ -860,9 +1029,7 @@ impl<D: AgentDriver> QqBot<D> {
                 conversation,
                 detail,
             } => {
-                eprintln!(
-                    "[qqbot] 群消息未 @ 机器人，忽略：{conversation}（{event}）；{detail}"
-                );
+                eprintln!("[qqbot] 群消息未 @ 机器人，忽略：{conversation}（{event}）；{detail}");
             }
             EventRoute::Malformed { event } => {
                 eprintln!("[qqbot] 事件缺少必需字段：{event}");
@@ -896,7 +1063,8 @@ impl<D: AgentDriver> QqBot<D> {
         if self.resolve_pending_question(inbound) {
             return;
         }
-        if inbound.content.is_empty() && inbound.attachments.is_empty() && inbound.quoted.is_empty() {
+        if inbound.content.is_empty() && inbound.attachments.is_empty() && inbound.quoted.is_empty()
+        {
             return;
         }
         if !inbound.attachments.is_empty() || !quoted_attachments(inbound).is_empty() {
@@ -991,6 +1159,8 @@ impl<D: AgentDriver> QqBot<D> {
             &inbound.message_id,
         )
         .with_reference(&inbound.ref_idx)
+        .with_active_budget(Arc::clone(&self.active_budget))
+        .with_workspace_root(PathBuf::from(self.driver.status().workspace_root))
     }
 
     /// 单活动校验后，在后台线程执行 Agent 任务；已有任务在跑时改为**排队**。
@@ -1019,7 +1189,9 @@ impl<D: AgentDriver> QqBot<D> {
             eprintln!("[qqbot] 已有任务在跑，新消息排队（第 {position} 位）。");
             // 只报「已排队、排在第几位」：既不说「开始执行」（它还没开始），也带上引用，
             // 让用户一眼认出这条回执对应的是自己哪句话。
-            reply.send_notice(&format!("🕒 已加入队列（前面还有 {position} 条），轮到后自动开始。"));
+            reply.send_notice(&format!(
+                "🕒 已加入队列（前面还有 {position} 条），轮到后自动开始。"
+            ));
             return;
         }
         state.queued_total = 0;
@@ -1280,15 +1452,24 @@ impl<D: AgentDriver> QqBot<D> {
         let mut save_one = |url: &str, name: &str| -> Result<String, String> {
             let position = stamp + index as i64;
             index += 1;
-            let content = self.port.download(url).map_err(|error| {
-                format!("❌ 附件下载失败：{}", redact_sensitive_text(&error))
-            })?;
+            let content = self
+                .port
+                .download(url)
+                .map_err(|error| format!("❌ 附件下载失败：{}", redact_sensitive_text(&error)))?;
             let file_name = safe_name(name, url, position, "");
             let subdir = classify_file_name(&file_name);
-            let destination = super::files::destination(&temp_root, subdir, &file_name)
-                .map_err(|error| format!("❌ 附件保存失败：{}", redact_sensitive_text(&error.to_string())))?;
+            let destination =
+                super::files::destination(&temp_root, subdir, &file_name).map_err(|error| {
+                    format!(
+                        "❌ 附件保存失败：{}",
+                        redact_sensitive_text(&error.to_string())
+                    )
+                })?;
             fs::write(&destination, &content).map_err(|error| {
-                format!("❌ 附件保存失败：{}", redact_sensitive_text(&error.to_string()))
+                format!(
+                    "❌ 附件保存失败：{}",
+                    redact_sensitive_text(&error.to_string())
+                )
             })?;
             Ok(relative_display_path(&destination, &workspace_root))
         };

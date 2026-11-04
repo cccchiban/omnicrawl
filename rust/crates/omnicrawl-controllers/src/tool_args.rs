@@ -457,13 +457,15 @@ fn public_windows_desktop_arguments(tool_name: &str, arguments: &Map<String, Val
         .to_string();
     let mut public = Map::new();
     public.insert("action".to_string(), Value::from(action));
-    const KEYS: [&str; 24] = [
+    const KEYS: [&str; 26] = [
         "window_handle",
         "title_contains",
         "class_name_contains",
         "visible_only",
         "include_untitled",
         "max_results",
+        "max_depth",
+        "screenshot",
         "name",
         "automation_id",
         "class_name",
@@ -621,20 +623,29 @@ fn parse_schema_or_default(argument_schema: &str) -> Value {
         .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
 }
 
+/// 压缩递归的最大深度。
+///
+/// MCP 的可复用结构原本藏在 `$defs` 里、嵌套很浅；展开 `$ref` 之后同一棵树会变成
+/// 10 层以上（例如 concat 的 `edit_apply.command`）。上限要足够深，截断也不能改变
+/// 节点的**类型**——见下面空 Schema 的说明。
+const MAX_COMPACT_DEPTH: usize = 32;
+
 fn compact_schema_node(value: &Value, depth: usize) -> Value {
-    if depth > 6 {
-        let mut fallback = Map::new();
-        fallback.insert("type".to_string(), Value::from("object"));
-        return Value::Object(fallback);
-    }
     match value {
         Value::Object(map) => {
+            // 超过深度上限时给空 Schema（任意值）：它在属性、`items`、`anyOf` 分支
+            // 里都合法。绝不能返回 `{"type": "object"}`——`required` 期待字符串数组、
+            // `type` 期待字符串，填一个对象会让整份工具定义被判非法（11129）。
+            if depth > MAX_COMPACT_DEPTH {
+                return Value::Object(Map::new());
+            }
             let mut compacted = Map::new();
             for (key, child) in map {
                 if !COMPACT_SCHEMA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
-                if key == "enum" {
+                if key == "enum" || key == "const" {
+                    // 取值集合与常量原样保留：它们不是 Schema，递归会改写契约。
                     compacted.insert(key.clone(), child.clone());
                 } else if key == "properties" {
                     match child {
@@ -1140,4 +1151,82 @@ pub fn read_limited_int(
     parsed
         .map(|item| item.clamp(1, std::cmp::max(1, maximum)))
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod compact_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 深嵌套（展开 `$ref` 后的真实形状）不得把 `required`/`type` 截断成对象。
+    ///
+    /// 旧实现在深度 >6 时一律返回 `{"type": "object"}`：`required` 会从字符串数组
+    /// 变成对象、`type` 会从字符串变成对象，整份工具定义被严格网关判成
+    /// `invalid_function_parameters`（CodeBuddy 11129）。
+    #[test]
+    fn deep_nodes_keep_required_and_type_shapes() {
+        let mut leaf = json!({
+            "type": "object",
+            "properties": {"index": {"type": "integer"}},
+            "required": ["index"]
+        });
+        // 在 leaf 外面套 10 层 properties，模拟展开 $defs 之后的嵌套。
+        for _ in 0..10 {
+            leaf = json!({"type": "object", "properties": {"child": leaf}});
+        }
+        let compacted = compact_tool_schema(&leaf.to_string());
+        let mut required_shapes: Vec<&Value> = Vec::new();
+        let mut type_shapes: Vec<&Value> = Vec::new();
+        fn walk<'a>(node: &'a Value, required: &mut Vec<&'a Value>, types: &mut Vec<&'a Value>) {
+            match node {
+                Value::Object(map) => {
+                    if let Some(value) = map.get("required") {
+                        required.push(value);
+                    }
+                    if let Some(value) = map.get("type") {
+                        types.push(value);
+                    }
+                    for child in map.values() {
+                        walk(child, required, types);
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        walk(item, required, types);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(&compacted, &mut required_shapes, &mut type_shapes);
+        assert!(!required_shapes.is_empty(), "深层 required 被整个丢了：{compacted}");
+        for value in required_shapes {
+            assert!(value.is_array(), "required 必须是数组：{value}");
+        }
+        for value in type_shapes {
+            assert!(value.is_string(), "type 必须是字符串：{value}");
+        }
+    }
+
+    /// 超过压缩深度上限时退成空 Schema（任意值），不能伪造 `type: object`。
+    #[test]
+    fn beyond_depth_limit_falls_back_to_empty_schema() {
+        let mut node = json!({"type": "string"});
+        for _ in 0..40 {
+            node = json!({"type": "object", "properties": {"child": node}});
+        }
+        let compacted = compact_tool_schema(&node.to_string());
+        let mut tail = &compacted;
+        let mut depth = 0;
+        while let Some(child) = tail.get("properties").and_then(|props| props.get("child")) {
+            tail = child;
+            depth += 1;
+        }
+        assert!(depth > 25, "递归链被截得太早：{depth}");
+        assert_eq!(
+            tail.as_object().map(serde_json::Map::len),
+            Some(0),
+            "深度回退必须是空 Schema：{tail}"
+        );
+    }
 }

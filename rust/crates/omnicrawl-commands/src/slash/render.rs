@@ -236,6 +236,9 @@ pub fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Val
                 python_str(&arguments["value_length"])
             ));
         }
+        if let Some(Value::Number(depth)) = arguments.get("max_depth") {
+            detail.push_str(&format!("，深度：{depth}"));
+        }
         return truncate_for_display(&detail, 240);
     }
 

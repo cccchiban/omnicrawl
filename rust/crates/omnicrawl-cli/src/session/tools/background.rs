@@ -207,7 +207,7 @@ impl ReplySource for BackgroundModelPort {
 
         loop {
             // 轮换只发生在重试路径：网关的重复提交判定按 id 认，原样再发等于再犯一次。
-            let attempt_messages = if rotate_ids {
+            let mut attempt_messages = if rotate_ids {
                 rotate_ids = false;
                 let mut list = messages.clone();
                 let rotated = rotate_tail_call_ids(&mut list, &format!("r{attempt}"));
@@ -218,6 +218,13 @@ impl ReplySource for BackgroundModelPort {
             } else {
                 messages.clone()
             };
+            // 与主回合同一套出站收尾：配对缺口补齐/摘除，内部名改回线上名，
+            // 只落在发出去的这份副本上。
+            let pairing = repair_tool_pairing(&mut attempt_messages);
+            if pairing.has_violation() {
+                eprintln!("[kernel] 子代理工具调用配对体检：{}", pairing.describe());
+            }
+            name_map.restore_wire_names(&mut attempt_messages);
             let conversation = conversation_from_openai_messages(&attempt_messages);
             let input = ChatRequestInput {
                 model: &self.config.model,
@@ -241,9 +248,13 @@ impl ReplySource for BackgroundModelPort {
                 agent_type: self.agent_type.clone(),
                 stream: self.stream,
             };
-            // 运行时在本段循环里只构建一次，失败重试都借用同一实例。
-            let runtime = self.runtime.as_ref().expect("运行时刚被构建");
-            match runtime.run_turn(&input, &mut sink) {
+            // 运行时在本段循环里只构建一次；只有中继账号池类拒绝会把 `self.runtime`
+            // 置空，下一次重试重新建连接池。借用必须止于本行，否则拿不到可变借用。
+            let result = {
+                let runtime = self.runtime.as_ref().expect("运行时刚被构建");
+                runtime.run_turn(&input, &mut sink)
+            };
+            match result {
                 Ok(reply) => {
                     if is_empty_reply(&reply) {
                         attempt += 1;
@@ -284,6 +295,12 @@ impl ReplySource for BackgroundModelPort {
                     // 它要走压缩恢复路径，不能在这里耗重试次数。
                     let overflow = error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE);
                     let retryable = !overflow;
+                    // 与主回合同口径：中继账号池/工具定义类拒绝换连接重试，退避拉长。
+                    let relay_rejected =
+                        omnicrawl_llm::is_relay_account_or_tool_definition_error(&error.message);
+                    if relay_rejected {
+                        self.runtime = None;
+                    }
                     if retryable && attempt < limit {
                         // 已经推进子代理窗口的半截流要先撤销，否则重试会叠在旧文本上。
                         if error.kind == RuntimeErrorKind::StreamInterrupted && self.stream {
@@ -302,8 +319,13 @@ impl ReplySource for BackgroundModelPort {
                         continue;
                     }
                     if retryable {
+                        let hint = if relay_rejected {
+                            "（模型中继暂无可用账号：中继的上游账号被判定不可用，稍后重试或更换渠道。）"
+                        } else {
+                            ""
+                        };
                         return Err(self.model_error(format!(
-                            "上游错误已达到自动重试上限，已停止本次请求。{}",
+                            "上游错误已达到自动重试上限，已停止本次请求。{hint}{}",
                             error.message
                         )));
                     }

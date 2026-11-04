@@ -769,6 +769,27 @@ fn dotted_tool_names_are_conformed_on_the_wire_and_restored_for_the_host() {
     );
     assert_eq!(call["arguments"]["query"], "x");
 
+    // 工具观察之后的下一次请求会把这一批 assistant 原文回灌给模型：里面的调用名
+    // 必须与声明同名（线上名），否则上游判「调用不在声明里」并整请求 400。
+    let second = server
+        .bodies()
+        .get(1)
+        .cloned()
+        .expect("工具结果之后应当再问一次模型");
+    let history_call = second["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find_map(|message| message.get("tool_calls").and_then(|calls| calls.get(0)))
+        })
+        .cloned()
+        .expect("第二份请求里应当带上一轮的 assistant 工具调用");
+    assert_eq!(
+        history_call["function"]["name"], "fathom_search",
+        "历史里的调用名必须与声明同名，内部名会被上游拒：{second}"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

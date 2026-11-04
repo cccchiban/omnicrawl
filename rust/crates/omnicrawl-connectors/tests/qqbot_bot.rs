@@ -2,7 +2,7 @@
 //!
 //! 只起进程内桩件：平台端口记录下发并把附件回放成固定字节，宿主用可编程的
 //! `AgentDriver` 代替。重点是 QQ 的平台约束——不能编辑、同一条入站消息的回复条数有硬上限
-//! （群聊 5 条、单聊 4 条），因此这里钉住「正文段在工具边界封口」「工具合并成一段进度」
+//! （群聊、单聊各 5 条），因此这里钉住「正文段在工具边界封口」「工具合并成一段进度」
 //! 「最终回答一定发得出去」。
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,7 +14,7 @@ use omnicrawl_connectors::agent::{
     TurnEvent, WorkspaceSwitch,
 };
 use omnicrawl_connectors::qqbot::{
-    load_qqbot_config, MediaUpload, QqApi, QqBot, QqPort, ReplyHandle, Target,
+    load_qqbot_config, ActiveBudget, MediaUpload, QqApi, QqBot, QqPort, ReplyHandle, Target,
 };
 use serde_json::{json, Value};
 
@@ -42,6 +42,8 @@ struct MockPort {
     references: Mutex<Vec<String>>,
     downloads: Mutex<Vec<String>>,
     fail_after: Mutex<Option<usize>>,
+    /// 模拟平台判定被动回复不可用（`msg_id` 过期 / 次数超限）。
+    reject_passive: Mutex<bool>,
 }
 
 impl MockPort {
@@ -73,6 +75,9 @@ impl MockPort {
         msg_seq: i64,
         reference: &str,
     ) -> Result<String, String> {
+        if !msg_id.is_empty() && *self.reject_passive.lock().expect("被动锁中毒") {
+            return Err("QQ 接口错误 40034005（HTTP 400）：msg_id 已过期".to_string());
+        }
         let mut sent = self.sent.lock().expect("发送锁中毒");
         if let Some(limit) = *self.fail_after.lock().expect("阈值锁中毒") {
             if sent.len() >= limit {
@@ -603,9 +608,9 @@ fn tool_calls_never_reach_the_chat() {
         !contents.iter().any(|text| text.contains("● bash")),
         "工具调用不应出现在任何消息里：{contents:?}"
     );
-    // 不能编辑，因此每次下发都是一条新消息：少了进度消息后额度更宽裕（单聊 4 条）。
+    // 不能编辑，因此每次下发都是一条新消息：少了进度消息后额度更宽裕（单聊 5 条）。
     assert!(
-        port.calls().len() <= 4,
+        port.calls().len() <= 5,
         "总下发条数不能超出额度：{contents:?}"
     );
 }
@@ -633,10 +638,10 @@ fn final_answer_is_still_sent_when_the_budget_runs_short() {
             .iter()
             .any(|text| text.contains("全部完成，结论在最后。"))
     });
-    // 单聊额度是 4 条：回执 + 正文段 + 结论必须装得下。
+    // 单聊额度是 5 条：回执 + 正文段 + 结论必须装得下。
     assert!(
-        port.calls().len() <= 4,
-        "单聊被动回复额度是 4 条：{:?}",
+        port.calls().len() <= 5,
+        "单聊被动回复额度是 5 条：{:?}",
         port.contents()
     );
 }
@@ -846,11 +851,11 @@ fn attachments_are_downloaded_and_saved_into_agent_tmp() {
 }
 
 #[test]
-fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() {
+fn intermediate_process_stops_after_four_c2c_replies_and_keeps_the_last_slot() {
     let driver = Arc::new(MockDriver::default());
     let port = Arc::new(MockPort::default());
     let bot = bot_with(driver.clone(), port.clone());
-    // 单聊额度是 4 条：中间消息严格停在 3 条，最后 1 条留给结论。
+    // 单聊额度是 5 条：中间消息严格停在 4 条，最后 1 条留给结论。
     let mut events = Vec::new();
     for index in 0..8 {
         events.push(json!({"kind": "delta", "text": format!("第 {index} 段。")}));
@@ -874,14 +879,14 @@ fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() 
     });
 
     let contents = port.contents();
-    // 没有回执后，单聊 4 条额度全给正文段与最终回答：3 条中间 + 1 条最终。
-    assert_eq!(contents.len(), 4, "总下发条数必须是 4：{contents:?}");
+    // 没有回执后，单聊 5 条额度全给正文段与最终回答：4 条中间 + 1 条最终。
+    assert_eq!(contents.len(), 5, "总下发条数必须是 5：{contents:?}");
     assert_eq!(
         contents.last().map(String::as_str),
         Some("全部完成，结论在最后。"),
-        "第 4 条必须是最终文本：{contents:?}"
+        "第 5 条必须是最终文本：{contents:?}"
     );
-    let intermediate = &contents[..3];
+    let intermediate = &contents[..4];
     assert!(
         !intermediate
             .iter()
@@ -893,13 +898,13 @@ fn intermediate_process_stops_after_three_c2c_replies_and_keeps_the_last_slot() 
             .iter()
             .filter(|text| text.starts_with("◇"))
             .count(),
-        3,
-        "没有回执后正文段可以占满 3 条中间额度：{contents:?}"
+        4,
+        "没有回执后正文段可以占满 4 条中间额度：{contents:?}"
     );
     assert!(
         !intermediate
             .iter()
-            .any(|text| text.contains("第 3 段") || text.contains("第 4 段")),
+            .any(|text| text.contains("第 4 段") || text.contains("第 5 段")),
         "中间额度用尽后不能再发正文：{contents:?}"
     );
 }
@@ -1078,20 +1083,58 @@ fn reply_handle_hard_caps_group_intermediate_at_four_and_total_at_five() {
 fn reply_handle_uses_the_c2c_budget_for_private_chats() {
     let port = Arc::new(MockPort::default());
     let handle = ReplyHandle::new(port.clone(), Target::User("F6A8".to_string()), "m-1");
-    // 单聊上限比群聊更紧：4 条，其中中间 3 条，最后 1 条留给最终回答。
-    assert_eq!(handle.intermediate_left(), 3);
-    assert_eq!(handle.slots_left(), 4);
+    // 单聊与群聊同口径：5 条，其中中间 4 条，最后 1 条留给最终回答。
+    assert_eq!(handle.intermediate_left(), 4);
+    assert_eq!(handle.slots_left(), 5);
 
-    for index in 0..5 {
+    for index in 0..6 {
         handle.send_intermediate(&format!("中间第 {index} 条"));
     }
-    assert_eq!(port.contents().len(), 3, "单聊中间过程最多 3 条");
+    assert_eq!(port.contents().len(), 4, "单聊中间过程最多 4 条");
     assert!(!handle.can_send_intermediate());
 
     assert_eq!(handle.send_final("最终回答"), 1);
-    assert_eq!(port.contents().len(), 4);
+    assert_eq!(port.contents().len(), 5);
     assert_eq!(handle.slots_left(), 0);
-    assert_eq!(handle.send_final("第五条"), 0, "单聊第五条必须被拒");
+    assert_eq!(handle.send_final("第六条"), 0, "单聊第六条必须被拒");
+}
+
+#[test]
+fn passive_budget_exhaustion_falls_back_to_active_messages() {
+    let port = Arc::new(MockPort::default());
+    let handle = ReplyHandle::new(port.clone(), Target::Group("A1B2".to_string()), "m-1")
+        .with_active_budget(Arc::new(ActiveBudget::per_minute()));
+    for index in 0..5 {
+        handle.send_intermediate(&format!("中间第 {index} 条"));
+    }
+    assert_eq!(handle.send_final("最终回答"), 1);
+    assert_eq!(handle.slots_left(), 0);
+
+    // 被动额度用尽后，最终回答改走主动消息（不带 msg_id）。
+    assert_eq!(handle.send_final("补充结论"), 1);
+    let calls = port.calls();
+    assert_eq!(calls.len(), 6, "{:?}", port.contents());
+    assert_eq!(calls.last().map(|call| call.2.as_str()), Some(""));
+    assert_eq!(port.contents().last().map(String::as_str), Some("补充结论"));
+}
+
+#[test]
+fn expired_passive_reply_is_resent_as_an_active_message() {
+    let port = Arc::new(MockPort::default());
+    *port.reject_passive.lock().expect("被动锁中毒") = true;
+    let handle = ReplyHandle::new(port.clone(), Target::User("F6A8".to_string()), "m-1")
+        .with_active_budget(Arc::new(ActiveBudget::per_minute()));
+
+    assert_eq!(handle.send_final("最终回答"), 1);
+    let calls = port.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "被动失败后应主动补发一次：{:?}",
+        port.contents()
+    );
+    assert_eq!(calls[0].2, "", "补发不能带 msg_id");
+    assert_eq!(port.contents(), vec!["最终回答".to_string()]);
 }
 
 #[test]
@@ -1105,6 +1148,30 @@ fn reply_handle_splits_one_long_intermediate_message_within_budget() {
     assert!(!handle.can_send_intermediate());
     assert_eq!(handle.send_final("结论"), 1);
     assert_eq!(port.contents().len(), 5);
+}
+
+#[test]
+fn a_relative_file_marker_resolves_against_the_workspace_root() {
+    let port = Arc::new(MockPort::default());
+    let root = std::env::temp_dir().join("omnicrawl-qqbot-ws-root");
+    std::fs::create_dir_all(root.join("输出")).expect("建目录");
+    std::fs::write(root.join("输出").join("chart.png"), b"\x89PNG\r\n\x1a\n").expect("写图片");
+    let handle = ReplyHandle::new(port.clone(), Target::User("F6A8".to_string()), "m-1")
+        .with_workspace_root(root.clone());
+    // 相对工作区根的路径：连接器进程的当前目录通常不是工作区，早先会直接报文件不存在。
+    handle.send_final("图表：\n[FILE:输出/chart.png]");
+    let media = port.calls().into_iter().find_map(|(_t, message, _m, _s)| match message {
+        Msg::Media {
+            name, file_type, bytes,
+        } => Some((name, file_type, bytes)),
+        _ => None,
+    });
+    assert_eq!(
+        media,
+        Some(("chart.png".to_string(), 1, 8)),
+        "应发成图片消息（file_type=1）"
+    );
+    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1712,7 +1779,7 @@ fn ready_injects_the_persona_with_the_bot_nickname() {
     }));
     assert_eq!(
         driver.prompt_append(),
-        "你是 小囫囵，一个在 QQ 上的 OmniCrawl 机器人。"
+        "你是 小囫囵，一个在 QQ 上的 OmniCrawl 机器人。\n\n".to_string() + omnicrawl_connectors::qqbot::MEDIA_HINT
     );
 }
 
@@ -1743,7 +1810,11 @@ fn the_configured_persona_wins_over_the_default_line() {
         "session_id": "s-1",
         "user": {"id": "BOT-ID", "username": "小囫囵"},
     }));
-    assert_eq!(driver.prompt_append(), "你是塔斯汀家的机器人，只在群里回答。");
+    assert_eq!(
+        driver.prompt_append(),
+        "你是塔斯汀家的机器人，只在群里回答。\n\n".to_string()
+            + omnicrawl_connectors::qqbot::MEDIA_HINT
+    );
 }
 
 #[test]

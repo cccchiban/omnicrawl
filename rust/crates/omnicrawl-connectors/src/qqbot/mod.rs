@@ -1,8 +1,8 @@
 //! QQ 机器人远程接入（对齐 QQ 开放平台 API v2 与「第三方 Agent 接入」文档）。
 //!
 //! 与 Telegram / 飞书同构：只做平台 I/O 与显示映射，回合、斜杠命令与配置持久化由宿主侧
-//! （[`crate::agent::AgentDriver`]）负责。平台形态差异集中在 [`bot`]：QQ 只允许被动回复，
-//! 因此没有消息编辑与流式预览。
+//! （[`crate::agent::AgentDriver`]）负责。平台形态差异集中在 [`bot`]：默认走被动回复，
+//! 被动不可用时最终回答降级成主动消息；消息不能编辑，因此没有流式预览。
 
 pub mod api;
 pub mod bind;
@@ -13,6 +13,7 @@ pub mod files;
 pub mod gateway;
 pub mod markdown;
 pub mod media;
+pub mod upload;
 
 pub use crate::http::{HttpReply, HttpTransport, UreqTransport};
 pub use api::{
@@ -26,20 +27,20 @@ pub use bind::{
     BindResult, BindStatus, BindTask, CONNECT_PAGE, DEFAULT_BIND_TIMEOUT, POLL_INTERVAL,
 };
 pub use bot::{
-    describe, split_content, QqBot, QqPort, ReplyHandle, MAX_CONTENT_CHARS,
-    MAX_INTERMEDIATE_REPLIES,
+    describe, split_content, ActiveBudget, QqBot, QqPort, ReplyHandle, MAX_ACTIVE_PER_MINUTE,
+    MAX_CONTENT_CHARS, MAX_INTERMEDIATE_REPLIES,
 };
 pub use config::{
-    check_config, load_qqbot_config, mask_secret, persona_prompt, validate_config, AccessPolicy,
-    AccessScope, QqBotConfig, DEFAULT_BASE_URL, DEFAULT_CONFIRM_TIMEOUT_SECONDS, DEFAULT_INTENTS,
-    SANDBOX_BASE_URL,
+    check_config, load_qqbot_config, mask_secret, persona_prompt, prompt_append, validate_config,
+    AccessPolicy, AccessScope, QqBotConfig, DEFAULT_BASE_URL, DEFAULT_CONFIRM_TIMEOUT_SECONDS,
+    DEFAULT_INTENTS, MEDIA_HINT, SANDBOX_BASE_URL,
 };
 pub use dispatch::{
     attachments_of, classify, command_name, mention_others_text, parse_message,
-    parse_message_with_bot, quoted_of, quoted_text, scan_mentions, parse_thinking_command,
-    route_event, route_event_with_bot, scene_index, strip_mention, workspace_argument, BotIdentity,
-    Command, EventRoute, Inbound, Mention, MentionScan, Quoted, ThinkingCommand, EVENT_C2C_MESSAGE,
-    EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE, EVENT_GUILD_AT_MESSAGE,
+    parse_message_with_bot, parse_thinking_command, quoted_of, quoted_text, route_event,
+    route_event_with_bot, scan_mentions, scene_index, strip_mention, workspace_argument,
+    BotIdentity, Command, EventRoute, Inbound, Mention, MentionScan, Quoted, ThinkingCommand,
+    EVENT_C2C_MESSAGE, EVENT_GROUP_AT_MESSAGE, EVENT_GROUP_MESSAGE, EVENT_GUILD_AT_MESSAGE,
 };
 pub use files::{
     classify_file_name, destination, fallback_name, relative_display_path, safe_name,
@@ -50,4 +51,5 @@ pub use gateway::{
     GatewayConnection, GatewaySignal, DEFAULT_HEARTBEAT,
 };
 pub use markdown::{starts_block, to_markdown, MAX_MARKDOWN_CHARS};
-pub use media::{kind_of_path, MediaKind, MediaUpload, MAX_MEDIA_BYTES};
+pub use media::{kind_of_path, MediaKind, MediaUpload, MAX_CHUNKED_BYTES, MAX_MEDIA_BYTES};
+pub use upload::{checksums, plan_parts, Checksums, MD5_10M_BYTES};

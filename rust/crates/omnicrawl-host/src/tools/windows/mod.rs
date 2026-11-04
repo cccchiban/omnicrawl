@@ -4,8 +4,9 @@
 //! PowerShell 的 UI Automation 外，其余工具直接调用 Win32（声明见 `ffi.rs`）。非 Windows
 //! 平台只保留「仅支持 Windows」的错误分支。
 //!
-//! 会改变画面的操作（输入、控件操作、窗口激活）在返回时附带一张当前画面截图：模型核对
-//! 效果不必再多调一次 `windows_screenshot`。
+//! 会改变画面的操作（输入、窗口激活）在返回时附带一张当前画面截图：模型核对效果不必再多调
+//! 一次 `windows_screenshot`。控件操作是例外——它的效果靠回读 `state` 核对，只有显式传
+//! `screenshot=true` 才附图，`action=tree` 则用紧凑缩进文本代替整屏视觉观察。
 
 #[cfg(windows)]
 mod args;

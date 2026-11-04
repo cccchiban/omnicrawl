@@ -60,7 +60,8 @@ src/
     ├── dispatch.rs         # 事件解析与路由：单聊/群聊/频道、白名单、命令分类（复用 telegram 那份）
     ├── files.rs            # 附件分类与落盘命名（扩展名规则与 Telegram 同源）
     ├── markdown.rs         # Markdown 适用范围与正文规整（代码块→引用、表格→列表）
-    ├── media.rs            # [FILE:] → 富媒体：file_type 判定、5MB 上限、标记剥离
+    ├── media.rs            # [FILE:] → 富媒体：file_type 判定、软/硬限制、工作区相对路径、标记剥离
+    ├── upload.rs           # 分片上传准备：MD5/SHA-1/前 10MB 取样、分片切分、预上传请求体
     └── bot.rs              # 回复额度（中间 ≤4、总 ≤5）、时间线装配、审批与提问桥、网关主循环
 ```
 
@@ -163,9 +164,9 @@ cd rust && cargo test -p omnicrawl-connectors
 （7200 秒，提前 5 分钟续期），事件走 **WebSocket 网关**（`GET /gateway` → `op=10 Hello`
 → `op=2 Identify` / `op=6 Resume` → `op=0 Dispatch`），不占本地端口、不需公网地址。
 
-**平台形态决定了显示方式**，这与 Telegram/飞书不同：2025-04 起 QQ 关闭了主动消息，
-所有下发都必须是对某条入站消息的被动回复（携带它的 `msg_id`），同一条入站消息只有
-**5 次回复额度**（单聊 60 分钟、群聊 5 分钟），且**消息不能编辑**。因此：
+**平台形态决定了显示方式**，这与 Telegram/飞书不同：QQ 默认走被动回复（携带入站消息的
+`msg_id`），同一条入站消息只有**5 次回复额度**（单聊 60 分钟、群聊 5 分钟）；被动不可用时
+最终回答降级成主动消息（不带 `msg_id`，受每分钟条数限制），且**消息不能编辑**。因此：
 
 - 没有流式预览：正文段在「工具调用」这个模型 pass 边界封口成一条 `◇ …` 消息；
 - 工具调用/执行计划/子任务进度合并成少数几条进度消息，而不是每条一个；工具调用每次
@@ -183,15 +184,20 @@ cd rust && cargo test -p omnicrawl-connectors
   而不是整条降级：围栏代码块→块引用、表格→列表项、`###`→`##`、列表前补空行、
   `* `→`- `、嵌套缩进统一 4 空格、行内反引号去掉、非公网图片退化成文字；被拒时
   自动按纯文本重发一次（同样占额度）；
-- 富媒体（`msg_type=7`，`media.file_info`）：回复里的 `[FILE:路径]` 先
-  `POST /v2/{users|groups}/{openid}/files`（`srv_send_msg=false`）拿 `file_info` 再发。
-  按扩展名给 `file_type`（png/jpg→1、mp4→2、silk/mp3/wav→3、其余→4），二进制直传
-  上限 5MB；文件读不到或超限时不下发富媒体、正文保留 `[FILE:…]` 路径（`media.rs`）。
+- 富媒体（`msg_type=7`，`media.file_info`）：回复里的 `[FILE:路径]` 先上传拿
+  `file_info` 再发。按扩展名给 `file_type`（png/jpg→1、mp4→2、
+  silk/mp3/wav/flac/ogg→3、其余→4）。**≤5MB** 二进制直传（`file_data`）；
+  **>5MB** 自动分片上传（`upload_prepare` → 逐片 PUT 预签名地址（不带平台鉴权头）→
+  `upload_part_finish` → 带 `upload_id` 合并），硬限 200MB。相对路径按 Agent 工作区
+  根解析；读不到或超 200MB 时不下发富媒体、正文保留 `[FILE:…]` 路径。
+  发送约定（`config::MEDIA_HINT`）与 persona 一起注入 system prompt，模型才知道能这么发。
 
 摘要与正文的生成规则仍与另外两个连接器、TUI 共用 `src/render.rs` 一份实现。
 `tests/qqbot_bot.rs` 用桩件钉住这些约束：正文段与工具段分离、三次工具调用合并成一条、
 多 pass 长任务总下发条数 ≤ 5 且中间恰好停在 4 条、Markdown 走 `msg_type=2`、
-图片标记经上传后按 `msg_type=7` 发出、未授权零请求、审批/提问桥、附件落到 `.agent_tmp/images`。
+图片标记经上传后按 `msg_type=7` 发出、相对工作区根的 `[FILE:…]` 同样发得出去、
+超 5MB 走分片上传（预上传→PUT→完成通知→合并，且预签名地址不带平台鉴权头）、
+未授权零请求、审批/提问桥、附件落到 `.agent_tmp/images`。
 
 扫码绑定（`bind.rs`）照官方 `@tencent-connect/qqbot-connector` 的流程实现：
 `lite/create_bind_task` 由本地生成 32 字节随机 key（base64），扫码完成后平台回

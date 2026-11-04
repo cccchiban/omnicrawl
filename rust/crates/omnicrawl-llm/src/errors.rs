@@ -98,7 +98,9 @@ impl RuntimeError {
         let mapped = map_exception(&view, &[]);
         // 与 HTTP 错误面同口径：只有工具状态类拒绝才把网关原话带出来。
         let mut text = format!("Agent 流式回复中断：{}", mapped.message);
-        if looks_like_tool_state_rejection(message) {
+        if looks_like_tool_state_rejection(message)
+            || is_relay_account_or_tool_definition_error(message)
+        {
             if let Some(detail) = provider_error_detail_value(message, body) {
                 if !text.contains(&detail) {
                     text = format!("{text}（上游原话：{detail}）");
@@ -359,7 +361,9 @@ pub fn http_status_error_with_body(status: u16, body: &str) -> ModelError {
     // 重试前要不要换 id、要不要换渠道，完全取决于网关原话说了什么（例如「同一请求不能重复
     // 提交相同的 call_id，type: invalid_tool_state」）。这类拒绝才把正文摘要在文案后面补上，
     // 其余错误维持原样：固定文案已经够用，冻结的文案不该因为无关错误而漂移。
-    if looks_like_tool_state_rejection(trimmed) {
+    if looks_like_tool_state_rejection(trimmed)
+        || is_relay_account_or_tool_definition_error(trimmed)
+    {
         if let Some(detail) = provider_error_detail(trimmed) {
             if !mapped.message.contains(&detail) {
                 mapped.message = format!("{}（上游原话：{}）", mapped.message, detail);
@@ -378,6 +382,31 @@ pub fn looks_like_tool_state_rejection(text: &str) -> bool {
     let lowered = text.to_lowercase();
     KEYS.iter()
         .any(|key| text.contains(key) || lowered.contains(key))
+}
+
+/// 文案/正文是否在说「中继没有可用账号」或「上游认为工具定义不合规」。
+///
+/// new-api 一族的中继会把上游错误整个塞进 `message` 再包一层
+/// `{"error":{"code":"no_healthy_account",...}}`：
+///
+/// ```text
+/// {"error":{"code":"no_healthy_account","message":"{\"code\":11129,\"msg\":\"invalid function call parameters\",...}"}}
+/// ```
+///
+/// 这类失败**不随请求内容确定**：同一份请求体换一条连接/账号往往就能成功（实测同一
+/// 请求连续发送时好时坏，还夹着 401/504）。因此重试时不能只换 call_id，还要换掉连接池
+/// 并拉长退避——否则 5 次快速重试会黏在同一个坏账号上，整段会话当场断掉。
+pub fn is_relay_account_or_tool_definition_error(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    const KEYS: [&str; 6] = [
+        "no_healthy_account",
+        "no healthy account",
+        "invalid_function_parameters",
+        "invalid function call parameters",
+        "invalid tool definition",
+        "工具定义不合规",
+    ];
+    KEYS.iter().any(|key| lowered.contains(key))
 }
 
 /// 上游错误正文里的「人话」摘要（字符串形态）：优先取 JSON 的 `error.message` /
@@ -791,3 +820,31 @@ impl fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+#[cfg(test)]
+mod relay_account_tests {
+    use super::*;
+
+    const RELAY_BODY: &str = r#"{"error":{"code":"no_healthy_account","message":"{\"code\":11129,\"msg\":\"invalid function call parameters\",\"extError\":{\"code\":\"invalid_function_parameters\"},\"displayMsg\":{\"zh\":\"工具定义不合规,请新建任务重试\"}}"}}"#;
+
+    #[test]
+    fn relay_wrapper_is_recognized() {
+        assert!(is_relay_account_or_tool_definition_error(RELAY_BODY));
+        assert!(is_relay_account_or_tool_definition_error(
+            "Invalid tool definition. Please start a new task and retry"
+        ));
+        assert!(!is_relay_account_or_tool_definition_error(
+            "Error code: 404 - model not found"
+        ));
+    }
+
+    #[test]
+    fn http_error_keeps_the_relay_signature_for_the_retry_path() {
+        let error = http_status_error_with_body(400, RELAY_BODY);
+        assert!(
+            is_relay_account_or_tool_definition_error(&error.message),
+            "{}",
+            error.message
+        );
+    }
+}
