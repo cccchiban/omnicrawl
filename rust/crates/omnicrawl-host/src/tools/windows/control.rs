@@ -503,12 +503,12 @@ mod tests {
         );
 
         let error =
-            control(json!({"action": "list", "window_handle": 42, "control_type": "slider"}))
+            control(json!({"action": "list", "window_handle": 42, "control_type": "spliter"}))
                 .expect_err("不支持的控件类型应当被拒绝");
         assert!(
             error
                 .message
-                .starts_with("control_type 不支持：slider。可用值："),
+                .starts_with("control_type 不支持：spliter。可用值："),
             "{}",
             error.message
         );
