@@ -564,15 +564,47 @@ pub fn repair_tool_pairing(messages: &mut Vec<Value>) -> ToolPairingReport {
         .filter(|id| !id.is_empty())
         .collect();
 
-    // 第一遍：摘掉孤儿结果。
+    // 第一遍：孤儿结果摘掉，缺 id 的结果按位置认领回它所属的调用。
+    //
+    // 宿主可能不回填 `tool_call_id`（协议里该字段可缺省）。这类结果不是孤儿：它紧跟在
+    // 与之对应的那条 assistant `tool_calls` 之后。若直接按「id 对不上」摘掉，真实观察
+    // 会被下一遍补成占位，模型看到的就是「此处无结果」。因此先按位置认领，认不到的才算孤儿。
     let mut kept: Vec<Value> = Vec::with_capacity(messages.len());
+    // 最近一条带 tool_calls 的 assistant 消息里、还没被认领的调用 id。
+    let mut claimable: Vec<String> = Vec::new();
     for message in messages.drain(..) {
-        let orphan = is_tool_message(&message) && !call_ids.contains(&result_id(&message));
-        if orphan {
-            report.dropped_orphans += 1;
-        } else {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            claimable = calls
+                .iter()
+                .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_string))
+                .filter(|id| !id.is_empty())
+                .collect();
             kept.push(message);
+            continue;
         }
+        if !is_tool_message(&message) {
+            // 其它角色出现即视为本批结束：之后的结果不再按位置认领。
+            claimable.clear();
+            kept.push(message);
+            continue;
+        }
+        let id = result_id(&message);
+        if !id.is_empty() && call_ids.contains(&id) {
+            claimable.retain(|pending| pending != &id);
+            kept.push(message);
+            continue;
+        }
+        // 无 id（或 id 对不上任何调用）但紧跟在这批调用之后：认领第一个还没结果的调用。
+        if id.is_empty() && !claimable.is_empty() {
+            let claimed = claimable.remove(0);
+            let mut message = message;
+            if let Some(object) = message.as_object_mut() {
+                object.insert("tool_call_id".to_string(), Value::String(claimed));
+            }
+            kept.push(message);
+            continue;
+        }
+        report.dropped_orphans += 1;
     }
     *messages = kept;
 
