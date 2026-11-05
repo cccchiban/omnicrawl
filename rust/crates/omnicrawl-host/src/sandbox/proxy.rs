@@ -248,7 +248,7 @@ impl Shared {
                     respond(&mut client, 403, &reason)?;
                     return Ok(());
                 }
-                let mut upstream = match TcpStream::connect((host.as_str(), *port)) {
+                let upstream = match TcpStream::connect((host.as_str(), *port)) {
                     Ok(stream) => stream,
                     Err(error) => {
                         respond(
@@ -414,7 +414,7 @@ fn origin_form(uri: &str) -> String {
 }
 
 /// 双向泵数据，直到两端任一关闭。
-fn tunnel(mut client: TcpStream, mut upstream: TcpStream) {
+fn tunnel(client: TcpStream, upstream: TcpStream) {
     let client_clone = match client.try_clone() {
         Ok(clone) => clone,
         Err(_) => return,

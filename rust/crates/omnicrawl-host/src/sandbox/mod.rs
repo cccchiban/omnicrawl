@@ -350,6 +350,7 @@ impl Sandbox {
         // 这里用一个不含网络通道的视图，避免代理线程再进 `ensure_network` 形成递归锁。
         let sandbox = std::sync::Arc::new(self.without_network());
         let proxy = proxy::Proxy::start(sandbox, approver)?;
+        #[cfg(windows)]
         let url = proxy.proxy_url();
 
         // 把代理地址接到隔离环境上：下一次 `spawn` 就会注入 `HTTP_PROXY`。

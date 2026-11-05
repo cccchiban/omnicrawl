@@ -16,6 +16,20 @@ pub enum Plan {
     Isolated(Arc<super::windows::Isolation>),
 }
 
+impl Plan {
+    /// 是否走真隔离。非 Windows 上不存在这个分支，恒为 `false`。
+    pub fn is_isolated(&self) -> bool {
+        #[cfg(windows)]
+        {
+            matches!(self, Self::Isolated(_))
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+}
+
 pub struct IsolationGate {
     sandbox: Arc<Sandbox>,
 }

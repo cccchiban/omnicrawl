@@ -236,12 +236,18 @@ impl CommandRunner {
                 false,
             )
         })?;
+        #[cfg(windows)]
         let invocation = match &plan {
             Plan::Isolated(isolation) => {
                 invocation_for_isolation(text, shell, &|name| std::env::var(name).ok(), isolation)
             }
             Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
         }?;
+        #[cfg(not(windows))]
+        let invocation = match &plan {
+            Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
+        }?;
+        #[cfg(windows)]
         if let Plan::Isolated(isolation) = plan {
             return self.run_isolated(&invocation, timeout_seconds, cancel, &isolation);
         }
@@ -311,6 +317,7 @@ impl CommandRunner {
     ///
     /// 与宿主路径刻意保持同一套「退出码 + 解释器 + stdout/stderr」组织方式，
     /// 只在开头多一行 `[sandbox:appcontainer]` 标记，让人一眼看出这条命令在隔离内跑。
+    #[cfg(windows)]
     fn run_isolated(
         &self,
         invocation: &Invocation,
@@ -496,7 +503,8 @@ pub fn invocation_for(
 /// 沙盒内的调用：解释器由容器实测选出（`pwsh` 7.* 优先，不通则回退 5.1）。
 ///
 /// 与 [`invocation_for`] 的差别只在「谁选了可执行文件」：这里的选择需要容器身份才能验证，
-/// 因此由 [`crate::sandbox::Isolation`] 在首次使用时探测并缓存。
+/// 因此由 `Isolation` 在首次使用时探测并缓存。
+#[cfg(windows)]
 pub fn invocation_for_isolation(
     command: &str,
     shell: Shell,
@@ -625,7 +633,7 @@ pub fn find_powershell_executable(env: &dyn Fn(&str) -> Option<String>) -> Optio
 /// 沙盒内的 PowerShell（无法在容器内实测时的回退口径）：安装目录里最新的 `pwsh`，
 /// 没有则用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`。
 ///
-/// 真正进沙盒执行时以 [`crate::sandbox::Isolation::powershell`] 的容器实测结果为准：
+/// 真正进沙盒执行时以 `Isolation::powershell` 的容器实测结果为准：
 /// PowerShell 7 在 AppContainer 里能否加载 cmdlet 取决于 `PSModulePath` 是否含它自己的
 /// 模块目录，只有跑一次才知道，因此探测放在隔离层。
 pub fn find_sandboxed_powershell(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {

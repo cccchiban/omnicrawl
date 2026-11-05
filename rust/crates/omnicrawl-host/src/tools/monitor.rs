@@ -20,12 +20,19 @@ use sha2::{Digest, Sha256};
 use omnicrawl_controllers::shared::MAX_TOOL_TIMEOUT_SECONDS;
 
 use super::arguments::{limited_int, optional_text};
-use super::command::{invocation_for, invocation_for_isolation, CommandOutcome, Shell};
+#[cfg(windows)]
+use super::command::invocation_for_isolation;
+use super::command::{invocation_for, CommandOutcome, Shell};
 use super::error::ToolError;
 use super::registry::BASH_UNAVAILABLE_IN_SANDBOX;
 use crate::process_control::{
     configure_process_group, kill_process_tree_by_pid, terminate_process_tree, KillOnCloseJob,
 };
+
+/// 沙盒子进程的终止句柄：容器身份下的进程拿不到 `std::process::Child`，
+/// 停止路径靠复制出的句柄终止。非 Windows 没有容器，因此这个类型不存在。
+#[cfg(windows)]
+type Terminator = crate::sandbox::Terminator;
 
 pub const MAX_ACTIVE_MONITORS: usize = 20;
 pub const MAX_BUFFERED_EVENTS: usize = 1_000;
@@ -517,10 +524,7 @@ impl MonitorManager {
             }
             None => None,
         };
-        let isolated = matches!(
-            plan,
-            Some(crate::sandbox::gate::Plan::Isolated(_))
-        );
+        let isolated = plan.as_ref().is_some_and(|plan| plan.is_isolated());
         let invocation = match plan.as_ref() {
             #[cfg(windows)]
             Some(crate::sandbox::gate::Plan::Isolated(isolation)) => {
@@ -543,7 +547,8 @@ impl MonitorManager {
         // 两条派生路径：宿主身份用 `std::process::Child`，容器身份用 `SandboxChild`。
         // 输出统一装箱成 `Read`：两条路径的读端类型不同，而 `spawn_reader` 只需要能读。
         type Piped = Option<Box<dyn Read + Send>>;
-        let spawned: std::io::Result<(Running, Piped, Piped, Option<crate::sandbox::Terminator>)> =
+        #[cfg(windows)]
+        let spawned: std::io::Result<(Running, Piped, Piped, Option<Terminator>)> =
             match plan.as_ref() {
                 #[cfg(windows)]
                 Some(crate::sandbox::gate::Plan::Isolated(isolation)) => {
@@ -574,7 +579,29 @@ impl MonitorManager {
                     (Running::Host(child), stdout, stderr, None)
                 }),
             };
+        #[cfg(not(windows))]
+        let spawned: std::io::Result<(Running, Piped, Piped)> =
+            spawn_background(&self.inner.root, &invocation.args).map(|mut child| {
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+                (Running::Host(child), stdout, stderr)
+            });
+        #[cfg(windows)]
         let (mut running, stdout, stderr, terminator) = match spawned {
+            Ok(value) => value,
+            Err(error) => {
+                self.release_slot();
+                return Err(ToolError::new(format!("后台命令启动失败：{error}")));
+            }
+        };
+        #[cfg(not(windows))]
+        let (mut running, stdout, stderr) = match spawned {
             Ok(value) => value,
             Err(error) => {
                 self.release_slot();
@@ -826,25 +853,25 @@ impl MonitorManager {
 
     /// 置位停止请求并回收进程树；`wait` 为真时等到任务落入终态。
     fn stop_task(&self, monitor_id: &str, reason: &str, wait: bool) -> Result<(), ToolError> {
-        let (pid, job, terminator) = {
-            let mut state = self.state();
-            let buffer_limit = state.buffer_limit;
-            let task = state
-                .tasks
-                .get_mut(monitor_id)
-                .ok_or_else(|| not_found(monitor_id))?;
-            if task.status != Status::Running {
-                return Ok(());
-            }
-            task.stop_requested = true;
-            record_event(task, "system", reason, buffer_limit);
-            let pid = task.pid;
-            // 取出 Job 句柄：停止后句柄归还调用点关闭，终态路径不再重复处理。
-            let job = task.job.take();
-            #[cfg(windows)]
-            let terminator = task.terminator.take();
-            (pid, job, terminator)
-        };
+        let mut state = self.state();
+        let buffer_limit = state.buffer_limit;
+        let task = state
+            .tasks
+            .get_mut(monitor_id)
+            .ok_or_else(|| not_found(monitor_id))?;
+        if task.status != Status::Running {
+            return Ok(());
+        }
+        task.stop_requested = true;
+        record_event(task, "system", reason, buffer_limit);
+        let pid = task.pid;
+        // 取出 Job 句柄：停止后句柄归还调用点关闭，终态路径不再重复处理。
+        let job = task.job.take();
+        // 沙盒任务：进程已在 `Isolation` 的 Job 里，用复制出的句柄终止。
+        #[cfg(windows)]
+        let terminator = task.terminator.take();
+        drop(state);
+
         match job {
             // 纳入了 Job：关闭句柄即递归终止整棵进程树（与 Python `_stop_task` 取出
             // job_handle 交给 `terminate_process_tree` 同义）。
@@ -853,7 +880,6 @@ impl MonitorManager {
             None => {
                 #[cfg(windows)]
                 match terminator {
-                    // 沙盒任务：进程已在 `Isolation` 的 Job 里，用复制出的句柄终止。
                     Some(terminator) => terminator.kill(),
                     None => kill_process_tree_by_pid(pid),
                 }
