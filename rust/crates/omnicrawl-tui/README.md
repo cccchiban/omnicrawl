@@ -803,7 +803,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）；子代理改走独立窗口（见上文「子代理独立窗口」）。
    斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
-   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/programming`、`/workspace` 能真正执行；
+   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/programming`、`/workspace`、`/sandbox`、`/sandbox:set` 能真正执行；
    `/mcp` 已接线（见上文）；
    `/skill:<名>` 是运行期命令（Skill 不在注册表里）：命中时先经 `session.settings` 把技能正文下发为本轮上下文、
    回合收尾再换回常规上下文，未命中时把带可用名称的说明当本轮文本；菜单候选与实际可执行的清单同源（`command_options_with_skills`）；设置面板的一级菜单全部落地

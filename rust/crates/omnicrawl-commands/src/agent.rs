@@ -243,6 +243,9 @@ pub(crate) mod testing {
         pub active_mode: String,
         pub review_report: Mutex<String>,
         pub calls: Mutex<Vec<String>>,
+        /// 配置环境；`None` 时按进程环境解析（真实 `~/.OmniCrawl`）。
+        /// 用例要读写隔离的 `config.toml` 时在这里注入。
+        pub environment: Option<ConfigEnvironment>,
     }
 
     impl Default for FakeAgent {
@@ -271,6 +274,7 @@ pub(crate) mod testing {
                 active_mode: String::new(),
                 review_report: Mutex::new(String::new()),
                 calls: Mutex::new(Vec::new()),
+                environment: None,
             }
         }
     }
@@ -298,6 +302,13 @@ pub(crate) mod testing {
     }
 
     impl CommandAgent for FakeAgent {
+        fn config_environment(&self) -> ConfigEnvironment {
+            match &self.environment {
+                Some(environment) => environment.clone(),
+                None => ConfigEnvironment::from_process(),
+            }
+        }
+
         fn current_session_id(&self) -> String {
             self.session_id.clone()
         }

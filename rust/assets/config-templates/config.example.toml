@@ -153,6 +153,42 @@ mode = "review"
 # 审查范围是删除类、下载即执行类与高风险 Git 调用；memory_delete 不在其中。
 review_model = ""
 
+# ── 沙盒（子进程隔离）──────────────────────────────────────────
+# 设计见 docs/sandbox_windows_design.md。当前版本处于 P0：只做**判定与记录**，
+# 不真隔离；`mode = "appcontainer"` 的执行路径尚未实现，行为等同 dry-run。
+#
+# 三档开关：
+#   enabled = false                → 与没有沙盒时完全一致（默认）
+#   enabled = true, mode = "off"   → dry-run：只判定并记录「本会拦什么」
+#   enabled = true, mode = "appcontainer" → 真隔离（P1/P3 落地后生效）
+#
+# 建议先跑一周 dry-run：提示随命令输出回显（`[sandbox dry-run]` 段），
+# 确认你的编译/依赖安装不会被拦，再考虑真切。
+#[sandbox]
+enabled = false
+mode = "off"
+
+# 额外可写路径（相对路径按工作区根）：工作区与 `.agent_tmp` 默认已可写。
+# [sandbox.fs]
+# writable = []
+# readable = []
+
+# 网络策略：offline（全拒，回环除外）/ ask（默认，每个新目标审批一次）/
+#           allowlist（仅白名单放行）/ online（全放行仅记录）。
+# 回环（127.0.0.1、localhost、::1）永远放行，本地 dev server 不受影响。
+# [sandbox.net]
+# policy = "ask"
+# allow = ["registry.npmjs.org", "*.githubusercontent.com"]
+# deny = []
+# approval_timeout_seconds = 60
+# log_all = true
+
+# 资源限额（真隔离后生效）。
+# [sandbox.limits]
+# max_processes = 64
+# max_memory_mb = 4096
+# cpu_rate_percent = 0
+
 # 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
 # 对话区渲染思考块（Markdown 渲染）。可在 TUI /settings 中切换。
 [ui]

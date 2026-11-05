@@ -213,6 +213,21 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
+        Command::new("sandbox", handle_sandbox_command)
+            .description("查看沙盒配置与当前生效范围（dry-run 判定随命令输出回显）。")
+            .usage("/sandbox")
+            .command_type(CommandType::Query),
+    )?;
+
+    registry.register(
+        Command::new("sandbox:set", handle_sandbox_set_command)
+            .description("开关沙盒或切换隔离模式/网络策略，并写回 config.toml。")
+            .usage("/sandbox:set <on|off|dry-run|appcontainer> | net <策略>")
+            .command_type(CommandType::Action)
+            .arg_prompt("取值"),
+    )?;
+
+    registry.register(
         Command::new("new", handle_new_command)
             .description("开启一个空白会话。")
             .usage("/new")

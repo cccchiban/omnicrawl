@@ -44,6 +44,7 @@ mod review;
 mod session_commands;
 mod skill_suggestions;
 mod workspace_commands;
+mod sandbox_commands;
 
 pub use registry::{build_registry, registry};
 pub use render::{
@@ -63,6 +64,7 @@ pub use skill_suggestions::{build_slash_command_options, build_slash_commands};
 pub use workspace_commands::{
     handle_workspace_command,
 };
+pub use sandbox_commands::{handle_sandbox_command, handle_sandbox_set_command};
 
 // 处理器保持对外可见：它们原先是 `slash.rs` 的 `pub fn`，宿主虽然只经
 // `registry().dispatch(..)` 调用，但路径一旦变化就是破坏性改动。
@@ -136,18 +138,115 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 28);
+        assert_eq!(names.len(), 30);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
         assert!(names.contains(&"programming".to_string()));
         assert!(names.contains(&"speaking-style".to_string()));
+        assert!(names.contains(&"sandbox".to_string()));
+        assert!(names.contains(&"sandbox:set".to_string()));
         assert_eq!(names.last().map(String::as_str), Some("workspace"));
     }
 
     #[test]
     fn registry_is_built_once() {
         assert!(std::ptr::eq(registry(), registry()));
+    }
+
+    /// 隔离的配置环境：每个用例一个独立目录，避免读到真实 `~/.OmniCrawl`。
+    fn sandbox_env(label: &str) -> (ConfigEnvironment, std::path::PathBuf) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "omnicrawl-sandbox-cmd-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("建目录");
+        (ConfigEnvironment::new(root.clone(), "windows"), root)
+    }
+
+    /// 走真实分派路径执行一条斜杠命令（比手工拼 `CommandContext` 更贴近实际）。
+    fn run_slash(agent: &dyn CommandAgent, raw: &str) -> CommandResult {
+        let parsed = registry().parse(raw).expect("命令可解析");
+        registry().invoke(parsed, agent, raw, Channel::Tui, None)
+    }
+
+    #[test]
+    fn sandbox_query_reports_disabled_by_default() {
+        let (environment, root) = sandbox_env("off");
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment);
+        let text = run_slash(&agent, "/sandbox").message.expect("应有文案");
+        assert!(text.contains("关闭"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sandbox_set_turns_on_dry_run_and_persists() {
+        let (environment, root) = sandbox_env("on");
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment.clone());
+        // 写回需要目录存在（`~/.OmniCrawl`）。
+        std::fs::create_dir_all(root.join(".OmniCrawl")).ok();
+        let text = run_slash(&agent, "/sandbox:set on")
+            .message
+            .expect("应有文案");
+        assert!(text.contains("dry-run"), "{text}");
+
+        // 真写进了 config.toml，并且能被读回来。
+        let written = std::fs::read_to_string(root.join(".OmniCrawl").join("config.toml"))
+            .expect("应写入配置");
+        assert!(written.contains("[sandbox]"), "{written}");
+        let config =
+            omnicrawl_config::features::sandbox::load_sandbox_config(&environment, None).expect("可读");
+        assert!(config.enabled);
+        assert!(config.is_dry_run());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sandbox_set_switches_network_policy() {
+        let (environment, root) = sandbox_env("net");
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment.clone());
+        std::fs::create_dir_all(root.join(".OmniCrawl")).ok();
+        let text = run_slash(&agent, "/sandbox:set net offline")
+            .message
+            .expect("应有文案");
+        assert!(text.contains("offline"), "{text}");
+        let config =
+            omnicrawl_config::features::sandbox::load_sandbox_config(&environment, None).expect("可读");
+        assert_eq!(
+            config.net_policy,
+            omnicrawl_config::features::sandbox::NetPolicy::Offline
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sandbox_set_rejects_unknown_values() {
+        let (environment, root) = sandbox_env("bad");
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment);
+        let text = run_slash(&agent, "/sandbox:set vm")
+            .message
+            .expect("应有文案");
+        assert!(text.contains("无法识别"), "{text}");
+        // 拒绝时不应写出任何配置。
+        assert!(!root.join(".OmniCrawl").join("config.toml").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sandbox_query_needs_no_writes() {
+        // 查询是只读操作：不应创建配置文件。
+        let (environment, root) = sandbox_env("ro");
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment);
+        run_slash(&agent, "/sandbox");
+        assert!(!root.join(".OmniCrawl").join("config.toml").exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

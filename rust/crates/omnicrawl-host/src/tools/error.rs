@@ -93,3 +93,12 @@ pub fn command_result(ok: bool, output: String) -> ToolResult {
         retryable: false,
     }
 }
+
+/// 在命令输出末尾追加沙盒提示（空提示原样返回，不产生多余空行）。
+pub fn attach_notice(output: String, notice: &str) -> String {
+    if notice.is_empty() {
+        output
+    } else {
+        format!("{output}{notice}")
+    }
+}

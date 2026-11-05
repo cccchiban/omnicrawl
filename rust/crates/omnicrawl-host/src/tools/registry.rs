@@ -26,7 +26,7 @@ use super::command::{CancelToken, CommandRunner, Shell, DEFAULT_COMMAND_TIMEOUT_
 use super::config_tool;
 use super::decision_search::RerankOptions;
 use super::declarations::declaration;
-use super::error::{command_result, text_failure, text_success, ToolError};
+use super::error::{attach_notice, command_result, text_failure, text_success, ToolError};
 use super::fetcher::{self, FetcherOptions};
 use super::image_gen::{self, ImageGenOptions};
 use super::knowledge::{self, KnowledgeBase};
@@ -177,6 +177,10 @@ pub struct RegistryOptions {
     pub knowledge_root: Option<PathBuf>,
     /// 配置工具的配置环境；未注入时按进程环境解析 `~/.OmniCrawl`。
     pub config_env: Option<ConfigEnvironment>,
+    /// 沙盒运行期配置；未注入时按 `~/.OmniCrawl/config.toml` 的 `[sandbox]` 段构造。
+    ///
+    /// 沙盒关闭（`enabled = false`）时它是空操作，不改变任何执行行为。
+    pub sandbox: Option<Arc<crate::sandbox::Sandbox>>,
     /// 知识库检索重排（`decision_models.toml` 的 `kb_search_rerank` 开关）。
     pub knowledge_rerank: Arc<RerankOptions>,
     /// Skill 检索重排（`decision_models.toml` 的 `skill_search_rerank` 开关）。
@@ -225,6 +229,8 @@ pub struct ToolRegistry {
     mcp: Option<Arc<McpClientManager>>,
     /// 配置工具的配置环境（构造时定下，之后不随工作区切换而变）。
     config_env: ConfigEnvironment,
+    /// 沙盒策略：判定读/写/网络目标；关闭时是空操作。
+    sandbox: Arc<crate::sandbox::Sandbox>,
     /// MCP 能力名：工具用逻辑名，资源/Prompt 用各自的适配工具名。
     mcp_tool_names: BTreeSet<String>,
     mcp_resource_names: Vec<(String, String)>,
@@ -411,6 +417,32 @@ impl ToolRegistry {
             workspace_root: paths.root().to_path_buf(),
             ..options.advisor.clone()
         };
+        // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
+        // 不在这里报错中断工具表构建（沙盒是增量能力，不能因为它的配置坏了就让整个 Agent 起不来）。
+        let sandbox = match options.sandbox.clone() {
+            Some(sandbox) => sandbox,
+            None => {
+                let temp_dir = paths.root().join(".omnicrawl").join(".agent_tmp");
+                let config = omnicrawl_config::features::sandbox::load_sandbox_config(
+                    &config_env,
+                    None,
+                );
+                match config {
+                    Ok(config) => Arc::new(crate::sandbox::Sandbox::new(
+                        config,
+                        paths.root().to_path_buf(),
+                        temp_dir,
+                    )),
+                    Err(error) => {
+                        eprintln!("[sandbox] 配置无法解析，已按关闭处理：{}", error.message());
+                        Arc::new(crate::sandbox::Sandbox::disabled(
+                            paths.root().to_path_buf(),
+                            temp_dir,
+                        ))
+                    }
+                }
+            }
+        };
         Ok(Self {
             paths,
             commands,
@@ -426,6 +458,7 @@ impl ToolRegistry {
             advisor,
             mcp: options.mcp.clone(),
             config_env,
+            sandbox,
             mcp_tool_names,
             mcp_resource_names,
             mcp_prompt_names,
@@ -513,6 +546,11 @@ impl ToolRegistry {
     /// 构建工具表时定下的配置环境（Skill 建议扫索引时要用它读 `extra_paths`）。
     pub fn config_environment(&self) -> &ConfigEnvironment {
         &self.config_env
+    }
+
+    /// 沙盒策略（判定读/写/网络；关闭时是空操作）。
+    pub fn sandbox(&self) -> &crate::sandbox::Sandbox {
+        &self.sandbox
     }
 
     pub fn is_implemented(&self, name: &str) -> bool {
@@ -752,8 +790,15 @@ impl ToolRegistry {
     }
 
     fn run_command(&self, arguments: &Map<String, Value>, shell: Shell) -> ToolResult {
+        // P0：dry-run 只做判定与记录，不改执行。真隔离在 P1/P3 落地后，
+        // 这条判定会变成"据此决定 grant/deny"，调用点不必再改。
+        let notice = if let Some(Value::String(command)) = arguments.get("command") {
+            self.sandbox.dry_run_notice_for_command(command)
+        } else {
+            String::new()
+        };
         match self.commands.run_shell(arguments, shell, &self.cancel) {
-            Ok(outcome) => command_result(outcome.ok, outcome.output),
+            Ok(outcome) => command_result(outcome.ok, attach_notice(outcome.output, &notice)),
             Err(error) => text_failure(&error),
         }
     }
@@ -1717,5 +1762,67 @@ mode = \"review\"
 
         registry.close_mcp();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 沙盒 dry-run 必须真的在 `bash` 的输出里露出提示，而不是只活在配置里。
+    #[test]
+    fn dry_run_appends_a_notice_to_command_output() {
+        let root = std::env::temp_dir().join("omnicrawl-registry-sandbox-notice");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::Off,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox.clone()),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
+        // 只做判定、不真的写盘：命令本身是无副作用的 echo，但引用了工作区外的目标路径。
+        let outside = root.join("..").join("outside-sb.txt");
+        let command = format!("echo {}", outside.display());
+        let result = registry
+            .execute(&call("bash", json!({"command": command})))
+            .expect("bash 应当被本宿主处理");
+        assert!(result.ok, "{}", result.output);
+        assert!(
+            result.output.contains("[sandbox dry-run]"),
+            "缺少 dry-run 提示：{}",
+            result.output
+        );
+        // 记录也进了沙盒（`/sandbox` 与日志据此统计）。
+        assert!(!sandbox.blocked_summary().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 沙盒关闭时，命令输出里**不能**出现任何沙盒痕迹。
+    #[test]
+    fn a_disabled_sandbox_leaves_command_output_untouched() {
+        let root = std::env::temp_dir().join("omnicrawl-registry-sandbox-silent");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let options = RegistryOptions {
+            sandbox: Some(Arc::new(crate::sandbox::Sandbox::disabled(
+                root.clone(),
+                root.join(".omnicrawl").join(".agent_tmp"),
+            ))),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+        let result = registry
+            .execute(&call("bash", json!({"command": "echo silent"})))
+            .expect("bash 应当被本宿主处理");
+        assert!(result.ok, "{}", result.output);
+        assert!(!result.output.contains("sandbox"), "{}", result.output);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
