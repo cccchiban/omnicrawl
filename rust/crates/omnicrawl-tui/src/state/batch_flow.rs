@@ -243,6 +243,10 @@ impl AppState {
                     card.arguments = arguments;
                     card.status = ToolStatus::Running;
                     card.elapsed = None;
+                    // 计时从**执行层**起算，不是从流式阶段起算：那张卡片在模型刚开始
+                    // 吐参数时就立好了，若不重置，卡片上的耗时会把「模型生成参数 +
+                    // 审批等待」也算进去（一次 read 因此显示 16 秒）。
+                    card.started = now;
                     return;
                 }
             }
