@@ -155,8 +155,18 @@ impl AgentLoopRunner {
             }
             // 全部 tool result 必须紧跟同一条 assistant tool_calls 消息：先回填整批，
             // 再追加各工具的补充观察，否则 Provider 会判定协议无效。
+            //
+            // `tool_call_id` 由观察自带的调用 id 校正：宿主若不回填，这条结果会在出站
+            // 配对修复里被判成孤儿摘掉，再补一条占位——真实观察就此丢失。
             for observation in &observations {
-                messages.push(observation.message.clone());
+                let mut message = observation.message.clone();
+                if let Some(object) = message.as_object_mut() {
+                    object.insert(
+                        "tool_call_id".to_string(),
+                        Value::String(observation.tool_call.id.clone()),
+                    );
+                }
+                messages.push(message);
             }
             for observation in &observations {
                 for followup in &observation.followup_messages {

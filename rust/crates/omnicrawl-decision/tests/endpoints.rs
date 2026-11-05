@@ -235,7 +235,7 @@ fn decide_forwards_state_and_questions_and_returns_answers() {
 
     // 上游收到的是决策渠道的地址、凭据与原生请求体。
     let captured = upstream.captured();
-    assert_eq!(captured.path, "/v1/decide");
+    assert_eq!(captured.path, "/v1/systemone");
     assert_eq!(captured.authorization, "Bearer jv_test");
     assert_eq!(captured.body["model"], "jev-test");
     assert_eq!(captured.body["state"]["task"], "支付账单");
