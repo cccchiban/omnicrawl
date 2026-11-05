@@ -154,13 +154,18 @@ mode = "review"
 review_model = ""
 
 # ── 沙盒（子进程隔离）──────────────────────────────────────────
-# 设计见 docs/sandbox_windows_design.md。当前版本处于 P0：只做**判定与记录**，
-# 不真隔离；`mode = "appcontainer"` 的执行路径尚未实现，行为等同 dry-run。
+# 设计见 docs/sandbox_windows_design.md。当前版本处于 P1：Windows 上真隔离已落地，
+# 但**只覆盖 `powershell` 工具**；`bash` 会明确拒绝执行（Git Bash 的运行时目录
+# 尚未纳入最小可读集合），`monitor`/`git` 等仍以宿主身份运行。
 #
 # 三档开关：
 #   enabled = false                → 与没有沙盒时完全一致（默认）
 #   enabled = true, mode = "off"   → dry-run：只判定并记录「本会拦什么」
-#   enabled = true, mode = "appcontainer" → 真隔离（P1/P3 落地后生效）
+#   enabled = true, mode = "appcontainer" → 真隔离（AppContainer 身份 + Job 限额）
+#
+# 真隔离下：工作区可读写，宿主用户目录（含 ~/.ssh、~/.OmniCrawl）不可读，
+# 网络能力为 0（回环代理是 P3）。沙盒内 PowerShell 固定用 5.1：pwsh 7 在
+# AppContainer 里加载不出任何 cmdlet。
 #
 # 建议先跑一周 dry-run：提示随命令输出回显（`[sandbox dry-run]` 段），
 # 确认你的编译/依赖安装不会被拦，再考虑真切。

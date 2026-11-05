@@ -164,7 +164,7 @@ impl SandboxConfig {
             );
         }
         format!(
-            "沙盒：appcontainer（真隔离）。网络策略 {}，进程上限 {}，内存上限 {}MB。",
+            "沙盒：appcontainer（真隔离，当前只覆盖 `powershell`；`bash` 会拒绝执行）。             网络策略 {}，进程上限 {}，内存上限 {}MB。",
             self.net_policy.as_str(),
             self.limits.max_processes,
             self.limits.max_memory_mb

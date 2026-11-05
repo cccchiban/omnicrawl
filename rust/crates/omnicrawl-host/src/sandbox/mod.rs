@@ -16,6 +16,14 @@ use std::sync::Mutex;
 
 use omnicrawl_config::features::sandbox::{NetPolicy, SandboxConfig};
 
+pub mod gate;
+
+#[cfg(windows)]
+pub mod windows;
+
+#[cfg(windows)]
+pub use windows::{Isolation, SandboxChild, Spawned};
+
 /// 一次判定的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -81,6 +89,43 @@ pub struct Sandbox {
     decisions: Mutex<Vec<Decision>>,
     /// 记录条数上限：dry-run 可能跑一整天，不能无限涨。
     max_decisions: usize,
+    /// 真隔离环境（容器 + ACL），首次使用时准备并复用。
+    #[cfg(windows)]
+    isolation: IsolationCache,
+}
+
+/// 容器身份与 ACL 授予的缓存。
+///
+/// 每条命令都重建容器、重算一遍祖先链 ACE 是纯浪费：容器名由工作区派生、ACE 是幂等
+/// 授予，同一进程内复用一份即可。`Err` 也缓存——环境不支持时不必每条命令再撞一次墙。
+#[cfg(windows)]
+#[derive(Default)]
+pub struct IsolationCache(
+    std::sync::Mutex<Option<Result<std::sync::Arc<windows::Isolation>, String>>>,
+);
+
+#[cfg(windows)]
+impl std::fmt::Debug for IsolationCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IsolationCache")
+    }
+}
+
+#[cfg(windows)]
+impl IsolationCache {
+    /// 取或准备隔离环境。失败结果同样缓存。
+    pub fn get(&self, sandbox: &Sandbox) -> Result<std::sync::Arc<windows::Isolation>, String> {
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = guard.as_ref() {
+            return cached.clone();
+        }
+        let prepared = windows::Isolation::prepare(sandbox);
+        *guard = Some(prepared.clone());
+        prepared
+    }
 }
 
 /// dry-run 记录条数上限。超出后只保留前 N 条并标记"已截断"。
@@ -95,6 +140,8 @@ impl Sandbox {
             temp_dir: temp_dir.into(),
             decisions: Mutex::new(Vec::new()),
             max_decisions: MAX_DECISIONS,
+            #[cfg(windows)]
+            isolation: IsolationCache::default(),
         }
     }
 
@@ -110,6 +157,8 @@ impl Sandbox {
             temp_dir: temp_dir.into(),
             decisions: Mutex::new(Vec::new()),
             max_decisions: MAX_DECISIONS,
+            #[cfg(windows)]
+            isolation: IsolationCache::default(),
         }
     }
 
@@ -125,6 +174,12 @@ impl Sandbox {
     /// 是否真隔离。
     pub fn isolates(&self) -> bool {
         self.config.isolates()
+    }
+
+    /// 取（或首次准备）真隔离环境。只在 `mode = appcontainer` 时有意义。
+    #[cfg(windows)]
+    pub fn isolation(&self) -> Result<std::sync::Arc<windows::Isolation>, String> {
+        self.isolation.get(self)
     }
 
     /// 是否 dry-run。

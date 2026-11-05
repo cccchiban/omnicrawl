@@ -22,6 +22,8 @@ use super::sample::{command_output_path, sample_command_output};
 use crate::process_control::{
     configure_process_group, kill_process_tree_by_pid, terminate_process_tree, KillOnCloseJob,
 };
+use crate::sandbox::gate::{IsolationGate, Plan};
+use crate::sandbox::Sandbox;
 
 pub const DEFAULT_COMMAND_TIMEOUT_SECONDS: i64 = 360;
 pub const MAX_COMMAND_TIMEOUT_SECONDS: i64 = 360;
@@ -125,17 +127,35 @@ impl CancelToken {
     }
 }
 
-/// 命令执行器：工作区根、默认超时与取消令牌之外无状态。
+/// 命令执行器：工作区根、默认超时与沙盒策略之外无状态。
 pub struct CommandRunner {
     root: PathBuf,
     timeout_seconds: i64,
+    gate: IsolationGate,
 }
 
 impl CommandRunner {
     pub fn new(root: impl Into<PathBuf>, timeout_seconds: i64) -> Self {
+        let root = root.into();
+        // 没有注入策略时按关闭处理：`CommandRunner::new` 的调用方（测试、`monitor`）
+        // 不该因为沙盒而改变行为。
+        let sandbox = Arc::new(Sandbox::disabled(
+            root.clone(),
+            root.join(AGENT_TEMP_DIRECTORY),
+        ));
+        Self::with_sandbox(root, timeout_seconds, sandbox)
+    }
+
+    /// 带上沙盒策略构造。`mode = appcontainer` 时命令以 AppContainer 身份执行。
+    pub fn with_sandbox(
+        root: impl Into<PathBuf>,
+        timeout_seconds: i64,
+        sandbox: Arc<Sandbox>,
+    ) -> Self {
         Self {
             root: root.into(),
             timeout_seconds: timeout_seconds.clamp(1, MAX_COMMAND_TIMEOUT_SECONDS),
+            gate: IsolationGate::new(sandbox),
         }
     }
 
@@ -187,12 +207,14 @@ impl CommandRunner {
             MAX_COMMAND_TIMEOUT_SECONDS,
         );
 
-        let primary = self.run_invocation(&invocation(&command, shell)?, timeout, cancel)?;
+        let isolated = self.gate.isolates();
+        let build =
+            |text: &str| invocation_for(text, shell, &|name| std::env::var(name).ok(), isolated);
+        let primary = self.run_invocation(&build(&command)?, timeout, cancel)?;
         if diagnostic_command.is_empty() {
             return Ok(primary);
         }
-        let diagnostic =
-            self.run_invocation(&invocation(&diagnostic_command, shell)?, timeout, cancel)?;
+        let diagnostic = self.run_invocation(&build(&diagnostic_command)?, timeout, cancel)?;
         Ok(CommandOutcome {
             ok: primary.ok && diagnostic.ok,
             output: format!(
@@ -208,6 +230,17 @@ impl CommandRunner {
         timeout_seconds: i64,
         cancel: &CancelToken,
     ) -> Result<CommandOutcome, ToolError> {
+        let plan = self.gate.plan().map_err(|error| {
+            // 沙盒准备失败时**不放行到宿主身份**：能跑但没隔离，比跑不了危险得多。
+            ToolError::coded(
+                format!("沙盒无法启用，命令未执行：{error}"),
+                "SANDBOX_UNAVAILABLE",
+                false,
+            )
+        })?;
+        if let Plan::Isolated(isolation) = plan {
+            return self.run_isolated(invocation, timeout_seconds, cancel, &isolation);
+        }
         let mut command = Command::new(&invocation.args[0]);
         command
             .args(&invocation.args[1..])
@@ -263,33 +296,130 @@ impl CommandRunner {
                 output: "命令已取消。".to_string(),
             });
         }
-        let return_code = status.and_then(|status| status.code()).unwrap_or(-1);
+        let return_code = status
+            .and_then(|status| status.code())
+            .map(i64::from)
+            .unwrap_or(-1);
+        Ok(self.finish(invocation, return_code, stdout_text, stderr_text, false))
+    }
 
-        let mut parts = vec![
-            format!("退出码：{return_code}"),
-            format!("Shell：{}", invocation.label),
-        ];
+    /// 沙盒路径：以 AppContainer 身份执行同一条命令。
+    ///
+    /// 与宿主路径刻意保持同一套「退出码 + 解释器 + stdout/stderr」组织方式，
+    /// 只在开头多一行 `[sandbox:appcontainer]` 标记，让人一眼看出这条命令在隔离内跑。
+    fn run_isolated(
+        &self,
+        invocation: &Invocation,
+        timeout_seconds: i64,
+        cancel: &CancelToken,
+        isolation: &crate::sandbox::Isolation,
+    ) -> Result<CommandOutcome, ToolError> {
+        let mut spawned = isolation.spawn(&invocation.args).map_err(|error| {
+            ToolError::coded(
+                format!("沙盒内命令启动失败：{error}"),
+                "SANDBOX_SPAWN_FAILED",
+                false,
+            )
+        })?;
+        let pid = spawned.child.id();
+        cancel.register(pid);
+
+        let deadline = Instant::now() + Duration::from_secs(timeout_seconds.max(1) as u64);
+        let mut cancelled = false;
+        let exit_code = loop {
+            if let Some(code) = spawned.child.try_wait() {
+                break Some(code);
+            }
+            if cancel.is_cancelled() {
+                spawned.child.kill();
+                cancelled = true;
+                break None;
+            }
+            if Instant::now() >= deadline {
+                spawned.child.kill();
+                cancel.unregister(pid);
+                return Err(ToolError::new(format!(
+                    "命令执行超过 {timeout_seconds} 秒，已终止。"
+                )));
+            }
+            thread::sleep(POLL_INTERVAL);
+        };
+        cancel.unregister(pid);
+
+        let stdout_bytes = join_bytes_reader(spawned.stdout);
+        let stderr_bytes = join_bytes_reader(spawned.stderr);
+        if cancelled {
+            return Ok(CommandOutcome {
+                ok: false,
+                output: "命令已取消。".to_string(),
+            });
+        }
+        let return_code = exit_code.map(i64::from).unwrap_or(-1);
+        Ok(self.finish(
+            invocation,
+            return_code,
+            decode_console_bytes(&stdout_bytes),
+            decode_console_bytes(&stderr_bytes),
+            true,
+        ))
+    }
+
+    /// 两条执行路径共用的结果组织。
+    fn finish(
+        &self,
+        invocation: &Invocation,
+        return_code: i64,
+        stdout_text: String,
+        stderr_text: String,
+        isolated: bool,
+    ) -> CommandOutcome {
+        let mut parts = vec![format!("退出码：{return_code}")];
+        if isolated {
+            parts.push("[sandbox:appcontainer] 本命令以隔离身份执行".to_string());
+        }
+        parts.push(format!("Shell：{}", invocation.label));
         if !stdout_text.trim().is_empty() {
             parts.push(format!(
-                "stdout:\n{}",
+                "stdout:
+{}",
                 self.sampled(stdout_text.trim().to_string())
             ));
         }
         if !stderr_text.trim().is_empty() {
             parts.push(format!(
-                "stderr:\n{}",
+                "stderr:
+{}",
                 self.sampled(stderr_text.trim().to_string())
             ));
         }
-        Ok(CommandOutcome {
+        CommandOutcome {
             ok: return_code == 0,
-            output: parts.join("\n\n"),
-        })
+            output: parts.join(
+                "
+
+",
+            ),
+        }
     }
 
     fn sampled(&self, text: String) -> String {
         let save_path = command_output_path(&self.root, AGENT_TEMP_DIRECTORY);
         sample_command_output(&text, Some(&save_path))
+    }
+}
+
+/// 解沙盒子进程的输出字节。
+///
+/// 宿主路径继承宿主自己的控制台，输出本来就是 UTF-8；沙盒进程的 stdout 是管道，
+/// 程序按**控制台代码页**（中文系统上是 936/GBK）写字节。因此先按 UTF-8 严格解，
+/// 失败再按 GBK——顺序不能反：GBK 也能"解开"UTF-8 的中文，但会得到乱码。
+fn decode_console_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => {
+            let (decoded, _, _) = encoding_rs::GBK.decode(bytes);
+            decoded.to_string()
+        }
     }
 }
 
@@ -299,6 +429,10 @@ fn spawn_reader<R: Read + Send + 'static>(mut stream: R) -> thread::JoinHandle<S
         let _ = stream.read_to_end(&mut buffer);
         String::from_utf8_lossy(&buffer).to_string()
     })
+}
+
+fn join_bytes_reader(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    handle.join().unwrap_or_default()
 }
 
 fn join_reader(handle: thread::JoinHandle<String>) -> String {
@@ -314,6 +448,16 @@ pub fn invocation_with(
     command: &str,
     shell: Shell,
     env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Invocation, ToolError> {
+    invocation_for(command, shell, env, false)
+}
+
+/// 与 [`invocation_with`] 相同，但可以按「是否在沙盒内」选择解释器。
+pub fn invocation_for(
+    command: &str,
+    shell: Shell,
+    env: &dyn Fn(&str) -> Option<String>,
+    isolated: bool,
 ) -> Result<Invocation, ToolError> {
     match shell {
         Shell::Bash => {
@@ -334,8 +478,14 @@ pub fn invocation_with(
             })
         }
         Shell::PowerShell => {
-            let executable = find_powershell_executable(env)
-                .ok_or_else(|| ToolError::new("未找到 PowerShell 可执行文件。"))?;
+            let executable = if isolated {
+                // 沙盒内只能用 Windows PowerShell 5.1：PowerShell 7 在 AppContainer 里
+                // 加载不出任何 cmdlet（连 `Write-Output` 都没有），真机已确认；5.1 完全正常。
+                find_sandboxed_powershell(env)
+            } else {
+                find_powershell_executable(env)
+            }
+            .ok_or_else(|| ToolError::new("未找到 PowerShell 可执行文件。"))?;
             let utf8_prefix = "$__OmniCrawlUtf8 = [System.Text.UTF8Encoding]::new($false); \
                                [Console]::InputEncoding = $__OmniCrawlUtf8; \
                                [Console]::OutputEncoding = $__OmniCrawlUtf8; \
@@ -388,6 +538,20 @@ pub fn find_powershell_executable(env: &dyn Fn(&str) -> Option<String>) -> Optio
     ["pwsh", "powershell"]
         .into_iter()
         .find_map(|name| which(name, env))
+}
+
+/// 沙盒内的 PowerShell：只用 `%SystemRoot%\System32\WindowsPowerShell1.0\powershell.exe`。
+///
+/// 不用 `pwsh`：PowerShell 7 在 AppContainer 里加载不出 cmdlet，连内置的 `Write-Output`
+/// 都报"无法识别"，而 Windows PowerShell 5.1 在同一容器里一切正常（真机核实）。
+pub fn find_sandboxed_powershell(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let system_root = env("SystemRoot").filter(|value| !value.trim().is_empty())?;
+    let candidate = PathBuf::from(system_root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    candidate.is_file().then_some(candidate)
 }
 
 /// `shutil.which` 的最小实现：按 PATH 找候选，Windows 上补常见可执行后缀。

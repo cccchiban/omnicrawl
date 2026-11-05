@@ -55,4 +55,13 @@ windows-sys = { version = "0.52", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # 沙盒：AppContainer profile 与 SID 派生（userenv）。
+    "Win32_Security_Isolation",
+    # 沙盒：给工作区与临时目录加容器 ACE（GetNamedSecurityInfoW / SetEntriesInAclW）。
+    "Win32_Security_Authorization",
+    # 沙盒：匿名管道承载子进程 stdout/stderr。
+    "Win32_System_Pipes",
+    # 沙盒：io::Error 包装 Win32 错误码。
+    "Win32_System_IO",
 ] }
+

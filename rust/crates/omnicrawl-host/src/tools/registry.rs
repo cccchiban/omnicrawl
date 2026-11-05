@@ -241,6 +241,35 @@ pub struct ToolRegistry {
     cancel: CancelToken,
 }
 
+/// 由 `[sandbox]` 段构造沙盒策略。
+///
+/// 配置读不出来时按**关闭**处理并留警告，不中断工具表构建：沙盒是增量能力，
+/// 不能因为它的配置写错就让整个 Agent 起不来。
+fn build_sandbox(
+    options: &RegistryOptions,
+    paths: &WorkspacePaths,
+    config_env: &ConfigEnvironment,
+) -> Arc<crate::sandbox::Sandbox> {
+    if let Some(sandbox) = options.sandbox.clone() {
+        return sandbox;
+    }
+    let temp_dir = paths.root().join(".omnicrawl").join(".agent_tmp");
+    match omnicrawl_config::features::sandbox::load_sandbox_config(config_env, None) {
+        Ok(config) => Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            paths.root().to_path_buf(),
+            temp_dir,
+        )),
+        Err(error) => {
+            eprintln!("[sandbox] 配置无法解析，已按关闭处理：{}", error.message());
+            Arc::new(crate::sandbox::Sandbox::disabled(
+                paths.root().to_path_buf(),
+                temp_dir,
+            ))
+        }
+    }
+}
+
 impl ToolRegistry {
     pub fn new(
         root: impl Into<PathBuf>,
@@ -387,13 +416,17 @@ impl ToolRegistry {
                 .collect(),
             None => specs,
         };
-        let commands = CommandRunner::new(
+        // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
+        // 不阻塞 Agent 启动。构造顺序在 `CommandRunner` 之前：它需要拿到策略。
+        let sandbox = build_sandbox(options, &paths, &config_env);
+        let commands = CommandRunner::with_sandbox(
             paths.root(),
             if command_timeout_seconds <= 0 {
                 DEFAULT_COMMAND_TIMEOUT_SECONDS
             } else {
                 command_timeout_seconds
             },
+            sandbox.clone(),
         );
         let monitors = match options.monitors.clone() {
             Some(monitors) => monitors,
@@ -416,32 +449,6 @@ impl ToolRegistry {
         let advisor = AdvisorOptions {
             workspace_root: paths.root().to_path_buf(),
             ..options.advisor.clone()
-        };
-        // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
-        // 不在这里报错中断工具表构建（沙盒是增量能力，不能因为它的配置坏了就让整个 Agent 起不来）。
-        let sandbox = match options.sandbox.clone() {
-            Some(sandbox) => sandbox,
-            None => {
-                let temp_dir = paths.root().join(".omnicrawl").join(".agent_tmp");
-                let config = omnicrawl_config::features::sandbox::load_sandbox_config(
-                    &config_env,
-                    None,
-                );
-                match config {
-                    Ok(config) => Arc::new(crate::sandbox::Sandbox::new(
-                        config,
-                        paths.root().to_path_buf(),
-                        temp_dir,
-                    )),
-                    Err(error) => {
-                        eprintln!("[sandbox] 配置无法解析，已按关闭处理：{}", error.message());
-                        Arc::new(crate::sandbox::Sandbox::disabled(
-                            paths.root().to_path_buf(),
-                            temp_dir,
-                        ))
-                    }
-                }
-            }
         };
         Ok(Self {
             paths,
@@ -790,8 +797,17 @@ impl ToolRegistry {
     }
 
     fn run_command(&self, arguments: &Map<String, Value>, shell: Shell) -> ToolResult {
-        // P0：dry-run 只做判定与记录，不改执行。真隔离在 P1/P3 落地后，
-        // 这条判定会变成"据此决定 grant/deny"，调用点不必再改。
+        // 真隔离目前只接 PowerShell：Git Bash 还需要 MSYS 运行时目录与用户级配置的
+        // 最小可读集合（设计文档 §17「已知限制」）。这里**明确拒绝**而不是悄悄用宿主身份
+        // 跑——后者会让人以为环境已经隔离。
+        if self.sandbox.isolates() && shell == Shell::Bash {
+            return command_result(
+                false,
+                "沙盒真隔离目前只覆盖 `powershell` 工具；`bash` 仍会以宿主身份运行，                 因此已拒绝执行。请改用 `powershell`，或把 `[sandbox] mode` 设为 off。"
+                    .to_string(),
+            );
+        }
+        // dry-run 只做判定与记录，不改执行；真隔离时判定用于日志，写由 ACL 兜底。
         let notice = if let Some(Value::String(command)) = arguments.get("command") {
             self.sandbox.dry_run_notice_for_command(command)
         } else {
@@ -1801,6 +1817,104 @@ mode = \"review\"
         // 记录也进了沙盒（`/sandbox` 与日志据此统计）。
         assert!(!sandbox.blocked_summary().is_empty());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真隔离：`powershell` 里读宿主用户目录被拒，工作区内可写，输出带隔离标记。
+    ///
+    /// 会真的创建 AppContainer 容器并改工作区 ACL，因此只在 Windows 上跑；
+    /// 验的是设计文档 §13 P1 的验收条件，不是内部实现。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_isolates_the_powershell_tool() {
+        // 不能落在 `%TEMP%`（在 `AppData` 下，容器读不到）——那正是沙盒要挡的地方。
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-appcontainer-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
+        let result = registry
+            .execute(&call(
+                "powershell",
+                json!({"command": "Set-Content -Path inside.txt -Value ok; Get-Content inside.txt"}),
+            ))
+            .expect("powershell 应当被本宿主处理");
+        assert!(
+            result.output.contains("[sandbox:appcontainer]"),
+            "{}",
+            result.output
+        );
+        assert!(result.ok, "工作区内必须能写：{}", result.output);
+
+        // 宿主用户目录在容器内不可见——这正是沙盒存在的理由。
+        let denied = registry
+            .execute(&call(
+                "powershell",
+                json!({"command": "Get-ChildItem C:/Users/Administrator -ErrorAction Stop | Out-Null; 'visible'"}),
+            ))
+            .expect("powershell 应当被本宿主处理");
+        assert!(
+            !denied.output.contains("visible"),
+            "宿主用户目录必须不可读：{}",
+            denied.output
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真隔离下 `bash` 必须明确拒绝：Git Bash 还没接入（P2），
+    /// 悄悄退回宿主身份会让人以为已经隔离。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_refuses_bash_instead_of_running_unescaped() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-bash-refusal-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let options = RegistryOptions {
+            sandbox: Some(Arc::new(crate::sandbox::Sandbox::new(
+                config,
+                root.clone(),
+                root.join(".omnicrawl").join(".agent_tmp"),
+            ))),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+        let result = registry
+            .execute(&call("bash", json!({"command": "echo hi"})))
+            .expect("bash 应当被本宿主处理");
+        assert!(!result.ok, "{}", result.output);
+        assert!(
+            result.output.contains("只覆盖 `powershell`"),
+            "{}",
+            result.output
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -545,3 +545,87 @@ cpu_rate_percent = 0
 2. **命令文本解析是启发式**：不解析 shell 语法，漏报/多报都可能。P1 之后真正的边界由
    ACL 保证，不依赖它；dry-run 只用来提前暴露"大概会拦什么"。
 3. **dry-run 记录只在宿主进程内存里**，不落盘，也不跨会话。`/sandbox` 的实时统计为此。
+
+## 17. P1 实施记录（2026-11-05）
+
+### 落地内容
+
+| 文件 | 内容 |
+| --- | --- |
+| `omnicrawl-host/src/sandbox/windows.rs`（新，约 1000 行） | AppContainer 容器与 SID、`STARTUPINFOEXW` + 裸 `CreateProcessW`、`SandboxChild`（自持 `hProcess`/Job，提供 `try_wait`/`kill`）、匿名管道与后台读取、Job 限额、最小环境重建、ACL 授予 |
+| `omnicrawl-host/src/sandbox/gate.rs`（新） | `IsolationGate`：关 / dry-run / 真隔离三态；真隔离准备失败时**拒绝执行**而不是回退宿主身份 |
+| `omnicrawl-host/src/sandbox.rs` → `sandbox/mod.rs` | 原 P0 判定逻辑不变，加上 `IsolationCache`：容器与 ACL 授予在同进程内只做一次 |
+| `omnicrawl-host/src/tools/command.rs` | 抽出 `run_isolated` 与共用的 `finish`；沙盒内解输出按 UTF-8 → GBK 顺序；沙盒内 PowerShell 选 5.1 |
+| `omnicrawl-host/src/tools/registry.rs` | 沙盒在 `CommandRunner` 之前构造并注入；新增端到端隔离用例 |
+| `omnicrawl-host/Cargo.toml` | `windows-sys` 补 `Win32_Security_Isolation`、`Win32_Security_Authorization`、`Win32_System_Pipes`、`Win32_System_IO` |
+
+### 真机验收（每一条都实测，不是推断）
+
+| 验收项 | 结果 |
+| --- | --- |
+| 容器内读 `C:\Windows\win.ini` | 成功 |
+| 容器内写工作区 | 成功 |
+| 容器内读 `C:\Users\Administrator` 目录内容 | `拒绝访问` |
+| 容器内读 `~/.ssh/id_rsa` | `拒绝访问` |
+| 容器内写宿主用户目录 | `拒绝访问` |
+| 容器内列 `C:\Windows\System32` 目录 | `拒绝访问`（能读具体文件，不能枚举目录） |
+| `echo` / 管道 / `dir` | 正常 |
+| 沙盒关闭时 | 输出与今天完全一致，无任何沙盒痕迹 |
+
+### 六个踩过的坑（都留了注释，避免下次重踩）
+
+1. **`STARTUPINFOEXW.StartupInfo.cb` 必须是 `sizeof(STARTUPINFOEXW)`（112），不是 `sizeof(STARTUPINFOW)`（104）**。
+   写成 104 时系统认为扩展区不可读，`CreateProcessW` 直接报 `ERROR_INVALID_PARAMETER`(87)。
+   反过来，`lpAttributeList` 必须是**整个 `STARTUPINFOEXW`** 的地址传进去——只传首字段
+   `StartupInfo` 会让属性列表整份失效，进程照样以宿主身份起来（最危险的静默失败）。
+2. **环境里必须有 `LOCALAPPDATA`**。AppContainer profile 落在 `%LOCALAPPDATA%\Packages`，
+   `CreateProcessW` 从调用方环境解析它；缺了就报 `ERROR_ENVVAR_NOT_FOUND`(203)。
+   这个错误码完全不指向真实原因，社区里有多个项目为此误判成"环境块构造错误"。
+3. **`PROC_THREAD_ATTRIBUTE_JOB_LIST` 在本机不可用**：`UpdateProcThreadAttribute` 返回成功，
+   但随后的 `CreateProcessW` 报 `ERROR_INVALID_HANDLE`(6)。改为创建后 `AssignProcessToJobObject`，
+   风险窗口是创建到 Assign 之间的几微秒（此时进程已受容器约束，只是还没受 Job 限额）。
+4. **ACL 授予必须先查再写**。给 `D:\` 这类卷根写一条可继承 ACE 会触发全卷继承传播，
+   实测一次 **108 秒**。加上 `GetEffectiveRightsFromAclW` 预检后，`prepare` 从 108 秒降到 **27 毫秒**。
+   判据只用 `FILE_TRAVERSE`(0x20) 与 `FILE_READ_ATTRIBUTES`(0x80)，`SYNCHRONIZE`(0x100000)
+   常一并返回但不是遍历的必要条件。
+5. **PowerShell 7 在 AppContainer 里不可用**：它能启动、能报版本号，但**加载不出任何 cmdlet**，
+   连内置的 `Write-Output` 都报"无法识别"。同一容器里 `Windows PowerShell 5.1` 完全正常。
+   因此沙盒内的 `powershell` 工具固定用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`。
+   症状极具迷惑性：表现为"脚本里每个命令都不存在"，而不是权限错误。
+6. **输出字节不能提前按 UTF-8 有损转换**。沙盒进程的 stdout 是管道，程序按控制台代码页
+   （中文系统 936）写字节；先 `from_utf8_lossy` 会把本来能还原的 GBK 字节变成替换字符。
+   现在管道保留原始字节，读取时先严格 UTF-8、失败再 GBK。
+
+### 性能
+
+| 场景 | 耗时 |
+| --- | --- |
+| 容器与 ACL 准备（首次，含祖先链预检） | 27 ms |
+| 之后每次 `cmd.exe` 命令 | 40 ms（其中进程创建 3 ms） |
+| 之后每次 `powershell.exe` 命令 | 1.2–2.0 s（其中 5.1 冷启动约 1 s） |
+
+ACL 授予是**幂等**的：首次之后 `can_traverse` 直接放行，不再改 DACL。
+
+### 验证
+
+- `cargo test -p omnicrawl-host --lib`：**579 通过 / 1 失败**。失败项
+  `tools::windows::control::tests::arguments_are_validated_before_calling_powershell`
+  是既有基线失败（无效窗口句柄 42），与沙盒无关，单独复跑可复现。
+- 新增 `tools::registry::tests::appcontainer_isolates_the_powershell_tool`：端到端走
+  `ToolRegistry::execute("powershell")`，验隔离标记、工作区可写、宿主用户目录不可枚举，3.7 秒。
+- `cargo test -p omnicrawl-commands`：69 通过。`cargo test -p omnicrawl-config --lib`：52 通过。
+- `cargo clippy -p omnicrawl-host --lib`：沙盒相关代码零告警；三个新文件 `rustfmt --check` 通过。
+
+### 已知限制（P1 的本分）
+
+1. **网络能力为 0**：沙盒内完全不能出网，回环也不行。回环代理是 P3，在它之前
+   "沙盒内不能联网"是清晰且安全的降级。
+2. **`bash` 工具暂不走沙盒**：Git Bash 装在 `C:\Program Files\Git`，容器可读，但它还需要
+   `/tmp`、`/usr/bin` 等一整套 MSYS 运行时目录与用户级配置；这属于 P2 的「解释器最小可读集合」。
+   现在 `bash` 仍以宿主身份运行——**这意味着沙盒目前只对 `powershell` 生效**，
+   必须让用户知道，不能让人以为全工具都已隔离。
+3. **卷根等已可遍历的祖先不会被改 DACL**，因此容器对它们的遍历权依赖系统默认配置
+   （`Authenticated Users`/`Users` 一般已有）。若某台机器上祖先链不可遍历且不允许改 DACL，
+   该工作区会启动失败并报出具体路径。
+4. **容器按「用户 + 工作区」派生**，同一工作区的多次启动复用同一容器与同一批 ACE；
+   ACE 不会在退出时撤销（它们对容器本身无害，且下次启动还要用）。
