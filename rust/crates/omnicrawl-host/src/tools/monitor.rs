@@ -20,8 +20,9 @@ use sha2::{Digest, Sha256};
 use omnicrawl_controllers::shared::MAX_TOOL_TIMEOUT_SECONDS;
 
 use super::arguments::{limited_int, optional_text};
-use super::command::{invocation, CommandOutcome, Shell};
+use super::command::{invocation_for, invocation_for_isolation, CommandOutcome, Shell};
 use super::error::ToolError;
+use super::registry::BASH_UNAVAILABLE_IN_SANDBOX;
 use crate::process_control::{
     configure_process_group, kill_process_tree_by_pid, terminate_process_tree, KillOnCloseJob,
 };
@@ -165,6 +166,65 @@ struct Task {
     /// 句柄随任务存活，任务终态或被显式停止时取出关闭；`Option` 是为了表达
     /// 「已交出」与「尚未纳入」两种情况——与 Python `ManagedMonitor.job_handle` 同义。
     job: Option<KillOnCloseJob>,
+    /// 沙盒任务的终止句柄：进程已交给等待线程，停止路径靠它终止。
+    #[cfg(windows)]
+    terminator: Option<crate::sandbox::Terminator>,
+    /// 本任务是否在沙盒里跑（展示与终止路径都要区分）。
+    isolated: bool,
+}
+
+/// 后台任务的进程本体：宿主身份（`std::process::Child`）或容器身份（`SandboxChild`）。
+///
+/// 两条路径的等待与终止方式不同：前者用 `Child::wait` 与 PID 回收，后者没有
+/// `Child` 可用（`PROCESS_INFORMATION` 无法构造 `Child`），靠 Job 句柄与复制出的
+/// `Terminator` 终止。
+enum Running {
+    Host(Child),
+    #[cfg(windows)]
+    Sandbox(crate::sandbox::SandboxChild),
+}
+
+impl Running {
+    fn pid(&self) -> u32 {
+        match self {
+            Self::Host(child) => child.id(),
+            #[cfg(windows)]
+            Self::Sandbox(child) => child.id(),
+        }
+    }
+
+    /// 等退出码：沙盒侧用轮询（`try_wait` 已含 `STILL_ACTIVE` 的窗口处理）。
+    fn wait(&mut self) -> i32 {
+        match self {
+            Self::Host(child) => child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(-1),
+            #[cfg(windows)]
+            Self::Sandbox(child) => loop {
+                if let Some(code) = child.try_wait() {
+                    break code as i32;
+                }
+                thread::sleep(Duration::from_millis(50));
+            },
+        }
+    }
+
+    /// 回收整棵进程树并等它退出。
+    fn terminate(&mut self, job: Option<KillOnCloseJob>) {
+        match self {
+            Self::Host(child) => terminate_process_tree(child, job, true),
+            #[cfg(windows)]
+            Self::Sandbox(child) => {
+                // `SandboxChild::kill` 走它自己的 kill-on-close Job，整棵树一起回收。
+                child.kill();
+                while child.try_wait().is_none() {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
 }
 
 struct State {
@@ -185,6 +245,10 @@ struct Inner {
     root: PathBuf,
     state: Mutex<State>,
     wake: Condvar,
+    /// 沙盒策略：未注入时按关闭处理，后台命令以宿主身份跑。
+    ///
+    /// 单独一个锁而不是塞进 `State`：`start` 起进程时要长时间持锁会阻塞 `poll`。
+    sandbox: Mutex<Option<Arc<crate::sandbox::Sandbox>>>,
 }
 
 /// 启动、轮询与终止后台命令；实例随宿主存活，进程随实例关闭被回收。
@@ -226,8 +290,28 @@ impl MonitorManager {
                     interrupted: BTreeSet::new(),
                 }),
                 wake: Condvar::new(),
+                sandbox: Mutex::new(None),
             }),
         }
+    }
+
+    /// 接上沙盒策略：之后启动的后台命令按同一套隔离规则执行。
+    ///
+    /// 工具表重建会复用既有实例（正在跑的任务不能丢），所以这里用 setter 而不是构造参数。
+    pub fn use_sandbox(&self, sandbox: Arc<crate::sandbox::Sandbox>) {
+        *self
+            .inner
+            .sandbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sandbox);
+    }
+
+    fn sandbox(&self) -> Option<Arc<crate::sandbox::Sandbox>> {
+        self.inner
+            .sandbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// 回合归属：本回合内启动的后台任务在该回合取消时被回收。
@@ -405,15 +489,93 @@ impl MonitorManager {
 
         // 先占名额再起进程：并发 start 不能同时通过容量检查。
         let scope = self.reserve_slot()?;
-        let invocation = match invocation(&command, shell) {
+        // 沙盒真隔离：与 `bash`/`powershell` 同一套规则。`bash` 在容器里起不来
+        // （MSYS 要打开 `NUL`，AppContainer 无权限），因此同样直接拒绝而不是退回宿主。
+        let plan = match self.sandbox() {
+            Some(sandbox) => {
+                let gate = crate::sandbox::gate::IsolationGate::new(sandbox);
+                if gate.isolates() && shell == Shell::Bash {
+                    self.release_slot();
+                    return Err(ToolError::coded(
+                        BASH_UNAVAILABLE_IN_SANDBOX.to_string(),
+                        "BASH_UNAVAILABLE_IN_SANDBOX",
+                        false,
+                    ));
+                }
+                match gate.plan() {
+                    Ok(plan) => Some(plan),
+                    Err(error) => {
+                        // 沙盒准备失败时不放行到宿主身份：能跑但没隔离比跑不了更危险。
+                        self.release_slot();
+                        return Err(ToolError::coded(
+                            format!("沙盒无法启用，后台命令未执行：{error}"),
+                            "SANDBOX_UNAVAILABLE",
+                            false,
+                        ));
+                    }
+                }
+            }
+            None => None,
+        };
+        let isolated = matches!(
+            plan,
+            Some(crate::sandbox::gate::Plan::Isolated(_))
+        );
+        let invocation = match plan.as_ref() {
+            #[cfg(windows)]
+            Some(crate::sandbox::gate::Plan::Isolated(isolation)) => {
+                invocation_for_isolation(
+                    &command,
+                    shell,
+                    &|name| std::env::var(name).ok(),
+                    isolation,
+                )
+            }
+            _ => invocation_for(&command, shell, &|name| std::env::var(name).ok(), false),
+        };
+        let invocation = match invocation {
             Ok(invocation) => invocation,
             Err(error) => {
                 self.release_slot();
                 return Err(error);
             }
         };
-        let mut child = match spawn_background(&self.inner.root, &invocation.args) {
-            Ok(child) => child,
+        // 两条派生路径：宿主身份用 `std::process::Child`，容器身份用 `SandboxChild`。
+        // 输出统一装箱成 `Read`：两条路径的读端类型不同，而 `spawn_reader` 只需要能读。
+        type Piped = Option<Box<dyn Read + Send>>;
+        let spawned: std::io::Result<(Running, Piped, Piped, Option<crate::sandbox::Terminator>)> =
+            match plan.as_ref() {
+                #[cfg(windows)]
+                Some(crate::sandbox::gate::Plan::Isolated(isolation)) => {
+                    isolation.spawn_streamed(&invocation.args).map(|streamed| {
+                        let crate::sandbox::Streamed {
+                            child,
+                            stdout,
+                            stderr,
+                            terminator,
+                        } = streamed;
+                        (
+                            Running::Sandbox(child),
+                            Some(Box::new(stdout) as Box<dyn Read + Send>),
+                            Some(Box::new(stderr) as Box<dyn Read + Send>),
+                            Some(terminator),
+                        )
+                    })
+                }
+                _ => spawn_background(&self.inner.root, &invocation.args).map(|mut child| {
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+                    (Running::Host(child), stdout, stderr, None)
+                }),
+            };
+        let (mut running, stdout, stderr, terminator) = match spawned {
+            Ok(value) => value,
             Err(error) => {
                 self.release_slot();
                 return Err(ToolError::new(format!("后台命令启动失败：{error}")));
@@ -423,10 +585,13 @@ impl MonitorManager {
         // 与 Python `_assign_process_to_kill_on_close_job` 一致：后台进程树纳入
         // kill-on-close Job，宿主退出（含崩溃）时由操作系统递归回收；拿不到 Job
         // （例如当前进程已在不可嵌套的 Job 里）时退回按 PID / 进程组回收。
-        let job = KillOnCloseJob::assign(&child);
-        let pid = child.id();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        // 沙盒路径不用这里：它自己的 Job 已由 `Isolation` 建好并纳入。
+        let job = match &running {
+            Running::Host(child) => KillOnCloseJob::assign(child),
+            #[cfg(windows)]
+            Running::Sandbox(_) => None,
+        };
+        let pid = running.pid();
         let monitor_id = self.next_id(&command, pid);
 
         {
@@ -435,7 +600,7 @@ impl MonitorManager {
             if state.closed {
                 // 进程在 close 与 spawn 之间启动时必须立即回收，不能变成孤儿。
                 drop(state);
-                terminate_process_tree(&mut child, job, true);
+                running.terminate(job);
                 return Err(ToolError::new("Agent 已关闭，后台任务已终止。"));
             }
             let buffer_limit = state.buffer_limit;
@@ -453,11 +618,17 @@ impl MonitorManager {
                 next_sequence: 1,
                 dropped_events: 0,
                 job,
+                #[cfg(windows)]
+                terminator,
+                isolated,
             };
             record_event(
                 &mut task,
                 "system",
-                &format!("已启动，shell={shell_text}。"),
+                &format!(
+                    "已启动，shell={shell_text}{}。",
+                    if isolated { "，[sandbox:appcontainer]" } else { "" }
+                ),
                 buffer_limit,
             );
             state.tasks.insert(monitor_id.clone(), task);
@@ -486,7 +657,7 @@ impl MonitorManager {
             readers += 1;
         }
         drop(done_sender);
-        self.spawn_waiter(monitor_id.clone(), child, done_receiver, readers);
+        self.spawn_waiter(monitor_id.clone(), running, done_receiver, readers);
 
         Ok(CommandOutcome {
             ok: true,
@@ -565,9 +736,13 @@ impl MonitorManager {
     }
 
     fn list(&self) -> CommandOutcome {
-        let rows: Vec<MonitorSnapshot> = {
+        let rows: Vec<(MonitorSnapshot, bool)> = {
             let state = self.state();
-            state.tasks.values().map(snapshot_of).collect()
+            state
+                .tasks
+                .values()
+                .map(|task| (snapshot_of(task), task.isolated))
+                .collect()
         };
         if rows.is_empty() {
             return CommandOutcome {
@@ -576,13 +751,19 @@ impl MonitorManager {
             };
         }
         let mut lines = vec!["后台任务：".to_string()];
-        for row in rows {
+        for (row, isolated) in rows {
             let suffix = match row.exit_code {
                 Some(exit_code) => format!("，退出码：{exit_code}"),
                 None => String::new(),
             };
+            // 在沙盒里跑的后台任务要能一眼看出来，否则它与宿主任务无从区分。
+            let isolation = if isolated {
+                "，[sandbox:appcontainer]"
+            } else {
+                ""
+            };
             lines.push(format!(
-                "- {}：{}，shell={}，当前游标：{}{suffix}",
+                "- {}：{}，shell={}，当前游标：{}{suffix}{isolation}",
                 row.monitor_id, row.status, row.shell, row.next_cursor
             ));
         }
@@ -645,7 +826,7 @@ impl MonitorManager {
 
     /// 置位停止请求并回收进程树；`wait` 为真时等到任务落入终态。
     fn stop_task(&self, monitor_id: &str, reason: &str, wait: bool) -> Result<(), ToolError> {
-        let (pid, job) = {
+        let (pid, job, terminator) = {
             let mut state = self.state();
             let buffer_limit = state.buffer_limit;
             let task = state
@@ -660,14 +841,25 @@ impl MonitorManager {
             let pid = task.pid;
             // 取出 Job 句柄：停止后句柄归还调用点关闭，终态路径不再重复处理。
             let job = task.job.take();
-            (pid, job)
+            #[cfg(windows)]
+            let terminator = task.terminator.take();
+            (pid, job, terminator)
         };
         match job {
             // 纳入了 Job：关闭句柄即递归终止整棵进程树（与 Python `_stop_task` 取出
             // job_handle 交给 `terminate_process_tree` 同义）。
             Some(job) => job.close(),
             // 未纳入 Job：退回按 PID（Unix 下按进程组）回收。
-            None => kill_process_tree_by_pid(pid),
+            None => {
+                #[cfg(windows)]
+                match terminator {
+                    // 沙盒任务：进程已在 `Isolation` 的 Job 里，用复制出的句柄终止。
+                    Some(terminator) => terminator.kill(),
+                    None => kill_process_tree_by_pid(pid),
+                }
+                #[cfg(not(windows))]
+                kill_process_tree_by_pid(pid);
+            }
         }
         if !wait {
             return Ok(());
@@ -706,18 +898,13 @@ impl MonitorManager {
     fn spawn_waiter(
         &self,
         monitor_id: String,
-        child: Child,
+        mut child: Running,
         done: mpsc::Receiver<()>,
         readers: usize,
     ) {
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
-            let mut child = child;
-            let exit_code = child
-                .wait()
-                .ok()
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
+            let exit_code = child.wait();
             // 先等读取线程收尾，终态事件才不会插到尚未落缓冲的输出前面；孤儿进程持有
             // 管道写端时最多等 5 秒，与 Python 的 `reader.join(timeout=5)` 一致。
             let deadline = Instant::now() + READER_JOIN_TIMEOUT;
@@ -825,6 +1012,11 @@ impl Inner {
         // 任务已到终态：释放 Job 句柄（与 Python `_wait_for_exit` 里的
         // `_close_windows_handle(job_handle)` 一致）。进程已退出，关闭句柄无副作用。
         task.job = None;
+        // 沙盒任务的终止句柄同理：进程已退出，留着只是白占一个句柄。
+        #[cfg(windows)]
+        {
+            task.terminator = None;
+        }
         drop(state);
         self.wake.notify_all();
     }

@@ -223,6 +223,10 @@ AppContainer 不给网络能力时，**连本地回环都被禁**（这是 Windo
 这点是安全的：失败而非泄漏。用户如果确实需要非 HTTP 协议（如 ssh），走 §7.4 的
 "显式授予能力"路径，那是**整段会话级**的授权，粒度更粗但可控。
 
+实测补充（§20.4）：还有一类客户端不是"不走代理"，而是**走错了代理**——.NET 的
+`GetSystemWebProxy()` 读宿主用户级 WinINET 设置，而回环豁免按容器粒度、无法限定端口，
+于是它会绕过我们的判定直连用户自己的代理。这是本方案的已知边界，已决定接受（§20.1）。
+
 ### 7.3 审批决策顺序（代理内）
 
 ```
@@ -447,13 +451,14 @@ cpu_rate_percent = 0
 
 ## 13. 实现切分（建议顺序）
 
-> **进度（2026-11-05）**：P0 已完成。见 §16「P0 实施记录」。
+> **进度（2026-11-05）**：P0、P1、P2、P3 已完成，P3 以方案 B 上线（保留代理、接受应用层
+> 绕过）。见 §16–§20 的实施记录。
 
 | 阶段 | 内容 | 可独立验证 |
 | --- | --- | --- |
 | P0 | `[sandbox]` 配置解析 + `/sandbox` 命令 + dry-run 判定（不真隔离） | 配置改动立即生效，日志能看到"本会拦" |
 | P1 | 新建 `sandbox/win.rs`：容器身份 + `STARTUPINFOEX` + 裸 `CreateProcessW` 封装；Job 限额；环境重建。先只接 `powershell` 一个工具 | 沙盒内 `whoami /groups` 能看到 package SID；读 `~/.ssh` 失败；`echo` 与管道能用 |
-| P2 | 文件 ACL 授予（工作区/`.agent_tmp`/专用 TEMP）+ 解释器最小可读集合 | 沙盒内 `npm install`、`python -c` 能跑 |
+| P2 | ~~文件 ACL 授予~~（P1 已做）+ 解释器发现与 PATH 重建 + 如实报告不可达目录 | 沙盒内 `node`/`python`/`npm run` 能跑（需显式 `readable`）；`bash`/`git` 因 NUL 设备不可用 |
 | P3 | 回环代理 + `HTTP_PROXY` 注入 + 审批桥接（含 §7.6 的豁免三纪律） | 沙盒内 `curl https://example.com` 触发审批；拒绝时明确报错 |
 | P4 | `bash`/`monitor`/`git` 全部接上；GUI 工具与 `computer_use` 拒绝 | 回归既有编排测试 |
 | P5 | allowlist/deny 规则、会话批准缓存、日志与 `/sandbox` 全量信息 | |
@@ -540,6 +545,9 @@ cpu_rate_percent = 0
 
 ### 已知限制（P0 阶段的本分）
 
+> 以下三条是 P0 当时的实况。第 1 条已在 P1 落地（真隔离执行路径）；P3 之后网络形态
+> 见 §20.7，`/sandbox` 的输出也已同步更正。
+
 1. **`mode = "appcontainer"` 目前等同 dry-run**：执行路径未实现，`/sandbox` 会显式说明这一点，
    避免让人以为隔离已生效。
 2. **命令文本解析是启发式**：不解析 shell 语法，漏报/多报都可能。P1 之后真正的边界由
@@ -588,10 +596,11 @@ cpu_rate_percent = 0
    实测一次 **108 秒**。加上 `GetEffectiveRightsFromAclW` 预检后，`prepare` 从 108 秒降到 **27 毫秒**。
    判据只用 `FILE_TRAVERSE`(0x20) 与 `FILE_READ_ATTRIBUTES`(0x80)，`SYNCHRONIZE`(0x100000)
    常一并返回但不是遍历的必要条件。
-5. **PowerShell 7 在 AppContainer 里不可用**：它能启动、能报版本号，但**加载不出任何 cmdlet**，
-   连内置的 `Write-Output` 都报"无法识别"。同一容器里 `Windows PowerShell 5.1` 完全正常。
-   因此沙盒内的 `powershell` 工具固定用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`。
-   症状极具迷惑性：表现为"脚本里每个命令都不存在"，而不是权限错误。
+5. **PowerShell 7 曾整体不可用，根因已在 P4 查明并修掉**：当时它能启动、能报版本号，但
+   加载不出任何 cmdlet，连内置的 `Write-Output` 都报"无法识别"，同一容器里 5.1 完全正常。
+   真正原因是**系统盘根 `C:\` 在容器内不可遍历**（工作区在别的盘时 `grant_ancestors`
+   覆盖不到它），pwsh 因此建不起 `C:` 驱动器、自己的内置模块全部导入失败；5.1 不依赖
+   这一步所以没事。修法与完整证据见 §22。沙盒内现在优先用 7.*，探测不通才回退 5.1。
 6. **输出字节不能提前按 UTF-8 有损转换**。沙盒进程的 stdout 是管道，程序按控制台代码页
    （中文系统 936）写字节；先 `from_utf8_lossy` 会把本来能还原的 GBK 字节变成替换字符。
    现在管道保留原始字节，读取时先严格 UTF-8、失败再 GBK。
@@ -629,3 +638,412 @@ ACL 授予是**幂等**的：首次之后 `can_traverse` 直接放行，不再�
    该工作区会启动失败并报出具体路径。
 4. **容器按「用户 + 工作区」派生**，同一工作区的多次启动复用同一容器与同一批 ACE；
    ACE 不会在退出时撤销（它们对容器本身无害，且下次启动还要用）。
+
+## 18. P2 实施记录（2026-11-05）
+
+### 落地内容
+
+| 文件 | 内容 |
+| --- | --- |
+| `sandbox/runtime.rs`（新） | 解释器目录发现：按路径特征认领 `node`/`npm`/`python`，剔除嵌套项与全局前缀目录 |
+| `sandbox/windows.rs` | `has_access`（显式 ACE 检查）、`prepare_runtimes`（只判定不写 ACL）、`sandboxed_path`（重建 PATH）、`is_system_path` 修正 |
+| `tools/registry.rs` | `bash` 拒绝文案改为实测结论；新增解释器可达性与 PATH 两条端到端用例 |
+
+### 真机结论（每一条都实测，不是推断）
+
+| 探针 | 结果 |
+| --- | --- |
+| `node -e`（`Program Files`） | 授权后**可用**，能写工作区 |
+| `npm run <script>` | **可用**（`npm install --offline` 也正常，只差网络） |
+| `python x.py` / `python -m pip -V` | **可用**（授权其目录后） |
+| `git --version` / `git status` | **不可用**：`could not open '/dev/null'` |
+| `bash -c echo` / `bash --version` | **不可用**：启动即 `0xC0000142`（退出码 -1073741502） |
+| `python -m venv` | **部分不可用**：`ensurepip` 失败（见下） |
+| 宿主用户目录 / `~/.ssh` | 仍**拒绝访问**（隔离未被削弱） |
+
+### 五个必须记住的坑
+
+1. **`GetEffectiveRightsFromAclW` 对 AppContainer SID 会说谎**。它对
+   `C:\Program Files\nodejs` 返回"容器可读"，容器内实际是「拒绝访问」。原因是它只按 ACE
+   位掩码求和，不走受限令牌的双 SID 链访问检查。判可读性必须自己遍历 DACL 找针对
+   package SID 的显式允许 ACE（`GetAce` + 比对 SID）。
+2. **`SetNamedSecurityInfoW` 改一次 DACL 就重算整棵子树的继承**，代价与规模成正比：
+   `C:\Program Files\nodejs`（0.29 万项）0.26 秒、`D:\ProgramData\Anaconda3`（22 万项）
+   **18.4 秒**。即便写入内容与原 DACL 完全相同也照付。把解释器目录直接授成可读是陷阱——
+   第一版就是这么写的，首次准备 **413 秒**。
+3. **"先数目录有多大再决定"同样不行**：全树遍历 22 万项本身要几十秒。
+   P2 最终只做一次有效权限查询（约 37µs），读不到就如实报告并指向 `[sandbox.fs] readable`。
+4. **`NUL` 设备在 AppContainer 内完全打不开**（`CreateFileW` → `ERROR_ACCESS_DENIED` 5），
+   读 DACL 也失败（status 161）。所有 MSYS/Cygwin 程序（`bash`、`git`、`ls`…）都在
+   DLL 初始化阶段就要打开 `/dev/null`，因此**这不是配置问题、无法靠授权目录解决**。
+   `git` 更隐蔽：`git --version` 成功，但任何真正干活的子命令都失败。
+5. **PATH 必须按容器实际可读重建**。继承宿主 PATH 会让 `npm.cmd` 这类批处理包装在解析
+   阶段失败，报"不是内部或外部命令"——与真正的根因（某个目录不可访问）毫无关系。
+
+### 与设计稿的偏离（如实记录）
+
+- §6.2 曾设想"运行时目录授成读执行"，P2 实测后**改为只在配置显式声明时才授权**
+  （`[sandbox.fs] readable`）。自动授权任何用户目录都会引入几十秒的启动代价，
+  且 `AppData` 祖先一旦放开就把隔离拆了。
+- §13 的 P2 验收"`npm install`、`python -c` 能跑"：`python -c` 与本机 `npm run` 已达成，
+  但**联网的 `npm install` 仍待 P3**（现在只会因无网络失败，不是权限问题）。
+
+### 验证
+
+- `appcontainer` 四条端到端用例全通过；host 全量 589 通过 / 2 失败，两个失败均为既有基线
+  （无效窗口句柄 42、`prompt::templates_dir` 找不到模板目录——已用 `git stash` 在 P1 提交上复现）。
+- 准备耗时：首次 14.7 ms（无授权）/ 195 ms（需写一次 `nodejs` 的 ACE），此后复用 0.6 ms 量级。
+- 新增文件 `rustfmt --check` 通过，`cargo clippy` 对沙盒代码零告警。
+
+## 19. P3 实施记录：`bash` 的替代路径（2026-11-05）
+
+### 目标与结论
+
+P2 把 `bash` 在沙盒内**明确拒绝**了，但只留下一句"请改用 powershell"——模型没有迁移依据，
+会把 bash 脚本原样搬进 `powershell` 工具，然后接连撞墙。本节做的是**让替代路径真的可用**。
+
+结论：Windows PowerShell 5.1 足以承担 `bash` 的日常职责，但前提是先修掉四个缺陷；
+四个缺陷里三个是**本次实测才暴露的真实 bug**，不是能力不足。
+
+### 修掉的四个缺陷
+
+| # | 现象 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `Remove-Item` / `rmdir /s` / `Directory.Delete` 一律「访问被拒绝」，连自己刚建的目录都删不掉 | 授权掩码 `FULL_CONTROL_FOR_SANDBOX` 只含 `GENERIC_READ\|WRITE\|EXECUTE`，**不含 `DELETE`**；`FILE_GENERIC_WRITE` 覆盖写数据与追加，不覆盖删除 | 掩码补 `DELETE` + `FILE_DELETE_CHILD` |
+| 2 | `$env:FOO` 与 `Get-ChildItem Env:` 报「已添加了具有相同键的项」 | 环境白名单里 `WINDIR` 与 `windir` 各列一次；Windows 变量名大小写不敏感，PowerShell 建 `Env:` 驱动器时键冲突 | 删重复项，并在组装环境块时按大小写不敏感去重 |
+| 3 | `npm --version` 报 `Test-Path : Access is denied` | `npm.ps1` 用 `npm-prefix.js` 的输出（`%APPDATA%\npm`，容器不可读）做 `Test-Path`；wrapper 的 `$ErrorActionPreference = 'Stop'` 把这次**无害探测**放大成致命错误 | `npm_config_prefix` 指向工作区内 `npm-global`（并预建目录、加入 PATH） |
+| 4 | 执行 `.cmd` 包装（npm 等）报 `AuthorizationManager 检查失败` | AppContainer 读不到执行策略注册表，策略落到 Restricted | **仅沙盒内**启动参数补 `-ExecutionPolicy Bypass`；宿主侧不动用户的执行策略 |
+
+缺陷 1 影响最大：它让工作区变成只增不减，删构建产物这种最日常的动作直接失败，
+而报错只说"访问被拒绝"，完全不指向权限位。
+
+### bash → PowerShell 对照（已逐条实测通过）
+
+`tools/registry.rs::BASH_UNAVAILABLE_IN_SANDBOX` 会把这张表交给模型。19 条映射全部在
+真机沙盒内跑通（`cat/head/tail/ls/grep/find/append/env/&&/管道/test -f/mkdir -p/rm -rf/
+sed -i/node/npm/python/pip/$?`）。
+
+| bash | PowerShell |
+| --- | --- |
+| `cat f` / `head -n N f` / `tail -n N f` | `Get-Content f`（`-TotalCount N` / `-Tail N`） |
+| `ls` | `Get-ChildItem` |
+| `grep pat f` | `Select-String -Path f -Pattern pat` |
+| `find . -name x` | `Get-ChildItem -Recurse -Filter x` |
+| `echo a >> f` | `Add-Content -Path f -Value a` |
+| `FOO=1 cmd` | `$env:FOO='1'; cmd` |
+| `cmd && next` | `cmd; if ($LASTEXITCODE -eq 0) { next }` |
+| `$?` | `$LASTEXITCODE`（外部程序）/ `$?`（cmdlet） |
+| `test -f f` | `Test-Path f` |
+| `mkdir -p d` | `New-Item -ItemType Directory -Force d` |
+| `rm -rf d` | `Remove-Item -Recurse -Force d` |
+| `sed -i 's/a/b/' f` | `(Get-Content f) -replace 'a','b' \| Set-Content f` |
+
+沙盒内 `node`、`npm`、`python`、`pip` 实测可用（需其安装目录已在 `[sandbox.fs] readable`
+或位于容器的默认可读系统目录）。`npm run` 需要工作区有 `package.json`。
+
+### 为什么不接 Git Bash / 改用别的 shell
+
+`bash` 与 `git` 的不可用由 `NUL` 设备决定（P2 已论证），换授权、换 PATH、换包装都没用。
+可选路径只有三条，各自的问题：
+
+- **Git Bash**：DLL 初始化阶段即 `0xC0000142`，无解。
+- **WSL**：仍是 `bash`，同样要 `/dev/null`；而且把执行面搬出了 Windows 容器，
+  反而扩大隔离边界。
+- **PowerShell 7（pwsh）**：曾经「同一容器内加载不出任何 cmdlet」，根因是系统盘根不可遍历，
+  P4 已查明并修掉（§22）。现在沙盒优先用 7.*，探测不通才回退 5.1。
+
+### 验证
+
+- 19 条 bash→PowerShell 映射在 AppContainer 内**全部通过**（一次性探针，验证后移除）。
+- 新增用例：`appcontainer_can_delete_what_it_created`（删除自己创建的内容）、
+  `environment_has_no_case_insensitive_duplicates`、`dedupe_vars_keeps_the_first_occurrence`、
+  `npm_prefix_points_inside_the_workspace`、`only_the_sandbox_adds_execution_policy_bypass`、
+  `bash_refusal_teaches_the_powershell_equivalents`。
+- host 全量 **596 通过 / 2 失败**，两个失败仍为既有基线（`prompt::templates_dir`、
+  无效窗口句柄 42），所在文件本次未改动（`git diff` 为空）。
+- 改动文件 `rustfmt --check` 通过，clippy 零告警。
+- 隔离边界复验：宿主用户目录、`~/.ssh`、工作区外写入仍全部拒绝。
+
+## 20. P3 实施记录：回环代理路线（2026-11-05）
+
+### 20.1 决策与结论
+
+路线技术上可行，但在 PowerShell/.NET 客户端上存在**无法在本层关闭**的绕过口。
+2026-11-05 的选择是 **方案 B：保留代理，接受应用层绕过，并把语义写清楚**。
+
+因此本节的定位是「已知边界的实施记录」，不是「待修的缺陷」。选择 B 的理由：
+
+- 方案 A（完全断网）语义最清晰，但会让 `npm install` / `pip install` 只能在沙盒外执行，
+  沙盒的实际价值大幅缩水。
+- 方案 C（WFP 内核过滤）是唯一能真正封闭的方案，但属 §4.2 明确排除的重型工作。
+- 保留代理的代价是「.NET/WinINET 客户端会绕过判定」。这个代价可以接受的前提是
+  **用户知情**，所以 §20.4 的绕过链条必须写在文档、`/sandbox` 输出与配置注释里。
+
+一句话边界：**沙盒的网络约束是应用层代理级，不是内核级。**
+需要严格不出网时用 `policy = "offline"`（此时连代理都不起）。
+
+### 20.2 三条实测确证的事实
+
+1. **无网络能力时连回环都被拒**：`CapabilityCount = 0` 的容器连宿主回环监听超时。
+2. **只加回环豁免即可连通**（不加任何网络能力）：这是最严的组合——容器内核层出不了网，
+   唯一通路是宿主代理。绕过代理的裸 `socket()` 是**失败**而非泄漏（实测裸 IP 直连被拒）。
+3. **`CheckNetIsolation` 必须用 `-p=<SID>`**，不能用 `-n=<容器名>`：`-n` 要的是**包名**
+   （形如 `microsoft.net.native.framework.2.1_8wekyb3d8bbwe`），传 AppContainer 名一律返回
+   87（参数错误）。容器 SID 形如 `S-1-15-2-...`，由 `DeriveAppContainerSidFromAppContainerName`
+   给出，本实现新增 `Isolation::sid_string()` 暴露它。
+
+### 20.3 已实现部分（保留）
+
+| 位置 | 内容 |
+| --- | --- |
+| `sandbox/proxy.rs` | 回环 HTTP 代理：`CONNECT` 隧道 + 绝对 URI 转发，判定统一走 `Sandbox::check_target`，`ask` 无审批通道时按拒绝处理，会话内记住已批准目标 |
+| `sandbox/windows.rs` | `set_capabilities`（`DeriveCapabilitySidsFromName` + `SID_AND_ATTRIBUTES`）、`exempt_loopback`（按 SID 加豁免，守卫析构时撤销）、`set_proxy`（注入 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`） |
+| `sandbox/mod.rs` | `ensure_network`：`offline` 或 dry-run 不起代理；豁免失败即降级断网；`NetStatus` 如实描述形态 |
+| `sandbox/gate.rs` | `plan()` 在真隔离分支调用 `ensure_network`，网络通道与容器身份一起就绪 |
+| `tools/command.rs` | 沙盒内补 `-ExecutionPolicy Bypass`；沙盒内把 `DefaultWebProxy` 指向 `HTTP_PROXY` |
+
+`gate.rs` 的接法是「尽力而为、失败即关闭」：`ensure_network` 不返回错误，豁免或代理拉不
+起来时它把形态降级为 `NetStatus::Failed` 且**不注入代理变量**，命令照常在容器里跑，只是
+出不去。把这种失败变成「命令不执行」反而更差——隔离本身仍然有效。
+
+### 20.4 已知边界：容器能绕过代理直连用户自己的代理
+
+实测链条：
+
+1. 容器能读到宿主用户级 WinINET 设置：
+   `HKCU\...\Internet Settings\ProxyServer = 127.0.0.1:10808`（读得到，写不了）。
+2. PowerShell 5.1 的 `Invoke-WebRequest` **不使用** `[Net.WebRequest]::DefaultWebProxy`，
+   而是取 `[Net.WebRequest]::GetSystemWebProxy()` —— 实测前者指向我们的代理、
+   后者指向用户代理 `127.0.0.1:10808`。
+3. 我们为代理加了**回环豁免**，该豁免按容器粒度生效、**无法限定端口**，于是用户代理
+   也随之可达。请求直接打到用户代理，`[sandbox.net]` 判定完全不参与。
+4. 实测表现：`allowlist = [registry.npmjs.org]` 下
+   * 只请求 `example.com` → 被拦（403 + 拒绝记录）；
+   * **先请求白名单域名、再请求 `example.com` → 返回 200，代理零记录**（连续 3 轮稳定复现）。
+
+`example.com` 本身不解析到回环，说明请求是经用户代理出网的。
+
+### 20.5 为什么没有在本层堵上它
+
+容器**写不了**注册表（`Set-ItemProperty` 报「不允许所请求的注册表访问权」，连自建键
+`HKCU\Software\OmniCrawlProbe` 都建不了），所以无法在容器内关掉 WinINET 代理。
+宿主侧改 `HKCU` 会动用户自己的浏览器代理设置，不可接受。
+
+沙盒内额外做的两件事只能收窄、不能关闭：
+
+1. 不继承宿主代理变量——容器不会「直接」拿到用户代理的地址。
+2. 把 `[Net.WebRequest]::DefaultWebProxy` 指向我们的代理——覆盖走它的客户端
+   （`HttpClient`、`WebClient`）。**但** PowerShell 5.1 的 `Invoke-WebRequest` 取
+   `GetSystemWebProxy()`（读 WinINET），实测仍指向用户代理，这就是 §20.4 的复现路径。
+
+因此本层能做的到此为止。三个可选方案的取舍与最终决定见 §20.1。
+
+### 20.6 已核验未受影响的部分
+
+- 文件隔离、删除权限、资源限额、解释器可读性（P1/P2）均不受影响。
+- `offline` 策略下实测确实取不到数据（`offline-blocked`），失败方向正确。
+- `online` 策略下经代理取到真实数据（`registry.npmjs.org` 返回 200）。
+
+### 20.7 上线形态（方案 B 的完整语义）
+
+以方案 B 交付后，`mode = appcontainer` 的实际行为：
+
+| 维度 | 行为 |
+| --- | --- |
+| 出网能力 | 容器**没有任何网络能力**，裸 `socket()` / 裸 IP 直连直接失败（内核层拒绝） |
+| 出网通路 | 只有宿主回环代理；地址经 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 注入 |
+| 判定 | 统一走 `Sandbox::check_target`：回环 → 已批准缓存 → deny → offline/ask/allowlist/online |
+| 覆盖到的客户端 | 尊重代理变量的：`curl`、`pip`、`npm`、`git http(s)`、`cargo`、`go mod`、`HttpClient`/`WebClient` |
+| 覆盖不到 | 直接读 WinINET 的 .NET 客户端（PowerShell `Invoke-WebRequest`）、非 HTTP 协议、裸 TCP/UDP |
+| 失败方向 | 拉起失败即不注入代理变量（彻底断网），不放宽成「有能力但代理不通」 |
+| 严格模式 | `policy = "offline"` 连代理都不起，语义变成「沙盒内不能联网」 |
+
+**`ask` 策略当前的落点**：没有审批通道（`Approver` 注入）时一律**拒绝**并记一条拒绝记录。
+这是刻意的——默认配置不能变成静默放行。要做成弹窗审批需另行接 TUI 面板。
+
+### 20.8 TUI 设置页「沙盒」
+
+`[sandbox]` 段此前**只有读取没有写回**，因此只能在 `config.toml` 里手改或走 `/sandbox`。
+本节记录补齐的写回路径与界面对映关系。
+
+**配置层**：`omnicrawl_config::features::sandbox::save_sandbox_config`。两条纪律：
+
+1. **先校验后写盘**。`validate` 不通过则一个字都不写（文件保持原样），
+   避免存下一份跑不起来的配置（`allowlist` 空白名单、进程上限 < 2）。
+2. **只合并、不整段替换**。`fs`/`net`/`limits` 三层子表分别合并：只改网络策略时
+   不该丢掉 `fs.writable`；本模块不认识的键也原样保留。
+
+**界面对映**（`FormKind::Sandbox`，12 个字段，下标与写回顺序一一对应）：
+
+| 字段 | 配置键 | 类型 |
+| --- | --- | --- |
+| 启用 | `enabled` | 开关 |
+| 隔离模式 | `mode` | 候选（`off` / `appcontainer`） |
+| 额外可写路径 | `fs.writable` | 文本（逗号分隔） |
+| 额外可读路径 | `fs.readable` | 文本（逗号分隔） |
+| 网络策略 | `net.policy` | 候选（`offline`/`ask`/`allowlist`/`online`） |
+| 允许的域名 | `net.allow` | 文本（逗号分隔，支持 `*.suffix`） |
+| 拒绝的域名 | `net.deny` | 文本（逗号分隔，优先级高于放行） |
+| 审批超时（秒） | `net.approval_timeout_seconds` | 正整数 |
+| 记录全部网络请求 | `net.log_all` | 开关 |
+| 进程上限 | `limits.max_processes` | 正整数 |
+| 内存上限（MB） | `limits.max_memory_mb` | 正整数 |
+| CPU 速率上限（%） | `limits.cpu_rate_percent` | 非负整数（0 = 不限） |
+
+**生效时机**：保存后必须重建工具表。沙盒在构造 `ToolRegistry` 时由 `build_sandbox`
+折算成运行期 `Sandbox`，只写盘要等下次启动。重建失败时如实回一句「本次会话仍按旧策略
+执行，下次启动生效」，不假装成功。
+
+一级项插在「会话管理」之后，是 `ROW_ORDER` 的第 21 项。
+
+## 21. P4 实施记录：沙盒内的工具表与 PowerShell 版本（2026-11-06）
+
+### 目标
+
+两件事，都在「启动后就按沙盒形态把工具表和解释器摆正」这一层：
+
+1. 真隔离下**自动禁用 `bash`、自动启用 `powershell`**（原先只是调用时拒绝）；
+2. 沙盒内 PowerShell **优先用 7.\* 最新版本**，不通再回退 5.1（原先硬编码 5.1）。
+
+### 21.1 工具表：启动即摆正，而不是调用时才报错
+
+`[tools]` 段默认把 `powershell` 关掉（其余开）。这在宿主侧合理——多数人用 Git Bash；
+但在真隔离下 `bash` 必然失败（§19 已论证 `NUL` 设备不可达，无法靠授权绕过），于是
+「关掉 powershell + bash 不可用」等于沙盒内**没有任何执行命令的途径**，而模型只会
+看见一个注定报错的 `bash`。
+
+`registry.rs::sandbox_tool_switches` 在构建工具表前做一次折算：
+
+| 输入 | 输出 |
+| --- | --- |
+| `sandbox.isolates()` 为假 | 原样返回 `[tools]` 的禁用表（沙盒关闭时行为零变化） |
+| 真隔离 | 禁用表加入 `bash`，并且**移除** `powershell` |
+
+两条纪律：
+
+- **只改禁用表，不改配置**。用户配置里 `powershell = false` 保持原样，沙盒关闭后
+  行为照旧；这是「怎么执行」与「工具存在吗」两个正交维度的边界（§9）。
+- **白名单仍然最后生效**。`allowed_tools` 在 specs 生成后再过滤一次，
+  它不会因为沙盒补了 `powershell` 就凭空多出权限。
+
+调用期的那道拒绝仍然保留（`registry.rs::run_command` 与 `monitor` 的
+`BASH_UNAVAILABLE_IN_SANDBOX`）：工具表是「模型看得见什么」，拒绝文案是「万一还是被
+调用，怎么教它改写」。两者不互相替代——白名单之外的路径进不来，但声明与执行都查同一份
+specs，留着更稳。
+
+### 21.2 PowerShell 版本：容器内实测，不通即回退
+
+`runtime.rs::powershell_candidates` 给出候选序列：
+
+1. `%ProgramFiles%\PowerShell\<版本>\pwsh.exe`，按目录名里的数字段**倒序**（`7.10` 在
+   `7.9` 之前——字符串比较会给出相反答案），同版本正式版排在 `preview` 前面；
+2. `PATH` 上的 `pwsh.exe`；
+3. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（5.1，恒定最后）。
+
+`Isolation::powershell` 逐个在容器里跑 `Write-Output '__omnicrawl_probe__'`，只认
+**stdout 里出现探针字符串**。不用退出码做判据：pwsh 7 在容器里可能以 0 退出却一个
+cmdlet 都没加载。
+
+### 21.3 实机结论（本机，pwsh 7.5.8）
+
+| 检查项 | 5.1 | pwsh 7.5.8 |
+| --- | --- | --- |
+| 容器内能启动 | ✅ | ✅ |
+| `$PSHOME` 正确 | ✅ | ✅（`C:\Program Files\PowerShell\7`） |
+| `$env:PSModulePath` 含自身 `Modules` | ✅ | ✅ |
+| 该 `Modules` 目录对容器可读 | — | ✅（`ALL APPLICATION PACKAGES: RX`） |
+| `Write-Output` 可用 | ✅ | ❌ 报「无法识别」 |
+| `Microsoft.PowerShell.Commands.*` 类型可解析 | ✅ | ❌ |
+
+也就是说 **7.5.8 在 AppContainer 内仍然加载不出 cmdlet**，与 §17 的旧结论一致；
+本次补的两条排查项（`$PSHOME`、自身 `Modules` 是否可读）都不是原因，根因尚未定位到
+单个环境因子。因此本机的实际结果是**自动回退到 5.1**，行为与改动前一致；
+在别的机器上若 pwsh 能跑，就会真的用上 7.*。
+
+`PSModulePath` 仍然做了补充：把各候选解释器自带的 `Modules` 目录放进沙盒环境块
+（存在才收）。它不改变上面的结论，但去掉了「模块目录缺失」这一个可能的原因，
+也是 7.* 在别的机器上能跑起来的前提。
+
+### 21.4 验证
+
+- `sandbox::runtime` 新增 3 条：版本按数字排序（`7.10` → `7.9` → `7` → `6`）、
+  5.1 恒定最后、同版本正式版胜出 `preview`。11 条全通过。
+- `tools::registry::tests::appcontainer_swaps_bash_out_of_the_table_for_powershell`：
+  真隔离下 `bash` 不在表里、`powershell` 在表里、且 `execute("bash")` 返回 `None`。通过。
+- `tools::registry::tests::a_disabled_sandbox_leaves_the_tool_table_alone`：
+  沙盒关闭时禁用表一字不改。通过。
+- `tools::registry::tests::appcontainer_prefers_powershell_7_when_it_works`：
+  装了 pwsh 时，若探测选中它则实际版本必须是 7.*；若探测判定不可用则只要求不报错。
+  通过（本机走的是回退分支）。
+- 既有端到端 `appcontainer_isolates_the_powershell_tool` 仍通过：隔离标记、工作区可写、
+  宿主用户目录不可读。
+
+## 22. P4 补记：PowerShell 7 的根因（2026-11-06）
+
+§21 记录的结论是「pwsh 7.5.8 在容器内加载不出任何 cmdlet，原因未定位」。本节把它查到了底，
+结论**推翻了此前「PowerShell 7 在 AppContainer 内根本不可用」的判断**。
+
+### 22.1 真正的根因：系统盘根不可遍历，`C:` 驱动器建不起来
+
+排查路径（每条都是在容器内实跑）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `$ExecutionContext.SessionState.LanguageMode` | `FullLanguage`（语言引擎正常） |
+| `$PSHOME` | `C:\Program Files\PowerShell\7`（正确） |
+| `[IO.Directory]::GetDirectories("…\7\Modules").Count` | 14（模块目录**可读**） |
+| 直接 `Assembly.LoadFrom("…\Commands.Utility.dll")` | 成功 |
+| `Write-Output` / `Get-ChildItem` | ❌「无法识别」 |
+| `Import-Module "…\Modules\Microsoft.PowerShell.Utility"` | ❌ `Cannot find drive. A drive with the name 'C' does not exist.` |
+| `[IO.Directory]::Exists("C:\")` | **False** |
+| `[IO.Directory]::GetFileSystemEntries("C:\Windows")` | 124（子目录可读） |
+
+关键两行：**`C:\` 根不存在于容器的视图里，但它下面的 `C:\Windows` 可读**。原因是
+`Isolation::prepare` 只在**工作区所在的祖先链**上补遍历 ACE；本机工作区在 `D:` 盘，
+于是 `C:\` 不在祖先链上，容器对它没有 `FILE_TRAVERSE`。
+
+PowerShell 7 启动时要建立 `C:`（系统盘）驱动器来加载自己的内置模块，它先用
+`Directory.Exists("C:\\")` 探路，拿到 False 就放弃：
+
+```
+The specified drive root "C:\" either does not exist, or it is not a folder.
+  → C: 驱动器没建起来
+  → Import-Module "…\Modules\Microsoft.PowerShell.*" 全部失败
+  → 所有内置 cmdlet 都没有注册
+  → 连 Write-Output 都报「无法识别」
+```
+
+Windows PowerShell 5.1 不需要这一步（它的 cmdlet 直接从 `$PSHOME` 的模块目录加载，
+不依赖盘符驱动器），所以**同一个容器里 5.1 一切正常**。这就是「只有 pwsh 坏掉」的全部原因，
+与语言模式、`PSModulePath`、权限都无关。
+
+### 22.2 修法
+
+`Isolation::prepare` 增加一步：给 `system_drive_roots()`（系统盘根）补
+`TRAVERSE_ONLY`（不可继承）遍历 ACE，仅在 `can_traverse` 判定不足时才写。
+
+- 代价极小：卷根本来就有一批同类 ACE，且这条不可继承、不触发子树传播；
+- 失败不致命：写不进去时容器内仍会回退到 5.1，命令照跑。
+
+修完后同一条容器内实测：`Write-Output` → `write-output-ok`、`Get-ChildItem
+"C:\Program Files\PowerShell\7"` → 346 项、`$PSVersionTable.PSVersion` → `7.5.8`。
+
+### 22.3 结论修订
+
+- §17 第 5 条、§19「为什么不接 Git Bash / 改用别的 shell」里「pwsh 在 AppContainer 内
+  加载不出任何 cmdlet → 5.1 是唯一可行 PowerShell」的结论**作废**：那是系统盘根缺少
+  遍历权导致的，不是 PowerShell 7 的限制。
+- `Isolation::powershell` 的容器内实测保留：它现在能真正选到 7.*，同时仍能在
+  异常环境里安全回退。回退不再是「常态」，而是兜底。
+- `PSModulePath` 补各候选解释器自带 `Modules` 目录的改动保留（无害且是别处的必要前提）。
+
+### 22.4 验证
+
+- 新增 `sandbox::windows::tests::appcontainer_can_traverse_the_system_drive_root`：
+  容器内 `Directory.Exists(系统盘根)` 必须为 True（首次会为卷根授权，约 80 秒；
+  之后幂等）。
+- `tools::registry::tests::appcontainer_prefers_powershell_7_when_it_works` 收紧为
+  **必须选中 pwsh** 且版本为 7.*——修复前它会失败（探测一路回退到 5.1），正是这条守住了根因。
+- `cargo test -p omnicrawl-host --lib sandbox`：68 通过 / 0 失败。
+- `tools::` 全量 482 通过 / 4 失败，4 项仍是既有环境基线（无效窗口句柄 42、
+  受限桌面会话下截图被拒），与本次改动无关。

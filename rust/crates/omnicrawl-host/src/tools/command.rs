@@ -207,14 +207,11 @@ impl CommandRunner {
             MAX_COMMAND_TIMEOUT_SECONDS,
         );
 
-        let isolated = self.gate.isolates();
-        let build =
-            |text: &str| invocation_for(text, shell, &|name| std::env::var(name).ok(), isolated);
-        let primary = self.run_invocation(&build(&command)?, timeout, cancel)?;
+        let primary = self.run_invocation(&command, shell, timeout, cancel)?;
         if diagnostic_command.is_empty() {
             return Ok(primary);
         }
-        let diagnostic = self.run_invocation(&build(&diagnostic_command)?, timeout, cancel)?;
+        let diagnostic = self.run_invocation(&diagnostic_command, shell, timeout, cancel)?;
         Ok(CommandOutcome {
             ok: primary.ok && diagnostic.ok,
             output: format!(
@@ -226,7 +223,8 @@ impl CommandRunner {
 
     fn run_invocation(
         &self,
-        invocation: &Invocation,
+        text: &str,
+        shell: Shell,
         timeout_seconds: i64,
         cancel: &CancelToken,
     ) -> Result<CommandOutcome, ToolError> {
@@ -238,8 +236,14 @@ impl CommandRunner {
                 false,
             )
         })?;
+        let invocation = match &plan {
+            Plan::Isolated(isolation) => {
+                invocation_for_isolation(text, shell, &|name| std::env::var(name).ok(), isolation)
+            }
+            Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
+        }?;
         if let Plan::Isolated(isolation) = plan {
-            return self.run_isolated(invocation, timeout_seconds, cancel, &isolation);
+            return self.run_isolated(&invocation, timeout_seconds, cancel, &isolation);
         }
         let mut command = Command::new(&invocation.args[0]);
         command
@@ -300,7 +304,7 @@ impl CommandRunner {
             .and_then(|status| status.code())
             .map(i64::from)
             .unwrap_or(-1);
-        Ok(self.finish(invocation, return_code, stdout_text, stderr_text, false))
+        Ok(self.finish(&invocation, return_code, stdout_text, stderr_text, false))
     }
 
     /// 沙盒路径：以 AppContainer 身份执行同一条命令。
@@ -479,34 +483,112 @@ pub fn invocation_for(
         }
         Shell::PowerShell => {
             let executable = if isolated {
-                // 沙盒内只能用 Windows PowerShell 5.1：PowerShell 7 在 AppContainer 里
-                // 加载不出任何 cmdlet（连 `Write-Output` 都没有），真机已确认；5.1 完全正常。
                 find_sandboxed_powershell(env)
             } else {
                 find_powershell_executable(env)
             }
             .ok_or_else(|| ToolError::new("未找到 PowerShell 可执行文件。"))?;
-            let utf8_prefix = "$__OmniCrawlUtf8 = [System.Text.UTF8Encoding]::new($false); \
-                               [Console]::InputEncoding = $__OmniCrawlUtf8; \
-                               [Console]::OutputEncoding = $__OmniCrawlUtf8; \
-                               $OutputEncoding = $__OmniCrawlUtf8; ";
-            let script = format!(
-                "$ErrorActionPreference = 'Stop'; {utf8_prefix}& {{\n{command}\n}}\n\
-                 $__OmniCrawlExitCode = $LASTEXITCODE; \
-                 if ($null -ne $__OmniCrawlExitCode) {{ exit $__OmniCrawlExitCode }}"
-            );
+            Ok(powershell_invocation(&executable, command, isolated))
+        }
+    }
+}
+
+/// 沙盒内的调用：解释器由容器实测选出（`pwsh` 7.* 优先，不通则回退 5.1）。
+///
+/// 与 [`invocation_for`] 的差别只在「谁选了可执行文件」：这里的选择需要容器身份才能验证，
+/// 因此由 [`crate::sandbox::Isolation`] 在首次使用时探测并缓存。
+pub fn invocation_for_isolation(
+    command: &str,
+    shell: Shell,
+    env: &dyn Fn(&str) -> Option<String>,
+    isolation: &crate::sandbox::Isolation,
+) -> Result<Invocation, ToolError> {
+    match shell {
+        Shell::Bash => {
+            let executable = find_bash_executable(env).ok_or_else(|| {
+                ToolError::new(
+                    "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。",
+                )
+            })?;
             Ok(Invocation {
                 args: vec![
                     executable.to_string_lossy().to_string(),
-                    "-NoLogo".to_string(),
-                    "-NoProfile".to_string(),
-                    "-NonInteractive".to_string(),
-                    "-Command".to_string(),
-                    script,
+                    "-o".to_string(),
+                    "pipefail".to_string(),
+                    "-lc".to_string(),
+                    command.to_string(),
                 ],
-                label: Shell::PowerShell.label().to_string(),
+                label: Shell::Bash.label().to_string(),
             })
         }
+        Shell::PowerShell => {
+            let executable = isolation
+                .powershell()
+                .ok_or_else(|| ToolError::new("沙盒内未找到可用的 PowerShell。"))?;
+            Ok(powershell_invocation(&executable, command, true))
+        }
+    }
+}
+
+/// 组装一次 PowerShell 调用：UTF-8 前缀、沙盒内的代理改写、退出码透传。
+fn powershell_invocation(executable: &Path, command: &str, isolated: bool) -> Invocation {
+    let utf8_prefix = "$__OmniCrawlUtf8 = [System.Text.UTF8Encoding]::new($false); \
+                       [Console]::InputEncoding = $__OmniCrawlUtf8; \
+                       [Console]::OutputEncoding = $__OmniCrawlUtf8; \
+                       $OutputEncoding = $__OmniCrawlUtf8; ";
+    // 沙盒内把 .NET 的默认代理指向 `HTTP_PROXY`。
+    //
+    // 这是一个真实的绕过口，本设置只能**收窄**不能关闭：.NET 的
+    // `HttpWebRequest`/`WebClient` 默认读**用户级 WinINET 设置**
+    // （`HKCU\...\Internet Settings\ProxyServer`），那可能是用户自己的代理
+    // （本机实测是 `127.0.0.1:10808`）。而我们为了代理可达给容器加了回环豁免，
+    // 该豁免按容器粒度、无法限定端口，于是用户代理也随之可达。
+    //
+    // `DefaultWebProxy` 覆盖走到它的客户端（`HttpClient`/`WebClient`）；但 Windows PowerShell
+    // 5.1 的 `Invoke-WebRequest` 取的是 `GetSystemWebProxy()`（读 WinINET），实测仍指向
+    // 用户代理——`allowlist` 下 `example.com` 就是这样漏出去的（连续 3 轮复现）。
+    // 容器内写不了注册表，宿主侧改 `HKCU` 会动用户自己的浏览器设置，因此这一层
+    // 只能做到「应用层代理级」，详见设计文档 §20。
+    //
+    // 只在沙盒内设置：宿主侧的代理偏好是用户自己的事。
+    let proxy_prefix = if isolated {
+        "$__OmniCrawlProxy = $env:HTTP_PROXY; \
+         if ($__OmniCrawlProxy) { \
+             $__OmniCrawlWebProxy = New-Object System.Net.WebProxy($__OmniCrawlProxy); \
+             [System.Net.WebRequest]::DefaultWebProxy = $__OmniCrawlWebProxy; \
+             [System.Net.ServicePointManager]::SecurityProtocol = \
+                 [System.Net.SecurityProtocolType]::Tls12 -bor \
+                 [System.Net.SecurityProtocolType]::Tls11 -bor \
+                 [System.Net.SecurityProtocolType]::Tls; \
+         } else { [System.Net.WebRequest]::DefaultWebProxy = $null }; "
+    } else {
+        ""
+    };
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; {utf8_prefix}{proxy_prefix}& {{\n{command}\n}}\n\
+         $__OmniCrawlExitCode = $LASTEXITCODE; \
+         if ($null -ne $__OmniCrawlExitCode) {{ exit $__OmniCrawlExitCode }}"
+    );
+    let mut args = vec![
+        executable.to_string_lossy().to_string(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+    ];
+    if isolated {
+        // 只有沙盒内需要显式 Bypass：AppContainer 读不到执行策略注册表
+        // （`Get-ExecutionPolicy` 报「不允许所请求的注册表访问权」），策略判定
+        // 因此落到 Restricted，把 `npm.cmd` 这类包装脚本挡在 `AuthorizationManager`
+        // 之前，报「AuthorizationManager 检查失败」。宿主侧不改执行策略——那是用户
+        // 自己的安全设置，不该被工具悄悄放宽。
+        args.push("-ExecutionPolicy".to_string());
+        args.push("Bypass".to_string());
+    }
+    args.push("-Command".to_string());
+    args.push(script);
+    Invocation {
+        args,
+        label: Shell::PowerShell.label().to_string(),
     }
 }
 
@@ -540,18 +622,16 @@ pub fn find_powershell_executable(env: &dyn Fn(&str) -> Option<String>) -> Optio
         .find_map(|name| which(name, env))
 }
 
-/// 沙盒内的 PowerShell：只用 `%SystemRoot%\System32\WindowsPowerShell1.0\powershell.exe`。
+/// 沙盒内的 PowerShell（无法在容器内实测时的回退口径）：安装目录里最新的 `pwsh`，
+/// 没有则用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`。
 ///
-/// 不用 `pwsh`：PowerShell 7 在 AppContainer 里加载不出 cmdlet，连内置的 `Write-Output`
-/// 都报"无法识别"，而 Windows PowerShell 5.1 在同一容器里一切正常（真机核实）。
+/// 真正进沙盒执行时以 [`crate::sandbox::Isolation::powershell`] 的容器实测结果为准：
+/// PowerShell 7 在 AppContainer 里能否加载 cmdlet 取决于 `PSModulePath` 是否含它自己的
+/// 模块目录，只有跑一次才知道，因此探测放在隔离层。
 pub fn find_sandboxed_powershell(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-    let system_root = env("SystemRoot").filter(|value| !value.trim().is_empty())?;
-    let candidate = PathBuf::from(system_root)
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe");
-    candidate.is_file().then_some(candidate)
+    crate::sandbox::runtime::powershell_candidates(env)
+        .into_iter()
+        .next()
 }
 
 /// `shutil.which` 的最小实现：按 PATH 找候选，Windows 上补常见可执行后缀。
@@ -644,6 +724,34 @@ mod tests {
             }
             Err(error) => assert!(error.message.contains("PowerShell"), "{}", error.message),
         }
+    }
+
+    /// 宿主侧不得改动用户的执行策略；只有沙盒内才补 `Bypass`。
+    ///
+    /// 两者分开不是为了形式：`-ExecutionPolicy Bypass` 等于绕过用户自己的安全设置，
+    /// 在宿主上这么做是越权。沙盒内则是唯一可行选择——AppContainer 读不到策略注册表，
+    /// 不补 Bypass 就连 `npm.cmd` 都跑不起来。
+    #[test]
+    fn only_the_sandbox_adds_execution_policy_bypass() {
+        let env = |name: &str| match name {
+            "PATH" => std::env::var("PATH").ok(),
+            "SystemRoot" => std::env::var("SystemRoot").ok(),
+            _ => None,
+        };
+        let hosted = invocation_with("Get-Location", Shell::PowerShell, &env).expect("宿主侧可用");
+        assert!(
+            !hosted.args.iter().any(|arg| arg == "-ExecutionPolicy"),
+            "宿主侧不得改执行策略：{:?}",
+            hosted.args
+        );
+        let isolated =
+            invocation_for("Get-Location", Shell::PowerShell, &env, true).expect("沙盒侧可用");
+        let policy = isolated
+            .args
+            .iter()
+            .position(|arg| arg == "-ExecutionPolicy")
+            .expect("沙盒内必须补 -ExecutionPolicy");
+        assert_eq!(isolated.args[policy + 1], "Bypass");
     }
 
     #[test]

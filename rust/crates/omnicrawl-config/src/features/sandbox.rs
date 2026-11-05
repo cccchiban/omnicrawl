@@ -1,6 +1,6 @@
 //! 沙盒配置（`[sandbox]` 段）。
 //!
-//! 设计见 `rust/assets/docs/sandbox_windows_design.md`。本模块只负责**读配置与校验**，
+//! 设计见 `rust/assets/docs/sandbox_windows_design.md`。本模块只负责**读写配置与校验**，
 //! 以及把配置折算成 [`SandboxPolicy`]。真正的隔离在 `omnicrawl-host` 的 `sandbox` 模块里。
 //!
 //! 三档开关（缺一档都会让用户踩坑，见设计文档 §9.2）：
@@ -9,9 +9,9 @@
 //! - `enabled = true, mode = "off"`：**dry-run**，只判定"本会拦什么"并记录，不真隔离；
 //! - `enabled = true, mode = "appcontainer"`：真隔离。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::core::runtime::{get_section, load_config_data, ConfigEnvironment};
+use crate::core::runtime::{get_section, load_config_data, save_config_data, ConfigEnvironment};
 use crate::error::ConfigError;
 use crate::toml::Value;
 
@@ -164,7 +164,7 @@ impl SandboxConfig {
             );
         }
         format!(
-            "沙盒：appcontainer（真隔离，当前只覆盖 `powershell`；`bash` 会拒绝执行）。             网络策略 {}，进程上限 {}，内存上限 {}MB。",
+            "沙盒：appcontainer（真隔离，`bash` 不进工具表，`powershell` 自动启用）。             网络策略 {}，进程上限 {}，内存上限 {}MB。",
             self.net_policy.as_str(),
             self.limits.max_processes,
             self.limits.max_memory_mb
@@ -254,6 +254,71 @@ pub fn validate(config: &SandboxConfig) -> Result<(), ConfigError> {
         ));
     }
     Ok(())
+}
+
+/// 写回 `[sandbox]` 段（先 `validate`，校验不过则一个字都不写）。
+///
+/// 只覆盖本模块认识的键，其余键与子表按原样保留：手写在 `config.toml` 里的注释会被
+/// TOML 读写抹掉，但用户自己加的其它键不会被顺手删除。三层子表（`fs`/`net`/`limits`）
+/// 分别合并，不是整段替换——只改网络策略时不该丢掉 `fs.writable`。
+pub fn save_sandbox_config(
+    env: &ConfigEnvironment,
+    config: &SandboxConfig,
+    config_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    validate(config)?;
+    let mut data = load_config_data(env, config_path)?;
+    let mut section = match data.get("sandbox") {
+        Some(Value::Table(table)) => table.clone(),
+        _ => crate::toml::Table::new(),
+    };
+
+    section.insert("enabled".to_string(), Value::Boolean(config.enabled));
+    section.insert(
+        "mode".to_string(),
+        Value::String(config.mode.as_str().to_string()),
+    );
+
+    let mut fs = nested(&section, "fs")?;
+    fs.insert("writable".to_string(), string_array(&config.writable));
+    fs.insert("readable".to_string(), string_array(&config.readable));
+    section.insert("fs".to_string(), Value::Table(fs));
+
+    let mut net = nested(&section, "net")?;
+    net.insert(
+        "policy".to_string(),
+        Value::String(config.net_policy.as_str().to_string()),
+    );
+    net.insert("allow".to_string(), string_array(&config.net_allow));
+    net.insert("deny".to_string(), string_array(&config.net_deny));
+    net.insert(
+        "approval_timeout_seconds".to_string(),
+        Value::Integer(config.net_approval_timeout_seconds as i64),
+    );
+    net.insert("log_all".to_string(), Value::Boolean(config.net_log_all));
+    section.insert("net".to_string(), Value::Table(net));
+
+    let mut limits = nested(&section, "limits")?;
+    limits.insert(
+        "max_processes".to_string(),
+        Value::Integer(config.limits.max_processes as i64),
+    );
+    limits.insert(
+        "max_memory_mb".to_string(),
+        Value::Integer(config.limits.max_memory_mb as i64),
+    );
+    limits.insert(
+        "cpu_rate_percent".to_string(),
+        Value::Integer(config.limits.cpu_rate_percent as i64),
+    );
+    section.insert("limits".to_string(), Value::Table(limits));
+
+    data.insert("sandbox".to_string(), Value::Table(section));
+    save_config_data(env, &data, config_path)
+}
+
+fn string_array(items: &[String]) -> Value {
+    Value::Array(items.iter().cloned().map(Value::String).collect())
 }
 
 /// `[sandbox.fs]` 这类子表：`get_section` 只认表名，嵌套表要在这里取。
@@ -364,6 +429,107 @@ mod tests {
         let result = load_sandbox_config(&env, Some(&path));
         std::fs::remove_dir_all(&dir).ok();
         result
+    }
+
+    /// 在临时目录里跑一次写盘的往返，返回写回后的文本与重新读出的配置。
+    fn save_roundtrip(
+        text: &str,
+        edit: impl FnOnce(&mut SandboxConfig),
+    ) -> (String, SandboxConfig) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "omnicrawl-sandbox-save-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, text).expect("写配置");
+        let env = ConfigEnvironment::new(dir.clone(), std::env::consts::OS);
+        let mut config = load_sandbox_config(&env, Some(&path)).expect("应可读");
+        edit(&mut config);
+        save_sandbox_config(&env, &config, Some(&path)).expect("应可写");
+        let written = std::fs::read_to_string(&path).expect("应可读回");
+        let reloaded = load_sandbox_config(&env, Some(&path)).expect("应可再读");
+        std::fs::remove_dir_all(&dir).ok();
+        (written, reloaded)
+    }
+
+    #[test]
+    fn save_roundtrip_keeps_every_field() {
+        let (_, config) = save_roundtrip("", |config| {
+            config.enabled = true;
+            config.mode = SandboxMode::AppContainer;
+            config.writable = vec!["D:\\work\\out".to_string()];
+            config.readable = vec!["C:\\tools".to_string()];
+            config.net_policy = NetPolicy::Allowlist;
+            config.net_allow = vec!["*.github.com".to_string()];
+            config.net_deny = vec!["example.com".to_string()];
+            config.net_approval_timeout_seconds = 30;
+            config.net_log_all = false;
+            config.limits.max_processes = 8;
+            config.limits.max_memory_mb = 2048;
+            config.limits.cpu_rate_percent = 50;
+        });
+        assert!(config.enabled);
+        assert_eq!(config.mode, SandboxMode::AppContainer);
+        assert_eq!(config.writable, vec!["D:\\work\\out".to_string()]);
+        assert_eq!(config.readable, vec!["C:\\tools".to_string()]);
+        assert_eq!(config.net_policy, NetPolicy::Allowlist);
+        assert_eq!(config.net_allow, vec!["*.github.com".to_string()]);
+        assert_eq!(config.net_deny, vec!["example.com".to_string()]);
+        assert_eq!(config.net_approval_timeout_seconds, 30);
+        assert!(!config.net_log_all);
+        assert_eq!(config.limits.max_processes, 8);
+        assert_eq!(config.limits.max_memory_mb, 2048);
+        assert_eq!(config.limits.cpu_rate_percent, 50);
+    }
+
+    #[test]
+    fn save_merges_subtables_instead_of_replacing_them() {
+        // 只改网络策略时，`fs.writable` 必须原样留在文件里。
+        let (written, config) =
+            save_roundtrip("[sandbox.fs]\nwritable = [\"D:\\\\keep\"]\n", |config| {
+                config.net_policy = NetPolicy::Online
+            });
+        assert_eq!(config.writable, vec!["D:\\keep".to_string()]);
+        assert!(written.contains("keep"), "写回后仍应含原有可写路径");
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys() {
+        let (written, _) = save_roundtrip("[sandbox]\nfuture_key = \"x\"\n", |config| {
+            config.enabled = true
+        });
+        assert!(
+            written.contains("future_key"),
+            "本模块不认识的键不该被写盘顺手删掉：{written}"
+        );
+    }
+
+    #[test]
+    fn save_refuses_invalid_config_without_writing() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "omnicrawl-sandbox-invalid-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[sandbox]\nenabled = false\n").expect("写配置");
+        let env = ConfigEnvironment::new(dir.clone(), std::env::consts::OS);
+        let mut config = load_sandbox_config(&env, Some(&path)).expect("应可读");
+        // allowlist 却没有白名单：校验必须拦住，且文件保持原样。
+        config.net_policy = NetPolicy::Allowlist;
+        let error = save_sandbox_config(&env, &config, Some(&path)).expect_err("应拒绝写入");
+        assert!(error.message().contains("allowlist"));
+        let text = std::fs::read_to_string(&path).expect("应可读回");
+        assert!(
+            !text.contains("allowlist"),
+            "校验失败时不应写任何内容：{text}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

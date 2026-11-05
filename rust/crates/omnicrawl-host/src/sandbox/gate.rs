@@ -44,6 +44,13 @@ impl IsolationGate {
             if !self.sandbox.isolates() {
                 return Ok(Plan::Host);
             }
+            // 网络通道与隔离身份同属「真隔离」这一档，必须一起就绪：容器没有网络能力，
+            // 出网只能经宿主回环代理，没有代理就是彻底断网（不是回避隔离）。
+            //
+            // `ensure_network` 自身幂等且**不返回错误**：豁免或代理拉不起来时它把形态降级为
+            // `NetStatus::Failed` 且不注入代理变量，于是这条命令照样在容器里跑，只是出不去。
+            // 因此这里不必把它的结果变成命令失败——失败方向仍然是关闭。
+            self.sandbox.ensure_network(None);
             self.sandbox.isolation().map(Plan::Isolated)
         }
         #[cfg(not(windows))]

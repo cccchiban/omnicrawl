@@ -1,15 +1,15 @@
-//! 沙盒策略运行期（P0：只有**判定**，没有隔离）。
+//! 沙盒策略运行期：配置折算、判定、以及真隔离环境与网络通道的持有点。
 //!
-//! 设计见 `rust/assets/docs/sandbox_windows_design.md`。本模块在 P0 阶段承担三件事：
+//! 设计见 `rust/assets/docs/sandbox_windows_design.md`。本模块承担四件事：
 //!
 //! 1. 把 `[sandbox]` 配置折算成可查询的策略（[`Sandbox`]）；
 //! 2. 判定「某个路径 / 某个网络目标**会不会**被拦」（[`Sandbox::check_path`] /
 //!    [`Sandbox::check_target`]）；
 //! 3. 在 dry-run（`mode = "off"`）下把判定结果记进[`Sandbox::decisions`]，供 `/sandbox`
-//!    展示「本会拦什么」。
+//!    展示「本会拦什么」；
+//! 4. 真隔离（`mode = "appcontainer"`）下持有容器身份与网络通道，由 [`gate`] 取用。
 //!
-//! **P0 不改变任何执行行为**：无论判定结果如何，命令照常以宿主身份运行。
-//! 真隔离在 P1/P3 落地；届时同一条判定链会变成"先判定、再据此决定 grant/deny"。
+//! 关闭时一切是空操作：判定恒为放行、不记录、不建容器、不起代理。
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -17,12 +17,14 @@ use std::sync::Mutex;
 use omnicrawl_config::features::sandbox::{NetPolicy, SandboxConfig};
 
 pub mod gate;
+pub mod proxy;
+pub mod runtime;
 
 #[cfg(windows)]
 pub mod windows;
 
 #[cfg(windows)]
-pub use windows::{Isolation, SandboxChild, Spawned};
+pub use windows::{Isolation, SandboxChild, Spawned, Streamed, Terminator};
 
 /// 一次判定的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +94,69 @@ pub struct Sandbox {
     /// 真隔离环境（容器 + ACL），首次使用时准备并复用。
     #[cfg(windows)]
     isolation: IsolationCache,
+    /// 网络通道（代理 + 回环豁免）。首次真正需要时才拉起，失败即降级为断网。
+    net: Mutex<NetState>,
+}
+
+/// 网络通道的惰性状态。
+#[derive(Default)]
+pub struct NetState {
+    /// 已拉起的代理与回环豁免；`None` 表示尚未尝试。
+    running: Option<NetRuntime>,
+    /// 拉起失败的原因（`/sandbox` 如实展示）。
+    failure: Option<String>,
+}
+
+impl std::fmt::Debug for NetState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NetState")
+            .field("running", &self.running.is_some())
+            .field("failure", &self.failure)
+            .finish()
+    }
+}
+
+/// 一次成功拉起的网络通道。
+pub struct NetRuntime {
+    proxy: proxy::Proxy,
+    /// 回环豁免守卫：析构时撤销。
+    #[cfg(windows)]
+    _exemption: windows::LoopbackExemption,
+}
+
+impl std::fmt::Debug for NetRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NetRuntime")
+            .field("port", &self.proxy.port())
+            .finish()
+    }
+}
+
+/// 网络通道的实际形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetStatus {
+    /// 沙盒关着。
+    Disabled,
+    /// 不需要或不允许出网（`offline` 策略、dry-run）。
+    Offline,
+    /// 代理已就绪，容器通过它出网（端口是宿主回环代理端口）。
+    Proxy(u16),
+    /// 拉起失败，已降级为断网。原因如实带出。
+    Failed(String),
+}
+
+impl NetStatus {
+    /// 一句话描述，供 `/sandbox` 与消息展示。
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Disabled => "沙盒未启用".to_string(),
+            Self::Offline => "沙盒内不能出网".to_string(),
+            Self::Proxy(port) => format!("沙盒内只能经宿主代理 127.0.0.1:{port} 出网"),
+            Self::Failed(reason) => format!("网络通道拉起失败，已断网：{reason}"),
+        }
+    }
 }
 
 /// 容器身份与 ACL 授予的缓存。
@@ -126,6 +191,18 @@ impl IsolationCache {
         *guard = Some(prepared.clone());
         prepared
     }
+
+    /// 取出已准备好的隔离环境（清空缓存）；从未准备过时返回 `None`。
+    ///
+    /// 退出清理用：只有真的建过容器才需要销毁，没进过隔离的会话不该去动
+    /// 磁盘上的既存 profile（那可能是别的实例正在用的）。
+    fn take(&self) -> Option<std::sync::Arc<windows::Isolation>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .and_then(Result::ok)
+    }
 }
 
 /// dry-run 记录条数上限。超出后只保留前 N 条并标记"已截断"。
@@ -142,6 +219,7 @@ impl Sandbox {
             max_decisions: MAX_DECISIONS,
             #[cfg(windows)]
             isolation: IsolationCache::default(),
+            net: Mutex::new(NetState::default()),
         }
     }
 
@@ -159,6 +237,7 @@ impl Sandbox {
             max_decisions: MAX_DECISIONS,
             #[cfg(windows)]
             isolation: IsolationCache::default(),
+            net: Mutex::new(NetState::default()),
         }
     }
 
@@ -182,9 +261,137 @@ impl Sandbox {
         self.isolation.get(self)
     }
 
+    /// 退出清理：销毁本会话真正建过的容器 profile。
+    ///
+    /// 只在**本次会话准备过**隔离环境时才动手。没进过隔离却去删同名的既存 profile，
+    /// 会误伤另一个正在用的实例（容器名按「用户 + 工作区」派生，同工作区的两个实例同名）。
+    ///
+    /// 返回被销毁的容器名，供日志如实报告。删除前先撤掉网络通道：回环豁免与代理
+    /// 都持有这个容器的 SID，留着它们指向一个已删除的 profile 没有意义。
+    #[cfg(windows)]
+    pub fn discard_container(&self) -> Option<String> {
+        let isolation = self.isolation.take()?;
+        let name = isolation.container_name().to_string();
+        drop(isolation);
+        let removed = windows::Isolation::destroy_container_named(&name);
+        removed.then_some(name)
+    }
+
+    /// 非 Windows 平台没有容器可清理。
+    #[cfg(not(windows))]
+    pub fn discard_container(&self) -> Option<String> {
+        None
+    }
+
     /// 是否 dry-run。
     pub fn is_dry_run(&self) -> bool {
         self.config.is_dry_run()
+    }
+
+    /// 拉起网络通道（宿主回环代理 + 回环豁免），并按需接到隔离环境上。
+    ///
+    /// 三条纪律来自设计文档 §7.6，都有实测依据：
+    ///
+    /// 1. **豁免加不上就断网**：`offline` 策略或豁免失败时不注入代理变量，
+    ///    容器既无网络能力也无代理通路——失败方向必须是关闭。
+    /// 2. **代理不通不是故障，是边界**：容器没有 `internetClient`，裸 `socket()`
+    ///    直接失败（内核层拒绝），不会悄悄绕过代理。
+    /// 3. **只有需要出网才拉起**：`offline` 下连代理都不起，省掉豁免这步最脆的操作。
+    ///
+    /// 边界要如实说清（设计文档 §20）：这是**应用层代理级**。直连 WinINET 用户代理设置
+    /// 的 .NET 客户端（如 PowerShell 的 `Invoke-WebRequest`）能绕开本判定，因此
+    /// 「沙盒内不能联网」严格成立只在 `offline` 策略下。
+    ///
+    /// 返回本次实际生效的网络形态，供诊断展示。
+    pub fn ensure_network(&self, approver: Option<proxy::Approver>) -> NetStatus {
+        if !self.config.enabled {
+            return NetStatus::Disabled;
+        }
+        // `offline` 与 dry-run 都不需要代理：前者全拒，后者不真隔离。
+        if !self.isolates() || matches!(self.config.net_policy, NetPolicy::Offline) {
+            return NetStatus::Offline;
+        }
+
+        let mut guard = self
+            .net
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(runtime) = guard.running.as_ref() {
+            return NetStatus::Proxy(runtime.proxy.port());
+        }
+        if let Some(reason) = guard.failure.as_ref() {
+            return NetStatus::Failed(reason.clone());
+        }
+
+        let outcome = self.start_network(approver);
+        match outcome {
+            Ok(runtime) => {
+                let port = runtime.proxy.port();
+                guard.running = Some(runtime);
+                NetStatus::Proxy(port)
+            }
+            Err(reason) => {
+                guard.failure = Some(reason.clone());
+                NetStatus::Failed(reason)
+            }
+        }
+    }
+
+    /// 真正拉起代理与豁免；任何一步失败都返回原因（调用方据此断网）。
+    fn start_network(&self, approver: Option<proxy::Approver>) -> Result<NetRuntime, String> {
+        #[cfg(windows)]
+        let exemption = {
+            let isolation = self.isolation()?;
+            // 先拿豁免再起代理：豁免失败就没必要开代理，直接断网。
+            isolation.exempt_loopback()?
+        };
+
+        // 代理自己持有 `Arc<Sandbox>`，判定时回问本实例，因此策略改动无需重启代理。
+        // 这里用一个不含网络通道的视图，避免代理线程再进 `ensure_network` 形成递归锁。
+        let sandbox = std::sync::Arc::new(self.without_network());
+        let proxy = proxy::Proxy::start(sandbox, approver)?;
+        let url = proxy.proxy_url();
+
+        // 把代理地址接到隔离环境上：下一次 `spawn` 就会注入 `HTTP_PROXY`。
+        // 用共享引用改而不是 `Arc::get_mut`——隔离环境是 `Arc` 且可能已被工具调用共享，
+        // 内部用互斥量保存代理地址，正是为了绕开这个限制。
+        #[cfg(windows)]
+        {
+            let isolation = self.isolation()?;
+            isolation.set_proxy(Some(url));
+        }
+
+        Ok(NetRuntime {
+            proxy,
+            #[cfg(windows)]
+            _exemption: exemption,
+        })
+    }
+
+    /// 复制一份策略，但不共享网络通道：给代理线程判定用，避免自己锁自己。
+    fn without_network(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            root: self.root.clone(),
+            temp_dir: self.temp_dir.clone(),
+            decisions: Mutex::new(Vec::new()),
+            max_decisions: self.max_decisions,
+            #[cfg(windows)]
+            isolation: IsolationCache::default(),
+            net: Mutex::new(NetState::default()),
+        }
+    }
+
+    /// 本次会话的网络诊断（拒绝记录与已批准目标），供诊断输出使用。
+    pub fn network_diagnostics(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let guard = self
+            .net
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match guard.running.as_ref() {
+            Some(runtime) => (runtime.proxy.approved_targets(), runtime.proxy.refusals()),
+            None => (Vec::new(), Vec::new()),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -700,6 +907,31 @@ mod tests {
         assert!(sandbox.check_target("[::1]:9000").is_allowed());
         // 非回环在 offline 下被拦。
         assert!(!sandbox.check_target("example.com:443").is_allowed());
+    }
+
+    #[test]
+    fn network_channel_is_off_unless_real_isolation_needs_it() {
+        // 三条短路分支都不该去碰回环豁免与代理：关闭、dry-run、offline 各自如此。
+        let disabled = Sandbox::disabled(r"D:\work", r"D:\work\.omnicrawl\.agent_tmp");
+        assert_eq!(disabled.ensure_network(None), NetStatus::Disabled);
+
+        let dry_run = sandbox(enabled(SandboxMode::Off));
+        assert_eq!(dry_run.ensure_network(None), NetStatus::Offline);
+
+        let mut config = enabled(SandboxMode::AppContainer);
+        config.net_policy = NetPolicy::Offline;
+        assert_eq!(sandbox(config).ensure_network(None), NetStatus::Offline);
+    }
+
+    #[test]
+    fn net_status_describes_each_shape() {
+        assert_eq!(NetStatus::Offline.describe(), "沙盒内不能出网");
+        assert!(NetStatus::Proxy(43210)
+            .describe()
+            .contains("127.0.0.1:43210"));
+        assert!(NetStatus::Failed("豁免不可用".to_string())
+            .describe()
+            .contains("豁免不可用"));
     }
 
     #[test]

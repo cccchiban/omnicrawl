@@ -154,18 +154,25 @@ mode = "review"
 review_model = ""
 
 # ── 沙盒（子进程隔离）──────────────────────────────────────────
-# 设计见 docs/sandbox_windows_design.md。当前版本处于 P1：Windows 上真隔离已落地，
-# 但**只覆盖 `powershell` 工具**；`bash` 会明确拒绝执行（Git Bash 的运行时目录
-# 尚未纳入最小可读集合），`monitor`/`git` 等仍以宿主身份运行。
+# 设计见 docs/sandbox_windows_design.md。Windows 上真隔离已落地（P0–P4）。
+# 真隔离下 `bash` 不进工具表、`powershell` 自动进表（它是唯一可用的解释器）：
+# `bash`/`git` 之所以失败，是因为 Git Bash 依赖 `/dev/null`，而 AppContainer 对该设备
+# 没有访问权，这在沙盒内无解。
 #
 # 三档开关：
 #   enabled = false                → 与没有沙盒时完全一致（默认）
 #   enabled = true, mode = "off"   → dry-run：只判定并记录「本会拦什么」
 #   enabled = true, mode = "appcontainer" → 真隔离（AppContainer 身份 + Job 限额）
 #
-# 真隔离下：工作区可读写，宿主用户目录（含 ~/.ssh、~/.OmniCrawl）不可读，
-# 网络能力为 0（回环代理是 P3）。沙盒内 PowerShell 固定用 5.1：pwsh 7 在
-# AppContainer 里加载不出任何 cmdlet。
+# 真隔离下：工作区可读写，宿主用户目录（含 ~/.ssh、~/.OmniCrawl）不可读。
+# 沙盒内 PowerShell 优先用 7.* 最新安装（按 `PowerShell\7`、`7.4` 这类目录的版本号挑选），
+# 首次使用时在容器里实测一次；环境异常加载不出 cmdlet 时自动回退 Windows PowerShell 5.1。
+#
+# 网络是**应用层代理级，不是内核级**：容器没有任何网络能力（裸 socket 直接失败），
+# 出网只能经宿主的回环代理（`HTTP_PROXY` 注入），因此 curl/pip/npm/git/cargo 这类
+# 尊重代理变量的客户端受下面的 `[sandbox.net]` 判定约束。不覆盖的是直接读 WinINET
+# 用户代理设置的 .NET 客户端（如 PowerShell 的 `Invoke-WebRequest`）——它能绕开判定，
+# 详见设计文档 §20。需要严格不出网就设 policy = "offline"。
 #
 # 建议先跑一周 dry-run：提示随命令输出回显（`[sandbox dry-run]` 段），
 # 确认你的编译/依赖安装不会被拦，再考虑真切。
@@ -174,6 +181,13 @@ enabled = false
 mode = "off"
 
 # 额外可写路径（相对路径按工作区根）：工作区与 `.agent_tmp` 默认已可写。
+#
+# `readable` 是沙盒内**唯一**能扩大可读范围的手段。解释器（node/npm/python）若装在
+# 用户目录或自选盘符（如 `D:\ProgramData\Anaconda3`），容器默认读不到，命令会报
+# 「不是内部或外部命令」；把它们加进这里即可：
+#   readable = ["C:\Program Files\nodejs", "D:\ProgramData\Anaconda3"]
+# 注意：每次授予会改写该目录 DACL 并递整棵子树重算继承，大目录（几十万文件）首次
+# 可能要十几秒；ACE 会留在磁盘上，之后启动不再付费。不要把 `AppData` 祖先整目录加进来。
 # [sandbox.fs]
 # writable = []
 # readable = []

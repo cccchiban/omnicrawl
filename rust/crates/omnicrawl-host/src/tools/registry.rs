@@ -107,6 +107,32 @@ pub const VISION_RUNNERS: [&str; 1] = ["read_image"];
 pub const IMAGE_RUNNERS: [&str; 1] = ["image_gen"];
 /// 语音合成：与 Python 一致，未启用时整组不进表（runner 名与工具名不同）。
 pub const TTS_RUNNERS: [&str; 1] = ["tts"];
+/// 真隔离下 `bash` 不可用的原因与替代写法。
+///
+/// 实测结论：Git Bash 是 MSYS/Cygwin 程序，初始化时要打开 `/dev/null`；AppContainer 身份
+/// 对 `NUL` 设备没有访问权（`CreateFileW` → `ERROR_ACCESS_DENIED`），进程在 DLL 初始化阶段
+/// 就以 `0xC0000142` 退出，连 `--version` 都跑不出来。这与 PATH、ACL 无关，无法靠授权目录绕过。
+///
+/// 因此替代路径不是「换个解释器跑同样的脚本」，而是**换写法**：沙盒内的 Windows PowerShell
+/// 5.1 已实测能承担日常职责（管道、文件读写、`node`/`npm`/`python`/`pip`、退出码传递、
+/// UTF-8 中文输出）。下面给出 bash 惯用写法到 PowerShell 的逐条对应，让调用方一次改对。
+pub const BASH_UNAVAILABLE_IN_SANDBOX: &str =
+    "沙盒真隔离下无法执行 `bash`：Git Bash 依赖 `/dev/null`（即 Windows 的 `NUL` 设备），\
+     而 AppContainer 身份对该设备没有访问权，bash 在启动阶段就会以 0xC0000142 退出。\
+     这不是配置问题，无法通过授权目录解决。请改用 `powershell` 工具并换用等价写法：\
+     `cat/head/tail f` → `Get-Content f`（`-TotalCount N` / `-Tail N`）；\
+     `ls` → `Get-ChildItem`；`grep pat f` → `Select-String -Path f -Pattern pat`；\
+     `find . -name x` → `Get-ChildItem -Recurse -Filter x`；\
+     `echo a >> f` → `Add-Content -Path f -Value a`；\
+     `FOO=1 cmd` → `$env:FOO='1'; cmd`；\
+     `cmd && next` → `cmd; if ($LASTEXITCODE -eq 0) { next }`；\
+     `cmd1 | cmd2` → `cmd1 | cmd2`（管道语义一致）；\
+     `$?` → `$LASTEXITCODE`（外部程序）或 `$?`（cmdlet）；\
+     `test -f f` → `Test-Path f`；`mkdir -p d` → `New-Item -ItemType Directory -Force d`；\
+     `rm -rf d` → `Remove-Item -Recurse -Force d`；\
+     `sed -i 's/a/b/' f` → `(Get-Content f) -replace 'a','b' | Set-Content f`。\
+     沙盒内 `node`、`npm`、`python`、`pip` 可用（需其安装目录已授权可读）；\
+     如确实需要 bash，把 `[sandbox] mode` 设为 off。";
 /// 顾问工具：只有显式启用并选中顾问模型时才进表（与 Python 的 AdvisorConfig 一致）。
 pub const ADVISOR_RUNNER: &str = "advisor";
 /// Computer Use 工具：由内核自持执行，只受 `[computer_use] enabled` 约束。
@@ -270,6 +296,28 @@ fn build_sandbox(
     }
 }
 
+/// 沙盒真隔离下的工具开关：去掉 `bash`，补上 `powershell`。
+///
+/// 与 `[tools]` 段的开关正交：那边决定「这个工具存在吗」，这里决定「沙盒里它有意义吗」。
+/// `bash` 在 AppContainer 里必然失败（要打开 `NUL` 设备，见
+/// [`BASH_UNAVAILABLE_IN_SANDBOX`]），让它留在表里只会诱导模型调用一个注定报错的入口；
+/// 而 `powershell` 默认在 `[tools]` 里是关的，沙盒内却是唯一可用的解释器——不补进表，
+/// 模型将没有任何执行命令的途径。
+fn sandbox_tool_switches(sandbox: &crate::sandbox::Sandbox, configured: &[String]) -> Vec<String> {
+    if !sandbox.isolates() {
+        return configured.to_vec();
+    }
+    let mut switches: Vec<String> = configured
+        .iter()
+        .filter(|name| name.as_str() != "powershell")
+        .cloned()
+        .collect();
+    if !switches.iter().any(|name| name == "bash") {
+        switches.insert(0, "bash".to_string());
+    }
+    switches
+}
+
 impl ToolRegistry {
     pub fn new(
         root: impl Into<PathBuf>,
@@ -395,6 +443,12 @@ impl ToolRegistry {
             .iter()
             .map(|(name, _)| name.clone())
             .collect();
+        // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
+        // 不阻塞 Agent 启动。构造顺序在 `CommandRunner` 之前：它需要拿到策略。
+        let sandbox = build_sandbox(options, &paths, &config_env);
+        // 真隔离下没有 `bash`，`powershell` 是唯一可用的解释器：启动时就按沙盒调整工具表，
+        // 而不是让模型看见一个必然失败的入口再去纠正。
+        let disabled_tools = sandbox_tool_switches(&sandbox, &options.disabled_tools);
         let catalog_options = ToolCatalogOptions {
             available: &available_refs,
             memory_enabled: options.memory_enabled,
@@ -402,7 +456,7 @@ impl ToolRegistry {
             mcp_tools: &mcp_tools,
             mcp_resources: &mcp_resources,
             mcp_prompts: &mcp_prompts,
-            disabled_tools: &options.disabled_tools,
+            disabled_tools: &disabled_tools,
             windows_tools: options.windows_tools,
         };
         let specs = build_agent_tools(&catalog_options)
@@ -416,9 +470,7 @@ impl ToolRegistry {
                 .collect(),
             None => specs,
         };
-        // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
-        // 不阻塞 Agent 启动。构造顺序在 `CommandRunner` 之前：它需要拿到策略。
-        let sandbox = build_sandbox(options, &paths, &config_env);
+        // 同步命令与后台命令共用同一份沙盒策略：两者必须走同一套隔离规则。
         let commands = CommandRunner::with_sandbox(
             paths.root(),
             if command_timeout_seconds <= 0 {
@@ -432,6 +484,9 @@ impl ToolRegistry {
             Some(monitors) => monitors,
             None => MonitorManager::new(paths.root()),
         };
+        // 后台命令与同步命令走同一套隔离规则：`monitor` 起的进程必须也进容器，
+        // 否则沙盒下它是一条以宿主身份运行的旁路。
+        monitors.use_sandbox(sandbox.clone());
         let knowledge = KnowledgeBase::new(
             options
                 .knowledge_root
@@ -497,6 +552,17 @@ impl ToolRegistry {
     /// 宿主退出：回收仍在运行的后台进程，避免留下孤儿。
     pub fn close_monitors(&self) {
         self.monitors.close();
+    }
+
+    /// 宿主退出：销毁本次会话建过的沙盒容器 profile。
+    ///
+    /// 容器名按「用户 + 工作区」派生，一个工作区对应一个 profile；不清理就会随
+    /// 换工作区不断累积（实测本机已积 43 个）。销毁是安全的：同名容器派生的 SID
+    /// 恒定，磁盘上给该 SID 的 ACE 在下次重建 profile 后继续有效。
+    ///
+    /// 返回被销毁的容器名，供调用方写进退出诊断。
+    pub fn discard_sandbox_container(&self) -> Option<String> {
+        self.sandbox.discard_container()
     }
 
     /// 宿主退出：关闭 MCP 连接，不给系统留下孤儿子进程。
@@ -797,15 +863,14 @@ impl ToolRegistry {
     }
 
     fn run_command(&self, arguments: &Map<String, Value>, shell: Shell) -> ToolResult {
-        // 真隔离目前只接 PowerShell：Git Bash 还需要 MSYS 运行时目录与用户级配置的
-        // 最小可读集合（设计文档 §17「已知限制」）。这里**明确拒绝**而不是悄悄用宿主身份
-        // 跑——后者会让人以为环境已经隔离。
+        // 真隔离下 `bash` 一律拒绝，且这是**实测得出的硬限制**，不是没做完：
+        // Git Bash 是 MSYS/Cygwin 程序，启动时要打开 `/dev/null`（映射到 `NUL` 设备）。
+        // AppContainer 身份对这个设备拿不到任何访问权（实测 `CreateFileW` 返回 ERROR_ACCESS_DENIED 5），
+        // 于是 `bash.exe` 在 DLL 初始化阶段就以 0xC0000142 退出——连 `--version` 都跑不出来。
+        // 这条限制与 PATH、ACL 无关，没法通过授权目录绕过，所以只能明确拒绝；
+        // 悄悄退回宿主身份会让人以为环境已经隔离。
         if self.sandbox.isolates() && shell == Shell::Bash {
-            return command_result(
-                false,
-                "沙盒真隔离目前只覆盖 `powershell` 工具；`bash` 仍会以宿主身份运行，                 因此已拒绝执行。请改用 `powershell`，或把 `[sandbox] mode` 设为 off。"
-                    .to_string(),
-            );
+            return command_result(false, BASH_UNAVAILABLE_IN_SANDBOX.to_string());
         }
         // dry-run 只做判定与记录，不改执行；真隔离时判定用于日志，写由 ACL 兜底。
         let notice = if let Some(Value::String(command)) = arguments.get("command") {
@@ -1880,16 +1945,194 @@ mode = \"review\"
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 真隔离下 `bash` 必须明确拒绝：Git Bash 还没接入（P2），
-    /// 悄悄退回宿主身份会让人以为已经隔离。
+    /// 沙盒内 PowerShell 优先用 7.*：装了 pwsh 就必须真的选中它，并且它得能跑。
+    ///
+    /// 这条守的是「优先 7.*」这一半。修复前的表现是：容器内 `C:\` 不可遍历，pwsh 建立
+    /// `C:` 驱动器失败，它自己的内置模块全部导入不了，于是连 `Write-Output` 都报「无法识别」，
+    /// 探测只能一路回退到 5.1——本用例会失败。回退路径本身由
+    /// [`crate::sandbox::runtime::tests::powershell_falls_back_to_windows_powershell_last`] 覆盖。
     #[cfg(windows)]
     #[test]
-    fn appcontainer_refuses_bash_instead_of_running_unescaped() {
+    fn appcontainer_prefers_powershell_7_when_it_works() {
+        let env = |name: &str| std::env::var(name).ok();
+        let has_pwsh = crate::sandbox::runtime::powershell_candidates(&env)
+            .iter()
+            .any(|path| path.to_string_lossy().to_ascii_lowercase().ends_with("pwsh.exe"));
+        if !has_pwsh {
+            // 没装 pwsh 的机器上这条无从验证，交给回退用例。
+            return;
+        }
         let root = std::env::current_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(".omnicrawl")
             .join(".agent_tmp")
-            .join("sandbox-bash-refusal-test");
+            .join("sandbox-pwsh-preference-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+        let result = registry
+            .execute(&call(
+                "powershell",
+                json!({"command": "$PSVersionTable.PSVersion.Major"}),
+            ))
+            .expect("powershell 应当被本宿主处理");
+        let selected = registry
+            .sandbox()
+            .isolation()
+            .ok()
+            .and_then(|isolation| isolation.powershell());
+        assert!(
+            selected
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_ascii_lowercase().ends_with("pwsh.exe"))
+                .unwrap_or(false),
+            "装了 pwsh 就必须选中它，实际：{selected:?}"
+        );
+        assert!(result.ok, "选中 pwsh 后必须能跑命令：{}", result.output);
+        assert!(
+            result.output.contains('7'),
+            "选中 pwsh 时版本应是 7.*：{}",
+            result.output
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真隔离下 `bash` 根本不进工具表：它在容器里必然失败，留在表里只会诱导模型
+    /// 调用一个注定报错的入口；同一次构建里 `powershell` 必须自动补进表——
+    /// `[tools]` 默认是关的，不补就等于沙盒内没有任何执行命令的途径。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_swaps_bash_out_of_the_table_for_powershell() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-tool-switch-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let options = RegistryOptions {
+            sandbox: Some(Arc::new(crate::sandbox::Sandbox::new(
+                config,
+                root.clone(),
+                root.join(".omnicrawl").join(".agent_tmp"),
+            ))),
+            // 与 `[tools]` 的默认一致：`powershell` 关、其余开。
+            disabled_tools: vec!["powershell".to_string()],
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(
+            !names.contains("bash"),
+            "真隔离下 bash 不该进表：{names:?}"
+        );
+        assert!(
+            names.contains("powershell"),
+            "真隔离下 powershell 必须自动进表：{names:?}"
+        );
+        // 表即权限：不在表里的工具连执行入口都不该给出。
+        assert!(
+            registry
+                .execute(&call("bash", json!({"command": "echo hi"})))
+                .is_none(),
+            "bash 不在表里时不该被本宿主处理"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 沙盒关闭时工具表一字不改：`[tools]` 关掉的 `powershell` 不能被悄悄打开。
+    #[test]
+    fn a_disabled_sandbox_leaves_the_tool_table_alone() {
+        let options = RegistryOptions {
+            disabled_tools: vec!["powershell".to_string()],
+            sandbox: Some(Arc::new(crate::sandbox::Sandbox::disabled(
+                std::env::temp_dir(),
+                std::env::temp_dir(),
+            ))),
+            ..RegistryOptions::default()
+        };
+        let switches = sandbox_tool_switches(
+            options.sandbox.as_ref().expect("已注入策略"),
+            &options.disabled_tools,
+        );
+        assert_eq!(switches, ["powershell".to_string()]);
+    }
+
+    /// P2：解释器目录未被授权时，沙盒内**如实不可用**，而不是给出误导性报错。
+    ///
+    /// 这台机器把 node 装在 Program Files 下的 nodejs 目录，而该目录的 DACL 里没有
+    /// `ALL APPLICATION PACKAGES`，容器读不到——`node` 必须失败，且失败要说清楚
+    /// （"不是内部或外部命令" 是 cmd 的措辞，不该由我们制造）。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_reports_interpreters_it_cannot_reach() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-interpreter-reach-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let isolation = sandbox.isolation().expect("准备隔离环境");
+        // 至少要能给出"可用/跳过"两类结论之一，不能全无声息。
+        assert!(
+            !isolation.runtimes().is_empty() || !isolation.skipped_runtimes().is_empty(),
+            "解释器目录既不可用也未报告，用户无从得知原因"
+        );
+        // 但凡被跳过，必须说明怎么办。
+        for (path, reason) in isolation.skipped_runtimes() {
+            assert!(
+                reason.contains("sandbox.fs") || reason.contains("readable"),
+                "跳过的 {} 缺少可操作说明：{reason}",
+                path.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 沙盒内必须能删掉自己创建的东西。
+    ///
+    /// 授权掩码曾经只给 `GENERIC_READ|WRITE|EXECUTE`，其中**不含删除**：
+    /// 目录能建、文件能写，但 `Remove-Item`、`rmdir /s`、`Directory.Delete`
+    /// 一律报「访问被拒绝」。删除刚生成的构建产物是最日常的动作，
+    /// 这条用例守住 `DELETE`/`FILE_DELETE_CHILD` 不被删掉。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_can_delete_what_it_created() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-delete-test");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建工作区");
         let config = omnicrawl_config::features::sandbox::SandboxConfig {
@@ -1906,15 +2149,91 @@ mode = \"review\"
             ..RegistryOptions::default()
         };
         let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
         let result = registry
-            .execute(&call("bash", json!({"command": "echo hi"})))
-            .expect("bash 应当被本宿主处理");
-        assert!(!result.ok, "{}", result.output);
+            .execute(&call(
+                "powershell",
+                json!({"command": "New-Item -ItemType Directory -Force d | Out-Null; \
+                         Set-Content d/x.txt -Value hi; \
+                         Remove-Item d -Recurse -Force; \
+                         if (Test-Path d) { 'still-there' } else { 'gone' }"}),
+            ))
+            .expect("powershell 应当被本宿主处理");
         assert!(
-            result.output.contains("只覆盖 `powershell`"),
-            "{}",
+            result.output.contains("gone"),
+            "沙盒内必须能删掉自己创建的目录：{}",
             result.output
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 沙盒内的 `bash` 拒绝文案必须给出**可照做**的替代写法。
+    ///
+    /// 文案是模型唯一的迁移依据：只写「改用 powershell」而不给映射，
+    /// 模型会把 bash 脚本原样搬过去，然后接连撞墙。这里锚定几条最常用的对应。
+    #[test]
+    fn bash_refusal_teaches_the_powershell_equivalents() {
+        for (bash, powershell) in [
+            ("Get-Content", "cat"),
+            ("Select-String", "grep"),
+            ("Get-ChildItem", "ls"),
+            ("$LASTEXITCODE", "$?"),
+            ("Set-Content", "sed"),
+        ] {
+            assert!(
+                BASH_UNAVAILABLE_IN_SANDBOX.contains(bash),
+                "拒绝文案缺少 {bash}（对应 bash 的 {powershell}）：{BASH_UNAVAILABLE_IN_SANDBOX}"
+            );
+        }
+        assert!(
+            BASH_UNAVAILABLE_IN_SANDBOX.contains("powershell"),
+            "{}",
+            BASH_UNAVAILABLE_IN_SANDBOX
+        );
+    }
+
+    /// P2：沙盒内 PATH 必须**只含容器可读目录**，否则程序查找会在解析阶段失败。
+    ///
+    /// `npm.cmd` 是最敏感的探针：它是批处理包装，靠 PATH 找 `node.exe`；
+    /// 只要 PATH 前面有不存在的项，就会报"不是内部或外部命令"，把根因完全掩盖。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_does_not_inherit_the_host_path() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-path-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
+        let result = registry
+            .execute(&call("powershell", json!({"command": "$env:PATH"})))
+            .expect("powershell 应当被本宿主处理");
+        assert!(result.ok, "{}", result.output);
+        // 宿主 PATH 里典型但容器读不到的项不能出现。
+        for forbidden in [r"\.cargo\bin", r"\WindowsApps", r"\Microsoft\WinGet"] {
+            assert!(
+                !result.output.contains(forbidden),
+                "沙盒 PATH 不应包含宿主私有目录 {forbidden}：{}",
+                result.output
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1938,5 +2257,130 @@ mode = \"review\"
         assert!(result.ok, "{}", result.output);
         assert!(!result.output.contains("sandbox"), "{}", result.output);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `monitor` 起的后台命令必须也进沙盒，不能是宿主身份的旁路。
+    ///
+    /// 这条守的是一处真实旁路：`MonitorManager` 曾经用裸 `Command` 起进程且完全不看
+    /// 沙盒策略，于是同步 `powershell` 被容器限制住、`monitor(shell=powershell)`
+    /// 却能以宿主身份删掉容器删不掉的东西。
+    #[cfg(windows)]
+    #[test]
+    fn background_monitors_run_inside_the_sandbox_too() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-monitor-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox.clone()),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
+        // 同一条命令在同步路径里会被容器执行；后台路径必须一致。
+        let started = registry
+            .execute(&call(
+                "monitor",
+                json!({"action": "start", "command": "Write-Output sandbox-probe", "shell": "powershell"}),
+            ))
+            .expect("monitor 应当被本宿主处理");
+        assert!(started.ok, "{}", started.output);
+        let monitor_id = started
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("已启动后台任务："))
+            .expect("启动结果里应有任务 id")
+            .trim()
+            .to_string();
+
+        // 启动事件必须如实标注隔离身份，否则用户无法分辨任务跑在哪。
+        let polled = registry
+            .execute(&call(
+                "monitor",
+                json!({"action": "poll", "monitor_id": monitor_id, "cursor": 0, "wait_seconds": 20}),
+            ))
+            .expect("monitor 应当被本宿主处理");
+        assert!(
+            polled.output.contains("[sandbox:appcontainer]"),
+            "后台任务没有走沙盒：{}",
+            polled.output
+        );
+
+        let listed = registry
+            .execute(&call("monitor", json!({"action": "list"})))
+            .expect("monitor 应当被本宿主处理");
+        assert!(
+            listed.output.contains("[sandbox:appcontainer]"),
+            "list 未标出隔离身份：{}",
+            listed.output
+        );
+
+        registry.close_monitors();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 退出清理要能把本次建过的容器 profile 删掉。
+    ///
+    /// 容器名按「用户 + 工作区」派生，不清理就会随工作区切换不断累积。
+    /// 删除是安全的：同名容器派生的 SID 恒定，磁盘上给该 SID 的 ACE 下次仍然有效。
+    #[cfg(windows)]
+    #[test]
+    fn discarding_a_container_removes_its_profile() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join("sandbox-discard-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let isolation = sandbox.isolation().expect("准备隔离环境");
+        let name = isolation.container_name().to_string();
+        drop(isolation);
+
+        let removed = sandbox.discard_container();
+        assert_eq!(
+            removed.as_deref(),
+            Some(name.as_str()),
+            "退出清理应当报告被销毁的容器名"
+        );
+        // 已经销毁过，再清一次没有可清理的对象。
+        assert!(sandbox.discard_container().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 没进过隔离的沙盒不该去删同名的既存 profile。
+    ///
+    /// 容器名只由「用户 + 工作区」决定，同工作区的两个实例同名；一个从未用过沙盒的
+    /// 实例若照删不误，就会把另一个正在用的实例的容器删掉。
+    #[test]
+    fn a_sandbox_that_never_ran_isolated_discards_nothing() {
+        let sandbox = crate::sandbox::Sandbox::disabled(
+            std::env::temp_dir(),
+            std::env::temp_dir().join(".omnicrawl").join(".agent_tmp"),
+        );
+        assert!(sandbox.discard_container().is_none());
     }
 }

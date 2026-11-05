@@ -51,11 +51,14 @@ pub fn handle_sandbox_command(ctx: &CommandContext<'_>) -> CommandResult {
             );
         }
         if config.isolates() {
-            lines.push(
-                "⚠ 当前版本尚未实现真隔离的执行路径，`mode = appcontainer` 暂不生效；\
-                 实际行为等同 dry-run。"
-                    .to_string(),
-            );
+            let network = if config.net_policy == NetPolicy::Offline {
+                "网络：offline，沙盒内完全不能出网。"
+            } else {
+                "网络：经宿主的回环代理出网（HTTP_PROXY 注入）。这是应用层代理级，不是内核级：\
+                 尊重代理变量的客户端（curl/pip/npm/git/cargo）受 `[sandbox.net]` 判定约束，\
+                 直接读 WinINET 设置的 .NET 客户端可能绕开判定。裸 socket 仍然失败。"
+            };
+            lines.push(network.to_string());
         }
     }
     lines.push(format!(
@@ -125,7 +128,8 @@ pub fn handle_sandbox_set_command(ctx: &CommandContext<'_>) -> CommandResult {
                 Ok(mode) => {
                     section.insert("enabled".to_string(), Value::Boolean(true));
                     section.insert("mode".to_string(), Value::String(mode.as_str().to_string()));
-                    "沙盒已设为 appcontainer。注意：真隔离的执行路径尚未实现，当前等同 dry-run。"
+                    "沙盒已设为 appcontainer：命令以 AppContainer 身份执行，工作区可读写、\
+                     宿主用户目录不可读，出网经宿主回环代理。"
                         .to_string()
                 }
                 Err(error) => return CommandResult::message(error.message().to_string()),
