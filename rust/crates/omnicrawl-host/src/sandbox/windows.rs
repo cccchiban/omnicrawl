@@ -21,7 +21,7 @@ use std::io;
 use std::mem::size_of;
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use windows_sys::Win32::Foundation::PSID;
@@ -327,6 +327,14 @@ pub fn revoke(path: &Path, sid: *mut c_void) -> Result<(), String> {
     edit_ace(path, sid, 0, false, REVOKE_ACCESS)
 }
 
+/// DACL 编辑的进程级串行化。
+///
+/// 「读 DACL → 加 ACE → 写回」不是原子操作：两条命令并发首次准备沙盒时，各自读到同一份
+/// 旧 DACL，后者写回的内容会把前者刚加的 ACE 抹掉。症状极其误导——工作区突然「拒绝访问」，
+/// 或容器内的 PowerShell 把相对路径解析到 `C:\`，看起来像路径写错。
+/// 代价可以忽略：准备只在首次使用时发生一次。
+static DACL_EDIT: Mutex<()> = Mutex::new(());
+
 fn edit_ace(
     path: &Path,
     sid: *mut c_void,
@@ -334,6 +342,7 @@ fn edit_ace(
     inherit: bool,
     mode: i32,
 ) -> Result<(), String> {
+    let _serial = DACL_EDIT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let wide_path = wide(&path.to_string_lossy());
     let mut old_dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
     let mut descriptor: *mut c_void = std::ptr::null_mut();
@@ -1128,8 +1137,14 @@ impl Isolation {
         // 卷根本来就有大量同类 ACE，且这一条不改写继承。
         for root in system_drive_roots() {
             if !granted.iter().any(|entry| entry == &root) && !can_traverse(&root, sid) {
-                // 失败不致命：容器内 PowerShell 会退回到 5.1，命令仍能跑。
-                let _ = grant(&root, sid, TRAVERSE_ONLY, false);
+                // 失败不致命：容器内 PowerShell 会退回到 5.1，命令仍能跑。但必须留下
+                // 原因——否则症状只是「pwsh 莫名其妙不能用」，与权限拒绝毫无相似之处。
+                if let Err(error) = grant(&root, sid, TRAVERSE_ONLY, false) {
+                    eprintln!(
+                        "[sandbox] 无法给系统盘根 {} 授予遍历权：{error}",
+                        root.display()
+                    );
+                }
             }
             granted.push(root);
         }
@@ -1886,11 +1901,21 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn appcontainer_can_traverse_the_system_drive_root() {
+        // 工作区名带唯一后缀：容器 SID 由工作区派生，复用同名目录会拿到上一次运行
+        // 留在卷根上的 ACE，这条用例就成了「本来就有权限」的假通过。CI 是全新机器，
+        // 每次都是首次授权，本地也必须复现同样条件。
         let root = std::env::current_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(".omnicrawl")
             .join(".agent_tmp")
-            .join("sandbox-system-drive-test");
+            .join(format!(
+                "sandbox-system-drive-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis())
+                    .unwrap_or_default()
+            ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建工作区");
         let config = omnicrawl_config::features::sandbox::SandboxConfig {

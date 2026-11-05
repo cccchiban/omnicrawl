@@ -177,8 +177,8 @@ review_model = ""
 # 建议先跑一周 dry-run：提示随命令输出回显（`[sandbox dry-run]` 段），
 # 确认你的编译/依赖安装不会被拦，再考虑真切。
 #[sandbox]
-enabled = false
-mode = "off"
+# enabled = false
+# mode = "off"
 
 # 额外可写路径（相对路径按工作区根）：工作区与 `.agent_tmp` 默认已可写。
 #

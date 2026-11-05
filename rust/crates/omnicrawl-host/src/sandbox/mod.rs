@@ -833,6 +833,7 @@ mod tests {
             .is_allowed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn writes_outside_the_workspace_are_denied_in_dry_run() {
         let sandbox = sandbox(enabled(SandboxMode::Off));
@@ -843,6 +844,7 @@ mod tests {
         assert_eq!(sandbox.blocked_summary().len(), 1);
     }
 
+    #[cfg(windows)]
     #[test]
     fn traversal_cannot_escape_the_workspace() {
         let sandbox = sandbox(enabled(SandboxMode::Off));
@@ -855,6 +857,7 @@ mod tests {
             .is_allowed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn prefix_lookalikes_are_not_treated_as_inside() {
         let sandbox = sandbox(enabled(SandboxMode::Off));
@@ -872,6 +875,7 @@ mod tests {
             .is_allowed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn extra_writable_entries_widen_the_write_set() {
         let mut config = enabled(SandboxMode::Off);
@@ -885,6 +889,7 @@ mod tests {
             .is_allowed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn readable_entries_do_not_grant_write() {
         let mut config = enabled(SandboxMode::Off);
@@ -1036,6 +1041,7 @@ mod tests {
             .is_allowed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn summary_counts_only_blocked_entries() {
         let sandbox = sandbox(enabled(SandboxMode::Off));
@@ -1058,6 +1064,7 @@ mod tests {
         assert_eq!(split_target("a:b"), ("a:b", None));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_command_touching_outside_paths_gets_a_dry_run_notice() {
         let sandbox = sandbox(enabled(SandboxMode::Off));
@@ -1068,6 +1075,7 @@ mod tests {
         assert!(notice.contains("拦截"), "{notice}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn reading_a_secret_outside_the_workspace_is_reported_as_a_read() {
         // `copy` 是「读源文件、写到目标」：源路径属于**读**。只报「写」会漏掉外泄路径。
@@ -1077,6 +1085,7 @@ mod tests {
         assert!(notice.contains("id_rsa"), "{notice}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_path_both_read_and_written_is_reported_twice() {
         // 工作区外的路径既不读也不写，两个限制都该说清楚（一条读、一条写）。
@@ -1127,6 +1136,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn notice_deduplicates_repeated_subjects() {
         let sandbox = sandbox(enabled(SandboxMode::Off));

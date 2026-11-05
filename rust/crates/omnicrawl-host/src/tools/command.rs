@@ -739,6 +739,7 @@ mod tests {
     /// 两者分开不是为了形式：`-ExecutionPolicy Bypass` 等于绕过用户自己的安全设置，
     /// 在宿主上这么做是越权。沙盒内则是唯一可行选择——AppContainer 读不到策略注册表，
     /// 不补 Bypass 就连 `npm.cmd` 都跑不起来。
+    #[cfg(windows)]
     #[test]
     fn only_the_sandbox_adds_execution_policy_bypass() {
         let env = |name: &str| match name {

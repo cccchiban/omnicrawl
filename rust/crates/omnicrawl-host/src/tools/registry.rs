@@ -2128,11 +2128,20 @@ mode = \"review\"
     #[cfg(windows)]
     #[test]
     fn appcontainer_can_delete_what_it_created() {
+        // 目录名唯一：容器 SID 由工作区派生，复用同名目录会让这条用例拿到上一次运行
+        // 留下的 ACE 与残留文件，测到的就不是「首次进入容器」的真实条件。
         let root = std::env::current_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(".omnicrawl")
             .join(".agent_tmp")
-            .join("sandbox-delete-test");
+            .join(format!(
+                "sandbox-delete-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis())
+                    .unwrap_or_default()
+            ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建工作区");
         let config = omnicrawl_config::features::sandbox::SandboxConfig {

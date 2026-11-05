@@ -243,6 +243,7 @@ mod tests {
         move |name: &str| map.get(name).cloned()
     }
 
+    #[cfg(windows)]
     #[test]
     fn path_entries_are_classified_by_name() {
         assert_eq!(
@@ -264,6 +265,7 @@ mod tests {
         assert_eq!(classify(Path::new(r"C:\Users\X\.ssh")), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn npm_global_prefix_is_never_granted() {
         // 授 `AppData\Roaming\npm` 会让 npm 拿它当有效 prefix 继续解析用户目录，
@@ -410,6 +412,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_preview_install_loses_to_the_stable_one() {
         let root = std::env::temp_dir().join("omnicrawl-pwsh-preview");
