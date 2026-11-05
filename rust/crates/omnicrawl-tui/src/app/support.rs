@@ -23,7 +23,11 @@ pub(super) fn field_text(values: &[FieldValue], index: usize) -> String {
 }
 
 /// 表单字段的正整数取值（对映 Python 的 `_read_positive_int`）。
-pub(super) fn positive_int(values: &[FieldValue], index: usize, label: &str) -> Result<i64, String> {
+pub(super) fn positive_int(
+    values: &[FieldValue],
+    index: usize,
+    label: &str,
+) -> Result<i64, String> {
     let raw = field_text(values, index);
     let value: i64 = raw
         .trim()
@@ -36,7 +40,11 @@ pub(super) fn positive_int(values: &[FieldValue], index: usize, label: &str) -> 
 }
 
 /// 表单字段的非负整数取值（0 合法，如「NER 缓存容量 0 关闭」）。
-pub(super) fn non_negative_int(values: &[FieldValue], index: usize, label: &str) -> Result<i64, String> {
+pub(super) fn non_negative_int(
+    values: &[FieldValue],
+    index: usize,
+    label: &str,
+) -> Result<i64, String> {
     let raw = field_text(values, index);
     let value: i64 = raw
         .trim()
@@ -107,7 +115,10 @@ pub(super) fn channel_for_key(environment: &ConfigEnvironment, key: &str) -> Opt
 ///
 /// 「顾问渠道 + 顾问模型」：把配置里的 `model_key` 拆成渠道与模型两段
 /// （与 `/advisor` 的命令行解析同一套口径，见 [`split_token`]）。
-pub(super) fn advisor_form_values(config: &AdvisorConfig, channels: &[ChannelRow]) -> Vec<FieldValue> {
+pub(super) fn advisor_form_values(
+    config: &AdvisorConfig,
+    channels: &[ChannelRow],
+) -> Vec<FieldValue> {
     let (channel, model) = split_token(&config.model_key, channels);
     vec![
         FieldValue::Flag(config.enabled),
@@ -205,6 +216,27 @@ pub(super) fn run_guard_form_values(config: &RunGuardConfig) -> Vec<FieldValue> 
         FieldValue::Text(config.guard.auto_retry_errors.join(", ")),
         FieldValue::Flag(config.continuation.enabled),
         FieldValue::Text(config.continuation.max_auto_followups.to_string()),
+    ]
+}
+
+/// 沙盒页的字段初值；顺序与 `FormKind::Sandbox` 的字段表一致。
+///
+/// 两个域名列表与两个路径列表都用逗号分隔：与「持续运转」页的多值字段同口径，
+/// 切分与去空在 `apply_sandbox_form` 里做。
+pub(super) fn sandbox_form_values(config: &SandboxConfig) -> Vec<FieldValue> {
+    vec![
+        FieldValue::Flag(config.enabled),
+        FieldValue::Text(config.mode.as_str().to_string()),
+        FieldValue::Text(config.writable.join(", ")),
+        FieldValue::Text(config.readable.join(", ")),
+        FieldValue::Text(config.net_policy.as_str().to_string()),
+        FieldValue::Text(config.net_allow.join(", ")),
+        FieldValue::Text(config.net_deny.join(", ")),
+        FieldValue::Text(config.net_approval_timeout_seconds.to_string()),
+        FieldValue::Flag(config.net_log_all),
+        FieldValue::Text(config.limits.max_processes.to_string()),
+        FieldValue::Text(config.limits.max_memory_mb.to_string()),
+        FieldValue::Text(config.limits.cpu_rate_percent.to_string()),
     ]
 }
 
@@ -550,7 +582,11 @@ pub(super) fn effective_context_window(explicit: Option<u64>, llm: &LlmConfig) -
 ///
 /// `--base-url` 指向外部渠道时不再叠加配置：那份 `native_vision` 描述的是配置里选中的
 /// 模型，而外部渠道跑的是命令行给的那个模型（与 Provider / 协议 / 生成选项同一口径）。
-pub(super) fn effective_native_vision(external_channel: bool, explicit: bool, llm: &LlmConfig) -> bool {
+pub(super) fn effective_native_vision(
+    external_channel: bool,
+    explicit: bool,
+    llm: &LlmConfig,
+) -> bool {
     if explicit {
         return true;
     }
@@ -623,7 +659,9 @@ pub(super) fn generation_options(llm: &LlmConfig) -> Value {
 
 /// 工具开关行：按 `TOOL_SWITCH_KEYS` 的顺序，注册状态来自当前工具表。
 /// MCP 配置 → 设置面板初值。
-pub(super) fn mcp_values_from_config(config: &omnicrawl_mcp::config::McpConfig) -> McpSettingsValues {
+pub(super) fn mcp_values_from_config(
+    config: &omnicrawl_mcp::config::McpConfig,
+) -> McpSettingsValues {
     McpSettingsValues {
         enabled: config.enabled,
         allow_external_network_tools: config.policy.allow_external_network_tools,

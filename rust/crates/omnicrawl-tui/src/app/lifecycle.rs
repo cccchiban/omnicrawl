@@ -115,6 +115,10 @@ impl App {
         self.registry.close_monitors();
         self.registry.close_mcp();
         self.finalize_isolation();
+        // 容器 profile 必须最后销毁：后台进程与代理都还持有这个容器的 SID。
+        if let Some(name) = self.registry.discard_sandbox_container() {
+            diagnostics::info(format!("[sandbox] 已销毁容器 {name}"));
+        }
         // 临时目录清理线程随进程退出而停：`join` 掉，避免留下悬挂工作。
         if let Some(installation) = self.agent_temp.as_mut() {
             installation.close();

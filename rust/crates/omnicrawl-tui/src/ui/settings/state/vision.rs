@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     /// 视觉设置页：`↑↓` 选列表项、空格 开关、`A` 添加、`D` 删除、`N` 原生视觉三态。
     pub(super) fn handle_vision_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match key {

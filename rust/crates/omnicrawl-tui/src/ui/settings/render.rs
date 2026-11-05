@@ -615,7 +615,7 @@ fn render_decision_models(frame: &mut Frame, area: Rect, state: &SettingsState, 
 ///
 /// ```text
 /// › [x] Jev 主渠道 [默认]
-///     jev  jev-latest  https://jevtypesafeai.com/api
+///     jev  jev-latest  https://api.typesafe.ai
 ///
 ///  功能开关
 ///   [x] 工具调用审查使用决策模型
@@ -1632,7 +1632,11 @@ fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsState, focus
     let selected = state.suggestion_selected();
     let mut lines: Vec<Line<'static>> = Vec::new();
     // 开关行与「Skills」分区标题固定在上方，滚动只作用在 Skill 行上。
-    let value = if state.suggestion_enabled() { "开启" } else { "关闭" };
+    let value = if state.suggestion_enabled() {
+        "开启"
+    } else {
+        "关闭"
+    };
     lines.push(Line::styled(
         fit(
             &format!(
@@ -1658,7 +1662,10 @@ fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsState, focus
     let offset = window_offset(selected_skill, skills.len(), body_height);
     for (index, row) in skills.iter().enumerate().skip(offset).take(body_height) {
         let current = index + 1 == selected;
-        state.record_hit(row_hit(list_area, lines.len()), HitAction::PaneRow(index + 1));
+        state.record_hit(
+            row_hit(list_area, lines.len()),
+            HitAction::PaneRow(index + 1),
+        );
         lines.push(Line::styled(
             fit(
                 &format!(
@@ -1720,7 +1727,9 @@ fn render_suggestion_detail(frame: &mut Frame, area: Rect, state: &SettingsState
         };
         let wrapped = crate::ui::wrap_display(description, width);
         state.set_suggestion_detail_total(wrapped.len());
-        let start = state.suggestion_detail_scroll().min(wrapped.len().saturating_sub(1));
+        let start = state
+            .suggestion_detail_scroll()
+            .min(wrapped.len().saturating_sub(1));
         for row in wrapped.iter().skip(start).take(SUGGESTION_DETAIL_ROWS) {
             lines.push(Line::styled(fit(row, width), body_text_style()));
         }

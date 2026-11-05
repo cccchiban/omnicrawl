@@ -5,19 +5,15 @@
 use super::*;
 
 impl SettingsState {
-
-
     // ---------- 只读访问（渲染层用） ----------
 
     pub fn rows(&self) -> [&'static str; ROW_ORDER.len()] {
         ROW_ORDER
     }
 
-
     pub fn dropdown(&self) -> Option<Dropdown> {
         self.dropdown
     }
-
 
     /// 单选页当前值的显示文本；不在单选页时返回空串。
     pub fn choice_value(&self) -> String {
@@ -27,61 +23,50 @@ impl SettingsState {
         }
     }
 
-
     pub fn tool_rows(&self) -> &[ToolSwitchRow] {
         &self.tools.rows
     }
 
-
     pub fn tool_selected(&self) -> usize {
         self.tools.selected
     }
-
 
     /// 工具页首行的审查模式显示文案（`工具调用审查：自动审查`）。
     pub fn tool_approval_value(&self) -> String {
         approval_mode_label(&self.tools.approval)
     }
 
-
     /// 工具页的可选行数：审查模式 + 逐工具开关。
     pub fn tool_row_count(&self) -> usize {
         self.tools.rows.len() + TOOLS_SWITCH_ROW_OFFSET
     }
 
-
     pub fn subagent_rows(&self) -> &[SubagentRow] {
         &self.subagents.rows
     }
-
 
     /// 提问建议页的开关当前是否开启。
     pub fn suggestion_enabled(&self) -> bool {
         self.suggestion.enabled
     }
 
-
     /// 提问建议页下方列表里的 Skill（渲染层用）。
     pub fn suggestion_skills(&self) -> &[SuggestionSkillRow] {
         &self.suggestion.skills
     }
 
-
     pub fn suggestion_selected(&self) -> usize {
         self.suggestion.selected
     }
-
 
     /// 详情态下是否正显示某个 Skill 的描述。
     pub fn suggestion_detail_open(&self) -> bool {
         self.suggestion.detail.is_some()
     }
 
-
     pub fn subagent_selected(&self) -> usize {
         self.subagents.selected
     }
-
 
     /// MCP 全局设置行（渲染层用）。
     pub fn mcp_rows(&self) -> Vec<McpRowView> {
@@ -99,23 +84,19 @@ impl SettingsState {
             .collect()
     }
 
-
     /// MCP 面板当前是否停在 Server 列表。
     pub fn mcp_servers_view(&self) -> bool {
         self.mcp.servers_view
     }
-
 
     /// MCP Server 列表（渲染层用）。
     pub fn mcp_server_rows(&self) -> &[McpServerRow] {
         &self.mcp.servers
     }
 
-
     pub fn mcp_server_selected(&self) -> usize {
         self.mcp.server_selected
     }
-
 
     /// 正在编辑的 Server 标题；不在编辑器时为 `None`。
     pub fn mcp_editor_title(&self) -> Option<String> {
@@ -127,7 +108,6 @@ impl SettingsState {
             }
         })
     }
-
 
     /// Server 编辑器的字段行；不在编辑器时为空。
     pub fn mcp_editor_rows(&self) -> Vec<McpEditorRowView> {
@@ -173,8 +153,6 @@ impl SettingsState {
             .collect()
     }
 
-
-
     /// 聚焦字段在**可见行**里的序号（渲染层按它滚动窗口）。
     pub fn form_focus_position(&self) -> usize {
         self.form()
@@ -187,15 +165,12 @@ impl SettingsState {
             .unwrap_or(0)
     }
 
-
     /// 表单页当前显示的字段个数（隐藏字段不计入滚动窗口）。
     pub fn form_field_count(&self) -> usize {
         self.form()
             .map(|form| form.visible_indices().len())
             .unwrap_or(0)
     }
-
-
 
     /// 表单页的字段行（渲染层用）；不在表单页时为空。隐藏字段不出现在这份清单里。
     pub fn form_rows(&self) -> Vec<FormFieldView> {
@@ -223,9 +198,13 @@ impl SettingsState {
             .collect()
     }
 
-
     /// 表单字段的显示文本：开关用两态文案，候选与模型项换成界面文案，输入态带光标块。
-    pub(super) fn form_field_value(&self, form: &FormState, index: usize, spec: FieldSpec) -> String {
+    pub(super) fn form_field_value(
+        &self,
+        form: &FormState,
+        index: usize,
+        spec: FieldSpec,
+    ) -> String {
         if index == form.focused() {
             if let Some(composer) = form.input() {
                 return composer
@@ -263,7 +242,6 @@ impl SettingsState {
         }
     }
 
-
     /// 模型选择字段的显示文本：渠道列显示渠道名，模型列显示模型 ID（或「渠道默认」）。
     ///
     /// 草稿里存的是原始值（渠道 key 与模型 ID），这里换成界面文案。
@@ -299,7 +277,6 @@ impl SettingsState {
         }
     }
 
-
     /// 当前面板底部的一行状态文本；没有状态文本的面板返回空串。
     pub fn status(&self) -> &str {
         match self.pane {
@@ -318,7 +295,6 @@ impl SettingsState {
             Pane::Pending => "",
         }
     }
-
 
     /// 面板内的操作提示行。
     pub fn pane_hint(&self) -> &'static str {
@@ -367,13 +343,13 @@ impl SettingsState {
             Pane::Choice(_) => "",
             Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
             Pane::Form(FormKind::WebSearch) => WEB_SEARCH_HINT,
+            Pane::Form(FormKind::Sandbox) => SANDBOX_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::Sessions => SESSIONS_HINT,
             Pane::Pending => "",
         }
     }
-
 
     /// 当前表单页的草稿；不在表单页时为 `None`。
     pub(super) fn form(&self) -> Option<&FormState> {
@@ -383,7 +359,6 @@ impl SettingsState {
         }
     }
 
-
     pub(super) fn form_mut(&mut self) -> Option<&mut FormState> {
         match self.pane {
             Pane::Form(kind) => self.forms.get_mut(kind.index()),
@@ -391,24 +366,19 @@ impl SettingsState {
         }
     }
 
-
-
     /// TTS 页的行视图（渲染层用；顺序即当前可见行，索引即屏幕行号）。
     pub fn tts_rows(&self) -> Vec<TtsRowView> {
         self.tts.rows()
     }
-
 
     /// TTS 页某一行号在可见行里的下标（不可见时返回 `None`）。
     pub fn tts_row_index(&self, row: usize) -> Option<usize> {
         self.tts.visible_rows().iter().position(|item| *item == row)
     }
 
-
     pub fn tts_focused(&self) -> usize {
         self.tts.focused
     }
-
 
     /// TTS 页选中行在可见行里的下标（渲染层用它比屏幕行号）。
     pub fn tts_focused_index(&self) -> usize {

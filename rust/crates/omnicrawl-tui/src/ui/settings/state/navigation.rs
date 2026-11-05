@@ -5,8 +5,6 @@
 use super::*;
 
 impl SettingsState {
-
-
     /// 左栏：把选中项移到第 N 项；复用键盘的逐项移动，保证切页时被清掉的
     /// 状态（收起下拉、上下文字段回到第一个）与按 `↑`/`↓` 完全一致。
     pub(super) fn select_row(&mut self, index: usize) {
@@ -21,7 +19,6 @@ impl SettingsState {
             guard += 1;
         }
     }
-
 
     /// 右栏：把当前页的选中行 / 字段移到第 N 个可点行。
     ///
@@ -159,7 +156,6 @@ impl SettingsState {
         }
     }
 
-
     /// 按一级项的键直接落到那一页（欢迎页徽标等鼠标入口用）；未知键不动。
     ///
     /// 与点左栏同义：选中项移过去、右侧挂上该页、焦点进右栏。
@@ -171,41 +167,33 @@ impl SettingsState {
         self.enter_pane();
     }
 
-
     pub fn selected(&self) -> usize {
         self.selected
     }
-
 
     pub fn selected_key(&self) -> &'static str {
         ROW_ORDER[self.selected]
     }
 
-
     pub fn focus(&self) -> Focus {
         self.focus
     }
-
 
     pub fn pane(&self) -> Pane {
         self.pane
     }
 
-
     pub fn title(&self) -> String {
         row_label(self.selected_key())
     }
-
 
     pub fn context_window_tokens(&self) -> i64 {
         self.model_management.window_tokens
     }
 
-
     pub fn compaction_percent(&self) -> i64 {
         self.model_management.percent
     }
-
 
     pub(super) fn move_selection(&mut self, delta: isize) {
         let count = ROW_ORDER.len() as isize;
@@ -219,7 +207,6 @@ impl SettingsState {
         }
     }
 
-
     /// 模型管理页列表态的行移动：渠道行与「模型与参数」分区行一起循环。
     pub(super) fn move_model_row(&mut self, delta: isize) {
         let count = self.model_management.row_count() as isize;
@@ -231,12 +218,10 @@ impl SettingsState {
         self.dropdown = None;
     }
 
-
     pub(super) fn enter_pane(&mut self) {
         self.focus = Focus::Pane;
         self.dropdown = None;
     }
-
 
     pub(super) fn back_to_list(&mut self) {
         self.focus = Focus::List;

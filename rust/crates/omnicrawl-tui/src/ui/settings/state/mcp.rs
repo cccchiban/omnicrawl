@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     /// MCP 设置页：全局行（改即保存）、Server 列表与编辑器三个子模式。
     pub(super) fn handle_mcp_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         if self.mcp.editor.is_some() {

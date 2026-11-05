@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     pub(super) fn handle_tools_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match key {
             KeyCode::Up => {
@@ -79,7 +78,6 @@ impl SettingsState {
         )))
     }
 
-
     /// 工具页首行是审查模式，其余行是逐工具开关；上下键在最外层一起循环。
     pub(super) fn move_tool(&mut self, delta: isize) {
         let count = self.tool_row_count() as isize;
@@ -88,7 +86,6 @@ impl SettingsState {
         }
         self.tools.selected = ((self.tools.selected as isize + delta).rem_euclid(count)) as usize;
     }
-
 
     /// 首行改审查模式（循环候选），其余行切换工具开关。
     ///

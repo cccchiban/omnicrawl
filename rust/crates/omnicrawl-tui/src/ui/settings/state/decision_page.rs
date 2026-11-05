@@ -7,13 +7,13 @@ use super::*;
 /// 一条结构化决策渠道（对应 `decision_models.toml` 的 `channels.<key>`）。
 ///
 /// 与 [`ChannelRow`] 同形但**不是同一套字段**：决策服务只有一种接口（choice / score /
-/// noul 三种提问类型共用 `/v1/decide`），因此没有 Provider / 协议 / User-Agent，模型名
+/// noul 三种提问类型共用 `/v1/systemone`），因此没有 Provider / 协议 / User-Agent，模型名
 /// 也不是对话模型（`jev-latest` 或固定版本号）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DecisionRow {
     pub key: String,
     pub name: String,
-    /// 服务类型，当前只有 `jev`。
+    /// 服务类型，取 `jev` / `chat_completions` / `onejev` 之一。
     pub mode: String,
     pub base_url: String,
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时的写回，界面从不渲染明文。

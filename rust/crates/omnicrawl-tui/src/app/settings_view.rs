@@ -149,6 +149,10 @@ impl App {
                 &load_computer_use_config(&environment, None).unwrap_or_default(),
             ),
         )
+        .with_form(
+            FormKind::Sandbox,
+            sandbox_form_values(&load_sandbox_config(&environment, None).unwrap_or_default()),
+        )
         .with_subagents(subagent_rows(&subagent_config))
         .with_mcp(self.mcp_settings_values(&environment))
         .with_web_search(web_search_row(&environment))
@@ -161,7 +165,10 @@ impl App {
     }
 
     /// 渠道页的初始列表与默认渠道（读不出来就留空，页面会提示按 N 新建）。
-    pub(super) fn channel_views(&self, environment: &ConfigEnvironment) -> (Vec<ChannelRow>, String) {
+    pub(super) fn channel_views(
+        &self,
+        environment: &ConfigEnvironment,
+    ) -> (Vec<ChannelRow>, String) {
         match load_channel_configuration(environment, None, None) {
             Ok(configuration) => (
                 configuration
@@ -179,7 +186,10 @@ impl App {
     }
 
     /// 决策模型页的渠道列表与默认渠道（读不出来就退回配置默认值）。
-    pub(super) fn decision_views(&self, environment: &ConfigEnvironment) -> (Vec<DecisionRow>, String) {
+    pub(super) fn decision_views(
+        &self,
+        environment: &ConfigEnvironment,
+    ) -> (Vec<DecisionRow>, String) {
         match load_decision_model_configuration(environment, None) {
             Ok(configuration) => (
                 configuration
@@ -210,7 +220,11 @@ impl App {
     ///
     /// 取渠道配置的默认渠道；读不出渠道（单模型 legacy 配置）时回落当前模型的引用
     /// （`llm.catalog_key`，即 `load_channel_configuration` 里 models.toml 的 key）。
-    pub(super) fn active_model_key(&self, environment: &ConfigEnvironment, llm: &LlmConfig) -> String {
+    pub(super) fn active_model_key(
+        &self,
+        environment: &ConfigEnvironment,
+        llm: &LlmConfig,
+    ) -> String {
         match load_channel_configuration(environment, None, None) {
             Ok(configuration) if !configuration.channels.is_empty() => {
                 if configuration.default_key.trim().is_empty() {
@@ -338,12 +352,7 @@ impl App {
                 api_key,
                 user_agent,
             }) => self.start_channel_model_discovery(
-                profile_id,
-                provider,
-                protocol,
-                base_url,
-                api_key,
-                user_agent,
+                profile_id, provider, protocol, base_url, api_key, user_agent,
             ),
             Some(SettingsEvent::DeleteSession { session_id }) => {
                 self.delete_session_from_settings(&session_id)

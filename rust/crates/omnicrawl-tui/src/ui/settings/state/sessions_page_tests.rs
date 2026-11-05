@@ -22,7 +22,9 @@ fn first_delete_press_only_enters_confirmation() {
     let mut state = state_with(vec![row("a", "甲", 3, false)]);
     assert_eq!(state.request_delete(), None, "第一次按不应发出删除");
     assert_eq!(
-        state.confirming().map(|pending| pending.session_id.as_str()),
+        state
+            .confirming()
+            .map(|pending| pending.session_id.as_str()),
         Some("a")
     );
 }
@@ -65,7 +67,9 @@ fn confirm_target_switch_needs_a_second_press_again() {
     state.move_selection(1);
     assert_eq!(state.request_delete(), None);
     assert_eq!(
-        state.confirming().map(|pending| pending.session_id.as_str()),
+        state
+            .confirming()
+            .map(|pending| pending.session_id.as_str()),
         Some("b")
     );
 }
@@ -83,7 +87,10 @@ fn set_rows_keeps_the_selection_on_the_same_session() {
     state.move_selection(1);
     // 列表刷新后顺序变化（b 排到前面），选中仍应跟住 b。
     state.set_rows(vec![row("b", "乙", 1, false), row("a", "甲", 3, false)]);
-    assert_eq!(state.selected_row().map(|row| row.session_id.as_str()), Some("b"));
+    assert_eq!(
+        state.selected_row().map(|row| row.session_id.as_str()),
+        Some("b")
+    );
 }
 
 #[test]

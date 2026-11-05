@@ -112,7 +112,10 @@ impl SettingsState {
 
     /// 详情当前的滚动起点。
     pub fn suggestion_detail_scroll(&self) -> usize {
-        self.suggestion.detail.map(|(_, scroll)| scroll).unwrap_or(0)
+        self.suggestion
+            .detail
+            .map(|(_, scroll)| scroll)
+            .unwrap_or(0)
     }
 
     /// 渲染层回报本次详情正文折行后的总行数（决定滚到底停在哪一行）。

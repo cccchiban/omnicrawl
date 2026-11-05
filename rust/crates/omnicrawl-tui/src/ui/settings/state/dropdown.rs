@@ -5,8 +5,6 @@
 use super::*;
 
 impl SettingsState {
-
-
     /// 当前面板正在编辑的字段；没有可展开字段（工具页/配置对话入口页，以及表单页
     /// 的开关与整数项）时为 `None`。
     pub(super) fn active_field(&self) -> Option<DropdownField> {
@@ -35,7 +33,6 @@ impl SettingsState {
             | Pane::Pending => None,
         }
     }
-
 
     pub(super) fn open_dropdown(&mut self) {
         let Some(field) = self.active_field() else {
@@ -80,7 +77,6 @@ impl SettingsState {
         self.dropdown = Some(Dropdown { field, selected });
     }
 
-
     pub(super) fn move_candidate(&mut self, delta: isize) {
         // 先算出候选数量再改动游标：`options_for` 借整个 `self`，不能与游标的可变借用重叠。
         let Some(field) = self.dropdown.map(|dropdown| dropdown.field) else {
@@ -95,7 +91,6 @@ impl SettingsState {
         };
         dropdown.selected = ((dropdown.selected as isize + delta).rem_euclid(count)) as usize;
     }
-
 
     /// 某个字段的候选：模型与渠道项随配置变化，表单页的候选取自字段表，其余是静态表。
     pub(super) fn options_for(&self, field: DropdownField) -> Vec<(String, OptionValue)> {
@@ -140,7 +135,6 @@ impl SettingsState {
         }
     }
 
-
     /// 渠道候选（文案 = 渠道名，取值 = 渠道 key）。
     pub(super) fn channel_options(&self) -> Vec<(String, OptionValue)> {
         self.model_management
@@ -156,7 +150,6 @@ impl SettingsState {
             })
             .collect()
     }
-
 
     /// 模型管理页参数行的候选。
     pub(super) fn model_param_options(&self, row: ModelParamRow) -> Vec<(String, OptionValue)> {
@@ -182,7 +175,6 @@ impl SettingsState {
         }
     }
 
-
     /// 当前展开的下拉的候选；没有展开时为空（渲染层用）。
     pub fn dropdown_options(&self) -> Vec<(String, OptionValue)> {
         match self.dropdown {
@@ -190,7 +182,6 @@ impl SettingsState {
             None => Vec::new(),
         }
     }
-
 
     /// 确认候选：值未变则不动作（Textual `Select` 只在值真正变化时触发保存）。
     pub(super) fn confirm_dropdown(&mut self) -> Option<SettingsEvent> {

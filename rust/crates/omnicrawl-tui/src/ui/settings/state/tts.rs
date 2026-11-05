@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     /// TTS 页：输入态 → 普通态两层。输入态优先，其余键位照行表走。
     pub(super) fn handle_tts_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         if self.tts.input.is_some() {

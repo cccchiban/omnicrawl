@@ -56,15 +56,15 @@ pub(super) use shared::cycle_text;
 mod decision_page;
 
 pub use decision_page::{
-    DecisionRow, DecisionField, DecisionDropdown, EmbeddingRow, EmbeddingField,
-    DECISION_SWITCH_SECTION, DECISION_LOCAL_SECTION, DECISION_LOCAL_ROW_SIZE,
-    DECISION_LOCAL_ROW_DEVICE, DECISION_LOCAL_ROW_ROOT, DECISION_LOCAL_ROW_DOWNLOADED,
-    DECISION_LOCAL_ROW_ENV, DECISION_LOCAL_ROW_PROGRESS, DECISION_LOCAL_ROW_PREPARE,
-    DECISION_LOCAL_ROW_DOWNLOAD, DECISION_LOCAL_ROW_DELETE, DECISION_LOCAL_ROW_REMOVE_ENV,
-    DECISION_LOCAL_ROW_CHANNEL, DECISION_LOCAL_ROW_SERVICE, DECISION_LOCAL_ROW_START,
-    DECISION_LOCAL_ROW_STOP, DECISION_LOCAL_ROW_COUNT, DECISION_PROGRESS_BAR_WIDTH,
-    DECISION_MODE_OPTIONS, DECISION_LOCAL_DEVICE_OPTIONS, DECISION_LOCAL_ROW_LABELS,
-    DecisionLocalRow, DecisionLocalValues, DecisionSwitchRow, DecisionLocalChange,
+    DecisionDropdown, DecisionField, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues,
+    DecisionRow, DecisionSwitchRow, EmbeddingField, EmbeddingRow, DECISION_LOCAL_DEVICE_OPTIONS,
+    DECISION_LOCAL_ROW_CHANNEL, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_ROW_DELETE,
+    DECISION_LOCAL_ROW_DEVICE, DECISION_LOCAL_ROW_DOWNLOAD, DECISION_LOCAL_ROW_DOWNLOADED,
+    DECISION_LOCAL_ROW_ENV, DECISION_LOCAL_ROW_LABELS, DECISION_LOCAL_ROW_PREPARE,
+    DECISION_LOCAL_ROW_PROGRESS, DECISION_LOCAL_ROW_REMOVE_ENV, DECISION_LOCAL_ROW_ROOT,
+    DECISION_LOCAL_ROW_SERVICE, DECISION_LOCAL_ROW_SIZE, DECISION_LOCAL_ROW_START,
+    DECISION_LOCAL_ROW_STOP, DECISION_LOCAL_SECTION, DECISION_MODE_OPTIONS,
+    DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION,
 };
 
 pub(crate) use decision_page::{DecisionForm, EmbeddingForm};
@@ -104,9 +104,9 @@ pub use pages::{
     WebSearchRow, MASKED_SECRET, MCP_EDITOR_ARGS, MCP_EDITOR_COMMAND, MCP_EDITOR_ENV,
     MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_HEADERS, MCP_EDITOR_LABELS, MCP_EDITOR_NAME,
     MCP_EDITOR_RISK, MCP_EDITOR_TIMEOUT, MCP_EDITOR_TRANSPORT, MCP_EDITOR_URL, MCP_RISK_OPTIONS,
-    MCP_ROW_AUDIT, MCP_ROW_COMMAND, MCP_ROW_COUNT, MCP_ROW_ENABLED, MCP_ROW_LABELS, MCP_ROW_NETWORK,
-    MCP_ROW_SERVERS, MCP_ROW_TIMEOUT, MCP_ROW_WRITE, MCP_TIMEOUT_OPTIONS, MCP_TRANSPORT_OPTIONS,
-    TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_SWITCH_ROW_OFFSET,
+    MCP_ROW_AUDIT, MCP_ROW_COMMAND, MCP_ROW_COUNT, MCP_ROW_ENABLED, MCP_ROW_LABELS,
+    MCP_ROW_NETWORK, MCP_ROW_SERVERS, MCP_ROW_TIMEOUT, MCP_ROW_WRITE, MCP_TIMEOUT_OPTIONS,
+    MCP_TRANSPORT_OPTIONS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_SWITCH_ROW_OFFSET,
 };
 
 use pages::{ChoicesState, McpState, SubagentsState, SuggestionState, ToolsState, VisionState};
@@ -184,6 +184,7 @@ impl Pane {
             "agent_workspace" => Self::Form(FormKind::AgentWorkspace),
             "image_gen" => Self::Form(FormKind::ImageGen),
             "computer_use" => Self::Form(FormKind::ComputerUse),
+            "sandbox" => Self::Form(FormKind::Sandbox),
             "tools" => Self::Tools,
             "web_search" => Self::Form(FormKind::WebSearch),
             "mcp" => Self::Mcp,
@@ -666,11 +667,7 @@ impl SettingsValues {
     }
 
     /// 覆盖提问建议页的开关与 Skill 列表。
-    pub fn with_suggestion(
-        mut self,
-        enabled: bool,
-        skills: Vec<SuggestionSkillRow>,
-    ) -> Self {
+    pub fn with_suggestion(mut self, enabled: bool, skills: Vec<SuggestionSkillRow>) -> Self {
         self.suggestion_enabled = enabled;
         self.suggestion_skills = skills;
         self
@@ -941,6 +938,8 @@ const EMBEDDING_LIST_HINT: &str = "↑↓ 选择  Enter/→ 编辑渠道或切�
 const EMBEDDING_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  Ctrl+S 保存  Esc 返回列表";
 /// 会话管理页：删除要按两次（先确认再执行），当前会话拒绝删除。
 const SESSIONS_HINT: &str = "↑↓ 选择  D 删除（连按两次确认）  R 刷新  Esc 返回";
+/// 沙盒页：列表字段用逗号分隔；保存后当场重建工具表。
+const SANDBOX_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回（列表用逗号分隔；保存后本会话即刻生效）";
 
 /// 图像生成页 `provider` 字段的下标（隐藏字段的判定依据，与 `form.rs` 的字段表对齐）。
 const IMAGE_GEN_PROVIDER_INDEX: usize = 1;

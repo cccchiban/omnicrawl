@@ -250,6 +250,10 @@ impl App {
         self.monitor_state.suspend_for_workspace_switch();
         self.registry.close_monitors();
         self.registry.close_mcp();
+        // 旧工作区的容器只属于旧工作区：不销毁就会每切一次留一个 profile。
+        if let Some(name) = self.registry.discard_sandbox_container() {
+            diagnostics::info(format!("[sandbox] 已销毁容器 {name}"));
+        }
         self.workspace = new_root.to_path_buf();
         // 临时目录跟着工作区走：旧句柄的清理线程盯的是旧根，先停掉再按新根重建。
         if let Some(installation) = self.agent_temp.as_mut() {

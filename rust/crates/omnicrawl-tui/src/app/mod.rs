@@ -57,6 +57,9 @@ use omnicrawl_config::features::computer_use::{
 use omnicrawl_config::features::run_guard::{
     load_run_guard_config, save_run_guard_config, RunGuardConfig,
 };
+use omnicrawl_config::features::sandbox::{
+    load_sandbox_config, save_sandbox_config, NetPolicy, SandboxConfig, SandboxMode,
+};
 use omnicrawl_config::features::subagents::{
     load_subagent_config, validate_subagent_advanced_setting, SubAgentConfig,
 };

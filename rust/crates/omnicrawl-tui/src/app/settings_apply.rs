@@ -68,7 +68,11 @@ impl App {
     /// 面板里填了新密钥（非空）就用新值，留空则按 key 从磁盘上的同一条渠道继承——
     /// 既能录入内联 `api_key`（Python 渠道编辑器同能力），也不会因为没碰这一行把它抹掉
     /// （`save_channel_configuration` 对空 `api_key` 会移除该字段）。
-    pub(super) fn apply_channels(&mut self, rows: &[ChannelRow], default_key: &str) -> Result<String, String> {
+    pub(super) fn apply_channels(
+        &mut self,
+        rows: &[ChannelRow],
+        default_key: &str,
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let existing = load_channel_configuration(&environment, None, None)
             .map(|configuration| configuration.channels)
@@ -232,7 +236,11 @@ impl App {
     /// 工具开关：写盘 → 重建宿主工具表 → 刷新设置面板里的注册标记。
     ///
     /// 开关即「模型可见性」：禁用的工具不进声明，模型也就调不到它。
-    pub(super) fn apply_tool_switch(&mut self, name: &str, enabled: bool) -> Result<String, String> {
+    pub(super) fn apply_tool_switch(
+        &mut self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let path = save_tool_switch(&environment, name, enabled, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -255,7 +263,10 @@ impl App {
     ///
     /// 五把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
     /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
-    pub(super) fn apply_web_search_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_web_search_form(
+        &mut self,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_web_search_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -427,7 +438,11 @@ impl App {
     }
 
     /// 保存一页表单：按表单页把字段值拼回配置结构，写盘后再让宿主侧生效。
-    pub(super) fn apply_form(&mut self, kind: FormKind, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_form(
+        &mut self,
+        kind: FormKind,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         match kind {
             FormKind::Advisor => self.apply_advisor_form(values),
             FormKind::ToolOutputCompression => self.apply_compression_form(values),
@@ -437,6 +452,7 @@ impl App {
             FormKind::ImageGen => self.apply_image_gen_form(values),
             FormKind::WebSearch => self.apply_web_search_form(values),
             FormKind::ComputerUse => self.apply_computer_use_form(values),
+            FormKind::Sandbox => self.apply_sandbox_form(values),
         }
     }
 
@@ -444,7 +460,10 @@ impl App {
     ///
     /// 工具是否进表取决于这个总开关，而执行体读的是工具表里那一份克隆，
     /// 因此保存后必须重建工具表，否则要等重启才生效。
-    pub(super) fn apply_computer_use_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_computer_use_form(
+        &mut self,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_computer_use_config(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -539,7 +558,11 @@ impl App {
     }
 
     /// 把顾问配置映射到顾问工具的运行期选项：模型项按渠道解析出接口与凭据。
-    pub(super) fn sync_advisor_options(&mut self, environment: &ConfigEnvironment, config: &AdvisorConfig) {
+    pub(super) fn sync_advisor_options(
+        &mut self,
+        environment: &ConfigEnvironment,
+        config: &AdvisorConfig,
+    ) {
         let mut advisor = self.registry_options.advisor.clone();
         advisor.enabled = config.active();
         advisor.effort = config.display_effort();
@@ -591,7 +614,10 @@ impl App {
     ///
     /// 压缩发生在内核侧的工具批次收口时，宿主这边没有运行期句柄，所以这里只写盘，
     /// 并在状态文本里说明生效时机。
-    pub(super) fn apply_compression_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_compression_form(
+        &mut self,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let enabled = values.first().map(|value| value.flag()).unwrap_or(false);
         // 字段表：启用 / 思考开关 / 思考深度 / 四个预算 / 压缩渠道 / 压缩模型。
@@ -630,7 +656,10 @@ impl App {
     ///
     /// 该段在内核构建模型运行时读取，而构建键里带了这段配置的指纹（见内核侧
     /// `RuntimeBuildKey`），因此改完只要下一回合取运行时就按新配置重建，本会话即刻生效。
-    pub(super) fn apply_desensitization_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_desensitization_form(
+        &mut self,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_desensitization_config(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -698,7 +727,10 @@ impl App {
     /// 隔离区在启动时创建一次，运行中的进程不换区：这里的改动对**下一个**隔离会话生效。
     /// 收尾策略（`apply_on_exit` / `cleanup_on_exit`）在退出时才读，所以它当场就生效。
     /// 「基线分支」不在界面里，保留磁盘原值。
-    pub(super) fn apply_agent_workspace_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+    pub(super) fn apply_agent_workspace_form(
+        &mut self,
+        values: &[FieldValue],
+    ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let mut configuration = load_agent_workspace_config(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
@@ -723,6 +755,52 @@ impl App {
             "隔离工作区设置已保存到 {}（收尾策略即刻生效；建区参数对下一个隔离会话生效）。",
             path.display()
         ))
+    }
+
+    /// 沙盒：写 `config.toml` 的 `[sandbox]` 段，随后重建工具表。
+    ///
+    /// 沙盒策略在构造 `ToolRegistry` 时折算成运行期 `Sandbox`（`build_sandbox`），
+    /// 所以这里必须重建工具表才生效——只写盘要等下次启动。
+    ///
+    /// 写盘前先 `validate`（配置层自带）：`allowlist` 空白名单、进程上限 < 2 这类组合
+    /// 会被拒绝，界面停在原地而不是存下一份跑不起来的配置。
+    pub(super) fn apply_sandbox_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration = load_sandbox_config(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 下标与 `form.rs` 的 `SANDBOX_FIELDS` 一一对应。
+        configuration.enabled = field_flag(values, 0);
+        let mode = SandboxMode::parse(&field_text(values, 1))
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        configuration.mode = mode;
+        configuration.writable = field_list(values, 2, ',');
+        configuration.readable = field_list(values, 3, ',');
+        let policy = NetPolicy::parse(&field_text(values, 4))
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        configuration.net_policy = policy;
+        configuration.net_allow = field_list(values, 5, ',');
+        configuration.net_deny = field_list(values, 6, ',');
+        configuration.net_approval_timeout_seconds = positive_int(values, 7, "审批超时")? as u64;
+        configuration.net_log_all = field_flag(values, 8);
+        configuration.limits.max_processes = positive_int(values, 9, "进程上限")? as u32;
+        configuration.limits.max_memory_mb = positive_int(values, 10, "内存上限")? as u64;
+        configuration.limits.cpu_rate_percent =
+            non_negative_int(values, 11, "CPU 速率上限")? as u32;
+        let path = save_sandbox_config(&environment, &configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 配置已落盘，但生效要换掉运行期的沙盒：重建失败时磁盘与运行期不一致，
+        // 说清楚「下次启动生效」而不是假装成功。
+        let live = match self.rebuild_registry() {
+            Ok(()) => "本会话即刻生效。",
+            Err(error) => {
+                return Ok(format!(
+                    "沙盒设置已保存到 {}，但重建工具表失败（{error}）：本次会话仍按旧策略执行，\
+                     下次启动生效。",
+                    path.display()
+                ));
+            }
+        };
+        Ok(format!("沙盒设置已保存到 {}（{live}）", path.display()))
     }
 
     /// 图像生成：写 `config.toml [image_gen]`，再按新配置重建图像生成工具。

@@ -6,8 +6,8 @@
 //! 这样设置面板可以脱离内核单独用 `TestBackend` 驱动。
 //!
 //! 已落地 `settings.py` 的一级菜单，以及模型管理、工具开关、联网搜索、子任务设置、视觉、
-//! 三个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成
-//! 六个表单页、TTS 页与 MCP 设置。
+//! 三个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成、
+//! 沙盒等表单页、TTS 页与 MCP 设置。
 
 pub mod form;
 pub mod hit;
@@ -28,14 +28,14 @@ pub use state::{
     DecisionRow, DecisionSwitchRow, Dropdown, DropdownField, EmbeddingField, EmbeddingFormView,
     EmbeddingRow, Focus, McpChange, McpEditorRowView, McpRowView, McpServerDraft, McpServerRow,
     McpSettingsValues, ModelParamRow, OptionValue, Pane, SessionRow, SettingsChange, SettingsEvent,
-    SettingsState, SettingsValues, SuggestionSkillRow, SubagentChange, SubagentRow, ToolSwitchRow,
-    SUGGESTION_DETAIL_ROWS, TtsChange,
-    TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues, VisionChange,
+    SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow, ToolSwitchRow,
+    TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues, VisionChange,
     VisionModelRef, WebSearchRow, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION,
     DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION, MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS,
-    MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION, TOOLS_APPROVAL_LABEL,
-    TOOLS_APPROVAL_OPTIONS, TOOLS_APPROVAL_ROW, TTS_GEMINI_VOICES, TTS_OPENAI_VOICES,
-    TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_SPEED_OPTIONS,
+    MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION,
+    SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_APPROVAL_ROW,
+    TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS,
+    TTS_SPEED_OPTIONS,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。
@@ -43,7 +43,7 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 20] = [
+pub const ROW_ORDER: [&str; 21] = [
     "model_management",
     "decision_models",
     "embedding_models",
@@ -63,6 +63,7 @@ pub const ROW_ORDER: [&str; 20] = [
     "memory",
     "subagents",
     "sessions",
+    "sandbox",
     "show_thinking",
 ];
 
@@ -88,6 +89,7 @@ pub fn row_label(key: &str) -> String {
         "memory" => "记忆功能",
         "subagents" => "子任务设置",
         "sessions" => "会话管理",
+        "sandbox" => "沙盒",
         "show_thinking" => "思考显示",
         other => other,
     };

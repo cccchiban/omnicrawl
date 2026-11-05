@@ -5,8 +5,6 @@
 use super::*;
 
 impl SettingsState {
-
-
     // ---------- 粘贴 ----------
 
     /// 把一次粘贴落进当前面板的输入态；没有正在编辑的字段时返回 `false`。
@@ -55,7 +53,6 @@ impl SettingsState {
         }
     }
 
-
     // ---------- 键盘 ----------
 
     pub fn handle_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
@@ -64,7 +61,6 @@ impl SettingsState {
             Focus::Pane => self.handle_pane_key(key),
         }
     }
-
 
     pub(super) fn handle_list_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match key {
@@ -84,7 +80,6 @@ impl SettingsState {
             _ => None,
         }
     }
-
 
     pub(super) fn handle_pane_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         // 展开态的三个键位对所有面板一致，先统一处理。
@@ -113,7 +108,6 @@ impl SettingsState {
             },
         }
     }
-
 
     /// 模型管理页：列表态与表单态各有一组键位。
     ///
@@ -169,7 +163,6 @@ impl SettingsState {
         }
     }
 
-
     /// 渠道表单：输入态 → 候选展开态 → 字段导航，三层各管各的键位。
     pub(super) fn handle_channel_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         let input_active = self
@@ -208,7 +201,6 @@ impl SettingsState {
         }
     }
 
-
     /// 候选展开态：`↑`/`↓` 移动、`Enter` 确认并保存、`Esc` 收起。
     pub(super) fn handle_dropdown_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match key {
@@ -229,9 +221,12 @@ impl SettingsState {
         }
     }
 
-
     /// 单选页：只有一个下拉，键位与 Textual `Select` 一致（与模型管理页的参数行同源）。
-    pub(super) fn handle_choice_key(&mut self, key: KeyCode, _kind: ChoiceKind) -> Option<SettingsEvent> {
+    pub(super) fn handle_choice_key(
+        &mut self,
+        key: KeyCode,
+        _kind: ChoiceKind,
+    ) -> Option<SettingsEvent> {
         match key {
             KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
                 self.open_dropdown();
@@ -244,7 +239,6 @@ impl SettingsState {
             _ => None,
         }
     }
-
 
     /// 表单页：输入态 → 字段导航两层各管各的键位；`Ctrl+S` 保存由宿主转发进来。
     ///
@@ -302,7 +296,6 @@ impl SettingsState {
             _ => None,
         }
     }
-
 
     /// `Ctrl` 组合键：渠道表单与表单页的保存都走 `Ctrl+S`。
     pub fn handle_ctrl_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {

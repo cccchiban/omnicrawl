@@ -408,6 +408,39 @@ const WEB_SEARCH_FIELDS: [FieldSpec; 7] = [
     FieldSpec::secret("GitHub Token"),
 ];
 
+/// 沙盒隔离模式候选（取值与 `[sandbox] mode` 一一对应）。
+const SANDBOX_MODE_OPTIONS: [(&str, &str); 2] = [
+    ("dry-run（只判定不隔离）", "off"),
+    ("appcontainer（真隔离）", "appcontainer"),
+];
+
+/// 沙盒网络策略候选（取值与 `[sandbox.net] policy` 一一对应）。
+const SANDBOX_NET_POLICY_OPTIONS: [(&str, &str); 4] = [
+    ("offline（全拒）", "offline"),
+    ("ask（每个新目标审批）", "ask"),
+    ("allowlist（仅白名单）", "allowlist"),
+    ("online（全放行仅记录）", "online"),
+];
+
+/// 沙盒页的字段；顺序与 `app.rs` 读值时的下标一一对应。
+///
+/// 页内分区按 `[sandbox]` 的实际结构排：开关与模式 → `[sandbox.fs]` → `[sandbox.net]` →
+/// `[sandbox.limits]`。两个列表字段用逗号分隔，与其余表单页的多值字段同口径。
+const SANDBOX_FIELDS: [FieldSpec; 12] = [
+    FieldSpec::enabled("启用"),
+    FieldSpec::enumerated("隔离模式", &SANDBOX_MODE_OPTIONS),
+    FieldSpec::text("额外可写路径"),
+    FieldSpec::text("额外可读路径"),
+    FieldSpec::enumerated("网络策略", &SANDBOX_NET_POLICY_OPTIONS),
+    FieldSpec::text("允许的域名"),
+    FieldSpec::text("拒绝的域名"),
+    FieldSpec::int("审批超时（秒）"),
+    FieldSpec::toggled("记录全部网络请求", "关", "开"),
+    FieldSpec::int("进程上限"),
+    FieldSpec::int("内存上限（MB）"),
+    FieldSpec::int("CPU 速率上限（%）"),
+];
+
 /// 表单类设置页。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKind {
@@ -427,10 +460,12 @@ pub enum FormKind {
     WebSearch,
     /// Computer Use：总开关 + 时间预算 + 截图上限 + 桌面模型。
     ComputerUse,
+    /// 沙盒：开关/模式 + 文件系统 + 网络策略 + 资源限额。
+    Sandbox,
 }
 
 /// 全部表单页，下标与 [`FormKind::index`] 一致。
-pub const FORM_KINDS: [FormKind; 8] = [
+pub const FORM_KINDS: [FormKind; 9] = [
     FormKind::Advisor,
     FormKind::ToolOutputCompression,
     FormKind::Desensitization,
@@ -439,6 +474,7 @@ pub const FORM_KINDS: [FormKind; 8] = [
     FormKind::ImageGen,
     FormKind::WebSearch,
     FormKind::ComputerUse,
+    FormKind::Sandbox,
 ];
 
 impl FormKind {
@@ -452,6 +488,7 @@ impl FormKind {
             Self::ImageGen => 5,
             Self::WebSearch => 6,
             Self::ComputerUse => 7,
+            Self::Sandbox => 8,
         }
     }
 
@@ -465,6 +502,7 @@ impl FormKind {
             Self::ImageGen => &IMAGE_GEN_FIELDS,
             Self::WebSearch => &WEB_SEARCH_FIELDS,
             Self::ComputerUse => &COMPUTER_USE_FIELDS,
+            Self::Sandbox => &SANDBOX_FIELDS,
         }
     }
 }

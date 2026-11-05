@@ -263,10 +263,7 @@ fn tools_panel_lists_switch_states() {
         screen.contains("tts_synthesize：已启用"),
         "工具行只画名称与开关状态：{screen}"
     );
-    assert!(
-        !screen.contains("未注册"),
-        "工具行不再带括号说明：{screen}"
-    );
+    assert!(!screen.contains("未注册"), "工具行不再带括号说明：{screen}");
     assert!(screen.contains("↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回"));
     assert!(
         screen.contains("工具调用审查：自动审查"),
@@ -374,7 +371,7 @@ fn decision(key: &str, name: &str, model: &str, enabled: bool) -> DecisionRow {
     row.key = key.to_string();
     row.name = name.to_string();
     row.mode = "jev".to_string();
-    row.base_url = "https://jevtypesafeai.com/api".to_string();
+    row.base_url = "https://api.typesafe.ai".to_string();
     row.model = model.to_string();
     row.retry_count = omnicrawl_config::features::decision_model::DEFAULT_DECISION_RETRY_COUNT;
     row.enabled = enabled;
@@ -1148,7 +1145,10 @@ fn pane_hint_is_not_repeated_in_the_status_line() {
             .lines()
             .filter(|row| row.contains('↑') && row.contains('↓'))
             .count();
-        assert_eq!(hinted, 1, "「{key}」页的键位提示出现了 {hinted} 次：\n{right}");
+        assert_eq!(
+            hinted, 1,
+            "「{key}」页的键位提示出现了 {hinted} 次：\n{right}"
+        );
     }
 }
 
@@ -1216,4 +1216,42 @@ fn menu_rows_use_white_text() {
         checked += 1;
     }
     assert_eq!(checked, 1, "应当找到一行「工具设置」");
+}
+
+/// 沙盒页要真的画出来：一级项在左栏、右侧是 12 行字段。
+///
+/// 字段多于一屏能显示的宽度不测（纵向滚动是既有表单页的公共逻辑），
+/// 这里只保证「页能打开、行数对、标签对」，防止加了一级项却没接渲染。
+#[test]
+fn sandbox_page_renders_its_fields() {
+    let mut state = state();
+    state.select_key("sandbox");
+    let buffer = draw(&state, WIDTH, HEIGHT);
+
+    let left = text_of(&buffer, 0, LEFT_COLUMN_WIDTH);
+    assert!(left.contains("沙盒"), "左栏应有一级项「沙盒」");
+    assert_eq!(state.pane(), Pane::Form(FormKind::Sandbox));
+
+    // 12 个字段要同时在右侧可见：字段表与渲染共用同一份 `specs()`，漏接会在这里暴露。
+    let buffer = draw(&state, WIDTH, HEIGHT);
+    let right = text_of(&buffer, LEFT_COLUMN_WIDTH, WIDTH);
+    for label in [
+        "启用",
+        "隔离模式",
+        "额外可写路径",
+        "额外可读路径",
+        "网络策略",
+        "允许的域名",
+        "拒绝的域名",
+        "审批超时（秒）",
+        "记录全部网络请求",
+        "进程上限",
+        "内存上限（MB）",
+        "CPU 速率上限（%）",
+    ] {
+        assert!(
+            right.contains(label),
+            "沙盒页缺少字段「{label}」：\n{right}"
+        );
+    }
 }

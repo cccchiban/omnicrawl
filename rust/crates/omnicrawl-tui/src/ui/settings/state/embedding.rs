@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     // ---------- 向量模型页 ----------
 
     pub(super) fn handle_embedding_models_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {

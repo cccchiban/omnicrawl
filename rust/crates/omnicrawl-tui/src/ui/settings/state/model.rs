@@ -6,7 +6,6 @@
 use super::*;
 
 impl SettingsState {
-
     // ---------- 模型管理页：渠道列表与表单 ----------
 
     /// 进入表单：编辑选中的渠道。
@@ -334,14 +333,12 @@ impl SettingsState {
         }))
     }
 
-
     /// 当前表单页聚焦字段的序号与规格。
     pub(super) fn focused_form_field(&self) -> Option<(usize, FieldSpec)> {
         let form = self.form()?;
         let index = form.focused();
         Some((index, form.field(index)?))
     }
-
 
     /// 某个表单页的「渠道 + 模型」两段草稿值（渠道 key 与模型 ID）。
     ///
@@ -362,12 +359,10 @@ impl SettingsState {
         ))
     }
 
-
     /// 该表单页的模型发现状态（只有带模型选择的表单页有）。
     pub(super) fn model_discovery(&self, kind: FormKind) -> Option<&ModelDiscovery> {
         self.model_discoveries.get(kind.index())
     }
-
 
     /// 该表单页的「模型」字段草稿值；页面没有渠道字段时渠道取当前生效的那条。
     ///
@@ -394,7 +389,6 @@ impl SettingsState {
         Some((channel, form.value(model_index)?.text().to_string()))
     }
 
-
     /// 某个表单页当前选中的渠道记录。
     pub(super) fn selected_model_channel(&self, kind: FormKind) -> Option<&ChannelRow> {
         let (channel, _) = self.model_selection_draft(kind)?;
@@ -403,7 +397,6 @@ impl SettingsState {
             .iter()
             .find(|row| row.key == channel)
     }
-
 
     /// 模型下拉的候选：渠道自带模型 + 该渠道的发现结果 + 当前值。
     pub fn model_candidates_for(&self, kind: FormKind) -> Vec<String> {
@@ -427,7 +420,6 @@ impl SettingsState {
             }
         }
     }
-
 
     /// 需要时请宿主发现「当前渠道」的可用模型；不需要时返回 `None`。
     pub(super) fn ensure_model_discovery(&mut self, index: usize) -> Option<SettingsEvent> {
@@ -461,7 +453,6 @@ impl SettingsState {
         })
     }
 
-
     /// 表单页里「模型」字段的下标（字段表里唯一的 [`FieldKind::ModelId`]）。
     pub(super) fn model_id_field(&self, kind: FormKind) -> Option<usize> {
         self.forms
@@ -470,7 +461,6 @@ impl SettingsState {
             .iter()
             .position(|spec| matches!(spec.kind, FieldKind::ModelId))
     }
-
 
     /// 换渠道后把模型列清空（沿用新渠道自带的模型），并请宿主重新发现。
     pub(super) fn reset_model_for_channel(&mut self, kind: FormKind, channel: &str) {

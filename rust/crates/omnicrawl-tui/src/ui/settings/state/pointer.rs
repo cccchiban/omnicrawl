@@ -5,13 +5,10 @@
 use super::*;
 
 impl SettingsState {
-
-
     /// 开始一帧渲染：丢掉上一帧记录的可点区域。
     pub fn begin_frame(&self) {
         self.hits.borrow_mut().clear();
     }
-
 
     /// 记下一块可点区域（只在渲染时调用；空区域不记）。
     pub fn record_hit(&self, area: Rect, action: HitAction) {
@@ -20,7 +17,6 @@ impl SettingsState {
         }
         self.hits.borrow_mut().push(HitRegion { area, action });
     }
-
 
     /// 按落点反查动作；**后画的优先**——展开的候选浮层画在面板之上，应当先命中它。
     pub fn hit_at(&self, column: u16, row: u16) -> Option<HitAction> {
@@ -37,17 +33,14 @@ impl SettingsState {
             .map(|region| region.action)
     }
 
-
     /// 记录鼠标悬停的行；`None` 表示光标已离开可点区域。
     pub fn set_hover(&mut self, action: Option<HitAction>) {
         self.hover = action;
     }
 
-
     pub fn hover(&self) -> Option<HitAction> {
         self.hover
     }
-
 
     /// 悬停行在当前帧里的区域（用于描边加亮）；该行本帧没画出来时为 `None`。
     pub fn hover_area(&self) -> Option<Rect> {
@@ -59,7 +52,6 @@ impl SettingsState {
             .find(|region| region.action == hover)
             .map(|region| region.area)
     }
-
 
     /// 左键点击分派。
     ///
