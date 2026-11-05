@@ -251,7 +251,7 @@ const CUSTODY_CHOICE_CRITERIA: &str = "该选项最符合用户意图且最能�
 const CUSTODY_CUSTOM_CRITERIA: &str =
     "给定选项都答不上这个问题、需要用户自己填写具体内容，因此把作答交回给用户。";
 
-/// 真实实现：`POST {base_url}/v1/decide`，一个 choice 问题，读回胜出选项。
+/// 真实实现：`POST {base_url}/v1/systemone`，一个 choice 问题，读回胜出选项。
 ///
 /// 公开是因为本地 REST 决策接口（`omnicrawl-decision`）直接复用这一条出站路径：
 /// 请求形状、脱敏旁路与选项解析都只有这一份实现。
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn request_shape_and_choice_round_trip_over_the_wire() {
-        // 本地回环：一次 `/v1/decide` 往返，验证请求形状与胜出选项的解析。
+        // 本地回环：一次 `/v1/systemone` 往返，验证请求形状与胜出选项的解析。
         let cassette = CustodyCassette::serve();
         let options = CustodyOptions {
             enabled: true,
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(chosen, 2);
 
         let captured = cassette.captured();
-        assert_eq!(captured.path, "/v1/decide");
+        assert_eq!(captured.path, "/v1/systemone");
         assert_eq!(captured.authorization, "Bearer jv_test");
         assert_eq!(captured.model, "jev-latest");
         assert_eq!(captured.question_type, "choice");

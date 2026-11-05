@@ -120,10 +120,11 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 写回只动本段且非法取值不落盘。
 
 **`features/decision_model`（Rust 专有）**：结构化决策模型配置（独立 `decision_models.toml`），
-面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。两种请求方式（`mode`）：
+面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。三种请求方式（`mode`）：
 
-* `jev`（默认）——Jev 原生接口：`POST {base_url}/v1/decide`、Bearer 鉴权，`state` + `questions`
-  直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
+* `jev`（默认）——官方 TypeSafe System One 接口：`POST {base_url}/v1/systemone`、Bearer 鉴权，
+  `state` + `questions` 直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
+* `onejev`——同一路径与形状的本机自部署（`qev` 服务）：回环地址走命名管道，不强制 API Key。
 * `chat_completions`——OpenAI 兼容接口：`POST {base_url}/chat/completions`（`base_url` 按
   OpenAI 兼容口径填到 `/v1`，同 `[image_gen]`），同一份
   `state` + `questions` 作为一条 user 消息的 JSON 文本发出并要求 JSON 输出，答案从

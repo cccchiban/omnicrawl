@@ -440,8 +440,8 @@ pub struct DecisionReviewOptions {
     pub mode: String,
     /// 决策模型名（`jev-latest` 或固定版本）。
     pub model: String,
-    /// 决策服务基地址：`jev` / `onejev` 填站点根下的 API 前缀（不含 `/v1/decide`、
-    /// `/v1/systemone`）；`chat_completions` 按 OpenAI 兼容口径填到 `/v1`（不含 `/chat/completions`）。
+    /// 决策服务基地址：`jev` / `onejev` 填站点根（不含 `/v1/systemone`）；
+    /// `chat_completions` 按 OpenAI 兼容口径填到 `/v1`（不含 `/chat/completions`）。
     pub base_url: String,
     pub api_key: String,
     /// 请求失败后的重试次数（不含首次请求）。
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn decision_channel_reads_the_choice_answer() {
-        // 本地回环：一次 `/v1/decide` 往返，验证请求形状与两个选项的解析。
+        // 本地回环：一次 `/v1/systemone` 往返，验证请求形状与两个选项的解析。
         let cassette = DecisionCassette::serve();
         let decision = DecisionReviewOptions {
             mode: omnicrawl_config::features::decision_model::DECISION_MODE_JEV.to_string(),
@@ -1263,7 +1263,7 @@ mod tests {
 
         // 请求形状：state 就是审查载荷，model 与鉴权头按决策渠道给。
         let captured = cassette.captured();
-        assert_eq!(captured.path, "/v1/decide");
+        assert_eq!(captured.path, "/v1/systemone");
         assert_eq!(captured.authorization, "Bearer jv_test");
         assert_eq!(captured.model, "jev-latest");
         assert!(

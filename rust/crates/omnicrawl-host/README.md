@@ -145,8 +145,8 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 
 六个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索排序、提问托管、
 工具调用淘汰）共用 `decision_wire`
-这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 走
-`POST /v1/decide`；`chat_completions` 走 `POST {base_url}/chat/completions`，基地址按 OpenAI
+这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 与
+`onejev` 都走 `POST {base_url}/v1/systemone`；`chat_completions` 走 `POST {base_url}/chat/completions`，基地址按 OpenAI
 兼容口径填到 `/v1`，作为 user 消息发出），并从响应里取出同一形状的 `answers`（后者从
 `choices[0].message.content` 里解析）。新增请求方式只需改配置域与这一层，调用点的解析逻辑不动。
 

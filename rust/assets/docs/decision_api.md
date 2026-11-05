@@ -122,7 +122,7 @@ retry_count = 3
     "channel": {
       "mode": "jev",
       "model": "jev-latest",
-      "base_url": "https://jevtypesafeai.com/api",
+      "base_url": "https://api.typesafe.ai",
       "api_key_configured": true,
       "retry_count": 3
     },

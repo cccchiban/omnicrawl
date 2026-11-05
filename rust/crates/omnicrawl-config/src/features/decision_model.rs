@@ -3,9 +3,11 @@
 //! 结构化决策模型是独立于对话模型的第二类服务：它不生成文本，而是对一段 `state`
 //! 加若干**有类型的提问**（choice / score / noul）返回**校准过的答案**。
 //!
-//! 两种请求方式（`mode`）：
-//! * `jev`（默认）：`POST {base_url}/v1/decide`，`state` + `questions` 直接进请求体，
-//!   响应体的 `answers` 直接就是答案。Bearer 鉴权，模型名形如 `jev-latest` / `jev-1.13.0`。
+//! 请求方式（`mode`）：
+//! * `jev`（默认）：官方 TypeSafe System One 接口 `POST {base_url}/v1/systemone`，
+//!   `state` + `questions` 直接进请求体，响应体的 `answers` 直接就是答案。
+//!   Bearer 鉴权，模型名形如 `jev-latest` / `jev-1.13.0`。
+//! * `onejev`：同一套请求/响应形状的本机自部署（`qev` 服务），回环地址走命名管道。
 //! * `chat_completions`：`POST {base_url}/chat/completions`（OpenAI 兼容），把同一份
 //!   `state` + `questions` 当作 user 消息的 JSON 文本发出，并要求结构化 JSON 输出；
 //!   答案从 `choices[0].message.content` 里解析出同一形状的 `answers`，因此上层读答案的
@@ -31,7 +33,7 @@ use crate::error::ConfigError;
 use crate::toml::{Table, Value};
 use crate::value::{python_str, truthy};
 
-/// 决策服务类型：Jev 原生接口（`POST {base_url}/v1/decide`）。
+/// 决策服务类型：官方 TypeSafe System One 接口（`POST {base_url}/v1/systemone`）。
 pub const DECISION_MODE_JEV: &str = "jev";
 
 /// 决策服务类型：OpenAI 兼容的 Chat Completions 接口（`POST {base_url}/chat/completions`，
@@ -40,9 +42,9 @@ pub const DECISION_MODE_CHAT_COMPLETIONS: &str = "chat_completions";
 
 /// 决策服务类型：OneJev 本地自部署（`POST {base_url}/v1/systemone`，TypeSafe 兼容接口）。
 ///
-/// 与云端 `jev` 是同一个协议的两种部署：`/v1/systemone` 的请求/响应形状与
-/// `/v1/decide` 一致（`state` + `questions` 进请求体，顶层 `answers` 出答案），
-/// 只是由本机判定服务提供（走命名管道 / Unix socket），因此这里单列一种方式。
+/// 与云端 `jev` 是同一个协议的两种部署：请求/响应形状完全一致（`state` + `questions`
+/// 进请求体，顶层 `answers` 出答案），只是由本机判定服务提供（走命名管道 / Unix socket），
+/// 因此这里单列一种方式。
 pub const DECISION_MODE_ONEJEV: &str = "onejev";
 
 /// 可选的服务类型（界面「请求方式」字段的候选）。
@@ -61,8 +63,8 @@ pub const DEFAULT_LOCAL_DECISION_BASE_URL: &str = "http://127.0.0.1:8766";
 /// 自部署渠道的默认 key（界面「切换为自部署」时用它）。
 pub const DEFAULT_LOCAL_DECISION_CHANNEL_KEY: &str = "onejev-local";
 
-/// Jev 决策接口的基础地址（不含 `/v1/decide`）。
-pub const DEFAULT_DECISION_BASE_URL: &str = "https://jevtypesafeai.com/api";
+/// Jev 决策接口的基础地址（不含 `/v1/systemone`）：官方 TypeSafe System One 接口。
+pub const DEFAULT_DECISION_BASE_URL: &str = "https://api.typesafe.ai";
 /// 默认模型：跟随最新版本；生产环境建议改成固定版本（如 `jev-1.13.0`）。
 pub const DEFAULT_DECISION_MODEL: &str = "jev-latest";
 /// 首次生成配置时使用的默认渠道 key。
@@ -165,8 +167,7 @@ impl DecisionChannelConfig {
             DECISION_MODE_CHAT_COMPLETIONS => {
                 format!("{}/chat/completions", self.base_url)
             }
-            DECISION_MODE_ONEJEV => format!("{}/v1/systemone", self.base_url),
-            _ => format!("{}/v1/decide", self.base_url),
+            _ => format!("{}/v1/systemone", self.base_url),
         }
     }
 
@@ -930,8 +931,8 @@ mod tests {
         assert!(channel.enabled);
         assert_eq!(
             channel.decide_url(),
-            "https://jevtypesafeai.com/api/v1/decide",
-            "接口地址按 base_url + /v1/decide 拼"
+            "https://api.typesafe.ai/v1/systemone",
+            "接口地址按 base_url + /v1/systemone 拼"
         );
         assert_eq!(
             configuration.active_channel().map(|item| item.key.as_str()),
@@ -947,8 +948,8 @@ mod tests {
         assert_eq!(native.mode, DECISION_MODE_JEV);
         assert_eq!(
             native.decide_url(),
-            "https://jevtypesafeai.com/api/v1/decide",
-            "原生方式走 /v1/decide"
+            "https://api.typesafe.ai/v1/systemone",
+            "官方托管方式走 /v1/systemone"
         );
 
         let chat = DecisionChannelConfig {
@@ -1103,7 +1104,7 @@ mod tests {
                     key: "jev-main".to_string(),
                     name: "Jev 主渠道".to_string(),
                     mode: DECISION_MODE_JEV.to_string(),
-                    base_url: "https://jevtypesafeai.com/api/".to_string(),
+                    base_url: "https://api.typesafe.ai/".to_string(),
                     api_key: String::new(),
                     model: "jev-1.13.0".to_string(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
@@ -1128,10 +1129,7 @@ mod tests {
         let reloaded = load_decision_model_configuration(&env, None).expect("读回");
         assert_eq!(reloaded.default_key, "self-hosted");
         assert_eq!(reloaded.channels.len(), 2);
-        assert_eq!(
-            reloaded.channels[0].base_url,
-            "https://jevtypesafeai.com/api"
-        );
+        assert_eq!(reloaded.channels[0].base_url, "https://api.typesafe.ai");
         assert_eq!(reloaded.channels[0].model, "jev-1.13.0");
         assert_eq!(
             reloaded.channels[0].retry_count, DEFAULT_DECISION_RETRY_COUNT,
@@ -1203,7 +1201,7 @@ mod tests {
             key: "bad-url".to_string(),
             name: "坏地址".to_string(),
             mode: DECISION_MODE_JEV.to_string(),
-            base_url: "jevtypesafeai.com".to_string(),
+            base_url: "api.typesafe.ai".to_string(),
             api_key: String::new(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),

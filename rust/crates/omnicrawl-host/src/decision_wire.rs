@@ -2,7 +2,8 @@
 //!
 //! 三种请求方式（`decision_models.toml` 的 `mode`）共享同一套 state / questions / answers
 //! 语义，差异只在这一层：
-//! * `jev`：请求体是 `{model, state, questions}`；响应顶层的 `answers` 就是答案。
+//! * `jev`：官方 TypeSafe System One 接口 `POST {base_url}/v1/systemone`，请求体是
+//!   `{model, state, questions}`；响应顶层的 `answers` 就是答案。
 //! * `onejev`：自部署的 OneJev 服务，请求体与响应形状与 `jev` 相同，**传输走本机管道**
 //!   （命名管道 / Unix socket，见 [`crate::decision_pipe`]），不经 HTTP；只有指向非回环
 //!   地址时（云端网关也提供同一协议形状）才按 `POST {base_url}/v1/systemone` 走网络。
@@ -27,20 +28,21 @@ const CHAT_SYSTEM_PROMPT: &str = "你是结构化决策服务：按 user 消息�
 /// 决策接口地址：按请求方式选路径（基地址末尾斜杠在此收口）。
 ///
 /// `chat_completions` 的基地址按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），
-/// 因此只追加资源路径；`jev` 与 `onejev` 的基地址是站点根下的 API 前缀，各自补 `/v1/...`。
+/// 因此只追加资源路径；`jev` 与 `onejev` 都走官方 System One 形状的 `/v1/systemone`。
 pub fn decide_url(mode: &str, base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
     if mode == DECISION_MODE_CHAT_COMPLETIONS {
         format!("{base}/chat/completions")
-    } else if mode == DECISION_MODE_ONEJEV {
-        // 自部署的 OneJev 服务：TypeSafe 兼容接口（与云端 jev 同形状、不同路径）。
-        format!("{base}/v1/systemone")
     } else {
-        format!("{base}/v1/decide")
+        // 官方托管（jev）与本机自部署（onejev）共用同一套 System One 接口路径。
+        format!("{base}/v1/systemone")
     }
 }
 
-/// 该请求方式是否需要凭据：自部署的本地服务（`onejev`）不鉴权，其余一律要。
+/// 该请求方式是否**必须**有凭据：自部署的本地服务（`onejev`）不强制，其余一律要。
+///
+/// `onejev` 不强制并不等于「永远不发」：渠道里填了 `api_key` 时照发 Bearer，
+/// 只是空 key 不算配置错误——本机管道与不鉴权的网关都不需要它。
 pub fn requires_api_key(mode: &str) -> bool {
     mode != DECISION_MODE_ONEJEV
 }
@@ -169,15 +171,19 @@ fn post_body_once(
         .build()
         .into();
     let timeout = std::time::Duration::from_secs(timeout_seconds.max(1));
-    let response = agent
+    let mut request = agent
         .post(decide_url)
         .config()
         .timeout_connect(Some(timeout))
         .timeout_recv_response(Some(timeout))
         .timeout_recv_body(Some(timeout))
         .build()
-        .header("Content-Type", "application/json")
-        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json");
+    // 填了才发：空 key 不带 Authorization 头，免得给不鉴权的网关发一个空的 Bearer。
+    if !api_key.trim().is_empty() {
+        request = request.header("Authorization", &format!("Bearer {api_key}"));
+    }
+    let response = request
         .header("User-Agent", user_agent)
         .send(body_text)
         .map_err(|error| error.to_string())?;
@@ -395,16 +401,20 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     const JEV: &str = DECISION_MODE_JEV;
 
-    /// 一个只回固定状态码的假上游；计数收到的请求次数。
-    fn flaky_upstream(statuses: Vec<u16>) -> (String, Arc<AtomicUsize>) {
+    /// 一个只回固定状态码的假上游；计数收到的请求次数，并记录每次的 Authorization 头。
+    fn flaky_upstream(
+        statuses: Vec<u16>,
+    ) -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<Option<String>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
         let port = listener.local_addr().expect("本地地址").port();
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&calls);
+        let authorizations = Arc::new(Mutex::new(Vec::new()));
+        let seen_auth = Arc::clone(&authorizations);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let mut stream = stream;
@@ -416,6 +426,7 @@ mod tests {
                     continue;
                 }
                 let mut length = 0usize;
+                let mut authorization = None;
                 loop {
                     let mut header = String::new();
                     if reader.read_line(&mut header).unwrap_or(0) == 0 {
@@ -428,8 +439,13 @@ mod tests {
                     if let Some((key, value)) = text.split_once(':') {
                         if key.eq_ignore_ascii_case("content-length") {
                             length = value.trim().parse().unwrap_or(0);
+                        } else if key.eq_ignore_ascii_case("authorization") {
+                            authorization = Some(value.trim().to_string());
                         }
                     }
+                }
+                if let Ok(mut list) = seen_auth.lock() {
+                    list.push(authorization);
                 }
                 let mut body = vec![0u8; length];
                 let _ = reader.read_exact(&mut body);
@@ -446,15 +462,15 @@ mod tests {
                 let _ = stream.flush();
             }
         });
-        (format!("http://127.0.0.1:{port}"), calls)
+        (format!("http://127.0.0.1:{port}"), calls, authorizations)
     }
 
     #[test]
     fn transient_failures_are_retried_up_to_the_configured_count() {
         // 两次 503 + 一次 200：retry_count = 2 时应当自愈。
-        let (base_url, calls) = flaky_upstream(vec![503, 503, 200]);
+        let (base_url, calls, _) = flaky_upstream(vec![503, 503, 200]);
         let text = post_body(
-            &format!("{base_url}/v1/decide"),
+            &format!("{base_url}/v1/systemone"),
             "jv_test",
             "{}",
             5,
@@ -468,9 +484,9 @@ mod tests {
 
     #[test]
     fn retries_are_bounded_and_the_last_error_is_reported() {
-        let (base_url, calls) = flaky_upstream(vec![500, 500, 500, 500, 500]);
+        let (base_url, calls, _) = flaky_upstream(vec![500, 500, 500, 500, 500]);
         let error = post_body(
-            &format!("{base_url}/v1/decide"),
+            &format!("{base_url}/v1/systemone"),
             "jv_test",
             "{}",
             5,
@@ -485,9 +501,9 @@ mod tests {
     #[test]
     fn client_errors_are_not_retried() {
         // 4xx 是请求本身的问题，原样再发一次还是同一个错。
-        let (base_url, calls) = flaky_upstream(vec![400, 200]);
+        let (base_url, calls, _) = flaky_upstream(vec![400, 200]);
         let error = post_body(
-            &format!("{base_url}/v1/decide"),
+            &format!("{base_url}/v1/systemone"),
             "jv_test",
             "{}",
             5,
@@ -501,9 +517,9 @@ mod tests {
 
     #[test]
     fn zero_retries_sends_exactly_one_request() {
-        let (base_url, calls) = flaky_upstream(vec![503]);
+        let (base_url, calls, _) = flaky_upstream(vec![503]);
         assert!(post_body(
-            &format!("{base_url}/v1/decide"),
+            &format!("{base_url}/v1/systemone"),
             "jv_test",
             "{}",
             5,
@@ -531,9 +547,10 @@ mod tests {
 
     #[test]
     fn decide_url_follows_the_request_mode() {
+        // 官方托管与自部署共用官方 System One 路径。
         assert_eq!(
-            decide_url(DECISION_MODE_JEV, "https://jevtypesafeai.com/api/"),
-            "https://jevtypesafeai.com/api/v1/decide"
+            decide_url(DECISION_MODE_JEV, "https://api.typesafe.ai/"),
+            "https://api.typesafe.ai/v1/systemone"
         );
         assert_eq!(
             decide_url(DECISION_MODE_CHAT_COMPLETIONS, "https://api.openlux.ai/v1/"),
@@ -543,6 +560,34 @@ mod tests {
             decide_url(DECISION_MODE_ONEJEV, "http://127.0.0.1:8766/"),
             "http://127.0.0.1:8766/v1/systemone"
         );
+    }
+
+    #[test]
+    fn authorization_header_is_sent_only_when_a_key_is_configured() {
+        let (base_url, _, authorizations) = flaky_upstream(vec![200, 200]);
+        post_body(
+            &format!("{base_url}/v1/systemone"),
+            "",
+            "{}",
+            5,
+            "test-agent",
+            0,
+        )
+        .expect("空 key 也能发");
+        post_body(
+            &format!("{base_url}/v1/systemone"),
+            "jv_test",
+            "{}",
+            5,
+            "test-agent",
+            0,
+        )
+        .expect("带 key 发送");
+
+        let headers = authorizations.lock().expect("锁").clone();
+        assert_eq!(headers.len(), 2, "两次请求都要记到");
+        assert_eq!(headers[0], None, "空 key 不带 Authorization");
+        assert_eq!(headers[1].as_deref(), Some("Bearer jv_test"));
     }
 
     #[test]

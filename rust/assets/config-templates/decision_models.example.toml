@@ -14,17 +14,18 @@ default_key = "jev-main"
 [channels.jev-main]
 name = "Jev 主渠道"
 # 请求方式：
-#   jev             —— Jev 原生接口，POST {base_url}/v1/decide，state + questions 直接进请求体。
+#   jev             —— 官方 TypeSafe System One 接口，POST {base_url}/v1/systemone，
+#                      state + questions 直接进请求体；Bearer 鉴权。
 #   chat_completions —— OpenAI 兼容接口，POST {base_url}/chat/completions，
 #                      base_url 与 [image_gen] 同口径（填到 /v1）；
 #                      同一份 state + questions 作为 user 消息发出，从返回内容里解析 answers。
-#   onejev          —— 本机自部署的 OneJev 服务，POST {base_url}/v1/systemone，
-#                      请求与响应形状与 jev 相同；base_url 指向本地服务（见下方 [local]）。
+#   onejev          —— 本机自部署的 OneJev 服务，与 jev 同一路径与形状（/v1/systemone），
+#                      回环地址走命名管道；base_url 指向本地服务（见下方 [local]）。
 mode = "jev"
-# 接口基础地址：jev / onejev 填站点根下的 API 前缀（不含 /v1/decide、/v1/systemone）；
+# 接口基础地址：jev / onejev 填站点根（不含 /v1/systemone）；
 # chat_completions 按 OpenAI 兼容口径填到 /v1（不含 /chat/completions）。
-base_url = "https://jevtypesafeai.com/api"
-# 内联密钥（可留空，改用下面的环境变量）。
+base_url = "https://api.typesafe.ai"
+# 内联密钥：jev / chat_completions 必填；onejev 可留空（留空则完全不发 Authorization 头）。
 api_key = ""
 # 决策模型：jev-latest 跟随最新版本；生产环境建议钉死版本（如 jev-1.13.0）。
 model = "jev-latest"

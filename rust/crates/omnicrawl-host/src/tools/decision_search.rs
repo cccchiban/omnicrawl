@@ -324,7 +324,7 @@ pub fn apply_order<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
     reordered
 }
 
-/// 真实实现：`POST {base_url}/v1/decide`，一个 choice 问题，读回各候选项的置信度。
+/// 真实实现：`POST {base_url}/v1/systemone`，一个 choice 问题，读回各候选项的置信度。
 ///
 /// 公开是因为本地 REST 决策接口（`omnicrawl-decision`）直接复用这一条出站路径。
 pub struct DecisionRerankClient;
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn request_shape_and_ranking_round_trip_over_the_wire() {
-        // 本地回环：一次 `/v1/decide` 往返，验证请求形状与按置信度排序。
+        // 本地回环：一次 `/v1/systemone` 往返，验证请求形状与按置信度排序。
         let cassette = RerankCassette::serve();
         let options = RerankOptions {
             enabled: true,
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(order, vec![2, 1, 0], "按置信度降序");
 
         let captured = cassette.captured();
-        assert_eq!(captured.path, "/v1/decide");
+        assert_eq!(captured.path, "/v1/systemone");
         assert_eq!(captured.authorization, "Bearer jv_test");
         assert_eq!(captured.model, "jev-latest");
         assert!(captured.state.contains("查询文本"), "{}", captured.state);
