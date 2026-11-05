@@ -39,7 +39,7 @@ pub fn list_files(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> Too
 
     let mut entries: Vec<String> = Vec::new();
     for (entry, is_dir) in collected {
-        if should_skip(&entry, paths) {
+        if should_skip(&path, &entry) {
             continue;
         }
         entries.push(format!(
@@ -166,5 +166,29 @@ mod tests {
         );
         assert_eq!(text.lines().count(), MAX_LIST_ENTRIES + 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 点名进 `.omnicrawl` 时要照实列出内容。
+    ///
+    /// 排除规则按「遍历根之下」判定，不是按整条路径的组件判定；否则
+    /// `.omnicrawl/.agent_tmp/files` 下明明有文件，也会报「目录为空」。
+    #[test]
+    fn naming_the_agent_temp_directory_lists_its_files() {
+        let (paths, root) = workspace("agent-temp");
+        let files = root.join(".omnicrawl").join(".agent_tmp").join("files");
+        std::fs::create_dir_all(&files).expect("建临时目录");
+        std::fs::write(files.join("终末地资料整理.md"), "内容").expect("写文件");
+
+        let text = list_files(
+            &paths,
+            &args(json!({"path": ".omnicrawl/.agent_tmp/files"})),
+        )
+        .expect("列临时目录");
+        assert!(text.contains("终末地资料整理.md"), "{text}");
+        assert_ne!(text, "目录为空。");
+
+        // 从工作区根列则不出现：排除规则对它仍生效。
+        let root_text = list_files(&paths, &args(json!({"recursive": true}))).expect("列工作区");
+        assert!(!root_text.contains(".omnicrawl"), "{root_text}");
     }
 }

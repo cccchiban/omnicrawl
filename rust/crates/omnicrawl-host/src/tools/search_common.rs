@@ -60,7 +60,7 @@ pub struct WalkEntry {
 /// `is_file` 过滤掉。忽略规则、受保护路径剪枝与 `WalkOptions` 全部一致。
 pub fn walk_entries_with(
     root: &Path,
-    paths: &WorkspacePaths,
+    _paths: &WorkspacePaths,
     options: &WalkOptions,
 ) -> Vec<WalkEntry> {
     if !root.is_dir() {
@@ -112,7 +112,7 @@ pub fn walk_entries_with(
         if path == root {
             continue;
         }
-        if should_skip(path, paths) {
+        if should_skip(root, path) {
             continue;
         }
         let Some(file_type) = entry.file_type() else {
@@ -188,7 +188,11 @@ impl Default for WalkOptions {
 }
 
 /// 带开关的遍历。
-pub fn walk_files_with(root: &Path, paths: &WorkspacePaths, options: &WalkOptions) -> Vec<PathBuf> {
+pub fn walk_files_with(
+    root: &Path,
+    _paths: &WorkspacePaths,
+    options: &WalkOptions,
+) -> Vec<PathBuf> {
     if root.is_file() {
         return vec![root.to_path_buf()];
     }
@@ -252,7 +256,7 @@ pub fn walk_files_with(root: &Path, paths: &WorkspacePaths, options: &WalkOption
             continue;
         }
         let path = entry.path();
-        if should_skip(path, paths) {
+        if should_skip(root, path) {
             continue;
         }
         files.push(path.to_path_buf());
@@ -261,11 +265,16 @@ pub fn walk_files_with(root: &Path, paths: &WorkspacePaths, options: &WalkOption
 }
 
 /// 逐条过滤：受保护路径与临时目录不进结果。
-pub fn should_skip(path: &Path, _paths: &WorkspacePaths) -> bool {
+///
+/// 排除只按**遍历根之下**的相对路径判定：遍历根自己叫 `.omnicrawl` 时（用户点名
+/// 列出或查找该目录），它的子项照常返回。按整条路径判定会让
+/// `list .omnicrawl/.agent_tmp/files` 恒报「目录为空」——文件明明存在、`read` 也能读。
+pub fn should_skip(root: &Path, path: &Path) -> bool {
     if WorkspacePaths::is_protected(path) {
         return true;
     }
-    path.components().any(|component| {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    relative.components().any(|component| {
         SEARCH_EXCLUDED_DIRS.contains(&component.as_os_str().to_string_lossy().as_ref())
     })
 }

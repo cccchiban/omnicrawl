@@ -978,4 +978,24 @@ mod tests {
         .expect("no_ignore");
         assert!(unignored.contains("ignored.py"), "{unignored}");
     }
+
+    /// 点名进 `.omnicrawl` 时要照实返回匹配项（与 `list` 同一条排除规则）。
+    #[test]
+    fn naming_the_agent_temp_directory_finds_its_files() {
+        let (paths, root) = workspace("agent-temp-find");
+        let files = root.join(".omnicrawl").join(".agent_tmp").join("files");
+        std::fs::create_dir_all(&files).expect("建临时目录");
+        std::fs::write(files.join("终末地资料整理.md"), "内容").expect("写文件");
+
+        let text = find_files(
+            &paths,
+            &args(json!({"pattern": "终末地", "path": ".omnicrawl/.agent_tmp/files"})),
+        )
+        .expect("查找临时目录");
+        assert!(text.contains("终末地资料整理.md"), "{text}");
+
+        // 从工作区根找则不出现：排除规则对它仍生效。
+        let root_text = find_files(&paths, &args(json!({"pattern": "终末地"}))).expect("查工作区");
+        assert_eq!(root_text, "未找到匹配结果。", "{root_text}");
+    }
 }

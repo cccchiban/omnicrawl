@@ -602,7 +602,7 @@ fn search_roots(
                 continue;
             }
             seen.push(file.clone());
-            if should_skip(&file, paths) || !basename_accepts(paths, &file, options) {
+            if should_skip(root, &file) || !basename_accepts(&file, options) {
                 continue;
             }
             let Some(bytes) = read_file_bytes(&file, options.text) else {
@@ -636,10 +636,7 @@ fn search_roots(
 }
 
 /// `include`/`exclude`：旧参数，按文件名 glob 过滤且大小写不敏感。
-fn basename_accepts(paths: &WorkspacePaths, file: &Path, options: &Options) -> bool {
-    if should_skip(file, paths) {
-        return false;
-    }
+fn basename_accepts(file: &Path, options: &Options) -> bool {
     let name = file
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -855,8 +852,10 @@ fn resolve_grep_roots(paths: &WorkspacePaths, raw_path: &str) -> Result<Vec<Path
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut matches = expand_glob(paths, &candidate);
     matches.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+    // 排除按用户给出的这个 glob 的静态前缀判定：点名进 `.omnicrawl` 时子项照常参与。
+    let skip_root = static_prefix(&candidate).unwrap_or_else(|| paths.root().to_path_buf());
     for matched in matches {
-        if should_skip(&matched, paths) {
+        if should_skip(&skip_root, &matched) {
             continue;
         }
         let path = paths.safe_path(&matched.to_string_lossy())?;
@@ -873,7 +872,10 @@ fn resolve_grep_roots(paths: &WorkspacePaths, raw_path: &str) -> Result<Vec<Path
 }
 
 /// 展开文件系统 glob（`*` 不跨目录分隔符，`**` 跨层级）。
-fn expand_glob(paths: &WorkspacePaths, candidate: &Path) -> Vec<PathBuf> {
+///
+/// 排除按 glob 的静态前缀判定，而不是按工作区根：这样 `grep` 的 `path` 点名进
+/// `.omnicrawl` 时子项照常参与，而 `**` 之类的宽泛 glob 仍不会把临时目录带进来。
+fn expand_glob(_paths: &WorkspacePaths, candidate: &Path) -> Vec<PathBuf> {
     let Some(prefix) = static_prefix(candidate) else {
         return Vec::new();
     };
@@ -881,6 +883,7 @@ fn expand_glob(paths: &WorkspacePaths, candidate: &Path) -> Vec<PathBuf> {
         Ok(regex) => regex,
         Err(_) => return Vec::new(),
     };
+    let skip_root = prefix.clone();
     let mut matched: Vec<PathBuf> = Vec::new();
     let mut stack = vec![prefix];
     while let Some(current) = stack.pop() {
@@ -891,7 +894,7 @@ fn expand_glob(paths: &WorkspacePaths, candidate: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             let is_dir = path.is_dir();
             let text = path.to_string_lossy().replace('\\', "/");
-            if regex.is_match(&text) && !should_skip(&path, paths) {
+            if regex.is_match(&text) && !should_skip(&skip_root, &path) {
                 matched.push(path.clone());
             }
             if is_dir && !path.is_symlink() {
