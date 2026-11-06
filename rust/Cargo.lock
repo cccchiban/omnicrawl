@@ -2024,6 +2024,7 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "ignore",
+ "libc",
  "omnicrawl-config",
  "omnicrawl-controllers",
  "omnicrawl-core",

@@ -14,9 +14,10 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use omnicrawl_config::features::sandbox::{NetPolicy, SandboxConfig};
+use omnicrawl_config::features::sandbox::{NetPolicy, SandboxConfig, SandboxMode};
 
 pub mod gate;
+pub mod net_approval;
 pub mod proxy;
 pub mod runtime;
 
@@ -25,6 +26,9 @@ pub mod windows;
 
 #[cfg(windows)]
 pub use windows::{Isolation, SandboxChild, Spawned, Streamed, Terminator};
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 /// 一次判定的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,8 +98,19 @@ pub struct Sandbox {
     /// 真隔离环境（容器 + ACL），首次使用时准备并复用。
     #[cfg(windows)]
     isolation: IsolationCache,
+    /// Linux 侧的能力探测结果，首次使用时问一次内核并复用。
+    #[cfg(target_os = "linux")]
+    capability: LinuxCapabilityCache,
     /// 网络通道（代理 + 回环豁免）。首次真正需要时才拉起，失败即降级为断网。
     net: Mutex<NetState>,
+    /// 网络审批站：把代理线程的"要不要放行"接到界面上。无界面时按拒绝处理。
+    approvals: std::sync::Arc<net_approval::ApprovalStation>,
+    /// 最近一次折算出的资源限额摘要（`/sandbox` 展示"实际设了几项"）。
+    ///
+    /// 限额只在 `Isolation::prepare` 里建，那条路径只在真正要跑命令时才走；
+    /// `/sandbox` 不该为此建一个 cgroup，因此这里只缓存已经得到的结果。
+    #[cfg(target_os = "linux")]
+    limits: std::sync::Mutex<Option<String>>,
 }
 
 /// 网络通道的惰性状态。
@@ -208,6 +223,33 @@ impl IsolationCache {
 /// dry-run 记录条数上限。超出后只保留前 N 条并标记"已截断"。
 pub const MAX_DECISIONS: usize = 512;
 
+/// Linux 能力探测的缓存。
+///
+/// 探测是一次只读系统调用，开销很小，但每条命令都问一遍没有意义；更重要的是
+/// `/sandbox` 与诊断要看到**同一份**结论，缓存能保证一次会话内不会前后不一致。
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub struct LinuxCapabilityCache(std::sync::Mutex<Option<linux::Capability>>);
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for LinuxCapabilityCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LinuxCapabilityCache")
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxCapabilityCache {
+    /// 取或探测一次。
+    pub fn get(&self) -> linux::Capability {
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.get_or_insert_with(linux::capability).clone()
+    }
+}
+
 impl Sandbox {
     /// 关闭状态：不判定、不记录。
     pub fn disabled(root: impl Into<PathBuf>, temp_dir: impl Into<PathBuf>) -> Self {
@@ -219,7 +261,12 @@ impl Sandbox {
             max_decisions: MAX_DECISIONS,
             #[cfg(windows)]
             isolation: IsolationCache::default(),
+            #[cfg(target_os = "linux")]
+            capability: LinuxCapabilityCache::default(),
             net: Mutex::new(NetState::default()),
+            approvals: std::sync::Arc::new(net_approval::ApprovalStation::new()),
+            #[cfg(target_os = "linux")]
+            limits: std::sync::Mutex::new(None),
         }
     }
 
@@ -237,12 +284,39 @@ impl Sandbox {
             max_decisions: MAX_DECISIONS,
             #[cfg(windows)]
             isolation: IsolationCache::default(),
+            #[cfg(target_os = "linux")]
+            capability: LinuxCapabilityCache::default(),
             net: Mutex::new(NetState::default()),
+            approvals: std::sync::Arc::new(net_approval::ApprovalStation::new()),
+            #[cfg(target_os = "linux")]
+            limits: std::sync::Mutex::new(None),
         }
     }
 
     pub fn config(&self) -> &SandboxConfig {
         &self.config
+    }
+
+    /// 网络审批站。界面启动时用它打开交互，并在每帧取待决请求。
+    pub fn approvals(&self) -> std::sync::Arc<net_approval::ApprovalStation> {
+        std::sync::Arc::clone(&self.approvals)
+    }
+
+    /// 记录最近一次折算出的资源限额摘要。
+    #[cfg(target_os = "linux")]
+    pub fn record_limits(&self, summary: String) {
+        if let Ok(mut slot) = self.limits.lock() {
+            *slot = Some(summary);
+        }
+    }
+
+    /// 最近一次的资源限额摘要；还没跑过命令时为 `None`（不为此专门建 cgroup）。
+    #[cfg(target_os = "linux")]
+    pub fn limits_summary(&self) -> Option<String> {
+        self.limits
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     /// 是否开着（dry-run 或真隔离都算开）。
@@ -255,10 +329,27 @@ impl Sandbox {
         self.config.isolates()
     }
 
+    /// 是否**在 Windows 上**真隔离（`mode = appcontainer` 且平台相符）。
+    ///
+    /// 用于 AppContainer 特有的取舍：`bash` 在容器里必然失败、`powershell` 是唯一解释器。
+    /// 这些结论在 Linux 上一条都不成立，因此不能直接用 [`Sandbox::isolates`]。
+    pub fn appcontainer_active(&self) -> bool {
+        cfg!(windows) && self.config.enabled && self.config.mode == SandboxMode::AppContainer
+    }
+
     /// 取（或首次准备）真隔离环境。只在 `mode = appcontainer` 时有意义。
     #[cfg(windows)]
     pub fn isolation(&self) -> Result<std::sync::Arc<windows::Isolation>, String> {
         self.isolation.get(self)
+    }
+
+    /// Linux 侧的能力探测（首次问内核，之后复用）。
+    ///
+    /// 与 `isolation()` 的差别在于它是**纯探测、无副作用**：不会改本进程权限，
+    /// 也不会建任何内核对象，因此可以在 dry-run 下安全调用并展示给用户。
+    #[cfg(target_os = "linux")]
+    pub fn capability(&self) -> linux::Capability {
+        self.capability.get()
     }
 
     /// 退出清理：销毁本会话真正建过的容器 profile。
@@ -349,6 +440,15 @@ impl Sandbox {
         // 代理自己持有 `Arc<Sandbox>`，判定时回问本实例，因此策略改动无需重启代理。
         // 这里用一个不含网络通道的视图，避免代理线程再进 `ensure_network` 形成递归锁。
         let sandbox = std::sync::Arc::new(self.without_network());
+        // 没有显式给出审批通道时接上本沙盒的审批站：它有超时、有界面接管开关，
+        // 且**没有界面时立即拒绝**——`ask` 因此不会因为"没人接"而拖住命令一整个超时，
+        // 也不会变成静默放行（失败方向仍是关闭）。
+        let approver = Some(approver.unwrap_or_else(|| {
+            self.approvals
+                .approver(std::time::Duration::from_secs(
+                    self.config.net_approval_timeout_seconds.max(1),
+                ))
+        }));
         let proxy = proxy::Proxy::start(sandbox, approver)?;
         #[cfg(windows)]
         let url = proxy.proxy_url();
@@ -379,7 +479,13 @@ impl Sandbox {
             max_decisions: self.max_decisions,
             #[cfg(windows)]
             isolation: IsolationCache::default(),
+            #[cfg(target_os = "linux")]
+            capability: LinuxCapabilityCache::default(),
             net: Mutex::new(NetState::default()),
+            // 代理线程问的必须是界面接管的那一个，因此这里克隆同一个站。
+            approvals: std::sync::Arc::clone(&self.approvals),
+            #[cfg(target_os = "linux")]
+            limits: std::sync::Mutex::new(None),
         }
     }
 
@@ -1029,7 +1135,29 @@ mod tests {
     fn isolation_flag_follows_mode() {
         assert!(!sandbox(enabled(SandboxMode::Off)).isolates());
         assert!(sandbox(enabled(SandboxMode::AppContainer)).isolates());
+        assert!(sandbox(enabled(SandboxMode::Landlock)).isolates());
         assert!(sandbox(enabled(SandboxMode::Off)).is_dry_run());
+    }
+
+    /// `appcontainer_active` 只在 Windows 上成立：Linux 的 `bash` 不能因为它被误禁。
+    #[test]
+    fn appcontainer_active_is_windows_only() {
+        let active = sandbox(enabled(SandboxMode::AppContainer)).appcontainer_active();
+        assert_eq!(active, cfg!(windows), "只在 Windows 上成立");
+        // 其余档位在哪个平台都不算 AppContainer。
+        assert!(!sandbox(enabled(SandboxMode::Off)).appcontainer_active());
+        assert!(!sandbox(enabled(SandboxMode::Landlock)).appcontainer_active());
+    }
+
+    /// Linux 上 landlock 档即便还不隔离命令（P1 才有 launcher），dry-run 判定照样要能跑。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_capability_is_probed_once_and_reused() {
+        let sandbox = sandbox(enabled(SandboxMode::Landlock));
+        let first = sandbox.capability();
+        let second = sandbox.capability();
+        assert_eq!(first, second, "缓存后两次结论必须一致");
+        assert!(!first.describe().is_empty());
     }
 
     #[test]

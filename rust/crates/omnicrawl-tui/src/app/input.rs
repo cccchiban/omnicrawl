@@ -597,6 +597,10 @@ impl App {
             }
         }
 
+        if self.handle_net_approval_key(key) {
+            return;
+        }
+
         if self.handle_waiting_key(key, ctrl) {
             return;
         }
@@ -711,6 +715,23 @@ impl App {
                 true
             }
             MenuAction::Redraw | MenuAction::Hidden => true,
+        }
+    }
+
+    /// 待决的网络审批优先吃 Y/N：它挡着一条正在连接的沙盒命令，越早回答越好。
+    ///
+    /// 只认明确的三键（`y`/`n`/`Esc`），其余按键一律放行给输入框——
+    /// 网络审批不该像工具审批那样把所有输入都吞掉，用户可能正在打字。
+    pub(super) fn handle_net_approval_key(&mut self, key: KeyEvent) -> bool {
+        if self.state.net_approval.is_none() {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => self.answer_net_approval(true),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.answer_net_approval(false)
+            }
+            _ => false,
         }
     }
 

@@ -37,6 +37,7 @@ use super::tts::TtsOptions;
 use super::web_search::{self, WebSearchOptions};
 use super::windows;
 use super::{edit, finding, git, grep, listing, read, read_image, skills, write};
+use crate::sandbox::gate::IsolationGate;
 
 /// 本宿主已实现执行体的工具。
 pub const IMPLEMENTED_TOOLS: [&str; 35] = [
@@ -231,6 +232,12 @@ pub struct RegistryOptions {
     pub monitors: Option<MonitorManager>,
     /// 复用既有的取消令牌：重建工具表不改取消语义（回合取消仍能回收本回合进程树）。
     pub cancel: Option<CancelToken>,
+    /// 是否有交互界面接管沙盒的网络审批（`ask` 档）。
+    ///
+    /// 必须在**重建工具表**时一并传下去：设置里改沙盒会换掉整个 `Sandbox` 与它的审批站，
+    /// 只在新实例上设一次会在下次重建后丢失，表现为"改完设置后 ask 又变成全拒"。
+    /// 无人值守（本地 API、触发接口、子代理）保持 `false`，`ask` 因此立即拒绝而不是空等超时。
+    pub net_approval_interactive: bool,
 }
 
 impl crate::host::ToolFacts for ToolRegistry {
@@ -277,10 +284,15 @@ fn build_sandbox(
     config_env: &ConfigEnvironment,
 ) -> Arc<crate::sandbox::Sandbox> {
     if let Some(sandbox) = options.sandbox.clone() {
+        // 注入的沙盒也要跟随这个开关：调用方（TUI）重建工具表时传的是同一个实例，
+        // 交互与否由选项决定，不在这里另设。
+        sandbox
+            .approvals()
+            .set_interactive(options.net_approval_interactive);
         return sandbox;
     }
     let temp_dir = paths.root().join(".omnicrawl").join(".agent_tmp");
-    match omnicrawl_config::features::sandbox::load_sandbox_config(config_env, None) {
+    let sandbox = match omnicrawl_config::features::sandbox::load_sandbox_config(config_env, None) {
         Ok(config) => Arc::new(crate::sandbox::Sandbox::new(
             config,
             paths.root().to_path_buf(),
@@ -293,7 +305,11 @@ fn build_sandbox(
                 temp_dir,
             ))
         }
-    }
+    };
+    sandbox
+        .approvals()
+        .set_interactive(options.net_approval_interactive);
+    sandbox
 }
 
 /// 沙盒真隔离下的工具开关：去掉 `bash`，补上 `powershell`。
@@ -304,7 +320,9 @@ fn build_sandbox(
 /// 而 `powershell` 默认在 `[tools]` 里是关的，沙盒内却是唯一可用的解释器——不补进表，
 /// 模型将没有任何执行命令的途径。
 fn sandbox_tool_switches(sandbox: &crate::sandbox::Sandbox, configured: &[String]) -> Vec<String> {
-    if !sandbox.isolates() {
+    // 这两条开关是 AppContainer 特有的（Linux 上 `bash` 完全可用），必须按「当前平台真能做到」
+    // 判断，否则 Linux 上配了 `mode = appcontainer` 会把唯一可用的解释器踢出工具表。
+    if !sandbox.appcontainer_active() {
         return configured.to_vec();
     }
     let mut switches: Vec<String> = configured
@@ -750,7 +768,11 @@ impl ToolRegistry {
                 &self.skill_rerank,
                 &arguments,
             )),
-            "git" => git::git_tool(&self.paths, &arguments),
+            "git" => git::git_tool(
+                &self.paths,
+                &arguments,
+                Some(&IsolationGate::new(self.sandbox.clone())),
+            ),
             "monitor" => self.run_monitor(&arguments),
             "kb_search" => outcome_result(knowledge::kb_search(
                 &self.knowledge,
@@ -869,7 +891,7 @@ impl ToolRegistry {
         // 于是 `bash.exe` 在 DLL 初始化阶段就以 0xC0000142 退出——连 `--version` 都跑不出来。
         // 这条限制与 PATH、ACL 无关，没法通过授权目录绕过，所以只能明确拒绝；
         // 悄悄退回宿主身份会让人以为环境已经隔离。
-        if self.sandbox.isolates() && shell == Shell::Bash {
+        if self.sandbox.appcontainer_active() && shell == Shell::Bash {
             return command_result(false, BASH_UNAVAILABLE_IN_SANDBOX.to_string());
         }
         // dry-run 只做判定与记录，不改执行；真隔离时判定用于日志，写由 ACL 兜底。

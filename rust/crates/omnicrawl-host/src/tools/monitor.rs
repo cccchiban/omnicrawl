@@ -496,12 +496,13 @@ impl MonitorManager {
 
         // 先占名额再起进程：并发 start 不能同时通过容量检查。
         let scope = self.reserve_slot()?;
-        // 沙盒真隔离：与 `bash`/`powershell` 同一套规则。`bash` 在容器里起不来
-        // （MSYS 要打开 `NUL`，AppContainer 无权限），因此同样直接拒绝而不是退回宿主。
+        // 沙盒真隔离：与 `bash`/`powershell` 同一套规则。`bash` 在 AppContainer 里起不来
+        // （MSYS 要打开 `NUL`，容器无权限），因此同样直接拒绝而不是退回宿主。
+        // 判定用 `appcontainer_active`：这条限制只在 Windows 上成立，Linux 的 `bash` 照常可用。
         let plan = match self.sandbox() {
             Some(sandbox) => {
-                let gate = crate::sandbox::gate::IsolationGate::new(sandbox);
-                if gate.isolates() && shell == Shell::Bash {
+                let gate = crate::sandbox::gate::IsolationGate::new(sandbox.clone());
+                if sandbox.appcontainer_active() && shell == Shell::Bash {
                     self.release_slot();
                     return Err(ToolError::coded(
                         BASH_UNAVAILABLE_IN_SANDBOX.to_string(),
@@ -580,18 +581,28 @@ impl MonitorManager {
                 }),
             };
         #[cfg(not(windows))]
-        let spawned: std::io::Result<(Running, Piped, Piped)> =
-            spawn_background(&self.inner.root, &invocation.args).map(|mut child| {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
-                let stderr = child
-                    .stderr
-                    .take()
-                    .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
-                (Running::Host(child), stdout, stderr)
-            });
+        let spawned: std::io::Result<(Running, Piped, Piped)> = match plan.as_ref() {
+            #[cfg(target_os = "linux")]
+            Some(crate::sandbox::gate::Plan::Landlock(isolation)) => spawn_background_with_policy(
+                &self.inner.root,
+                &isolation.wrap(&invocation.args),
+                Some(isolation.policy_text()),
+                // 与同步路径同一份环境处理：清宿主代理、注入本机代理。
+                |command| isolation.apply_environment(command),
+            ),
+            _ => spawn_background(&self.inner.root, &invocation.args),
+        }
+        .map(|mut child| {
+            let stdout = child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+            let stderr = child
+                .stderr
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+            (Running::Host(child), stdout, stderr)
+        });
         #[cfg(windows)]
         let (mut running, stdout, stderr, terminator) = match spawned {
             Ok(value) => value,
@@ -1049,6 +1060,22 @@ impl Inner {
 }
 
 fn spawn_background(root: &Path, args: &[String]) -> std::io::Result<Child> {
+    spawn_background_with_policy(root, args, None, |_| {})
+}
+
+/// 拉一个后台子进程；`policy` 非空时把 stdin 变成管道，供沙盒 launcher 读策略。
+///
+/// 不能无条件 `Stdio::piped()`：后台命令的 stdin 必须断开（否则命令可能等输入），
+/// 只有 launcher 这一条路径需要一个短命的、马上关闭的写端。
+///
+/// `configure` 让调用方补上平台特有的环境（Linux 沙盒的代理注入），
+/// 免得这个函数自己知道沙盒的存在。
+fn spawn_background_with_policy(
+    root: &Path,
+    args: &[String],
+    policy: Option<&str>,
+    configure: impl FnOnce(&mut Command),
+) -> std::io::Result<Child> {
     let mut command = Command::new(&args[0]);
     command
         .args(&args[1..])
@@ -1056,13 +1083,24 @@ fn spawn_background(root: &Path, args: &[String]) -> std::io::Result<Child> {
         .env("LANG", "C.UTF-8")
         .env("LC_ALL", "C.UTF-8")
         .env("PYTHONIOENCODING", "utf-8")
-        .stdin(Stdio::null())
+        .stdin(if policy.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure(&mut command);
     // 后台任务自成进程组：停止 / 取消时按组回收，`bash -c '… & …'` 拉起的
     // 后代也一起被终止（Windows 下由 Job Object 递归回收）。
     configure_process_group(&mut command);
-    command.spawn()
+    let mut child = command.spawn()?;
+    if let (Some(text), Some(mut stdin)) = (policy, child.stdin.take()) {
+        use std::io::Write;
+        let _ = stdin.write_all(text.as_bytes());
+        let _ = stdin.flush();
+    }
+    Ok(child)
 }
 
 fn spawn_reader<R: Read + Send + 'static>(

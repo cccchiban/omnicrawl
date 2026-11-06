@@ -222,7 +222,7 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     registry.register(
         Command::new("sandbox:set", handle_sandbox_set_command)
             .description("开关沙盒或切换隔离模式/网络策略，并写回 config.toml。")
-            .usage("/sandbox:set <on|off|dry-run|appcontainer> | net <策略>")
+            .usage("/sandbox:set <on|off|dry-run|appcontainer|landlock> | net <策略>")
             .command_type(CommandType::Action)
             .arg_prompt("取值"),
     )?;

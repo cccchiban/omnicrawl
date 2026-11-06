@@ -44,6 +44,11 @@ brotli = { version = "9.0.0", default-features = false, features = ["std"] }
 # 正文字符集还原：GBK/GB18030/Big5/Shift_JIS 站点不能用 UTF-8 解。纯 Rust，无 C 依赖。
 encoding_rs = "0.8"
 
+# Linux 沙盒：Landlock 探测要直接发系统调用（`libc::syscall` 与 `SYS_landlock_*`）。
+# 只给 Linux 目标，其余平台不进依赖图。
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 # 后台命令树要随宿主退出（含崩溃）被回收：Windows Job Object 的 kill-on-close。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [

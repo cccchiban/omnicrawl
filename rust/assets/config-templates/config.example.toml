@@ -154,25 +154,42 @@ mode = "review"
 review_model = ""
 
 # ── 沙盒（子进程隔离）──────────────────────────────────────────
-# 设计见 docs/sandbox_windows_design.md。Windows 上真隔离已落地（P0–P4）。
-# 真隔离下 `bash` 不进工具表、`powershell` 自动进表（它是唯一可用的解释器）：
+# 设计见 docs/sandbox_windows_design.md（Windows）与 docs/sandbox_linux_design.md（Linux）。
+# 真隔离已落地 Windows（P0–P4）；Linux 侧当前只到能力探测（P0），命令会被明确拒绝。
+#
+# Windows 真隔离下 `bash` 不进工具表、`powershell` 自动进表（它是唯一可用的解释器）：
 # `bash`/`git` 之所以失败，是因为 Git Bash 依赖 `/dev/null`，而 AppContainer 对该设备
-# 没有访问权，这在沙盒内无解。
+# 没有访问权，这在沙盒内无解。Linux 侧没有这条限制，`bash` 照常可用。
 #
 # 三档开关：
 #   enabled = false                → 与没有沙盒时完全一致（默认）
 #   enabled = true, mode = "off"   → dry-run：只判定并记录「本会拦什么」
-#   enabled = true, mode = "appcontainer" → 真隔离（AppContainer 身份 + Job 限额）
+#   enabled = true, mode = "appcontainer" → 真隔离（仅 Windows；AppContainer 身份 + Job 限额）
+#   enabled = true, mode = "landlock"     → 真隔离（仅 Linux；Landlock 文件与网络规则）
 #
-# 真隔离下：工作区可读写，宿主用户目录（含 ~/.ssh、~/.OmniCrawl）不可读。
+# 模式与平台必须对应：写成另一平台的档位会**直接报错**（不会悄悄退化成不隔离）。
+#
+# Windows：工作区可读写，宿主用户目录（含 ~/.ssh、~/.OmniCrawl）不可读。
 # 沙盒内 PowerShell 优先用 7.* 最新安装（按 `PowerShell\7`、`7.4` 这类目录的版本号挑选），
 # 首次使用时在容器里实测一次；环境异常加载不出 cmdlet 时自动回退 Windows PowerShell 5.1。
 #
-# 网络是**应用层代理级，不是内核级**：容器没有任何网络能力（裸 socket 直接失败），
-# 出网只能经宿主的回环代理（`HTTP_PROXY` 注入），因此 curl/pip/npm/git/cargo 这类
-# 尊重代理变量的客户端受下面的 `[sandbox.net]` 判定约束。不覆盖的是直接读 WinINET
-# 用户代理设置的 .NET 客户端（如 PowerShell 的 `Invoke-WebRequest`）——它能绕开判定，
-# 详见设计文档 §20。需要严格不出网就设 policy = "offline"。
+# Linux：靠 Landlock 做文件白名单（工作区 + 临时目录 + 系统只读路径），不建镜像、不需 root。
+# 需要 5.13+；内核级网络端口控制要 6.7+（ABI ≥ 4），没有它就兑现不了 offline；
+# UDP 端口控制要 ABI ≥ 10（6.12+）。
+# 注意：同 UID 的沙盒进程仍可向宿主进程发信号、可读 /proc，要堵需 user namespace 或 root。
+#
+# Linux 的网络是**端口层内核级 + 域名判定应用级**：
+#   - 端口层：非 online 档只放行回环代理端口，其余 connect() 直接 EPERM；offline 连
+#     代理端口也不放行（ABI ≥ 10 时连 UDP 目标端口一起拒）。端口规则不含地址，
+#     所以 offline 下本地 dev server 也连不上。
+#   - 域名层：宿主的回环 HTTP 代理按 `[sandbox.net]` 判定，需客户端尊重 `HTTP_PROXY`；
+#     宿主自身代理变量会被清掉再改指本机代理。
+#
+# Windows 的网络是**应用层代理级**：容器没有 internetClient（裸 socket 直接失败），
+# 出网只能经宿主回环代理（`HTTP_PROXY` 注入），curl/pip/npm/git/cargo 受判定约束。
+# 不覆盖的是直接读 WinINET 用户代理设置的 .NET 客户端（如 PowerShell 的
+# `Invoke-WebRequest`）——它能绕开判定，详见设计文档 §20。两边都要严格不出网就设
+# policy = "offline"。
 #
 # 建议先跑一周 dry-run：提示随命令输出回显（`[sandbox dry-run]` 段），
 # 确认你的编译/依赖安装不会被拦，再考虑真切。

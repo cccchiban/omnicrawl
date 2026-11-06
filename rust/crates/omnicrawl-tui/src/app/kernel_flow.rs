@@ -168,7 +168,8 @@ impl App {
         });
     }
 
-    /// 取回后台版本检测结果，有新版本就在会话区顶一条提示（整个进程只提示一次）。
+    /// 取回后台版本检测结果：底栏版本号旁标「有更新」，并在会话区顶一条提示
+    /// （整个进程只提示一次）。
     ///
     /// 检测失败一律静默：网络不可达、registry 改版都不该变成启动噪音。
     pub(super) fn drain_update_check(&mut self) {
@@ -180,8 +181,12 @@ impl App {
         // 先把结论取出来（`poll` 借用 `self.update_check`），再动 `self` 的其它字段。
         let notice = match self.update_check.as_mut() {
             Some(check) => match check.poll() {
-                Some(Ok(status)) => status.notice(),
-                // 失败与「没有更新」同义：都不打扰用户。
+                Some(Ok(status)) => {
+                    // 底栏的常驻标记与一次性的会话提示来自同一份结论。
+                    self.state.set_upgrade_available(status.has_update);
+                    status.notice()
+                }
+                // 失败与「没有更新」同义：都不打扰用户，底栏保持无箭头。
                 _ => None,
             },
             None => return,

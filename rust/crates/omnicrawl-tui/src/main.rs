@@ -46,13 +46,16 @@ const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 1.0;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
-/// 终端标签页标题的旋转动画：待机显示 `#`，会话进行中按 `| → / → - → \` 旋转，100ms 一帧。
+/// 终端标签页标题的运行动画：待机显示 `#`，会话进行中在 `▧ → ▢` 之间交替，100ms 一帧。
 const TITLE_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_NAME: &str = "omnicrawl";
 /// 待机标记：没有进行中的会话时固定这一个字符。
 const TITLE_IDLE_GLYPH: char = '#';
-/// 会话进行中的四帧旋转序列（经典斜线 spinner）。
-const TITLE_SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+/// 会话进行中的两帧：实心格与空心格交替，得到「方块闪烁」的呼吸感。
+///
+/// 必须是两个会随帧变化的值：`write_title` 跳过与上次相同的标题，若序列只剩一个
+/// 固定字符串，标题文本永不变化，动画就静止了。
+const TITLE_SPINNER: [char; 2] = ['▧', '▢'];
 /// 自愈提示的最小间隔：恢复本身照常做，只是不再每次都往屏幕上写一行。
 const NOTICE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -66,8 +69,26 @@ fn main() -> ExitCode {
     }
 }
 
+/// 沙盒 launcher 分流。只有 Linux 上有这个子命令；其它平台恒为 `None`。
+fn sandbox_launcher_exit(args: &[String]) -> Option<ExitCode> {
+    #[cfg(target_os = "linux")]
+    {
+        omnicrawl_host::sandbox::linux::intercept(args)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = args;
+        None
+    }
+}
+
 fn run() -> Result<ExitCode, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 沙盒 launcher 必须最先分流：它的 argv 是用户的原始命令，不能被下面的参数解析吃掉。
+    // 非 Linux 平台由 `intercept` 直接返回 `None`（该模块在那些平台上不存在）。
+    if let Some(code) = sandbox_launcher_exit(&args) {
+        return Ok(code);
+    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from))
@@ -197,7 +218,7 @@ fn set_terminal_title(text: &str) {
     let _ = execute!(out, SetTitle(text));
 }
 
-/// 当前帧的标题文本：待机 `#`，运行中取旋转序列的当前帧，后面跟会话名。
+/// 当前帧的标题文本：待机 `#`，运行中取两帧序列的当前帧，后面跟会话名。
 ///
 /// 会话名取内核会话标题（首条提问或 `/rename` 的结果）；尚未命名时退回产品名，
 /// 空会话与新建会话不会出现只剩一个标记的标签页。
@@ -234,7 +255,7 @@ fn event_loop(
     let mut viewport: Option<Rect> = None;
     // 粘贴识别状态：跨控制台输入批次的多行粘贴要挂起等后续批次。
     let mut paste_tracker = paste::PasteTracker::new();
-    // 终端标签页标题：待机固定 `#`，会话进行中按 100ms 一帧旋转。
+    // 终端标签页标题：待机固定 `#`，会话进行中按 100ms 一帧在 ▧/▢ 间交替。
     let mut title_frame = 0usize;
     let mut last_title = title_text(false, 0, app.current_session_title());
     let mut next_title_at = Instant::now();
@@ -255,7 +276,7 @@ fn event_loop(
                 next_title_at = now + TITLE_FRAME_INTERVAL;
             }
         } else {
-            // 回到待机立刻换成 `#`（不等帧点），下一次开跑从 `|` 重新开始。
+            // 回到待机立刻换成 `#`（不等帧点），下一次开跑从 `▧` 重新开始。
             title_frame = 0;
             write_title(&title_text(false, 0, session_title), &mut last_title);
         }
@@ -270,6 +291,8 @@ fn event_loop(
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
         app.tick_monitor_events(now);
+        // 沙盒 `ask` 档的网络审批：代理线程在等，界面每帧取一次待决请求。
+        app.tick_net_approvals();
         // 审查相关配置的外部改动（`config.toml` / `decision_models.toml`）：无需重启即生效。
         app.tick_review_config();
         app.drain_frames();
@@ -564,23 +587,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn title_is_a_hash_when_idle_and_rotates_only_while_running() {
+    fn title_is_a_hash_when_idle_and_blinks_only_while_running() {
         assert_eq!(title_text(false, 0, ""), "# omnicrawl");
         assert_eq!(title_text(false, 7, ""), "# omnicrawl", "待机不随帧变化");
 
         let frames: Vec<String> = (0..4).map(|frame| title_text(true, frame, "")).collect();
         assert_eq!(
             frames,
-            vec!["| omnicrawl", "/ omnicrawl", "- omnicrawl", "\\ omnicrawl"]
+            vec!["▧ omnicrawl", "▢ omnicrawl", "▧ omnicrawl", "▢ omnicrawl"]
         );
-        assert_eq!(title_text(true, 4, ""), "| omnicrawl", "四帧循环");
+        assert_eq!(title_text(true, 4, ""), "▧ omnicrawl", "两帧循环");
+        // 相邻帧必须不同：`write_title` 跳过重复标题，同值就等于没动画。
+        assert_ne!(
+            title_text(true, 0, ""),
+            title_text(true, 1, ""),
+            "相邻两帧文本相同会让标签页静止"
+        );
     }
 
     /// 会话有名字之后标签页显示会话名；未命名的新会话退回产品名。
     #[test]
     fn title_shows_the_session_name_once_it_has_one() {
         assert_eq!(title_text(false, 0, "修复登录"), "# 修复登录");
-        assert_eq!(title_text(true, 2, "修复登录"), "- 修复登录");
+        assert_eq!(title_text(true, 1, "修复登录"), "▢ 修复登录");
         assert_eq!(title_text(false, 0, "  "), "# omnicrawl");
     }
 

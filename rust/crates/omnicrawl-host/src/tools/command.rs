@@ -243,30 +243,64 @@ impl CommandRunner {
             }
             Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
         }?;
-        #[cfg(not(windows))]
+        // `Plan::Landlock` 只在 Linux 目标存在，因此这里必须按目标精确匹配：
+        // 用 `not(windows)` 会在 macOS 上引用一个不存在的变体。
+        #[cfg(target_os = "linux")]
+        let invocation = match &plan {
+            Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
+            // Linux 的 `bash` 在沙盒内照常可用，解释器选择与宿主路径一致。
+            Plan::Landlock(_) => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
+        }?;
+        #[cfg(not(any(windows, target_os = "linux")))]
         let invocation = match &plan {
             Plan::Host => invocation_for(text, shell, &|name| std::env::var(name).ok(), false),
         }?;
         #[cfg(windows)]
-        if let Plan::Isolated(isolation) = plan {
-            return self.run_isolated(&invocation, timeout_seconds, cancel, &isolation);
+        if let Plan::Isolated(isolation) = &plan {
+            return self.run_isolated(&invocation, timeout_seconds, cancel, isolation.as_ref());
         }
-        let mut command = Command::new(&invocation.args[0]);
+        // Linux：真实命令经 `sandbox-exec` 包装，其余（超时、取消、输出组织）与宿主路径共享。
+        #[cfg(target_os = "linux")]
+        let (args, policy) = match &plan {
+            Plan::Landlock(isolation) => (
+                isolation.wrap(&invocation.args),
+                Some(isolation.policy_text().to_string()),
+            ),
+            Plan::Host => (invocation.args.clone(), None),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (args, policy) = (invocation.args.clone(), None::<String>);
+        let mut command = Command::new(&args[0]);
         command
-            .args(&invocation.args[1..])
+            .args(&args[1..])
             .current_dir(&self.root)
             .env("LANG", "C.UTF-8")
             .env("LC_ALL", "C.UTF-8")
             .env("PYTHONIOENCODING", "utf-8")
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Linux 沙盒：清掉宿主代理变量、注入宿主回环代理。不做这一步，
+        // `ask`/`allowlist` 的域名判定会被宿主的 `HTTP_PROXY` 整段跳过。
+        #[cfg(target_os = "linux")]
+        if let Plan::Landlock(isolation) = &plan {
+            isolation.apply_environment(&mut command);
+        }
         // Unix 下让命令自成进程组：取消 / 超时按组回收时，`bash -c '… & …'`
         // 拉起的后代也一起被终止，不止直接子进程。
         configure_process_group(&mut command);
         let mut child = command
             .spawn()
             .map_err(|error| ToolError::new(format!("命令执行失败：{error}")))?;
+        // 沙盒 launcher 在读策略：写完立刻关掉，否则命令会阻塞在等 stdin EOF 上。
+        // 非沙盒路径的 stdin 是空管道，等同原来的 `Stdio::null()`。
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Some(text) = policy {
+                use std::io::Write;
+                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.flush();
+            }
+        }
 
         // 命令树纳入 kill-on-close Job：宿主退出（含崩溃）时由操作系统递归回收，
         // 不依赖按 PID 重新查找，也不受受限桌面会话下的 `taskkill` 权限限制。
@@ -310,7 +344,13 @@ impl CommandRunner {
             .and_then(|status| status.code())
             .map(i64::from)
             .unwrap_or(-1);
-        Ok(self.finish(&invocation, return_code, stdout_text, stderr_text, false))
+        Ok(self.finish(
+            &invocation,
+            return_code,
+            stdout_text,
+            stderr_text,
+            plan.is_isolated(),
+        ))
     }
 
     /// 沙盒路径：以 AppContainer 身份执行同一条命令。
@@ -386,7 +426,12 @@ impl CommandRunner {
     ) -> CommandOutcome {
         let mut parts = vec![format!("退出码：{return_code}")];
         if isolated {
-            parts.push("[sandbox:appcontainer] 本命令以隔离身份执行".to_string());
+            // 标记随平台/模式变化：AppContainer 与 Landlock 是两套完全不同的隔离，
+            // 在输出里写成同一个名字会让人排查时找错方向。
+            parts.push(format!(
+                "{} 本命令以隔离身份执行",
+                self.gate.label()
+            ));
         }
         parts.push(format!("Shell：{}", invocation.label));
         if !stdout_text.trim().is_empty() {

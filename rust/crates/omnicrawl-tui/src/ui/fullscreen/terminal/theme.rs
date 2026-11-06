@@ -26,6 +26,9 @@ pub const BORDER_MUTED: &str = "bright_black";
 pub const ACCENT_GREEN: &str = "green";
 pub const ACCENT_BLUE: &str = "blue";
 pub const ACCENT_AMBER: &str = "yellow";
+/// 淡黄色：用于「有更新」这类需要被看见、但不该抢注意力的常驻小标记
+/// （标准 `yellow` 在白底终端上过硬，这里用低饱和的真彩色）。
+pub const ACCENT_PALE_AMBER: &str = "#e8d9a0";
 pub const ACCENT_RED: &str = "red";
 /// 工具进行中的边框色（白色）：与成功/失败语义色区分开，不引入新色相。
 pub const ACCENT_WHITE: &str = "white";

@@ -17,6 +17,15 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // 沙盒 launcher 比连接器更优先：它是"给一条命令施加规则后 exec"的通道，
+    // 进程已经不是宿主了，绝不能被连接器/API 的参数解析截走。
+    #[cfg(target_os = "linux")]
+    {
+        let raw_args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(code) = omnicrawl_host::sandbox::linux::intercept(&raw_args) {
+            return code;
+        }
+    }
     // 连接器模式在最前面分流：它不需要 API 配置（监听地址与令牌），也不起 HTTP 服务，
     // 只在宿主进程内驱动一个消息平台连接器。由 `omnicrawl-host` 路由到这里。
     if let Some((platform, extra)) = connector_platform(&std::env::args().collect::<Vec<String>>())

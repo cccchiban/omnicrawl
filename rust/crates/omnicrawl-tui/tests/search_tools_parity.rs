@@ -223,7 +223,7 @@ fn git_cases_match_python() {
             }
             initialised = true;
         }
-        let result = git::git_tool(&paths, &arguments(&case["arguments"]));
+        let result = git::git_tool(&paths, &arguments(&case["arguments"]), None);
         assert_eq!(result.ok, case["ok"], "用例 {:?}", case["arguments"]);
         assert_eq!(
             normalize(&result.output, &root),

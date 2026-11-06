@@ -7,8 +7,8 @@
 //! （对映 `text-overflow: ellipsis`）。
 //!
 //! 不再轮播（留言页已移除）：模型与各开关改在欢迎 Logo 下方的会话徽标里显示。
-//! 与 Python 一致，这一行不显示版本号：版本在启动画面与 `/version` 里给，
-//! 常驻底栏只保留会话态数据。
+//! 常驻底栏只保留会话态数据，末尾跟一段版本号（`工作区 ⁕ v0.4.6`）；有新版本时
+//! 版本号旁多一个淡黄色 ↑。
 //!
 //! [`AppState::hud_text`]: crate::state::AppState::hud_text
 
@@ -53,14 +53,21 @@ pub fn line_of(text: &StyledText, width: usize) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::ui::display_width;
-    use crate::ui::fullscreen::status::hud::{context_summary_text, token_telemetry_text};
+    use crate::ui::fullscreen::status::indicators::{hud_line_text, HudSource};
     use crate::ui::fullscreen::terminal::theme;
 
     fn telemetry_line(width: usize) -> Line<'static> {
-        let mut text = token_telemetry_text(1_200, 300, 600, 128_000, 12.3);
-        text.push("⁕ 工作区 ", theme::TEXT_MUTED);
-        text.append_text(&context_summary_text("D:/work"));
-        line_of(&text, width)
+        let source = HudSource {
+            workspace: "D:/work".to_string(),
+            input_tokens: 1_200,
+            output_tokens: 300,
+            cached_input_tokens: 600,
+            context_limit: 128_000,
+            tokens_per_second: 12.3,
+            version: "v0.4.6".to_string(),
+            upgrade_available: false,
+        };
+        line_of(&hud_line_text(&source), width)
     }
 
     fn line_text(line: &Line<'static>) -> String {
@@ -71,15 +78,29 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_line_carries_usage_rate_and_workspace() {
+    fn telemetry_line_carries_usage_rate_workspace_and_version() {
         let text = line_text(&telemetry_line(120));
         assert!(text.contains("1.2K/128K 1%"), "{text}");
         assert!(text.contains("t/s"), "{text}");
         assert!(text.contains("⁕ 工作区 D:/work"), "{text}");
+        assert!(text.contains("D:/work ⁕ v0.4.6"), "{text}");
+        assert!(!text.contains('↑'), "无更新时不画箭头：{text}");
         // 模型与各开关已移到欢迎 Logo 下的会话徽标，底部不再重复。
         assert!(!text.contains("THINKING"), "{text}");
         assert!(!text.contains("MCP"), "{text}");
         assert!(!text.contains('│'), "底栏用 ⁕ 分隔，不用竖线：{text}");
+    }
+
+    #[test]
+    fn upgrade_arrow_shows_next_to_the_version() {
+        let source = HudSource {
+            workspace: "D:/work".to_string(),
+            version: "v0.4.6".to_string(),
+            upgrade_available: true,
+            ..HudSource::default()
+        };
+        let text = line_text(&line_of(&hud_line_text(&source), 120));
+        assert!(text.contains("D:/work ⁕ ↑v0.4.6"), "{text}");
     }
 
     #[test]

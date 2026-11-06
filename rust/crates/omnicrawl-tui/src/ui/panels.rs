@@ -29,6 +29,21 @@ pub fn todo_height(state: &AppState) -> u16 {
 }
 
 pub fn panel_height(state: &AppState, width: u16) -> u16 {
+    // 网络审批与工具审批是两件独立的事，可能同时存在（沙盒里的命令正在跑，
+    // 回合又推进到一个需确认的调用）：取较高者，渲染时两块都画。
+    tool_panel_height(state, width).max(net_panel_height(state))
+}
+
+/// 网络审批面板高度：标题 + 目标 + 按键提示。
+fn net_panel_height(state: &AppState) -> u16 {
+    if state.net_approval.is_some() {
+        5
+    } else {
+        0
+    }
+}
+
+fn tool_panel_height(state: &AppState, width: u16) -> u16 {
     match state.waiting() {
         None => 0,
         Some(Waiting::Approval(panel)) => {
@@ -87,6 +102,45 @@ pub fn render_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16)
     if area.height == 0 {
         return;
     }
+    // 网络审批画在上面：它挡着一条正在连接的沙盒命令，比工具审批更急。
+    if let Some(panel) = &state.net_approval {
+        render_net_approval(frame, area, panel, width);
+        return;
+    }
+    render_tool_panel(frame, area, state, width);
+}
+
+fn render_net_approval(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &crate::state::NetApprovalPanel,
+    width: u16,
+) {
+    let inner = width.saturating_sub(4).max(1) as usize;
+    let lines = vec![
+        Line::from(vec![
+            Span::raw("沙盒内进程请求连接 "),
+            Span::styled(fit(&panel.target, inner), Style::new().fg(Color::Yellow)),
+        ]),
+        Line::raw(format!("{} 秒后按超时拒绝", panel.remaining_seconds)),
+        Line::styled(
+            "[Y] 放行    [N] 拒绝",
+            Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title("网络审批")
+                .border_style(Style::new().fg(Color::Yellow)),
+        ),
+        area,
+    );
+}
+
+fn render_tool_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16) {
     let inner = width.saturating_sub(4).max(1) as usize;
     match state.waiting() {
         None => {}
@@ -212,6 +266,46 @@ mod tests {
         );
         assert!(matches!(state.waiting(), Some(Waiting::Approval(_))));
         assert!(panel_height(&state, 60) >= 4, "审批面板要装下工具名与说明");
+    }
+
+    #[test]
+    fn net_approval_panel_has_its_own_height() {
+        let mut state = new_state();
+        assert_eq!(panel_height(&state, 60), 0);
+        state.net_approval = Some(crate::state::NetApprovalPanel {
+            id: 7,
+            target: "https://example.com:443".to_string(),
+            remaining_seconds: 42,
+        });
+        // 独立于工具批次：没有 `Waiting` 也要占位置，否则面板画不出来。
+        assert!(state.waiting().is_none());
+        assert_eq!(panel_height(&state, 60), 5);
+    }
+
+    #[test]
+    fn net_approval_and_tool_panel_share_the_band() {
+        let mut state = new_state();
+        state.start_batch(
+            Id::Number(3),
+            vec![omnicrawl_core::ToolCall {
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "curl https://example.com"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                id: "c1".to_string(),
+                function_name: "bash".to_string(),
+            }],
+        );
+        let tool_only = panel_height(&state, 60);
+        state.net_approval = Some(crate::state::NetApprovalPanel {
+            id: 8,
+            target: "https://example.com:443".to_string(),
+            remaining_seconds: 30,
+        });
+        // 两者可能同时存在（沙盒里的命令在跑，回合又推进到一个需确认的调用），
+        // 取较高者，不能因为其中一块更矮就把另一块挤掉。
+        assert_eq!(panel_height(&state, 60), tool_only.max(5));
     }
 
     #[test]

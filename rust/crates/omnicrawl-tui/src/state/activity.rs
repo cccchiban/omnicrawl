@@ -161,7 +161,7 @@ impl AppState {
             self.logo.next_frame_delay(now)
         }
 
-        /// 底部单行 HUD 的数据源快照（遥测 + 工作区）。
+        /// 底部单行 HUD 的数据源快照（遥测 + 工作区 + 版本号）。
         pub(super) fn hud_source(&self) -> HudSource {
             HudSource {
                 workspace: self.project.clone(),
@@ -171,7 +171,20 @@ impl AppState {
                 // 总量未知时传 0：对映层与 Python 一样按 max(1) 兜底，不编造分母。
                 context_limit: self.telemetry.context_window.unwrap_or(0) as i64,
                 tokens_per_second: self.telemetry.rate.value().unwrap_or(0.0),
+                version: self.version.clone(),
+                upgrade_available: self.upgrade_available,
             }
+        }
+
+        /// 记下「registry 上有更新版本」：底栏版本号旁随即出现 ↑。
+        ///
+        /// 只改这一个标记并重建底栏；检测失败时调用方不调它，底栏就保持无箭头。
+        pub fn set_upgrade_available(&mut self, available: bool) {
+            if self.upgrade_available == available {
+                return;
+            }
+            self.upgrade_available = available;
+            self.refresh_hud();
         }
 
         /// 按最新遥测重建底部单行 HUD。

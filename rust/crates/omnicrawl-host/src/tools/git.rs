@@ -7,7 +7,8 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use omnicrawl_controllers::approval::GIT_SUPPORTED_ACTIONS;
 use omnicrawl_controllers::tool_args::read_required_string_list;
@@ -15,8 +16,15 @@ use omnicrawl_core::ToolResult;
 use serde_json::{Map, Value};
 
 use super::paths::WorkspacePaths;
+use crate::process_control::{configure_process_group, kill_process_tree_by_pid};
+use crate::sandbox::gate::IsolationGate;
+// `Plan` 只有 Linux 分支会用到；在其它 Unix 目标上导入它就是未使用。
+#[cfg(target_os = "linux")]
+use crate::sandbox::gate::Plan;
 
 pub const GIT_COMMAND_TIMEOUT_SECONDS: u64 = 360;
+/// 等 git 退出的轮询间隔：与 `command.rs` 一致，20ms 对 git 这种秒级命令足够细。
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub const GIT_OUTPUT_HEAD_CHARS: usize = 4_000;
 pub const GIT_OUTPUT_TAIL_CHARS: usize = 8_000;
 pub const GIT_OUTPUT_MAX_CHARS: usize = GIT_OUTPUT_HEAD_CHARS + GIT_OUTPUT_TAIL_CHARS;
@@ -38,7 +46,11 @@ const ARCHIVE_FORBIDDEN_PREFIXES: [&str; 1] = ["--output="];
 /// clone/init 的目录位置参数必须位于工作区内。
 const DIRECTORY_ACTIONS: [&str; 2] = ["clone", "init"];
 
-pub fn git_tool(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> ToolResult {
+pub fn git_tool(
+    paths: &WorkspacePaths,
+    arguments: &Map<String, Value>,
+    gate: Option<&IsolationGate>,
+) -> ToolResult {
     let action = arguments
         .get("action")
         .and_then(Value::as_str)
@@ -116,30 +128,202 @@ pub fn git_tool(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> ToolR
         argv.extend(file_paths.iter().cloned());
     }
 
-    let mut command = Command::new(&argv[0]);
+    run_git(argv, action, paths.root(), gate)
+}
+
+/// 按沙盒计划执行一次 `git`。
+///
+/// 三条路径的差别只在**怎么起进程**；参数校验、输出组织、错误文案完全共享，
+/// 否则沙盒内外会给出两种不同的失败文本，排查时找不到方向。
+#[cfg(not(windows))]
+fn run_git(
+    argv: Vec<String>,
+    action: String,
+    root: &Path,
+    gate: Option<&IsolationGate>,
+) -> ToolResult {
+    // Linux：`git` 是普通可执行文件，只需经 `sandbox-exec` 施加文件与网络规则。
+    let plan = match gate.map(IsolationGate::plan) {
+        None => None,
+        Some(Ok(plan)) => Some(plan),
+        Some(Err(error)) => {
+            return error_result(format!("沙盒无法启用，git 未执行：{error}"));
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let (args, policy) = match &plan {
+        Some(Plan::Landlock(isolation)) => (
+            isolation.wrap(&argv),
+            Some(isolation.policy_text().to_string()),
+        ),
+        _ => (argv, None),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (args, policy) = (argv, None::<String>);
+
+    let mut command = Command::new(&args[0]);
     command
-        .args(&argv[1..])
-        .current_dir(paths.root())
+        .args(&args[1..])
+        .current_dir(root)
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")
         // 不向终端交互：需要凭据时直接失败，需要编辑器时用 true 直接成功。
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true");
-    let child = match command.output() {
-        Ok(output) => output,
+    // 沙盒内必须清掉宿主代理变量并改指本机代理，否则 `git clone https://…`
+    // 会直奔用户代理，`[sandbox.net]` 的判定被整段跳过。
+    #[cfg(target_os = "linux")]
+    if let Some(Plan::Landlock(isolation)) = &plan {
+        isolation.apply_environment(&mut command);
+    }
+    // 沙盒 launcher 从 stdin 读策略：必须给它管道，写完立刻关。
+    // 两个输出管道**始终**要接管：下面用独立的读线程收输出，不接管就什么都读不到。
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if policy.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    // 自成进程组：超时按组回收时，git 拉起的钩子/凭据助手一并终止。
+    configure_process_group(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return error_result("未找到 git 可执行文件，请确认 Git 已安装。".to_string());
         }
         Err(error) => return error_result(format!("无法启动 git：{error}。")),
     };
-    let _ = Duration::from_secs(GIT_COMMAND_TIMEOUT_SECONDS);
+    if let Some(text) = policy {
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(text.as_bytes());
+            let _ = stdin.flush();
+        }
+    }
+    // `wait_with_output` 没有上限：`git push` 卡在网络上会一直占着这条工具调用。
+    // 超时后整组终止（`configure_process_group` 让 git 自成一组，后代一并回收）。
+    //
+    // 读管道必须先起线程再等退出：管道缓冲区满时 git 会阻塞在 write 上，
+    // 先等退出就会死锁。这也是 `command.rs` 的做法。
+    let stdout = child.stdout.take().map(spawn_output_reader);
+    let stderr = child.stderr.take().map(spawn_output_reader);
+    let pid = child.id();
+    let deadline = Instant::now() + Duration::from_secs(GIT_COMMAND_TIMEOUT_SECONDS);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return error_result(format!("等待 git 结束失败：{error}。")),
+        }
+        if Instant::now() >= deadline {
+            kill_process_tree_by_pid(pid);
+            return error_result(format!(
+                "git {action} 超过 {GIT_COMMAND_TIMEOUT_SECONDS} 秒，已终止。"
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+    let stdout_text = stdout.map(join_output_reader).unwrap_or_default();
+    let stderr_text = stderr.map(join_output_reader).unwrap_or_default();
+    finish_git(status, &stdout_text, &stderr_text, &action)
+}
 
-    let stdout = String::from_utf8_lossy(&child.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&child.stderr).to_string();
-    if !child.status.success() {
+fn spawn_output_reader<R: std::io::Read + Send + 'static>(
+    mut stream: R,
+) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stream, &mut buffer);
+        buffer
+    })
+}
+
+fn join_output_reader(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    handle.join().unwrap_or_default()
+}
+
+/// Windows：`git` 是 MSYS 程序，在 AppContainer 内起不来，因此**明确拒绝**而非悄悄放行。
+///
+/// 依据是 `sandbox_windows_design.md` §18 的实测：`git --version` 能过，但任何真正干活的
+/// 子命令都因打不开 `/dev/null`（Windows 的 `NUL`）而失败，`CreateFileW` 返回
+/// `ERROR_ACCESS_DENIED`。这**不是配置问题**，授权目录解决不了。
+///
+/// 关键：必须拒绝，不能"沙盒模式下退回宿主身份执行"——那等于让最该被约束的操作
+/// （`push`、`config`、`submodule`）完全不受约束，比"跑不了"危险得多。
+#[cfg(windows)]
+fn run_git(
+    argv: Vec<String>,
+    action: String,
+    root: &Path,
+    gate: Option<&IsolationGate>,
+) -> ToolResult {
+    let isolated = match gate.map(IsolationGate::plan) {
+        None => false,
+        Some(Ok(plan)) => plan.is_isolated(),
+        Some(Err(error)) => {
+            return error_result(format!("沙盒无法启用，git 未执行：{error}"));
+        }
+    };
+    if isolated {
+        return error_result(GIT_UNAVAILABLE_IN_SANDBOX.to_string());
+    }
+    let mut command = Command::new(&argv[0]);
+    command
+        .args(&argv[1..])
+        .current_dir(root)
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true");
+    // 与 Linux 路径同一套超时语义：`git push` 卡住不能无限占着工具调用。
+    // 必须显式接管两个输出管道，否则 `child.stdout` 为 `None`，读线程拿不到任何内容。
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return error_result("未找到 git 可执行文件，请确认 Git 已安装。".to_string());
+        }
+        Err(error) => return error_result(format!("无法启动 git：{error}。")),
+    };
+    let stdout = child.stdout.take().map(spawn_output_reader);
+    let stderr = child.stderr.take().map(spawn_output_reader);
+    let pid = child.id();
+    let deadline = Instant::now() + Duration::from_secs(GIT_COMMAND_TIMEOUT_SECONDS);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return error_result(format!("等待 git 结束失败：{error}。")),
+        }
+        if Instant::now() >= deadline {
+            kill_process_tree_by_pid(pid);
+            return error_result(format!(
+                "git {action} 超过 {GIT_COMMAND_TIMEOUT_SECONDS} 秒，已终止。"
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+    let stdout_bytes = stdout.map(join_output_reader).unwrap_or_default();
+    let stderr_bytes = stderr.map(join_output_reader).unwrap_or_default();
+    finish_git(status, &stdout_bytes, &stderr_bytes, &action)
+}
+
+/// 共享的退出码与输出组织：沙盒内外文案必须一致。
+fn finish_git(
+    status: std::process::ExitStatus,
+    stdout_bytes: &[u8],
+    stderr_bytes: &[u8],
+    action: &str,
+) -> ToolResult {
+    let stdout = String::from_utf8_lossy(stdout_bytes).to_string();
+    let stderr = String::from_utf8_lossy(stderr_bytes).to_string();
+    if !status.success() {
         let detail = stderr.trim();
         let text = if detail.is_empty() {
-            let code = child.status.code().unwrap_or(-1);
+            let code = status.code().unwrap_or(-1);
             format!("git {action} 失败（退出码 {code}）。")
         } else {
             detail.to_string()
@@ -160,6 +344,18 @@ pub fn git_tool(paths: &WorkspacePaths, arguments: &Map<String, Value>) -> ToolR
         retryable: false,
     }
 }
+
+/// Windows 沙盒内 `git` 不可用的说明与替代做法。
+///
+/// 与 `registry.rs` 的 `BASH_UNAVAILABLE_IN_SANDBOX` 同源（都是 `NUL` 设备导致的），
+/// 但 `git` 有自己的替代路径：用 `bash` 工具跑系统 `git` 也不可行（同因），因此给出的是
+/// 「关掉沙盒或改用文件工具」这两条真实可走的路。
+#[cfg(windows)]
+const GIT_UNAVAILABLE_IN_SANDBOX: &str =
+    "沙盒真隔离下无法执行 `git`：它是 MSYS 程序，启动时要打开 `/dev/null`（Windows 的 `NUL` 设备），\
+     而 AppContainer 身份对该设备没有访问权，任何真正干活的子命令都会失败。\
+     这不是配置问题，无法通过授权目录解决。可选做法：把 `[sandbox] mode` 设为 off 后重试；\
+     或改用 `read`/`write_file`/`Edit_file`/`grep`/`find` 完成同样的改动（这些工具仍在沙盒判定之下）。";
 
 fn error_result(message: String) -> ToolResult {
     ToolResult {
@@ -237,22 +433,24 @@ mod tests {
     #[test]
     fn validation_errors_match_python_texts() {
         let (paths, _root) = workspace("validate");
-        let unsupported = git_tool(&paths, &args(json!({"action": "push"})));
+        let unsupported = git_tool(&paths, &args(json!({"action": "push"})), None);
         // push 属于高风险但受支持；这里用真正不支持的动作。
         assert!(unsupported.ok || !unsupported.output.contains("不支持的 git 子命令"));
 
-        let bad_action = git_tool(&paths, &args(json!({"action": "frobnicate"})));
+        let bad_action = git_tool(&paths, &args(json!({"action": "frobnicate"})), None);
         assert_eq!(bad_action.output, "不支持的 git 子命令：frobnicate。");
 
         let escape = git_tool(
             &paths,
             &args(json!({"action": "status", "args": ["--git-dir=/tmp/x"]})),
+            None,
         );
         assert_eq!(escape.output, "git 工具不允许参数：--git-dir=/tmp/x。");
 
         let config = git_tool(
             &paths,
             &args(json!({"action": "config", "args": ["--global", "user.name", "x"]})),
+            None,
         );
         assert_eq!(
             config.output,
@@ -262,24 +460,26 @@ mod tests {
         let archive = git_tool(
             &paths,
             &args(json!({"action": "archive", "args": ["-o", "out.zip"]})),
+            None,
         );
         assert_eq!(
             archive.output,
             "git archive 不允许 -o/--output，输出只能走 stdout。"
         );
 
-        let commit = git_tool(&paths, &args(json!({"action": "commit"})));
+        let commit = git_tool(&paths, &args(json!({"action": "commit"})), None);
         assert_eq!(
             commit.output,
             "commit 必须提供 message，或显式传入 --no-edit。"
         );
 
-        let message_type = git_tool(&paths, &args(json!({"action": "commit", "message": 5})));
+        let message_type = git_tool(&paths, &args(json!({"action": "commit", "message": 5})), None);
         assert_eq!(message_type.output, "message 必须是字符串。");
 
         let outside = git_tool(
             &paths,
             &args(json!({"action": "add", "paths": ["../outside.txt"]})),
+            None,
         );
         assert_eq!(
             outside.output,
@@ -289,6 +489,7 @@ mod tests {
         let clone_outside = git_tool(
             &paths,
             &args(json!({"action": "clone", "args": ["https://example.invalid/x", "../out"]})),
+            None,
         );
         assert!(
             clone_outside
@@ -312,13 +513,13 @@ mod tests {
     fn readonly_status_runs_in_a_real_repository() {
         let (paths, root) = workspace("status");
         // 需要真 git：先 init，再跑只读 status。
-        let init = git_tool(&paths, &args(json!({"action": "init"})));
+        let init = git_tool(&paths, &args(json!({"action": "init"})), None);
         if !init.ok && init.output.contains("未找到 git 可执行文件") {
             eprintln!("跳过：本机没有 git");
             return;
         }
         assert!(init.ok, "{}", init.output);
-        let status = git_tool(&paths, &args(json!({"action": "status"})));
+        let status = git_tool(&paths, &args(json!({"action": "status"})), None);
         assert!(status.ok, "{}", status.output);
         assert!(
             status.output.contains("On branch") || status.output.contains("No commits"),
@@ -326,5 +527,56 @@ mod tests {
             status.output
         );
         assert!(root.join(".git").is_dir());
+    }
+
+    /// 沙盒关闭时 git 照常执行：先校验参数、再跑子命令，两层都不能被沙盒改动。
+    #[test]
+    fn sandbox_off_keeps_git_working() {
+        let (paths, _root) = workspace("sandbox-off");
+        let sandbox = std::sync::Arc::new(crate::sandbox::Sandbox::disabled(
+            paths.root().to_path_buf(),
+            paths.root().join(".omnicrawl/.agent_tmp"),
+        ));
+        let gate = IsolationGate::new(sandbox);
+        let init = git_tool(&paths, &args(json!({"action": "init"})), Some(&gate));
+        if !init.ok && init.output.contains("未找到 git 可执行文件") {
+            eprintln!("跳过：本机没有 git");
+            return;
+        }
+        assert!(init.ok, "{}", init.output);
+        // 参数校验必须在沙盒判定之前照旧生效。
+        let escape = git_tool(
+            &paths,
+            &args(json!({"action": "status", "args": ["--git-dir=/tmp/x"]})),
+            Some(&gate),
+        );
+        assert_eq!(escape.output, "git 工具不允许参数：--git-dir=/tmp/x。");
+    }
+
+    /// Windows 沙盒内 `git` 必须**明确拒绝**，绝不能让它在宿主身份下悄悄跑起来。
+    ///
+    /// 这是本工具最重要的一条安全断言：`git push`/`config`/`submodule` 是最需要约束的
+    /// 操作，一旦"沙盒模式下退回宿主"就完全失守。
+    #[cfg(windows)]
+    #[test]
+    fn windows_sandbox_refuses_git_instead_of_falling_back() {
+        let (paths, _root) = workspace("sandbox-windows");
+        let mut config = omnicrawl_config::features::sandbox::SandboxConfig::default();
+        config.enabled = true;
+        config.mode = omnicrawl_config::features::sandbox::SandboxMode::AppContainer;
+        let sandbox = std::sync::Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            paths.root().to_path_buf(),
+            paths.root().join(".omnicrawl/.agent_tmp"),
+        ));
+        let gate = IsolationGate::new(sandbox);
+        // 容器真实建不起来时也要给出"沙盒无法启用"而不是退化成宿主执行。
+        let result = git_tool(&paths, &args(json!({"action": "status"})), Some(&gate));
+        assert!(!result.ok, "{}", result.output);
+        assert!(
+            result.output.contains("沙盒"),
+            "拒绝理由必须提到沙盒：{}",
+            result.output
+        );
     }
 }

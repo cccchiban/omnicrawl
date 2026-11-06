@@ -6,7 +6,9 @@
 //! 可见性、热区与触发时机由装配层（`ui/fullscreen/app/core`）承接。
 
 use crate::ui::fullscreen::status::hud::{context_summary_text, token_telemetry_text};
-use crate::ui::fullscreen::terminal::theme::{ACCENT_AMBER, TEXT_MUTED};
+use crate::ui::fullscreen::terminal::theme::{
+    ACCENT_AMBER, ACCENT_PALE_AMBER, TEXT_MUTED, TEXT_PRIMARY,
+};
 use crate::ui::fullscreen::text::StyledText;
 
 /// 排队预览条折叠时可见的消息条数（对映 `OmniCrawlApp.QUEUE_PREVIEW_MAX_ROWS`）。
@@ -16,7 +18,7 @@ pub const QUEUE_PREVIEW_SUMMARY_LIMIT: usize = 40;
 
 /// 底部单行 HUD 的数据源快照。
 ///
-/// 只保留仍会绘制的内容：上下文用量 / 吞吐 / 速率与工作区。模型与各开关已移到
+/// 只保留仍会绘制的内容：上下文用量 / 吞吐 / 速率、工作区与版本号。模型与各开关已移到
 /// 欢迎 Logo 下方的会话徽标（见 [`crate::ui::fullscreen::rendering::welcome_logo`]），
 /// 底部不再轮播留言页。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -27,9 +29,25 @@ pub struct HudSource {
     pub cached_input_tokens: i64,
     pub context_limit: i64,
     pub tokens_per_second: f64,
+    /// 产品版本（`v0.4.6`）。
+    pub version: String,
+    /// registry 上是否存在更新版本：为真时版本号旁标 ↑。
+    pub upgrade_available: bool,
 }
 
-/// 底部单行 HUD 的整行文本：遥测 + 工作区路径。
+/// 版本号段：`v0.4.6`，有新版本时前置淡黄色 ↑。
+///
+/// 单独成函数是因为 ↑ 只挂在版本号旁，且颜色与版本号本身不同（箭头提示、版本号常色）。
+fn version_text(version: &str, upgrade_available: bool) -> StyledText {
+    let mut rendered = StyledText::new();
+    if upgrade_available {
+        rendered.push("↑", ACCENT_PALE_AMBER);
+    }
+    rendered.push(version, TEXT_PRIMARY);
+    rendered
+}
+
+/// 底部单行 HUD 的整行文本：遥测 ⁕ 工作区路径 ⁕ 版本号。
 pub fn hud_line_text(source: &HudSource) -> StyledText {
     let mut rendered = token_telemetry_text(
         source.input_tokens,
@@ -40,6 +58,12 @@ pub fn hud_line_text(source: &HudSource) -> StyledText {
     );
     rendered.push("⁕ 工作区 ", TEXT_MUTED);
     rendered.append_text(&context_summary_text(&source.workspace));
+    // `context_summary_text` 段尾自带 1 空格，这里直接接分隔符，不再叠空格。
+    rendered.push("⁕ ", TEXT_MUTED);
+    rendered.append_text(&version_text(
+        &source.version,
+        source.upgrade_available,
+    ));
     rendered
 }
 
@@ -162,11 +186,13 @@ mod tests {
             cached_input_tokens: 600,
             context_limit: 128_000,
             tokens_per_second: 12.3,
+            version: "v0.4.6".to_string(),
+            upgrade_available: false,
         }
     }
 
     #[test]
-    fn hud_line_joins_telemetry_and_workspace() {
+    fn hud_line_joins_telemetry_workspace_and_version() {
         let text = hud_line_text(&source());
         assert!(text.plain().contains("t/s"), "{}", text.plain());
         assert!(
@@ -174,11 +200,43 @@ mod tests {
             "{}",
             text.plain()
         );
+        // 版本号紧跟在工作区右侧，用 ⁕ 隔开。
+        assert!(
+            text.plain().contains("D:/work ⁕ v0.4.6"),
+            "{}",
+            text.plain()
+        );
+        assert!(
+            !text.plain().contains('↑'),
+            "无更新时不该有箭头：{}",
+            text.plain()
+        );
         assert!(
             !text.plain().contains("MAN"),
             "模型与开关已移到欢迎 Logo 的会话徽标：{}",
             text.plain()
         );
+    }
+
+    #[test]
+    fn upgrade_arrow_precedes_version_in_pale_amber() {
+        let mut upgraded = source();
+        upgraded.upgrade_available = true;
+        let text = hud_line_text(&upgraded);
+        assert!(text.plain().contains("D:/work ⁕ ↑v0.4.6"), "{}", text.plain());
+        let arrow = text
+            .spans()
+            .iter()
+            .find(|span| span.text == "↑")
+            .expect("缺少升级箭头");
+        assert_eq!(arrow.style, ACCENT_PALE_AMBER);
+        // 箭头是版本号之外的独立一段：版本号本身仍是常色。
+        let version = text
+            .spans()
+            .iter()
+            .find(|span| span.text == "v0.4.6")
+            .expect("缺少版本号");
+        assert_eq!(version.style, TEXT_PRIMARY);
     }
 
     #[test]

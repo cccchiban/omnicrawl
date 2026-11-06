@@ -16,7 +16,7 @@ use crate::error::ConfigError;
 use crate::toml::Value;
 
 /// `[sandbox] mode` 允许取值。
-pub const SANDBOX_MODES: &str = "off, appcontainer";
+pub const SANDBOX_MODES: &str = "off, appcontainer, landlock";
 
 /// `[sandbox.net] policy` 允许取值。
 pub const SANDBOX_NET_POLICIES: &str = "offline, ask, allowlist, online";
@@ -26,8 +26,10 @@ pub const SANDBOX_NET_POLICIES: &str = "offline, ask, allowlist, online";
 pub enum SandboxMode {
     /// 只判定并记录，不真隔离（dry-run）。
     Off,
-    /// AppContainer + Job Object 真隔离。
+    /// AppContainer + Job Object 真隔离（仅 Windows）。
     AppContainer,
+    /// Landlock 真隔离（仅 Linux）。
+    Landlock,
 }
 
 impl SandboxMode {
@@ -35,13 +37,21 @@ impl SandboxMode {
         match self {
             Self::Off => "off",
             Self::AppContainer => "appcontainer",
+            Self::Landlock => "landlock",
         }
+    }
+
+    /// 这一档模式是否要求真隔离（与平台无关：平台支持与否由运行期的 gate 判定）。
+    pub fn requires_isolation(self) -> bool {
+        matches!(self, Self::AppContainer | Self::Landlock)
     }
 
     pub fn parse(value: &str) -> Result<Self, ConfigError> {
         match value.trim().to_lowercase().as_str() {
             "off" | "dry_run" | "dry-run" => Ok(Self::Off),
             "appcontainer" | "container" => Ok(Self::AppContainer),
+            // `bwrap` / `linux` 是便利别名：都指「Linux 上的真隔离」这一档。
+            "landlock" | "bwrap" | "linux" => Ok(Self::Landlock),
             other => Err(ConfigError::new(format!(
                 "sandbox.mode 仅支持 {SANDBOX_MODES}，当前值：{other}。"
             ))),
@@ -141,9 +151,12 @@ impl Default for SandboxConfig {
 }
 
 impl SandboxConfig {
-    /// 是否真的执行隔离（`enabled` 且 `mode = appcontainer`）。
+    /// 是否真的执行隔离（`enabled` 且 mode 要求隔离）。
+    ///
+    /// 这里**不判平台**：配置层不知道自己在哪个平台跑，写了 `landlock` 却在 Windows 上跑
+    /// 应由 `sandbox::gate` 报出可读错误，而不是在解析配置时就静默降级成"不隔离"。
     pub fn isolates(&self) -> bool {
-        self.enabled && self.mode == SandboxMode::AppContainer
+        self.enabled && self.mode.requires_isolation()
     }
 
     /// 是否 dry-run：开关打开但只判定不隔离。
@@ -163,13 +176,33 @@ impl SandboxConfig {
                 self.net_policy.as_str()
             );
         }
-        format!(
-            "沙盒：appcontainer（真隔离，`bash` 不进工具表，`powershell` 自动启用）。             网络策略 {}，进程上限 {}，内存上限 {}MB。",
-            self.net_policy.as_str(),
-            self.limits.max_processes,
-            self.limits.max_memory_mb
-        )
+        match self.mode {
+            SandboxMode::AppContainer => format!(
+                "沙盒：appcontainer（真隔离，`bash` 不进工具表，`powershell` 自动启用）。             网络策略 {}，进程上限 {}，内存上限 {}MB。",
+                self.net_policy.as_str(),
+                self.limits.max_processes,
+                self.limits.max_memory_mb
+            ),
+            SandboxMode::Landlock => string_landlock_status(self),
+            // `is_dry_run` 已排除 Off，这里只是让 match 穷尽。
+            SandboxMode::Off => String::new(),
+        }
     }
+}
+
+/// landlock 档的状态行。Linux 侧的限制（同 UID 进程间干扰挡不住）必须写在明面上。
+fn string_landlock_status(config: &SandboxConfig) -> String {
+    let offline = if config.net_policy == NetPolicy::Offline {
+        "offline 下由内核端口规则全禁，是内核级严格边界"
+    } else {
+        "网络为应用层代理级（仅 offline 是内核级）"
+    };
+    format!(
+        "沙盒：landlock（真隔离，命令经 `sandbox-exec` 施加文件与网络规则）。网络策略 {}（{}）。\
+         注意：同 UID 的沙盒进程仍可向宿主进程发信号、可读 `/proc`，要堵需 user namespace 或 root。",
+        config.net_policy.as_str(),
+        offline
+    )
 }
 
 /// 读取 `[sandbox]` 段；缺项回落到默认值（即"关闭"）。
@@ -558,6 +591,38 @@ mod tests {
     }
 
     #[test]
+    fn enabled_with_landlock_isolates() {
+        let config = load_from("[sandbox]\nenabled = true\nmode = \"landlock\"\n").expect("应可读");
+        assert!(config.isolates());
+        assert!(!config.is_dry_run());
+        // 配置层不判平台：在 Windows 上解析出 landlock 也必须仍算"要求隔离"，
+        // 由 gate 报"仅 Linux"，而不是静默降级成不隔离。
+        assert!(config.mode.requires_isolation());
+        let line = config.status_line();
+        assert!(line.contains("landlock"), "{line}");
+        assert!(line.contains("user namespace"), "必须如实写明限制：{line}");
+    }
+
+    #[test]
+    fn landlock_aliases_resolve() {
+        for alias in ["landlock", "bwrap", "linux", "Landlock"] {
+            assert_eq!(
+                SandboxMode::parse(alias).expect("别名"),
+                SandboxMode::Landlock,
+                "{alias}"
+            );
+        }
+        assert_eq!(SandboxMode::Landlock.as_str(), "landlock");
+    }
+
+    #[test]
+    fn isolation_is_required_by_both_real_modes_only() {
+        assert!(!SandboxMode::Off.requires_isolation());
+        assert!(SandboxMode::AppContainer.requires_isolation());
+        assert!(SandboxMode::Landlock.requires_isolation());
+    }
+
+    #[test]
     fn disabled_overrides_mode() {
         // enabled=false 时即使写了 appcontainer 也不隔离：开关优先。
         let config =
@@ -636,7 +701,7 @@ cpu_rate_percent = 50
 
         let error = load_from("[sandbox]\nmode = \"vm\"\n").expect_err("应报错");
         assert!(
-            error.message().contains("appcontainer"),
+            error.message().contains("landlock"),
             "{}",
             error.message()
         );

@@ -15,6 +15,40 @@ impl App {
         self.workspace.clone()
     }
 
+    /// 沙盒的**实际**能力（`Landlock ABI 6，…` / `AppContainer 可用`），供 `/sandbox` 展示。
+    ///
+    /// 只在真隔离模式下给值：dry-run 与关闭档下"本机能做什么"与用户当前的意图无关，
+    /// 展示出来只会让人以为已经隔离。
+    pub(crate) fn sandbox_capability_note(&self) -> Option<String> {
+        let sandbox = self.registry.sandbox();
+        if !sandbox.isolates() {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        let note = {
+            // 内核能力（ABI 等）与本次实际设的限额是两件事：前者说"能做什么"，
+            // 后者说"这次真做了什么"。分开给，否则 `/sandbox` 会声称已设限额而实际没有。
+            let mut note = sandbox.capability().describe();
+            match sandbox.limits_summary() {
+                Some(limits) => {
+                    note.push_str("；");
+                    note.push_str(&limits);
+                }
+                // 还没跑过命令就如实说"未折算"，而不是假装已经设好了。
+                None => note.push_str("；资源限额尚未折算（本会话还没跑过沙盒命令）"),
+            }
+            Some(note)
+        };
+        #[cfg(windows)]
+        let note = Some("AppContainer 身份 + Job 限额（Windows）".to_string());
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let note = {
+            let _ = sandbox;
+            None
+        };
+        note
+    }
+
     /// 命令层读取 Skill 索引与诊断：与提示词装配同源（含 `[skills].extra_paths`）。
     pub(crate) fn command_skills(&self) -> (Vec<SkillMeta>, Vec<SkillDiagnostic>) {
         (self.prompt.skill_metas(), self.prompt.skill_diagnostics())

@@ -64,6 +64,15 @@ pub trait CommandAgent {
         ConfigEnvironment::from_process()
     }
 
+    /// 沙盒的**实际**能力诊断（如 `Landlock ABI 6，网络端口未受控`）。
+    ///
+    /// 配置里写的是用户的意图，这里给出的是本机内核/平台真能做到什么——两者必须分开
+    /// 展示，否则 `/sandbox` 会在"声称已隔离"和"其实没隔离"之间说谎。
+    /// 默认空串表示宿主没有能力探测通道。
+    fn sandbox_diagnostic(&self) -> String {
+        String::new()
+    }
+
     // ── 会话 ──────────────────────────────────────────────────
 
     /// 当前会话 ID（无会话时为空串）。

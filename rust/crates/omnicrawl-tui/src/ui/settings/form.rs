@@ -409,9 +409,10 @@ const WEB_SEARCH_FIELDS: [FieldSpec; 7] = [
 ];
 
 /// 沙盒隔离模式候选（取值与 `[sandbox] mode` 一一对应）。
-const SANDBOX_MODE_OPTIONS: [(&str, &str); 2] = [
+const SANDBOX_MODE_OPTIONS: [(&str, &str); 3] = [
     ("dry-run（只判定不隔离）", "off"),
-    ("appcontainer（真隔离）", "appcontainer"),
+    ("appcontainer（真隔离，仅 Windows）", "appcontainer"),
+    ("landlock（真隔离，仅 Linux）", "landlock"),
 ];
 
 /// 沙盒网络策略候选（取值与 `[sandbox.net] policy` 一一对应）。

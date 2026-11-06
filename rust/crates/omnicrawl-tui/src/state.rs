@@ -1146,11 +1146,25 @@ impl ReasoningReveal {
     }
 }
 
+/// 一条待决的沙盒网络审批（渲染与按键都只看这份快照）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetApprovalPanel {
+    /// 审批站里的编号：回答时要带回去配对。
+    pub id: u64,
+    /// 展示用的目标：`https://example.com:443`。
+    pub target: String,
+    /// 剩余秒数：到点由代理线程自己按超时拒绝。
+    pub remaining_seconds: u64,
+}
+
 pub struct AppState {
     pub project: String,
     pub model: String,
     pub approval: ApprovalMode,
+    /// 底栏显示的产品版本（`v0.4.6`，取自 `omnicrawl_version::VERSION`）。
     pub version: String,
+    /// registry 上是否有更新版本；为真时底栏版本号旁标 ↑。
+    pub upgrade_available: bool,
     pub records: Vec<Record>,
     pub composer: Composer,
     pub scroll_from_bottom: usize,
@@ -1196,6 +1210,12 @@ pub struct AppState {
     batch_quiet: bool,
     /// 底部单行 HUD 的整行文本（渲染只读；由 [`AppState::refresh_hud`] 按最新遥测重建）。
     pub hud_text: StyledText,
+    /// 沙盒网络审批：当前在等用户回答的请求（`ask` 档的连接）。
+    ///
+    /// 放在 `AppState` 而不是 `App` 上，因为渲染层只拿得到 `&AppState`；
+    /// 与工具审批面板（`Waiting::Approval`）是两回事——那个随工具批次出现，
+    /// 这个由沙盒内某条命令的一次连接产生，可能在批次之外单独发生。
+    pub net_approval: Option<NetApprovalPanel>,
     /// 鼠标拖选的文本区间（`None` = 没有选区）：渲染层按它加反显高亮，
     /// 松手时由宿主抽出文本写入剪切板。坐标是「`display_lines` 行下标 + 行内显示列」。
     selection: Option<TextSelection>,
@@ -1255,7 +1275,8 @@ impl AppState {
             project,
             model,
             approval,
-            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            version: format!("v{}", omnicrawl_version::VERSION),
+            upgrade_available: false,
             records: Vec::new(),
             composer: Composer::default(),
             scroll_from_bottom: 0,
@@ -1268,6 +1289,7 @@ impl AppState {
             telemetry: Telemetry::default(),
             mcp_servers: 0,
             turn_started: None,
+            net_approval: None,
             // 缺省显示思考（与 Python 的 `ui.show_thinking` 缺省一致），启动期由宿主按配置覆盖。
             show_thinking: true,
             logo: LogoAnimation::new(),

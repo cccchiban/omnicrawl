@@ -118,6 +118,15 @@ impl CommandAgent for TuiHostAgent<'_> {
         ConfigEnvironment::from_process()
     }
 
+    fn sandbox_diagnostic(&self) -> String {
+        // 直接问宿主持有的沙盒：这是唯一能拿到"本机内核实际支持什么"的地方，
+        // 命令层自己发不了 landlock syscall（也不该在这里发）。
+        self.app
+            .borrow()
+            .sandbox_capability_note()
+            .unwrap_or_default()
+    }
+
     // ── 会话 ──────────────────────────────────────────────────
 
     fn current_session_id(&self) -> String {

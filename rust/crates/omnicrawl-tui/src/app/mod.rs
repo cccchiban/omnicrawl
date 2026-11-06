@@ -209,6 +209,8 @@ mod kernel;
 
 mod ticks;
 
+mod net_approval;
+
 mod settings;
 
 mod lifecycle;
@@ -817,6 +819,10 @@ impl App {
             },
             // 只受 `[computer_use] enabled` 约束：普通子代理关掉不影响桌面操作。
             computer_use: computer_use_enabled(&environment),
+            // 沙盒 `ask` 档的网络审批由本界面接管：没有这一句，代理线程会认为
+            // "没人能回答"而立即拒绝，表现为 ask 与 offline 等价。
+            // 无人值守入口（本地 API、触发接口）保持默认 `false`，这是刻意的。
+            net_approval_interactive: true,
             ..RegistryOptions::default()
         };
         let registry = Arc::new(

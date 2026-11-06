@@ -51,18 +51,43 @@ pub fn handle_sandbox_command(ctx: &CommandContext<'_>) -> CommandResult {
             );
         }
         if config.isolates() {
-            let network = if config.net_policy == NetPolicy::Offline {
-                "网络：offline，沙盒内完全不能出网。"
-            } else {
-                "网络：经宿主的回环代理出网（HTTP_PROXY 注入）。这是应用层代理级，不是内核级：\
-                 尊重代理变量的客户端（curl/pip/npm/git/cargo）受 `[sandbox.net]` 判定约束，\
-                 直接读 WinINET 设置的 .NET 客户端可能绕开判定。裸 socket 仍然失败。"
+            // 配置说的是"用户想要什么"，这里是"本机真能做到什么"——两者分开显示，
+            // 否则 `/sandbox` 会在"声称已隔离"和"其实做不到"之间说谎。
+            let diagnostic = ctx.agent.sandbox_diagnostic();
+            if !diagnostic.is_empty() {
+                lines.push(format!("实际能力：{diagnostic}"));
+            }
+            let network = match config.mode {
+                SandboxMode::Landlock => {
+                    "网络：Linux 侧端口层由 Landlock 管（内核级，只放行回环代理端口；\
+                     offline 则连代理端口也不放行、含 UDP），域名判定在宿主回环代理（应用层）。\
+                     注意端口规则不含地址，offline 下本地 dev server 同样连不上；\
+                     且 ask 尚无网络审批面板，当前等同全拒。\
+                     `git` 在沙盒内可用（普通可执行文件，经 launcher 施加规则）。"
+                }
+                _ => {
+                    if config.net_policy == NetPolicy::Offline {
+                        "网络：offline，沙盒内完全不能出网。"
+                    } else {
+                        "网络：经宿主的回环代理出网（HTTP_PROXY 注入）。这是应用层代理级，不是内核级：\
+                         尊重代理变量的客户端（curl/pip/npm/git/cargo）受 `[sandbox.net]` 判定约束，\
+                         直接读 WinINET 设置的 .NET 客户端可能绕开判定。裸 socket 仍然失败。"
+                    }
+                }
             };
             lines.push(network.to_string());
+            // Windows 上 `git`/`bash` 是 MSYS 程序，在 AppContainer 内打不开 `NUL`，
+            // 属于"用不了"而不是"被拦"。提前说清，免得模型反复重试。
+            #[cfg(windows)]
+            lines.push(
+                "`git` 与 `bash` 在 Windows 沙盒内不可用（MSYS 依赖 `NUL` 设备，容器无访问权，\
+                 授权目录解决不了）。改用 `powershell` 或 `read`/`write_file`/`Edit_file`/`grep`/`find`。"
+                    .to_string(),
+            );
         }
     }
     lines.push(format!(
-        "用法：/sandbox [on|off|dry-run|appcontainer] [net <{SANDBOX_NET_POLICIES}>]"
+        "用法：/sandbox [on|off|dry-run|appcontainer|landlock] [net <{SANDBOX_NET_POLICIES}>]"
     ));
     CommandResult::message(lines.join("\n"))
 }
@@ -72,7 +97,7 @@ pub fn handle_sandbox_set_command(ctx: &CommandContext<'_>) -> CommandResult {
     let spec = ctx.args.trim().to_lowercase();
     if spec.is_empty() {
         return CommandResult::message(format!(
-            "用法：/sandbox:set <on|off|dry-run|appcontainer> 或 `/sandbox:set net <策略>`\
+            "用法：/sandbox:set <on|off|dry-run|appcontainer|landlock> 或 `/sandbox:set net <策略>`\
              （可选策略 {SANDBOX_NET_POLICIES}）"
         ));
     }
@@ -128,15 +153,25 @@ pub fn handle_sandbox_set_command(ctx: &CommandContext<'_>) -> CommandResult {
                 Ok(mode) => {
                     section.insert("enabled".to_string(), Value::Boolean(true));
                     section.insert("mode".to_string(), Value::String(mode.as_str().to_string()));
-                    "沙盒已设为 appcontainer：命令以 AppContainer 身份执行，工作区可读写、\
-                     宿主用户目录不可读，出网经宿主回环代理。"
+                    "沙盒已设为 appcontainer（仅 Windows）：命令以 AppContainer 身份执行，\
+                     工作区可读写、宿主用户目录不可读，出网经宿主回环代理。"
+                        .to_string()
+                }
+                Err(error) => return CommandResult::message(error.message().to_string()),
+            },
+            "landlock" | "linux" => match SandboxMode::parse("landlock") {
+                Ok(mode) => {
+                    section.insert("enabled".to_string(), Value::Boolean(true));
+                    section.insert("mode".to_string(), Value::String(mode.as_str().to_string()));
+                    "沙盒已设为 landlock（仅 Linux）：命令经 `sandbox-exec` 施加文件与网络规则，\
+                     工作区可读写、宿主用户目录不可读。注意同 UID 的沙盒进程仍可向宿主发信号。"
                         .to_string()
                 }
                 Err(error) => return CommandResult::message(error.message().to_string()),
             },
             other => {
                 return CommandResult::message(format!(
-                    "❌ 无法识别的取值：{other}。只支持 on / off / dry-run / appcontainer，\
+                    "❌ 无法识别的取值：{other}。只支持 on / off / dry-run / appcontainer / landlock，\
                      或 `net <{SANDBOX_NET_POLICIES}>`（mode 可选 {SANDBOX_MODES}）。"
                 ))
             }
