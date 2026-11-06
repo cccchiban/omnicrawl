@@ -206,9 +206,11 @@ mod tests {
             "{}",
             text.plain()
         );
+        // 无更新时版本号前没有箭头。注意不能对整行查 `↑`：遥测段的
+        // `↑1.2K` 是上行 token 标记，与本处的升级箭头同字形。
         assert!(
-            !text.plain().contains('↑'),
-            "无更新时不该有箭头：{}",
+            !text.plain().contains("⁕ ↑v0.4.6"),
+            "无更新时版本号前不该有箭头：{}",
             text.plain()
         );
         assert!(

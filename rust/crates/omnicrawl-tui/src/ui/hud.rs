@@ -84,7 +84,8 @@ mod tests {
         assert!(text.contains("t/s"), "{text}");
         assert!(text.contains("⁕ 工作区 D:/work"), "{text}");
         assert!(text.contains("D:/work ⁕ v0.4.6"), "{text}");
-        assert!(!text.contains('↑'), "无更新时不画箭头：{text}");
+        // 只查版本号前的箭头：遥测段的 `↑1.2K` 是上行 token 标记，同字形但无关。
+        assert!(!text.contains("⁕ ↑v0.4.6"), "无更新时版本号前不画箭头：{text}");
         // 模型与各开关已移到欢迎 Logo 下的会话徽标，底部不再重复。
         assert!(!text.contains("THINKING"), "{text}");
         assert!(!text.contains("MCP"), "{text}");
