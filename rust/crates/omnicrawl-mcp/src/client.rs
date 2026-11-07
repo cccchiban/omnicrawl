@@ -1522,7 +1522,10 @@ mod tests {
         assert!(connection.closed.load(Ordering::SeqCst), "子进程应被关闭");
 
         // 回收不是失败：下一次调用重新建连，调用本身照常成功。
-        let result = manager.call_tool("files.read", &Map::new());
+        // 工具声明里 `path` 是必填项，请求体要带上，否则失败在参数校验而不是重连。
+        let mut arguments = Map::new();
+        arguments.insert("path".to_string(), json!("/tmp/a"));
+        let result = manager.call_tool("files.read", &arguments);
         assert!(result.ok, "{}", result.output);
         assert_eq!(manager.connected_count(), 1);
     }

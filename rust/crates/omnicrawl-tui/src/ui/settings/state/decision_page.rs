@@ -685,8 +685,8 @@ mod tests {
         assert!(cloudflare.contains(&DecisionField::AccountId));
         assert_eq!(
             cloudflare.len(),
-            DecisionField::ORDER.len(),
-            "只换一个字段，其余照旧"
+            DecisionField::ORDER.len() - 1,
+            "只把 Base URL 换成 Account ID，其余照旧"
         );
     }
 

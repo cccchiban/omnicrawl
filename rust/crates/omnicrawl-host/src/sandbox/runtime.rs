@@ -405,17 +405,22 @@ mod tests {
             .iter()
             .map(|entry| entry.path.to_string_lossy().to_string())
             .collect();
+        // 按路径组件比而不是拼字符串：`\` 与 `/` 各平台不同，拼死分隔符在 Linux 上必失败。
         assert!(
-            paths.iter().any(|path| path.ends_with(r".cargo\bin")),
+            found
+                .iter()
+                .any(|entry| entry.path.ends_with(Path::new(".cargo").join("bin"))),
             "{paths:?}"
         );
         assert!(
-            paths.iter().any(|path| path.ends_with(".rustup")),
+            found
+                .iter()
+                .any(|entry| entry.path.ends_with(".rustup")),
             "{paths:?}"
         );
         // `.cargo` 本体（根上有 credentials.toml）不能出现在授权列表里。
         assert!(
-            !paths.iter().any(|path| path.ends_with(r".cargo")),
+            !found.iter().any(|entry| entry.path.ends_with(".cargo")),
             "含凭据的 ~/.cargo 不该被授权：{paths:?}"
         );
         let _ = std::fs::remove_dir_all(&base);

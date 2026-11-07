@@ -208,7 +208,7 @@ fn bottom_hud_conversation_todos_and_composer_are_on_screen() {
     let hud = lines.last().expect("应有一行底部 HUD");
     assert!(hud.contains("0/1M 0%"), "底栏应带上下文占用：{hud:?}");
     assert!(hud.contains("t/s"), "底栏应带速率段：{hud:?}");
-    assert!(hud.contains("工作区"), "底栏应带工作区：{hud:?}");
+    assert!(hud.contains("omnicrawl"), "底栏应带工作区名：{hud:?}");
     assert!(
         !hud.contains("stub-model"),
         "模型改到欢迎 Logo 下的会话徽标：{hud:?}"
