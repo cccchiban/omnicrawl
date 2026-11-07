@@ -498,6 +498,27 @@ fn build_environment(
     build_environment_with(temp_dir, workspace, runtimes, None)
 }
 
+/// 宿主的 `RUSTUP_HOME`：显式设置了就用它，否则回落到 `%USERPROFILE%\.rustup`。
+///
+/// 只返回**确实存在**的目录：沙盒里给它一个不存在的路径，`cargo` 会报
+/// 「no default toolchain」，比不给更容易误导（有值但里面是空的）。
+fn rustup_home() -> Option<String> {
+    let explicit = std::env::var("RUSTUP_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let path = match explicit {
+        Some(value) => PathBuf::from(value),
+        None => {
+            let profile = std::env::var("USERPROFILE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| std::env::var("HOME").ok())?;
+            PathBuf::from(profile).join(".rustup")
+        }
+    };
+    path.is_dir().then(|| path.to_string_lossy().to_string())
+}
+
 /// 同 [`build_environment`]，但可注入出网代理。
 ///
 /// `proxy` 是 `http://127.0.0.1:<port>`：注入 `HTTP_PROXY`/`HTTPS_PROXY` 后，
@@ -570,6 +591,18 @@ fn build_environment_with(
     // PowerShell 的 `~\` 与部分工具从这两个变量取当前目录。
     vars.push(("PWD".to_string(), workspace.clone()));
     vars.push(("OMNICRAWL_SANDBOX".to_string(), "1".to_string()));
+    // Rust：`HOME`/`USERPROFILE` 已改指向沙盒内的空家目录，而 rustup 的 shim
+    // （`~/.cargo/bin/cargo.exe`）靠 `USERPROFILE` 找 `~/.rustup`。不显式给
+    // `RUSTUP_HOME` 就必然报「rustup could not choose a version to run, because one
+    // wasn't specified explicitly, and no default is configured」——这条报错完全
+    // 不指向「家目录被换掉了」，实测最容易误判成权限问题。
+    //
+    // 只给 `RUSTUP_HOME`（toolchain 定位），`CARGO_HOME` 另指沙盒内缓存（见下）：
+    // `cargo` 只是 shim，真正的编译驱动在 `~/.rustup/toolchains/<tc>/bin` 下，
+    // 那两处都按只读授权。
+    if let Some(rustup_home) = rustup_home() {
+        vars.push(("RUSTUP_HOME".to_string(), rustup_home));
+    }
     // 沙盒进程的输出不走控制台，而是管道；代码页仍是 OEM（中文系统上是 936），
     // 按 UTF-8 解会是乱码。`PYTHONUTF8` 让 Python 自己吐 UTF-8，其余程序由
     // `tools/command.rs` 在读取时按 OEM 代码页解码。
@@ -609,6 +642,13 @@ fn build_environment_with(
     vars.push((
         "npm_config_prefix".to_string(),
         format!("{workspace}\\.omnicrawl\\.agent_tmp\\npm-global"),
+    ));
+    // `CARGO_HOME` 指到沙盒内可写目录：它同时是 registry 缓存落点，指回真实 `~/.cargo`
+    // 会要求写权限（那里只有只读授权）。toolchain 的定位不走它——`cargo.exe` 是 rustup
+    // 的 shim，靠 `RUSTUP_HOME` 找 toolchain（上面已显式给出）。
+    vars.push((
+        "CARGO_HOME".to_string(),
+        format!("{workspace}\\.omnicrawl\\.agent_tmp\\cargo"),
     ));
 
     // 网络：容器没有 `internetClient`（内核层出不了网），唯一通路是宿主回环代理。
@@ -692,6 +732,9 @@ fn sandboxed_path(workspace: &str, runtimes: &[super::runtime::RuntimeRoot]) -> 
     // `npm i -g` 把可执行文件放进 prefix 目录（`build_environment` 指向这里），
     // 放进 PATH 才能被后续命令找到。
     push(&format!("{workspace}\\.omnicrawl\\.agent_tmp\\npm-global"));
+    // Rust：`~/.cargo/bin` 是唯一放着 `cargo.exe`/`rustc.exe`/`rustup.exe` 的地方。
+    // 只有**已授权**的目录才会出现在 `runtimes` 里，因此这里不会把一个读不到的
+    // 用户目录塞进 PATH（那会让 cmd 在解析阶段就失败，报"不是内部或外部命令"）。
     for runtime in runtimes {
         push(&runtime.path.to_string_lossy());
     }
@@ -1039,19 +1082,25 @@ fn spawn_pipe_reader(handle: HANDLE) -> thread::JoinHandle<Vec<u8>> {
 fn prepare_runtimes(
     sid: *mut c_void,
 ) -> (Vec<super::runtime::RuntimeRoot>, Vec<(PathBuf, String)>) {
-    let mut available: Vec<super::runtime::RuntimeRoot> = Vec::new();
+    let env = |name: &str| std::env::var(name).ok();
+    // 先收集**全部**候选（不做可读性判定）：auto-discovery 的两类来源合在一起，
+    // 后面的授权环节再决定谁能真正可用。
+    let mut candidates: Vec<super::runtime::RuntimeRoot> = super::runtime::discover(&env);
+    for runtime in super::runtime::rust_roots(&env) {
+        if !candidates.iter().any(|entry| entry.path == runtime.path) {
+            candidates.push(runtime);
+        }
+    }
     let mut skipped: Vec<(PathBuf, String)> = Vec::new();
-    for runtime in super::runtime::discover(&|name| std::env::var(name).ok()) {
-        // 判「可用」必须看**目录里的可执行文件**，不能只看目录本身：
-        // 目录上有 ACE、文件上没有时，容器能列目录却读不到 `node.exe`，
-        // `cmd` 只会报「不是内部或外部命令」，把根因完全掩盖（实测踩过）。
-        if probe_runtime(runtime.reason, &runtime.path, sid) {
+    let mut available: Vec<super::runtime::RuntimeRoot> = Vec::new();
+    grant_runtime_roots(&mut candidates, &mut skipped, sid);
+    for runtime in candidates {
+        if runtime_ready(&runtime, sid) {
             available.push(runtime);
         } else {
             skipped.push((
                 runtime.path.clone(),
-                "沙盒内读不到其中的可执行文件；如需使用，请把该目录加入 `[sandbox.fs] readable`"
-                    .to_string(),
+                "沙盒内读不到该目录；如需使用，请把该目录加入 `[sandbox.fs] readable`".to_string(),
             ));
         }
     }
@@ -1066,12 +1115,107 @@ fn probe_runtime(reason: &str, directory: &Path, sid: *mut c_void) -> bool {
         "node" => &["node.exe"],
         "npm" => &["npm.cmd"],
         "python" => &["python.exe", "python3.exe"],
+        "cargo" => &["cargo.exe", "rustup.exe"],
         _ => &[],
     };
     candidates.iter().any(|name| {
         let path = directory.join(name);
         path.is_file() && has_access(&path, sid, FILE_GENERIC_READ)
     })
+}
+
+/// `~/.rustup` 是否真的能被容器读到：`settings.toml` 与至少一个 toolchain 的
+/// `cargo.exe` 都要可读。
+///
+/// 只看根目录不够：可继承 ACE 传播失败时目录能列、文件读不到，`cargo` 会以
+/// 「rustup could not choose a version to run」失败，与权限毫无相似之处（实测）。
+fn probe_rustup(home: &Path, sid: *mut c_void) -> bool {
+    let settings = home.join("settings.toml");
+    if !(settings.is_file() && has_access(&settings, sid, FILE_GENERIC_READ)) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(home.join("toolchains")) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path().join("bin").join("cargo.exe"))
+        .any(|cargo| cargo.is_file() && has_access(&cargo, sid, FILE_GENERIC_READ))
+}
+
+/// 给「自动发现的解释器目录」授权，按子树规模设上限。
+///
+/// 授权代价与子树条目数成正比（`SetNamedSecurityInfoW` 会重算整棵子树的继承：实测
+/// `C:\Program Files\nodejs` 0.29 万项 0.26 秒、`D:\ProgramData\Anaconda3` 22 万项
+/// 18.4 秒）。因此这里先按 [`GRANT_ENTRY_BUDGET`] 判规模：**已经授过的零成本跳过**，
+/// 没授过的只有小目录才自动授，大目录如实报告给用户用 `[sandbox.fs] readable` 显式授权。
+///
+/// 这条是可用性要求而不是优化：`~/.cargo/bin`（23 项）与 `~/.rustup`（本机 5221 项）
+/// 都能落在预算内，于是 `cargo`/`rustc`/`rustup` 开箱即可用；而 `~/.cargo/registry`
+/// （7.1 万项）这类目录不会被悄悄拖进来卡住启动。
+fn grant_runtime_roots(
+    runtimes: &mut Vec<super::runtime::RuntimeRoot>,
+    skipped: &mut Vec<(PathBuf, String)>,
+    sid: *mut c_void,
+) {
+    let mut kept: Vec<super::runtime::RuntimeRoot> = Vec::with_capacity(runtimes.len());
+    for runtime in runtimes.drain(..) {
+        // 已经可读的（上次启动授过）零成本跳过：重新写一次 DACL 同样要重算整棵子树。
+        if runtime_ready(&runtime, sid) {
+            kept.push(runtime);
+            continue;
+        }
+        match subtree_size(&runtime.path) {
+            Some(entries) if entries > GRANT_ENTRY_BUDGET => skipped.push((
+                runtime.path.clone(),
+                format!(
+                    "目录过大（超过 {GRANT_ENTRY_BUDGET} 项，自动授权会明显拖慢启动）；\
+                     如需使用，请把该目录加入 `[sandbox.fs] readable`，那时代价由你显式选择承担"
+                ),
+            )),
+            _ => match grant(&runtime.path, sid, READ_EXECUTE, true) {
+                Ok(()) => kept.push(runtime),
+                Err(error) => skipped.push((
+                    runtime.path.clone(),
+                    format!(
+                        "无法授予沙盒访问权（{error}）；如需使用，请把该目录加入 `[sandbox.fs] readable`"
+                    ),
+                )),
+            },
+        }
+    }
+    *runtimes = kept;
+}
+
+/// 该解释器根是否已经能被容器读到（与 [`probe_runtime`] 同口径，但按用途分派）。
+fn runtime_ready(runtime: &super::runtime::RuntimeRoot, sid: *mut c_void) -> bool {
+    match runtime.reason {
+        "rustup" => probe_rustup(&runtime.path, sid),
+        reason => probe_runtime(reason, &runtime.path, sid),
+    }
+}
+
+/// 子树条目数；超预算就提前返回，读不到时给 `None`（按「不确定」处理）。
+///
+/// 只在**首次**判定一个未授权的目录时调用一次：预算内的目录随后就被授权，
+/// 下次启动 `runtime_ready` 直接命中、不再数。
+fn subtree_size(root: &Path) -> Option<u64> {
+    let mut count: u64 = 0;
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).ok()?;
+        for entry in entries.flatten() {
+            count += 1;
+            if count > GRANT_ENTRY_BUDGET {
+                return Some(count);
+            }
+            let path = entry.path();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                pending.push(path);
+            }
+        }
+    }
+    Some(count)
 }
 
 /// 一条沙盒命令所需的全部上下文：容器身份、专用目录与限额。
@@ -1170,13 +1314,14 @@ impl Isolation {
             })?;
         }
 
-        // 解释器根目录：`node`/`npm`/`python` 常装在用户目录下，容器默认读不到。
+        // 解释器根目录：`node`/`npm`/`python`/`cargo` 常装在用户目录下，容器默认读不到。
         //
         // 成本已实测：改一次 DACL 会让系统重算整棵子树的继承，`D:\ProgramData\Anaconda3`
         // （22 万项）单次 18.4 秒，`C:\Program Files\nodejs`（0.29 万项）0.26 秒。
-        // 所以这里按规模分档：小的直接授权（代价可忽略），大的跳过并在 `/sandbox` 里
-        // 如实报告——宁可让用户知道「这个解释器沙盒内不可用」，也不让启动默默卡 20 秒。
-        // 已经授过的（容器 SID 有权限）零成本，直接进 PATH。
+        // 所以这里按规模分档：小目录自动授权（代价可忽略，用户开箱可用），大目录跳过并在
+        // `/sandbox` 里如实报告——宁可让用户知道「这个解释器沙盒内不可用」，也不让启动
+        // 默默卡 20 秒。已经授过的（容器 SID 有权限）零成本，直接进 PATH。
+        // 授权与判定都在 `prepare_runtimes` 内部完成（先授、再按可读性分可用/跳过）。
         let (runtimes, skipped) = prepare_runtimes(sid);
 
         Ok(Arc::new(Self {
@@ -2105,5 +2250,64 @@ mod tests {
         assert!(first.starts_with("omnicrawl-sandbox-"), "{first}");
         // 大小写不同是同一个工作区，应复用同一容器。
         assert_eq!(first, container_name(Path::new(r"D:\WORK\A")));
+    }
+
+    /// `RUSTUP_HOME` 必须显式给出，且只在宿主目录真实存在时才给。
+    ///
+    /// 不给的表现是 `cargo` 报「rustup could not choose a version to run」——因为
+    /// `HOME`/`USERPROFILE` 已被改指向沙盒内的空家目录，shim 找不到 `~/.rustup`。
+    /// 这条报错与权限无关，实测极易误导。
+    #[test]
+    fn rustup_home_is_taken_from_the_host_user_profile() {
+        let profile = std::env::var("USERPROFILE").unwrap_or_default();
+        let expected = PathBuf::from(&profile).join(".rustup");
+        let resolved = rustup_home();
+        if expected.is_dir() {
+            assert_eq!(
+                resolved.as_deref(),
+                Some(expected.to_string_lossy().as_ref()),
+                "应把宿主 ~/.rustup 交给沙盒"
+            );
+        } else {
+            // 没装 Rust 的机器：绝不给出一个不存在的路径（那会报 no default toolchain）。
+            assert!(resolved.is_none(), "{resolved:?}");
+        }
+    }
+
+    /// `CARGO_HOME` 必须指进沙盒内，registry 缓存才写得进去。
+    #[test]
+    fn cargo_home_points_inside_the_workspace() {
+        let block = build_environment(
+            Path::new(r"D:\work\.omnicrawl\.agent_tmp\sandbox"),
+            Path::new(r"D:\work"),
+            &[],
+        );
+        let text = String::from_utf16_lossy(&block);
+        assert!(
+            text.contains(r"CARGO_HOME=D:\work\.omnicrawl\.agent_tmp\cargo"),
+            "{text}"
+        );
+    }
+
+    /// 已授权的解释器目录必须在沙盒 `PATH` 里，否则 `cargo` 之类的命令找不到；
+    /// 未授权的（不在 `runtimes` 里）绝不能进 PATH。
+    #[test]
+    fn only_granted_runtime_roots_enter_the_sandbox_path() {
+        let runtimes = vec![super::super::runtime::RuntimeRoot {
+            path: PathBuf::from(r"C:\Users\X\.cargo\bin"),
+            reason: "cargo",
+        }];
+        let path = sandboxed_path(r"D:\work", &runtimes);
+        assert!(
+            path.split(';')
+                .any(|entry| entry.eq_ignore_ascii_case(r"C:\Users\X\.cargo\bin")),
+            "{path}"
+        );
+        // 空列表时不应凭空出现用户目录。
+        let empty = sandboxed_path(r"D:\work", &[]);
+        assert!(
+            !empty.to_lowercase().contains(r"\.cargo\bin"),
+            "未授权的目录不该进 PATH：{empty}"
+        );
     }
 }

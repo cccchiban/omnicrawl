@@ -79,6 +79,52 @@ pub fn discover(env: &dyn Fn(&str) -> Option<String>) -> Vec<RuntimeRoot> {
     keep_outermost(found)
 }
 
+/// Rust 工具链的两处安装根：`~/.cargo/bin`（shim）与 `~/.rustup`（toolchain）。
+///
+/// **不能授整个 `~/.cargo`**：它根上有 `credentials.toml`（crates.io 发布令牌）与
+/// `config.toml`（同样可写 token），授它等于把发布凭据交给沙盒。
+/// 只授 `bin` 就够了——`cargo`/`rustc`/`rustup`/`rustfmt` 都是这里的 shim。
+///
+/// `~/.rustup` 是 shim 的**运行时依赖**，不给就没有 toolchain：`cargo` 会报
+/// 「rustup could not choose a version to run」，与权限错误毫无相似之处。
+/// 它本身不含凭据（`settings.toml` 只是默认 toolchain 与 profile 设置）。
+/// 代价可接受：实测本机 5221 项，可继承授权在百毫秒级。
+///
+/// `~/.cargo/registry` 与 `~/.cargo/git` 故意不在这里：本机 7.1 万项，首次授权要数秒，
+/// 而它们只影响「离线缓存命中」，`CARGO_HOME` 指向沙盒内缓存后本来也不该读宿主缓存。
+pub fn rust_roots(env: &dyn Fn(&str) -> Option<String>) -> Vec<RuntimeRoot> {
+    let mut found: Vec<RuntimeRoot> = Vec::new();
+    let mut push = |path: PathBuf, reason: &'static str| {
+        if path.is_dir() && !found.iter().any(|entry| same_path(&entry.path, &path)) {
+            found.push(RuntimeRoot { path, reason });
+        }
+    };
+    // 先按环境变量定位（`CARGO_HOME`/`RUSTUP_HOME` 可被用户改写），再回落到用户目录。
+    let profile = env("USERPROFILE")
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| env("HOME").filter(|value| !value.trim().is_empty()));
+
+    let cargo_home = env("CARGO_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            profile
+                .as_ref()
+                .map(|base| PathBuf::from(base).join(".cargo"))
+        });
+    if let Some(cargo_home) = cargo_home {
+        push(cargo_home.join("bin"), "cargo");
+    }
+    let rustup_home = env("RUSTUP_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| profile.map(|base| PathBuf::from(base).join(".rustup")));
+    if let Some(rustup_home) = rustup_home {
+        push(rustup_home, "rustup");
+    }
+    found
+}
+
 /// 沙盒内 PowerShell 的候选，按优先顺序：7.* 最新安装 → `PATH` 上的 `pwsh` → 5.1。
 ///
 /// `pwsh` 的安装目录名就是版本（`7`、`7.4`、`7-preview`），因此按数字段倒序取最新；
@@ -335,6 +381,44 @@ mod tests {
             },
         ];
         assert_eq!(keep_outermost(entries).len(), 2);
+    }
+
+    /// Rust 工具链的两处根都要被发现；`~/.cargo` 本身（含凭据）绝不整目录授权。
+    #[test]
+    fn rust_roots_cover_bin_and_rustup_only() {
+        let base =
+            std::env::temp_dir().join(format!("omnicrawl-rust-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let profile = base.join("home");
+        let cargo_root = profile.join(".cargo");
+        std::fs::create_dir_all(cargo_root.join("bin")).expect("建 bin");
+        std::fs::write(cargo_root.join("bin").join("cargo.exe"), b"").expect("写 cargo");
+        std::fs::write(cargo_root.join("credentials.toml"), b"token = \"x\"\n").expect("写凭据");
+        let rustup = profile.join(".rustup");
+        std::fs::create_dir_all(rustup.join("toolchains/stable/bin")).expect("建 toolchain");
+        std::fs::write(rustup.join("settings.toml"), b"default = \"stable\"\n").expect("写设置");
+
+        let profile_text = profile.to_string_lossy().to_string();
+        let env = env_of(&[("USERPROFILE", profile_text.as_str())]);
+        let found = rust_roots(&env);
+        let paths: Vec<String> = found
+            .iter()
+            .map(|entry| entry.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            paths.iter().any(|path| path.ends_with(r".cargo\bin")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|path| path.ends_with(".rustup")),
+            "{paths:?}"
+        );
+        // `.cargo` 本体（根上有 credentials.toml）不能出现在授权列表里。
+        assert!(
+            !paths.iter().any(|path| path.ends_with(r".cargo")),
+            "含凭据的 ~/.cargo 不该被授权：{paths:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

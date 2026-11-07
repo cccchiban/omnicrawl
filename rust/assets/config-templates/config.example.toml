@@ -203,6 +203,8 @@ review_model = ""
 # 用户目录或自选盘符（如 `D:\ProgramData\Anaconda3`），容器默认读不到，命令会报
 # 「不是内部或外部命令」；把它们加进这里即可：
 #   readable = ["C:\Program Files\nodejs", "D:\ProgramData\Anaconda3"]
+# `node`/`npm`/`python`/`cargo` 的常见安装目录（含 `~/.cargo/bin`、`~/.rustup`）会自动
+# 发现并授权，通常不必手写；只有目录规模过大（超 1 万项）时才会跳过并要求写在这里。
 # 注意：每次授予会改写该目录 DACL 并递整棵子树重算继承，大目录（几十万文件）首次
 # 可能要十几秒；ACE 会留在磁盘上，之后启动不再付费。不要把 `AppData` 祖先整目录加进来。
 # [sandbox.fs]
@@ -229,6 +231,10 @@ review_model = ""
 # 对话区渲染思考块（Markdown 渲染）。可在 TUI /settings 中切换。
 [ui]
 show_thinking = true
+# 会话上下文闲置换出：回合结束闲置这么多秒后，请内核把会话历史缓冲换出内存，
+# 下次提交时从转录重放（对用户不可见）。默认 1800 秒（30 分钟）；0 表示关闭。
+# 长会话的历史常驻可达几十 MB；代价是重放大会话会有可见停顿。
+session_release_seconds = 1800
 
 [memory]
 enabled = true
@@ -468,6 +474,10 @@ skills = false
 [mcp]
 enabled = false
 default_timeout_seconds = 30
+# stdio Server 闲置这么多秒后结束子进程，下次调用再拉起；0 表示常驻不回收。
+# 多开终端时每个实例会为一台 stdio Server 各常驻一份子进程（cad 这类要上百 MB），
+# 默认 600 秒（10 分钟）即为此回收。冷启动很贵（cad 要几十秒）且不在意内存时设 0。
+idle_release_seconds = 600
 # 工具输出预算为固定硬编码（单工具 50K 字符、每回合聚合 200K 字符）：
 # 超限输出自动落盘到会话 artifact，模型上下文只保留头尾预览与文件路径。
 servers = {}

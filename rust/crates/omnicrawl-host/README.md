@@ -146,9 +146,15 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 六个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索排序、提问托管、
 工具调用淘汰）共用 `decision_wire`
 这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 与
-`onejev` 都走 `POST {base_url}/v1/systemone`；`chat_completions` 走 `POST {base_url}/chat/completions`，基地址按 OpenAI
-兼容口径填到 `/v1`，作为 user 消息发出），并从响应里取出同一形状的 `answers`（后者从
-`choices[0].message.content` 里解析）。新增请求方式只需改配置域与这一层，调用点的解析逻辑不动。
+`onejev` 都走 `POST {base_url}/v1/systemone`；`cloudflare_workers_ai` 同样发原生
+`{model, state, questions}`，只是地址由配置域按账户号折算成 Workers AI 的 Run 端点
+`{account_id}/ai/run/{model}`，模型 ID 在路径上；`chat_completions` 走
+`POST {base_url}/chat/completions`，基地址按 OpenAI 兼容口径填到 `/v1`，并把
+`state` + `questions` 作为 user 消息发出），并从响应里取出 `answers`（对话补全从
+`choices[0].message.content` 里解析；原生形状读顶层 `answers`，也认 Workers AI REST 的
+`result.answers` 外层包装）。
+“是不是对话补全形状”只由 `uses_chat_completions` 判一次。新增请求方式只需改配置域与这一层，
+调用点的解析逻辑不动。
 
 `post_body` 是这一层唯一的传输落点，因此**上游重试也只实现一次**：按渠道的 `retry_count`
 （默认 3）对连接失败、超时与 5xx 做 `0.2s → 0.4s → 0.8s`（封顶 2s）退避重试，4xx 立即回错

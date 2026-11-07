@@ -676,7 +676,9 @@ ACL 授予是**幂等**的：首次之后 `can_traverse` 直接放行，不再�
 4. **`NUL` 设备在 AppContainer 内完全打不开**（`CreateFileW` → `ERROR_ACCESS_DENIED` 5），
    读 DACL 也失败（status 161）。所有 MSYS/Cygwin 程序（`bash`、`git`、`ls`…）都在
    DLL 初始化阶段就要打开 `/dev/null`，因此**这不是配置问题、无法靠授权目录解决**。
-   `git` 更隐蔽：`git --version` 成功，但任何真正干活的子命令都失败。
+   真因见 §23.1：`\Device\Null` 是 NULL DACL，受限令牌的双 SID 链没有可匹配 ACE。
+   （本节此处原写「`git --version` 成功，只有真正干活的子命令失败」，§23 实测已推翻：
+   连 `--version` 都失败。）
 5. **PATH 必须按容器实际可读重建**。继承宿主 PATH 会让 `npm.cmd` 这类批处理包装在解析
    阶段失败，报"不是内部或外部命令"——与真正的根因（某个目录不可访问）毫无关系。
 
@@ -1047,3 +1049,52 @@ Windows PowerShell 5.1 不需要这一步（它的 cmdlet 直接从 `$PSHOME` �
 - `cargo test -p omnicrawl-host --lib sandbox`：68 通过 / 0 失败。
 - `tools::` 全量 482 通过 / 4 失败，4 项仍是既有环境基线（无效窗口句柄 42、
   受限桌面会话下截图被拒），与本次改动无关。
+
+## 23. P5 实施记录：沙盒内的外部进程与配置自愈（2026-11-07）
+
+### 23.1 三个实测根因（都不是「权限不够」）
+
+| 现象 | 真因 | 结论 |
+| --- | --- | --- |
+| `cargo`/`rustc`/`rustup` 在容器内报 `rustup could not choose a version of cargo to run` | `USERPROFILE`/`HOME` 被改指向沙盒内的空家目录，rustup 的 shim 据此找不到 `~/.rustup` | 授权再多目录也没用，必须显式给 `RUSTUP_HOME` |
+| `git --version` 就报 `could not open '/dev/null'` | `\Device\Null` 的 DACL 是 **NULL DACL**（`NO_ACCESS_CONTROL`）；AppContainer 是受限令牌，双 SID 链检查没有任何可匹配 ACE | 任何访问掩码都是 `ERROR_ACCESS_DENIED`，**无法靠授权解决** |
+| 设置面板保存报「配置项 sandbox.fs.readable 必须是字符串数组」 | `config.toml` 里被写成了空表头 `[sandbox.fs.readable]`，解析成一个空表 | 空表应等价于空列表，而不是类型错误 |
+
+### 23.2 落地内容
+
+| 文件 | 内容 |
+| --- | --- |
+| `omnicrawl-config/src/features/sandbox.rs` | `string_list` 接受**空表**（读作空列表）；非空子表返回带修法的错误 |
+| `omnicrawl-host/src/sandbox/runtime.rs` | 新增 `rust_roots`：发现 `~/.cargo/bin` 与 `~/.rustup`，**不含**含凭据的 `~/.cargo` 本体 |
+| `omnicrawl-host/src/sandbox/windows.rs` | 环境块补 `RUSTUP_HOME`（真实目录，不存在时不给）与 `CARGO_HOME`（沙盒内可写）；`sandboxed_path` 只收录**已授权**的解释器根；新增 `grant_runtime_roots` 按 `GRANT_ENTRY_BUDGET`（1 万项）自动授予只读执行权，已授过的零成本跳过 |
+| `omnicrawl-host/src/tools/git.rs`、`tools/registry.rs` | 拒绝文案改为实测根因（NULL DACL + 受限令牌），并保留两条真实替代（关沙盒 / 用文件工具） |
+
+### 23.3 为什么 git 仍然「拒绝」而不是想办法跑起来
+
+`NUL` 打不开是设备对象 DACL 与受限令牌共同决定的，属于**内核对象语义**，不是文件权限。
+文档 §19 曾按「`git --version` 能过」记录，本轮实测推翻了它：连 `--version` 都过不去。
+给设备对象补 ACE 的路线**有害**：NULL DACL 一旦被写入一条 ACE 就变成「只放行该 ACE」，
+会把整台机器的 NUL 一起打坏（本轮实际发生过，只能重启恢复）。因此正确做法是明确拒绝
+并给出可行替代，而不是用运行期手段去改设备 ACL。
+
+### 23.4 自动授权的成本控制
+
+`SetNamedSecurityInfoW` 每次都会重算整棵子树的继承，代价与条目数成正比。本机实测：
+`~/.cargo/bin` 23 项、`~/.rustup` 5221 项、`~/.cargo/registry` 71591 项。所以：
+
+- 前两者落在 1 万项预算内，自动授权，`cargo` 开箱可用；
+- `registry`/`git` 缓存目录**不发现**——`CARGO_HOME` 已指进沙盒，本就不该读宿主缓存；
+- 已授权的（DACL 上已有容器 ACE）直接跳过，不重复付费。
+
+### 23.5 验证
+
+- `sandbox/runtime.rs`：`rustc --test` 直编直跑 **12 通过 / 0 失败**（含新增
+  `rust_roots_cover_bin_and_rustup_only`：`.cargo/bin` 与 `.rustup` 被发现、`.cargo` 本体不被授权）。
+- `string_list` 语义：独立复刻 6 条断言全通过（空表→空列表、非空表→可操作错误、数组 trim 去空、
+  单字符串、缺项、标量报错）。
+- 新增用例（待 `cargo test` 可跑时执行）：`an_empty_table_header_reads_as_an_empty_list`、
+  `a_non_empty_table_for_a_list_says_how_to_fix_it`、`rustup_home_is_taken_from_the_host_user_profile`、
+  `cargo_home_points_inside_the_workspace`、`only_granted_runtime_roots_enter_the_sandbox_path`。
+- **未完成**：`cargo test -p omnicrawl-host --lib sandbox` 与沙盒内 `cargo --version` 真机复测。
+  本轮环境中 `\Device\Null` 的 DACL 被误改，`cargo` 无法启动 `rustc`
+  （`failed to open NUL device for child stdin`），需重启系统后补跑。

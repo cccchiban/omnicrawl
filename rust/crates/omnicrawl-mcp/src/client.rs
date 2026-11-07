@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -129,6 +129,8 @@ struct ManagerState {
     connections: Vec<(String, Arc<dyn McpConnection>)>,
     server_status: Vec<(String, String)>,
     failure_counts: BTreeMap<String, i64>,
+    /// 每个已连接 Server 的最后使用时刻（空闲回收据此判断）。
+    last_used: BTreeMap<String, Instant>,
 }
 
 impl ManagerState {
@@ -169,6 +171,51 @@ impl ManagerState {
             }
             None => self.connections.push((name.to_string(), connection)),
         }
+        // 新建连接从「刚用过」起算空闲时间。
+        self.last_used.insert(name.to_string(), Instant::now());
+    }
+
+    /// 记下某个 Server 刚被用过（空闲回收的计时起点）。
+    fn touch(&mut self, server_name: &str) {
+        self.last_used
+            .insert(server_name.to_string(), Instant::now());
+    }
+
+    /// 取下所有已闲置超过 `idle` 的连接，交给调用方在锁外关闭。
+    ///
+    /// 只取 `only` 里列出的 Server：HTTP 连接没有本地进程，摘掉它既不省内存又会丢掉
+    /// 一条本来还能用的连接。返回 `(Server 名, 连接, 闲置了多久)`；状态一并降回 `idle`
+    /// ——它不是失败，下次调用会照常重新拉起。
+    fn take_idle(
+        &mut self,
+        idle: Duration,
+        only: &[String],
+    ) -> Vec<(String, Arc<dyn McpConnection>, Duration)> {
+        let now = Instant::now();
+        // 先取出判定所需的快照：`retain` 会可变借用 `connections`，闭包里不能再借 `self` 的其余字段。
+        let last_used = self.last_used.clone();
+        let only: Vec<String> = only.to_vec();
+        let mut released = Vec::new();
+        self.connections.retain(|(name, connection)| {
+            if !only.contains(name) {
+                return true;
+            }
+            let Some(since) = last_used.get(name).copied() else {
+                // 没有使用记录的连接不动它（只有 put_connection 会漏记，属于不该发生的情形）。
+                return true;
+            };
+            let waited = now.saturating_duration_since(since);
+            if waited < idle {
+                return true;
+            }
+            released.push((name.clone(), Arc::clone(connection), waited));
+            false
+        });
+        for (name, _, _) in &released {
+            self.last_used.remove(name);
+            self.set_status(name, "idle");
+        }
+        released
     }
 }
 
@@ -776,6 +823,42 @@ impl McpClientManager {
             .closed
     }
 
+    /// 回收闲置的 stdio 连接：空出它们常驻的内存。
+    ///
+    /// 只动 stdio Server——HTTP 连接在 Server 侧，结束本地连接不会释放任何进程。
+    /// 回收后状态标为 `idle`（不是失败），下一次调用由 [`Self::ensure_server_connected`]
+    /// 透明重连。返回被回收的 Server 名。
+    ///
+    /// `[mcp] idle_release_seconds` 为 0（默认）时永远回收不到任何东西。
+    pub fn release_idle(&self) -> Vec<String> {
+        let seconds = self.config.idle_release_seconds;
+        if seconds <= 0 {
+            return Vec::new();
+        }
+        let stdio: Vec<String> = self
+            .config
+            .enabled_servers()
+            .iter()
+            .filter(|server| server.transport == MCP_TRANSPORT_STDIO)
+            .map(|server| server.name.clone())
+            .collect();
+        if stdio.is_empty() {
+            return Vec::new();
+        }
+        let released = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.closed {
+                return Vec::new();
+            }
+            state.take_idle(Duration::from_secs(seconds as u64), &stdio)
+        };
+        // 关闭在锁外做：`close()` 要结束子进程、等回收线程，不该占着管理器状态锁。
+        for (_, connection, _) in &released {
+            connection.close();
+        }
+        released.into_iter().map(|(name, _, _)| name).collect()
+    }
+
     pub fn set_server_status(&self, server_name: &str, status: &str) {
         self.state
             .lock()
@@ -898,11 +981,13 @@ impl McpClientManager {
         }
 
         self.ensure_server_connected(&meta.server_name);
-        let connection = self
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .connection(&meta.server_name);
+        // 取连接与打点在**同一次加锁**里完成：否则中间被回收线程抽走，这里会白等一次失败。
+        // 工具执行期间也算「在用」——长工具的耗时可超过回收阈值，只认调用结束会漏掉这段。
+        let connection = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.touch(&meta.server_name);
+            state.connection(&meta.server_name)
+        };
         let Some(connection) = connection else {
             self.record_tool_failure(&meta.server_name);
             let result = McpToolCallResult {
@@ -953,6 +1038,11 @@ impl McpClientManager {
         } else {
             self.record_tool_failure(&meta.server_name);
         }
+        // 空闲回收的计时起点：一次调用结束即算这次使用。
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .touch(&meta.server_name);
 
         let result = McpToolCallResult {
             ok,
@@ -1337,6 +1427,7 @@ mod tests {
             default_timeout_seconds: 30,
             servers: vec![(server.name.clone(), server)],
             policy: McpPolicyConfig::default(),
+            idle_release_seconds: 0,
         }
     }
 
@@ -1385,6 +1476,68 @@ mod tests {
             tool_result,
             closed: AtomicBool::new(false),
         })
+    }
+
+    /// 默认开启回收：闲置十分钟后自动结束 stdio 子进程。
+    #[test]
+    fn idle_release_is_on_by_default() {
+        assert!(
+            McpConfig::default().idle_release_seconds > 0,
+            "默认应开启闲置回收，0 表示常驻"
+        );
+        assert_eq!(
+            McpConfig::default().idle_release_seconds,
+            DEFAULT_MCP_IDLE_RELEASE_SECONDS
+        );
+    }
+
+    /// 显式设成 0 才恢复「连上就常驻」的旧行为。
+    #[test]
+    fn zero_disables_the_release() {
+        let mut config = config_with(stdio_server("files"));
+        config.idle_release_seconds = 0;
+        let (manager, connection) = manager(config, connection(None));
+        manager.discover();
+        assert_eq!(manager.connected_count(), 1);
+        assert!(manager.release_idle().is_empty(), "0 表示不回收");
+        assert_eq!(manager.connected_count(), 1);
+        assert!(!connection.closed.load(Ordering::SeqCst), "子进程应还活着");
+    }
+
+    /// 闲置到期后连接被关闭、状态降为 idle，再次调用会透明重连。
+    #[test]
+    fn idle_connection_is_released_and_reconnects_transparently() {
+        let mut config = config_with(stdio_server("files"));
+        config.idle_release_seconds = 1;
+        let (manager, connection) = manager(config, connection(Some(Ok(Map::new()))));
+        manager.discover();
+        assert_eq!(manager.connected_count(), 1);
+
+        // 刚连上还算「用过」，立刻回收拿不到东西。
+        assert!(manager.release_idle().is_empty());
+
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        assert_eq!(manager.release_idle(), vec!["files".to_string()]);
+        assert_eq!(manager.connected_count(), 0);
+        assert!(connection.closed.load(Ordering::SeqCst), "子进程应被关闭");
+
+        // 回收不是失败：下一次调用重新建连，调用本身照常成功。
+        let result = manager.call_tool("files.read", &Map::new());
+        assert!(result.ok, "{}", result.output);
+        assert_eq!(manager.connected_count(), 1);
+    }
+
+    /// HTTP Server 不占本地进程：即使闲置也不该被回收。
+    #[test]
+    fn idle_release_skips_http_servers() {
+        let mut server = McpServerConfig::new("remote", MCP_TRANSPORT_STREAMABLE_HTTP);
+        server.url = Some("http://127.0.0.1:9/mcp".to_string());
+        let mut config = config_with(server);
+        config.idle_release_seconds = 1;
+        let (manager, _) = manager(config, connection(None));
+        manager.discover();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        assert!(manager.release_idle().is_empty(), "HTTP 不回收");
     }
 
     #[test]

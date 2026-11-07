@@ -13,6 +13,13 @@
 //!   答案从 `choices[0].message.content` 里解析出同一形状的 `answers`，因此上层读答案的
 //!   代码两种方式共用。该方式的 `base_url` 按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），
 //!   因此只追加资源路径。
+//! * `cloudflare_workers_ai`：Cloudflare Workers AI 上的决策模型（`@cf/cloudflare/clef-flash`、
+//!   `@cf/cloudflare/clef`），请求/响应形状与 `jev` 相同（`model` + `state` +
+//!   `questions` 进、顶层 `answers` 出），走原生 Run 端点 `{account_id}/ai/run/{model}`。
+//!   它**不**用 OpenAI 兼容的 `ai/v1` 对话补全：那条路径只服务文本生成模型，送决策模型
+//!   会被判「缺少 model/state/questions」。地址由官方固定前缀加账户号拼出
+//!   （见 [`cloudflare_ai_base_url`]）：账户号填在 `account_id`，因此本方式没有 `base_url`
+//!   可填，端点不可能被填错。
 //!
 //! 与 `models.toml` 分开成独立文件是刻意的：决策渠道与对话渠道是两套互不相干的服务地址
 //! 与模型命名空间，混进 `models.toml` 会被对话侧的目录与能力解析当成候选模型。
@@ -47,12 +54,45 @@ pub const DECISION_MODE_CHAT_COMPLETIONS: &str = "chat_completions";
 /// 因此这里单列一种方式。
 pub const DECISION_MODE_ONEJEV: &str = "onejev";
 
+/// 决策服务类型：Cloudflare Workers AI 的决策模型（`@cf/cloudflare/clef-flash` 一类）。
+///
+/// 请求/响应形状与 [`DECISION_MODE_JEV`] 一致（`model` + `state` + `questions` 进，
+/// 顶层 `answers` 出）：Workers AI 上的决策模型（`@cf/cloudflare/clef`、`@cf/cloudflare/clef-flash`）
+/// 只认这套 System One 形状，走 `/ai/v1/chat/completions` 会被判「缺少 model/state/questions」。
+/// 差别只在地址：它由官方固定前缀加账户号拼出（[`cloudflare_ai_base_url`]），因此该方式
+/// **不使用**渠道里的 `base_url`，账户号填在 [`DecisionChannelConfig::account_id`]。
+pub const DECISION_MODE_CLOUDFLARE_WORKERS_AI: &str = "cloudflare_workers_ai";
+
 /// 可选的服务类型（界面「请求方式」字段的候选）。
-pub const DECISION_MODES: [&str; 3] = [
+pub const DECISION_MODES: [&str; 4] = [
     DECISION_MODE_JEV,
     DECISION_MODE_CHAT_COMPLETIONS,
+    DECISION_MODE_CLOUDFLARE_WORKERS_AI,
     DECISION_MODE_ONEJEV,
 ];
+
+/// Cloudflare API 的官方基地址（不含 `/client/v4` 之后的路径）。
+pub const CLOUDFLARE_API_BASE_URL: &str = "https://api.cloudflare.com";
+
+/// Cloudflare Workers AI 的默认模型：决策模型（原生 `state` / `questions` 形状）。
+pub const DEFAULT_CLOUDFLARE_DECISION_MODEL: &str = "@cf/cloudflare/clef-flash";
+
+/// Workers AI 的 Run 端点前缀（模型 ID 追加在它后面）。
+pub const CLOUDFLARE_AI_RUN_PATH: &str = "ai/run";
+
+/// 按账户号拼出 Cloudflare Workers AI 的 Run 基地址。
+///
+/// 决策模型走原生 Run 端点（`{account_id}/ai/run/{model}`），不是 OpenAI 兼容的
+/// `ai/v1` 对话补全——后者只服务文本生成模型，送决策模型会因缺少 `model`/`state`/
+/// `questions` 被判非法输入。模型 ID 由调用方追加（见 `decide_url`）。
+/// 账户号为空时返回空串：调用方据此判定「还没填账户号」。
+pub fn cloudflare_ai_base_url(account_id: &str) -> String {
+    let account = account_id.trim();
+    if account.is_empty() {
+        return String::new();
+    }
+    format!("{CLOUDFLARE_API_BASE_URL}/client/v4/accounts/{account}/{CLOUDFLARE_AI_RUN_PATH}")
+}
 
 /// 自部署（`onejev`）渠道的默认基地址：只作为「本机服务」的标识保留。
 ///
@@ -83,6 +123,9 @@ pub struct DecisionChannelConfig {
     /// 决策服务类型，取 [`DECISION_MODES`] 之一。
     pub mode: String,
     pub base_url: String,
+    /// Cloudflare 账户号：仅 `cloudflare_workers_ai` 使用（该方式没有 `base_url` 可填，
+    /// 地址由它拼出，见 [`cloudflare_ai_base_url`]）。其余方式该值恒为空串。
+    pub account_id: String,
     /// 内联凭据。与 `config.toml` 的渠道 profile 同口径，只认这一处明文。
     pub api_key: String,
     /// 决策模型名（`jev-latest` 或固定版本）。
@@ -99,6 +142,7 @@ impl Default for DecisionChannelConfig {
             name: "Jev 主渠道".to_string(),
             mode: DECISION_MODE_JEV.to_string(),
             base_url: DEFAULT_DECISION_BASE_URL.to_string(),
+            account_id: String::new(),
             api_key: String::new(),
             model: DEFAULT_DECISION_MODEL.to_string(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
@@ -108,6 +152,13 @@ impl Default for DecisionChannelConfig {
 }
 
 impl DecisionChannelConfig {
+    /// 该渠道的地址是否由账户号拼出（Cloudflare Workers AI）。
+    pub fn uses_account_id(&self) -> bool {
+        self.mode
+            .trim()
+            .eq_ignore_ascii_case(DECISION_MODE_CLOUDFLARE_WORKERS_AI)
+    }
+
     /// 取值域校验与归一化（错误文案带渠道 key，便于在界面上直接读）。
     pub fn normalize(mut self) -> Result<Self, ConfigError> {
         self.key = self.key.trim().to_string();
@@ -130,20 +181,34 @@ impl DecisionChannelConfig {
                 self.mode
             )));
         }
-        let base_url = self.base_url.trim().trim_end_matches('/').to_string();
-        if base_url.is_empty() {
-            return Err(ConfigError::new(format!(
-                "决策渠道 {} 的基地址不能为空。",
-                self.key
-            )));
+        self.account_id = self.account_id.trim().to_string();
+        if self.mode == DECISION_MODE_CLOUDFLARE_WORKERS_AI {
+            // 官方端点由账户号拼出：不接受用户填的地址，也就没有填错的机会。
+            if self.account_id.is_empty() {
+                return Err(ConfigError::new(format!(
+                    "决策渠道 {} 使用 Cloudflare Workers AI 时必须填写 Account ID。",
+                    self.key
+                )));
+            }
+            self.base_url = cloudflare_ai_base_url(&self.account_id);
+        } else {
+            // 其余方式不使用账户号：留着会让切换方式后的旧值误导排错。
+            self.account_id.clear();
+            let base_url = self.base_url.trim().trim_end_matches('/').to_string();
+            if base_url.is_empty() {
+                return Err(ConfigError::new(format!(
+                    "决策渠道 {} 的基地址不能为空。",
+                    self.key
+                )));
+            }
+            if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+                return Err(ConfigError::new(format!(
+                    "决策渠道 {} 的基地址必须以 http:// 或 https:// 开头。",
+                    self.key
+                )));
+            }
+            self.base_url = base_url;
         }
-        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-            return Err(ConfigError::new(format!(
-                "决策渠道 {} 的基地址必须以 http:// 或 https:// 开头。",
-                self.key
-            )));
-        }
-        self.base_url = base_url;
         self.model = self.model.trim().to_string();
         if self.model.is_empty() {
             return Err(ConfigError::new(format!(
@@ -164,9 +229,12 @@ impl DecisionChannelConfig {
     /// 云端网关那种「同一协议、不同部署」的情形仍能按 HTTP 访问。
     pub fn decide_url(&self) -> String {
         match self.mode.as_str() {
-            DECISION_MODE_CHAT_COMPLETIONS => {
-                format!("{}/chat/completions", self.base_url)
+            // Workers AI 的 Run 端点把模型 ID 放在路径上：基地址已在归一化时由账户号拼好。
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI => {
+                format!("{}/{}", self.base_url, self.model)
             }
+            // OpenAI 兼容口径的基地址已填到 `/v1`，这里只追加资源路径。
+            DECISION_MODE_CHAT_COMPLETIONS => format!("{}/chat/completions", self.base_url),
             _ => format!("{}/v1/systemone", self.base_url),
         }
     }
@@ -850,6 +918,13 @@ pub fn save_decision_model_configuration(
             "base_url".to_string(),
             Value::String(channel.base_url.clone()),
         );
+        // 只有按账户号拼地址的方式才写这个键：其余方式的渠道文件里不该出现无用的空字段。
+        if channel.uses_account_id() {
+            entry.insert(
+                "account_id".to_string(),
+                Value::String(channel.account_id.clone()),
+            );
+        }
         entry.insert(
             "api_key".to_string(),
             Value::String(channel.api_key.clone()),
@@ -873,6 +948,7 @@ fn parse_channel(key: &str, section: &Table) -> Result<DecisionChannelConfig, Co
         name: text_field(section, "name", key),
         mode: text_field(section, "mode", DECISION_MODE_JEV),
         base_url: text_field(section, "base_url", DEFAULT_DECISION_BASE_URL),
+        account_id: python_str(section.get("account_id")),
         api_key: python_str(section.get("api_key")),
         model: text_field(section, "model", DEFAULT_DECISION_MODEL),
         retry_count: match section.get("retry_count") {
@@ -974,6 +1050,95 @@ mod tests {
             "http://127.0.0.1:8766/v1/systemone",
             "自部署方式走 OneJev 服务的 /v1/systemone"
         );
+    }
+
+    #[test]
+    fn cloudflare_channel_derives_the_official_endpoint_from_the_account_id() {
+        let channel = DecisionChannelConfig {
+            mode: DECISION_MODE_CLOUDFLARE_WORKERS_AI.to_string(),
+            // 用户填的地址被丢弃：这种方式没有 Base URL 可填。
+            base_url: String::new(),
+            account_id: " 023e105f4ecef8ad9ca31a8372d0c353 ".to_string(),
+            model: DEFAULT_CLOUDFLARE_DECISION_MODEL.to_string(),
+            api_key: "cf_token".to_string(),
+            ..DecisionChannelConfig::default()
+        }
+        .normalize()
+        .expect("账户号齐全即可用");
+
+        assert_eq!(
+            channel.base_url,
+            "https://api.cloudflare.com/client/v4/accounts/023e105f4ecef8ad9ca31a8372d0c353/ai/run",
+            "端点由官方前缀 + 账户号拼出，账户号两端的空白被去掉"
+        );
+        assert_eq!(
+            channel.decide_url(),
+            "https://api.cloudflare.com/client/v4/accounts/023e105f4ecef8ad9ca31a8372d0c353/ai/run/@cf/cloudflare/clef-flash",
+            "Run 端点把模型 ID 放在路径上"
+        );
+        assert!(channel.uses_account_id());
+
+        // 缺账户号是配置错误：不回落到默认端点，免得请求打到别人的账户上。
+        let missing = DecisionChannelConfig {
+            mode: DECISION_MODE_CLOUDFLARE_WORKERS_AI.to_string(),
+            base_url: String::new(),
+            account_id: "   ".to_string(),
+            ..DecisionChannelConfig::default()
+        };
+        let error = missing.normalize().expect_err("缺账户号应被拒绝");
+        assert!(error.message().contains("Account ID"), "{}", error.message());
+
+        // 切回其它方式时账户号被清掉，地址也该重新由 base_url 决定。
+        let switched = DecisionChannelConfig {
+            mode: DECISION_MODE_JEV.to_string(),
+            account_id: "023e105f4ecef8ad9ca31a8372d0c353".to_string(),
+            ..DecisionChannelConfig::default()
+        }
+        .normalize()
+        .expect("其余方式不看账户号");
+        assert!(switched.account_id.is_empty(), "不适用的字段会被清空");
+        assert!(!switched.uses_account_id());
+        assert_eq!(switched.decide_url(), "https://api.typesafe.ai/v1/systemone");
+    }
+
+    #[test]
+    fn cloudflare_account_id_round_trips_and_stays_out_of_other_channels() {
+        let root = temp_root("cloudflare");
+        let env = env_for(&root);
+        let configuration = DecisionModelConfiguration {
+            channels: vec![
+                DecisionChannelConfig {
+                    key: "cf".to_string(),
+                    mode: DECISION_MODE_CLOUDFLARE_WORKERS_AI.to_string(),
+                    base_url: String::new(),
+                    account_id: "023e105f4ecef8ad9ca31a8372d0c353".to_string(),
+                    model: DEFAULT_CLOUDFLARE_DECISION_MODEL.to_string(),
+                    ..DecisionChannelConfig::default()
+                },
+                DecisionChannelConfig::default(),
+            ],
+            default_key: "cf".to_string(),
+        };
+        let path = save_decision_model_configuration(&env, &configuration, None).expect("写盘");
+        let text = std::fs::read_to_string(&path).expect("读文件");
+        assert!(
+            text.contains("account_id"),
+            "Cloudflare 渠道要把它写进文件：{text}"
+        );
+
+        let reloaded = load_decision_model_configuration(&env, None).expect("读回");
+        let cloudflare = &reloaded.channels[0];
+        assert_eq!(cloudflare.account_id, "023e105f4ecef8ad9ca31a8372d0c353");
+        assert_eq!(
+            cloudflare.base_url,
+            cloudflare_ai_base_url("023e105f4ecef8ad9ca31a8372d0c353")
+        );
+        assert!(
+            reloaded.channels[1].account_id.is_empty(),
+            "其余方式不写这个键，读回来也是空"
+        );
+        assert_eq!(reloaded.default_key, "cf");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1105,6 +1270,7 @@ mod tests {
                     name: "Jev 主渠道".to_string(),
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: "https://api.typesafe.ai/".to_string(),
+                    account_id: String::new(),
                     api_key: String::new(),
                     model: "jev-1.13.0".to_string(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
@@ -1115,6 +1281,7 @@ mod tests {
                     name: "自建决策服务".to_string(),
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: "http://127.0.0.1:8080".to_string(),
+                    account_id: String::new(),
                     api_key: "jv_live_test".to_string(),
                     model: "jev-latest".to_string(),
                     retry_count: 0,
@@ -1158,6 +1325,7 @@ mod tests {
                     name: "关掉的".to_string(),
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
+                    account_id: String::new(),
                     api_key: String::new(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
@@ -1168,6 +1336,7 @@ mod tests {
                     name: "开着的".to_string(),
                     mode: DECISION_MODE_JEV.to_string(),
                     base_url: DEFAULT_DECISION_BASE_URL.to_string(),
+                    account_id: String::new(),
                     api_key: String::new(),
                     retry_count: DEFAULT_DECISION_RETRY_COUNT,
                     model: DEFAULT_DECISION_MODEL.to_string(),
@@ -1189,6 +1358,7 @@ mod tests {
             name: String::new(),
             mode: DECISION_MODE_JEV.to_string(),
             base_url: DEFAULT_DECISION_BASE_URL.to_string(),
+            account_id: String::new(),
             api_key: String::new(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),
@@ -1202,6 +1372,7 @@ mod tests {
             name: "坏地址".to_string(),
             mode: DECISION_MODE_JEV.to_string(),
             base_url: "api.typesafe.ai".to_string(),
+            account_id: String::new(),
             api_key: String::new(),
             retry_count: DEFAULT_DECISION_RETRY_COUNT,
             model: DEFAULT_DECISION_MODEL.to_string(),

@@ -244,9 +244,14 @@ fn join_output_reader(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
 
 /// Windows：`git` 是 MSYS 程序，在 AppContainer 内起不来，因此**明确拒绝**而非悄悄放行。
 ///
-/// 依据是 `sandbox_windows_design.md` §18 的实测：`git --version` 能过，但任何真正干活的
-/// 子命令都因打不开 `/dev/null`（Windows 的 `NUL`）而失败，`CreateFileW` 返回
-/// `ERROR_ACCESS_DENIED`。这**不是配置问题**，授权目录解决不了。
+/// 依据是 `sandbox_windows_design.md` §18 与 §23 的实测：`git.exe` 一启动就要以读写方式
+/// 打开 `/dev/null`（Windows 上的 `NUL`），而 `\Device\Null` 的 DACL 是 **NULL DACL**
+/// （`NO_ACCESS_CONTROL`）。AppContainer 是受限令牌，访问检查要求常规 SID 链与受限 SID
+/// 链同时放行，NULL DACL 里没有任何 ACE 可供匹配，因此**任何访问掩码都是
+/// `ERROR_ACCESS_DENIED(5)`**——连 `--version` 都过不去。
+///
+/// 这**不是配置问题**：授权目录、改 PATH、换包装都无效；给设备对象补 ACE 也不行
+/// （NULL DACL 一旦被写入 ACE 就变成了"只放行该 ACE"，会把整机 NUL 一起打坏）。
 ///
 /// 关键：必须拒绝，不能"沙盒模式下退回宿主身份执行"——那等于让最该被约束的操作
 /// （`push`、`config`、`submodule`）完全不受约束，比"跑不了"危险得多。
@@ -347,15 +352,17 @@ fn finish_git(
 
 /// Windows 沙盒内 `git` 不可用的说明与替代做法。
 ///
-/// 与 `registry.rs` 的 `BASH_UNAVAILABLE_IN_SANDBOX` 同源（都是 `NUL` 设备导致的），
-/// 但 `git` 有自己的替代路径：用 `bash` 工具跑系统 `git` 也不可行（同因），因此给出的是
-/// 「关掉沙盒或改用文件工具」这两条真实可走的路。
+/// 与 `registry.rs` 的 `BASH_UNAVAILABLE_IN_SANDBOX` 同源：`\Device\Null` 的 NULL DACL
+/// 对受限令牌没有任何可匹配的 ACE，`NUL` 因此完全打不开。`git` 一启动就要读写它，
+/// 所以连 `--version` 都过不去。替代路径只有两条真实可走的：关掉沙盒，或改用文件工具。
 #[cfg(windows)]
 const GIT_UNAVAILABLE_IN_SANDBOX: &str =
-    "沙盒真隔离下无法执行 `git`：它是 MSYS 程序，启动时要打开 `/dev/null`（Windows 的 `NUL` 设备），\
-     而 AppContainer 身份对该设备没有访问权，任何真正干活的子命令都会失败。\
-     这不是配置问题，无法通过授权目录解决。可选做法：把 `[sandbox] mode` 设为 off 后重试；\
-     或改用 `read`/`write_file`/`Edit_file`/`grep`/`find` 完成同样的改动（这些工具仍在沙盒判定之下）。";
+    "沙盒真隔离下无法执行 `git`：它是 MSYS 程序，进程初始化阶段就要以读写方式打开 \
+     `/dev/null`（Windows 的 `NUL` 设备），而 AppContainer 对 `\\Device\\Null` 的任何访问\
+     都会被拒（该设备的 DACL 为 NULL DACL，受限令牌的 SID 链没有可匹配的 ACE），\
+     连 `git --version` 都会失败。这不是配置问题，授权目录或改 PATH 都无法解决。\
+     可选做法：把 `[sandbox] mode` 设为 off 后重试，或改用 `read`/`write_file`/`Edit_file`/\
+     `grep`/`find` 完成同样的改动（这些工具仍在沙盒判定之下）。";
 
 fn error_result(message: String) -> ToolResult {
     ToolResult {

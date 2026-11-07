@@ -148,6 +148,17 @@ pub(super) fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             respond_compact(conn, id);
             false
         }
+        Command::SessionRelease => {
+            // 闲置回收：只把内核里的历史缓冲换出，转录与索引都不动。
+            let released = match conn.borrow_mut().session.as_mut() {
+                Some(session) => session.release_history(),
+                // 没有内核自持会话（宿主代答模式）时无事可做，但仍算成功。
+                None => false,
+            };
+            conn.borrow_mut()
+                .respond(id, json!({ "released": released }));
+            false
+        }
         Command::SubagentQuery(params) => {
             match subagent_query_value(conn, &params) {
                 Ok(value) => conn.borrow_mut().respond(id, value),

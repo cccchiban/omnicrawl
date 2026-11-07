@@ -13,9 +13,12 @@ use super::*;
 pub struct DecisionRow {
     pub key: String,
     pub name: String,
-    /// 服务类型，取 `jev` / `chat_completions` / `onejev` 之一。
+    /// 服务类型，取 `jev` / `chat_completions` / `cloudflare_workers_ai` / `onejev` 之一。
     pub mode: String,
     pub base_url: String,
+    /// Cloudflare 账户号：仅 `cloudflare_workers_ai` 使用；该方式下 Base URL 不显示，
+    /// 由账户号拼出官方端点。
+    pub account_id: String,
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时的写回，界面从不渲染明文。
     pub api_key: String,
     pub model: String,
@@ -30,6 +33,7 @@ pub enum DecisionField {
     Name,
     Mode,
     BaseUrl,
+    AccountId,
     ApiKey,
     ModelId,
     RetryCount,
@@ -38,10 +42,11 @@ pub enum DecisionField {
 
 impl DecisionField {
     /// 表单里的字段顺序。
-    pub const ORDER: [DecisionField; 7] = [
+    pub const ORDER: [DecisionField; 8] = [
         DecisionField::Name,
         DecisionField::Mode,
         DecisionField::BaseUrl,
+        DecisionField::AccountId,
         DecisionField::ApiKey,
         DecisionField::ModelId,
         DecisionField::RetryCount,
@@ -51,9 +56,10 @@ impl DecisionField {
     pub fn label(self) -> &'static str {
         match self {
             Self::Name => "渠道名称",
-            // 与对话渠道的「请求方式」同文案：这里放的是决策服务类型（当前只有 Jev）。
+            // 与对话渠道的「请求方式」同文案：这里放的是决策服务类型。
             Self::Mode => "请求方式",
             Self::BaseUrl => "Base URL",
+            Self::AccountId => "Account ID",
             Self::ApiKey => "API Key",
             Self::ModelId => "模型 ID",
             Self::RetryCount => "失败重试次数",
@@ -66,12 +72,29 @@ impl DecisionField {
         !matches!(self, Self::Mode | Self::Enabled)
     }
 
-    pub(crate) fn index(self) -> usize {
-        Self::ORDER
-            .iter()
-            .position(|field| *field == self)
-            .unwrap_or(0)
+    /// 该字段在当前请求方式下是否显示。
+    ///
+    /// 地址与账户号互斥：按账户号拼官方端点的方式（Cloudflare Workers AI）不显示
+    /// Base URL，其余方式不显示 Account ID——用户看不到的字段就不可能被填错。
+    pub fn is_visible(self, mode: &str) -> bool {
+        let by_account = mode.trim().eq_ignore_ascii_case(
+            omnicrawl_config::features::decision_model::DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+        );
+        match self {
+            Self::BaseUrl => !by_account,
+            Self::AccountId => by_account,
+            _ => true,
+        }
     }
+}
+
+/// 当前请求方式下依次显示的字段（表单渲染、`Tab` 与点击命中都用它）。
+pub fn visible_decision_fields(mode: &str) -> Vec<DecisionField> {
+    DecisionField::ORDER
+        .iter()
+        .copied()
+        .filter(|field| field.is_visible(mode))
+        .collect()
 }
 
 /// 决策渠道表单里展开的枚举候选（当前只有「请求方式」）。
@@ -256,11 +279,11 @@ pub const DECISION_LOCAL_ROW_COUNT: usize = 14;
 /// 进度条宽度（显示列）：状态行里够看又不会挤掉阶段文案。
 pub const DECISION_PROGRESS_BAR_WIDTH: usize = 24;
 
-/// 结构化决策模型的服务类型候选（Jev 原生 / 对话补全 / OneJev 自部署）。
+/// 结构化决策模型的服务类型候选（Jev 原生 / 对话补全 / Cloudflare Workers AI / OneJev 自部署）。
 ///
 /// 与配置域 [`omnicrawl_config::features::decision_model::DECISION_MODES`] 同源：
 /// 这里重导出成界面用的名字，避免界面层直接引用配置域常量。
-pub const DECISION_MODE_OPTIONS: [&str; 3] =
+pub const DECISION_MODE_OPTIONS: [&str; 4] =
     omnicrawl_config::features::decision_model::DECISION_MODES;
 
 /// 自部署的推理设备候选（与配置域 [`omnicrawl_config::features::decision_model::LOCAL_DEVICE_OPTIONS`] 同源）。
@@ -638,4 +661,71 @@ pub enum DecisionLocalChange {
     StartService,
     /// 停止本地服务并释放显存。
     StopService,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::settings::state::set_decision_field;
+    use omnicrawl_config::features::decision_model::{
+        DECISION_MODE_CLOUDFLARE_WORKERS_AI, DECISION_MODE_JEV,
+    };
+
+    #[test]
+    fn base_url_and_account_id_never_show_together() {
+        let jev = visible_decision_fields(DECISION_MODE_JEV);
+        assert!(jev.contains(&DecisionField::BaseUrl));
+        assert!(!jev.contains(&DecisionField::AccountId), "其余方式不显示账户号");
+
+        let cloudflare = visible_decision_fields(DECISION_MODE_CLOUDFLARE_WORKERS_AI);
+        assert!(
+            !cloudflare.contains(&DecisionField::BaseUrl),
+            "Cloudflare 方式的地址由账户号拼出，不显示 Base URL"
+        );
+        assert!(cloudflare.contains(&DecisionField::AccountId));
+        assert_eq!(
+            cloudflare.len(),
+            DecisionField::ORDER.len(),
+            "只换一个字段，其余照旧"
+        );
+    }
+
+    #[test]
+    fn switching_mode_clears_the_field_it_hides() {
+        // 切方式后 Base URL / Account ID 只剩一个可见，旧值由 set_decision_field 清掉。
+        assert!(!DecisionField::BaseUrl.is_visible(DECISION_MODE_CLOUDFLARE_WORKERS_AI));
+        assert!(DecisionField::AccountId.is_visible(DECISION_MODE_CLOUDFLARE_WORKERS_AI));
+        assert!(DecisionField::BaseUrl.is_visible(DECISION_MODE_JEV));
+        assert!(!DecisionField::AccountId.is_visible(DECISION_MODE_JEV));
+        // 切方式的清理只针对这两个字段，其余字段的取值不受影响。
+        let mut row = DecisionRow {
+            mode: DECISION_MODE_JEV.to_string(),
+            base_url: "https://api.typesafe.ai".to_string(),
+            account_id: "023e105f".to_string(),
+            model: "jev-latest".to_string(),
+            ..DecisionRow::default()
+        };
+        set_decision_field(
+            &mut row,
+            DecisionField::Mode,
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI.to_string(),
+        );
+        assert!(row.base_url.is_empty(), "不显示地址时旧地址被清掉");
+        assert_eq!(
+            row.model,
+            omnicrawl_config::features::decision_model::DEFAULT_CLOUDFLARE_DECISION_MODEL,
+            "模型名跟着方式换，避免留着 jev-latest 让首次请求失败"
+        );
+        // 切回去时模型名与地址都回到该方式的默认值。
+        set_decision_field(&mut row, DecisionField::Mode, DECISION_MODE_JEV.to_string());
+        assert_eq!(
+            row.model,
+            omnicrawl_config::features::decision_model::DEFAULT_DECISION_MODEL
+        );
+        assert_eq!(
+            row.base_url,
+            omnicrawl_config::features::decision_model::DEFAULT_DECISION_BASE_URL
+        );
+        assert!(row.account_id.is_empty(), "切走后账户号被清掉");
+    }
 }

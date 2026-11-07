@@ -113,6 +113,7 @@ impl App {
             name: format!("OneJev 自部署 {}", target.key),
             mode: DECISION_MODE_ONEJEV.to_string(),
             base_url: DEFAULT_LOCAL_DECISION_BASE_URL.to_string(),
+            account_id: String::new(),
             api_key: String::new(),
             model: model_name,
             retry_count: DEFAULT_DECISION_RETRY_COUNT,

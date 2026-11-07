@@ -74,7 +74,16 @@ impl App {
             }
             _ => None,
         };
+        // 底栏工作区名：点一下打开仓库文件夹。
+        let on_workspace = self
+            .state
+            .hud_workspace_area()
+            .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)));
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if on_workspace => {
+                self.state.clear_selection();
+                self.open_workspace_folder();
+            }
             MouseEventKind::Down(MouseButton::Left) if on_esc => {
                 if self.state.selection().is_some() {
                     self.state.clear_selection();
@@ -282,6 +291,7 @@ impl App {
     /// 命中测试只做窗口换算。
     pub(super) fn update_conversation_hover(&mut self, column: u16, row: u16) {
         self.update_welcome_badge_hover(column, row);
+        self.update_hud_workspace_hover(column, row);
         self.update_stop_button_hover(column, row);
         self.update_subagent_view_hover(column, row);
         self.update_retry_button_hover(column, row);
@@ -307,6 +317,17 @@ impl App {
             .iter()
             .position(|area| area.is_some_and(|area| area.contains(point)));
         self.state.set_welcome_badge_hover(hover);
+    }
+
+    /// 悬停判定：鼠标是否落在底栏工作区名上（悬停时那段染成淡黄色）。
+    ///
+    /// 工作区名在底部 HUD 里，与消息流无关，命中只用渲染路径登记的矩形。
+    pub(super) fn update_hud_workspace_hover(&mut self, column: u16, row: u16) {
+        let hover = self
+            .state
+            .hud_workspace_area()
+            .is_some_and(|area| area.contains(Position::new(column, row)));
+        self.state.set_hud_workspace_hover(hover);
     }
 
     /// 落点命中的徽标段（点击跳转用）；没命中徽标时为 `None`。

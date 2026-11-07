@@ -7,6 +7,15 @@ use crate::ui::fullscreen::round_half_even;
 use crate::ui::fullscreen::terminal::theme::{BORDER_MUTED, TEXT_MUTED, TEXT_PRIMARY};
 use crate::ui::fullscreen::text::StyledText;
 
+/// 底部 HUD 里工作区名（可点段）的纯白前景。
+///
+/// 不用 `TEXT_PRIMARY`（`default`）：那交给终端调色板，深色主题下常是灰的，看不出
+/// 这段可以点。纯白 sRGB 与设置面板菜单同一取色。
+pub const WORKSPACE_LINK_COLOR: &str = "#ffffff";
+
+/// 悬停时工作区名换成的淡黄色（与徽标/按钮的悬停同一色）。
+pub const WORKSPACE_HOVER_COLOR: &str = "#e8d9a0";
+
 /// 使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。
 pub fn compact_token_count(value: i64) -> String {
     let value = value.max(0);
@@ -141,13 +150,12 @@ fn take_last(text: &str, count: usize) -> String {
 // 2 空格），数字位数增长时后续字段自然顺移。分隔符为 ⁕，行首与行尾不再有闭合
 // 竖线；超长值由 compact_hud_value 截断。
 
-/// 渲染第一行左段：项目绝对路径（灰色，行首直接开始）。
+/// 渲染工作区段：工作区名与段尾 1 空格。
 ///
-/// 直接显示完整路径不做 basename 截断，用灰色弱化视觉；超长路径由
-/// [`compact_hud_value`] 截断（保留首尾）。尾部 1 空格保持字段间距。
+/// 只显示路径本身不做 basename 截断；超长路径由 [`compact_hud_value`] 截断（保留首尾）。
 pub fn context_summary_text(workspace: &str) -> StyledText {
     let mut rendered = StyledText::new();
-    rendered.push(&compact_hud_value(workspace, 40), TEXT_MUTED);
+    rendered.push(&compact_hud_value(workspace, 40), WORKSPACE_LINK_COLOR);
     rendered.push(" ", TEXT_MUTED);
     rendered
 }
@@ -209,6 +217,14 @@ mod tests {
         let rendered = context_summary_text("D:/very/long/workspace/path/that/exceeds/the/limit");
         assert_eq!(rendered.plain().chars().last(), Some(' '));
         assert!(rendered.plain().contains('…'));
+    }
+
+    /// 工作区名独占纯白前景：渲染层就是靠这一点在整行里认出它。
+    #[test]
+    fn context_summary_text_marks_the_workspace_in_pure_white() {
+        let rendered = context_summary_text("D:/work");
+        assert_eq!(rendered.spans()[0].text, "D:/work");
+        assert_eq!(rendered.spans()[0].style, WORKSPACE_LINK_COLOR);
     }
 
     #[test]

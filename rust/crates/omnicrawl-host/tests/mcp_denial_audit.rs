@@ -50,6 +50,7 @@ fn manager_with_one_tool(workspace: &Path) -> Arc<McpClientManager> {
             audit_log_enabled: true,
             ..McpPolicyConfig::default()
         },
+        idle_release_seconds: 0,
     };
     let manager = McpClientManager::new(config, workspace)
         .with_approval_mode(Arc::new(|| "manual".to_string()));
@@ -155,6 +156,7 @@ fn audit_disabled_writes_nothing() {
             audit_log_enabled: false,
             ..McpPolicyConfig::default()
         },
+        idle_release_seconds: 0,
     };
     let manager = Arc::new(McpClientManager::new(config, &workspace));
     manager.registry().add_tool(McpToolMeta {

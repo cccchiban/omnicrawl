@@ -270,6 +270,19 @@ impl TurnState {
     }
 }
 
+/// 上一个回合的结局：终端标签页标题据此显示 ✓ / ⩍ / ✕。
+///
+/// `None` 表示还没跑过回合（标题仍是待机标记）。进行中不看这里，看 [`TurnState`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// 回合正常收尾。
+    Done,
+    /// 回合收尾但需用户留意：被模型暂停（`turn.finished` 的 `paused`）。
+    Warning,
+    /// 回合以失败结束：上游错误、取消、内核退出。
+    Failed,
+}
+
 /// 输出速度估计：累计估算 token 数与真正的连续输出时长，间隔超过 [`IDLE_GAP`] 不计时。
 #[derive(Debug, Clone, Default)]
 pub struct RateEstimator {
@@ -1176,6 +1189,8 @@ pub struct AppState {
     pub todos: Vec<TodoItem>,
     pub paused: bool,
     pub turn: TurnState,
+    /// 上一个回合的结局（终端标签页标题的 ✓ / ⩍ / ✕）；`None` 表示还没跑过回合。
+    pub turn_outcome: Option<TurnOutcome>,
     pub telemetry: Telemetry,
     /// 已启用的 MCP Server 数量（HUD 的 MCP 段）。
     pub mcp_servers: u64,
@@ -1210,6 +1225,10 @@ pub struct AppState {
     batch_quiet: bool,
     /// 底部单行 HUD 的整行文本（渲染只读；由 [`AppState::refresh_hud`] 按最新遥测重建）。
     pub hud_text: StyledText,
+    /// 底栏工作区名是否被鼠标悬停（悬停时那段染成淡黄色，点击打开仓库文件夹）。
+    hud_workspace_hover: bool,
+    /// 底栏工作区名的屏幕矩形（渲染时登记，鼠标据此悬停/点击）。
+    hud_workspace_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
     /// 沙盒网络审批：当前在等用户回答的请求（`ask` 档的连接）。
     ///
     /// 放在 `AppState` 而不是 `App` 上，因为渲染层只拿得到 `&AppState`；
@@ -1286,6 +1305,7 @@ impl AppState {
             todos: Vec::new(),
             paused: false,
             turn: TurnState::Idle,
+            turn_outcome: None,
             telemetry: Telemetry::default(),
             mcp_servers: 0,
             turn_started: None,
@@ -1305,6 +1325,8 @@ impl AppState {
             batch: None,
             batch_quiet: false,
             hud_text: StyledText::new(),
+            hud_workspace_hover: false,
+            hud_workspace_area: std::cell::Cell::new(None),
             selection: None,
             runtime_esc_hover: false,
             welcome_badge_areas: std::cell::Cell::new([None; BADGE_SEGMENT_COUNT]),
@@ -1554,6 +1576,11 @@ impl AppState {
                 // （流被截断、批次被丢弃、工具超时后结果被丢弃），留着就会永远转圈。
                 self.close_running_cards("工具调用在回合结束前未收到结果。");
                 self.turn = TurnState::Idle;
+                self.turn_outcome = Some(if payload.paused {
+                    TurnOutcome::Warning
+                } else {
+                    TurnOutcome::Done
+                });
                 self.turn_started = None;
                 self.status = None;
                 // 状态行随回合结束消失：悬停态一并复位，避免下一回合复用旧高亮。

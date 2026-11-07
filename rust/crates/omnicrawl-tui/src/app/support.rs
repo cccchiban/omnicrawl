@@ -457,6 +457,7 @@ pub(super) fn decision_row_from_config(channel: &DecisionChannelConfig) -> Decis
         name: channel.name.clone(),
         mode: channel.mode.clone(),
         base_url: channel.base_url.clone(),
+        account_id: channel.account_id.clone(),
         // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
         api_key: channel.api_key.clone(),
         model: channel.model.clone(),
@@ -501,6 +502,7 @@ pub(super) fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConf
         name: row.name.trim().to_string(),
         mode: row.mode.trim().to_string(),
         base_url: row.base_url.trim().to_string(),
+        account_id: row.account_id.trim().to_string(),
         api_key: row.api_key.trim().to_string(),
         model: row.model.trim().to_string(),
         retry_count: row.retry_count,

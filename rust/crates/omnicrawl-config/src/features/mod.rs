@@ -18,6 +18,8 @@ pub mod embedding;
 pub mod fetch_api;
 pub mod image_gen;
 pub mod run_guard;
+// 会话上下文闲置换出（`[ui] session_release_seconds`；Rust 侧新增，Python 无对映）。
+pub mod session_release;
 // 沙盒（`[sandbox]`）：子进程隔离的配置与判定（Rust 侧新增，Python 无对映）。
 pub mod sandbox;
 pub mod skills;

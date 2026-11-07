@@ -24,6 +24,7 @@ fn config(server: McpServerConfig) -> McpConfig {
         default_timeout_seconds: 15,
         servers: vec![(server.name.clone(), server)],
         policy: McpPolicyConfig::default(),
+        idle_release_seconds: 0,
     }
 }
 
@@ -104,6 +105,7 @@ fn unreachable_command_degrades_without_blocking_other_servers() {
                 (working.name.clone(), working),
             ],
             policy: McpPolicyConfig::default(),
+            idle_release_seconds: 0,
         },
         &root,
     );

@@ -185,6 +185,7 @@ impl AgentService {
             }
             // 重起内核的会话块与启动时同源：漏了这两项就会悄悄回到内核默认策略。
             let (memory_root, compaction) = session_config_defaults(&self.options);
+            let target_session = session_id.to_string();
             spawner.runner.session = Some(KernelSessionConfig {
                 root: session_root,
                 session_id: session_id.to_string(),
@@ -192,6 +193,9 @@ impl AgentService {
                 workspace_root: Some(workspace.to_string_lossy().to_string()),
                 compaction,
             });
+            // 工具表的会话级记忆跟着这次会话走：`RegistryOptions` 是进程级共享的，
+            // 只有在这里（每次重起内核）才有一个明确的会话 id 可以写进去。
+            bind_session_memory(&mut spawner.registry_options, &target_session);
 
             let ready = Arc::new(Mutex::new(String::new()));
             let slot = Arc::clone(&ready);

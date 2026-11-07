@@ -39,6 +39,10 @@ pub mod method {
     pub const SESSION_EVENTS: &str = "session.events";
     /// 清空当前对话并开启新会话。
     pub const SESSION_NEW: &str = "session.new";
+    /// 把当前会话的运行期历史换出内存（闲置回收）：下一次回合提交时从转录重放。
+    ///
+    /// 只释放内核里的历史缓冲，不动转录与索引，因此不影响任何可见结果。
+    pub const SESSION_RELEASE: &str = "session.release";
     /// 恢复指定会话：内核切到该会话并用转录重建运行期历史。
     pub const SESSION_RESUME: &str = "session.resume";
     /// 派生一个子 Agent 任务并等它结束，返回子 Agent 的原始输出文本。
@@ -794,6 +798,8 @@ pub enum Command {
     SessionEvents(SessionEventsParams),
     /// 清空当前对话并开启新会话。
     SessionNew,
+    /// 换出运行期历史（闲置回收），返回是否真的换出。
+    SessionRelease,
     /// 恢复指定会话。
     SessionResume(SessionResumeParams),
     /// 派生单个子 Agent 并等它结束。
@@ -853,6 +859,7 @@ impl Command {
             Self::SessionHistory(_) => method::SESSION_HISTORY,
             Self::SessionEvents(_) => method::SESSION_EVENTS,
             Self::SessionNew => method::SESSION_NEW,
+            Self::SessionRelease => method::SESSION_RELEASE,
             Self::SessionResume(_) => method::SESSION_RESUME,
             Self::SubagentRun(_) => method::SUBAGENT_RUN,
             Self::SessionAppend(_) => method::SESSION_APPEND,
@@ -877,6 +884,7 @@ impl Command {
             Self::SessionHistory(payload) => payload_value(payload),
             Self::SessionEvents(payload) => payload_value(payload),
             Self::SessionNew => json!({}),
+            Self::SessionRelease => json!({}),
             Self::SessionResume(payload) => payload_value(payload),
             Self::SubagentRun(payload) => payload_value(payload),
             Self::SessionAppend(payload) => payload_value(payload),
@@ -911,6 +919,7 @@ impl Command {
             method::SESSION_HISTORY => Command::SessionHistory(from_params(params)?),
             method::SESSION_EVENTS => Command::SessionEvents(from_params(params)?),
             method::SESSION_NEW => Command::SessionNew,
+            method::SESSION_RELEASE => Command::SessionRelease,
             method::SESSION_RESUME => Command::SessionResume(from_params(params)?),
             method::SUBAGENT_RUN => Command::SubagentRun(from_params(params)?),
             method::SESSION_APPEND => Command::SessionAppend(from_params(params)?),

@@ -286,6 +286,7 @@ fn config_from(value: &Value) -> McpConfig {
                 .as_bool()
                 .unwrap_or(true),
         },
+        idle_release_seconds: 0,
     }
 }
 

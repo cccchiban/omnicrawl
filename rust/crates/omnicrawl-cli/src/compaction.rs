@@ -32,6 +32,8 @@ pub struct KernelSession {
     pub session_id: String,
     /// 运行期历史（模型上下文里除系统提示词与工具声明之外的部分）。
     pub history: Vec<Value>,
+    /// 历史是否已被换出（闲置回收）：为真时 `history` 必为空，用前要从转录重放。
+    pub history_released: bool,
     pub config: CompactionConfig,
     /// 会话级记忆的用户数据根；为空则不做记忆回写与自动召回。
     pub memory_root: Option<PathBuf>,
@@ -62,6 +64,7 @@ impl KernelSession {
             store,
             session_id,
             history: Vec::new(),
+            history_released: false,
             config: compaction_config(settings.compaction.as_ref()),
             memory_root: settings
                 .memory_root
@@ -90,7 +93,38 @@ impl KernelSession {
             .into_iter()
             .map(|(_, message)| message)
             .collect();
+        self.history_released = false;
         Ok(())
+    }
+
+    /// 运行期历史是否已被换出（为空并不代表没历史——那要看转录）。
+    pub fn history_released(&self) -> bool {
+        self.history_released
+    }
+
+    /// 把运行期历史交出去，本会话只剩会话 id 与转录。
+    ///
+    /// 长会话的历史是内核里最大的一块常驻内存（实测几十 MB），而它完全可以由转录重建。
+    /// 换出后 [`Self::ensure_history`] 会按需重放同一条路径，因此语义与「刚从磁盘打开」一致。
+    pub fn release_history(&mut self) -> bool {
+        if self.history_released {
+            return false;
+        }
+        self.history = Vec::new();
+        // `Vec::new` 不持有容量，但历史可能先被 `shrink_to_fit` 过；显式清空容量才算真释放。
+        self.history.shrink_to_fit();
+        self.history_released = true;
+        true
+    }
+
+    /// 取用运行期历史，必要时先从转录重放。
+    ///
+    /// 返回的是借用而非克隆：回合开始时只读它拼请求，避免每回合再复制一份几十 MB 的历史。
+    pub fn ensure_history(&mut self) -> Result<&[Value], String> {
+        if self.history_released {
+            self.reload_history()?;
+        }
+        Ok(&self.history)
     }
 
     /// 切换到已有会话：重建运行期历史。调用方负责先校验会话存在（含归档处理）。
@@ -481,5 +515,40 @@ mod tests {
         assert_eq!(config.trigger_context_tokens, 50_000);
         assert_eq!(config.target_summary_tokens, default.target_summary_tokens);
         assert_eq!(config.recent_turns, default.recent_turns);
+    }
+
+    /// 换出只是丢掉缓冲：`release_history` 幂等，`ensure_history` 之后历史原样回来。
+    ///
+    /// 用真实会话存储跑一遍，确保「重放」走的确实是转录而不是残留内存。
+    #[test]
+    fn released_history_is_rebuilt_from_the_transcript() {
+        let root =
+            std::env::temp_dir().join(format!("omnicrawl-release-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut session = KernelSession::open(KernelSessionConfig {
+            root: root.to_string_lossy().replace('\\', "/"),
+            session_id: String::new(),
+            memory_root: None,
+            workspace_root: None,
+            compaction: None,
+        })
+        .expect("打开会话");
+        session
+            .append("user_message", serde_json::json!({ "content": "第一句" }))
+            .expect("写事件");
+        session.reload_history().expect("重建历史");
+        let before = session.history.clone();
+        assert!(!before.is_empty(), "转录里有一条消息");
+        assert!(!session.history_released());
+
+        assert!(session.release_history(), "第一次换出生效");
+        assert!(session.history.is_empty(), "缓冲已交出去");
+        assert!(session.history_released());
+        assert!(!session.release_history(), "重复换出没有副作用");
+
+        let restored = session.ensure_history().expect("按需重放").to_vec();
+        assert_eq!(restored, before, "重放结果必须与换出前一致");
+        assert!(!session.history_released());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

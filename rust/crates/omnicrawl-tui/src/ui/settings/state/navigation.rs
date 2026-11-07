@@ -82,7 +82,9 @@ impl SettingsState {
             Pane::DecisionModels => {
                 // 与渠道页同形：列表态选渠道或开关，表单态选字段。
                 if let Some(form) = self.decision_models.form.as_mut() {
-                    let Some(field) = DecisionField::ORDER.get(index).copied() else {
+                    // 命中行号是「可见字段」的下标，与渲染顺序一致。
+                    let Some(field) = visible_decision_fields(&form.row.mode).get(index).copied()
+                    else {
                         return false;
                     };
                     let already = form.field == field;

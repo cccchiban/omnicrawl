@@ -71,6 +71,9 @@ impl App {
         // 非斜杠命令的提交记入输入框历史，供上下键回看（对映 Python `_submit` 中的
         // `history_record`：命令不记录）。
         self.state.composer.history_record(&text);
+        // 新一轮的上下文又要进内核：这一次换出到此为止，下一次回合落地重新计时。
+        self.session_release_at = None;
+        self.session_released = false;
         // 建议还在后台跑：这一条排队等它——两条同时提交会被内核按 `TURN_BUSY` 拒掉一条。
         if self.suggest_in_flight > 0 {
             self.state.queue_pending(text, images);

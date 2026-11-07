@@ -414,4 +414,22 @@ impl App {
             .collect())
     }
 
+    /// 打开当前工作区（仓库根）文件夹：底栏工作区名被点击时调用。
+    ///
+    /// 用系统文件管理器打开，不自带文件浏览界面（Windows `explorer`、macOS `open`、
+    /// Linux `xdg-open`）。`explorer` 即使成功也可能返回非零退出码，因此只看能否拉起。
+    pub(super) fn open_workspace_folder(&mut self) {
+        let root = self.workspace.clone();
+        let program = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(error) = std::process::Command::new(program).arg(&root).spawn() {
+            self.state
+                .show_notice_line(format!("打开文件夹失败：{error}"), Instant::now());
+        }
+    }
 }

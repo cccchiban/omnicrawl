@@ -28,6 +28,7 @@ use omnicrawl_tui::args::{parse, Options, Parsed};
 use omnicrawl_tui::clipboard;
 use omnicrawl_tui::kernel::KernelClient;
 use omnicrawl_tui::paste;
+use omnicrawl_tui::state::TurnOutcome;
 use omnicrawl_tui::ui;
 use omnicrawl_tui::ui::fullscreen::terminal::console_heal::{
     heal_console_input_mode, heal_output_mode,
@@ -46,16 +47,14 @@ const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 1.0;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
-/// 终端标签页标题的运行动画：待机显示 `#`，会话进行中在 `▧ → ▢` 之间交替，100ms 一帧。
-const TITLE_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_NAME: &str = "omnicrawl";
-/// 待机标记：没有进行中的会话时固定这一个字符。
+/// 待机标记：还没有跑过回合时固定这一个字符。
 const TITLE_IDLE_GLYPH: char = '#';
-/// 会话进行中的两帧：实心格与空心格交替，得到「方块闪烁」的呼吸感。
-///
-/// 必须是两个会随帧变化的值：`write_title` 跳过与上次相同的标题，若序列只剩一个
-/// 固定字符串，标题文本永不变化，动画就静止了。
-const TITLE_SPINNER: [char; 2] = ['▧', '▢'];
+/// 标题状态标记：四个固定字符，不再按帧轮换。
+const TITLE_GLYPH_RUNNING: char = '⌛';
+const TITLE_GLYPH_DONE: char = '✓';
+const TITLE_GLYPH_WARNING: char = '⩍';
+const TITLE_GLYPH_FAILED: char = '✕';
 /// 自愈提示的最小间隔：恢复本身照常做，只是不再每次都往屏幕上写一行。
 const NOTICE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -218,15 +217,20 @@ fn set_terminal_title(text: &str) {
     let _ = execute!(out, SetTitle(text));
 }
 
-/// 当前帧的标题文本：待机 `#`，运行中取两帧序列的当前帧，后面跟会话名。
+/// 当前标题文本：进行中 `⌛`、上次完成 `✓`、需留意 `⩍`、失败 `✕`；没跑过回合时 `#`。
 ///
 /// 会话名取内核会话标题（首条提问或 `/rename` 的结果）；尚未命名时退回产品名，
 /// 空会话与新建会话不会出现只剩一个标记的标签页。
-fn title_text(running: bool, frame: usize, name: &str) -> String {
+fn title_text(running: bool, outcome: Option<TurnOutcome>, name: &str) -> String {
     let glyph = if running {
-        TITLE_SPINNER[frame % TITLE_SPINNER.len()]
+        TITLE_GLYPH_RUNNING
     } else {
-        TITLE_IDLE_GLYPH
+        match outcome {
+            Some(TurnOutcome::Done) => TITLE_GLYPH_DONE,
+            Some(TurnOutcome::Warning) => TITLE_GLYPH_WARNING,
+            Some(TurnOutcome::Failed) => TITLE_GLYPH_FAILED,
+            None => TITLE_IDLE_GLYPH,
+        }
     };
     let name = name.trim();
     if name.is_empty() {
@@ -255,31 +259,13 @@ fn event_loop(
     let mut viewport: Option<Rect> = None;
     // 粘贴识别状态：跨控制台输入批次的多行粘贴要挂起等后续批次。
     let mut paste_tracker = paste::PasteTracker::new();
-    // 终端标签页标题：待机固定 `#`，会话进行中按 100ms 一帧在 ▧/▢ 间交替。
-    let mut title_frame = 0usize;
-    let mut last_title = title_text(false, 0, app.current_session_title());
-    let mut next_title_at = Instant::now();
+    let mut last_title = String::new();
     loop {
         if viewport.is_none() {
             viewport = Some(terminal_viewport(terminal)?);
             app.set_viewport(viewport.expect("刚写入视口"));
         }
         let now = Instant::now();
-        let session_title = app.current_session_title();
-        if app.state.turn.is_running() {
-            if now >= next_title_at {
-                write_title(
-                    &title_text(true, title_frame, session_title),
-                    &mut last_title,
-                );
-                title_frame = title_frame.wrapping_add(1);
-                next_title_at = now + TITLE_FRAME_INTERVAL;
-            }
-        } else {
-            // 回到待机立刻换成 `#`（不等帧点），下一次开跑从 `▧` 重新开始。
-            title_frame = 0;
-            write_title(&title_text(false, 0, session_title), &mut last_title);
-        }
         app.tick_welcome_logo_animation(now);
         app.tick_subagent_trees();
         // 自部署（OneJev）后台任务：环境安装 / 权重下载 / 本地服务启停的结果。
@@ -295,7 +281,18 @@ fn event_loop(
         app.tick_net_approvals();
         // 审查相关配置的外部改动（`config.toml` / `decision_models.toml`）：无需重启即生效。
         app.tick_review_config();
+        // 闲置的 stdio MCP 连接按 `[mcp] idle_release_seconds` 回收（默认 600 秒）。
+        app.tick_mcp_idle(now);
+        // 闲置的会话上下文按 `[ui] session_release_seconds` 换出（默认 1800 秒）。
+        app.tick_session_release(now);
         app.drain_frames();
+        // 终端标签页标题：状态标记随回合状态变化，不再按帧轮换，因此只在真的变了时写 OSC。
+        let title = title_text(
+            app.state.turn.is_running(),
+            app.state.turn_outcome,
+            app.current_session_title(),
+        );
+        write_title(&title, &mut last_title);
         // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
         app.state.tick_reasoning_reveal();
         // 工具卡图片预览：后台解码完的缩略图在这里接进状态（新图会让会话区重算那一张卡）。
@@ -338,11 +335,6 @@ fn event_loop(
         // 好让「其实不是粘贴」的按键流能及时按普通输入回退。
         let budget = app.poll_budget(Instant::now());
         let wait = paste_wait(&paste_tracker, budget);
-        // 标题动画要按时醒来：把长空闲等待截到下一帧标题时刻。
-        let title_wait = next_title_at
-            .saturating_duration_since(Instant::now())
-            .max(Duration::from_millis(1));
-        let wait = wait.min(title_wait);
         if event::poll(wait).map_err(|error| format!("读取终端事件失败：{error}"))? {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
             if matches!(event, Event::Resize(..)) {
@@ -525,8 +517,8 @@ impl TerminalGuard {
         .map_err(|error| format!("切换备用屏幕失败：{error}"))?;
         // crossterm 在 Windows 上不发 ANSI 序列，鼠标移动要靠这里补上（见 MOUSE_MOVE_ON）。
         Self::write_mouse_move_tracking(Self::MOUSE_MOVE_ON);
-        // 进全屏先给标签页一个静态产品名（待机态），随后事件循环只在会话进行时接上旋转。
-        set_terminal_title(&title_text(false, 0, ""));
+        // 进全屏先给标签页一个静态产品名（待机态），随后事件循环按回合状态换成四态标记。
+        set_terminal_title(&title_text(false, None, ""));
         Ok(Self {
             last_heal: Instant::now(),
             last_notice: None,
@@ -575,7 +567,6 @@ impl Drop for TerminalGuard {
             DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen,
-            // 退出时停掉 spinner，标签页保留产品名而不是定格在某一帧。
             SetTitle(TITLE_NAME)
         );
         let _ = disable_raw_mode();
@@ -587,30 +578,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn title_is_a_hash_when_idle_and_blinks_only_while_running() {
-        assert_eq!(title_text(false, 0, ""), "# omnicrawl");
-        assert_eq!(title_text(false, 7, ""), "# omnicrawl", "待机不随帧变化");
-
-        let frames: Vec<String> = (0..4).map(|frame| title_text(true, frame, "")).collect();
+    fn title_marks_the_turn_outcome() {
         assert_eq!(
-            frames,
-            vec!["▧ omnicrawl", "▢ omnicrawl", "▧ omnicrawl", "▢ omnicrawl"]
+            title_text(false, None, ""),
+            "# omnicrawl",
+            "没跑过回合仍是待机标记"
         );
-        assert_eq!(title_text(true, 4, ""), "▧ omnicrawl", "两帧循环");
-        // 相邻帧必须不同：`write_title` 跳过重复标题，同值就等于没动画。
-        assert_ne!(
-            title_text(true, 0, ""),
-            title_text(true, 1, ""),
-            "相邻两帧文本相同会让标签页静止"
+        assert_eq!(
+            title_text(true, None, ""),
+            "⌛ omnicrawl",
+            "进行中优先于结局"
+        );
+        assert_eq!(
+            title_text(true, Some(TurnOutcome::Done), ""),
+            "⌛ omnicrawl"
+        );
+        assert_eq!(
+            title_text(false, Some(TurnOutcome::Done), ""),
+            "✓ omnicrawl"
+        );
+        assert_eq!(
+            title_text(false, Some(TurnOutcome::Warning), ""),
+            "⩍ omnicrawl"
+        );
+        assert_eq!(
+            title_text(false, Some(TurnOutcome::Failed), ""),
+            "✕ omnicrawl"
         );
     }
 
     /// 会话有名字之后标签页显示会话名；未命名的新会话退回产品名。
     #[test]
     fn title_shows_the_session_name_once_it_has_one() {
-        assert_eq!(title_text(false, 0, "修复登录"), "# 修复登录");
-        assert_eq!(title_text(true, 1, "修复登录"), "▢ 修复登录");
-        assert_eq!(title_text(false, 0, "  "), "# omnicrawl");
+        assert_eq!(title_text(false, None, "修复登录"), "# 修复登录");
+        assert_eq!(title_text(true, None, "修复登录"), "⌛ 修复登录");
+        assert_eq!(
+            title_text(false, Some(TurnOutcome::Done), "修复登录"),
+            "✓ 修复登录"
+        );
+        assert_eq!(title_text(false, None, "  "), "# omnicrawl");
     }
 
     #[test]
@@ -621,7 +627,7 @@ mod tests {
         // 同一串再来一次不改变状态（也只是省掉一次 OSC，不可见）。
         write_title("# omnicrawl", &mut last);
         assert_eq!(last, "# omnicrawl");
-        write_title("| omnicrawl", &mut last);
-        assert_eq!(last, "| omnicrawl");
+        write_title("✓ omnicrawl", &mut last);
+        assert_eq!(last, "✓ omnicrawl");
     }
 }

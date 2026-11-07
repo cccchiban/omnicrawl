@@ -179,6 +179,14 @@ impl App {
                 {
                     self.session_id = session_id.to_string();
                 }
+                // 工具表建在握手之前，那时还取不到会话 id：拿到之后重建一次，
+                // 会话级记忆才有目录可解析（声明内容不变，只是执行面换了）。
+                if let Err(error) = self.rebuild_registry() {
+                    report_startup_log(
+                        LogLevel::Warning,
+                        &format!("会话级记忆未接上：{error}"),
+                    );
+                }
                 let declared = self.registry.declarations().len();
                 report_startup_log(LogLevel::Info, &format!("已向内核声明 {declared} 个工具。"));
                 return Ok(());

@@ -147,6 +147,12 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
         .map(|config| config.context_messages.clone())
         .unwrap_or_default();
     // 有会话就从转录恢复的运行期历史接着走；没有会话维持「一回合一条 user 消息」的旧行为。
+    // 历史可能因闲置被换出：这里按需重放同一条转录路径，语义与刚从磁盘打开一致。
+    if let Some(session) = conn.borrow_mut().session.as_mut() {
+        if let Err(detail) = session.ensure_history() {
+            eprintln!("[kernel] 重放会话历史失败：{detail}");
+        }
+    }
     let mut messages = conn
         .borrow()
         .session

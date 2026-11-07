@@ -120,7 +120,7 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 写回只动本段且非法取值不落盘。
 
 **`features/decision_model`（Rust 专有）**：结构化决策模型配置（独立 `decision_models.toml`），
-面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。三种请求方式（`mode`）：
+面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。四种请求方式（`mode`）：
 
 * `jev`（默认）——官方 TypeSafe System One 接口：`POST {base_url}/v1/systemone`、Bearer 鉴权，
   `state` + `questions` 直接进请求体，响应里的 `answers` 就是答案；模型名 `jev-latest` / 固定版本。
@@ -130,11 +130,22 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
   `state` + `questions` 作为一条 user 消息的 JSON 文本发出并要求 JSON 输出，答案从
   `choices[0].message.content` 里解析出同一形状的 `answers`（负载组装与解析在
   `omnicrawl-host::decision_wire`）。
+* `cloudflare_workers_ai`——Cloudflare Workers AI 上的决策模型（`@cf/cloudflare/clef-flash`、
+  `@cf/cloudflare/clef`）：请求与响应形状同 `jev`（`model` + `state` + `questions`
+  进、顶层 `answers` 出），走原生 Run 端点。没有 `base_url` 可填——地址由
+  `cloudflare_ai_base_url(account_id)` 按官方固定前缀拼出
+  （`https://api.cloudflare.com/client/v4/accounts/<id>/ai/run`），调用时再追加模型 ID；
+  账户号存 `account_id`（仅本方式使用，其余方式归一化时清空）。填 `account_id` + `api_key`
+  （Cloudflare API Token，需 Workers AI 读取权限），模型名形如
+  `@cf/cloudflare/clef-flash`。**不能**走 OpenAI 兼容的 `/ai/v1/chat/completions`：那条路径
+  只服务文本生成模型，把决策模型送上去会被判「缺少 model/state/questions」（即 cf 渠道曾
+  报出的 HTTP 400）。另注意请求体的 `model` 只认模型 ID 最后一段（`clef` / `clef-flash`），
+  传全名会报 `'/model' failed test`；前缀由 `decision_wire` 统一剥除。
 
 与 `models.toml` 分开是刻意的：决策渠道与对话渠道是两套服务地址与命名空间，混在一起会被
 对话侧的目录与能力解析当成候选模型；它也**不并入** `llm.profiles`（`initialize` 里没有对映
-字段）。同样不进 parity 数据集，自带模块内测试（默认一条 Jev 渠道、两种请求方式的端点折算、
-读写往返、默认渠道折算、取值域与重复 key 校验）。
+字段）。同样不进 parity 数据集，自带模块内测试（默认一条 Jev 渠道、各种请求方式的端点折算
+（含账户号折算出 Cloudflare 官方端点）、读写往返、默认渠道折算、取值域与重复 key 校验）。
 接入点：`DecisionChannelConfig::decide_url()` 与 `resolve_api_key()`，以及
 `DecisionModelConfiguration::active_channel()`。渠道级 `retry_count`（默认 3、上限 10、0 表示
 不重试）交由出站落点 `omnicrawl-host::decision_wire::post_body` 消费。

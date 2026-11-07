@@ -259,6 +259,16 @@ impl App {
         self.state.open_sessions_menu(items);
     }
 
+    /// 会话 id 变了之后跟上工具表：会话级记忆目录按 id 解析，重建后指向新会话。
+    ///
+    /// 重建失败不影响会话切换本身（切换已在内核侧完成），只把原因如实报出来。
+    fn retarget_session_memory(&mut self) {
+        if let Err(error) = self.rebuild_registry() {
+            self.state
+                .notice(format!("会话级记忆未切换：{error}"));
+        }
+    }
+
     /// 会话列表（`/sessions` / `/archives`）：顺带把当前会话 id 对齐到内核。
     pub(crate) fn command_session_list(
         &mut self,
@@ -270,8 +280,12 @@ impl App {
             limit: session_limit(limit),
         };
         let result = self.session_request(Command::SessionList(params))?;
+        let previous = self.session_id.clone();
         if let Some(current) = result.get("current_session_id").and_then(Value::as_str) {
             self.session_id = current.to_string();
+        }
+        if self.session_id != previous {
+            self.retarget_session_memory();
         }
         session_entries(&result)
     }
@@ -297,8 +311,14 @@ impl App {
         // 新会话没有历史也没有标题：标签页回到「未命名」。
         self.session_title.clear();
         self.session_has_messages = false;
+        // 标签页标记属于上一个会话的回合：新会话还没跑过回合，退回待机标记。
+        self.state.turn_outcome = None;
+        // 新会话没有历史可换出：清掉上一个会话的排程。
+        self.session_release_at = None;
+        self.session_released = false;
         // 新会话没有历史：视图清空是「已归档并新开」的如实投影，不只是提示文案。
         self.state.replay_history(&[]);
+        self.retarget_session_memory();
         session_summary(&result)
     }
 
@@ -327,7 +347,13 @@ impl App {
         self.session_id = session_id.to_string();
         self.session_title.clear();
         self.session_has_messages = false;
+        // 新会话还没跑过回合：标签页标记退回待机。
+        self.state.turn_outcome = None;
+        // 新会话没有历史可换出：清掉上一个会话的排程。
+        self.session_release_at = None;
+        self.session_released = false;
         self.state.replay_history(&[]);
+        self.retarget_session_memory();
         Ok(self.session_id.clone())
     }
 
@@ -354,6 +380,11 @@ impl App {
         // 标题属于「当前会话」的一部分：切过去之后标签页要显示被恢复会话的名字。
         self.session_title = summary.title.clone();
         self.session_has_messages = summary.message_count > 0;
+        // 恢复的会话在本进程里还没跑过回合：标签页标记退回待机。
+        self.state.turn_outcome = None;
+        // 换了会话就重新计闲置：上一份会话的换出状态不适用于这一份。
+        self.session_release_at = None;
+        self.session_released = false;
         // 兼容旧内核/测试桩：它们可能忽略 `include_history=false` 仍然带回历史；
         // 这份历史已经拿到，直接用它，不再额外等一次 `session.events`。
         let inline_history = result
@@ -376,6 +407,7 @@ impl App {
                 },
             }
         }
+        self.retarget_session_memory();
         session_summary(&result)
     }
 

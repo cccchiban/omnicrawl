@@ -36,6 +36,19 @@ impl App {
         self.llm.native_vision
     }
 
+    /// 回合落地后按 `[ui] session_release_seconds` 安排一次上下文换出。
+    ///
+    /// 关闭（0）时清掉排程：改配置后不需要重启也能生效。
+    pub(super) fn schedule_session_release(&mut self) {
+        if self.session_release_seconds == 0 {
+            self.session_release_at = None;
+            return;
+        }
+        self.session_released = false;
+        self.session_release_at =
+            Some(Instant::now() + Duration::from_secs(self.session_release_seconds));
+    }
+
     pub(super) fn handle_frame(&mut self, frame: Frame) {
         if frame.is_notification() {
             match HostEvent::from_frame(&frame) {
@@ -49,6 +62,8 @@ impl App {
                         if let HostEvent::TurnFinished(payload) = &event {
                             self.speak_reply(&payload.final_text);
                         }
+                        // 回合落地即开始计闲置：到点把内核里的历史缓冲换出（默认 30 分钟）。
+                        self.schedule_session_release();
                         self.drain_pending_inputs();
                     }
                 }

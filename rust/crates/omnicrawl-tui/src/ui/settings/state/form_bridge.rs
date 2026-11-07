@@ -118,6 +118,7 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
         DecisionField::Name => row.name.clone(),
         DecisionField::Mode => row.mode.clone(),
         DecisionField::BaseUrl => row.base_url.clone(),
+        DecisionField::AccountId => row.account_id.clone(),
         // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码（与渠道页同款）。
         DecisionField::ApiKey => mask_api_key(&row.api_key),
         DecisionField::ModelId => row.model.clone(),
@@ -132,10 +133,13 @@ pub fn decision_field_value(row: &DecisionRow, field: DecisionField) -> String {
     }
 }
 
-/// 决策表单某字段的输入缓冲初值（与渠道表单同口径：凭据从空开始）。
+/// 决策表单某字段的输入缓冲初值。
+///
+/// 凭据从空开始（不回显、留空＝不改动）；账户号同理——它是长串标识，整段回填容易让人以为
+/// 已改过，真正要动时整段重填更清楚。
 pub(super) fn decision_input_composer(row: &DecisionRow, field: DecisionField) -> Composer {
     let mut composer = Composer::default();
-    if field != DecisionField::ApiKey {
+    if !matches!(field, DecisionField::ApiKey | DecisionField::AccountId) {
         composer.insert(&decision_field_value(row, field));
     }
     composer
@@ -145,8 +149,43 @@ pub(super) fn decision_input_composer(row: &DecisionRow, field: DecisionField) -
 pub(super) fn set_decision_field(row: &mut DecisionRow, field: DecisionField, value: String) {
     match field {
         DecisionField::Name => row.name = value,
-        DecisionField::Mode => row.mode = value.trim().to_lowercase(),
+        DecisionField::Mode => {
+            let next = value.trim().to_lowercase();
+            let cloudflare =
+                omnicrawl_config::features::decision_model::DECISION_MODE_CLOUDFLARE_WORKERS_AI;
+            // 模型名跟着方式走：jev-latest 在 Cloudflare 上不存在，留着只会让第一次请求就失败。
+            if next != row.mode {
+                if next == cloudflare {
+                    row.model =
+                        omnicrawl_config::features::decision_model::DEFAULT_CLOUDFLARE_DECISION_MODEL
+                            .to_string();
+                } else if row.mode == cloudflare {
+                    row.model =
+                        omnicrawl_config::features::decision_model::DEFAULT_DECISION_MODEL
+                            .to_string();
+                }
+            }
+            row.mode = next;
+            // 地址与账户号互斥：切走后清掉不适用的那个，避免旧值被当成新方式的值。
+            if row.mode == cloudflare {
+                row.base_url.clear();
+            } else {
+                row.account_id.clear();
+                if row.base_url.trim().is_empty() {
+                    row.base_url =
+                        omnicrawl_config::features::decision_model::DEFAULT_DECISION_BASE_URL
+                            .to_string();
+                }
+            }
+        }
         DecisionField::BaseUrl => row.base_url = value.trim().to_string(),
+        DecisionField::AccountId => {
+            // 与凭据同口径：空提交＝不改动（账户号不能为空，抹掉只会让渠道失效）。
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                row.account_id = trimmed.to_string();
+            }
+        }
         // 留空 = 不改动（与渠道页、TTS 面板同一套口径，避免误触把磁盘上的密钥抹掉）。
         DecisionField::ApiKey => {
             let trimmed = value.trim();
@@ -186,8 +225,23 @@ pub(super) fn validate_decision_rows(rows: &[DecisionRow]) -> Result<(), String>
         if row.mode.trim().is_empty() {
             return Err(format!("决策渠道 {key} 的请求方式不能为空。"));
         }
-        if row.base_url.trim().is_empty() {
+        if row.base_url.trim().is_empty()
+            && !row
+                .mode
+                .trim()
+                .eq_ignore_ascii_case(omnicrawl_config::features::decision_model::DECISION_MODE_CLOUDFLARE_WORKERS_AI)
+        {
             return Err(format!("决策渠道 {key} 的基地址不能为空。"));
+        }
+        if row
+            .mode
+            .trim()
+            .eq_ignore_ascii_case(omnicrawl_config::features::decision_model::DECISION_MODE_CLOUDFLARE_WORKERS_AI)
+            && row.account_id.trim().is_empty()
+        {
+            return Err(format!(
+                "决策渠道 {key} 使用 Cloudflare Workers AI 时必须填写 Account ID。"
+            ));
         }
         if row.model.trim().is_empty() {
             return Err(format!("决策渠道 {key} 的模型 ID 不能为空。"));

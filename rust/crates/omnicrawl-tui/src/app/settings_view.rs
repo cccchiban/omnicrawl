@@ -10,6 +10,8 @@ impl App {
 
     /// 打开设置面板：初始值来自配置与当前工具表，读不出来就只提示、不打开。
     pub(super) fn open_settings(&mut self) {
+        // 面板铺满整屏：底栏工作区名的悬停态先收掉，关掉面板后不会留着一截黄色。
+        self.state.set_hud_workspace_hover(false);
         match self.settings_values() {
             Ok(values) => self.settings = Some(SettingsState::new(values)),
             Err(message) => self.state.notice(format!("设置面板打不开：{message}")),
@@ -23,6 +25,8 @@ impl App {
     pub(super) fn open_settings_at(&mut self, key: &str) {
         // 面板铺满整屏，徽标的悬停态先收掉：关掉面板后不会留着一截黄色。
         self.state.set_welcome_badge_hover(None);
+        // 底栏同样被盖住：工作区名的悬停也收起。
+        self.state.set_hud_workspace_hover(false);
         match self.settings_values() {
             Ok(values) => {
                 let mut settings = SettingsState::new(values);

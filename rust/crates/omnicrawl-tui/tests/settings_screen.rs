@@ -449,6 +449,42 @@ fn decision_mode_dropdown_selects_the_service() {
     );
 }
 
+/// 选到 Cloudflare Workers AI：Base URL 行让位给 Account ID（地址由账户号拼出，不让用户填）。
+#[test]
+fn decision_cloudflare_mode_swaps_base_url_for_account_id() {
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_decision_models(
+            vec![decision("jev-main", "Jev 主渠道", "jev-latest", true)],
+            "jev-main",
+            decision("新渠道", "新渠道", "jev-latest", true),
+        ),
+    );
+    while state.selected_key() != "decision_models" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter); // 进右侧面板
+    state.handle_key(KeyCode::Enter); // 编辑渠道
+    let jev_form = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(jev_form.contains("Base URL"), "默认方式显示地址：{jev_form}");
+    assert!(
+        !jev_form.contains("Account ID"),
+        "默认方式不显示账户号：{jev_form}"
+    );
+
+    state.handle_key(KeyCode::Down); // 移到「请求方式」
+    state.handle_key(KeyCode::Enter); // 展开候选
+    state.handle_key(KeyCode::Down); // 第二项 = chat_completions
+    state.handle_key(KeyCode::Down); // 第三项 = cloudflare_workers_ai
+    state.handle_key(KeyCode::Enter); // 确认候选
+    let cloudflare = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(cloudflare.contains("请求方式：cloudflare_workers_ai"), "{cloudflare}");
+    assert!(
+        !cloudflare.contains("Base URL"),
+        "Cloudflare 方式不显示 Base URL：{cloudflare}"
+    );
+    assert!(cloudflare.contains("Account ID"), "改为填账户号：{cloudflare}");
+}
+
 /// `N` 新建的草稿在 `Ctrl+S` 之前不进列表，`Esc` 直接丢弃。
 #[test]
 fn decision_new_channel_is_drafted_until_saved() {

@@ -437,6 +437,15 @@ fn string_list(
                 vec![trimmed.to_string()]
             }))
         }
+        // 空表按空列表读：手写成 `[sandbox.fs]` 下多带一个 `[sandbox.fs.readable]` 表头
+        // （或任何一次把该键写成空表）都会解析成「空表」，语义上就是「没有额外路径」。
+        // 这曾经让整个 `[sandbox]` 段读不出来，连设置面板都打不开——类型错误不该由
+        // 一个没有内容的表头触发。
+        Some(Value::Table(table)) if table.is_empty() => Ok(Some(Vec::new())),
+        Some(Value::Table(_)) => Err(ConfigError::new(format!(
+            "配置项 {path} 必须是字符串数组，当前被写成了子表：请把它改成数组写法，\
+             或删掉对应的 `[{path}]` 表头。"
+        ))),
         Some(_) => Err(ConfigError::new(format!(
             "配置项 {path} 必须是字符串数组。"
         ))),
@@ -685,6 +694,46 @@ cpu_rate_percent = 50
         let config = load_from("[sandbox.net]\npolicy = \"allowlist\"\nallow = \"example.com\"\n")
             .expect("单字符串也接受");
         assert_eq!(config.net_allow, vec!["example.com"]);
+    }
+
+    /// 空表头按空列表读：`[sandbox.fs.readable]` 这种写法曾经让整个段读不出来，
+    /// 于是设置面板一打开就报「配置项 sandbox.fs.readable 必须是字符串数组」。
+    #[test]
+    fn an_empty_table_header_reads_as_an_empty_list() {
+        let config = load_from(
+            r#"
+[sandbox]
+enabled = true
+mode = "appcontainer"
+
+[sandbox.fs]
+writable = []
+
+[sandbox.fs.readable]
+
+[sandbox.net]
+policy = "ask"
+allow = []
+deny = []
+
+[sandbox.limits]
+max_processes = 64
+max_memory_mb = 4096
+cpu_rate_percent = 0
+"#,
+        )
+        .expect("空表头应被当成空列表");
+        assert!(config.readable.is_empty());
+        assert!(config.writable.is_empty());
+    }
+
+    /// 带内容的子表仍是类型错误，但错误文案要说清怎么改。
+    #[test]
+    fn a_non_empty_table_for_a_list_says_how_to_fix_it() {
+        let error = load_from("[sandbox.fs.readable]\nC = \"tools\"\n").expect_err("应报错");
+        let message = error.message();
+        assert!(message.contains("sandbox.fs.readable"), "{message}");
+        assert!(message.contains("表头"), "应给出修法：{message}");
     }
 
     #[test]

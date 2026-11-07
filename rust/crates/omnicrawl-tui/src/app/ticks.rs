@@ -155,6 +155,56 @@ impl App {
     }
 
 
+    /// 回收闲置的 stdio MCP 连接（`[mcp] idle_release_seconds`，默认 600 秒；0 关闭）。
+    ///
+    /// 多开终端时每个实例都会为一台 stdio Server 常驻一份子进程；闲置超过设定时长后
+    /// 连接会被结束，下次调用该 Server 的工具时由管理器透明重连。HTTP Server 不涉及
+    /// 本地进程，因此不回收。
+    ///
+    /// 回合进行中不动手：那时正好可能有工具批在排队等这台 Server，回收只会让它们白等一次冷启动。
+    pub fn tick_mcp_idle(&mut self, now: Instant) {
+        if now.duration_since(self.mcp_idle_checked_at) < MCP_IDLE_CHECK_INTERVAL {
+            return;
+        }
+        self.mcp_idle_checked_at = now;
+        if self.state.turn.is_running() {
+            return;
+        }
+        let Some(manager) = self.registry.mcp().cloned() else {
+            return;
+        };
+        for name in manager.release_idle() {
+            // 只在启动日志里留一行，不打断用户：这是后台的资源回收，不是事件。
+            report_startup_log(
+                LogLevel::Info,
+                &format!("MCP [{name}] 闲置已回收，下次调用时重新连接"),
+            );
+        }
+    }
+
+    /// 闲置的会话上下文换出（`ui.session_release_seconds`，默认 1800 秒；0 关闭）。
+    ///
+    /// 内核把整个历史缓冲常驻在内存里（实测长会话几十 MB），而它完全能由转录重建。
+    /// 回合结束闲置一段时间后请内核换出，下次提交时内核自己重放——对用户不可见，
+    /// 代价是重放时要重新解析转录（大会话有可见停顿）。
+    pub fn tick_session_release(&mut self, now: Instant) {
+        if self.session_released || self.session_release_seconds <= 0 {
+            return;
+        }
+        if self.state.turn.is_running() || self.state.paused {
+            return;
+        }
+        let Some(deadline) = self.session_release_at else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        self.session_release_at = None;
+        self.session_released = true;
+        self.send(Command::SessionRelease);
+    }
+
     /// 按 `MONITOR_POLL_INTERVAL` 节流轮询后台任务日志，把增量归并进工具卡。
     ///
     /// 对映 Python `ConversationViewMixin._refresh_monitor_events`：只往消息流追加，

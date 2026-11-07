@@ -119,8 +119,9 @@ pub const TTS_RUNNERS: [&str; 1] = ["tts"];
 /// UTF-8 中文输出）。下面给出 bash 惯用写法到 PowerShell 的逐条对应，让调用方一次改对。
 pub const BASH_UNAVAILABLE_IN_SANDBOX: &str =
     "沙盒真隔离下无法执行 `bash`：Git Bash 依赖 `/dev/null`（即 Windows 的 `NUL` 设备），\
-     而 AppContainer 身份对该设备没有访问权，bash 在启动阶段就会以 0xC0000142 退出。\
-     这不是配置问题，无法通过授权目录解决。请改用 `powershell` 工具并换用等价写法：\
+     而 `\\Device\\Null` 的 DACL 是 NULL DACL，AppContainer 受限令牌的 SID 链找不到可匹配的 \
+     ACE，因此该设备在容器内完全打不开（任何访问掩码都是拒绝访问），bash 在启动阶段就会以 \
+     0xC0000142 退出。这不是配置问题，无法通过授权目录解决。请改用 `powershell` 工具并换用等价写法：\
      `cat/head/tail f` → `Get-Content f`（`-TotalCount N` / `-Tail N`）；\
      `ls` → `Get-ChildItem`；`grep pat f` → `Select-String -Path f -Pattern pat`；\
      `find . -name x` → `Get-ChildItem -Recurse -Filter x`；\
@@ -1797,6 +1798,7 @@ mode = \"review\"
                     default_timeout_seconds: 30,
                     servers: vec![(server.name.clone(), server)],
                     policy: McpPolicyConfig::default(),
+                    idle_release_seconds: 0,
                 },
                 &root,
             )

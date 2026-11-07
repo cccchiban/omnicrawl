@@ -126,7 +126,24 @@ pub struct McpConfig {
     /// 按配置出现顺序保存的 Server 列表（发现顺序、状态列表与诊断顺序都跟着它）。
     pub servers: Vec<(String, McpServerConfig)>,
     pub policy: McpPolicyConfig,
+    /// 空闲回收：stdio Server 闲置这么多秒后结束子进程，下次调用再拉起。
+    ///
+    /// 默认开启；0 表示不回收（连接一旦建立就常驻到进程退出）。
+    pub idle_release_seconds: i64,
 }
+
+/// 空闲回收的默认值：闲置 10 分钟后结束 stdio 子进程。
+///
+/// 多开终端时每个实例都会为一台 stdio Server 常驻一份子进程（实测 `cad` 一条 uvx→python
+/// 链上百 MB、`concat` 36.6 MB），默认回收是这套进程里性价比最高的省内存手段。十分钟足够
+/// 让「连续用同一个 Server」的会话不多付冷启动，又不至于把整晚闲置的进程留着。
+///
+/// 冷启动贵（`cad` 要几十秒）且不在意内存的话，把 `[mcp] idle_release_seconds` 设成 0
+/// 即恢复「连上就常驻到进程退出」。
+pub const DEFAULT_MCP_IDLE_RELEASE_SECONDS: i64 = 600;
+
+/// 空闲回收的上限：一天。再长没有意义（进程寿命远小于它）。
+pub const MAX_MCP_IDLE_RELEASE_SECONDS: i64 = 86_400;
 
 impl Default for McpConfig {
     fn default() -> Self {
@@ -135,6 +152,7 @@ impl Default for McpConfig {
             default_timeout_seconds: 30,
             servers: Vec::new(),
             policy: McpPolicyConfig::default(),
+            idle_release_seconds: DEFAULT_MCP_IDLE_RELEASE_SECONDS,
         }
     }
 }
@@ -184,6 +202,14 @@ pub fn load_mcp_config(
         default_timeout_seconds: default_timeout,
         servers,
         policy,
+        idle_release_seconds: read_int_field(
+            &section,
+            "idle_release_seconds",
+            DEFAULT_MCP_IDLE_RELEASE_SECONDS,
+            0,
+            MAX_MCP_IDLE_RELEASE_SECONDS,
+            "mcp.idle_release_seconds",
+        )?,
     })
 }
 

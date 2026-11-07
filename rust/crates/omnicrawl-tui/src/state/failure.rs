@@ -14,6 +14,7 @@ impl AppState {
         /// 带重试能力的回合失败收尾。
         pub fn fail_turn_with(&mut self, message: String, retryable: bool) {
             self.turn = TurnState::Idle;
+            self.turn_outcome = Some(TurnOutcome::Failed);
             self.turn_started = None;
             self.status = None;
             // 未决批次必须卸下：`waiting()` 还返回它时，`handle_mouse` 会一直判定「等审批」

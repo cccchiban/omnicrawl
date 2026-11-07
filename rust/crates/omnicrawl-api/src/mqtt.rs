@@ -254,6 +254,7 @@ impl Planner for DecisionPlanner {
         let text = decision_wire::post_decision(
             &self.channel.mode,
             &self.channel.base_url,
+            &self.channel.model,
             &self.channel.resolve_api_key(),
             &body_text,
             self.timeout_seconds,

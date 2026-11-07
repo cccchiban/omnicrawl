@@ -56,8 +56,9 @@ pub(super) use shared::cycle_text;
 mod decision_page;
 
 pub use decision_page::{
-    DecisionDropdown, DecisionField, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues,
-    DecisionRow, DecisionSwitchRow, EmbeddingField, EmbeddingRow, DECISION_LOCAL_DEVICE_OPTIONS,
+    visible_decision_fields, DecisionDropdown, DecisionField, DecisionLocalChange, DecisionLocalRow,
+    DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingField, EmbeddingRow,
+    DECISION_LOCAL_DEVICE_OPTIONS,
     DECISION_LOCAL_ROW_CHANNEL, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_ROW_DELETE,
     DECISION_LOCAL_ROW_DEVICE, DECISION_LOCAL_ROW_DOWNLOAD, DECISION_LOCAL_ROW_DOWNLOADED,
     DECISION_LOCAL_ROW_ENV, DECISION_LOCAL_ROW_LABELS, DECISION_LOCAL_ROW_PREPARE,

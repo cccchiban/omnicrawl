@@ -16,10 +16,11 @@ use ratatui::Frame;
 use super::hit::HitAction;
 use super::picker::window_bounds;
 use super::state::{
-    ChannelField, ChannelFormView, DecisionField, DecisionFormView, DropdownField, EmbeddingField,
-    Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
-    DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
-    SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
+    visible_decision_fields, ChannelField, ChannelFormView, DecisionField, DecisionFormView,
+    DropdownField, EmbeddingField, Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow,
+    DECISION_LOCAL_SECTION, DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION,
+    MODEL_PARAM_SECTION, SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW,
+    TOOLS_SWITCH_ROW_OFFSET,
 };
 use super::{channel_field_value, decision_field_value, embedding_field_value, row_label};
 use crate::ui::display_width;
@@ -872,7 +873,10 @@ fn render_decision_form(
     form: DecisionFormView<'_>,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, field) in DecisionField::ORDER.iter().copied().enumerate() {
+    for (index, field) in visible_decision_fields(&form.row.mode)
+        .into_iter()
+        .enumerate()
+    {
         state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
         let is_current = field == form.field;
         let marker = if is_current { "›" } else { " " };

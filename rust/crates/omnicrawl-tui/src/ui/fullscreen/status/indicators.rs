@@ -47,7 +47,11 @@ fn version_text(version: &str, upgrade_available: bool) -> StyledText {
     rendered
 }
 
-/// 底部单行 HUD 的整行文本：遥测 ⁕ 工作区路径 ⁕ 版本号。
+/// 底部单行 HUD 的整行文本：遥测 ⁕ 工作区名 ⁕ 版本号。
+///
+/// 工作区名直接跟在 `⁕` 之后、不加「工作区」字样：它是可点的一段（悬停变淡黄、点击
+/// 打开文件夹），前缀会把可点区域撑到不该点的地方。这一段固定用纯白前景着色
+/// （`status::hud::WORKSPACE_LINK_COLOR`），渲染层据此认出它并做悬停换色。
 pub fn hud_line_text(source: &HudSource) -> StyledText {
     let mut rendered = token_telemetry_text(
         source.input_tokens,
@@ -56,7 +60,7 @@ pub fn hud_line_text(source: &HudSource) -> StyledText {
         source.context_limit,
         source.tokens_per_second,
     );
-    rendered.push("⁕ 工作区 ", TEXT_MUTED);
+    rendered.push("⁕ ", TEXT_MUTED);
     rendered.append_text(&context_summary_text(&source.workspace));
     // `context_summary_text` 段尾自带 1 空格，这里直接接分隔符，不再叠空格。
     rendered.push("⁕ ", TEXT_MUTED);
@@ -195,9 +199,11 @@ mod tests {
     fn hud_line_joins_telemetry_workspace_and_version() {
         let text = hud_line_text(&source());
         assert!(text.plain().contains("t/s"), "{}", text.plain());
+        assert!(text.plain().contains("⁕ D:/work"), "{}", text.plain());
+        // 不再有「工作区」前缀：工作区名自己就是可点的一段。
         assert!(
-            text.plain().contains("⁕ 工作区 D:/work"),
-            "{}",
+            !text.plain().contains("工作区"),
+            "工作区前缀已删：{}",
             text.plain()
         );
         // 版本号紧跟在工作区右侧，用 ⁕ 隔开。

@@ -4,7 +4,7 @@
 # （choice / score / noul），拿回校准过的答案。它不做文本生成，也不进 models.toml
 # 的对话模型目录——两套服务地址与模型命名空间互不相干。
 #
-# 支持的服务：Jev（TypeSafe AI）与自部署的 OneJev（本机 qev 服务）。三种请求方式见下方 mode 注释。
+# 支持的服务：Jev（TypeSafe AI）、Cloudflare Workers AI 与自部署的 OneJev（本机 qev 服务）。四种请求方式见下方 mode 注释。
 # 密钥只写明文 api_key；不要提交到版本库。
 version = 1
 
@@ -19,13 +19,28 @@ name = "Jev 主渠道"
 #   chat_completions —— OpenAI 兼容接口，POST {base_url}/chat/completions，
 #                      base_url 与 [image_gen] 同口径（填到 /v1）；
 #                      同一份 state + questions 作为 user 消息发出，从返回内容里解析 answers。
+#   cloudflare_workers_ai —— Cloudflare Workers AI 上的决策模型（@cf/cloudflare/clef-flash、
+#                      @cf/cloudflare/clef），请求与返回形状同 jev（model + state +
+#                      questions 进、顶层 answers 出），走原生 Run 端点；**没有
+#                      base_url 可填**：地址由官方固定前缀加 account_id 拼出
+#                      （https://api.cloudflare.com/client/v4/accounts/<id>/ai/run），
+#                      因此只需填下面的 account_id 与 api_key（Cloudflare API Token，
+#                      需带 Workers AI 读取权限）。模型名形如 @cf/cloudflare/clef-flash。
+#                      不要用 OpenAI 兼容的 /ai/v1/chat/completions：那条路径只服务文本
+#                      生成模型，决策模型会被判「缺少 model/state/questions」。
+#                      注意请求体里的 model 只认最后一段（clef / clef-flash）：写盘与
+#                      请求时由代码自动剥掉 @cf/cloudflare/ 前缀，端点路径仍保留全名。
 #   onejev          —— 本机自部署的 OneJev 服务，与 jev 同一路径与形状（/v1/systemone），
 #                      回环地址走命名管道；base_url 指向本地服务（见下方 [local]）。
 mode = "jev"
 # 接口基础地址：jev / onejev 填站点根（不含 /v1/systemone）；
 # chat_completions 按 OpenAI 兼容口径填到 /v1（不含 /chat/completions）。
+# cloudflare_workers_ai 不使用本项（留空即可，写入时会被账户号折算出的官方端点覆盖）。
 base_url = "https://api.typesafe.ai"
-# 内联密钥：jev / chat_completions 必填；onejev 可留空（留空则完全不发 Authorization 头）。
+# Cloudflare 账户号：仅 cloudflare_workers_ai 使用，其余方式留空。从仪表盘的 Workers AI
+# 页面或右下角「Account ID」处复制；它出现在请求路径里，不是密钥。
+# account_id = ""
+# 内联密钥：jev / chat_completions / cloudflare_workers_ai 必填；onejev 可留空（留空则完全不发 Authorization 头）。
 api_key = ""
 # 决策模型：jev-latest 跟随最新版本；生产环境建议钉死版本（如 jev-1.13.0）。
 model = "jev-latest"

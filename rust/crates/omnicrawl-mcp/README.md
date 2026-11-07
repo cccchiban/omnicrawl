@@ -73,6 +73,11 @@ stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
    解析不到时原样交给 spawn 报错。
 10. **HTTP 连接池**：Python 每个 Server 一个 httpx Client（含 keepalive 配置），Rust 每个
     连接一个 `ureq::Agent`，没有显式的 `close()`（`close()` 是空实现）。
+11. **stdio 连接的空闲回收**（Rust 新增，Python 侧没有）：`[mcp] idle_release_seconds`
+    闲置超时后关闭 stdio 连接（`McpClientManager::release_idle`），下次调用该 Server 的
+    工具时由 `ensure_server_connected` 透明重连。**默认 600 秒开启**（Python 侧是「连上
+    就常驻到进程退出」）；设 0 即恢复旧行为。HTTP Server 不参与回收：它没有本地进程，
+    摘掉连接只会白丢一条可用连接。
 
 ## 宿主接线（`omnicrawl-tui`）
 

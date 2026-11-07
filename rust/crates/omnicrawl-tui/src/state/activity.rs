@@ -190,6 +190,7 @@ impl AppState {
         /// 按最新遥测重建底部单行 HUD。
         ///
         /// 文本没变时不写回、不标脏：空闲时底部块因此保持干净，事件循环可以整帧跳过绘制。
+        /// 悬停换色不经过这里：渲染层直接把工作区段改成淡黄，文本本身不变。
         pub fn refresh_hud(&mut self) {
             let text = hud_line_text(&self.hud_source());
             if self.hud_text == text {
@@ -197,6 +198,30 @@ impl AppState {
             }
             self.hud_text = text;
             self.touch_bottom();
+        }
+
+        /// 工作区名是否被鼠标悬停（悬停时那段在渲染层染成淡黄色）。
+        pub fn hud_workspace_hover(&self) -> bool {
+            self.hud_workspace_hover
+        }
+
+        /// 记下工作区名的悬停态：只影响渲染，文本不变，因此只标脏底部块。
+        pub fn set_hud_workspace_hover(&mut self, hovered: bool) {
+            if self.hud_workspace_hover == hovered {
+                return;
+            }
+            self.hud_workspace_hover = hovered;
+            self.touch_bottom();
+        }
+
+        /// 底栏工作区名（可点段）的屏幕矩形（上一帧渲染登记的，不显示底栏时为 `None`）。
+        pub fn hud_workspace_area(&self) -> Option<ratatui::layout::Rect> {
+            self.hud_workspace_area.get()
+        }
+
+        /// 渲染路径登记工作区名的屏幕矩形（同 [`Self::set_runtime_esc_area`]，`Cell` 写入）。
+        pub fn set_hud_workspace_area(&self, area: Option<ratatui::layout::Rect>) {
+            self.hud_workspace_area.set(area);
         }
 
         /// 追加一条系统消息；不改动回合状态。

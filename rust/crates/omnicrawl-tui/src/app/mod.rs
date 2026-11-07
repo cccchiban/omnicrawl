@@ -188,6 +188,8 @@ const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 真正空闲时的等待上限：没有任何东西会定时变（没有回合、没有动画、没有在途结果），
 /// 键盘、鼠标与内核帧都会立刻唤醒 `event::poll`，因此这里可以放心久睡。
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// MCP 闲置回收的检查节流：回收粒度本来就是秒级，不必每帧进管理器的锁。
+const MCP_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// 方向键滚动步长与翻页步长（行）。
 const SCROLL_STEP: isize = 1;
 const PAGE_STEP: isize = 10;
@@ -550,6 +552,14 @@ pub struct App {
     /// 上次轮询 Monitor 事件的时刻：主循环每帧调 `tick_monitor_events`，按
     /// `MONITOR_POLL_INTERVAL` 节流。
     monitor_polled_at: Instant,
+    /// 上次检查 MCP 闲置回收的时刻（节流用：不必每帧进管理器的锁）。
+    mcp_idle_checked_at: Instant,
+    /// 会话上下文闲置换出的时长（`ui.session_release_seconds`；0 表示关闭）。
+    session_release_seconds: u64,
+    /// 本回合结束后安排换出的时刻；`None` 表示当前没有排程。
+    session_release_at: Option<Instant>,
+    /// 本次提交之后是否已经换出过（同一份历史只换出一次，重放后重新计）。
+    session_released: bool,
     /// 主 Agent 隔离区会话：退出收尾时 apply 变更 + 按策略清理（对映 Python `attach_isolation_session`）。
     isolation: Option<IsolationSession>,
     /// 内核当前持有的会话 id：握手与各会话命令的回执里同步过来。
@@ -722,6 +732,10 @@ impl App {
         // `[tools]` 段的禁用开关同样要在构造期装载：此前只在设置面板切换
         // （`apply_tool_switch`）时才赋值，启动路径漏装，配置里关掉的工具重启后照旧进表。
         let disabled_tools = load_disabled_tools(&environment, None).unwrap_or_default();
+        // 会话上下文闲置换出：缺省 0（关闭），读不出来也按关闭处理。
+        let session_release_seconds = omnicrawl_config::features::session_release::
+            load_session_release_seconds(&environment, None)
+            .unwrap_or(0);
         // Agent 临时目录：创建分类子目录、按 `[agent_temp]` 间隔补清理并起后台线程。
         // 此前这部分只在对照测试里被调用，宿主侧实际只靠字符串常量拼路径，产物从不回收。
         let agent_temp = omnicrawl_workspace::install_agent_temp_workspace(&environment, workspace);
@@ -749,12 +763,13 @@ impl App {
             session_held_by_kernel: options.session_root.is_some(),
             // 记忆整组工具进表，作用域与 Python 的 `_create_memory_stores` 对齐：项目级与
             // 用户级常开（目录由 `MemoryOptions::store` 按 `DEFAULT_MEMORY_DIRECTORY` 与
-            // `$HOME` 解析）。会话级记忆不开——内核自持会话时宿主拿不到 session id，
-            // 强行开启只会让模型调用 `scope="session"` 时拿到「未启用」。
+            // `$HOME` 解析）。会话级目录要 session id，而 id 只在内核回执里出现。
             memory_enabled,
             memory: MemoryOptions {
                 project_enabled: true,
                 user_enabled: true,
+                // 会话级由 `sync_session_memory` 按内核回执的 session id 打开：
+                // 建表发生在握手之前，此处拿不到 id，先关着，握手后与每次切会话时再补。
                 session_enabled: false,
                 // 记忆检索重排：开关在 `[decision_models.features]`，默认关闭。
                 rerank: Arc::new(omnicrawl_host::tools::rerank_options_from_config(
@@ -950,6 +965,10 @@ impl App {
             onejev_server: OneJevServer::new(),
             monitor_state: crate::monitor::MonitorStateAdapter::default(),
             monitor_polled_at: Instant::now(),
+            mcp_idle_checked_at: Instant::now(),
+            session_release_seconds,
+            session_release_at: None,
+            session_released: false,
             isolation: None,
             session_id: String::new(),
             session_title: String::new(),

@@ -148,6 +148,14 @@ impl SettingsState {
                 form.dropdown = None;
                 if let Some(value) = value {
                     set_decision_field(&mut form.row, field, value);
+                    // 切方式可能让当前字段消失（Base URL 与 Account ID 互斥），光标要跟过去。
+                    if !form.field.is_visible(&form.row.mode) {
+                        form.input = None;
+                        form.field = visible_decision_fields(&form.row.mode)
+                            .first()
+                            .copied()
+                            .unwrap_or(DecisionField::Name);
+                    }
                 }
                 None
             }
@@ -395,15 +403,22 @@ impl SettingsState {
             format!("已删除决策渠道 {}；Ctrl+S 保存后才会写盘。", removed.key);
     }
 
-    /// 表单里切换字段（`↑`/`↓` 与 `Tab` 同义）。
+    /// 表单里切换字段（`↑`/`↓` 与 `Tab` 同义）；按当前请求方式跳过隐藏字段。
     pub(super) fn move_decision_field(&mut self, delta: isize) {
         let Some(form) = self.decision_models.form.as_mut() else {
             return;
         };
-        let count = DecisionField::ORDER.len() as isize;
-        let current = form.field.index() as isize;
+        let fields = visible_decision_fields(&form.row.mode);
+        let count = fields.len() as isize;
+        if count == 0 {
+            return;
+        }
+        let current = fields
+            .iter()
+            .position(|field| *field == form.field)
+            .unwrap_or(0) as isize;
         let next = (current + delta).rem_euclid(count) as usize;
-        form.field = DecisionField::ORDER[next];
+        form.field = fields[next];
     }
 
     /// `Enter`/空格：文本字段进编辑态、枚举展开候选、开关就地翻转。

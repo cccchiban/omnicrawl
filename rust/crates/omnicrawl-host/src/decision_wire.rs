@@ -1,23 +1,25 @@
 //! 结构化决策请求的线格式：把 `state` + `questions` 组装成请求体，并从响应里取回 `answers`。
 //!
-//! 三种请求方式（`decision_models.toml` 的 `mode`）共享同一套 state / questions / answers
+//! 四种请求方式（`decision_models.toml` 的 `mode`）共享同一套 state / questions / answers
 //! 语义，差异只在这一层：
 //! * `jev`：官方 TypeSafe System One 接口 `POST {base_url}/v1/systemone`，请求体是
 //!   `{model, state, questions}`；响应顶层的 `answers` 就是答案。
 //! * `onejev`：自部署的 OneJev 服务，请求体与响应形状与 `jev` 相同，**传输走本机管道**
 //!   （命名管道 / Unix socket，见 [`crate::decision_pipe`]），不经 HTTP；只有指向非回环
 //!   地址时（云端网关也提供同一协议形状）才按 `POST {base_url}/v1/systemone` 走网络。
-//! * `chat_completions`：请求体走 OpenAI 兼容的 `messages`——state + questions 作为一条 user
-//!   消息的 JSON 文本，并带 `response_format` 要求 JSON 输出；答案从
-//!   `choices[0].message.content` 里解析出同一形状的 `answers`。该方式的 `base_url` 已含
-//!   `/v1`（与 `[image_gen]` 的 OpenAI 兼容口径一致），因此只追加
-//!   `/chat/completions`。
+//! * `cloudflare_workers_ai`：Workers AI 上的决策模型（`@cf/cloudflare/clef-flash`、`@cf/cloudflare/clef`），
+//!   请求体与响应形状同样与 `jev` 一致，差别只有地址：它由渠道的账户号折算成原生 Run 端点
+//!   `{account_id}/ai/run/{model}`（配置域归一化时已折算进 `base_url`）。**不能**走
+//!   OpenAI 兼容的 `ai/v1/chat/completions`——那条路径只服务文本生成模型。
+//! * `chat_completions`：OpenAI 兼容端点，`state` + `questions` 作为 user 消息发出，
+//!   答案从 `choices[0].message.content` 里解析。
 //!
-//! 因此三个调用点（工具调用审查、检索重排、提问托管）只管按 mode 组装请求体与读回
-//! `answers`，其余解析逻辑两种方式共用。
+//! 因此各调用点（工具调用审查、检索重排、提问托管、工具调用淘汰、本地决策接口）只管按
+//! mode 组装请求体与读回 `answers`，其余解析逻辑两种形状共用。
 
 use omnicrawl_config::features::decision_model::{
-    is_loopback_url, DECISION_MODE_CHAT_COMPLETIONS, DECISION_MODE_ONEJEV,
+    is_loopback_url, DECISION_MODE_CHAT_COMPLETIONS, DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+    DECISION_MODE_ONEJEV,
 };
 use serde_json::{json, Map, Value};
 
@@ -25,18 +27,32 @@ use serde_json::{json, Map, Value};
 const CHAT_SYSTEM_PROMPT: &str = "你是结构化决策服务：按 user 消息里 JSON 的 questions 逐项判定，\
 只输出一个 JSON 对象 {\"answers\": {...}}，键与 questions 的键一致，不要输出任何其他文字。";
 
+/// 该请求方式是否走 OpenAI 兼容的对话补全形状（`messages` 进、`choices[].message` 出）。
+///
+/// 只有 `chat_completions` 是这套形状：`jev` / `onejev` / `cloudflare_workers_ai` 都发
+/// 原生的 `{model, state, questions}`，答案在顶层 `answers`。
+pub fn uses_chat_completions(mode: &str) -> bool {
+    mode == DECISION_MODE_CHAT_COMPLETIONS
+}
+
 /// 决策接口地址：按请求方式选路径（基地址末尾斜杠在此收口）。
 ///
-/// `chat_completions` 的基地址按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），
-/// 因此只追加资源路径；`jev` 与 `onejev` 都走官方 System One 形状的 `/v1/systemone`。
-pub fn decide_url(mode: &str, base_url: &str) -> String {
+/// `chat_completions` 的基地址按 OpenAI 兼容口径填到 `/v1`（同 `[image_gen]`），因此只追加
+/// 资源路径；`cloudflare_workers_ai` 的基地址由账户号折算成 Workers AI 的 Run 端点
+/// （`{account_id}/ai/run`），因此要再追加模型 ID；`jev` 与 `onejev` 都走官方 System One
+/// 形状的 `/v1/systemone`。
+pub fn decide_url(mode: &str, base_url: &str, model: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
-    if mode == DECISION_MODE_CHAT_COMPLETIONS {
-        format!("{base}/chat/completions")
-    } else {
-        // 官方托管（jev）与本机自部署（onejev）共用同一套 System One 接口路径。
-        format!("{base}/v1/systemone")
+    if uses_chat_completions(mode) {
+        return format!("{base}/chat/completions");
     }
+    if mode == DECISION_MODE_CLOUDFLARE_WORKERS_AI {
+        // Run 端点把模型 ID 放在路径上，请求体里也带一份（官方示例即如此）。
+        // 模型 ID 形如 `@cf/...`：路径里的 `@` 与 `/` 都要原样保留，不做转义。
+        return format!("{base}/{}", model.trim());
+    }
+    // 官方托管（jev）与本机自部署（onejev）共用同一套 System One 接口路径。
+    format!("{base}/v1/systemone")
 }
 
 /// 该请求方式是否**必须**有凭据：自部署的本地服务（`onejev`）不强制，其余一律要。
@@ -61,6 +77,7 @@ pub fn uses_local_endpoint(mode: &str, base_url: &str) -> bool {
 pub fn post_decision(
     mode: &str,
     base_url: &str,
+    model: &str,
     api_key: &str,
     body_text: &str,
     timeout_seconds: u64,
@@ -74,7 +91,7 @@ pub fn post_decision(
         return crate::decision_pipe::post_body(&endpoint, body_text, timeout_seconds);
     }
     post_body(
-        &decide_url(mode, base_url),
+        &decide_url(mode, base_url, model),
         api_key,
         body_text,
         timeout_seconds,
@@ -84,8 +101,12 @@ pub fn post_decision(
 }
 
 /// 组装一次决策请求的请求体。
+///
+/// `jev` / `onejev` / `cloudflare_workers_ai` 都发原生形状 `{model, state, questions}`：
+/// Workers AI 的决策模型（`@cf/cloudflare/clef*`）只认这套 System One 形状，
+/// `model` 是模型选择器（`clef` / `clef-flash`），与 Run 端点路径上的模型 ID 并存。
 pub fn request_body(mode: &str, model: &str, state: &Value, questions: &Value) -> Value {
-    if mode == DECISION_MODE_CHAT_COMPLETIONS {
+    if uses_chat_completions(mode) {
         let payload = json!({"state": state, "questions": questions}).to_string();
         return json!({
             "model": model,
@@ -96,7 +117,29 @@ pub fn request_body(mode: &str, model: &str, state: &Value, questions: &Value) -
             "response_format": {"type": "json_object"},
         });
     }
+    if mode == DECISION_MODE_CLOUDFLARE_WORKERS_AI {
+        // 官方 `model` 参数只认选择器本身（`clef` / `clef-flash`），端点路径才用 `@cf/...`。
+        return json!({
+            "model": cloudflare_model_selector(model),
+            "state": state,
+            "questions": questions,
+        });
+    }
     json!({"model": model, "state": state, "questions": questions})
+}
+
+/// Workers AI 决策模型在请求体 `model` 里要的选择器：取模型 ID 的最后一段。
+///
+/// 官方 `model` 参数的取值域是 `clef` / `clef-flash`，而端点路径上的模型 ID 是
+/// `@cf/cloudflare/clef-flash`——只剥 `@cf/` 会剩 `cloudflare/clef-flash`，仍被判非法
+/// （实测 400：`'/model' failed test ^\s*(clef|clef-flash)\s*$`）。没有斜杠的模型名照原样用。
+fn cloudflare_model_selector(model: &str) -> String {
+    let trimmed = model.trim();
+    trimmed
+        .rsplit_once('/')
+        .map(|(_, tail)| tail)
+        .unwrap_or(trimmed)
+        .to_string()
 }
 
 /// 单次重试的退避基数（毫秒）：第 n 次重试前等 `BASE << (n-1)`，上限 [`MAX_RETRY_BACKOFF_MILLIS`]。
@@ -204,7 +247,7 @@ fn post_body_once(
 /// 从响应体里取出 `answers` 对象；取不到时返回可直接展示的原因。
 pub fn extract_answers(mode: &str, text: &str) -> Result<Value, String> {
     let payload = parse_json(text)?;
-    if mode == DECISION_MODE_CHAT_COMPLETIONS {
+    if uses_chat_completions(mode) {
         let content = payload
             .get("choices")
             .and_then(Value::as_array)
@@ -225,8 +268,12 @@ pub fn extract_answers(mode: &str, text: &str) -> Result<Value, String> {
             None => body,
         });
     }
-    payload
+    // Workers AI 的 REST 响应在外层再包一层 `result`（`{"result":{"answers":...},"success":true}`）；
+    // 决策模型本身也给顶层 `answers`，两处都认。
+    let answers = payload
         .get("answers")
+        .or_else(|| payload.get("result").and_then(|result| result.get("answers")));
+    answers
         .cloned()
         .ok_or_else(|| format!("决策服务响应缺少 answers：{}", truncate(text)))
 }
@@ -409,6 +456,15 @@ mod tests {
     fn flaky_upstream(
         statuses: Vec<u16>,
     ) -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<Option<String>>>>) {
+        flaky_upstream_with_body(statuses, json!({"answers": {"q": {"choice": "o0"}}}))
+    }
+
+    /// 同 [`flaky_upstream`]，但 2xx 时回指定的响应体（用来验证具体形状的解析口径）。
+    fn flaky_upstream_with_body(
+        statuses: Vec<u16>,
+        ok_body: Value,
+    ) -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<Option<String>>>>) {
+        let ok_text = ok_body.to_string();
         let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
         let port = listener.local_addr().expect("本地地址").port();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -452,7 +508,7 @@ mod tests {
                 let payload = if status >= 400 {
                     "{\"error\":\"上游抖动\"}".to_string()
                 } else {
-                    "{\"answers\":{\"q\":{\"choice\":\"o0\"}}}".to_string()
+                    ok_text.clone()
                 };
                 let response = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
@@ -496,6 +552,53 @@ mod tests {
         .expect_err("重试耗尽后仍要如实报错");
         assert!(error.contains("HTTP 500"), "{error}");
         assert_eq!(calls.load(Ordering::SeqCst), 3, "首次 + 两次重试");
+    }
+
+    #[test]
+    fn cloudflare_run_request_round_trips_through_the_transport() {
+        // 出站落点用真实 HTTP 请求验证一次：端点路径、请求体与响应解析的联调口径。
+        let (base_url, calls, authorizations) = flaky_upstream_with_body(
+            vec![200],
+            json!({
+                "result": {"model": "clef-flash", "answers": {"pick": {"type": "choice", "choice": "o1"}}},
+                "success": true,
+                "errors": [],
+                "messages": []
+            }),
+        );
+        let body = request_body(
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+            "@cf/cloudflare/clef-flash",
+            &json!({"task": "构建失败"}),
+            &json!({"pick": {"type": "choice"}}),
+        );
+        let text = post_decision(
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+            &format!("{base_url}/ai/run"),
+            "@cf/cloudflare/clef-flash",
+            "cf_token",
+            &serde_json::to_string(&body).expect("序列化"),
+            5,
+            "test-agent",
+            0,
+        )
+        .expect("Run 端点可用");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            parse_choice_index(DECISION_MODE_CLOUDFLARE_WORKERS_AI, &text, "pick", 3, "o")
+                .expect("外层 result 包装也能读到答案"),
+            1
+        );
+        assert_eq!(
+            authorizations
+                .lock()
+                .expect("锁")
+                .first()
+                .cloned()
+                .flatten()
+                .as_deref(),
+            Some("Bearer cf_token")
+        );
     }
 
     #[test]
@@ -549,16 +652,37 @@ mod tests {
     fn decide_url_follows_the_request_mode() {
         // 官方托管与自部署共用官方 System One 路径。
         assert_eq!(
-            decide_url(DECISION_MODE_JEV, "https://api.typesafe.ai/"),
+            decide_url(DECISION_MODE_JEV, "https://api.typesafe.ai/", "jev-latest"),
             "https://api.typesafe.ai/v1/systemone"
         );
         assert_eq!(
-            decide_url(DECISION_MODE_CHAT_COMPLETIONS, "https://api.openlux.ai/v1/"),
+            decide_url(
+                DECISION_MODE_CHAT_COMPLETIONS,
+                "https://api.openlux.ai/v1/",
+                "jev-1.13.0"
+            ),
             "https://api.openlux.ai/v1/chat/completions"
         );
         assert_eq!(
-            decide_url(DECISION_MODE_ONEJEV, "http://127.0.0.1:8766/"),
+            decide_url(DECISION_MODE_ONEJEV, "http://127.0.0.1:8766/", "OneJev-0.8B"),
             "http://127.0.0.1:8766/v1/systemone"
+        );
+        // Workers AI 走原生 Run 端点：模型 ID 在路径上（`@cf/...` 原样保留）。
+        assert_eq!(
+            decide_url(
+                DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+                "https://api.cloudflare.com/client/v4/accounts/abc123/ai/run/",
+                "@cf/cloudflare/clef-flash"
+            ),
+            "https://api.cloudflare.com/client/v4/accounts/abc123/ai/run/@cf/cloudflare/clef-flash"
+        );
+        assert_eq!(
+            decide_url(
+                DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+                "https://api.cloudflare.com/client/v4/accounts/abc123/ai/run",
+                "@cf/cloudflare/clef"
+            ),
+            "https://api.cloudflare.com/client/v4/accounts/abc123/ai/run/@cf/cloudflare/clef"
         );
     }
 
@@ -686,6 +810,61 @@ mod tests {
                 ["choice"],
             "c"
         );
+    }
+
+    #[test]
+    fn cloudflare_workers_ai_uses_the_native_decision_shape() {
+        let body = request_body(
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+            "@cf/cloudflare/clef-flash",
+            &json!({"ticket": "空白页"}),
+            &json!({"urgency": {"type": "choice"}}),
+        );
+        // 请求体里只认选择器本身（模型 ID 的最后一段）：`@cf/cloudflare/` 只属于端点路径。
+        // 只剥 `@cf/` 会剩 `cloudflare/clef-flash`，Cloudflare 仍判非法（实测 400）。
+        assert_eq!(body["model"], "clef-flash");
+        assert_eq!(body["state"]["ticket"], "空白页");
+        assert_eq!(body["questions"]["urgency"]["type"], "choice");
+        assert!(body.get("messages").is_none(), "决策模型不带 messages");
+        assert!(body.get("response_format").is_none(), "决策模型没有输出约束项");
+
+        // 多段模型 ID 一律取最后一段；没有斜杠的名字照原样用。
+        let clef = request_body(
+            DECISION_MODE_CLOUDFLARE_WORKERS_AI,
+            "@cf/cloudflare/clef",
+            &json!({}),
+            &json!({}),
+        );
+        assert_eq!(clef["model"], "clef");
+        assert_eq!(cloudflare_model_selector("clef-flash"), "clef-flash");
+        assert_eq!(
+            cloudflare_model_selector(" @cf/cloudflare/clef "),
+            "clef",
+            "两端空白也要去掉"
+        );
+
+        // REST 响应外层包 `result`，决策模型本身给顶层 `answers`：两处都要读到。
+        let wrapped = json!({
+            "result": {"answers": {"q": {"type": "choice", "choice": "o1"}}},
+            "success": true,
+            "errors": [],
+            "messages": []
+        })
+        .to_string();
+        assert_eq!(
+            extract_answers(DECISION_MODE_CLOUDFLARE_WORKERS_AI, &wrapped).expect("外层包装可读")
+                ["q"]["choice"],
+            "o1"
+        );
+        let bare = json!({"answers": {"q": {"type": "choice", "choice": "o0"}}}).to_string();
+        assert_eq!(
+            extract_answers(DECISION_MODE_CLOUDFLARE_WORKERS_AI, &bare).expect("顶层 answers 可读")
+                ["q"]["choice"],
+            "o0"
+        );
+
+        assert!(!uses_chat_completions(DECISION_MODE_CLOUDFLARE_WORKERS_AI));
+        assert!(requires_api_key(DECISION_MODE_CLOUDFLARE_WORKERS_AI));
     }
 
     #[test]

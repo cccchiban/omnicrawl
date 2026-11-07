@@ -376,6 +376,7 @@ impl RerankClient for DecisionRerankClient {
         let text = crate::decision_wire::post_decision(
             &channel.mode,
             &channel.base_url,
+            &channel.model,
             &api_key,
             &body_text,
             request.timeout_seconds,

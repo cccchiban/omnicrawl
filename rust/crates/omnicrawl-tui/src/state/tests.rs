@@ -606,6 +606,48 @@ mod tests {
         assert_eq!(state.telemetry.cached_input_tokens, 5);
     }
 
+    /// 标签页标题的四态标记：回合收尾写完成/暂停，失败写失败，新回合开始时仍按运行态。
+    #[test]
+    fn turn_outcome_marks_the_tab_title() {
+        let mut state = state();
+        let now = Instant::now();
+        assert_eq!(state.turn_outcome, None, "还没跑过回合");
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        assert_eq!(state.turn_outcome, None, "进行中不写结局");
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "完成".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 0,
+                paused: false,
+                post_compaction_context_tokens: None,
+            }),
+            now,
+        );
+        assert_eq!(state.turn_outcome, Some(TurnOutcome::Done));
+
+        state.begin_turn("t2".to_string(), "再问".to_string(), Vec::new());
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t2".to_string(),
+                final_text: String::new(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 0,
+                paused: true,
+                post_compaction_context_tokens: None,
+            }),
+            now,
+        );
+        assert_eq!(state.turn_outcome, Some(TurnOutcome::Warning));
+
+        state.begin_turn("t3".to_string(), "三问".to_string(), Vec::new());
+        state.fail_turn("上游错误".to_string());
+        assert_eq!(state.turn_outcome, Some(TurnOutcome::Failed));
+    }
+
     /// 压缩后遥测要换成压缩后的真实上下文大小，↓/† 清零（它们属于那一次已经过去的请求）。
     #[test]
     fn context_compaction_refreshes_telemetry_to_the_post_compaction_size() {

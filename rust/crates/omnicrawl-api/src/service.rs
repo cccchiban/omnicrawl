@@ -354,10 +354,17 @@ impl AgentService {
             .map_err(|error| format!("内核握手失败：{error}"))?;
 
         let session_id = wait_for_session_id(&ready);
+        // 会话 id 只有内核报出之后才知道：这里先按它绑一次，再让正在跑的运行器换表，
+        // 否则首个回合的工具表里会话级记忆仍是关的。
+        let mut registry_options = options.registry_options.clone();
+        bind_session_memory(&mut registry_options, &session_id);
+        runner
+            .rebuild_registry(&registry_options)
+            .map_err(|error| format!("会话级记忆未接上：{error}"))?;
         let spawner = KernelSpawn {
             program: kernel_program.to_path_buf(),
             runner: runner_options(&options),
-            registry_options: options.registry_options.clone(),
+            registry_options,
         };
         let service = Self::with_runner(options, runner)
             .with_session_id(session_id.clone())
@@ -775,6 +782,17 @@ pub fn resolve_kernel_program(env: &ConfigEnvironment, explicit: Option<&Path>) 
     PathBuf::from("omnicrawl")
 }
 
+/// 把会话 id 绑到工具表的会话级记忆上；id 不可用时保持关闭。
+///
+/// 与 TUI 的 `sync_session_memory` 同一口径：目录名只接受字母数字、`_` 与 `-`，
+/// 不合规的 id 若照抄进去，工具调用只会拿到一个「目录不合法」的错误。
+pub(crate) fn bind_session_memory(options: &mut RegistryOptions, session_id: &str) {
+    let id = session_id.trim();
+    let valid = !id.is_empty() && omnicrawl_controllers::memory::is_valid_session_id(id);
+    options.memory.session_enabled = valid;
+    options.memory.session_id = valid.then(|| id.to_string());
+}
+
 /// 从本地配置与进程环境组装服务选项（对应 Python 的 `create_default_agent`）。
 ///
 /// 模型与审批模式读 `config.toml`（`llm` / `approval` 段），会话根取工作区下的
@@ -889,8 +907,9 @@ fn options_from_process_profile(
     // 记忆工具整组进出：与 Python `entry.py` 的 `load_feature_enabled("memory", default=True)`
     // 同源，缺省开启（本处早先没有设置，`RegistryOptions::default()` 让记忆整组永远不进表，
     // 而 `/settings` 的 `features.memory` 又报 true——两侧会自相矛盾）。
-    // 作用域对齐 Python 的 `_create_memory_stores`：项目级与用户级常开；会话级不开——
-    // 这里的会话每个 run 现开现关，`RegistryOptions` 是进程级共享的，塞不进某个 run 的 session id。
+    // 作用域对齐 Python 的 `_create_memory_stores`：项目级与用户级常开；会话级由
+    // `bind_session_memory` 在拿到会话 id 时打开——启动时还不知道会话 id，
+    // 之后每次 `switch_session` 重起内核都会按目标会话重新绑一次。
     options.registry_options.memory_enabled =
         load_feature_enabled(env, "memory", true, None, None).unwrap_or(true);
     options.registry_options.memory = MemoryOptions {

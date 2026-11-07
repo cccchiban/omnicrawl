@@ -987,11 +987,24 @@ impl App {
         )));
     }
 
+    /// 把当前会话 id 写进记忆选项，会话级作用域才有目录可解析。
+    ///
+    /// 会话 id 只在内核回执里出现，而工具表在握手之前就建好了，因此每次拿到新 id
+    /// 都要重算一遍；没有 id 时保持关闭，让 `scope="session"` 如实报未启用。
+    pub(super) fn sync_session_memory(&mut self) {
+        let session_id = self.session_id.trim();
+        let valid = !session_id.is_empty()
+            && omnicrawl_controllers::memory::is_valid_session_id(session_id);
+        self.registry_options.memory.session_enabled = valid;
+        self.registry_options.memory.session_id = valid.then(|| session_id.to_string());
+    }
+
     /// 按当前 `registry_options` 重建工具表。
     ///
     /// 只换工具表：正在跑的后台命令与取消令牌从旧表带过去，否则一次开关
     /// 会把 `monitor` 启动的后台进程从宿主的账上抹掉。
     pub(super) fn rebuild_registry(&mut self) -> Result<(), String> {
+        self.sync_session_memory();
         let mut options = self.registry_options.clone();
         options.monitors = Some(self.registry.monitors().clone());
         options.cancel = Some(self.registry.cancel_token());
