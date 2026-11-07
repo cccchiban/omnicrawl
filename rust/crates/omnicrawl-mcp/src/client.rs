@@ -1375,7 +1375,7 @@ fn default_connector(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::McpPolicyConfig;
+    use crate::config::{McpPolicyConfig, DEFAULT_MCP_IDLE_RELEASE_SECONDS};
     use serde_json::json;
 
     /// 脚本化连接：把「请求 → 响应」写成表，用于验证管理器的登记、状态与错误映射。
