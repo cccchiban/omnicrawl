@@ -2260,7 +2260,10 @@ mode = \"review\"
             .expect("powershell 应当被本宿主处理");
         assert!(result.ok, "{}", result.output);
         // 宿主 PATH 里典型但容器读不到的项不能出现。
-        for forbidden in [r"\.cargo\bin", r"\WindowsApps", r"\Microsoft\WinGet"] {
+        //
+        // `\.cargo\bin` 不在此列：它是本次新增的自动授权项，`cargo` 要用就得在 PATH 里，
+        // 出现在这里是**预期**的（能否读到由 `runtime_ready` 判定，读不到就不会进列表）。
+        for forbidden in [r"\WindowsApps", r"\Microsoft\WinGet"] {
             assert!(
                 !result.output.contains(forbidden),
                 "沙盒 PATH 不应包含宿主私有目录 {forbidden}：{}",
