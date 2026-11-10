@@ -27,6 +27,8 @@ pub mod fetch_metadata;
 pub mod fetcher;
 pub mod finding;
 pub mod git;
+// 沙盒内的 git 由进程内 gix 承接（Windows 真隔离下 `git.exe` 起不来）。
+pub mod git_native;
 pub mod grep;
 pub mod hsts;
 pub mod http_cache;

@@ -12,6 +12,8 @@
 //   payload/omnicrawl-fetch[.exe]   抓取接口（网页抓取的本地 REST 服务，无鉴权、仅回环）
 //   payload/omnicrawl-trigger[.exe] 触发接口（外部事件拉起独立 loop 的本地 REST 服务）
 //   payload/omnicrawl-mcp-server[.exe]
+//   payload/omnicrawl-brush[.exe]    沙盒内的 bash 执行体（纯 Rust 的 bash 兼容 shell；
+//                                    沙盒里的 `bash` 工具按「主程序同目录」找它）
 //   payload/rust/assets/templates/          提示词与模式模板（源在 rust/assets/templates；缺失时用内嵌副本）
 //   payload/rust/assets/config-templates/   首次配置的三份 TOML 模板（源在 rust/assets/config-templates）
 //
@@ -76,7 +78,7 @@ const zigbuild = process.argv.includes('--zigbuild')
 const skipBuild = process.argv.includes('--skip-build')
 
 /** 载荷里必须存在的可执行文件（平台后缀按目标平台给）。 */
-const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-fetch', 'omnicrawl-trigger', 'omnicrawl-mcp-server']
+const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-decision', 'omnicrawl-fetch', 'omnicrawl-trigger', 'omnicrawl-mcp-server', 'omnicrawl-brush']
 
 /** 逐文件递归复制：Node 22.22 的目录级 cpSync 在本机会静默崩掉整个进程。 */
 function copyTree(source, destination) {
@@ -121,6 +123,7 @@ function buildRust() {
     'omnicrawl-fetch',
     'omnicrawl-trigger',
     'omnicrawl-mcp',
+    'omnicrawl-brush',
   ]
   const cargoArgs = [zigbuild ? 'zigbuild' : 'build', '--release']
   for (const name of packages) cargoArgs.push('-p', name)

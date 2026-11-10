@@ -108,33 +108,20 @@ pub const VISION_RUNNERS: [&str; 1] = ["read_image"];
 pub const IMAGE_RUNNERS: [&str; 1] = ["image_gen"];
 /// 语音合成：与 Python 一致，未启用时整组不进表（runner 名与工具名不同）。
 pub const TTS_RUNNERS: [&str; 1] = ["tts"];
-/// 真隔离下 `bash` 不可用的原因与替代写法。
+/// 沙盒真隔离下 `bash` 的执行体缺失时的说明。
 ///
-/// 实测结论：Git Bash 是 MSYS/Cygwin 程序，初始化时要打开 `/dev/null`；AppContainer 身份
-/// 对 `NUL` 设备没有访问权（`CreateFileW` → `ERROR_ACCESS_DENIED`），进程在 DLL 初始化阶段
-/// 就以 `0xC0000142` 退出，连 `--version` 都跑不出来。这与 PATH、ACL 无关，无法靠授权目录绕过。
+/// 背景（实测）：Git Bash 是 MSYS/Cygwin 程序，初始化时要打开 `/dev/null`（即 `NUL`），
+/// 而 `\Device\Null` 的 NULL DACL 对 AppContainer 受限令牌一律拒绝，`bash.exe` 在 DLL
+/// 初始化阶段就以 `0xC0000142` 退出。因此隔离时改由自带的 `omnicrawl-brush`（纯 Rust 的
+/// bash/POSIX 兼容 shell）解释同一份脚本：换执行形态，不放宽隔离。
 ///
-/// 因此替代路径不是「换个解释器跑同样的脚本」，而是**换写法**：沙盒内的 Windows PowerShell
-/// 5.1 已实测能承担日常职责（管道、文件读写、`node`/`npm`/`python`/`pip`、退出码传递、
-/// UTF-8 中文输出）。下面给出 bash 惯用写法到 PowerShell 的逐条对应，让调用方一次改对。
+/// 只剩一种情况会走到这里：安装不完整（`omnicrawl-brush` 不在主程序同目录、也不在 PATH 上）。
 pub const BASH_UNAVAILABLE_IN_SANDBOX: &str =
-    "沙盒真隔离下无法执行 `bash`：Git Bash 依赖 `/dev/null`（即 Windows 的 `NUL` 设备），\
-     而 `\\Device\\Null` 的 DACL 是 NULL DACL，AppContainer 受限令牌的 SID 链找不到可匹配的 \
-     ACE，因此该设备在容器内完全打不开（任何访问掩码都是拒绝访问），bash 在启动阶段就会以 \
-     0xC0000142 退出。这不是配置问题，无法通过授权目录解决。请改用 `powershell` 工具并换用等价写法：\
-     `cat/head/tail f` → `Get-Content f`（`-TotalCount N` / `-Tail N`）；\
+    "沙盒内找不到 bash 执行体 `omnicrawl-brush`。它是纯 Rust 实现的 bash 兼容 shell，\
+     与主程序一起分发，正常情况下与主程序同目录。请确认安装完整；\
+     在此之前可改用 `powershell` 工具（`cat/head/tail f` → `Get-Content f`；\
      `ls` → `Get-ChildItem`；`grep pat f` → `Select-String -Path f -Pattern pat`；\
-     `find . -name x` → `Get-ChildItem -Recurse -Filter x`；\
-     `echo a >> f` → `Add-Content -Path f -Value a`；\
-     `FOO=1 cmd` → `$env:FOO='1'; cmd`；\
-     `cmd && next` → `cmd; if ($LASTEXITCODE -eq 0) { next }`；\
-     `cmd1 | cmd2` → `cmd1 | cmd2`（管道语义一致）；\
-     `$?` → `$LASTEXITCODE`（外部程序）或 `$?`（cmdlet）；\
-     `test -f f` → `Test-Path f`；`mkdir -p d` → `New-Item -ItemType Directory -Force d`；\
-     `rm -rf d` → `Remove-Item -Recurse -Force d`；\
-     `sed -i 's/a/b/' f` → `(Get-Content f) -replace 'a','b' | Set-Content f`。\
-     沙盒内 `node`、`npm`、`python`、`pip` 可用（需其安装目录已授权可读）；\
-     如确实需要 bash，把 `[sandbox] mode` 设为 off。";
+     `test -f f` → `Test-Path f`；`rm -rf d` → `Remove-Item -Recurse -Force d`）。";
 /// 顾问工具：只有显式启用并选中顾问模型时才进表（与 Python 的 AdvisorConfig 一致）。
 pub const ADVISOR_RUNNER: &str = "advisor";
 /// Computer Use 工具：由内核自持执行，只受 `[computer_use] enabled` 约束。
@@ -313,30 +300,6 @@ fn build_sandbox(
     sandbox
 }
 
-/// 沙盒真隔离下的工具开关：去掉 `bash`，补上 `powershell`。
-///
-/// 与 `[tools]` 段的开关正交：那边决定「这个工具存在吗」，这里决定「沙盒里它有意义吗」。
-/// `bash` 在 AppContainer 里必然失败（要打开 `NUL` 设备，见
-/// [`BASH_UNAVAILABLE_IN_SANDBOX`]），让它留在表里只会诱导模型调用一个注定报错的入口；
-/// 而 `powershell` 默认在 `[tools]` 里是关的，沙盒内却是唯一可用的解释器——不补进表，
-/// 模型将没有任何执行命令的途径。
-fn sandbox_tool_switches(sandbox: &crate::sandbox::Sandbox, configured: &[String]) -> Vec<String> {
-    // 这两条开关是 AppContainer 特有的（Linux 上 `bash` 完全可用），必须按「当前平台真能做到」
-    // 判断，否则 Linux 上配了 `mode = appcontainer` 会把唯一可用的解释器踢出工具表。
-    if !sandbox.appcontainer_active() {
-        return configured.to_vec();
-    }
-    let mut switches: Vec<String> = configured
-        .iter()
-        .filter(|name| name.as_str() != "powershell")
-        .cloned()
-        .collect();
-    if !switches.iter().any(|name| name == "bash") {
-        switches.insert(0, "bash".to_string());
-    }
-    switches
-}
-
 impl ToolRegistry {
     pub fn new(
         root: impl Into<PathBuf>,
@@ -465,9 +428,9 @@ impl ToolRegistry {
         // 沙盒默认从 `[sandbox]` 段构造；配置读不出来时按**关闭**处理并留警告，
         // 不阻塞 Agent 启动。构造顺序在 `CommandRunner` 之前：它需要拿到策略。
         let sandbox = build_sandbox(options, &paths, &config_env);
-        // 真隔离下没有 `bash`，`powershell` 是唯一可用的解释器：启动时就按沙盒调整工具表，
-        // 而不是让模型看见一个必然失败的入口再去纠正。
-        let disabled_tools = sandbox_tool_switches(&sandbox, &options.disabled_tools);
+        // 沙盒不再改写工具表：`bash` 在隔离内执行的是自带的 `omnicrawl-brush`，与
+        // `powershell` 一样按 `[tools]` 的配置来。表里留不留，完全由用户决定。
+        let disabled_tools = options.disabled_tools.clone();
         let catalog_options = ToolCatalogOptions {
             available: &available_refs,
             memory_enabled: options.memory_enabled,
@@ -886,16 +849,14 @@ impl ToolRegistry {
     }
 
     fn run_command(&self, arguments: &Map<String, Value>, shell: Shell) -> ToolResult {
-        // 真隔离下 `bash` 一律拒绝，且这是**实测得出的硬限制**，不是没做完：
-        // Git Bash 是 MSYS/Cygwin 程序，启动时要打开 `/dev/null`（映射到 `NUL` 设备）。
-        // AppContainer 身份对这个设备拿不到任何访问权（实测 `CreateFileW` 返回 ERROR_ACCESS_DENIED 5），
-        // 于是 `bash.exe` 在 DLL 初始化阶段就以 0xC0000142 退出——连 `--version` 都跑不出来。
-        // 这条限制与 PATH、ACL 无关，没法通过授权目录绕过，所以只能明确拒绝；
-        // 悄悄退回宿主身份会让人以为环境已经隔离。
-        if self.sandbox.appcontainer_active() && shell == Shell::Bash {
-            return command_result(false, BASH_UNAVAILABLE_IN_SANDBOX.to_string());
-        }
-        // dry-run 只做判定与记录，不改执行；真隔离时判定用于日志，写由 ACL 兜底。
+        // 真隔离下 `bash` 曾经一律拒绝：Git Bash 是 MSYS/Cygwin 程序，启动时要打开
+        // `/dev/null`（映射到 `NUL` 设备），而 AppContainer 身份对这个设备拿不到任何访问权
+        // （实测 `CreateFileW` 返回 ERROR_ACCESS_DENIED 5），于是 `bash.exe` 在 DLL 初始化
+        // 阶段就以 0xC0000142 退出。这条限制依然成立，但**换执行形态**就能绕开它——
+        // 隔离时改由自带的 `omnicrawl-brush`（纯 Rust 的 bash/POSIX 兼容 shell）解释同一份
+        // 脚本：它不经 MSYS、不打开 `NUL`，而它自己仍是独立进程、依旧以容器身份启动，
+        // 它 spawn 的外部程序同样继承容器令牌。所以隔离没有放松，只是换了实现者。
+        // 绝不能改成「在宿主进程内解释脚本」——那会让脚本里每条命令都以宿主权限执行。
         let notice = if let Some(Value::String(command)) = arguments.get("command") {
             self.sandbox.dry_run_notice_for_command(command)
         } else {
@@ -2035,12 +1996,14 @@ mode = \"review\"
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 真隔离下 `bash` 根本不进工具表：它在容器里必然失败，留在表里只会诱导模型
-    /// 调用一个注定报错的入口；同一次构建里 `powershell` 必须自动补进表——
-    /// `[tools]` 默认是关的，不补就等于沙盒内没有任何执行命令的途径。
+    /// 真隔离下 `bash` 与 `powershell` 都按 `[tools]` 的配置来：沙盒不再改写工具表。
+    ///
+    /// 这条曾经断言的是相反的行为（踢掉 `bash`、强行补上 `powershell`）。改的理由是
+    /// `bash` 在容器里执行的是自带的 `omnicrawl-brush`，不再必然失败；而擅自打开用户
+    /// 关掉的工具，是沙盒代替用户改主意。
     #[cfg(windows)]
     #[test]
-    fn appcontainer_swaps_bash_out_of_the_table_for_powershell() {
+    fn appcontainer_keeps_the_tool_table_as_configured() {
         let root = std::env::current_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(".omnicrawl")
@@ -2066,19 +2029,12 @@ mode = \"review\"
         let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
         let names = declared_names(&registry);
         assert!(
-            !names.contains("bash"),
-            "真隔离下 bash 不该进表：{names:?}"
+            names.contains("bash"),
+            "真隔离下 bash 仍该进表（执行体是 omnicrawl-brush）：{names:?}"
         );
         assert!(
-            names.contains("powershell"),
-            "真隔离下 powershell 必须自动进表：{names:?}"
-        );
-        // 表即权限：不在表里的工具连执行入口都不该给出。
-        assert!(
-            registry
-                .execute(&call("bash", json!({"command": "echo hi"})))
-                .is_none(),
-            "bash 不在表里时不该被本宿主处理"
+            !names.contains("powershell"),
+            "用户关掉的 powershell 不该被沙盒擅自打开：{names:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2094,11 +2050,16 @@ mode = \"review\"
             ))),
             ..RegistryOptions::default()
         };
-        let switches = sandbox_tool_switches(
-            options.sandbox.as_ref().expect("已注入策略"),
-            &options.disabled_tools,
+        let registry = ToolRegistry::new(std::env::temp_dir(), &options, 60).expect("工具表应当构建成功");
+        let names = declared_names(&registry);
+        assert!(
+            names.contains("bash"),
+            "关掉 sandbox 后 bash 照旧在表里：{names:?}"
         );
-        assert_eq!(switches, ["powershell".to_string()]);
+        assert!(
+            !names.contains("powershell"),
+            "关掉 sandbox 也不该擅自打开 powershell：{names:?}"
+        );
     }
 
     /// P2：解释器目录未被授权时，沙盒内**如实不可用**，而不是给出误导性报错。
@@ -2140,6 +2101,96 @@ mode = \"review\"
                 path.display()
             );
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真隔离下 `bash` 必须真的能跑：执行体是自带的 `omnicrawl-brush`。
+    ///
+    /// 这条用例守住 §25 的全部承诺：容器内 `bash` 不再是"装了却跑不了"的入口。
+    /// 它同时验证三件容易分开失效的事：能在容器里启动、内建 coreutils 可用
+    /// （`cat`/`wc` 不 spawn 进程，因此不碰 `NUL`）、退出码与管道如实透传。
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_runs_bash_through_brush() {
+        let root = std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(".omnicrawl")
+            .join(".agent_tmp")
+            .join(format!(
+                "sandbox-brush-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let config = omnicrawl_config::features::sandbox::SandboxConfig {
+            enabled: true,
+            mode: omnicrawl_config::features::sandbox::SandboxMode::AppContainer,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            root.clone(),
+            root.join(".omnicrawl").join(".agent_tmp"),
+        ));
+        let options = RegistryOptions {
+            sandbox: Some(sandbox),
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 60).expect("工具表应当构建成功");
+
+        // brush 必须位于容器**可读**处：构建目录（`D:\build_temp`）不在授权范围，
+        // 直接跑只会得到「拒绝访问」，那样测到的不是通路本身。生产形态里它与主程序
+        // 同目录，而安装目录本就在授权范围内；这里把产物复制进授权工作区并临时加进
+        // PATH，复现同一个条件。
+        //
+        // 找不到产物时**跳过**而不是失败：这条用例验证的是通路，不是「有没有构建过」。
+        let source = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+            .and_then(|dir| {
+                [
+                    dir.join("omnicrawl-brush.exe"),
+                    dir.join("..").join("omnicrawl-brush.exe"),
+                ]
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+            });
+        let Some(source) = source else {
+            eprintln!("跳过：未找到 omnicrawl-brush 产物，先跑 `cargo build -p omnicrawl-brush`");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        };
+        std::fs::copy(&source, root.join("omnicrawl-brush.exe")).expect("复制 brush 进工作区");
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{};{}", root.display(), original_path));
+
+        // 写文件再读回来：确认容器内的工作区可写，且内建 `cat` 工作。
+        let result = registry
+            .execute(&call(
+                "bash",
+                json!({"command": "printf 'a\\nb\\n' > bt.txt && wc -l < bt.txt && cat bt.txt"}),
+            ))
+            .expect("bash 应当被本宿主处理");
+        let text = result.output.clone();
+        assert!(
+            !text.contains("omnicrawl-brush"),
+            "bash 不该再报执行体缺失：{text}"
+        );
+        assert!(result.ok, "沙盒内 bash 应当执行成功：{text}");
+        assert!(text.contains('2'), "wc -l 应给出 2 行：{text}");
+        assert!(text.contains('a') && text.contains('b'), "cat 应读回内容：{text}");
+
+        // 退出码必须如实透传，否则调用方无法判断成败。
+        let status = registry
+            .execute(&call("bash", json!({"command": "exit 7"})))
+            .expect("bash 应当被本宿主处理");
+        assert!(!status.ok, "退出码 7 应当被判定为失败：{}", status.output);
+
+        std::env::set_var("PATH", original_path);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2200,28 +2251,23 @@ mode = \"review\"
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 沙盒内的 `bash` 拒绝文案必须给出**可照做**的替代写法。
+    /// 执行体缺失时的文案必须指出**真正缺的东西**（`omnicrawl-brush`），而不是重复
+    /// 已被推翻的「沙盒内 bash 不可用」结论。
     ///
-    /// 文案是模型唯一的迁移依据：只写「改用 powershell」而不给映射，
-    /// 模型会把 bash 脚本原样搬过去，然后接连撞墙。这里锚定几条最常用的对应。
+    /// 文案是模型唯一的迁移依据：它得知道是安装不完整，而不是脚本写错了。
     #[test]
-    fn bash_refusal_teaches_the_powershell_equivalents() {
-        for (bash, powershell) in [
-            ("Get-Content", "cat"),
-            ("Select-String", "grep"),
-            ("Get-ChildItem", "ls"),
-            ("$LASTEXITCODE", "$?"),
-            ("Set-Content", "sed"),
-        ] {
-            assert!(
-                BASH_UNAVAILABLE_IN_SANDBOX.contains(bash),
-                "拒绝文案缺少 {bash}（对应 bash 的 {powershell}）：{BASH_UNAVAILABLE_IN_SANDBOX}"
-            );
-        }
+    fn bash_refusal_names_the_missing_brush_executable() {
+        assert!(
+            BASH_UNAVAILABLE_IN_SANDBOX.contains("omnicrawl-brush"),
+            "文案要点名缺失的执行体：{BASH_UNAVAILABLE_IN_SANDBOX}"
+        );
+        assert!(
+            BASH_UNAVAILABLE_IN_SANDBOX.contains("bash"),
+            "文案要说清是 bash 通路：{BASH_UNAVAILABLE_IN_SANDBOX}"
+        );
         assert!(
             BASH_UNAVAILABLE_IN_SANDBOX.contains("powershell"),
-            "{}",
-            BASH_UNAVAILABLE_IN_SANDBOX
+            "文案要给出可用的替代入口：{BASH_UNAVAILABLE_IN_SANDBOX}"
         );
     }
 

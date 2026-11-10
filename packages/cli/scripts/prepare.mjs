@@ -40,6 +40,7 @@ const HOST_EXECUTABLES = [
   'omnicrawl-fetch',
   'omnicrawl-trigger',
   'omnicrawl-mcp-server',
+  'omnicrawl-brush',
 ]
 
 const TARGETS = [

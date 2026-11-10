@@ -29,6 +29,7 @@ const HOST_EXECUTABLES = [
   'omnicrawl-fetch',
   'omnicrawl-trigger',
   'omnicrawl-mcp-server',
+  'omnicrawl-brush',
 ]
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')

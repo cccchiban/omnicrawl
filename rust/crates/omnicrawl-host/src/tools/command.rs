@@ -517,10 +517,20 @@ pub fn invocation_for(
 ) -> Result<Invocation, ToolError> {
     match shell {
         Shell::Bash => {
-            let executable = find_bash_executable(env).ok_or_else(|| {
-                ToolError::new(
-                    "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。",
-                )
+            // 真隔离下 Git Bash 起不来（MSYS 启动要打开 `/dev/null`），改由自带的
+            // `omnicrawl-brush` 解释同一份脚本。参数形状与 Git Bash 逐字相同，因此
+            // 调用方无需区分——差别只在「用哪个可执行文件」。
+            let executable = if isolated {
+                find_sandboxed_bash(env)
+            } else {
+                find_bash_executable(env)
+            }
+            .ok_or_else(|| {
+                ToolError::new(if isolated {
+                    "沙盒内未找到 bash 执行体（omnicrawl-brush）。请确认它与主程序安装在同一目录。"
+                } else {
+                    "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。"
+                })
             })?;
             Ok(Invocation {
                 args: vec![
@@ -533,6 +543,7 @@ pub fn invocation_for(
                 label: Shell::Bash.label().to_string(),
             })
         }
+
         Shell::PowerShell => {
             let executable = if isolated {
                 find_sandboxed_powershell(env)
@@ -558,9 +569,10 @@ pub fn invocation_for_isolation(
 ) -> Result<Invocation, ToolError> {
     match shell {
         Shell::Bash => {
-            let executable = find_bash_executable(env).ok_or_else(|| {
+            // 真隔离：Git Bash 起不来，改由自带的 brush 执行体解释同一份脚本。
+            let executable = find_sandboxed_bash(env).ok_or_else(|| {
                 ToolError::new(
-                    "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。",
+                    "沙盒内未找到 bash 执行体（omnicrawl-brush）。请确认它与主程序安装在同一目录。",
                 )
             })?;
             Ok(Invocation {
@@ -673,6 +685,36 @@ pub fn find_powershell_executable(env: &dyn Fn(&str) -> Option<String>) -> Optio
     ["pwsh", "powershell"]
         .into_iter()
         .find_map(|name| which(name, env))
+}
+
+/// 沙盒内的 bash 执行体：自带的 `omnicrawl-brush`。
+///
+/// 顺序刻意是「PATH 优先，其次可执行文件同目录与它的上一级」：容器里的 PATH 只含
+/// 已授权目录，因此 PATH 命中的一定读得到；而 `current_exe` 所在目录未必在容器内可读
+/// （cargo 的 `target/` 落在授权范围外时就是这样），直接优先它会把一个读不到的路径
+/// 交给容器，报出来的却是「拒绝访问」。同目录仍作为兜底，照顾安装目录未进 PATH 的分发形态。
+///
+/// 不按名字 `bash` 去 PATH 上撞：那是 Git Bash（容器里起不来）或 WSL 启动器。
+pub fn find_sandboxed_bash(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let file_name = if cfg!(windows) {
+        "omnicrawl-brush.exe"
+    } else {
+        "omnicrawl-brush"
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(found) = which("omnicrawl-brush", env) {
+        candidates.push(found);
+    }
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(directory) = current.parent() {
+            candidates.push(directory.join(file_name));
+            // cargo 测试/调试布局：可执行文件在 `<profile>/deps/`，产物在 `<profile>/`。
+            if let Some(parent) = directory.parent() {
+                candidates.push(parent.join(file_name));
+            }
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 /// 沙盒内的 PowerShell（无法在容器内实测时的回退口径）：安装目录里最新的 `pwsh`，

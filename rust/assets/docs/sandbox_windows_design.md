@@ -753,6 +753,11 @@ sed -i/node/npm/python/pip/$?`）。
   反而扩大隔离边界。
 - **PowerShell 7（pwsh）**：曾经「同一容器内加载不出任何 cmdlet」，根因是系统盘根不可遍历，
   P4 已查明并修掉（§22）。现在沙盒优先用 7.*，探测不通才回退 5.1。
+- **brush（后补，已落地为 `omnicrawl-brush`）**：纯 Rust 的 bash/POSIX 兼容 shell，
+  不经 MSYS、不打开 `NUL`，因此容器内可用。它与 `git → gix` 是同一手法——**换执行形态，
+  不放宽隔离**：它仍是独立进程、以容器身份启动，它 spawn 的外部程序同样继承容器令牌。
+  反过来说，「在宿主进程内解释脚本」是这条路上唯一的禁区：那会让脚本里每条命令都以
+  宿主权限执行，等于没有沙盒。落地细节见 §24。
 
 ### 验证
 
@@ -760,7 +765,8 @@ sed -i/node/npm/python/pip/$?`）。
 - 新增用例：`appcontainer_can_delete_what_it_created`（删除自己创建的内容）、
   `environment_has_no_case_insensitive_duplicates`、`dedupe_vars_keeps_the_first_occurrence`、
   `npm_prefix_points_inside_the_workspace`、`only_the_sandbox_adds_execution_policy_bypass`、
-  `bash_refusal_teaches_the_powershell_equivalents`。
+  `bash_refusal_teaches_the_powershell_equivalents`（已随 §24 改名为
+  `bash_refusal_names_the_missing_brush_executable`）。
 - host 全量 **596 通过 / 2 失败**，两个失败仍为既有基线（`prompt::templates_dir`、
   无效窗口句柄 42），所在文件本次未改动（`git diff` 为空）。
 - 改动文件 `rustfmt --check` 通过，clippy 零告警。
@@ -908,6 +914,11 @@ sed -i/node/npm/python/pip/$?`）。
 2. 沙盒内 PowerShell **优先用 7.\* 最新版本**，不通再回退 5.1（原先硬编码 5.1）。
 
 ### 21.1 工具表：启动即摆正，而不是调用时才报错
+
+> **已被 §24 取代（2026-11-10）**：`bash` 在沙盒内改由自带的 `omnicrawl-brush` 执行，
+> 因此不再自动禁用 `bash`、也不再自动启用 `powershell`——工具表完全按 `[tools]` 来。
+> 下面这段保留的是当时的推理，作为历史记录；其中「沙盒内没有任何执行命令的途径」
+> 的前提已不成立。
 
 `[tools]` 段默认把 `powershell` 关掉（其余开）。这在宿主侧合理——多数人用 Git Bash；
 但在真隔离下 `bash` 必然失败（§19 已论证 `NUL` 设备不可达，无法靠授权绕过），于是
@@ -1074,8 +1085,8 @@ Windows PowerShell 5.1 不需要这一步（它的 cmdlet 直接从 `$PSHOME` �
 `NUL` 打不开是设备对象 DACL 与受限令牌共同决定的，属于**内核对象语义**，不是文件权限。
 文档 §19 曾按「`git --version` 能过」记录，本轮实测推翻了它：连 `--version` 都过不去。
 给设备对象补 ACE 的路线**有害**：NULL DACL 一旦被写入一条 ACE 就变成「只放行该 ACE」，
-会把整台机器的 NUL 一起打坏（本轮实际发生过，只能重启恢复）。因此正确做法是明确拒绝
-并给出可行替代，而不是用运行期手段去改设备 ACL。
+会把整台机器的 NUL 一起打坏（本轮实际发生过，只能重启恢复）。因此正确做法是换一种
+**执行形态**，而不是用运行期手段去改设备 ACL。这一条已在 §24 落实。
 
 ### 23.4 自动授权的成本控制
 
@@ -1098,3 +1109,134 @@ Windows PowerShell 5.1 不需要这一步（它的 cmdlet 直接从 `$PSHOME` �
 - **未完成**：`cargo test -p omnicrawl-host --lib sandbox` 与沙盒内 `cargo --version` 真机复测。
   本轮环境中 `\Device\Null` 的 DACL 被误改，`cargo` 无法启动 `rustc`
   （`failed to open NUL device for child stdin`），需重启系统后补跑。
+
+## 24. 沙盒内的 `git`：改走进程内 gix（2026-11-08）
+
+上一节把 `git` 判了「沙盒内不可用」，理由是 MSYS 运行时初始化就要打开 `/dev/null`，
+而 `\Device\Null` 的 NULL DACL 对受限令牌一律拒绝。这个根因没变，但它否掉的是**某一种
+执行形态**（spawn `git.exe`），不是「沙盒内不能做 git 操作」。
+
+### 24.1 换形态，不放开隔离
+
+`gix`（gitoxide）是纯 Rust 的 git 实现，在宿主进程内跑：不经 MSYS、不打开 `NUL`，
+因此容器语义下那些约束一条都拦不住它。**代价是它天然不受 AppContainer 约束**，
+所以约束必须由我们自己按子命令施加（`tools/git_native.rs`）：
+
+| 子命令 | 作用域 | 说明 |
+| --- | --- | --- |
+| `status` / `log` / `diff` | 只读 | 只读对象库与工作区 |
+| `rev-parse` / `ls-files` / `show-ref` / `for-each-ref` / `describe` / `cat-file` | 只读 | 解析与枚举，不动任何东西 |
+| `remote` | 只读 | 只读配置里的远程名与 URL，不联网 |
+| `stash`（无参数 / `list` / `show`） | 只读 | 仅列举 |
+| `branch` / `tag`（无参数或 `-l`） | 只读 | 列举分支与标签 |
+| `add` | 可写 | 只写工作区内的 `.git/index`，路径先过越界校验 |
+| `commit` | 可写 | 只写对象库与 HEAD 引用；`--dry-run` 按只读处理 |
+| `rm` | 可写 | 索引移除；带 `--cached` 时工作区文件保留 |
+| `branch <name>` / `tag <name>` / 二者的 `-d` | 可写 | 建删引用；重名显式拒绝 |
+| `fetch`/`pull`/`push`/`clone`/`ls-remote`/`submodule` | **拒绝** | 见下 |
+| `merge`/`rebase`/`cherry-pick`/`checkout`/`restore`/`reset`/`stash` 写形态 | **拒绝** | 需要工作区状态机 |
+
+作用域按**本次调用的实际参数**判定：`branch` 无位置参数是列举（只读），带名字才是新建（可写）。
+
+网络子命令是**不允许**，不是「暂不支持」：沙盒的每个出网请求都要经 `[sandbox.net]`
+判定（宿主回环代理），让 git 自己连出去就整段绕过了这套判定。这也是 gix 依赖不启
+`blocking-network-client` 的原因——能力不在依赖图里，比「记得别调用」更可靠。
+
+**绝不能**改成「沙盒模式下退回 spawn `git.exe`」：那等于让最该被约束的操作
+（`push`、`config`、`submodule`）完全不受约束，比「跑不了」危险得多。
+
+### 24.2 依赖裁剪
+
+`gix 0.90`（`default-features = false`，只开 `basic` / `status` / `blob-diff` /
+`attributes` / `excludes` / `command` / `sha1`）。实测：无 C 依赖（zlib 走纯 Rust 的
+`zlib-rs`），冷编译约 16 秒，共 112 个依赖包。
+
+### 24.3 两个真机端到端才暴露的缺陷
+
+1. **`head_id()` 是提交，不是树**：构树前必须先取 `tree_id`。把提交 id 直接喂给
+   `edit_tree` 会在运行时被判「本该是 tree，却是 commit」。单测的仓库都是新 `init` 的
+   （无 HEAD），走空树分支，**覆盖不到**这条；是 AppContainer 真机跑通时暴露的。
+2. **重复建同名分支被放行**：`reference(…, PreviousValue::MustNotExist, …)` 在当前
+   组合下并不会拒绝已存在的引用，于是「再建一次」也报成功。现在建引用前显式
+   `find_reference` 查存，重名直接拒绝——与真 git 的
+   `fatal: a branch named 'x' already exists` 对齐。
+
+第 2 条的教训是：**底层约束的行为要当成假设去验证**，不能因为参数名叫
+`MustNotExist` 就认为它会拒绝。两条都已固化成用例
+（`first_commit_in_a_fresh_repository`、`branch_and_tag_writes_are_visible_to_real_git`）。
+
+### 24.4 仍未覆盖
+
+`merge`/`rebase`/`revert`/`cherry-pick`/`checkout`/`restore`/`reset` 与 `stash` 的写形态，
+以及逐行统一 diff 的文本渲染，都还没有进程内实现。原因是它们要跑**工作区状态机**
+（冲突解决、部分检出、可中断重放），gix 的高层入口只覆盖 linked worktree，硬接等于把
+「半对」的行为交给模型。这些子命令在沙盒内会得到明确拒绝并提示改在宿主侧执行，
+不会悄悄退回 spawn `git.exe`。
+
+### 24.5 验证
+
+- `cargo test -p omnicrawl-host --lib`：**647 通过 / 0 失败**（git 相关 16 项）。
+- `tools/git_native.rs` 单测 10 项：网络子命令拒绝、不支持动作指出可用集合、作用域判定、
+  add→commit→log 往返、首次提交、非仓库目录报错、只读子命令实答、branch/tag 建删可见、
+  `rm --cached` 保留工作区文件、写 stash 与 merge 明确拒绝。
+- **真机 AppContainer 全量**（`mode = appcontainer`，`plan().is_isolated() == true`）：
+  `rev-parse`、`ls-files`、`show-ref`、`for-each-ref`、`describe`、`cat-file`、
+  `branch`（列举/新建）、`tag`（列举/新建）、`stash`（列举）、`remote`、`add`、
+  `rm --cached` 全部成功；`push` 被拒。
+- **真 git 交叉验证**：`git log` 读到 gix 写的提交、`git show --stat` 内容正确、
+  `git status` 干净、`git fsck` 无完整性错误；`git show-ref`/`git branch`/`git tag`
+  与进程内输出一致；空仓库首次提交同样通过。
+- `cargo check --workspace` 通过；`git_native.rs` clippy 零告警（其余为既有基线）。
+
+## 25. `bash` 接上 brush：沙盒内不再禁用 bash（2026-11-10）
+
+### 25.1 背景
+
+§19/§21 的结论是「沙盒内 `bash` 不可用，改用 PowerShell」。根因没变：Git Bash 是
+MSYS/Cygwin 程序，初始化时要打开 `/dev/null`，而 `\Device\Null` 是 NULL DACL，
+AppContainer 受限令牌拿不到任何 ACE。但可以**换执行形态**：与 §24 的 `git → gix`
+同构，用一个纯 Rust 的 bash 兼容 shell 顶上。
+
+### 25.2 实现
+
+- 新 crate `omnicrawl-brush`：`brush-shell::entry::run()` 的薄入口，产出
+  `omnicrawl-brush[.exe]`。它是**独立可执行文件**，仍由沙盒以容器身份 spawn。
+- `tools/command.rs`：
+  - `find_sandboxed_bash()`：先找主程序同目录，再找 PATH（刻意不按名字 `bash` 找，
+    那会撞到 Git Bash 或 WSL 启动器）。
+  - `invocation_for(..., isolated: true)` 与 `invocation_for_isolation()` 的
+    `Shell::Bash` 分支改用它；参数形状与 Git Bash 逐字相同
+    （`-o pipefail -lc <script>`，brush 的 `-o` 即 `set -o`）。
+- `tools/registry.rs`：删掉 `run_command` 里的 `BASH_UNAVAILABLE_IN_SANDBOX` 拒绝分支；
+  删除 `sandbox_tool_switches`（沙盒不再改写工具表），`disabled_tools` 直接用
+  `[tools]` 的配置。
+- `tools/monitor.rs`：删掉后台任务对 `bash` 的同样拒绝（它走
+  `invocation_for_isolation`，自动获得 brush 通路）。
+- 分发：`packages/cli/scripts/build-host.mjs`（`-p` 构建列表 + `HOST_FILES` 校验）、
+  `prepare.mjs`、`install-smoke.mjs` 三处清单都加入 `omnicrawl-brush`。
+
+### 25.3 为什么不能让 brush 跑在宿主进程内
+
+`brush-core` 是库，能在宿主进程里解释脚本，看似更省事。但它 spawn 外部命令时
+用的是宿主的 token——脚本里的每条 `cargo`/`python` 都会以宿主权限执行，Sandbox
+形同虚设。`gix` 之所以能进程内跑，是因为它**只操作仓库文件**、不执行外部程序；
+brush 的职责恰恰是执行任意命令。这是两者根本的区别，所以必须是独立进程。
+
+### 25.4 未完成的验证（重要）
+
+本次改动**没有经过编译验证**。原因是被测对象正是"沙盒能否编译"：当前宿主进程以
+`[sandbox:appcontainer]` 身份运行，实测两条路都不通：
+
+- `cargo build`：`failed to open NUL device for child stdin: 拒绝访问。 (os error 5)`
+  —— cargo 每次 spawn rustc 都要打开 `NUL`，与 git/bash 同一根因。
+- 直连 `rustc`（绕开 cargo）可以编译，但**读不到 crate 源码缓存、也没有网络**：
+  `C:\Users\Administrator\.cargo` 被拒访问，`CARGO_HOME` 被重定向到
+  `.omnicrawl/.agent_tmp/cargo`（空），`static.crates.io` 超时。因此无法拉取
+  `brush-shell` 及其依赖（`brush-core`、`brush-builtins`、`brush-interactive` 等）。
+- 已做的替代检查：四个改动文件用 `rustc --emit=metadata` 单文件解析，**零语法错误**
+  （仅剩模块路径/C 依赖类错误，属单文件编译的必然结果）。
+
+落地前必须在能编译的环境里补做：`cargo build --release -p omnicrawl-brush`、
+`cargo test -p omnicrawl-host --lib`（关注 `appcontainer_keeps_the_tool_table_as_configured`、
+`bash_refusal_names_the_missing_brush_executable` 两条改名后的用例）、
+以及真机 AppContainer 下 `bash -c 'echo hi'` 与 `cat/管道/退出码` 的实跑。

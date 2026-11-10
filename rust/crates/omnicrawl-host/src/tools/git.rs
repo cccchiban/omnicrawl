@@ -242,19 +242,14 @@ fn join_output_reader(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.join().unwrap_or_default()
 }
 
-/// Windows：`git` 是 MSYS 程序，在 AppContainer 内起不来，因此**明确拒绝**而非悄悄放行。
+/// Windows 沙盒内的 `git` 走进程内 gix 后端（见 `git_native`）。
 ///
-/// 依据是 `sandbox_windows_design.md` §18 与 §23 的实测：`git.exe` 一启动就要以读写方式
-/// 打开 `/dev/null`（Windows 上的 `NUL`），而 `\Device\Null` 的 DACL 是 **NULL DACL**
-/// （`NO_ACCESS_CONTROL`）。AppContainer 是受限令牌，访问检查要求常规 SID 链与受限 SID
-/// 链同时放行，NULL DACL 里没有任何 ACE 可供匹配，因此**任何访问掩码都是
-/// `ERROR_ACCESS_DENIED(5)`**——连 `--version` 都过不去。
+/// 这里取代了原先的「一律拒绝」：拒绝的理由（MSYS 打不开 `NUL`）依然成立，但换执行形态
+/// 就能绕开它——gix 在宿主进程内运行，不经 MSYS、不打开 `NUL`。
 ///
-/// 这**不是配置问题**：授权目录、改 PATH、换包装都无效；给设备对象补 ACE 也不行
-/// （NULL DACL 一旦被写入 ACE 就变成了"只放行该 ACE"，会把整机 NUL 一起打坏）。
-///
-/// 关键：必须拒绝，不能"沙盒模式下退回宿主身份执行"——那等于让最该被约束的操作
-/// （`push`、`config`、`submodule`）完全不受约束，比"跑不了"危险得多。
+/// 关键约束没有放松：写路径、网络仍由 `git_native` 按子命令施加。**绝不能**改成
+/// 「沙盒模式下退回 spawn `git.exe`」——那等于让最该被约束的操作（`push`、`config`、
+/// `submodule`）完全不受约束，比「跑不了」危险得多。
 #[cfg(windows)]
 fn run_git(
     argv: Vec<String>,
@@ -270,7 +265,10 @@ fn run_git(
         }
     };
     if isolated {
-        return error_result(GIT_UNAVAILABLE_IN_SANDBOX.to_string());
+        // 真隔离下 `git.exe` 起不来，但同样的操作可以由进程内的 gix 完成。
+        // 换的是执行形态，不是放宽隔离：gix 不经 MSYS、不打开 `NUL`，而写路径与网络
+        // 的约束由 `git_native` 自己按子命令施加。
+        return super::git_native::run_native(&argv, &action, root);
     }
     let mut command = Command::new(&argv[0]);
     command
@@ -349,20 +347,6 @@ fn finish_git(
         retryable: false,
     }
 }
-
-/// Windows 沙盒内 `git` 不可用的说明与替代做法。
-///
-/// 与 `registry.rs` 的 `BASH_UNAVAILABLE_IN_SANDBOX` 同源：`\Device\Null` 的 NULL DACL
-/// 对受限令牌没有任何可匹配的 ACE，`NUL` 因此完全打不开。`git` 一启动就要读写它，
-/// 所以连 `--version` 都过不去。替代路径只有两条真实可走的：关掉沙盒，或改用文件工具。
-#[cfg(windows)]
-const GIT_UNAVAILABLE_IN_SANDBOX: &str =
-    "沙盒真隔离下无法执行 `git`：它是 MSYS 程序，进程初始化阶段就要以读写方式打开 \
-     `/dev/null`（Windows 的 `NUL` 设备），而 AppContainer 对 `\\Device\\Null` 的任何访问\
-     都会被拒（该设备的 DACL 为 NULL DACL，受限令牌的 SID 链没有可匹配的 ACE），\
-     连 `git --version` 都会失败。这不是配置问题，授权目录或改 PATH 都无法解决。\
-     可选做法：把 `[sandbox] mode` 设为 off 后重试，或改用 `read`/`write_file`/`Edit_file`/\
-     `grep`/`find` 完成同样的改动（这些工具仍在沙盒判定之下）。";
 
 fn error_result(message: String) -> ToolResult {
     ToolResult {
@@ -560,13 +544,14 @@ mod tests {
         assert_eq!(escape.output, "git 工具不允许参数：--git-dir=/tmp/x。");
     }
 
-    /// Windows 沙盒内 `git` 必须**明确拒绝**，绝不能让它在宿主身份下悄悄跑起来。
+    /// Windows 沙盒内的 `git` 改由进程内 gix 承接，**绝不退回 spawn `git.exe`**。
     ///
     /// 这是本工具最重要的一条安全断言：`git push`/`config`/`submodule` 是最需要约束的
-    /// 操作，一旦"沙盒模式下退回宿主"就完全失守。
+    /// 操作，一旦"沙盒模式下退回宿主"就完全失守。所以真隔离档下：能做的事由
+    /// `git_native` 按子命令放行，不能做的事给出明确拒绝，而不是换个进程照样跑。
     #[cfg(windows)]
     #[test]
-    fn windows_sandbox_refuses_git_instead_of_falling_back() {
+    fn windows_sandbox_uses_native_backend_not_host_git() {
         let (paths, _root) = workspace("sandbox-windows");
         let mut config = omnicrawl_config::features::sandbox::SandboxConfig::default();
         config.enabled = true;
@@ -577,13 +562,83 @@ mod tests {
             paths.root().join(".omnicrawl/.agent_tmp"),
         ));
         let gate = IsolationGate::new(sandbox);
-        // 容器真实建不起来时也要给出"沙盒无法启用"而不是退化成宿主执行。
-        let result = git_tool(&paths, &args(json!({"action": "status"})), Some(&gate));
-        assert!(!result.ok, "{}", result.output);
+
+        // 联网子命令必须先被拒：它是「不允许」而不是「暂不支持」。
+        let network = git_tool(&paths, &args(json!({"action": "push"})), Some(&gate));
+        assert!(!network.ok, "{}", network.output);
         assert!(
-            result.output.contains("沙盒"),
-            "拒绝理由必须提到沙盒：{}",
-            result.output
+            network.output.contains("出网"),
+            "必须说明是出网限制：{}",
+            network.output
         );
+
+        // 未初始化的目录里 `status` 应给出「不是 git 仓库」，而不是宿主 git 的错误。
+        let status = git_tool(&paths, &args(json!({"action": "status"})), Some(&gate));
+        assert!(!status.ok, "{}", status.output);
+        assert!(
+            status.output.contains("不是 git 仓库") || status.output.contains("沙盒"),
+            "应由进程内后端作答：{}",
+            status.output
+        );
+    }
+
+    /// 真隔离档下 `git` 的读写主链路必须真的能跑：init 用宿主 git，之后全程走 gix。
+    #[cfg(windows)]
+    #[test]
+    fn windows_sandbox_native_backend_covers_core_actions() {
+        let (paths, root) = workspace("sandbox-native-core");
+        let init = git_tool(&paths, &args(json!({"action": "init"})), None);
+        if !init.ok && init.output.contains("未找到 git 可执行文件") {
+            eprintln!("跳过：本机没有 git");
+            return;
+        }
+        assert!(init.ok, "{}", init.output);
+        // git init 之后要能配身份；沙盒内不承接 config，这里走宿主侧。
+        let _ = git_tool(
+            &paths,
+            &args(json!({"action": "config", "args": ["user.email", "t@example.com"]})),
+            None,
+        );
+        let _ = git_tool(
+            &paths,
+            &args(json!({"action": "config", "args": ["user.name", "T"]})),
+            None,
+        );
+        std::fs::write(root.join("a.txt"), "hello\n").expect("写文件");
+
+        let mut config = omnicrawl_config::features::sandbox::SandboxConfig::default();
+        config.enabled = true;
+        config.mode = omnicrawl_config::features::sandbox::SandboxMode::AppContainer;
+        let sandbox = std::sync::Arc::new(crate::sandbox::Sandbox::new(
+            config,
+            paths.root().to_path_buf(),
+            paths.root().join(".omnicrawl/.agent_tmp"),
+        ));
+        let gate = IsolationGate::new(sandbox);
+
+        let add = git_tool(&paths, &args(json!({"action": "add", "paths": ["a.txt"]})), Some(&gate));
+        assert!(add.ok, "{}", add.output);
+
+        let commit = git_tool(
+            &paths,
+            &args(json!({"action": "commit", "message": "native commit"})),
+            Some(&gate),
+        );
+        assert!(commit.ok, "{}", commit.output);
+
+        let log = git_tool(&paths, &args(json!({"action": "log", "args": ["--oneline"]})), Some(&gate));
+        assert!(log.ok, "{}", log.output);
+        assert!(log.output.contains("native commit"), "{}", log.output);
+
+        // 用宿主 git 交叉验证：真 git 必须能读到 gix 写的提交。
+        let verify = std::process::Command::new("git")
+            .arg("log")
+            .arg("--oneline")
+            .current_dir(&root)
+            .output();
+        if let Ok(verify) = verify {
+            let text = String::from_utf8_lossy(&verify.stdout);
+            assert!(text.contains("native commit"), "真 git 读不到 gix 的提交：{text}");
+        }
     }
 }

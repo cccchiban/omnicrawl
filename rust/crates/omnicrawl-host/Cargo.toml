@@ -33,6 +33,9 @@ omnicrawl-version = { path = "../omnicrawl-version" }
 omnicrawl-jsdom = { path = "../omnicrawl-jsdom" }
 # TTS 云服务通道（OpenAI audio/speech 与 Gemini TTS），纯 HTTP，无原生依赖。
 omnicrawl-tts = { path = "../omnicrawl-tts" }
+# 沙盒内的 `git`：真隔离下 `git.exe` 是 MSYS 程序、起不来（见 tools/git.rs 的说明），
+# 因此隔离时改由进程内的 gix 完成同样的仓库操作。
+gix = { workspace = true }
 chrono = { workspace = true }
 ignore = { workspace = true }
 regex = { workspace = true }

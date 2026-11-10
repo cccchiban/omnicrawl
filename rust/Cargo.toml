@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/omnicrawl-brush",
     "crates/omnicrawl-cli",
     "crates/omnicrawl-commands",
     "crates/omnicrawl-compaction",
@@ -73,6 +74,29 @@ ignore = "0.4"
 scraper = "0.20"
 # AI 消息与思考区的 Markdown 渲染：对映 Python 侧 Rich 的 RichMarkdown。
 pulldown-cmark = { version = "0.13", default-features = false }
+# `git` 工具的沙盒通路：Windows 真隔离下 `git.exe` 起不来（MSYS 要打开 `/dev/null`，
+# 而 `\Device\Null` 的 NULL DACL 对受限令牌一律拒绝），因此隔离时改由进程内的 gix
+# 完成同样的仓库操作。只开仓库读改与提交所需的那几档特性，网络传输整段不要：
+# 沙盒内本来就不该由 git 自己出网（`[sandbox.net]` 才是唯一出口）。
+gix = { version = "0.90", default-features = false, features = [
+    "basic",
+    "status",
+    "blob-diff",
+    "attributes",
+    "excludes",
+    "command",
+    "sha1",
+] }
+# 沙盒内的 `bash` 通路：真隔离下 `bash.exe` 起不来（MSYS 要打开 `/dev/null`，见 gix 那条
+# 注释里的同一处根因），因此由 `omnicrawl-brush` 提供 bash 兼容的独立执行体，
+# 内部就是 brush（`brush-shell` = 纯 Rust 的 bash/POSIX 兼容 shell）。
+#
+# 额外打开 `experimental-bundled-coreutils`：它把 uutils/coreutils 编进**进程内**
+# 内建命令（`cat`/`ls`/`grep`/`tr`/`wc`/`sed` …）。这是沙盒内的必需品而不是锦上添花：
+# 容器里 PATH 上没有 GNU 工具（Git Bash 起不来），不内建的话 `cat file` 就是
+# `command not found`，绝大多数 bash 脚本第一行就废。内建还顺带绕开了 NUL 问题——
+# 这些命令根本不 spawn 进程。名字里的 `experimental-` 是上游的保守语气，功能本身可用。
+brush-shell = { version = "0.4", features = ["experimental-bundled-coreutils"] }
 
 [profile.release]
 lto = "thin"

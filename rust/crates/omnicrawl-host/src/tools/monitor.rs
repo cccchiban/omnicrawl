@@ -24,7 +24,6 @@ use super::arguments::{limited_int, optional_text};
 use super::command::invocation_for_isolation;
 use super::command::{invocation_for, CommandOutcome, Shell};
 use super::error::ToolError;
-use super::registry::BASH_UNAVAILABLE_IN_SANDBOX;
 use crate::process_control::{
     configure_process_group, kill_process_tree_by_pid, terminate_process_tree, KillOnCloseJob,
 };
@@ -496,20 +495,11 @@ impl MonitorManager {
 
         // 先占名额再起进程：并发 start 不能同时通过容量检查。
         let scope = self.reserve_slot()?;
-        // 沙盒真隔离：与 `bash`/`powershell` 同一套规则。`bash` 在 AppContainer 里起不来
-        // （MSYS 要打开 `NUL`，容器无权限），因此同样直接拒绝而不是退回宿主。
-        // 判定用 `appcontainer_active`：这条限制只在 Windows 上成立，Linux 的 `bash` 照常可用。
+        // 沙盒真隔离：与 `bash`/`powershell` 工具同一套规则。`bash` 在容器里执行的是自带的
+        // `omnicrawl-brush`（解释器选择在 `invocation_for_isolation` 里），因此这里不再拒绝。
         let plan = match self.sandbox() {
             Some(sandbox) => {
                 let gate = crate::sandbox::gate::IsolationGate::new(sandbox.clone());
-                if sandbox.appcontainer_active() && shell == Shell::Bash {
-                    self.release_slot();
-                    return Err(ToolError::coded(
-                        BASH_UNAVAILABLE_IN_SANDBOX.to_string(),
-                        "BASH_UNAVAILABLE_IN_SANDBOX",
-                        false,
-                    ));
-                }
                 match gate.plan() {
                     Ok(plan) => Some(plan),
                     Err(error) => {

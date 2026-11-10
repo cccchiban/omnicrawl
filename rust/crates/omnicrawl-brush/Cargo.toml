@@ -1,0 +1,19 @@
+[package]
+name = "omnicrawl-brush"
+description = "沙盒内的 bash 执行体：把 brush（纯 Rust 的 bash/POSIX 兼容 shell）包成本产品的 brush 可执行文件"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "omnicrawl-brush"
+path = "src/main.rs"
+
+[dependencies]
+# 沙盒内的 `bash`：真隔离下 Git Bash 是 MSYS 程序、起不来（要打开 `/dev/null`，
+# 而 `\Device\Null` 的 NULL DACL 对 AppContainer 受限令牌一律拒绝），因此隔离时改由
+# brush 解释同一份脚本。换的是执行形态，不是放宽隔离：本程序仍是独立进程，
+# 依旧以容器身份启动，它 spawn 的外部程序同样继承容器令牌。
+brush-shell = { workspace = true }
