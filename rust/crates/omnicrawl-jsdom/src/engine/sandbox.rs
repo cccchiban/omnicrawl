@@ -27,6 +27,8 @@ pub(crate) fn run_in_process(
     clear_element_cache();
     // Canvas 位图同样按执行隔离：位图键是元素号，跨执行复用会让新文档读到旧像素。
     crate::browser_env::clear_canvas_state();
+    // 页面动作（cookie 写入、脚本跳转）也只属于这一次执行。
+    page_state::reset();
     // 通道在这里登记、在本函数末尾清空：中间所有脚本都能用到它。
     fetch_api::install(http, profile.href.as_str());
 

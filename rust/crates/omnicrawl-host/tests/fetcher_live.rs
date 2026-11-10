@@ -120,3 +120,42 @@ fn cookies_from_a_real_site_are_stored_and_replayed() {
         .unwrap_or_else(|error| panic!("第二次抓取应当成功：{error}"));
     assert!(again.contains("状态: 200"), "{again}");
 }
+
+/// 挑战页形态的端到端验证：NGA 的 403 页脚本先写 `guestJs` cookie、再跳回带 `rand` 的同一地址。
+///
+/// 这条覆盖「4xx → 执行页面脚本 → cookie 落罐 → 按脚本地址重发 → 200」整条链路，
+/// 是 `run_page_scripts` 那几段在真实站点上的证据。`tid` 是长期存在的讨论帖。
+#[test]
+#[ignore = "需要外网"]
+fn a_script_navigation_challenge_page_is_followed_to_the_real_article() {
+    let jar = std::sync::Arc::new(omnicrawl_host::tools::cookies::CookieJar::new());
+    let options = FetcherOptions {
+        proxy: Some(String::new()),
+        cookie_jar: Some(jar.clone()),
+        ..FetcherOptions::default()
+    };
+    let output = fetcher::fetcher(
+        &options,
+        &arguments("https://bbs.nga.cn/read.php?tid=47713286", "chrome"),
+    )
+    .unwrap_or_else(|error| panic!("NGA 帖子应当能抓：{error}"));
+    println!("{output}");
+    assert!(!output.contains("失败:"), "抓取失败：\n{output}");
+    assert!(
+        output.contains("状态: 200"),
+        "应当跟随脚本跳转拿到 200：\n{output}"
+    );
+    // 最终地址是脚本拼出来的（带 `rand`），说明跟的确实是页面自己给的目标。
+    assert!(output.contains("rand="), "最终地址应带脚本追加的 rand：\n{output}");
+    // 脚本写下的凭证进了罐，且下一次请求会回带。
+    assert!(jar.count() > 0, "脚本写入的 cookie 应当落罐：\n{output}");
+
+    // 再抓一次：这次首跳就带着罐里的凭证，不必再走一遍挑战。
+    let again = fetcher::fetcher(
+        &options,
+        &arguments("https://bbs.nga.cn/read.php?tid=47713286", "chrome"),
+    )
+    .unwrap_or_else(|error| panic!("第二次抓取应当成功：{error}"));
+    assert!(again.contains("状态: 200"), "{again}");
+    assert!(!again.contains("失败:"), "{again}");
+}

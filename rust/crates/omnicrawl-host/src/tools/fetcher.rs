@@ -6,7 +6,14 @@
 //! 静态提取拿不到内容时（或用 `force_scripts=true` 显式要求时），再用本地 JS 沙箱
 //! （[`omnicrawl_jsdom`]）执行页面脚本重建正文：沙箱按文档顺序跑内联与外链脚本，
 //! 外链由本模块的 `ScriptLoader` 取回——它继承本次抓取的指纹身份、逐脚本过 robots.txt、
-//! 并限制单脚本体积与总数；沙箱本身不持有网络能力，遇到挑战页仍是如实报错。
+//! 并限制单脚本体积与总数；沙箱本身不持有网络能力。
+//!
+//! 一类常见的「挑战页」不是验证码，而是**自证流程**：4xx 响应里的脚本把服务端下发的凭据
+//! 写进 cookie（`document.cookie = ...`）、再把地址栏换成带随机参数的同一 URL
+//! （`location.replace(...)`，常在 `setTimeout` 里）。真实浏览器走完这两步就能拿到正文，
+//! 因此沙箱把这两件事记下来（`RunOutcome::cookie_writes` / `navigation`），由本模块把
+//! cookie 落进罐、按脚本给出的地址再跳有限几次——与浏览器同一条路径，仍不做任何
+//! 「猜验证码」「伪造凭证」的事：凭据只来自站点自己的响应。
 //! JS 侧环境按 `impersonate` 的档案族伪装成有头浏览器（见 `omnicrawl_jsdom::Profile`）。
 //! Python 侧的 `impersonate` 浏览器指纹参数在此同样生效：默认传输是
 //! [`super::tls_transport::TlsWebTransport`]（omnicrawl-tls 自研栈的浏览器档案），
@@ -33,6 +40,11 @@ pub const DEFAULT_TIMEOUT_SECONDS: f64 = 15.0;
 pub const DEFAULT_MAX_CHARS: i64 = 8000;
 pub const MAX_URLS: usize = 20;
 pub const MAX_META_REDIRECTS: usize = 3;
+/// 一次抓取里允许跟随几次「页面脚本要求跳转」：与 meta refresh 分开计数。
+///
+/// 取 2：挑战页的形态是「一次凭证跳转 + 可能再有一次」，而脚本自己写出来的循环跳转
+/// 必须被这道理性上限挡住，不能让一次抓取在原地打转。
+pub const MAX_SCRIPT_REDIRECTS: usize = 2;
 pub const MAX_WORKERS: usize = 8;
 /// 正文短于这个字数（不计空白）时，视为「没抓到内容」，值得在本机沙箱里重建一次。
 ///
@@ -265,10 +277,18 @@ fn fetch_one_inner(
     plan: &FetchPlan,
 ) -> Result<FetchEntry, FetchError> {
     let mut current = url.to_string();
-    let mut status = 0u16;
-    let mut final_url = url.to_string();
-    let mut html_text = String::new();
-    for _ in 0..=MAX_META_REDIRECTS {
+    // 循环结束时这几个都已被最后一轮赋值；初值只为「至少一轮」这一前提，不参与结果。
+    let mut status: u16;
+    let mut final_url: String;
+    let mut html_text: String;
+    // 上一跳的最终地址：页面自己发起的导航（meta refresh、脚本 `location`）会把它填成
+    // `Referer`——真实浏览器就是这么带的，而不少站点的挑战校验正是拿它做同源判据。
+    let mut initiator: Option<String> = None;
+    let mut meta_hops = 0usize;
+    let mut script_hops = 0usize;
+    let mut rendered: Option<String>;
+    loop {
+        rendered = None;
         // 每一轮都判：重定向后可能落到另一个站点，按新地址重新查一次许可。
         super::robots_cache::ensure_allowed(
             options.transport.as_ref(),
@@ -289,48 +309,103 @@ fn fetch_one_inner(
         request.impersonate = Some(plan.impersonate.clone());
         request.cookie_jar = options.cookie_jar.clone();
         request.tls_session_cache = options.tls_session_cache.clone();
+        request.initiator = initiator.clone();
         let response = options
             .transport
             .send(&request)
             .map_err(|error| FetchError::Transport(error.kind, error.message))?;
         status = response.status;
-        if status >= 400 {
-            return Err(FetchError::Fatal(format!(
-                "HTTP {status}（目标返回错误状态码）"
-            )));
-        }
         html_text = response.text();
         final_url = response.final_url;
-        match meta_refresh_target(&html_text, &final_url) {
-            Some(target) => current = target,
-            None => break,
-        }
-    }
-    let title = extract_title(&html_text);
-    let content = if plan.max_html {
-        html_text
-    } else {
-        let static_text = extract_main_text(&html_text, plan.max_chars);
-        // 正文近乎为空时，页面很可能是「外壳 + 脚本填充」结构：在本机沙箱里执行页面脚本
-        // （含 `<script src>`，由 `ScriptLoader` 取回），再重新取正文。
-        // 沙箱本身不联网：外链取数、robots 校验与体积限制都在加载器里做。
-        if plan.run_scripts && (plan.force_scripts || is_thin_text(&static_text)) {
-            match rebuild_with_scripts(
+
+        // 页面脚本这一趟同时管两件事：把「写 cookie + 跳转」的挑战页走完，以及为
+        // 外壳型页面重建正文。错误状态码只有在脚本确实喊了跳转时才值得跑一次脚本。
+        let static_text = if plan.max_html {
+            String::new()
+        } else {
+            extract_main_text(&html_text, plan.max_chars)
+        };
+        let wants_scripts = plan.run_scripts
+            && if status >= 400 {
+                // 错误页没有正文可保，只有「页面自己要求跳转」才值得付一次脚本执行的代价。
+                script_navigation_target(&html_text)
+            } else if plan.max_html {
+                // 调用方要的是原始 HTML：没有正文要重建，脚本只为重建而跑。
+                false
+            } else {
+                plan.force_scripts || is_thin_text(&static_text)
+            };
+        if wants_scripts {
+            let run = run_page_scripts(
                 &html_text,
                 plan.max_chars,
                 plan.impersonate.as_str(),
                 &final_url,
                 options,
                 plan,
-            ) {
-                Some(rendered) => rendered,
-                None => static_text,
+            );
+            // 脚本写下的 cookie 立刻落进罐：下一跳要带着它才过得去。
+            super::cookies::harvest(
+                options.cookie_jar.as_deref(),
+                &final_url,
+                run.cookie_writes.iter().map(String::as_str),
+            );
+            // 脚本自己要求的跳转（挑战页的「写凭证 → 重跳」）：只跟有限的几次，
+            // 并把它记作下一跳的发起方——站点常按 `Referer` 判断是否同源。
+            let follow = run
+                .navigation
+                .as_deref()
+                .filter(|_| script_hops < MAX_SCRIPT_REDIRECTS)
+                .map(|target| resolve_url(&final_url, target));
+            if let Some(target) = follow {
+                if target != current {
+                    script_hops += 1;
+                    initiator = Some(final_url.clone());
+                    current = target;
+                    continue;
+                }
             }
-        } else {
-            static_text
+            rendered = run.rendered;
+        }
+
+        if status >= 400 {
+            return Err(FetchError::Fatal(format!(
+                "HTTP {status}（目标返回错误状态码）"
+            )));
+        }
+        match meta_refresh_target(&html_text, &final_url) {
+            Some(target) if meta_hops < MAX_META_REDIRECTS => {
+                meta_hops += 1;
+                initiator = Some(final_url.clone());
+                current = target;
+            }
+            _ => break,
+        }
+    }
+    let title = extract_title(&html_text);
+    let content = if plan.max_html {
+        html_text
+    } else {
+        // 脚本重建出的正文才是这一页的真实内容；没有就当静态提取的结果。
+        match rendered {
+            Some(text) => text,
+            None => extract_main_text(&html_text, plan.max_chars),
         }
     };
     Ok(FetchEntry::done(url, status, final_url, title, content))
+}
+
+/// 页面脚本会不会自己走人：`location.replace/assign/href =` 与 `top.location =` 等写法。
+///
+/// 只用来判断「这一页的脚本会不会导航」，不解析具体地址——真实地址由沙箱执行脚本后
+/// 记录（脚本可能用变量拼出来，正则看不出来）。因此它是一道**代价闸门**，不是导航实现。
+fn script_navigation_target(html_text: &str) -> bool {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        Regex::new(r"(?i)location\s*(?:\.\s*(?:replace|assign|href)|\[[^\]]*\])|\.location\s*=")
+            .expect("脚本跳转正则应当合法")
+    });
+    pattern.is_match(html_text)
 }
 
 /// 正文短到不像「抓到了内容」时返回 `true`：用于决定是否值得再跑一次脚本重建。
@@ -341,21 +416,32 @@ fn is_thin_text(text: &str) -> bool {
         < THIN_TEXT_THRESHOLD
 }
 
-/// 用本地 JS 沙箱重建正文；脚本没动过 DOM 或重建后仍无内容时返回 `None`（保持原样）。
+/// 一次页面脚本执行带回来的两样东西。
+struct ScriptRun {
+    /// 脚本重建出的正文；脚本没动过 DOM 或重建后仍无内容时为 `None`。
+    rendered: Option<String>,
+    /// 脚本写下的 cookie 原始赋值串（可直接当 `Set-Cookie` 用）。
+    cookie_writes: Vec<String>,
+    /// 脚本要求的跳转地址（原样，可能是相对路径）。
+    navigation: Option<String>,
+}
+
+/// 在本地 JS 沙箱里跑一遍页面脚本，取回正文、cookie 写入与脚本自己要求的跳转。
 ///
 /// 两个取数通道都交给沙箱：
 /// - `ScriptLoader` 取 `<script src>` 的脚本正文；
 /// - `HttpFetcher` 承接脚本内 `fetch`/XHR（SPA 外壳的正文就靠它）。
 ///
-/// 沙箱自身仍然不持网络能力，访问控制全在这两个实现里。
-fn rebuild_with_scripts(
+/// 沙箱自身仍然不持网络能力，访问控制全在这两个实现里。跳转也不由沙箱执行：
+/// 它只记下目标，交给调用方决定是否再发一次请求。
+fn run_page_scripts(
     html_text: &str,
     max_chars: usize,
     family: &str,
     page_url: &str,
     options: &FetcherOptions,
     plan: &FetchPlan,
-) -> Option<String> {
+) -> ScriptRun {
     let profile = omnicrawl_jsdom::Profile::for_family(family).with_href(page_url);
     let loader = ScriptLoader {
         transport: &options.transport,
@@ -380,14 +466,14 @@ fn rebuild_with_scripts(
     };
     let outcome =
         omnicrawl_jsdom::run_with_sources(html_text, &profile, Some(&loader), Some(&fetcher));
-    if !omnicrawl_jsdom::touches_dom(&outcome) {
-        return None;
+    let rendered = omnicrawl_jsdom::touches_dom(&outcome)
+        .then(|| extract_main_text(&outcome.html, max_chars))
+        .filter(|text| !is_thin_text(text));
+    ScriptRun {
+        rendered,
+        cookie_writes: outcome.cookie_writes,
+        navigation: outcome.navigation,
     }
-    let rendered = extract_main_text(&outcome.html, max_chars);
-    if is_thin_text(&rendered) {
-        return None;
-    }
-    Some(rendered)
 }
 
 /// 外链脚本加载器：给 JS 沙箱取 `<script src=...>` 的正文。
@@ -916,7 +1002,7 @@ mod tests {
             is_thin_text(&static_text),
             "静态提取应当拿不到内容：{static_text}"
         );
-        let rebuilt = rebuild_with_scripts(
+        let rebuilt = run_page_scripts(
             &html,
             8000,
             "chrome",
@@ -924,6 +1010,7 @@ mod tests {
             &FetcherOptions::default(),
             &test_plan(),
         )
+        .rendered
         .expect("应当重建出正文");
         assert!(rebuilt.contains("脚本填充的正文"), "{rebuilt}");
     }
@@ -943,7 +1030,7 @@ mod tests {
         let html =
             "<html><body><div id=\"app\"></div><script>var unused = 1 + 1;</script></body></html>";
         assert!(
-            rebuild_with_scripts(
+            run_page_scripts(
                 html,
                 8000,
                 "chrome",
@@ -951,6 +1038,7 @@ mod tests {
                 &FetcherOptions::default(),
                 &test_plan(),
             )
+            .rendered
             .is_none(),
             "脚本没动 DOM 时不应替换原正文"
         );
@@ -1028,6 +1116,93 @@ mod tests {
         let text = extract_main_text(&long, 10);
         assert_eq!(text.chars().count(), 10);
         assert!(text.ends_with('…'));
+    }
+
+    /// 挑战页形态（NGA 实测）：脚本把通行凭证写进 cookie，300ms 后 `location.replace` 到
+    /// 带随机参数的同一地址。沙箱要把两件事都记下来——cookie 落罐、跳转交给调用方。
+    #[test]
+    fn challenge_page_cookie_and_script_navigation_are_captured() {
+        let html = r#"
+<html><head><title>访客不能直接访问</title></head><body>
+<script>
+var d = location.host
+,x = new Date()
+,e = function(){
+	var l = window.location,r = Math.floor(Math.random()*1000),
+	s = (l.search.replace(/(?:\?|&)rand=\d+/,'')+'&rand='+r).replace(/^&/,'?')
+	return (l.protocol=='http:' ? ('https://'+l.host) : '')+l.pathname+s
+}
+,f = function(){
+	x.setTime(x.getTime()+3200000)
+	document.cookie = 'guestJs=1794203771_dxo3wj;domain='+d+';path=/;expires='+x.toUTCString()
+	x.setTime(0)
+	document.cookie = 'lastpath=0;domain='+d+';path=/;expires='+x.toUTCString()
+}
+,g = function(){
+	f()
+	setTimeout(function(){
+		location.replace(e())
+		},300)
+}
+g()
+</script></body></html>"#;
+        let run = run_page_scripts(
+            html,
+            8000,
+            "chrome",
+            "https://bbs.nga.cn/read.php?tid=47713286",
+            &FetcherOptions::default(),
+            &test_plan(),
+        );
+        assert!(
+            run.cookie_writes
+                .iter()
+                .any(|write| write.starts_with("guestJs=1794203771_dxo3wj")),
+            "脚本写入的凭证 cookie 应当被记录：{:?}",
+            run.cookie_writes
+        );
+        assert!(
+            run.cookie_writes
+                .iter()
+                .any(|write| write.starts_with("lastpath=0")),
+            "清空 lastpath 的写入同样要被记录：{:?}",
+            run.cookie_writes
+        );
+        let target = run.navigation.expect("脚本要求跳转的地址应当被记录");
+        // 关键的一步：`location.search` 是 `?tid=...`，拼出来的地址不能丢掉它，
+        // 也不能把 `?query` 混进 `pathname`。
+        //
+        // 原脚本在 https 下图省协议与主机（`l.protocol=='http:'` 才补 `https://host`），
+        // 因此记录到的是相对地址——由抓取侧的 `resolve_url` 按最终地址补全。
+        assert_eq!(
+            target.split_once("&rand=").map(|(head, _)| head),
+            Some("/read.php?tid=47713286"),
+            "{target}"
+        );
+        assert_eq!(
+            resolve_url("https://bbs.nga.cn/read.php?tid=47713286", &target),
+            target.replace("/read.php", "https://bbs.nga.cn/read.php"),
+            "相对地址必须能按页面地址补全"
+        );
+    }
+
+    /// 只有在页面脚本确实会自己走人时，错误状态码才值得付一次脚本执行。
+    #[test]
+    fn script_navigation_gate_recognizes_common_shapes() {
+        assert!(script_navigation_target(
+            "<script>location.replace(x)</script>"
+        ));
+        assert!(script_navigation_target(
+            "<script>window.location.href = u</script>"
+        ));
+        assert!(script_navigation_target("<script>top.location = u</script>"));
+        assert!(script_navigation_target(
+            "<script>setTimeout(function(){location.assign(u)},300)</script>"
+        ));
+        // 普通错误页：不值得跑脚本。
+        assert!(!script_navigation_target(
+            "<html><body>403 Forbidden</body></html>"
+        ));
     }
 
     #[test]

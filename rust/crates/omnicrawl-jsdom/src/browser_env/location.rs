@@ -1,7 +1,7 @@
 //! 由 `browser_env.rs` 按假装的全局对象拆出，语义未变。
 
 use super::*;
-use super::codec::{split_url};
+use super::codec::split_href;
 
 
 
@@ -77,10 +77,10 @@ pub(crate) fn custom_elements_get(
 
 pub(crate) fn install_location(context: &mut Context, profile: &Profile) {
     // 指向真实抓取地址：写死成 example.com 是页面一眼能看出的破绽。
-    let (origin, protocol, host, pathname) = split_url(&profile.href);
+    let (origin, protocol, host, pathname, search, hash) = split_href(&profile.href);
     let location = ObjectInitializer::new(context)
         .property(
-            js_string!("href"),
+            js_string!("__ornHref"),
             JsString::from(profile.href.clone()),
             Attribute::all(),
         )
@@ -110,13 +110,113 @@ pub(crate) fn install_location(context: &mut Context, profile: &Profile) {
             JsString::from(pathname),
             Attribute::all(),
         )
-        .property(js_string!("search"), js_string!(""), Attribute::all())
-        .property(js_string!("hash"), js_string!(""), Attribute::all())
-        .function(native(noop), js_string!("assign"), 1)
-        .function(native(noop), js_string!("replace"), 1)
+        .property(js_string!("search"), JsString::from(search), Attribute::all())
+        .property(js_string!("hash"), JsString::from(hash), Attribute::all())
+        .function(native(location_navigate), js_string!("assign"), 1)
+        .function(native(location_navigate), js_string!("replace"), 1)
         .function(native(noop), js_string!("reload"), 0)
         .build();
+    // `location.href = ...` 同样是一次导航：做成访问器才能记下目标地址。
+    install_href_accessor(context, &location);
     let _ = context.register_global_property(js_string!("location"), location, Attribute::all());
+}
+
+/// 把 `href` 装成读写访问器：写到 `__ornHref` 槽上，赋值同时记为一次跳转。
+///
+/// 用原生函数而不是 JS 访问器：`Function.prototype.toString` 对 `NativeFunction`
+/// 直接输出 `[native code]`，与其余伪装字段保持一致。
+fn install_href_accessor(context: &mut Context, location: &JsObject) {
+    let getter = FunctionObjectBuilder::new(context.realm(), native(location_href))
+        .name(js_string!("get href"))
+        .length(0)
+        .build();
+    let setter = FunctionObjectBuilder::new(context.realm(), native(location_navigate))
+        .name(js_string!("set href"))
+        .length(1)
+        .build();
+    let descriptor = boa_engine::property::PropertyDescriptor::builder()
+        .get(getter)
+        .set(setter)
+        .enumerable(true)
+        .configurable(true)
+        .build();
+    let _ = location.define_property_or_throw(js_string!("href"), descriptor, context);
+}
+
+fn location_href(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(this
+        .as_object()
+        .and_then(|object| object.get(js_string!("__ornHref"), context).ok())
+        .unwrap_or_else(|| JsValue::from(js_string!(""))))
+}
+
+/// `location.assign(url)` / `location.replace(url)` / `location.href = url`：
+/// 记下目标地址供调用方跟随。
+///
+/// 沙箱里没有导航，也不在这里发请求：调用方（抓取工具）决定要不要跟随、跟几次。
+/// 相对地址原样记录，补全由调用方按页面地址完成。
+pub(crate) fn location_navigate(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let raw = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::undefined())
+        .to_string(context)?
+        .to_std_string_escaped();
+    if raw.trim().is_empty() {
+        return Ok(JsValue::undefined());
+    }
+    crate::page_state::record_navigation(&raw);
+    // 赋值形态要回写槽：脚本随后读 `location.href` 期待看到新地址。
+    if let Some(object) = this.as_object() {
+        let _ = object.set(js_string!("__ornHref"), JsString::from(raw), false, context);
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `document.cookie`：写入被记成一次 cookie 变更，读回脚本自己写过的内容。
+///
+/// 浏览器里读到的是「本次页面可见的 cookie」。沙箱不持有罐，只能回放脚本自己写进去的
+/// 那些值——这已足够让「先写 cookie、再读它拼地址」的脚本走通；调用方负责把写入落进
+/// 真实的罐（见 `RunOutcome::cookie_writes`），下一次由罐把 cookie 带在请求头上。
+fn install_cookie_accessor(context: &mut Context, document: &JsObject) {
+    let getter = FunctionObjectBuilder::new(context.realm(), native(document_cookie))
+        .name(js_string!("get cookie"))
+        .length(0)
+        .build();
+    let setter = FunctionObjectBuilder::new(context.realm(), native(document_cookie_set))
+        .name(js_string!("set cookie"))
+        .length(1)
+        .build();
+    let descriptor = boa_engine::property::PropertyDescriptor::builder()
+        .get(getter)
+        .set(setter)
+        .enumerable(true)
+        .configurable(true)
+        .build();
+    let _ = document.define_property_or_throw(js_string!("cookie"), descriptor, context);
+}
+
+fn document_cookie(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(JsString::from(crate::page_state::cookie_header())))
+}
+
+fn document_cookie_set(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let raw = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::undefined())
+        .to_string(context)?
+        .to_std_string_escaped();
+    crate::page_state::record_cookie(&raw);
+    Ok(JsValue::undefined())
 }
 
 pub(crate) fn install_history(context: &mut Context) {
@@ -237,7 +337,7 @@ pub(crate) fn install_document_state(context: &mut Context, profile: &Profile) {
     else {
         return;
     };
-    let (origin, _protocol, _host, _pathname) = split_url(&profile.href);
+    let (origin, _, _, _, _, _) = split_href(&profile.href);
     let _ = document.set(
         js_string!("URL"),
         JsString::from(profile.href.clone()),
@@ -266,7 +366,7 @@ pub(crate) fn install_document_state(context: &mut Context, profile: &Profile) {
         false,
         context,
     );
-    let _ = document.set(js_string!("cookie"), js_string!(""), false, context);
+    install_cookie_accessor(context, &document);
     let _ = document.set(
         js_string!("characterSet"),
         js_string!("UTF-8"),

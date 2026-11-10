@@ -30,6 +30,7 @@ use crate::browser_env;
 use crate::dom::{Dom, NODE_ID};
 use crate::fetch_api::{self, HttpSource};
 use crate::fingerprint::Profile;
+use crate::page_state::{self, cookie_writes};
 
 mod canvas;
 mod document;
@@ -150,6 +151,15 @@ pub struct RunOutcome {
     pub errors: Vec<String>,
     /// 脚本数或节点数是否触顶被截断。
     pub truncated: bool,
+    /// 页面脚本通过 `document.cookie` 写入的原始赋值串（`name=value; path=/; ...`）。
+    ///
+    /// 赋值串本身就是 `Set-Cookie` 的语法，调用方可以直接交给 cookie 罐落盘——挑战页
+    /// 常把「通行凭证」写在 cookie 里再跳转，`expires` 已过期的条目也会被罐正确地丢弃。
+    pub cookie_writes: Vec<String>,
+    /// 页面脚本请求的跳转地址（`location.replace`/`assign`/`href =`），只记第一条。
+    ///
+    /// 原样记录（可能是相对地址）：沙箱不知道该以什么为基准，补全交给调用方。
+    pub navigation: Option<String>,
 }
 
 /// 执行一段 HTML 里全部内联脚本，返回执行后的页面状态。
@@ -245,6 +255,8 @@ fn finish(executed: usize, truncated: bool) -> RunOutcome {
             errors
         },
         truncated: truncated || session.dom.truncated,
+        cookie_writes: cookie_writes(),
+        navigation: page_state::navigation(),
     })
     .unwrap_or_default();
 

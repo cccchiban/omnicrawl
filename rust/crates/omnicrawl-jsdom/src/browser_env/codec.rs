@@ -322,21 +322,46 @@ pub(crate) fn url_to_string(this: &JsValue, _args: &[JsValue], context: &mut Con
 }
 
 /// 极简切分：`scheme://host/path`。探针只用得到这几段，不需要完整 URL 语义。
+///
+/// 返回的 `pathname` **不含**查询串与片段：浏览器里那是 `search` 与 `hash` 的位置，
+/// 混在 `pathname` 里会让页面拼出的跳转地址把 `?query` 当成路径的一部分（见 [`split_path`]）。
 pub(crate) fn split_url(raw: &str) -> (String, String, String, String) {
+    let (origin, protocol, host, pathname, _, _) = split_href(raw);
+    (origin, protocol, host, pathname)
+}
+
+/// 完整切分：`(origin, protocol, host, pathname, search, hash)`，与 `Location` 的字段一一对应。
+pub(crate) fn split_href(raw: &str) -> (String, String, String, String, String, String) {
     let (protocol, rest) = match raw.split_once("://") {
         Some((scheme, rest)) => (format!("{scheme}:"), rest),
         None => (String::new(), raw),
     };
-    let (host, pathname) = match rest.split_once('/') {
-        Some((host, path)) => (host.to_string(), format!("/{path}")),
+    let (host, tail) = match rest.split_once('/') {
+        Some((host, tail)) => (host.to_string(), format!("/{tail}")),
         None => (rest.to_string(), "/".to_string()),
     };
+    let (pathname, search, hash) = split_path(&tail);
     let origin = if protocol.is_empty() || host.is_empty() {
         String::new()
     } else {
         format!("{protocol}//{host}")
     };
-    (origin, protocol, host, pathname)
+    (origin, protocol, host, pathname, search, hash)
+}
+
+/// 把「路径 + 查询串 + 片段」拆成三段：`("/read.php", "?tid=1", "#pid2")`。
+///
+/// 缺失的段返回空串（浏览器同样如此：没有查询串时 `location.search` 是空串）。
+pub(crate) fn split_path(raw: &str) -> (String, String, String) {
+    let (rest, hash) = match raw.split_once('#') {
+        Some((rest, hash)) => (rest, format!("#{hash}")),
+        None => (raw, String::new()),
+    };
+    let (path, search) = match rest.split_once('?') {
+        Some((path, search)) => (path, format!("?{search}")),
+        None => (rest, String::new()),
+    };
+    (path.to_string(), search, hash)
 }
 
 pub(crate) fn install_text_codec(context: &mut Context) {

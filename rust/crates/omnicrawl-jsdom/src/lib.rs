@@ -36,6 +36,7 @@ mod dom;
 mod engine;
 mod fetch_api;
 mod fingerprint;
+mod page_state;
 
 pub use engine::{
     run_inline_scripts, run_with_profile, run_with_scripts, run_with_sources, touches_dom,

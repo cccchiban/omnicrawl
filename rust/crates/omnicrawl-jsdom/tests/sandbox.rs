@@ -300,3 +300,64 @@ fn bounding_rect_returns_numeric_fields() {
         outcome.html
     );
 }
+
+/// `location` 的字段必须与浏览器一致：`pathname` 不含查询串，`search` 单独存在。
+/// 挑战页正是靠 `location.pathname + location.search` 拼出带原参数的跳转地址。
+#[test]
+fn location_fields_split_query_from_path() {
+    let outcome = run_inline_scripts(
+        r#"<html><body><script>
+        document.body.setAttribute('data-loc',
+          [location.pathname, location.search, location.hash, location.host].join('|'));
+        </script></body></html>"#,
+    );
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    // 默认画像的 href 是 `https://example.com/`：没有查询串时 `search` 是空串。
+    assert!(
+        outcome.html.contains("data-loc=\"/|||example.com\""),
+        "{}",
+        outcome.html
+    );
+}
+
+/// 页面脚本写 `document.cookie` 与请求跳转，都必须被记录下来交给调用方。
+#[test]
+fn cookie_writes_and_script_navigation_are_recorded() {
+    let outcome = run_inline_scripts(
+        r#"<html><body><script>
+        document.cookie = 'guestJs=1_abc;domain=example.com;path=/';
+        document.cookie = 'lastpath=0;domain=example.com;path=/';
+        var seen = document.cookie;
+        document.body.setAttribute('data-cookie', seen);
+        setTimeout(function(){ location.replace('/next?x=1') }, 300);
+        </script></body></html>"#,
+    );
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    assert_eq!(
+        outcome.cookie_writes,
+        vec![
+            "guestJs=1_abc;domain=example.com;path=/".to_string(),
+            "lastpath=0;domain=example.com;path=/".to_string()
+        ]
+    );
+    // 读回的是脚本自己写的值（浏览器里同样能看到刚写下的 cookie）。
+    assert!(
+        outcome.html.contains("data-cookie=\"guestJs=1_abc; lastpath=0\""),
+        "{}",
+        outcome.html
+    );
+    // 定时器里的跳转只登记回调、脚本结束后统一跑一轮，因此仍然会被记录。
+    assert_eq!(outcome.navigation.as_deref(), Some("/next?x=1"));
+}
+
+/// 只记第一条跳转：浏览器里第一次导航就已离开本页。
+#[test]
+fn only_the_first_navigation_is_recorded() {
+    let outcome = run_inline_scripts(
+        r#"<html><body><script>
+        location.href = '/first';
+        location.replace('/second');
+        </script></body></html>"#,
+    );
+    assert_eq!(outcome.navigation.as_deref(), Some("/first"));
+}
