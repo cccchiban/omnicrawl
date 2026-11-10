@@ -138,11 +138,12 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 30);
+        assert_eq!(names.len(), 31);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
         assert!(names.contains(&"programming".to_string()));
+        assert!(names.contains(&"solve".to_string()));
         assert!(names.contains(&"speaking-style".to_string()));
         assert!(names.contains(&"sandbox".to_string()));
         assert!(names.contains(&"sandbox:set".to_string()));
@@ -665,13 +666,17 @@ mod tests {
             .unwrap_or_default()
             .contains("已启用编程模式"));
         assert!(programming.refresh_context);
+
+        let solve = registry().dispatch("/solve", &agent, Channel::Tui, None);
+        assert!(solve.message.unwrap_or_default().contains("已启用解题模式"));
+        assert!(solve.refresh_context);
         assert_eq!(
             agent
                 .calls()
                 .iter()
                 .filter(|call| *call == "activate_mode")
                 .count(),
-            2
+            3
         );
     }
 

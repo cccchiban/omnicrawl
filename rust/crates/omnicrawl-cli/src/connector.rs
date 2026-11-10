@@ -37,6 +37,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 内核里的助手，回�
 /// 内核连接器可用的模式模板：与 `rust/assets/templates/` 同一份，脱离宿主也能切模式。
 const PLAN_PROMPT: &str = include_str!("../../../assets/templates/plan.md");
 const PROGRAMMING_PROMPT: &str = include_str!("../../../assets/templates/programming.md");
+const SOLVE_PROMPT: &str = include_str!("../../../assets/templates/solve.md");
 const SPEAKING_STYLE_PROMPT: &str = include_str!("../../../assets/templates/speaking-style.md");
 /// 工具批次在连接器模式下的错误码：调用方据此区分「工具失败」与「本模式没有执行器」。
 const TOOL_UNAVAILABLE: &str = "tool_unavailable";
@@ -477,6 +478,7 @@ impl AgentDriver for KernelDriver {
         let prompt = match mode.trim().to_lowercase().as_str() {
             "plan" => PLAN_PROMPT,
             "programming" => PROGRAMMING_PROMPT,
+            "solve" => SOLVE_PROMPT,
             "speaking-style" => SPEAKING_STYLE_PROMPT,
             other => return Err(format!("未知模式：{other}")),
         };

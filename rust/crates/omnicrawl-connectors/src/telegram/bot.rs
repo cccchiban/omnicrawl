@@ -1262,6 +1262,7 @@ const HELP_TEXT: &str = "🤖 OmniCrawl 远程控制\n\n\
   /reset   开启新会话\n\
   /workspace [路径]  查看/切换工作区（切换会同步到 TUI）\n\
   /plan  启用计划模式，后续任务先制定 Markdown 计划\n\
+  /solve  启用解题模式，题目直接作答（解析 + 标准作答）\n\
   /programming  启用编程模式，后续任务按编程规范执行\n\n\
 文件：\n\
   直接发送图片/文档/视频/语音/音频，自动存入 .agent_tmp\n\

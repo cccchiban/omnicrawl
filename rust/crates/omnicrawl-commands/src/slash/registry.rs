@@ -183,6 +183,13 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
+        Command::new("solve", handle_mode_command)
+            .description("启用主 Agent 解题模式，题目直接作答并追加 templates/solve.md。")
+            .usage("/solve")
+            .command_type(CommandType::Action),
+    )?;
+
+    registry.register(
         Command::new("speaking-style", handle_speaking_style_command)
             .description("开启或关闭主 Agent 简洁回复模式（默认关闭）。")
             .usage("/speaking-style [on|off]")

@@ -33,6 +33,7 @@ const EMBEDDED_SYSTEM_PROMPT: &str =
 const EMBEDDED_PLAN_PROMPT: &str = include_str!("../../../../rust/assets/templates/plan.md");
 const EMBEDDED_PROGRAMMING_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/programming.md");
+const EMBEDDED_SOLVE_PROMPT: &str = include_str!("../../../../rust/assets/templates/solve.md");
 const EMBEDDED_SPEAKING_STYLE_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/speaking-style.md");
 
@@ -376,6 +377,7 @@ pub fn builtin_mode_prompt(mode: &str) -> Option<&'static str> {
     match mode {
         "plan" => Some(EMBEDDED_PLAN_PROMPT),
         "programming" => Some(EMBEDDED_PROGRAMMING_PROMPT),
+        "solve" => Some(EMBEDDED_SOLVE_PROMPT),
         "speaking-style" => Some(EMBEDDED_SPEAKING_STYLE_PROMPT),
         _ => None,
     }
@@ -454,6 +456,17 @@ mod tests {
     }
 
     #[test]
+    fn solve_mode_appends_the_answer_structure() {
+        let env = ConfigEnvironment::from_process();
+        let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
+        runtime.activate_mode("solve").expect("启用解题模式");
+        let prompt = runtime.system_prompt();
+        assert!(prompt.contains("<active_mode_prompt name=\"solve\">"));
+        assert!(prompt.contains("## 标准作答"));
+        assert!(prompt.trim_end().ends_with("</active_mode_prompt>"));
+    }
+
+    #[test]
     fn speaking_style_mode_can_be_switched_off_again() {
         let env = ConfigEnvironment::from_process();
         let mut runtime = PromptRuntime::load(&env, options()).expect("装配提示词");
@@ -477,6 +490,7 @@ mod tests {
     fn builtin_mode_prompt_covers_selectable_modes() {
         assert!(builtin_mode_prompt("plan").is_some());
         assert!(builtin_mode_prompt("programming").is_some());
+        assert!(builtin_mode_prompt("solve").is_some());
         assert!(builtin_mode_prompt("speaking-style").is_some());
         assert!(builtin_mode_prompt("unknown-mode").is_none());
     }

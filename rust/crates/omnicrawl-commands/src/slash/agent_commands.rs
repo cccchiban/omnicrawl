@@ -368,7 +368,7 @@ fn normalize_advisor_effort(effort: &str) -> Result<String, AgentError> {
     Ok(normalized)
 }
 
-/// 启用主 Agent 模式（`/plan`、`/programming`）。
+/// 启用主 Agent 模式（`/plan`、`/programming`、`/solve`）。
 pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     // 主 Agent 模式切换命令：命令名（不含前导斜杠）→ `activate_mode` 的模式标识。
     let name = match ctx.command.as_ref() {
@@ -378,6 +378,7 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     let mode = match name.as_str() {
         "plan" => "plan",
         "programming" => "programming",
+        "solve" => "solve",
         _ => {
             return CommandResult::message(format!("未知模式：{name}"));
         }
@@ -391,6 +392,7 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     let label = match activated.as_str() {
         "plan" => "计划模式".to_string(),
         "programming" => "编程模式".to_string(),
+        "solve" => "解题模式".to_string(),
         other => other.to_string(),
     };
     CommandResult::message(format!("已启用{label}。后续任务将遵循该模式提示词。"))
