@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-api"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "axum",
  "omnicrawl-commands",
@@ -4541,14 +4541,14 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-brush"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "brush-shell",
 ]
 
 [[package]]
 name = "omnicrawl-cli"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "omnicrawl-compaction",
@@ -4566,7 +4566,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-commands"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "omnicrawl-config",
@@ -4580,7 +4580,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-compaction"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "omnicrawl-controllers",
@@ -4592,7 +4592,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-config"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-llm",
  "omnicrawl-protocol",
@@ -4603,7 +4603,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-connectors"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -4623,7 +4623,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-controllers"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-config",
  "omnicrawl-core",
@@ -4636,7 +4636,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-core"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -4644,7 +4644,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-decision"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "axum",
  "omnicrawl-config",
@@ -4656,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-entry"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-config",
  "omnicrawl-connectors",
@@ -4666,14 +4666,14 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-extensions"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "omnicrawl-fetch"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "axum",
  "omnicrawl-config",
@@ -4684,7 +4684,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-host"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "base64",
  "brotli",
@@ -4718,7 +4718,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-ipc"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-core",
  "omnicrawl-protocol",
@@ -4728,7 +4728,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-jsdom"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "boa_engine",
  "ego-tree",
@@ -4740,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-llm"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-protocol",
  "omnicrawl-version",
@@ -4754,7 +4754,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-mcp"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "omnicrawl-config",
@@ -4768,7 +4768,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-onejev"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "omnicrawl-config",
  "omnicrawl-host",
@@ -4778,7 +4778,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-protocol"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -4786,7 +4786,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-session"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "libc",
@@ -4799,7 +4799,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-tls"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4809,7 +4809,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-trigger"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "axum",
  "chrono",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-tts"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "base64",
  "omnicrawl-version",
@@ -4836,7 +4836,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-tui"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "base64",
  "chrono",
@@ -4870,7 +4870,7 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-update"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "omnicrawl-version",
@@ -4881,14 +4881,14 @@ dependencies = [
 
 [[package]]
 name = "omnicrawl-version"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "omnicrawl-workspace"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "chrono",
  "libc",

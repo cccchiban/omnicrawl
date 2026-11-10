@@ -143,6 +143,7 @@ Bot 启动时会用 `setMyCommands` 把宿主承载方的命令表发布成 Tele
 `/rename`、`/resume <id>`、`/plan`（启用主 Agent 计划模式，后续任务追加模式提示词）、
 `/programming`（启用主 Agent 编程模式，后续任务追加 `templates/programming.md`）、
 `/solve`（启用主 Agent 解题模式：题目直接作答，输出「题目解析 + 标准作答」两段，需要时用 Python 绘图）、
+`/deepsearch`（启用主 Agent 深度搜索模式：多轮检索后交付带信源的 Markdown 报告与会话回答；搜索目标另发一条消息）、
 `/speaking-style [on|off]`（开关简洁回复模式，回复不超过十行；默认关闭）、
 `/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/model`、`/advisor`、
 `/skills`、`/memory:clean`、`/mcp` 等。

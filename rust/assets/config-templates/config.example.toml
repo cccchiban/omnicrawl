@@ -66,7 +66,8 @@ enabled = true
 # 且与同一出口 IP 的其他流量共享这份公共池）。因此它的 Key 是提高速率的可选项，不影响可用性。
 # 走哪个引擎只看这里的设置：工具调用里的 engine 参数无效，agent 不能按单次任务改搜索通路。
 # mixed 是综合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与（anysearch 始终参与，
-# keenable 因匿名额度是共享池，参与综合搜索需配 Key）。
+# keenable 因匿名额度是共享池，参与综合搜索需配 Key）。要让某个渠道退出综合搜索，
+# 清掉它自己的 API Key 即可——设置面板「联网搜索」页选中凭据行按 Del 清空后 Ctrl+S 就会落盘。
 [web_search]
 engine = "duckduckgo"
 tavily_api_key = ""

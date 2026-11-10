@@ -138,12 +138,13 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 31);
+        assert_eq!(names.len(), 32);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
         assert!(names.contains(&"programming".to_string()));
         assert!(names.contains(&"solve".to_string()));
+        assert!(names.contains(&"deepsearch".to_string()));
         assert!(names.contains(&"speaking-style".to_string()));
         assert!(names.contains(&"sandbox".to_string()));
         assert!(names.contains(&"sandbox:set".to_string()));
@@ -678,6 +679,23 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn deepsearch_mode_activates_and_asks_for_target_on_other_channels() {
+        let agent = FakeAgent::default();
+        let bare = registry().dispatch("/deepsearch", &agent, Channel::Tui, None);
+        assert!(bare
+            .message
+            .unwrap_or_default()
+            .contains("已启用深度搜索模式"));
+
+        // 命令层没有提交回合的通道：带目标时不能装作已经开始检索。
+        let with_target =
+            registry().dispatch("/deepsearch 固态电池量产", &agent, Channel::Tui, None);
+        let text = with_target.message.unwrap_or_default();
+        assert!(text.contains("已启用深度搜索模式"), "{text}");
+        assert!(text.contains("另发一条消息"), "{text}");
     }
 
     #[test]

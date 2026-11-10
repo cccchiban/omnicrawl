@@ -251,6 +251,10 @@ impl App {
                 self.start_mcp_status();
                 return;
             }
+            "deepsearch" => {
+                self.dispatch_deepsearch(&text, &parsed.args);
+                return;
+            }
             _ => {}
         }
         let result = {
@@ -258,6 +262,30 @@ impl App {
             command_registry().dispatch(&text, &agent, Channel::Tui, None)
         };
         self.apply_command_result(result);
+    }
+
+    /// 处理 `/deepsearch [搜索目标]`：先启用深度搜索模式，带目标时立即把目标当一轮提交。
+    ///
+    /// 模式提示词经 system prompt 的 `<active_mode_prompt>` 区块下发，因此必须先
+    /// 启用再提交（同一连接按序处理，本轮请求就带模式区块）。没写目标时只切模式，
+    /// 由用户接着输入。
+    pub(super) fn dispatch_deepsearch(&mut self, text: &str, target: &str) {
+        if self.kernel_lost {
+            return;
+        }
+        self.state.composer.history_record(text);
+        if let Err(error) = self.command_activate_mode(DEEPSEARCH_MODE) {
+            self.state.notice(format!("深度搜索模式启用失败：{error}"));
+            return;
+        }
+        let target = target.trim();
+        if target.is_empty() {
+            self.state
+                .notice("深度搜索模式已启用。发送搜索目标即可开始。".to_string());
+            return;
+        }
+        self.state.set_status(Some(format!("深度搜索中：{target}")));
+        self.submit_to_kernel(target.to_string(), Vec::new());
     }
 
     /// 处理 `/skill:<名> [余下任务]`：命中就加载技能正文并提交余下任务，未命中回可用列表。

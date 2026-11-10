@@ -289,6 +289,15 @@ impl SettingsState {
                 }
                 None
             }
+            // `Del` 清掉已配置的凭据：清空草稿即「删掉磁盘上的这把凭据」（`Ctrl+S` 落盘）。
+            KeyCode::Delete if matches!(spec.kind, FieldKind::Secret) => {
+                if let Some(form) = self.form_mut() {
+                    if form.clear_secret(index) {
+                        form.set_status("已清空这把凭据，Ctrl+S 保存后删除。");
+                    }
+                }
+                None
+            }
             KeyCode::Esc | KeyCode::Left => {
                 self.back_to_list();
                 None

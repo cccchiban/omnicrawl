@@ -405,6 +405,7 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | `/plan` | 启用主 Agent 计划模式 |
 | `/programming` | 启用主 Agent 编程模式 |
 | `/solve` | 启用主 Agent 解题模式 |
+| `/deepsearch` | 启用主 Agent 深度搜索模式（搜索目标另发一条消息） |
 | `/sessions`、`/resume <id>` | 查看/恢复会话 |
 | `/resume latest` | 恢复最近活动会话 |
 | `/approval` | 查看审批模式 |

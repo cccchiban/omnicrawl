@@ -176,7 +176,7 @@ use crate::ui::settings::{
     SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow, ToolSwitchRow,
     TtsChange,
     TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
-    WebSearchRow, SUBAGENT_ADVANCED_SPECS,
+    WebSearchRow, MASKED_SECRET, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 
@@ -223,6 +223,9 @@ pub use support::is_ctrl_v_release;
 
 /// 退出前等一次在途慢命令结果的时长（拿得到的候选子系统要 close 干净）。
 const SLOW_TASK_SETTLE_MS: u64 = 200;
+
+/// 深度搜索模式的模式标识（与模板 `templates/deepsearch.md` 同名）。
+const DEEPSEARCH_MODE: &str = "deepsearch";
 
 /// 装配工作区切换的候选子系统（工具表 + MCP 连接 + 提示词运行时）。
 ///

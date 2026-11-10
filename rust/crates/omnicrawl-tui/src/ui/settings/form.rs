@@ -22,7 +22,8 @@ pub enum FieldKind {
     /// 自由文本：逗号/分号分隔的列表也归这里，切分由宿主负责。
     Text,
     /// 凭据文本：编辑方式同自由文本，但界面上只显示掩码，进输入态也从空起步
-    /// （留空表示不改动磁盘上的原值，避免误触把已存凭据抹掉）。
+    /// （留空表示不改动磁盘上的原值，避免误触把已存凭据抹掉）；
+    /// 要真的删掉已存凭据按 `Del`（见 [`FormState::clear_secret`]）。
     Secret,
     /// 模型渠道引用：候选是配置里的渠道列表（文案 = 渠道名，取值 = 渠道 key）。
     ModelChannel,
@@ -750,6 +751,9 @@ impl FormState {
     }
 
     /// 编辑态键位：`Enter` 落进字段、`Esc` 放弃本次输入。
+    ///
+    /// 凭据字段提交空缓冲等于「没改」：草稿保持原值（掩码），要删掉已存凭据按 `Del`
+    /// （见 [`Self::clear_secret`]），免得进了输入态随手回车就把密钥抹掉。
     pub fn input_key(&mut self, key: KeyCode) {
         let Some(composer) = self.input.as_mut() else {
             return;
@@ -758,6 +762,13 @@ impl FormState {
             KeyCode::Enter => {
                 let text = composer.take();
                 self.input = None;
+                let secret = matches!(
+                    self.field(self.focused).map(|spec| spec.kind),
+                    Some(FieldKind::Secret)
+                );
+                if secret && text.trim().is_empty() {
+                    return;
+                }
                 self.set_value(self.focused, FieldValue::Text(text));
             }
             KeyCode::Esc => self.input = None,
@@ -770,5 +781,25 @@ impl FormState {
             KeyCode::End => composer.move_end(),
             _ => {}
         }
+    }
+
+    /// 清除第 N 个凭据字段的草稿：清空即「删掉磁盘上的这把凭据」。
+    ///
+    /// 只有凭据字段有这个动作：进去输入态再从空起步是「不改动」，界面上就再也没有
+    /// 删掉一把已存密钥的办法，而按凭据是否非空决定可用的通路（联网搜索的 `mixed`）
+    /// 会一直把它算作可用渠道。返回 `true` 表示确实清掉了一把已配置的凭据。
+    pub fn clear_secret(&mut self, index: usize) -> bool {
+        if !matches!(
+            self.field(index).map(|spec| spec.kind),
+            Some(FieldKind::Secret)
+        ) {
+            return false;
+        }
+        let had_value = self
+            .value(index)
+            .map(|value| !value.text().trim().is_empty())
+            .unwrap_or(false);
+        self.set_value(index, FieldValue::Text(String::new()));
+        had_value
     }
 }

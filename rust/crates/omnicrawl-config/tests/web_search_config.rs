@@ -296,3 +296,35 @@ fn save_rejects_invalid_engine_before_writing() {
     assert_eq!(text, "[llm]\nmodel = \"keep-me\"\n", "拒绝时不得产生写入");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 清空的凭据必须真的落成空串：`mixed` 只按「凭据非空」判定渠道可用，
+/// 清不掉就等于删不掉，渠道会一直参与综合搜索。
+#[test]
+fn clearing_a_credential_writes_an_empty_value() {
+    let root = temp_root("clear");
+    let user = user_dir(&root);
+    let config_path = user.join("config.toml");
+    write_text(
+        &config_path,
+        "[web_search]\nengine = \"mixed\"\ngrok_api_key = \"xai-key\"\ngrok_model = \"grok-lite\"\n",
+    );
+    let env = R::ConfigEnvironment::new(root.to_string_lossy().to_string(), "win32");
+
+    let mut configuration = load_web_search_configuration(&env, None).expect("读取");
+    assert_eq!(configuration.grok_api_key, "xai-key");
+
+    configuration.grok_api_key = String::new();
+    configuration.grok_search_url = String::new();
+    configuration.grok_model = String::new();
+    save_web_search_configuration(&env, &configuration, None).expect("写回");
+
+    let reloaded = load_web_search_configuration(&env, None).expect("重新读取");
+    assert!(
+        reloaded.grok_api_key.is_empty(),
+        "空串必须落盘：{:?}",
+        reloaded.grok_api_key
+    );
+    assert!(reloaded.grok_search_url.is_empty());
+    assert!(reloaded.grok_model.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}

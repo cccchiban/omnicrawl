@@ -36,6 +36,8 @@ const EMBEDDED_PROGRAMMING_PROMPT: &str =
 const EMBEDDED_SOLVE_PROMPT: &str = include_str!("../../../../rust/assets/templates/solve.md");
 const EMBEDDED_SPEAKING_STYLE_PROMPT: &str =
     include_str!("../../../../rust/assets/templates/speaking-style.md");
+const EMBEDDED_DEEPSEARCH_PROMPT: &str =
+    include_str!("../../../../rust/assets/templates/deepsearch.md");
 
 /// 一次提示词装配所需的宿主输入。
 pub struct PromptOptions {
@@ -379,6 +381,7 @@ pub fn builtin_mode_prompt(mode: &str) -> Option<&'static str> {
         "programming" => Some(EMBEDDED_PROGRAMMING_PROMPT),
         "solve" => Some(EMBEDDED_SOLVE_PROMPT),
         "speaking-style" => Some(EMBEDDED_SPEAKING_STYLE_PROMPT),
+        "deepsearch" => Some(EMBEDDED_DEEPSEARCH_PROMPT),
         _ => None,
     }
 }
@@ -492,6 +495,7 @@ mod tests {
         assert!(builtin_mode_prompt("programming").is_some());
         assert!(builtin_mode_prompt("solve").is_some());
         assert!(builtin_mode_prompt("speaking-style").is_some());
+        assert!(builtin_mode_prompt("deepsearch").is_some());
         assert!(builtin_mode_prompt("unknown-mode").is_none());
     }
 

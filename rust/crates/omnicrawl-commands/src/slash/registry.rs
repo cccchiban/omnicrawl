@@ -190,6 +190,16 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
+        Command::new("deepsearch", handle_mode_command)
+            .description(
+                "启用主 Agent 深度搜索模式；带搜索目标时立即开始多轮检索并交付带信源的报告。",
+            )
+            .usage("/deepsearch [搜索目标]")
+            .command_type(CommandType::Action)
+            .arg_prompt("搜索目标"),
+    )?;
+
+    registry.register(
         Command::new("speaking-style", handle_speaking_style_command)
             .description("开启或关闭主 Agent 简洁回复模式（默认关闭）。")
             .usage("/speaking-style [on|off]")

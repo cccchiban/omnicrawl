@@ -3080,6 +3080,34 @@ mod tests {
         );
     }
 
+    /// 清掉 grok 的凭据（地址与模型也留空）之后，综合搜索就不能再打 grok 的接口。
+    ///
+    /// `grok_search_url` / `grok_model` 留空只是回落内置默认值，并不影响参与与否；
+    /// 判定只看凭据。凭据一旦能删掉，这条路径就随之关闭。
+    #[test]
+    fn grok_leaves_mixed_search_once_its_credential_is_cleared() {
+        let configured = WebSearchOptions {
+            grok_search_url: String::new(),
+            grok_model: String::new(),
+            grok_api_key: "xai-key".to_string(),
+            ..WebSearchOptions::default()
+        };
+        assert!(
+            mixed_engines(&configured, &[]).contains(&"grok"),
+            "有凭据时参与：地址与模型留空也不影响"
+        );
+
+        let cleared = WebSearchOptions {
+            grok_api_key: String::new(),
+            ..configured
+        };
+        assert_eq!(
+            mixed_engines(&cleared, &[]),
+            vec!["duckduckgo", "anysearch"],
+            "凭据清空后综合搜索不再包含 grok"
+        );
+    }
+
     #[test]
     fn mixed_engines_default_to_generic_channels_only() {
         let options = WebSearchOptions::default();

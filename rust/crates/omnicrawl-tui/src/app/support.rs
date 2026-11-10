@@ -81,10 +81,24 @@ pub(super) fn field_text_or(values: &[FieldValue], index: usize, fallback: &str)
 
 /// 凭据字段的写回取值：草稿留空表示「不改动」→ `None`；否则用新值。
 ///
-/// 界面上的掩码已在状态机里折成空串，所以这里只需判空。
+/// 用于界面掩码已折成空串的页（TTS 渠道表单）：那套口径下空串即「不改动」，
+/// 因此无法删除已存凭据；需要删除通道的页用 [`secret_write`]。
 pub(super) fn keep_or_replace(draft: &str) -> Option<String> {
     let trimmed = draft.trim();
     if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// 联网搜索页凭据字段的写回取值：`None` = 不动磁盘原值，`Some("")` = 删掉这把凭据。
+///
+/// 与 [`keep_or_replace`] 的差别就在空串：那套口径下空串表示「不改动」，凭据一旦写入
+/// 就再也删不掉，而 `mixed` 只按「凭据非空」判定渠道可用，于是清空地址与模型后搜索
+/// 仍会请求该渠道。这里把「不动」的唯一标记收窄成界面掩码本身。
+pub(super) fn secret_write(draft: &str) -> Option<String> {
+    let trimmed = draft.trim();
+    if trimmed == MASKED_SECRET {
         return None;
     }
     Some(trimmed.to_string())

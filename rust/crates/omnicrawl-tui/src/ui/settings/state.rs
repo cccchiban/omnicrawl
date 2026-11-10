@@ -963,8 +963,8 @@ const TTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Enter 执行 
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
 /// 工具输出压缩页的提示（模型选择与其余表单页同款，都是两个下拉）。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 展开候选  Ctrl+S 保存  Esc 返回";
-/// 联网搜索页的提示：凭据留空表示不改动磁盘上的原值。
-const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回（凭据留空＝不改动；引擎只由这里决定）";
+/// 联网搜索页的提示：凭据多一个 `Del`（清空草稿＝删掉磁盘上的这把凭据）。
+const WEB_SEARCH_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  Del 删除凭据  Ctrl+S 保存  Esc 返回";
 const DECISION_LIST_HINT: &str =
     "↑↓ 选择  Enter/→ 编辑渠道、←/→ 切换开关  N 新建  D 删除  Esc 返回";
 const DECISION_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";

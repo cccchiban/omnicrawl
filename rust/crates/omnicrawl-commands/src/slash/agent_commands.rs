@@ -368,7 +368,7 @@ fn normalize_advisor_effort(effort: &str) -> Result<String, AgentError> {
     Ok(normalized)
 }
 
-/// 启用主 Agent 模式（`/plan`、`/programming`、`/solve`）。
+/// 启用主 Agent 模式（`/plan`、`/programming`、`/solve`、`/deepsearch`）。
 pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
     // 主 Agent 模式切换命令：命令名（不含前导斜杠）→ `activate_mode` 的模式标识。
     let name = match ctx.command.as_ref() {
@@ -379,6 +379,7 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
         "plan" => "plan",
         "programming" => "programming",
         "solve" => "solve",
+        "deepsearch" => "deepsearch",
         _ => {
             return CommandResult::message(format!("未知模式：{name}"));
         }
@@ -393,8 +394,17 @@ pub fn handle_mode_command(ctx: &CommandContext<'_>) -> CommandResult {
         "plan" => "计划模式".to_string(),
         "programming" => "编程模式".to_string(),
         "solve" => "解题模式".to_string(),
+        "deepsearch" => "深度搜索模式".to_string(),
         other => other.to_string(),
     };
+    // 同一条命令里直接开始检索由 TUI 在派发前接管；命令层没有提交回合的通道，
+    // 其余入口必须把目标作为下一条消息发送，否则这里只剩切模式、目标会被悄悄丢掉。
+    if name == "deepsearch" && !ctx.args.trim().is_empty() {
+        return CommandResult::message(format!(
+            "已启用{label}。本入口不支持在命令里直接开始，请把搜索目标另发一条消息。"
+        ))
+        .with_refresh_context();
+    }
     CommandResult::message(format!("已启用{label}。后续任务将遵循该模式提示词。"))
         .with_refresh_context()
 }

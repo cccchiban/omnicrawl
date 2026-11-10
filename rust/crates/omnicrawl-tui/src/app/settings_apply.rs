@@ -261,8 +261,9 @@ impl App {
     /// 联网搜索页：写 `config.toml [web_search]`（字段顺序与 `WEB_SEARCH_FIELDS` 一致），
     /// 再换掉宿主侧搜索运行期。
     ///
-    /// 六把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
-    /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
+    /// 凭据字段：草稿仍是掩码表示「不改动磁盘原值」，其余值原样写回——包括空串，
+    /// 那表示把这把凭据删掉。没有删除通道时清空界面上的 Key 毫无效果，而 `mixed` 只按
+    /// 「凭据非空」判定渠道可用，于是删掉地址与模型后搜索仍会请求该渠道。
     pub(super) fn apply_web_search_form(
         &mut self,
         values: &[FieldValue],
@@ -273,35 +274,35 @@ impl App {
         // 写盘前留一份磁盘原值：重建工具表失败时要把它写回去（这份还没被覆盖）。
         let previous = configuration.clone();
         configuration.engine = field_text_or(values, 0, "duckduckgo");
-        if let Some(key) = keep_or_replace(&field_text(values, 1)) {
+        if let Some(key) = secret_write(&field_text(values, 1)) {
             configuration.tavily_api_key = key;
         }
-        if let Some(key) = keep_or_replace(&field_text(values, 2)) {
+        if let Some(key) = secret_write(&field_text(values, 2)) {
             configuration.exa_api_key = key;
         }
-        if let Some(key) = keep_or_replace(&field_text(values, 3)) {
+        if let Some(key) = secret_write(&field_text(values, 3)) {
             configuration.firecrawl_api_key = key;
         }
-        if let Some(key) = keep_or_replace(&field_text(values, 4)) {
+        if let Some(key) = secret_write(&field_text(values, 4)) {
             configuration.anysearch_api_key = key;
         }
-        if let Some(key) = keep_or_replace(&field_text(values, 5)) {
+        if let Some(key) = secret_write(&field_text(values, 5)) {
             configuration.tinyfish_api_key = key;
         }
-        if let Some(key) = keep_or_replace(&field_text(values, 6)) {
+        if let Some(key) = secret_write(&field_text(values, 6)) {
             configuration.github_token = key;
         }
-        // URL 与模型可清空（空即回落内置默认值），因此不套 keep_or_replace 的「留空=不改动」。
+        // URL 与模型可清空（空即回落内置默认值），因此不套凭据那套「掩码=不改动」。
         configuration.deepseek_search_url = field_text(values, 7);
-        if let Some(key) = keep_or_replace(&field_text(values, 8)) {
+        if let Some(key) = secret_write(&field_text(values, 8)) {
             configuration.deepseek_api_key = key;
         }
         configuration.grok_search_url = field_text(values, 9);
-        if let Some(key) = keep_or_replace(&field_text(values, 10)) {
+        if let Some(key) = secret_write(&field_text(values, 10)) {
             configuration.grok_api_key = key;
         }
         configuration.grok_model = field_text(values, 11);
-        if let Some(key) = keep_or_replace(&field_text(values, 12)) {
+        if let Some(key) = secret_write(&field_text(values, 12)) {
             configuration.keenable_api_key = key;
         }
         let path = save_web_search_configuration(&environment, &configuration, None)

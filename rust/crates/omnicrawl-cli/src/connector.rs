@@ -39,6 +39,7 @@ const PLAN_PROMPT: &str = include_str!("../../../assets/templates/plan.md");
 const PROGRAMMING_PROMPT: &str = include_str!("../../../assets/templates/programming.md");
 const SOLVE_PROMPT: &str = include_str!("../../../assets/templates/solve.md");
 const SPEAKING_STYLE_PROMPT: &str = include_str!("../../../assets/templates/speaking-style.md");
+const DEEPSEARCH_PROMPT: &str = include_str!("../../../assets/templates/deepsearch.md");
 /// 工具批次在连接器模式下的错误码：调用方据此区分「工具失败」与「本模式没有执行器」。
 const TOOL_UNAVAILABLE: &str = "tool_unavailable";
 /// `/help` 的回执；与 [`KernelDriver::command_menu`] 发布到 Telegram 菜单的命令保持一致。
@@ -480,6 +481,7 @@ impl AgentDriver for KernelDriver {
             "programming" => PROGRAMMING_PROMPT,
             "solve" => SOLVE_PROMPT,
             "speaking-style" => SPEAKING_STYLE_PROMPT,
+            "deepsearch" => DEEPSEARCH_PROMPT,
             other => return Err(format!("未知模式：{other}")),
         };
         let mut guard = self

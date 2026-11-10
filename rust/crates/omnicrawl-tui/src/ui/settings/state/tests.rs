@@ -1524,7 +1524,7 @@ fn web_search_is_its_own_left_row() {
 }
 
 #[test]
-fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
+fn web_search_page_masks_credentials_and_keeps_the_mask_on_save() {
     let mut state = web_search_state();
     goto(&mut state, "web_search");
     state.handle_key(KeyCode::Enter); // 进联网搜索页
@@ -1545,7 +1545,7 @@ fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
     assert_eq!(rows[5].value, "（未配置）", "TinyFish 未配（无匿名通道）");
     assert_eq!(rows[6].value, "（未配置）", "GitHub Token 未配");
 
-    // 掩码原样保存 = 不改动：各把凭据都折成空串交给宿主。
+    // 掩码原样交给宿主 = 不改动：宿主只把「非掩码」当作要写入的值。
     let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
         state.handle_ctrl_key(KeyCode::Char('s'))
     else {
@@ -1553,8 +1553,12 @@ fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
     };
     assert_eq!(kind, FormKind::WebSearch);
     assert_eq!(values[0], FieldValue::Text("tavily".to_string()));
-    assert_eq!(values[1], FieldValue::Text(String::new()), "掩码不当作新值");
-    assert_eq!(values[2], FieldValue::Text(String::new()));
+    assert_eq!(
+        values[1],
+        FieldValue::Text(MASKED_SECRET.to_string()),
+        "掩码原样送出，宿主据此判定不改动"
+    );
+    assert_eq!(values[2], FieldValue::Text(String::new()), "未配置的仍是空串");
     assert_eq!(values[3], FieldValue::Text(String::new()));
     assert_eq!(values[4], FieldValue::Text(String::new()));
     assert_eq!(values[5], FieldValue::Text(String::new()));
@@ -1562,6 +1566,49 @@ fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
         values[6],
         FieldValue::Text(String::new()),
         "GitHub Token 未配时也为空"
+    );
+}
+
+/// 凭据必须能删掉：`Del` 清空草稿后保存，字段以空串送出（= 删掉磁盘上的这把凭据）。
+///
+/// 没有这条通道时清空界面上的 Key 毫无效果，而 `mixed` 只按「凭据非空」判定渠道可用，
+/// 于是删掉地址与模型后搜索仍会请求该渠道。
+#[test]
+fn web_search_page_deletes_a_configured_credential() {
+    let mut state = web_search_state();
+    goto(&mut state, "web_search");
+    state.handle_key(KeyCode::Enter); // 进联网搜索页
+    // 引擎 → Tavily 密钥（已配置，显示掩码）。
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.form_rows()[1].value, MASKED_SECRET);
+    state.handle_key(KeyCode::Delete);
+    assert_eq!(state.form_rows()[1].value, "（未配置）", "Del 清空即删掉");
+
+    let Some(SettingsEvent::Apply(SettingsChange::Form { values, .. })) =
+        state.handle_ctrl_key(KeyCode::Char('s'))
+    else {
+        panic!("Ctrl+S 应产出保存事件");
+    };
+    assert_eq!(
+        values[1],
+        FieldValue::Text(String::new()),
+        "空串让宿主删掉这把凭据"
+    );
+}
+
+/// 凭据字段进输入态后直接回车（缓冲为空）等于没改：草稿仍是掩码，不会被误删。
+#[test]
+fn web_search_page_keeps_a_credential_when_the_empty_buffer_is_committed() {
+    let mut state = web_search_state();
+    goto(&mut state, "web_search");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Enter); // 进输入态（从空起步）
+    state.handle_key(KeyCode::Enter); // 空缓冲提交
+    assert_eq!(
+        state.form_rows()[1].value,
+        MASKED_SECRET,
+        "空提交不改动已配置的凭据"
     );
 }
 

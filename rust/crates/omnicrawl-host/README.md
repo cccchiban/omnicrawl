@@ -38,7 +38,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   当本轮文本。两条路径都不改持久化历史。
 
 装配结果经 `initialize.model.system_prompt` / `context_messages` 交给内核；模式切换
-（`/plan`、`/programming`、`/solve`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
+（`/plan`、`/programming`、`/solve`、`/deepsearch`）重算后经 `session.settings` 即时下发。内核每轮把 `context_messages` 插在历史之前，
 **不写进会话转录**（它们是本轮读到的环境，不是历史）。
 
 `PromptOptions.system_prompt_override` 只在**显式覆盖**时有值（TUI 的 `--system-prompt` /
