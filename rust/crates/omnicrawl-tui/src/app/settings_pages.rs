@@ -8,7 +8,7 @@ use super::*;
 impl App {
     // ---------- 向量模型页 ----------
 
-    /// 向量召回总开关：写 `config.toml` 的 `[memory_embedding] enabled`，并立刻重建召回运行期。
+    /// 嵌入模型开关：写 `config.toml` 的 `[memory_embedding] enabled`，并立刻重建召回运行期。
     pub(super) fn apply_embedding_enabled(&mut self, enabled: bool) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let path = save_feature_enabled(&environment, "memory_embedding", enabled, None, None)
@@ -18,19 +18,37 @@ impl App {
             settings.set_embedding_enabled(enabled);
         }
         Ok(format!(
-            "向量召回：{}，已保存到 {}。",
+            "嵌入模型：{}，已保存到 {}。",
             if enabled { "开启" } else { "关闭" },
             path.display()
         ))
     }
 
-    /// 保存整份向量模型配置：`api_key` 留空表示不改动，按 key 从磁盘继承。
+    /// 重排序模型开关：写 `config.toml` 的 `[memory_rerank] enabled`，并立刻重建召回运行期。
+    pub(super) fn apply_rerank_enabled(&mut self, enabled: bool) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let path = save_feature_enabled(&environment, "memory_rerank", enabled, None, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.rebuild_memory_embedding(&environment);
+        if let Some(settings) = self.settings.as_mut() {
+            settings.set_rerank_enabled(enabled);
+        }
+        Ok(format!(
+            "重排序模型：{}，已保存到 {}。",
+            if enabled { "开启" } else { "关闭" },
+            path.display()
+        ))
+    }
+
+    /// 保存整份向量模型配置：两组渠道各按 key 从磁盘继承留空的 `api_key`。
     ///
     /// 向量渠道同样不下发内核，因此写盘后只重建宿主侧的记忆向量召回运行期。
     pub(super) fn apply_embedding_models(
         &mut self,
         rows: &[EmbeddingRow],
         default_key: &str,
+        rerank_rows: &[EmbeddingRow],
+        rerank_default_key: &str,
     ) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let previous = load_embedding_model_configuration(&environment, None)
@@ -49,46 +67,81 @@ impl App {
             }
             channels.push(channel);
         }
+        let mut rerank_channels: Vec<RerankChannelConfig> = Vec::new();
+        for row in rerank_rows {
+            let mut channel = rerank_config_from_row(row);
+            if channel.api_key.is_empty() {
+                if let Some(existing) = previous
+                    .rerank_channels
+                    .iter()
+                    .find(|item| item.key == channel.key)
+                {
+                    channel.api_key = existing.api_key.clone();
+                }
+            }
+            rerank_channels.push(channel);
+        }
         let configuration = EmbeddingModelConfiguration {
             channels,
             default_key: default_key.to_string(),
+            rerank_channels,
+            rerank_default_key: rerank_default_key.to_string(),
         };
         let path = save_embedding_model_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         self.rebuild_memory_embedding(&environment);
         let reloaded =
             load_embedding_model_configuration(&environment, None).unwrap_or(configuration);
-        let reloaded_enabled =
+        let embedding_enabled =
             load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                .unwrap_or(false);
+        let rerank_enabled =
+            load_feature_enabled(&environment, "memory_rerank", false, None, None)
                 .unwrap_or(false);
         let rows: Vec<EmbeddingRow> = reloaded
             .channels
             .iter()
             .map(embedding_row_from_config)
             .collect();
+        let rerank_rows: Vec<EmbeddingRow> = reloaded
+            .rerank_channels
+            .iter()
+            .map(rerank_row_from_config)
+            .collect();
         if let Some(settings) = self.settings.as_mut() {
             settings.refresh_embedding_models(
                 rows,
                 &reloaded.default_key,
-                reloaded_enabled,
+                rerank_rows,
+                &reloaded.rerank_default_key,
+                embedding_enabled,
+                rerank_enabled,
                 "",
             );
         }
         Ok(format!("向量模型配置已保存到 {}。", path.display()))
     }
 
-    /// 按当前配置重建记忆的向量召回运行期（保存后本会话即刻生效）。
+    /// 按当前配置重建记忆的向量召回与重排运行期（保存后本会话即刻生效）。
     pub(super) fn rebuild_memory_embedding(&mut self, environment: &ConfigEnvironment) {
         let enabled = load_feature_enabled(environment, "memory_embedding", false, None, None)
             .unwrap_or(false);
+        let rerank_enabled = load_feature_enabled(environment, "memory_rerank", false, None, None)
+            .unwrap_or(false);
         let embedding = Arc::new(
-            omnicrawl_host::embedding_client::embedding_options_from_config(environment, enabled),
+            omnicrawl_host::embedding_client::embedding_options_from_config(
+                environment,
+                enabled,
+                rerank_enabled,
+            ),
         );
         let memory = MemoryOptions {
-            embedding,
+            embedding: Arc::clone(&embedding),
             ..self.registry_options.memory.clone()
         };
         self.registry_options.memory = memory;
+        // 知识库与 Skill 检索的第二阶段精排与记忆共用同一份向量模型配置。
+        self.registry_options.search_embedding = embedding;
     }
 
     // ---------- 决策模型页（渠道 / 功能开关 / 自部署） ----------

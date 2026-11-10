@@ -1,19 +1,24 @@
 # OmniCrawl 向量模型配置（在设置面板「向量模型」页新建渠道后自动生成 embedding_models.toml）
 #
-# 向量模型把一段文本映射成一个定长浮点向量，记忆检索用它做语义召回：先把查询与
-# 候选记忆都换成向量，按余弦相似度排序，再与关键词规则分做倒数排名融合。
+# 检索分两个阶段，各由一类模型负责：
+# 1. 嵌入模型（[channels.*]）把文本映射成定长向量，负责从大池子里粗筛召回：
+#    查询与候选都换成向量，按余弦相似度排序，再与关键词规则分做倒数排名融合。
+# 2. 重排序模型（[rerank_channels.*]）对召回出的候选逐条打分，负责精排：
+#    把最相关的排到最前面，噪声沉到候选池尾部，之后才截断送进模型。
 #
-# 全部走云端 OpenAI 兼容接口（POST {base_url}/embeddings），不使用本地模型：
-# 本地推理要多一份模型文件与推理运行时，代价远高于收益。
+# 都走云端 OpenAI 兼容接口，不使用本地模型：
+# 嵌入 POST {base_url}/embeddings，重排 POST {base_url}/rerank。
 #
-# 未配置、未启用或缺凭据时，记忆检索直接退回纯关键词规则排序——这是刻意的兜底，
-# 不是错误：向量召回是纯加速项，不可用不该让检索失败。
+# 未配置、未启用或缺凭据时，检索直接退回纯关键词规则排序——这是刻意的兜底，
+# 不是错误：两阶段召回都是纯加速项，不可用不该让检索失败。
 #
 # 密钥只写明文 api_key；不要提交到版本库。
 version = 1
 
-# 默认使用的向量渠道 key；留空或指向不存在的渠道时取第一条启用的渠道。
+# 默认使用的嵌入渠道 key；留空或指向不存在的渠道时取第一条启用的渠道。
 default_key = "openai-embedding"
+# 默认使用的重排渠道 key；口径同上。
+rerank_default_key = "jina-rerank"
 
 [channels.openai-embedding]
 name = "OpenAI 向量"
@@ -26,5 +31,14 @@ model = "text-embedding-3-small"
 dimensions = 0
 # 单次请求最多携带的文本条数；候选多时按此分批串行发送。
 batch_size = 64
+timeout_seconds = 30
+enabled = true
+
+[rerank_channels.jina-rerank]
+name = "Jina 重排序"
+# 这里只追加 /rerank。
+base_url = "https://api.jina.ai/v1"
+api_key = ""
+model = "jina-reranker-v2-base-multilingual"
 timeout_seconds = 30
 enabled = true

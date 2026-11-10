@@ -11,6 +11,9 @@
 //! 可选交给结构化决策模型重排（`decision_models.toml` 的 `[features] skill_search_rerank`，
 //! 默认关闭）：此时先取更宽的一池候选送审，最终顺序按决策模型给出的置信度，条数仍是十条。
 //! 没有关键词（按作用域列出全部）时没有「相关度」可判，不送审。
+//!
+//! 另可选交给重排序模型精排（`[memory_rerank] enabled`）：对召回出的候选逐条打分后排序，
+//! 与决策模型重排是两个独立开关，可只开其中一个。
 
 use std::path::Path;
 
@@ -23,6 +26,7 @@ use serde_json::{json, Map, Value};
 use super::arguments::optional_text;
 use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
+use crate::embedding_client::{rerank_scores, EmbeddingOptions};
 
 /// 固定返回的条数：检索结果只用于判断「该读哪个 Skill」，再多也只是噪声。
 pub const SEARCH_RESULT_LIMIT: usize = 10;
@@ -32,6 +36,7 @@ pub fn skill_search(
     root: &Path,
     env: &ConfigEnvironment,
     rerank: &RerankOptions,
+    embedding: &EmbeddingOptions,
     arguments: &Map<String, Value>,
 ) -> ToolOutcome {
     let raw_scope = optional_text(arguments, "scope").to_lowercase();
@@ -47,9 +52,10 @@ pub fn skill_search(
         )));
     }
     let query = optional_text(arguments, "query");
-    // 重排开启且有关键词时先取更宽的一池候选：BM25 只用于挑池子，最终顺序由决策模型决定。
-    let reranking = rerank.active() && !query.trim().is_empty();
-    let pool = if reranking {
+    // 任一路重排开启且有关键词时先取更宽的一池候选：BM25 只用于挑池子，最终顺序由外发通道决定。
+    let ranked = !query.trim().is_empty();
+    let pooling = ranked && (rerank.active() || embedding.rerank_active());
+    let pool = if pooling {
         SEARCH_RESULT_LIMIT.max(RERANK_POOL_LIMIT)
     } else {
         SEARCH_RESULT_LIMIT
@@ -61,14 +67,22 @@ pub fn skill_search(
         .unwrap_or_default();
     manager.discover(Some(root), &extra_paths);
     let mut hits = manager.search_meta(&query, &scope, pool);
-    if reranking {
-        let state = json!({
-            "query": query,
-            "scope": scope,
-        });
+    if pooling {
         let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
-        if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &query, &texts) {
+        if let Some(scored) = rerank_scores(embedding, &query, &texts) {
+            let order: Vec<usize> = scored.into_iter().map(|(index, _)| index).collect();
             hits = apply_order(hits, &order);
+        }
+        if rerank.active() {
+            let state = json!({
+                "query": query,
+                "scope": scope,
+            });
+            let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
+            if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &query, &texts)
+            {
+                hits = apply_order(hits, &order);
+            }
         }
     }
     hits.truncate(SEARCH_RESULT_LIMIT);
@@ -193,6 +207,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "python code review"})),
         )
         .expect("检索成功");
@@ -222,6 +237,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project"})),
         )
         .expect("列出成功");
@@ -231,6 +247,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "all"})),
         )
         .expect("列出成功");
@@ -242,6 +259,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "path"})),
         )
         .expect("列出成功");
@@ -258,6 +276,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "global"})),
         )
         .expect_err("非法作用域");
@@ -289,6 +308,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "rust 内核"})),
         )
         .expect("检索成功");
@@ -304,6 +324,7 @@ mod tests {
             &root,
             &env(&root),
             &options,
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "rust 内核"})),
         )
         .expect("检索成功");
@@ -336,6 +357,7 @@ mod tests {
             &root,
             &env(&root),
             &options,
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project"})),
         )
         .expect("列出成功");
@@ -357,6 +379,7 @@ mod tests {
             &root,
             &env(&root),
             &options,
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "甲级技能"})),
         )
         .expect("检索不该因为重排不可用而失败");
@@ -382,6 +405,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "kubernetes"})),
         )
         .expect("检索成功");
@@ -408,6 +432,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "检索排序用技能"})),
         )
         .expect("检索成功");
@@ -437,6 +462,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "复盘"})),
         )
         .expect("检索成功");
@@ -456,6 +482,7 @@ mod tests {
             &root,
             &env(&root),
             &plain(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"scope": "project", "query": "完全无关的词汇"})),
         )
         .expect("检索成功");

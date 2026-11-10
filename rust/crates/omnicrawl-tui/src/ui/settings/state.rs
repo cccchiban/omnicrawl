@@ -56,8 +56,9 @@ pub(super) use shared::cycle_text;
 mod decision_page;
 
 pub use decision_page::{
-    visible_decision_fields, DecisionDropdown, DecisionField, DecisionLocalChange, DecisionLocalRow,
-    DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingField, EmbeddingRow,
+    visible_decision_fields, visible_embedding_fields, DecisionDropdown, DecisionField,
+    DecisionLocalChange, DecisionLocalRow, DecisionLocalValues, DecisionRow, DecisionSwitchRow,
+    EmbeddingChannelKind, EmbeddingField, EmbeddingRow,
     DECISION_LOCAL_DEVICE_OPTIONS,
     DECISION_LOCAL_ROW_CHANNEL, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_ROW_DELETE,
     DECISION_LOCAL_ROW_DEVICE, DECISION_LOCAL_ROW_DOWNLOAD, DECISION_LOCAL_ROW_DOWNLOADED,
@@ -70,7 +71,9 @@ pub use decision_page::{
 
 pub(crate) use decision_page::{DecisionForm, EmbeddingForm};
 
-pub(super) use decision_page::{DecisionLocalState, DecisionModelsState, EmbeddingModelsState};
+pub(super) use decision_page::{
+    DecisionLocalState, DecisionModelsState, EmbeddingGroupState, EmbeddingModelsState,
+};
 
 mod tts_page;
 
@@ -538,12 +541,18 @@ pub struct SettingsValues {
     pub decision_channels: Vec<DecisionRow>,
     pub default_decision_key: String,
     pub decision_template: DecisionRow,
-    /// 向量模型页的初始列表、默认渠道与「新建」模板。
+    /// 嵌入模型渠道（`channels`）与重排模型渠道（`rerank_channels`）各一组：
+    /// 列表、默认 key、「新建」模板。
     pub embedding_channels: Vec<EmbeddingRow>,
     pub default_embedding_key: String,
     pub embedding_template: EmbeddingRow,
-    /// 向量召回总开关（`config.toml` 的 `[memory_embedding] enabled`）。
+    pub rerank_channels: Vec<EmbeddingRow>,
+    pub default_rerank_key: String,
+    pub rerank_template: EmbeddingRow,
+    /// 嵌入模型开关（`config.toml` 的 `[memory_embedding] enabled`）。
     pub embedding_enabled: bool,
+    /// 重排序模型开关（`config.toml` 的 `[memory_rerank] enabled`）。
+    pub rerank_enabled: bool,
     /// 联网搜索走向量模型排序的开关（`decision_models.toml` 的 `[features]`）。
     /// 决策模型页下方那一组功能开关的当前值（键与顺序取自配置域的开关表）。
     pub decision_switches: Vec<DecisionSwitchRow>,
@@ -599,7 +608,11 @@ impl SettingsValues {
             embedding_channels: Vec::new(),
             default_embedding_key: String::new(),
             embedding_template: EmbeddingRow::default(),
+            rerank_channels: Vec::new(),
+            default_rerank_key: String::new(),
+            rerank_template: EmbeddingRow::default(),
             embedding_enabled: false,
+            rerank_enabled: false,
             decision_switches: Vec::new(),
             decision_local: DecisionLocalValues::default(),
             suggestion_enabled: false,
@@ -674,13 +687,17 @@ impl SettingsValues {
         self
     }
 
-    /// 覆盖向量模型页的初始列表、默认渠道、「新建」模板与两条开关。
+    /// 覆盖向量模型页的两组渠道、各自默认 key、「新建」模板与两个开关。
     pub fn with_embedding_models(
         mut self,
         channels: Vec<EmbeddingRow>,
         default_key: &str,
         template: EmbeddingRow,
+        rerank_channels: Vec<EmbeddingRow>,
+        rerank_default_key: &str,
+        rerank_template: EmbeddingRow,
         enabled: bool,
+        rerank_enabled: bool,
     ) -> Self {
         let fallback = channels
             .first()
@@ -693,7 +710,19 @@ impl SettingsValues {
         };
         self.embedding_channels = channels;
         self.embedding_template = template;
+        let fallback = rerank_channels
+            .first()
+            .map(|row| row.key.clone())
+            .unwrap_or_default();
+        self.default_rerank_key = if rerank_default_key.trim().is_empty() {
+            fallback
+        } else {
+            rerank_default_key.to_string()
+        };
+        self.rerank_channels = rerank_channels;
+        self.rerank_template = rerank_template;
         self.embedding_enabled = enabled;
+        self.rerank_enabled = rerank_enabled;
         self
     }
 
@@ -867,13 +896,17 @@ pub enum SettingsChange {
         rows: Vec<DecisionRow>,
         default_key: String,
     },
-    /// 保存整份向量模型配置（向量渠道列表 + 默认渠道 key）。
+    /// 保存整份向量模型配置：嵌入渠道与重排渠道两组，各自带默认 key。
     EmbeddingModels {
         rows: Vec<EmbeddingRow>,
         default_key: String,
+        rerank_rows: Vec<EmbeddingRow>,
+        rerank_default_key: String,
     },
-    /// 向量模型页顶部的总开关（`config.toml` 的 `[memory_embedding] enabled`）。
+    /// 嵌入模型开关（`config.toml` 的 `[memory_embedding] enabled`）。
     EmbeddingEnabled { enabled: bool },
+    /// 重排序模型开关（`config.toml` 的 `[memory_rerank] enabled`）。
+    RerankEnabled { enabled: bool },
     /// 决策模型页的一个功能开关（键取自配置域的开关表）。
     DecisionSwitch { key: String, enabled: bool },
     /// 提问建议页的开关（写回 `config.toml` 的 `[suggestion] skills`）。
@@ -1183,12 +1216,22 @@ impl SettingsState {
                 status: String::new(),
             },
             embedding_models: EmbeddingModelsState {
-                rows: values.embedding_channels,
-                default_key: values.default_embedding_key,
+                groups: [
+                    EmbeddingGroupState {
+                        rows: values.embedding_channels,
+                        default_key: values.default_embedding_key,
+                        template: values.embedding_template,
+                    },
+                    EmbeddingGroupState {
+                        rows: values.rerank_channels,
+                        default_key: values.default_rerank_key,
+                        template: values.rerank_template,
+                    },
+                ],
                 enabled: values.embedding_enabled,
+                rerank_enabled: values.rerank_enabled,
                 selected: 0,
                 form: None,
-                template: values.embedding_template,
                 status: String::new(),
             },
             forms,

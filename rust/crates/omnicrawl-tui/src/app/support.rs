@@ -502,6 +502,34 @@ pub(super) fn embedding_config_from_row(row: &EmbeddingRow) -> EmbeddingChannelC
     }
 }
 
+/// 配置重排渠道 → 界面行。
+pub(super) fn rerank_row_from_config(channel: &RerankChannelConfig) -> EmbeddingRow {
+    EmbeddingRow {
+        key: channel.key.clone(),
+        name: channel.name.clone(),
+        base_url: channel.base_url.clone(),
+        // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
+        api_key: channel.api_key.clone(),
+        model: channel.model.clone(),
+        dimensions: 0,
+        timeout_seconds: channel.timeout_seconds,
+        enabled: channel.enabled,
+    }
+}
+
+/// 界面行 → 配置重排渠道（`api_key` 留空表示「不改动」，由调用方按 key 继承）。
+pub(super) fn rerank_config_from_row(row: &EmbeddingRow) -> RerankChannelConfig {
+    RerankChannelConfig {
+        key: row.key.trim().to_string(),
+        name: row.name.trim().to_string(),
+        base_url: row.base_url.trim().to_string(),
+        api_key: row.api_key.trim().to_string(),
+        model: row.model.trim().to_string(),
+        timeout_seconds: row.timeout_seconds,
+        enabled: row.enabled,
+    }
+}
+
 pub(super) fn decision_config_from_row(row: &DecisionRow) -> DecisionChannelConfig {
     DecisionChannelConfig {
         key: row.key.trim().to_string(),

@@ -924,10 +924,19 @@ fn options_from_process_profile(
             omnicrawl_host::embedding_client::embedding_options_from_config(
                 env,
                 load_feature_enabled(env, "memory_embedding", false, None, None).unwrap_or(false),
+                load_feature_enabled(env, "memory_rerank", false, None, None).unwrap_or(false),
             ),
         ),
         ..MemoryOptions::default()
     };
+    // 知识库与 Skill 检索的第二阶段精排：与记忆召回共用同一份向量模型配置。
+    options.registry_options.search_embedding = Arc::new(
+        omnicrawl_host::embedding_client::embedding_options_from_config(
+            env,
+            load_feature_enabled(env, "memory_embedding", false, None, None).unwrap_or(false),
+            load_feature_enabled(env, "memory_rerank", false, None, None).unwrap_or(false),
+        ),
+    );
     // 知识库检索重排：与 TUI 同源，按 `[decision_models.features] kb_search_rerank` 装配。
     options.registry_options.knowledge_rerank = Arc::new(
         omnicrawl_host::tools::rerank_options_from_config(env, DECISION_SWITCH_KB_SEARCH),

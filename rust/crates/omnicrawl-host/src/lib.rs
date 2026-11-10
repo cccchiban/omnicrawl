@@ -22,6 +22,7 @@ pub mod sandbox;
 pub mod prompt;
 // 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的组装方。
 pub mod prompt_cache;
+pub mod rerank_wire;
 pub mod review;
 pub mod tools;
 pub mod turn;

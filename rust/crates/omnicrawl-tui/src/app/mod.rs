@@ -111,7 +111,7 @@ use omnicrawl_config::features::decision_model::{
 };
 use omnicrawl_config::features::embedding::{
     load_embedding_model_configuration, save_embedding_model_configuration, EmbeddingChannelConfig,
-    EmbeddingModelConfiguration,
+    EmbeddingModelConfiguration, RerankChannelConfig,
 };
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
 use omnicrawl_controllers::subagents::tasks::is_terminal;
@@ -776,11 +776,14 @@ impl App {
                     &environment,
                     DECISION_SWITCH_MEMORY_SEARCH,
                 )),
-                // 向量召回：`[memory_embedding] enabled` 开关，默认关闭。
+                // 向量召回：`[memory_embedding] enabled` 是嵌入模型，`[memory_rerank] enabled`
+                // 是重排序模型；两个开关各自独立，都在「向量模型」页顶部。
                 embedding: Arc::new(
                     omnicrawl_host::embedding_client::embedding_options_from_config(
                         &environment,
                         load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                            .unwrap_or(false),
+                        load_feature_enabled(&environment, "memory_rerank", false, None, None)
                             .unwrap_or(false),
                     ),
                 ),
@@ -796,6 +799,16 @@ impl App {
                 &environment,
                 DECISION_SWITCH_SKILL_SEARCH,
             )),
+            // 知识库与 Skill 检索的第二阶段精排：与记忆召回共用同一份向量模型配置。
+            search_embedding: Arc::new(
+                omnicrawl_host::embedding_client::embedding_options_from_config(
+                    &environment,
+                    load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                        .unwrap_or(false),
+                    load_feature_enabled(&environment, "memory_rerank", false, None, None)
+                        .unwrap_or(false),
+                ),
+            ),
             subagent_roles: subagent_roles(),
             disabled_tools,
             // 联网搜索：默认引擎与 Tavily/Exa/Firecrawl 凭据来自 `[web_search]` 段。

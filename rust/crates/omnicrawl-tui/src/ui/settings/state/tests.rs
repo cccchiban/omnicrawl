@@ -45,12 +45,22 @@ fn embedding_row(key: &str, enabled: bool) -> EmbeddingRow {
 fn embedding_state(enabled: bool) -> SettingsState {
     let mut state = state();
     state.embedding_models = EmbeddingModelsState {
-        rows: vec![embedding_row("first", true), embedding_row("second", true)],
-        default_key: "first".to_string(),
+        groups: [
+            EmbeddingGroupState {
+                rows: vec![embedding_row("first", true), embedding_row("second", true)],
+                default_key: "first".to_string(),
+                template: EmbeddingRow::default(),
+            },
+            EmbeddingGroupState {
+                rows: vec![embedding_row("rerank-first", true)],
+                default_key: "rerank-first".to_string(),
+                template: EmbeddingRow::default(),
+            },
+        ],
         enabled,
+        rerank_enabled: false,
         selected: 0,
         form: None,
-        template: EmbeddingRow::default(),
         status: String::new(),
     };
     // 让按键直接落到向量页（与用户进入该页后的状态一致）。
@@ -59,7 +69,7 @@ fn embedding_state(enabled: bool) -> SettingsState {
     state
 }
 
-/// 第 0 行是向量召回总开关：Enter 翻转并交宿主写盘，不动渠道。
+/// 第 0 行是嵌入模型开关：Enter 翻转并交宿主写盘，不动渠道。
 #[test]
 fn embedding_top_row_toggles_the_switch() {
     let mut state = embedding_state(false);
@@ -79,27 +89,60 @@ fn embedding_top_row_toggles_the_switch() {
     }
 }
 
-/// 上下移动跨越开关与渠道，且不会停在越界位置。
+/// 第 1 行是重排序模型开关：Enter 翻转的是另一个开关。
+#[test]
+fn embedding_second_row_toggles_the_rerank_switch() {
+    let mut state = embedding_state(true);
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.embedding_switch_row(), 1);
+    assert_eq!(state.embedding_selected(), None, "仍是开关行，不是渠道");
+
+    let event = state.handle_key(KeyCode::Enter);
+    match event {
+        Some(SettingsEvent::Apply(SettingsChange::RerankEnabled { enabled })) => {
+            assert!(enabled, "关闭时回车应当请求开启重排序");
+        }
+        other => panic!("应当请求翻转重排序开关，实际：{other:?}"),
+    }
+}
+
+/// 上下移动跨越两个开关与两组渠道，且不会停在越界位置。
 #[test]
 fn embedding_cursor_walks_switch_then_channels() {
     let mut state = embedding_state(true);
     assert!(state.embedding_switch_selected());
 
+    // 第 0 行嵌入开关、第 1 行重排开关，之后是嵌入渠道、再重排渠道。
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.embedding_switch_row(), 1);
+    assert_eq!(state.embedding_selected(), None);
     state.handle_key(KeyCode::Down);
     assert_eq!(
         state.embedding_selected(),
-        Some(0),
-        "下移一格应选中第一条渠道"
+        Some((EmbeddingChannelKind::Embedding, 0)),
+        "第三行应选中第一条嵌入渠道"
     );
     state.handle_key(KeyCode::Down);
-    assert_eq!(state.embedding_selected(), Some(1));
+    assert_eq!(
+        state.embedding_selected(),
+        Some((EmbeddingChannelKind::Embedding, 1))
+    );
+    state.handle_key(KeyCode::Down);
+    assert_eq!(
+        state.embedding_selected(),
+        Some((EmbeddingChannelKind::Rerank, 0)),
+        "嵌入渠道之后是重排渠道"
+    );
     // 再下移回到顶部开关（环形）。
     state.handle_key(KeyCode::Down);
     assert!(state.embedding_switch_selected());
     assert_eq!(state.embedding_switch_row(), 0);
     // 上移一格又到最后一条渠道。
     state.handle_key(KeyCode::Up);
-    assert_eq!(state.embedding_selected(), Some(1));
+    assert_eq!(
+        state.embedding_selected(),
+        Some((EmbeddingChannelKind::Rerank, 0))
+    );
 }
 
 /// 游标在开关上时 D 不删渠道。

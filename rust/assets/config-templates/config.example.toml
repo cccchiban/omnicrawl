@@ -257,6 +257,15 @@ session_release_seconds = 1800
 [memory]
 enabled = true
 
+# 向量模型的两个阶段开关（渠道与密钥在 embedding_models.toml，用设置面板「向量模型」页编辑）。
+# 嵌入模型负责粗筛召回，重排序模型负责对候选精排；两个开关互相独立，都可单独关闭。
+# 缺凭据或请求失败时检索自动退回纯关键词规则排序，不让检索失败。
+[memory_embedding]
+enabled = false
+
+[memory_rerank]
+enabled = false
+
 # Skill 额外路径：目录或 .md 文件，相对路径按工作区解析。
 # 与内置作用域一起参与发现，扫描顺序排在最后；同名 Skill 由先扫描到的作用域胜出。
 # [skills]

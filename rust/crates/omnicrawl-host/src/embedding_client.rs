@@ -24,11 +24,12 @@ use std::time::{Duration, Instant};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::embedding::{
-    load_embedding_model_configuration, EmbeddingChannelConfig,
+    load_embedding_model_configuration, EmbeddingChannelConfig, RerankChannelConfig,
 };
 use omnicrawl_core::diagnostics;
 
 use crate::embedding_wire::{cosine_similarity, parse_embeddings, request_body};
+use crate::rerank_wire::{parse_rerank, request_body as rerank_request_body};
 
 const USER_AGENT: &str = omnicrawl_version::USER_AGENT;
 /// 单条输入进请求前的截断长度：向量只看语义，不需要整段正文。
@@ -172,18 +173,112 @@ fn post_embeddings(channel: &EmbeddingChannel, body_text: &str) -> Result<String
     Ok(text)
 }
 
+/// 一个可用的重排渠道（凭据已解析，配置已归一化）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RerankChannel {
+    pub model: String,
+    pub base_url: String,
+    /// 已解析出的凭据；为空表示不可用。
+    pub api_key: String,
+    pub timeout_seconds: u64,
+}
+
+impl RerankChannel {
+    fn from_config(channel: &RerankChannelConfig, environment: &ConfigEnvironment) -> Self {
+        Self {
+            model: channel.model.clone(),
+            base_url: channel.base_url.clone(),
+            api_key: channel.resolve_api_key(environment),
+            timeout_seconds: channel.timeout_seconds.max(1) as u64,
+        }
+    }
+
+    fn endpoint(&self) -> String {
+        format!("{}/rerank", self.base_url.trim_end_matches('/'))
+    }
+}
+
+/// 重排请求的传输层：真实实现走 HTTP；测试注入桩以便不起网络。
+pub trait RerankClient: Send + Sync {
+    /// 按相关度降序返回 `(候选下标, 相关度)`；`Err` 表示该批不可用。
+    fn rerank(
+        &self,
+        channel: &RerankChannel,
+        query: &str,
+        documents: &[String],
+    ) -> Result<Vec<(usize, f32)>, String>;
+}
+
+/// 真实实现：OpenAI 兼容的 `POST {base_url}/rerank`。
+pub struct HttpRerankClient;
+
+impl RerankClient for HttpRerankClient {
+    fn rerank(
+        &self,
+        channel: &RerankChannel,
+        query: &str,
+        documents: &[String],
+    ) -> Result<Vec<(usize, f32)>, String> {
+        if channel.api_key.trim().is_empty() {
+            return Err(
+                "重排序渠道缺少凭据：请在「向量模型」设置里填写 API Key。".to_string(),
+            );
+        }
+        let body = rerank_request_body(&channel.model, query, documents, documents.len());
+        let body_text = serde_json::to_string(&body)
+            .map_err(|error| format!("构造重排请求失败：{error}"))?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let timeout = std::time::Duration::from_secs(channel.timeout_seconds);
+        let response = agent
+            .post(&channel.endpoint())
+            .config()
+            .timeout_connect(Some(timeout))
+            .timeout_recv_response(Some(timeout))
+            .timeout_recv_body(Some(timeout))
+            .build()
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {}", channel.api_key))
+            .header("User-Agent", USER_AGENT)
+            .send(body_text)
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let text = response
+            .into_body()
+            .read_to_string()
+            .map_err(|error| error.to_string())?;
+        if status >= 400 {
+            return Err(format!(
+                "重排服务返回 HTTP {status}：{}",
+                shorten(text.trim())
+            ));
+        }
+        parse_rerank(&text)
+    }
+}
+
 /// 向量召回运行期：一个宿主一份，供所有记忆作用域共用。
 #[derive(Clone)]
 pub struct EmbeddingOptions {
-    /// 是否启用向量召回（`[memory_embedding] enabled`）。
+    /// 是否启用嵌入模型（`[memory_embedding] enabled`）。
     pub enabled: bool,
-    /// 默认向量渠道；`None` 表示没有可用渠道（未配置、未启用或缺凭据）。
+    /// 默认嵌入渠道；`None` 表示没有可用渠道（未配置、未启用或缺凭据）。
     pub channel: Option<EmbeddingChannel>,
+    /// 是否启用重排序模型（`[memory_rerank] enabled`）。
+    pub rerank_enabled: bool,
+    /// 默认重排渠道；`None` 表示没有可用渠道。
+    pub rerank_channel: Option<RerankChannel>,
     pub cache: Arc<EmbeddingCache>,
     /// 传输实现（测试注入桩）。
     pub client: Arc<dyn EmbeddingClient>,
+    /// 重排传输实现（测试注入桩）。
+    pub rerank_client: Arc<dyn RerankClient>,
     /// 最近一次失败的时刻：冷却期内不再外发（[`FAILURE_COOLDOWN`]）。
     pub last_failure: Arc<Mutex<Option<Instant>>>,
+    /// 重排侧的失败时刻：与嵌入分开，一侧坏掉不该连累另一侧。
+    pub last_rerank_failure: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Default for EmbeddingOptions {
@@ -191,9 +286,13 @@ impl Default for EmbeddingOptions {
         Self {
             enabled: false,
             channel: None,
+            rerank_enabled: false,
+            rerank_channel: None,
             cache: Arc::new(EmbeddingCache::default()),
             client: Arc::new(HttpEmbeddingClient),
+            rerank_client: Arc::new(HttpRerankClient),
             last_failure: Arc::new(Mutex::new(None)),
+            last_rerank_failure: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -204,12 +303,14 @@ impl std::fmt::Debug for EmbeddingOptions {
             .debug_struct("EmbeddingOptions")
             .field("enabled", &self.enabled)
             .field("channel", &self.channel)
+            .field("rerank_enabled", &self.rerank_enabled)
+            .field("rerank_channel", &self.rerank_channel)
             .finish()
     }
 }
 
 impl EmbeddingOptions {
-    /// 是否真正可用：开关打开、有渠道、有凭据。
+    /// 嵌入模型是否真正可用：开关打开、有渠道、有凭据。
     pub fn active(&self) -> bool {
         self.enabled
             && self
@@ -219,10 +320,33 @@ impl EmbeddingOptions {
                 .unwrap_or(false)
     }
 
+    /// 重排序模型是否真正可用（口径同上）。
+    pub fn rerank_active(&self) -> bool {
+        self.rerank_enabled
+            && self
+                .rerank_channel
+                .as_ref()
+                .map(|channel| !channel.api_key.trim().is_empty())
+                .unwrap_or(false)
+    }
+
+    /// 是否有任何一路可用（决定检索要不要取更宽的候选池）。
+    pub fn any_active(&self) -> bool {
+        self.active() || self.rerank_active()
+    }
+
     /// 是否处在失败冷却期内：是则跳过外发，直接走本地规则排序。
     pub fn cooling_down(&self) -> bool {
-        self.last_failure
-            .lock()
+        Self::within_cooldown(&self.last_failure)
+    }
+
+    /// 重排侧是否处在失败冷却期内。
+    pub fn rerank_cooling_down(&self) -> bool {
+        Self::within_cooldown(&self.last_rerank_failure)
+    }
+
+    fn within_cooldown(slot: &Mutex<Option<Instant>>) -> bool {
+        slot.lock()
             .ok()
             .and_then(|at| *at)
             .map(|at| at.elapsed() < FAILURE_COOLDOWN)
@@ -236,9 +360,23 @@ impl EmbeddingOptions {
         }
     }
 
+    /// 记一次重排失败，开启重排侧的冷却窗口。
+    pub fn record_rerank_failure(&self) {
+        if let Ok(mut at) = self.last_rerank_failure.lock() {
+            *at = Some(Instant::now());
+        }
+    }
+
     /// 一次召回成功后立即解除冷却，不必再等窗口走完。
     pub fn clear_failure(&self) {
         if let Ok(mut at) = self.last_failure.lock() {
+            *at = None;
+        }
+    }
+
+    /// 一次重排成功后立即解除重排侧的冷却。
+    pub fn clear_rerank_failure(&self) {
+        if let Ok(mut at) = self.last_rerank_failure.lock() {
             *at = None;
         }
     }
@@ -246,22 +384,31 @@ impl EmbeddingOptions {
 
 /// 按配置装配向量召回运行期（TUI 与 API 共用同一口径）。
 ///
-/// 未启用时连配置文件都不读：这是纯加速项，不该在启动路径上多花一次磁盘往返。
+/// 两个开关都关时连配置文件都不读：这是纯加速项，不该在启动路径上多花一次磁盘往返。
 pub fn embedding_options_from_config(
     environment: &ConfigEnvironment,
     enabled: bool,
+    rerank_enabled: bool,
 ) -> EmbeddingOptions {
-    if !enabled {
+    if !enabled && !rerank_enabled {
         return EmbeddingOptions::default();
     }
-    let channel = load_embedding_model_configuration(environment, None)
-        .ok()
+    let configuration = load_embedding_model_configuration(environment, None).ok();
+    let channel = configuration
+        .as_ref()
         .and_then(|configuration| configuration.active_channel().cloned())
         .map(|channel| EmbeddingChannel::from_config(&channel, environment))
         .filter(|channel| !channel.api_key.trim().is_empty());
+    let rerank_channel = configuration
+        .as_ref()
+        .and_then(|configuration| configuration.active_rerank_channel().cloned())
+        .map(|channel| RerankChannel::from_config(&channel, environment))
+        .filter(|channel| !channel.api_key.trim().is_empty());
     EmbeddingOptions {
-        enabled: true,
+        enabled,
         channel,
+        rerank_enabled,
+        rerank_channel,
         ..EmbeddingOptions::default()
     }
 }
@@ -455,6 +602,45 @@ fn clamp_input(text: &str) -> String {
         return collapsed;
     }
     collapsed.chars().take(INPUT_MAX_CHARS).collect()
+}
+
+/// 第二阶段：把候选交给重排序模型逐条打分，返回**候选下标及其相关度**（降序）。
+///
+/// 与嵌入召回同一套取舍：`None` 表示本次不可用，调用方保留现有顺序；失败进冷却，
+/// 冷却期内不再外发。候选不足两条时不值得多发一次请求，直接返回 `None`。
+pub fn rerank_scores(
+    options: &EmbeddingOptions,
+    query: &str,
+    candidates: &[String],
+) -> Option<Vec<(usize, f32)>> {
+    if !options.rerank_active() || candidates.len() < 2 || options.rerank_cooling_down() {
+        return None;
+    }
+    let channel = options.rerank_channel.as_ref()?;
+    let documents: Vec<String> = candidates.iter().map(|text| clamp_input(text)).collect();
+    match options
+        .rerank_client
+        .rerank(channel, &clamp_input(query), &documents)
+    {
+        Ok(scored) => {
+            // 越界下标一律丢弃：调用方按这个下标重排，越界会错位。
+            let scored: Vec<(usize, f32)> = scored
+                .into_iter()
+                .filter(|(index, _)| *index < documents.len())
+                .collect();
+            if scored.is_empty() {
+                options.record_rerank_failure();
+                return None;
+            }
+            options.clear_rerank_failure();
+            Some(scored)
+        }
+        Err(error) => {
+            diagnostics::warn(format!("[host] 重排序模型不可用，保留原顺序：{error}"));
+            options.record_rerank_failure();
+            None
+        }
+    }
 }
 
 fn shorten(text: &str) -> String {
@@ -782,5 +968,136 @@ mod tests {
         assert!(!options.cooling_down());
         assert!(request_with(&options, &channel, &cache, &client, "q3", &candidates).is_none());
         assert!(client.calls.lock().unwrap().len() > after_first);
+    }
+
+    /// 重排桩：按文档文本查表给出相关度，或整体失败。
+    struct StubRerank {
+        scores: HashMap<String, f32>,
+        fail: bool,
+        calls: Mutex<usize>,
+    }
+
+    impl StubRerank {
+        fn new(scores: &[(&str, f32)]) -> Self {
+            Self {
+                scores: scores
+                    .iter()
+                    .map(|(text, score)| (text.to_string(), *score))
+                    .collect(),
+                fail: false,
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                scores: HashMap::new(),
+                fail: true,
+                calls: Mutex::new(0),
+            }
+        }
+    }
+
+    impl RerankClient for StubRerank {
+        fn rerank(
+            &self,
+            _channel: &RerankChannel,
+            _query: &str,
+            documents: &[String],
+        ) -> Result<Vec<(usize, f32)>, String> {
+            *self.calls.lock().unwrap() += 1;
+            if self.fail {
+                return Err("桩：故意失败".to_string());
+            }
+            let mut scored: Vec<(usize, f32)> = documents
+                .iter()
+                .enumerate()
+                .map(|(index, text)| (index, self.scores.get(text).copied().unwrap_or(0.0)))
+                .collect();
+            scored.sort_by(|left, right| {
+                right
+                    .1
+                    .partial_cmp(&left.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            Ok(scored)
+        }
+    }
+
+    fn rerank_channel() -> RerankChannel {
+        RerankChannel {
+            model: "r".to_string(),
+            base_url: "https://example.invalid/v1".to_string(),
+            api_key: "k".to_string(),
+            timeout_seconds: 5,
+        }
+    }
+
+    #[test]
+    fn rerank_orders_candidates_by_score() {
+        let client = Arc::new(StubRerank::new(&[("无关", 0.1), ("相近", 0.9)]));
+        let options = EmbeddingOptions {
+            rerank_enabled: true,
+            rerank_channel: Some(rerank_channel()),
+            rerank_client: client.clone(),
+            ..EmbeddingOptions::default()
+        };
+        let candidates = vec!["无关".to_string(), "相近".to_string()];
+        let scored = rerank_scores(&options, "查询", &candidates).expect("应当给出名次");
+        let indices: Vec<usize> = scored.iter().map(|(index, _)| *index).collect();
+        assert_eq!(indices, vec![1, 0], "高分候选应排在前面");
+    }
+
+    /// 失败后只让重排侧进冷却：嵌入侧不受牵连。
+    #[test]
+    fn rerank_failure_cools_down_only_the_rerank_side() {
+        let client = Arc::new(StubRerank::failing());
+        let options = EmbeddingOptions {
+            rerank_enabled: true,
+            rerank_channel: Some(rerank_channel()),
+            rerank_client: client.clone(),
+            ..EmbeddingOptions::default()
+        };
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        assert!(rerank_scores(&options, "q", &candidates).is_none());
+        assert!(options.rerank_cooling_down(), "重排失败应开启重排侧冷却");
+        assert!(!options.cooling_down(), "嵌入侧不该被牵连");
+
+        // 冷却期内不再外发。
+        assert!(rerank_scores(&options, "q", &candidates).is_none());
+        assert_eq!(*client.calls.lock().unwrap(), 1, "冷却期内不应再发请求");
+
+        options.clear_rerank_failure();
+        assert!(!options.rerank_cooling_down());
+        assert!(rerank_scores(&options, "q", &candidates).is_none());
+        assert_eq!(*client.calls.lock().unwrap(), 2);
+    }
+
+    /// 开关没开或缺凭据时不发请求，也不误报失败。
+    #[test]
+    fn rerank_inactive_without_switch_or_key() {
+        let client = Arc::new(StubRerank::new(&[("a", 1.0)]));
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let options = EmbeddingOptions {
+            rerank_channel: Some(rerank_channel()),
+            rerank_client: client.clone(),
+            ..EmbeddingOptions::default()
+        };
+        assert!(rerank_scores(&options, "q", &candidates).is_none());
+        assert!(!options.rerank_active());
+        assert_eq!(*client.calls.lock().unwrap(), 0, "开关关着不该外发");
+
+        let options = EmbeddingOptions {
+            rerank_enabled: true,
+            rerank_channel: Some(RerankChannel {
+                api_key: String::new(),
+                ..rerank_channel()
+            }),
+            rerank_client: client.clone(),
+            ..EmbeddingOptions::default()
+        };
+        assert!(!options.rerank_active());
+        assert!(rerank_scores(&options, "q", &candidates).is_none());
+        assert_eq!(*client.calls.lock().unwrap(), 0, "缺凭据不该外发");
     }
 }

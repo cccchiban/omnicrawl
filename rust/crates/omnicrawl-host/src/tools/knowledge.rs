@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
 use super::paths::resolve_lenient;
+use crate::embedding_client::{rerank_scores, EmbeddingOptions};
 
 pub const DEFAULT_KNOWLEDGE_DIRNAME: &str = "knowledge";
 pub const INDEX_FILENAME: &str = "INDEX.md";
@@ -1041,6 +1042,7 @@ state 是事实来源，不要根据候选项自身措辞推测查询。";
 pub fn kb_search(
     base: &KnowledgeBase,
     rerank: &RerankOptions,
+    embedding: &EmbeddingOptions,
     arguments: &Map<String, Value>,
 ) -> ToolOutcome {
     let query = argument_text(arguments, "query");
@@ -1052,8 +1054,9 @@ pub fn kb_search(
     let note_type = optional_text(arguments, "type");
     let status = optional_text(arguments, "status");
     let max_results = read_limited_int(arguments, "max_results", 10, MAX_SEARCH_RESULTS);
-    // 重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由决策模型决定。
-    let pool = if rerank.active() {
+    // 任一路重排开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序与条数由外发通道决定。
+    let pooling = rerank.active() || embedding.rerank_active();
+    let pool = if pooling {
         max_results.max(RERANK_POOL_LIMIT as i64)
     } else {
         max_results
@@ -1066,19 +1069,28 @@ pub fn kb_search(
         status.as_deref(),
         pool,
     )?;
-    if rerank.active() {
-        let state = json!({
-            "query": query,
-            "filters": {
-                "project": project,
-                "tags": tags,
-                "type": note_type,
-                "status": status,
-            },
-        });
+    if pooling {
+        // 第二阶段精排：重排序模型逐条打分。
         let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
-        if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &query, &texts) {
+        if let Some(scored) = rerank_scores(embedding, &query, &texts) {
+            let order: Vec<usize> = scored.into_iter().map(|(index, _)| index).collect();
             hits = apply_order(hits, &order);
+        }
+        if rerank.active() {
+            let state = json!({
+                "query": query,
+                "filters": {
+                    "project": project,
+                    "tags": tags,
+                    "type": note_type,
+                    "status": status,
+                },
+            });
+            let texts: Vec<String> = hits.iter().map(rerank_candidate_text).collect();
+            if let Some(order) = reranked_order(rerank, state, RERANK_INSTRUCTIONS, &query, &texts)
+            {
+                hits = apply_order(hits, &order);
+            }
         }
     }
     hits.truncate(max_results as usize);
@@ -1280,6 +1292,7 @@ mod tests {
         let hits = kb_search(
             &base,
             &RerankOptions::default(),
+            &EmbeddingOptions::default(),
             &arguments(json!({"query": "rust"})),
         )
         .expect("搜索应当成功");
@@ -1348,6 +1361,7 @@ mod tests {
         let hits = kb_search(
             &base,
             &options,
+            &EmbeddingOptions::default(),
             &arguments(json!({"query": "rust 检索", "max_results": 2})),
         )
         .expect("搜索应当成功");
@@ -1385,7 +1399,12 @@ mod tests {
             channel: None,
             ..RerankOptions::default()
         };
-        let hits = kb_search(&base, &options, &arguments(json!({"query": "检索回退"})))
+        let hits = kb_search(
+            &base,
+            &options,
+            &EmbeddingOptions::default(),
+            &arguments(json!({"query": "检索回退"})),
+        )
             .expect("检索不该因为重排不可用而失败");
         let parsed: Value = serde_json::from_str(&hits).expect("结果是 JSON");
         assert_eq!(parsed.as_array().map(Vec::len), Some(1), "{hits}");

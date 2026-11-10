@@ -31,9 +31,22 @@ impl SettingsState {
                 self.decision_models.form = None;
                 self.decision_models.status = message;
             }
-            SettingsChange::EmbeddingModels { rows, default_key } => {
-                self.embedding_models.rows = rows.clone();
-                self.embedding_models.default_key = default_key.clone();
+            SettingsChange::EmbeddingModels {
+                rows,
+                default_key,
+                rerank_rows,
+                rerank_default_key,
+            } => {
+                self.embedding_models.group_mut(EmbeddingChannelKind::Embedding).rows =
+                    rows.clone();
+                self.embedding_models
+                    .group_mut(EmbeddingChannelKind::Embedding)
+                    .default_key = default_key.clone();
+                self.embedding_models.group_mut(EmbeddingChannelKind::Rerank).rows =
+                    rerank_rows.clone();
+                self.embedding_models
+                    .group_mut(EmbeddingChannelKind::Rerank)
+                    .default_key = rerank_default_key.clone();
                 self.embedding_models.selected = self
                     .embedding_models
                     .selected
@@ -43,6 +56,10 @@ impl SettingsState {
             }
             SettingsChange::EmbeddingEnabled { enabled } => {
                 self.embedding_models.enabled = *enabled;
+                self.embedding_models.status = message;
+            }
+            SettingsChange::RerankEnabled { enabled } => {
+                self.embedding_models.rerank_enabled = *enabled;
                 self.embedding_models.status = message;
             }
             SettingsChange::DecisionLocal(change) => {
@@ -296,7 +313,9 @@ impl SettingsState {
                     self.embedding_models.status.push_str(note);
                 }
             }
-            SettingsChange::EmbeddingModels { .. } | SettingsChange::EmbeddingEnabled { .. } => {
+            SettingsChange::EmbeddingModels { .. }
+            | SettingsChange::EmbeddingEnabled { .. }
+            | SettingsChange::RerankEnabled { .. } => {
                 self.embedding_models.status.push_str(note);
             }
             SettingsChange::Model { .. }
@@ -527,14 +546,26 @@ impl SettingsState {
         &mut self,
         rows: Vec<EmbeddingRow>,
         default_key: &str,
+        rerank_rows: Vec<EmbeddingRow>,
+        rerank_default_key: &str,
         enabled: bool,
+        rerank_enabled: bool,
         message: &str,
     ) {
-        self.embedding_models.rows = rows;
-        self.embedding_models.enabled = enabled;
+        self.embedding_models.group_mut(EmbeddingChannelKind::Embedding).rows = rows;
         if !default_key.trim().is_empty() {
-            self.embedding_models.default_key = default_key.trim().to_string();
+            self.embedding_models
+                .group_mut(EmbeddingChannelKind::Embedding)
+                .default_key = default_key.trim().to_string();
         }
+        self.embedding_models.group_mut(EmbeddingChannelKind::Rerank).rows = rerank_rows;
+        if !rerank_default_key.trim().is_empty() {
+            self.embedding_models
+                .group_mut(EmbeddingChannelKind::Rerank)
+                .default_key = rerank_default_key.trim().to_string();
+        }
+        self.embedding_models.enabled = enabled;
+        self.embedding_models.rerank_enabled = rerank_enabled;
         let last = self.embedding_models.total_rows().saturating_sub(1);
         if self.embedding_models.selected > last {
             self.embedding_models.selected = last;
@@ -544,39 +575,68 @@ impl SettingsState {
         }
     }
 
-    /// 宿主回填：顶部总开关的现值（开关翻转由状态层先画，再以磁盘结果为准）。
+    /// 宿主回填：嵌入模型开关的现值（开关翻转由状态层先画，再以磁盘结果为准）。
     pub fn set_embedding_enabled(&mut self, enabled: bool) {
         self.embedding_models.enabled = enabled;
     }
 
-    pub fn embedding_rows(&self) -> &[EmbeddingRow] {
-        &self.embedding_models.rows
+    /// 宿主回填：重排序模型开关的现值。
+    pub fn set_rerank_enabled(&mut self, enabled: bool) {
+        self.embedding_models.rerank_enabled = enabled;
     }
 
-    /// 顶部总开关的当前值（渲染层用）。
+    /// 某一组的渠道行（渲染层用）。
+    pub fn embedding_rows_of(&self, kind: EmbeddingChannelKind) -> &[EmbeddingRow] {
+        &self.embedding_models.group(kind).rows
+    }
+
+    /// 嵌入渠道列表。
+    pub fn embedding_rows(&self) -> &[EmbeddingRow] {
+        self.embedding_rows_of(EmbeddingChannelKind::Embedding)
+    }
+
+    /// 重排渠道列表。
+    pub fn rerank_rows(&self) -> &[EmbeddingRow] {
+        self.embedding_rows_of(EmbeddingChannelKind::Rerank)
+    }
+
+    /// 嵌入模型开关的当前值（渲染层用）。
     pub fn embedding_enabled(&self) -> bool {
         self.embedding_models.enabled
     }
 
-    /// 联网搜索走向量模型排序的当前值（渲染层用）。
-    /// 行游标是否停在开关区（向量召回 / 联网搜索向量排序）。
+    /// 重排序模型开关的当前值（渲染层用）。
+    pub fn rerank_enabled(&self) -> bool {
+        self.embedding_models.rerank_enabled
+    }
+
+    /// 行游标是否停在开关区（嵌入模型 / 重排序模型两个开关）。
     pub fn embedding_switch_selected(&self) -> bool {
         self.embedding_models.selected < EmbeddingModelsState::SWITCH_ROWS
     }
 
-    /// 游标在开关区时的行号（0 向量召回、1 联网搜索向量排序）。
+    /// 游标在开关区时的行号（0 嵌入模型、1 重排序模型）。
     pub fn embedding_switch_row(&self) -> usize {
         self.embedding_models.selected
     }
 
-    /// 选中的**渠道**下标；游标停在总开关时为 `None`。
-    pub fn embedding_selected(&self) -> Option<usize> {
-        EmbeddingModelsState::channel_index(self.embedding_models.selected)
-            .filter(|index| *index < self.embedding_models.rows.len())
+    /// 选中的**渠道**：组与组内下标；游标停在开关区时为 `None`。
+    pub fn embedding_selected(&self) -> Option<(EmbeddingChannelKind, usize)> {
+        self.embedding_models
+            .channel_at(self.embedding_models.selected)
+    }
+
+    /// 某一组的默认渠道 key。
+    pub fn embedding_default_key_of(&self, kind: EmbeddingChannelKind) -> &str {
+        &self.embedding_models.group(kind).default_key
     }
 
     pub fn embedding_default_key(&self) -> &str {
-        &self.embedding_models.default_key
+        self.embedding_default_key_of(EmbeddingChannelKind::Embedding)
+    }
+
+    pub fn rerank_default_key(&self) -> &str {
+        self.embedding_default_key_of(EmbeddingChannelKind::Rerank)
     }
 
     /// 正在编辑的向量渠道（渲染层用）；不在表单时为 `None`。
@@ -588,6 +648,7 @@ impl SettingsState {
             input: form.input.as_ref(),
             dropdown: None,
             is_new: form.is_new,
+            kind: form.kind,
         })
     }
 

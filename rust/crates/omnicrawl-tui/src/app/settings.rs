@@ -38,12 +38,16 @@ impl App {
             SettingsChange::DecisionModels { rows, default_key } => {
                 self.apply_decision_models(rows, default_key)?
             }
-            SettingsChange::EmbeddingModels { rows, default_key } => {
-                self.apply_embedding_models(rows, default_key)?
-            }
+            SettingsChange::EmbeddingModels {
+                rows,
+                default_key,
+                rerank_rows,
+                rerank_default_key,
+            } => self.apply_embedding_models(rows, default_key, rerank_rows, rerank_default_key)?,
             SettingsChange::EmbeddingEnabled { enabled } => {
                 self.apply_embedding_enabled(*enabled)?
             }
+            SettingsChange::RerankEnabled { enabled } => self.apply_rerank_enabled(*enabled)?,
             SettingsChange::DecisionSwitch { key, enabled } => {
                 self.apply_decision_switch(key, *enabled)?
             }

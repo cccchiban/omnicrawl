@@ -14,6 +14,8 @@ pub struct EmbeddingFormView<'a> {
     /// 与决策表单同形，但向量页没有枚举字段，恒为 `None`。
     pub dropdown: Option<&'a DecisionDropdown>,
     pub is_new: bool,
+    /// 这条渠道属于哪一组（决定表单字段表与保存位置）。
+    pub kind: EmbeddingChannelKind,
 }
 
 /// 向量表单字段的当前显示值。
@@ -80,23 +82,23 @@ pub(super) fn set_embedding_field(row: &mut EmbeddingRow, field: EmbeddingField,
 /// 保存前的本地校验：至少一条、key 唯一、地址与模型非空。
 pub(super) fn validate_embedding_rows(rows: &[EmbeddingRow]) -> Result<(), String> {
     if rows.is_empty() {
-        return Err("至少要保留一个向量渠道。".to_string());
+        return Err("至少要保留一个渠道。".to_string());
     }
     let mut seen: Vec<&str> = Vec::new();
     for row in rows {
         let key = row.key.trim();
         if key.is_empty() {
-            return Err("向量渠道 key 不能为空。".to_string());
+            return Err("渠道 key 不能为空。".to_string());
         }
         if seen.contains(&key) {
-            return Err(format!("向量渠道 key 重复：{key}。"));
+            return Err(format!("渠道 key 重复：{key}。"));
         }
         seen.push(key);
         if row.base_url.trim().is_empty() {
-            return Err(format!("向量渠道 {key} 的 Base URL 不能为空。"));
+            return Err(format!("渠道 {key} 的 Base URL 不能为空。"));
         }
         if row.model.trim().is_empty() {
-            return Err(format!("向量渠道 {key} 的模型 ID 不能为空。"));
+            return Err(format!("渠道 {key} 的模型 ID 不能为空。"));
         }
     }
     Ok(())

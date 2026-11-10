@@ -200,6 +200,8 @@ pub struct RegistryOptions {
     pub knowledge_rerank: Arc<RerankOptions>,
     /// Skill 检索重排（`decision_models.toml` 的 `skill_search_rerank` 开关）。
     pub skill_rerank: Arc<RerankOptions>,
+    /// Skill 与知识库检索的第二阶段精排（`[memory_rerank] enabled` 的重排序模型）。
+    pub search_embedding: Arc<crate::embedding_client::EmbeddingOptions>,
     /// 联网工具的运行期配置（传输可注入，测试用桩替换）。
     pub web_search: WebSearchOptions,
     pub fetcher: FetcherOptions,
@@ -241,6 +243,7 @@ pub struct ToolRegistry {
     knowledge: KnowledgeBase,
     knowledge_rerank: Arc<RerankOptions>,
     skill_rerank: Arc<RerankOptions>,
+    search_embedding: Arc<crate::embedding_client::EmbeddingOptions>,
     memory: MemoryOptions,
     web_search: WebSearchOptions,
     fetcher: FetcherOptions,
@@ -494,6 +497,7 @@ impl ToolRegistry {
             knowledge,
             knowledge_rerank: options.knowledge_rerank.clone(),
             skill_rerank: options.skill_rerank.clone(),
+            search_embedding: options.search_embedding.clone(),
             memory,
             web_search: options.web_search.clone(),
             fetcher: options.fetcher.clone(),
@@ -730,6 +734,7 @@ impl ToolRegistry {
                 self.paths.root(),
                 &self.config_env,
                 &self.skill_rerank,
+                &self.search_embedding,
                 &arguments,
             )),
             "git" => git::git_tool(
@@ -741,6 +746,7 @@ impl ToolRegistry {
             "kb_search" => outcome_result(knowledge::kb_search(
                 &self.knowledge,
                 &self.knowledge_rerank,
+                &self.search_embedding,
                 &arguments,
             )),
             "kb_read" => outcome_result(knowledge::kb_read(&self.knowledge, &arguments)),

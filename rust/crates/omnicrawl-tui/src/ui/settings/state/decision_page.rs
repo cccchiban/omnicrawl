@@ -132,9 +132,9 @@ impl DecisionForm {
     }
 }
 
-/// 一条向量渠道（对应 `embedding_models.toml` 的 `channels.<key>`）。
+/// 一条向量渠道（对应 `embedding_models.toml` 的 `channels.<key>` 或 `rerank_channels.<key>`）。
 ///
-/// 比决策渠道少一个「请求方式」：向量接口只有 OpenAI 兼容一种形状，全部走云端。
+/// 两组渠道共用这一个行结构：重排侧不使用 `dimensions`（表单里按组隐藏），其余字段同形。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EmbeddingRow {
     pub key: String,
@@ -143,7 +143,7 @@ pub struct EmbeddingRow {
     /// 内联凭据：只用于「是否已配置 + 掩码显示」与保存时写回，界面从不渲染明文。
     pub api_key: String,
     pub model: String,
-    /// 期望维度；0 表示由服务端决定。
+    /// 期望维度；0 表示由服务端决定。重排渠道不显示这一项。
     pub dimensions: i64,
     pub timeout_seconds: i64,
     pub enabled: bool,
@@ -197,6 +197,22 @@ impl EmbeddingField {
     }
 }
 
+/// 当前分组下依次显示的向量渠道字段（表单渲染、`Tab` 与点击命中都用它）。
+///
+/// 重排侧没有变化：`/rerank` 接口不吃维度参数，显示它只会让人以为要填。
+pub fn visible_embedding_fields(kind: EmbeddingChannelKind) -> Vec<EmbeddingField> {
+    let skip = if kind == EmbeddingChannelKind::Rerank {
+        Some(EmbeddingField::Dimensions)
+    } else {
+        None
+    };
+    EmbeddingField::ORDER
+        .iter()
+        .copied()
+        .filter(|field| Some(*field) != skip)
+        .collect()
+}
+
 /// 向量渠道表单：正在编辑的副本 + 字段游标 + 临时编辑态。
 #[derive(Debug, Clone)]
 pub(crate) struct EmbeddingForm {
@@ -206,6 +222,8 @@ pub(crate) struct EmbeddingForm {
     /// 正在编辑列表里的哪一条；`None` 表示这是还没落盘的草稿。
     pub(crate) index: Option<usize>,
     pub(crate) is_new: bool,
+    /// 这条渠道属于哪一组（决定它写进 `channels` 还是 `rerank_channels`）。
+    pub(crate) kind: EmbeddingChannelKind,
 }
 
 impl EmbeddingForm {
@@ -220,33 +238,92 @@ impl EmbeddingForm {
     }
 }
 
-/// 向量模型页：顶部总开关（向量召回）+ 渠道列表 + 单条渠道表单。
-#[derive(Debug, Clone)]
-pub(crate) struct EmbeddingModelsState {
+/// 渠道分组：两组各有一份列表、默认 key、模板与游标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingChannelKind {
+    Embedding,
+    Rerank,
+}
+
+impl EmbeddingChannelKind {
+    /// 分区标题。
+    pub fn section(self) -> &'static str {
+        match self {
+            Self::Embedding => "嵌入模型",
+            Self::Rerank => "重排序模型",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Embedding => 0,
+            Self::Rerank => 1,
+        }
+    }
+}
+
+/// 一组渠道的列表状态（两组各一份）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EmbeddingGroupState {
     pub(crate) rows: Vec<EmbeddingRow>,
     pub(crate) default_key: String,
-    /// 顶部总开关：`config.toml` 的 `[memory_embedding] enabled`。
+    /// 「新建」用的模板（宿主从配置的默认渠道生成）。
+    pub(crate) template: EmbeddingRow,
+}
+
+/// 向量模型页：两个开关 + 嵌入渠道列表 + 重排渠道列表 + 单条渠道表单。
+#[derive(Debug, Clone)]
+pub(crate) struct EmbeddingModelsState {
+    pub(crate) groups: [EmbeddingGroupState; 2],
+    /// 顶部第一个开关：`config.toml` 的 `[memory_embedding] enabled`。
     pub(crate) enabled: bool,
-    /// 行游标：开关区在前，渠道随后。
+    /// 顶部第二个开关：`config.toml` 的 `[memory_rerank] enabled`。
+    pub(crate) rerank_enabled: bool,
+    /// 游标：开关区在前，两组渠道随后（嵌入组全部行、再重排组全部行）。
     pub(crate) selected: usize,
     pub(crate) form: Option<EmbeddingForm>,
-    /// 「新建」用的模板（宿主从配置的默认向量渠道生成）。
-    pub(crate) template: EmbeddingRow,
     pub(crate) status: String,
 }
 
 impl EmbeddingModelsState {
-    /// 向量召回总开关占第 0 行。
-    pub(crate) const MEMORY_SWITCH_ROW: usize = 0;
+    /// 嵌入模型开关占第 0 行，重排序模型开关占第 1 行。
+    pub(crate) const EMBEDDING_SWITCH_ROW: usize = 0;
+    pub(crate) const RERANK_SWITCH_ROW: usize = 1;
     /// 开关行数：渠道从这一行开始。
-    pub(crate) const SWITCH_ROWS: usize = 1;
+    pub(crate) const SWITCH_ROWS: usize = 2;
 
-    pub(crate) fn channel_index(selected: usize) -> Option<usize> {
-        selected.checked_sub(Self::SWITCH_ROWS)
+    pub(crate) fn group(&self, kind: EmbeddingChannelKind) -> &EmbeddingGroupState {
+        &self.groups[kind.index()]
     }
 
+    pub(crate) fn group_mut(&mut self, kind: EmbeddingChannelKind) -> &mut EmbeddingGroupState {
+        &mut self.groups[kind.index()]
+    }
+
+    /// 游标所在的组与组内下标；游标停在开关区时为 `None`。
+    pub(crate) fn channel_at(&self, selected: usize) -> Option<(EmbeddingChannelKind, usize)> {
+        let mut offset = selected.checked_sub(Self::SWITCH_ROWS)?;
+        for kind in [EmbeddingChannelKind::Embedding, EmbeddingChannelKind::Rerank] {
+            let count = self.group(kind).rows.len();
+            if offset < count {
+                return Some((kind, offset));
+            }
+            offset -= count;
+        }
+        None
+    }
+
+    /// 页面可选中行数：两个开关 + 两组全部渠道（分区标题不可选中）。
     pub(crate) fn total_rows(&self) -> usize {
-        Self::SWITCH_ROWS + self.rows.len()
+        Self::SWITCH_ROWS + self.groups[0].rows.len() + self.groups[1].rows.len()
+    }
+
+    /// 新建渠道落在哪一组：游标在重排组里就进重排组，否则进嵌入组。
+    pub(crate) fn kind_for_new(&self) -> EmbeddingChannelKind {
+        match self.channel_at(self.selected) {
+            Some((EmbeddingChannelKind::Rerank, _)) => EmbeddingChannelKind::Rerank,
+            _ => EmbeddingChannelKind::Embedding,
+        }
     }
 }
 

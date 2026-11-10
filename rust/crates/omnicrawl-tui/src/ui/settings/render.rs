@@ -16,11 +16,11 @@ use ratatui::Frame;
 use super::hit::HitAction;
 use super::picker::window_bounds;
 use super::state::{
-    visible_decision_fields, ChannelField, ChannelFormView, DecisionField, DecisionFormView,
-    DropdownField, EmbeddingField, Focus, ModelParamRow, Pane, SettingsState, ToolSwitchRow,
-    DECISION_LOCAL_SECTION, DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION,
-    MODEL_PARAM_SECTION, SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW,
-    TOOLS_SWITCH_ROW_OFFSET,
+    visible_decision_fields, visible_embedding_fields, ChannelField, ChannelFormView,
+    DecisionField, DecisionFormView, DropdownField, EmbeddingChannelKind, Focus,
+    ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
+    DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
+    SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
 };
 use super::{channel_field_value, decision_field_value, embedding_field_value, row_label};
 use crate::ui::display_width;
@@ -439,23 +439,28 @@ fn render_embedding_models(frame: &mut Frame, area: Rect, state: &SettingsState,
     );
 }
 
-/// 向量渠道列表：与决策渠道列表同款两行行式，开关行画在渠道之上（没有功能开关分区
-/// 与自部署分区），其中「联网搜索使用向量模型排序」来自决策模型的功能开关表。
+/// 向量渠道列表：两个阶段开关在下、各自一组渠道在各自的开关之下。
 ///
 /// ```text
-/// › [ ] 启用向量召回
-///   [ ] 联网搜索使用向量模型排序
+/// › [ ] 启用嵌入模型
+///   [ ] 启用重排序模型
+///  嵌入模型
 ///   [x] OpenAI 向量 [默认]
 ///       text-embedding-3-small  https://api.openai.com/v1
+///  重排序模型
+///   [ ] Jina 重排序 [默认]
+///       jina-reranker-v2-base-multilingual  https://api.jina.ai/v1
 /// ```
 fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
-    let rows = state.embedding_rows();
     let reserved = 4u16.min(area.height);
     let list_height = area.height.saturating_sub(reserved) as usize;
     let selected = state.embedding_selected();
     let switch_selected = state.embedding_switch_selected();
 
-    let switches = [("启用向量召回", state.embedding_enabled())];
+    let switches = [
+        ("启用嵌入模型", state.embedding_enabled()),
+        ("启用重排序模型", state.rerank_enabled()),
+    ];
     let mut entries: Vec<(Line<'static>, Option<usize>)> = Vec::new();
     for (row, (label, enabled)) in switches.iter().enumerate() {
         let current = switch_selected && state.embedding_switch_row() == row;
@@ -478,55 +483,80 @@ fn render_embedding_list(frame: &mut Frame, area: Rect, state: &SettingsState, f
             Some(row),
         ));
     }
-    // 行号沿用页面游标：开关区在前，渠道从开关行数开始。
-    let channel_selected = selected.map(|index| index + switches.len());
-    if rows.is_empty() {
+
+    // 两组渠道各自一段：分区标题不可选中，行号沿用页面游标（开关区在前，两组随后）。
+    let mut absolute = switches.len();
+    for kind in [
+        EmbeddingChannelKind::Embedding,
+        EmbeddingChannelKind::Rerank,
+    ] {
         entries.push((
             Line::styled(
-                fit("尚无向量渠道，按 N 新建第一条渠道。", area.width as usize),
-                theme::rich_style(theme::TEXT_MUTED),
+                fit(&format!(" {}", kind.section()), area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD),
             ),
             None,
         ));
-    }
-    for (index, row) in rows.iter().enumerate() {
-        let absolute = index + switches.len();
-        let line_style = if Some(absolute) == channel_selected && focused {
-            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
-        } else {
-            menu_text_style()
-        };
-        let checked = if row.enabled { "x" } else { " " };
-        let default_mark = if state.embedding_default_key() == row.key {
-            " [默认]"
-        } else {
-            ""
-        };
-        entries.push((
-            Line::styled(
-                format!(
-                    "{} [{checked}] {}{default_mark}",
-                    if Some(absolute) == channel_selected {
-                        "›"
-                    } else {
-                        " "
-                    },
-                    row.name
+        let rows = state.embedding_rows_of(kind);
+        if rows.is_empty() {
+            entries.push((
+                Line::styled(
+                    fit(
+                        &format!("  尚无{}渠道，按 N 新建第一条。", kind.section()),
+                        area.width as usize,
+                    ),
+                    theme::rich_style(theme::TEXT_MUTED),
                 ),
-                line_style,
-            ),
-            Some(absolute),
-        ));
-        entries.push((
-            Line::styled(format!("    {}  {}", row.model, row.base_url), line_style),
-            Some(absolute),
-        ));
+                None,
+            ));
+        }
+        for (index, row) in rows.iter().enumerate() {
+            let current = selected == Some((kind, index));
+            let line_style = if current && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                menu_text_style()
+            };
+            let checked = if row.enabled { "x" } else { " " };
+            let default_mark = if state.embedding_default_key_of(kind) == row.key {
+                " [默认]"
+            } else {
+                ""
+            };
+            entries.push((
+                Line::styled(
+                    format!(
+                        "{} [{checked}] {}{default_mark}",
+                        if current { "›" } else { " " },
+                        row.name
+                    ),
+                    line_style,
+                ),
+                Some(absolute),
+            ));
+            entries.push((
+                Line::styled(format!("    {}  {}", row.model, row.base_url), line_style),
+                Some(absolute),
+            ));
+            absolute += 1;
+        }
     }
 
     let cursor = if switch_selected {
         state.embedding_switch_row()
     } else {
-        channel_selected.unwrap_or(0)
+        // 分区标题插在中间，游标行号与绘制序号不再一一对应：按归属行号定位窗口。
+        selected
+            .map(|(kind, index)| {
+                switches.len()
+                    + match kind {
+                        EmbeddingChannelKind::Embedding => index,
+                        EmbeddingChannelKind::Rerank => {
+                            state.embedding_rows_of(EmbeddingChannelKind::Embedding).len() + index
+                        }
+                    }
+            })
+            .unwrap_or(0)
     };
     let owners: Vec<Option<usize>> = entries.iter().map(|(_, owner)| *owner).collect();
     let start = decision_window_start_owners(&owners, cursor, list_height);
@@ -557,7 +587,7 @@ fn render_embedding_form(
     form: super::state::EmbeddingFormView<'_>,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, field) in EmbeddingField::ORDER.iter().copied().enumerate() {
+    for (index, field) in visible_embedding_fields(form.kind).iter().copied().enumerate() {
         state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
         let is_current = field == form.field;
         let marker = if is_current { "›" } else { " " };

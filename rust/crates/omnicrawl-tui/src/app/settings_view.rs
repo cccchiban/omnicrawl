@@ -70,7 +70,7 @@ impl App {
             omnicrawl_config::features::suggestion::load_suggestion_config(&environment, None);
         let suggestion_skills = suggestion_skill_rows(&self.prompt.skill_metas());
         let decision_local = self.decision_local_values(&environment);
-        // 向量模型页的初值：渠道、默认渠道、新建模板与总开关（读不出来就用配置默认值）。
+        // 向量模型页的初值：两组渠道、各自默认 key、新建模板与两个开关（读不出来就用配置默认值）。
         let embedding_config =
             load_embedding_model_configuration(&environment, None).unwrap_or_default();
         let embedding_rows: Vec<EmbeddingRow> = embedding_config
@@ -80,8 +80,18 @@ impl App {
             .collect();
         let default_embedding_key = embedding_config.default_key.clone();
         let embedding_template = embedding_row_from_config(&EmbeddingChannelConfig::default());
+        let rerank_rows: Vec<EmbeddingRow> = embedding_config
+            .rerank_channels
+            .iter()
+            .map(rerank_row_from_config)
+            .collect();
+        let default_rerank_key = embedding_config.rerank_default_key.clone();
+        let rerank_template = rerank_row_from_config(&RerankChannelConfig::default());
         let embedding_enabled =
             load_feature_enabled(&environment, "memory_embedding", false, None, None)
+                .unwrap_or(false);
+        let rerank_enabled =
+            load_feature_enabled(&environment, "memory_rerank", false, None, None)
                 .unwrap_or(false);
         let channel_template = default_channel(provider_options()[0], None)
             .map(|channel| channel_row_from_config(&channel))
@@ -121,7 +131,11 @@ impl App {
             embedding_rows,
             &default_embedding_key,
             embedding_template,
+            rerank_rows,
+            &default_rerank_key,
+            rerank_template,
             embedding_enabled,
+            rerank_enabled,
         )
         .with_decision_local(decision_local)
         .with_choices(

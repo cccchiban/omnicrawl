@@ -25,7 +25,9 @@ use serde_json::{json, Map, Value};
 
 use super::decision_search::{apply_order, reranked_order, RerankOptions, RERANK_POOL_LIMIT};
 use super::error::{ToolError, ToolOutcome};
-use crate::embedding_client::{fuse_rankings, semantic_scores, EmbeddingOptions, EmbeddingRequest};
+use crate::embedding_client::{
+    fuse_rankings, rerank_scores, semantic_scores, EmbeddingOptions, EmbeddingRequest,
+};
 
 /// 三个作用域各自的开关与目录；会话级还需要当前会话 ID。
 #[derive(Debug, Clone, Default)]
@@ -194,8 +196,8 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
         .collect();
     let max_results = read_limited_int(arguments, "max_results", 5, 20) as u32;
     // 重排或向量召回开启时先取更宽的一池候选：本地排序只用于挑池子，最终顺序由
-    // 向量相似度与规则分（或决策模型）决定。
-    let wide_pool = options.rerank.active() || options.embedding.active();
+    // 向量相似度与规则分（或重排序模型 / 决策模型）决定。
+    let wide_pool = options.rerank.active() || options.embedding.any_active();
     let pool = if wide_pool {
         max_results.max(RERANK_POOL_LIMIT as u32)
     } else {
@@ -205,7 +207,7 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
         .search(&query, &candidates, pool)
         .map_err(store_error)?;
 
-    // 混合重排：本地规则分给出初序，向量召回给出语义序，按倒数排名融合两路。
+    // 第一阶段：嵌入模型做语义粗筛，给出语义序并与规则序按倒数排名融合。
     // 向量不可用（未配置、无凭据、失败、候选不足）时 kept 初序不变，退化成纯粹规则排序。
     let mut ranked: Vec<MemorySearchResult> = results;
     if options.embedding.active() && !options.embedding.cooling_down() {
@@ -226,6 +228,15 @@ pub fn memory_search(options: &MemoryOptions, arguments: &Map<String, Value>) ->
                     scored.into_iter().map(|(index, _)| index).collect();
                 ranked = apply_order(ranked, &fuse_rankings(&rule_order, &semantic_order));
             }
+        }
+    }
+
+    // 第二阶段：重排序模型对召回出的候选逐条打分，把最相关的排到最前面。
+    if options.embedding.rerank_active() && !options.embedding.rerank_cooling_down() {
+        let texts: Vec<String> = ranked.iter().map(rerank_candidate_text).collect();
+        if let Some(scored) = rerank_scores(options.embedding.as_ref(), &query, &texts) {
+            let order: Vec<usize> = scored.into_iter().map(|(index, _)| index).collect();
+            ranked = apply_order(ranked, &order);
         }
     }
 

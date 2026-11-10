@@ -99,7 +99,7 @@ impl SettingsState {
             }
             Pane::EmbeddingModels => {
                 if let Some(form) = self.embedding_models.form.as_mut() {
-                    let Some(field) = EmbeddingField::ORDER.get(index).copied() else {
+                    let Some(field) = visible_embedding_fields(form.kind).get(index).copied() else {
                         return false;
                     };
                     let already = form.field == field;

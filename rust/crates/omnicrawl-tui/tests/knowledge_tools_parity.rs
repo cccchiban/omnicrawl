@@ -50,7 +50,12 @@ fn knowledge_tools_match_python() {
             .unwrap_or_default()
             .replace(&today, "{TODAY}");
         let outcome = match tool {
-            "kb_search" => knowledge::kb_search(&base, &RerankOptions::default(), &args),
+            "kb_search" => knowledge::kb_search(
+                &base,
+                &RerankOptions::default(),
+                &omnicrawl_host::embedding_client::EmbeddingOptions::default(),
+                &args,
+            ),
             "kb_read" => knowledge::kb_read(&base, &args),
             "kb_write" => knowledge::kb_write(&base, &args),
             "kb_append" => knowledge::kb_append(&base, &args),
