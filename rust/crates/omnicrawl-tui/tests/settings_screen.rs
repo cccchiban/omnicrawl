@@ -1134,7 +1134,6 @@ fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
     let buffer = draw(&state, WIDTH, HEIGHT);
     let screen = text(&buffer);
     assert!(screen.contains("duckduckgo"), "候选项要列出来：{screen}");
-    assert!(screen.contains("mixed"), "混合搜索也要在候选里：{screen}");
     assert!(
         !screen.contains("API Key"),
         "被浮层盖住的字段行不能透出来：{screen}"
@@ -1148,6 +1147,25 @@ fn expanded_dropdown_overlay_covers_the_rows_beneath_it() {
     let line = &lines[row as usize];
     assert!(line.contains("duckduckgo"), "高亮行是候选本身：{line}");
     assert!(!line.contains("API Key"), "高亮行不许有残留：{line}");
+
+    // 候选比浮层高时靠滚动看全：末项是综合搜索，游标走到最后也要能画出来。
+    let labels: Vec<String> = state
+        .dropdown_options()
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert!(
+        labels.iter().any(|label| label == "mixed"),
+        "综合搜索也要在候选里：{labels:?}"
+    );
+    for _ in 1..labels.len() {
+        state.handle_key(KeyCode::Down);
+    }
+    let tail = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(
+        tail.contains("mixed"),
+        "游标移到最后一项时它必须可见：{tail}"
+    );
 
     // 收起后字段行原样回来（Clear 只擦浮层那一块）。
     state.handle_key(KeyCode::Esc);
