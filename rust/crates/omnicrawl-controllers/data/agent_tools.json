@@ -58,7 +58,7 @@
       },
       {
         "name": "web_search",
-        "description": "是什么：在 DuckDuckGo、GitHub、arXiv、Hugging Face、Tavily、Exa、Firecrawl、AnySearch 或 TinyFish 搜索公开资料；具体走哪个引擎由使用者在设置里选定，配成 mixed 时并发查询多个渠道并去重合并。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily、Exa、Firecrawl、AnySearch 与 TinyFish 走检索接口，需先在 [web_search] 段配置对应 API Key（AnySearch 可不配，走匿名额度；TinyFish 必配）；其余引擎抓各自站点的公开搜索页，统一走浏览器指纹环境。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。mixed 的条数：每路取 10 条、总量随渠道数增长（开启决策模型排序时每路保留排序靠前的 5 条），传了 max_results 才收窄总数。引擎不可由参数指定：传 engine 无效，需要换引擎只能改设置。建议：搜索结果是线索，需用 fetcher 获取正文并核实来源。",
+        "description": "是什么：在 DuckDuckGo、GitHub、arXiv、Hugging Face、Tavily、Exa、Firecrawl、AnySearch、TinyFish、DeepSeek、Grok 或 Keenable 搜索公开资料；具体走哪个引擎由使用者在设置里选定，配成 mixed 时并发查询多个渠道并去重合并。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。Tavily、Exa、Firecrawl、AnySearch、TinyFish、DeepSeek、Grok 与 Keenable 走检索接口，凭据在 [web_search] 段（AnySearch 与 Keenable 可不配，走匿名额度；TinyFish 必配）；其余引擎抓各自站点的公开搜索页，统一走浏览器指纹环境。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。mixed 的条数：每路取 10 条、总量随渠道数增长（开启决策模型排序时每路保留排序靠前的 5 条），传了 max_results 才收窄总数。引擎不可由参数指定：传 engine 无效，需要换引擎只能改设置。建议：搜索结果是线索，需用 fetcher 获取正文并核实来源。",
         "argument_schema": "{\"query\": \"关键词\", \"max_results\": 20, \"language\": \"zh-CN\"}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,

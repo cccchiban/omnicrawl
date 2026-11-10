@@ -27,6 +27,18 @@ pub struct WebSearchRow {
     pub tinyfish_configured: bool,
     /// GitHub Token 是否已配置。它不影响引擎可用性，只影响额度。
     pub github_configured: bool,
+    /// DeepSeek 搜索接口地址（空串表示用内置默认地址）。
+    pub deepseek_search_url: String,
+    /// DeepSeek API Key 是否已配置。
+    pub deepseek_configured: bool,
+    /// Grok 搜索接口地址（空串表示用内置默认地址）。
+    pub grok_search_url: String,
+    /// Grok API Key 是否已配置。
+    pub grok_configured: bool,
+    /// Grok 模型名（空串表示用内置默认模型）。
+    pub grok_model: String,
+    /// Keenable API Key 是否已配置。留空时该引擎仍可用（走匿名通道）。
+    pub keenable_configured: bool,
 }
 
 impl Default for WebSearchRow {
@@ -39,6 +51,12 @@ impl Default for WebSearchRow {
             anysearch_configured: false,
             tinyfish_configured: false,
             github_configured: false,
+            deepseek_search_url: String::new(),
+            deepseek_configured: false,
+            grok_search_url: String::new(),
+            grok_configured: false,
+            grok_model: String::new(),
+            keenable_configured: false,
         }
     }
 }

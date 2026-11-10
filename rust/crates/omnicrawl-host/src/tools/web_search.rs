@@ -3,8 +3,8 @@
 //! 抓页面型引擎（DuckDuckGo / GitHub / arXiv / Hugging Face）的语义基准是
 //! `omnicrawl/net/web_search.py`：同一套端点与查询参数、同一套页面解析规则（正则而非 DOM）、
 //! 同一套拦截检测与文案，只访问公开搜索页面，检测到
-//! 验证码或 JS 挑战即如实报错、不绕过。接口型引擎（Tavily / Exa / Firecrawl / AnySearch / TinyFish）走各自的
-//! JSON 检索接口，凭据取 `[web_search]` 段（见 [`WebSearchOptions`]）。
+//! 验证码或 JS 挑战即如实报错、不绕过。接口型引擎（Tavily / Exa / Firecrawl / AnySearch / TinyFish /
+//! DeepSeek / Grok / Keenable）走各自的 JSON 检索接口，凭据取 `[web_search]` 段（见 [`WebSearchOptions`]）。
 //!
 //! `mixed` 是混合搜索：并发查询全部可用渠道，按 URL 去重后合并成一份结果。默认只跑通用渠道
 //! （DuckDuckGo + 已配置凭据的接口型引擎，AnySearch 无凭据也参与）；GitHub / arXiv / Hugging Face
@@ -20,7 +20,9 @@ use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use omnicrawl_config::features::web_search::WEB_SEARCH_ENGINES;
+use omnicrawl_config::features::web_search::{
+    complete_search_endpoint, WEB_SEARCH_ENGINES,
+};
 use omnicrawl_core::diagnostics;
 use regex::Regex;
 use scraper::Html;
@@ -35,14 +37,14 @@ use super::web_transport::{
 };
 use omnicrawl_extensions::bm25;
 
-pub const DEFAULT_TIMEOUT_SECONDS: f64 = 10.0;
+pub const DEFAULT_TIMEOUT_SECONDS: f64 = 100.0;
 /// 单渠道一次取回的候选上限：既是未传 `max_results` 时的默认条数，也是单引擎返回的条数上限。
 pub const MAX_RESULTS_PER_ENGINE: i64 = 50;
 /// 混合搜索里每路渠道取回的条数：`max_results` 只收窄总条数，不会把每路压到这条线以下。
 /// 总条数因此随渠道数增长（渠道数 × 该值），没有固定总量上限。
 pub const MIXED_RESULTS_PER_CHANNEL: i64 = 10;
 /// 支持的全部引擎；清单的唯一来源在配置域（界面候选与配置值归一化读同一张表）。
-pub const SUPPORTED_ENGINES: [&str; 10] = WEB_SEARCH_ENGINES;
+pub const SUPPORTED_ENGINES: [&str; 13] = WEB_SEARCH_ENGINES;
 
 /// 单路排序后每路渠道保留的条数：BM25 与决策模型排序都按这个数截，也是路内最终返回的条数。
 pub const RERANK_KEEP_PER_CHANNEL: usize = 5;
@@ -69,12 +71,29 @@ const OPTIONAL_MIXED_PAGE_ENGINES: [&str; 3] = ["github", "arxiv", "huggingface"
 /// 接口型引擎：一次请求回 JSON 结果，不走页面解析（TinyFish 用 `GET`，其余用 `POST`）。
 ///
 /// Tavily / Exa / Firecrawl / TinyFish 需要各自配置凭据；AnySearch 没有 Key 也能匿名调用，
-/// 因此它在混合搜索里始终参与（见 [`mixed_engines`]）。
-const API_ENGINES: [&str; 5] = ["tavily", "exa", "firecrawl", "anysearch", "tinyfish"];
-/// 唯一「凭据可选」的接口型渠道：缺 Key 走匿名额度，而不是报错或跳过。
+/// 因此它在混合搜索里始终参与（见 [`mixed_engines`]）。Keenable 也能匿名调用，但匿名额度是
+/// 出口 IP 共享的公共池，所以它只在被单独选为引擎时匿名可用，参与综合搜索需配 Key。
+const API_ENGINES: [&str; 8] = [
+    "tavily",
+    "exa",
+    "firecrawl",
+    "anysearch",
+    "tinyfish",
+    "deepseek",
+    "grok",
+    "keenable",
+];
+/// 唯一「凭据可选」的接口型渠道之一：缺 Key 走匿名额度，而不是报错或跳过。
 const ANYSEARCH_ENGINE: &str = "anysearch";
 /// TinyFish：`GET` 检索接口，Key 必填（没有匿名通道）。
 const TINYFISH_ENGINE: &str = "tinyfish";
+/// DeepSeek：`POST /v1/tools/search`，回 `results[]`，Key 必填。
+const DEEPSEEK_ENGINE: &str = "deepseek";
+/// Grok：Responses API + `web_search` 服务端工具，回模型回答与 `citations`，Key 必填。
+const GROK_ENGINE: &str = "grok";
+/// Keenable：`POST /v1/search`（`X-API-Key`）；无 Key 时改打 `/v1/search/public`，
+/// 必须带 `X-Keenable-Title`。两条通道回同一份结构，只有额度与速率不同。
+const KEENABLE_ENGINE: &str = "keenable";
 
 /// Tavily 检索接口（`POST`，Bearer 鉴权）。
 const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
@@ -88,6 +107,25 @@ const ANYSEARCH_ENDPOINT: &str = "https://api.anysearch.com/v1/search";
 const ANYSEARCH_MAX_RESULTS: i64 = 10;
 /// TinyFish 检索接口（`GET`，`X-API-Key` 鉴权；每天 12,000 次以内免费）。
 const TINYFISH_ENDPOINT: &str = "https://api.search.tinyfish.ai/";
+/// DeepSeek 检索接口（`POST /v1/tools/search`，Bearer 鉴权）。
+const DEFAULT_DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/v1/tools/search";
+/// DeepSeek 单次请求的条数上限（接口硬限制 1–50）。
+const DEEPSEEK_MAX_RESULTS: i64 = 50;
+/// Grok 检索接口：Responses API + `web_search` 服务端工具（Bearer 鉴权）。
+const GROK_ENDPOINT: &str = "https://api.x.ai/v1/responses";
+/// Grok 默认模型；第三方网关上的模型名不同时可自行填写。
+const DEFAULT_GROK_MODEL: &str = "grok-4.7";
+/// Keenable 检索接口（`POST`，`X-API-Key` 鉴权）。
+const KEENABLE_ENDPOINT: &str = "https://api.keenable.ai/v1/search";
+/// Keenable 的匿名通道：请求体与结构同正式接口，不要 Key，但必须带应用名头。
+const KEENABLE_PUBLIC_ENDPOINT: &str = "https://api.keenable.ai/v1/search/public";
+/// 匿名通道要求的应用名头。它只用于让 Keenable 标识调用方，写死成工具名即可。
+const KEENABLE_PUBLIC_TITLE_HEADER: &str = "X-Keenable-Title";
+const KEENABLE_PUBLIC_TITLE: &str = "OmniCrawl";
+/// Keenable 单次请求的条数上限（接口硬限制 1–50）。
+const KEENABLE_MAX_RESULTS: i64 = 50;
+/// 向 Keenable 要的摘要长度：接口允许 180–10000，默认会回几千字，取够排序与引用即可。
+const KEENABLE_SNIPPET_MAX_LENGTH: i64 = 400;
 /// GitHub 仓库检索接口（`GET`，带 Token 时用 Bearer 鉴权）。
 const GITHUB_SEARCH_ENDPOINT: &str = "https://api.github.com/search/repositories";
 /// GitHub 接口版本：固定版本比跟随默认值稳定，避免上游改默认行为时静默变化。
@@ -159,6 +197,18 @@ pub struct WebSearchOptions {
     /// 只影响 GitHub 引擎：有 Token 走 REST 检索接口（认证后 30 次/分钟），
     /// 没有 Token 仍抓公开搜索页（未认证 10 次/分钟），引擎始终可用。
     pub github_token: String,
+    /// DeepSeek 搜索接口地址（空串表示用内置默认地址；可指向第三方网关）。
+    pub deepseek_search_url: String,
+    /// DeepSeek 搜索 API Key（空串表示未配置）。
+    pub deepseek_api_key: String,
+    /// Grok 搜索接口地址（空串表示用内置默认地址；可指向第三方网关）。
+    pub grok_search_url: String,
+    /// Grok 搜索 API Key（空串表示未配置）。
+    pub grok_api_key: String,
+    /// Grok 搜索使用的模型名（空串表示用内置默认模型）。
+    pub grok_model: String,
+    /// Keenable API Key（空串表示走匿名通道：按 IP 限流，共用公共池）。
+    pub keenable_api_key: String,
     /// 混合搜索的并发度数（每路一个线程）；0 与 1 都表示串行。
     pub mixed_parallelism: usize,
     /// 抓页面型引擎用的浏览器指纹档案（`chrome`/`firefox`/`safari`/`edge`）。
@@ -188,6 +238,12 @@ impl Default for WebSearchOptions {
             anysearch_api_key: String::new(),
             tinyfish_api_key: String::new(),
             github_token: String::new(),
+            deepseek_search_url: String::new(),
+            deepseek_api_key: String::new(),
+            grok_search_url: String::new(),
+            grok_api_key: String::new(),
+            grok_model: String::new(),
+            keenable_api_key: String::new(),
             mixed_parallelism: 4,
             impersonate: super::tls_transport::DEFAULT_IMPERSONATE.to_string(),
             // 缺省不启用决策模型排序：它是可选项，开关关着时连配置都不读。
@@ -205,7 +261,30 @@ impl WebSearchOptions {
             "firecrawl" => self.firecrawl_api_key.as_str(),
             "anysearch" => self.anysearch_api_key.as_str(),
             "tinyfish" => self.tinyfish_api_key.as_str(),
+            "deepseek" => self.deepseek_api_key.as_str(),
+            "grok" => self.grok_api_key.as_str(),
+            "keenable" => self.keenable_api_key.as_str(),
             _ => "",
+        }
+    }
+
+    /// DeepSeek 引擎的接口地址：配了就用配的，否则用内置默认值。
+    fn deepseek_endpoint(&self) -> String {
+        complete_search_endpoint(&self.deepseek_search_url, DEFAULT_DEEPSEEK_ENDPOINT)
+    }
+
+    /// Grok 引擎的接口地址：配了就用配的，否则用内置默认值。
+    fn grok_endpoint(&self) -> String {
+        complete_search_endpoint(&self.grok_search_url, GROK_ENDPOINT)
+    }
+
+    /// Grok 引擎的模型名：配了就用配的，否则用内置默认值。
+    fn grok_model(&self) -> String {
+        let model = self.grok_model.trim();
+        if model.is_empty() {
+            DEFAULT_GROK_MODEL.to_string()
+        } else {
+            model.to_string()
         }
     }
 
@@ -244,6 +323,12 @@ pub fn web_search_options_from_config(
         anysearch_api_key: configuration.anysearch_api_key,
         tinyfish_api_key: configuration.tinyfish_api_key,
         github_token: configuration.github_token,
+        deepseek_search_url: configuration.deepseek_search_url,
+        deepseek_api_key: configuration.deepseek_api_key,
+        grok_search_url: configuration.grok_search_url,
+        grok_api_key: configuration.grok_api_key,
+        grok_model: configuration.grok_model,
+        keenable_api_key: configuration.keenable_api_key,
         rerank: Arc::new(super::rerank_options_from_config(
             environment,
             omnicrawl_config::features::decision_model::DECISION_SWITCH_WEB_SEARCH,
@@ -1144,7 +1229,9 @@ fn mixed_search(
 
 /// 混合搜索参与的路：默认抓页面渠道 + 显式点名的垂直渠道，接口型只上有凭据的。
 ///
-/// AnySearch 是唯一例外：没有凭据也能匿名检索，因此它始终参与。
+/// AnySearch 是例外：没有凭据也能匿名检索，因此它始终参与。Keenable 也能匿名调用，
+/// 但匿名额度是整个出口 IP 共享的公共池，混进综合搜索会持续摊薄它，所以它只在自己
+/// 被选为引擎时匿名可用，参与综合搜索需配 Key。
 /// `extra_sources` 是调用方通过 `sources` 参数点名的垂直渠道（GitHub / arXiv / Hugging Face）：
 /// 它们不默认参与综合搜索，点名后按固定顺序插在默认渠道之后。
 fn mixed_engines(options: &WebSearchOptions, extra_sources: &[&'static str]) -> Vec<&'static str> {
@@ -1408,7 +1495,7 @@ fn parse_github_api_results(body: &str) -> Result<Vec<WebSearchResult>, ToolErro
 
 /// 接口型引擎的单路检索：返回结果（可能为空，截断与空结果判定交给调用方）。
 ///
-/// AnySearch 没有 Key 也照常请求（匿名额度），因此缺凭据的判定只对其余三个接口型引擎成立。
+/// AnySearch 与 Keenable 没有 Key 也照常请求（匿名额度），因此缺凭据的判定只对其余接口型引擎成立。
 fn api_results(
     options: &WebSearchOptions,
     engine: &str,
@@ -1416,14 +1503,14 @@ fn api_results(
     max_results: i64,
 ) -> Result<Vec<WebSearchResult>, ToolError> {
     let api_key = options.api_key_for(engine).trim().to_string();
-    if api_key.is_empty() && engine != ANYSEARCH_ENGINE {
+    if api_key.is_empty() && engine != ANYSEARCH_ENGINE && engine != KEENABLE_ENGINE {
         return Err(ToolError::new(format!(
             "缺少 {} 的 API Key：请在 config.toml 的 [web_search] 段填写 {}。",
             engine_label(engine),
             key_field(engine)
         )));
     }
-    let (url, headers, payload) = api_request(engine, query, max_results, &api_key);
+    let (url, headers, payload) = api_request(options, engine, query, max_results, &api_key);
     // TinyFish 是唯一的 `GET` 通路（查询串带上条件，没有请求体）。
     let mut request = if engine == TINYFISH_ENGINE {
         WebRequest::new(url, headers, timeout(options.timeout_seconds))
@@ -1451,6 +1538,7 @@ fn api_results(
 ///
 /// TinyFish 是唯一的 `GET` 通路：条件全在查询串里，请求体留空。
 fn api_request(
+    options: &WebSearchOptions,
     engine: &str,
     query: &str,
     max_results: i64,
@@ -1465,6 +1553,42 @@ fn api_request(
             &[("query".to_string(), query.to_string())],
         );
         return (url, headers, String::new());
+    }
+    if engine == GROK_ENGINE {
+        // Responses API：把 `web_search` 当服务端工具交给模型，检索由它自己完成。
+        // `no_inline_citations` 让正文不带 `[[N]](url)`，来源统一从顶层 `citations` 取。
+        headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+        let payload = serde_json::json!({
+            "model": options.grok_model(),
+            "input": [{ "role": "user", "content": query }],
+            "tools": [{ "type": "web_search" }],
+            "include": ["no_inline_citations"],
+            "store": false,
+        });
+        return (options.grok_endpoint(), headers, payload.to_string());
+    }
+    if engine == KEENABLE_ENGINE {
+        // 有 Key 走正式接口；没有 Key 改打 `/public`——它必须带应用名头，否则 400。
+        // 两条通道请求体与响应结构相同，差别只在额度：匿名按 IP 限流且共用公共池。
+        let url = if api_key.is_empty() {
+            headers.push((
+                KEENABLE_PUBLIC_TITLE_HEADER.to_string(),
+                KEENABLE_PUBLIC_TITLE.to_string(),
+            ));
+            KEENABLE_PUBLIC_ENDPOINT.to_string()
+        } else {
+            headers.push(("X-API-Key".to_string(), api_key.to_string()));
+            KEENABLE_ENDPOINT.to_string()
+        };
+        let payload = serde_json::json!({
+            "query": query,
+            "max_results": max_results.clamp(1, KEENABLE_MAX_RESULTS),
+            // 摘要默认可能上千字：截到够排序与引用即可，省令牌也省上下文。
+            "snippet_max_length": KEENABLE_SNIPPET_MAX_LENGTH,
+            // 卡片是 Keenable 自己写的答案，URL 只活一天；搜索结果要可复核的网页。
+            "disable_cards": true,
+        });
+        return (url, headers, payload.to_string());
     }
     let payload = match engine {
         "exa" => {
@@ -1492,6 +1616,13 @@ fn api_request(
                 "max_results": max_results.clamp(1, ANYSEARCH_MAX_RESULTS),
             })
         }
+        DEEPSEEK_ENGINE => {
+            headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+            serde_json::json!({
+                "query": query,
+                "count": max_results.clamp(1, DEEPSEEK_MAX_RESULTS),
+            })
+        }
         _ => {
             headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
             serde_json::json!({
@@ -1500,15 +1631,18 @@ fn api_request(
             })
         }
     };
-    (endpoint_of(engine), headers, payload.to_string())
+    (endpoint_of(options, engine), headers, payload.to_string())
 }
 
-fn endpoint_of(engine: &str) -> String {
+fn endpoint_of(options: &WebSearchOptions, engine: &str) -> String {
     match engine {
         "exa" => EXA_ENDPOINT.to_string(),
         "firecrawl" => FIRECRAWL_ENDPOINT.to_string(),
         "anysearch" => ANYSEARCH_ENDPOINT.to_string(),
         "tinyfish" => TINYFISH_ENDPOINT.to_string(),
+        DEEPSEEK_ENGINE => options.deepseek_endpoint(),
+        GROK_ENGINE => options.grok_endpoint(),
+        KEENABLE_ENGINE => KEENABLE_ENDPOINT.to_string(),
         _ => TAVILY_ENDPOINT.to_string(),
     }
 }
@@ -1519,6 +1653,9 @@ fn engine_label(engine: &str) -> &'static str {
         "firecrawl" => "Firecrawl",
         "anysearch" => "AnySearch",
         "tinyfish" => "TinyFish",
+        DEEPSEEK_ENGINE => "DeepSeek",
+        GROK_ENGINE => "Grok",
+        KEENABLE_ENGINE => "Keenable",
         _ => "Tavily",
     }
 }
@@ -1530,6 +1667,9 @@ fn key_field(engine: &str) -> &'static str {
         "firecrawl" => "firecrawl_api_key",
         "anysearch" => "anysearch_api_key",
         "tinyfish" => "tinyfish_api_key",
+        DEEPSEEK_ENGINE => "deepseek_api_key",
+        GROK_ENGINE => "grok_api_key",
+        KEENABLE_ENGINE => "keenable_api_key",
         _ => "tavily_api_key",
     }
 }
@@ -1537,8 +1677,11 @@ fn key_field(engine: &str) -> &'static str {
 /// 解析接口返回的结果数组；结构异常（不是 JSON、缺结果数组）如实报错。
 ///
 /// Tavily / Exa 把列表放在 `results`，Firecrawl 放在 `data`，AnySearch 放在 `data.results`
-/// （外层还带 `code`/`message` 与 `request_id`），TinyFish 放在顶层 `results`。
+/// （外层还带 `code`/`message` 与 `request_id`），TinyFish 与 Keenable 放在顶层 `results`。
 fn parse_api_results(engine: &str, body: &str) -> Result<Vec<WebSearchResult>, ToolError> {
+    if engine == GROK_ENGINE {
+        return parse_grok_results(body);
+    }
     let parsed: Value = serde_json::from_str(body).map_err(|error| {
         ToolError::new(format!("搜索失败（{engine}）：响应不是合法 JSON：{error}"))
     })?;
@@ -1620,7 +1763,116 @@ fn parse_api_results(engine: &str, body: &str) -> Result<Vec<WebSearchResult>, T
         .collect())
 }
 
-/// 接口返回的错误说明：优先取响应体里的 `detail.error` / `error` / `message` 文案。
+/// Grok 的结果解析：来源在顶层 `citations`（URL 列表），标题与摘要在 `output[]` 的
+/// `annotations` 与正文里。它没有逐条的结构化结果，因此每条只保证有 URL。
+///
+/// 优先用 `annotations` 里的 `url_citation`（带标题、以及对应正文片段）；没有时就退到
+/// 纯 URL 列表并让标题等于 URL——与其余引擎「至少给出可访问的链接」保持一致。
+fn parse_grok_results(body: &str) -> Result<Vec<WebSearchResult>, ToolError> {
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        ToolError::new(format!("搜索失败（grok）：响应不是合法 JSON：{error}"))
+    })?;
+    if let Some(error) = parsed.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .unwrap_or_default()
+            .trim();
+        if !message.is_empty() {
+            return Err(ToolError::new(format!("搜索失败（grok）：{message}")));
+        }
+    }
+    // 先按 `citations` 定顺序（它是接口给的完整来源列表），标题暂时等于 URL。
+    let mut collected: Vec<WebSearchResult> = Vec::new();
+    if let Some(citations) = parsed.get("citations").and_then(Value::as_array) {
+        for citation in citations {
+            let Some(url) = citation.as_str().map(str::trim) else {
+                continue;
+            };
+            if url.is_empty() || collected.iter().any(|item| url_key(&item.url) == url_key(url)) {
+                continue;
+            }
+            collected.push(WebSearchResult {
+                title: url.to_string(),
+                url: url.to_string(),
+                snippet: String::new(),
+            });
+        }
+    }
+    // 再用 `output[].content[].annotations` 补标题与摘要；没在 citations 里的也一并收下。
+    let output_blocks: Vec<&Value> = parsed
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .flat_map(|item| {
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .map(|content| content.as_slice())
+                        .unwrap_or(&[])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for block in output_blocks {
+        let Some(annotations) = block.get("annotations").and_then(Value::as_array) else {
+            continue;
+        };
+        for annotation in annotations {
+            let Some(url) = annotation.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            let url = url.trim();
+            if url.is_empty() {
+                continue;
+            }
+            let title = annotation
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .replace('\n', " ");
+            let snippet = annotation
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .replace('\n', " ");
+            match collected
+                .iter_mut()
+                .find(|item| url_key(&item.url) == url_key(url))
+            {
+                Some(existing) => {
+                    if !title.is_empty() {
+                        existing.title = title;
+                    }
+                    if existing.snippet.trim().is_empty() {
+                        existing.snippet = snippet;
+                    }
+                }
+                None => collected.push(WebSearchResult {
+                    title: if title.is_empty() {
+                        url.to_string()
+                    } else {
+                        title
+                    },
+                    url: url.to_string(),
+                    snippet,
+                }),
+            }
+        }
+    }
+    if collected.is_empty() {
+        return Err(ToolError::new(format!(
+            "搜索失败（grok）：响应里既没有 citations 也没有引用标注：{}",
+            truncate(body.trim(), 200)
+        )));
+    }
+    Ok(collected)
+}
+
 fn api_status_message(engine: &str, status: u16, body: &str) -> String {
     let detail = serde_json::from_str::<Value>(body)
         .ok()
@@ -1807,6 +2059,13 @@ mod tests {
 
     fn arguments(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    /// 引擎抓取的默认超时是 100 秒：留一条断言，避免以后被误改回旧值。
+    #[test]
+    fn default_timeout_is_one_hundred_seconds() {
+        assert_eq!(DEFAULT_TIMEOUT_SECONDS, 100.0);
+        assert_eq!(WebSearchOptions::default().timeout_seconds, 100.0);
     }
 
     /// 按 URL 片段分发的传输桩：命中不了任何路由就报连接失败（用来造单路失败）。
@@ -2212,7 +2471,7 @@ mod tests {
         assert_eq!(anonymous_transport.take_requests().len(), 1);
 
         // 匿名时不得带 Authorization：带上无效 Key 会被直接 401，不回落匿名额度。
-        let (_, headers, payload) = api_request("anysearch", "rust", 3, "");
+        let (_, headers, payload) = api_request(&WebSearchOptions::default(), "anysearch", "rust", 3, "");
         assert!(
             !headers.iter().any(|(name, _)| name == "Authorization"),
             "{headers:?}"
@@ -2221,7 +2480,7 @@ mod tests {
         assert_eq!(request_body["max_results"], 3);
 
         // 配了 Key 就走 Bearer。
-        let (_, headers, _) = api_request("anysearch", "rust", 3, "as-key");
+        let (_, headers, _) = api_request(&WebSearchOptions::default(), "anysearch", "rust", 3, "as-key");
         assert_eq!(
             headers,
             vec![
@@ -2234,7 +2493,13 @@ mod tests {
     #[test]
     fn anysearch_clamps_max_results_to_the_interface_cap() {
         // 接口硬限制 1–10，超出会被上游 400；本地先夹住，避免调用方传 50 就必然失败。
-        let (_, _, payload) = api_request("anysearch", "rust", MAX_RESULTS_PER_ENGINE, "");
+        let (_, _, payload) = api_request(
+            &WebSearchOptions::default(),
+            "anysearch",
+            "rust",
+            MAX_RESULTS_PER_ENGINE,
+            "",
+        );
         let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
         assert_eq!(body["max_results"], ANYSEARCH_MAX_RESULTS);
     }
@@ -2284,9 +2549,259 @@ mod tests {
         assert!(unauthorized.contains("anysearch_api_key"), "{unauthorized}");
     }
 
+    /// DeepSeek：`POST` + Bearer，请求体是 `query` / `count`；结果在顶层 `results`。
+    #[test]
+    fn deepseek_uses_count_in_the_body_and_reads_top_level_results() {
+        let (url, headers, payload) =
+            api_request(&WebSearchOptions::default(), "deepseek", "rust 工具", 8, "ds-key");
+        assert_eq!(url, "https://api.deepseek.com/v1/tools/search");
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), "Bearer ds-key".to_string()),
+            ]
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["query"], "rust 工具");
+        assert_eq!(body["count"], 8, "DeepSeek 的条数参数叫 count");
+
+        let response = r#"{"results":[
+            {"rerank_score":2.4,"title":"甲","url":"https://a.example","snippet":"短摘要",
+             "summary":"长摘要","content":"","site_name":"站点","authority":3},
+            {"title":"乙","url":"https://b.example","summary":"只有长摘要"},
+            {"title":"没 url","url":""}
+        ]}"#;
+        let results = parse_api_results("deepseek", response).expect("DeepSeek 结构");
+        assert_eq!(results.len(), 2, "没有 url 的条目应当被丢弃");
+        assert_eq!(results[0].snippet, "短摘要", "snippet 优先于 content 与 summary");
+        assert_eq!(
+            results[1].snippet, "",
+            "DeepSeek 的长摘要在 summary 里，不当作 snippet"
+        );
+    }
+
+    /// DeepSeek 自定义地址原样使用：第三方网关接入不需要改代码。
+    #[test]
+    fn deepseek_honours_a_custom_endpoint() {
+        let options = WebSearchOptions {
+            deepseek_search_url: "https://gateway.example/v1/tools/search".to_string(),
+            ..WebSearchOptions::default()
+        };
+        let (url, _, _) = api_request(&options, "deepseek", "x", 3, "k");
+        assert_eq!(url, "https://gateway.example/v1/tools/search");
+    }
+
+    /// Grok：Responses API 的 `web_search` 工具，模型与地址都可自定义。
+    #[test]
+    fn grok_uses_the_responses_web_search_tool() {
+        let options = WebSearchOptions::default();
+        let (url, headers, payload) = api_request(&options, "grok", "rust 工具", 5, "xai-key");
+        assert_eq!(url, "https://api.x.ai/v1/responses");
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), "Bearer xai-key".to_string()),
+            ]
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["model"], DEFAULT_GROK_MODEL);
+        assert_eq!(body["tools"][0]["type"], "web_search");
+        assert_eq!(body["input"][0]["content"], "rust 工具");
+        assert_eq!(body["include"][0], "no_inline_citations");
+
+        let custom = WebSearchOptions {
+            grok_search_url: "https://gateway.example/v1/responses".to_string(),
+            grok_model: "grok-custom".to_string(),
+            ..WebSearchOptions::default()
+        };
+        let (url, _, payload) = api_request(&custom, "grok", "x", 3, "k");
+        assert_eq!(url, "https://gateway.example/v1/responses");
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["model"], "grok-custom", "模型名可自定义");
+    }
+
+    /// Grok 的来源在顶层 `citations`，标题与摘要优先取 `annotations`。
+    #[test]
+    fn grok_reads_citations_and_annotation_titles() {
+        let body = r#"{
+            "citations":["https://a.example","https://b.example","https://c.example"],
+            "output":[
+                {"type":"reasoning","content":[]},
+                {"type":"message","content":[
+                    {"type":"output_text","text":"回答正文","annotations":[
+                        {"type":"url_citation","url":"https://b.example","title":"乙站","start_index":0,"end_index":3}
+                    ]}
+                ]}
+            ]
+        }"#;
+        let results = parse_grok_results(body).expect("Grok 结构");
+        assert_eq!(results.len(), 3, "citations 里的来源应当全部保留");
+        assert_eq!(results[0].url, "https://a.example");
+        assert_eq!(results[0].title, "https://a.example", "没有标注时标题用 URL");
+        assert_eq!(results[1].url, "https://b.example");
+        assert_eq!(results[1].title, "乙站", "标注给了标题就用它");
+
+        // 只有 citations、没有任何标注：仍然给出可访问的链接。
+        let bare = parse_grok_results(r#"{"citations":["https://x.example"]}"#)
+            .expect("只有 citations 也应可用");
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].url, "https://x.example");
+
+        // 两者都没有：如实报错，不返回空结果当作「搜索成功」。
+        let error = parse_grok_results(r#"{"output":[]}"#).expect_err("没有来源应当报错");
+        assert!(error.message.contains("citations"), "{}", error.message);
+
+        // 错误信封优先按其 message 报错。
+        let error = parse_grok_results(r#"{"error":{"message":"invalid api key"}}"#)
+            .expect_err("错误信封应当报错");
+        assert_eq!(error.message, "搜索失败（grok）：invalid api key");
+    }
+
+    /// 新增的两个接口型引擎同样在混合理参与（有凭据时）。
+    #[test]
+    fn deepseek_and_grok_join_mixed_search_when_configured() {
+        let options = WebSearchOptions {
+            deepseek_api_key: "ds".to_string(),
+            grok_api_key: "xai".to_string(),
+            ..WebSearchOptions::default()
+        };
+        let engines = mixed_engines(&options, &[]);
+        assert!(engines.contains(&"deepseek"), "{engines:?}");
+        assert!(engines.contains(&"grok"), "{engines:?}");
+
+        // 没凭据时不参与：它们没有匿名通道。
+        let bare = mixed_engines(&WebSearchOptions::default(), &[]);
+        assert!(!bare.contains(&"deepseek"), "{bare:?}");
+        assert!(!bare.contains(&"grok"), "{bare:?}");
+    }
+
+    /// Keenable 匿名也能单独用，但综合搜索要它参与就得配 Key：匿名额度是出口 IP 共享的公共池。
+    #[test]
+    fn keenable_joins_mixed_search_only_with_a_key() {
+        let bare = mixed_engines(&WebSearchOptions::default(), &[]);
+        assert!(!bare.contains(&"keenable"), "{bare:?}");
+        let configured = WebSearchOptions {
+            keenable_api_key: "keen-key".to_string(),
+            ..WebSearchOptions::default()
+        };
+        let engines = mixed_engines(&configured, &[]);
+        assert_eq!(engines, vec!["duckduckgo", "anysearch", "keenable"]);
+    }
+
+    /// Keenable 两条通道：带 Key 打 `/v1/search` 并加 `X-API-Key`；
+    /// 不带 Key 改打 `/v1/search/public`，必须附应用名头（缺它就是 400）。
+    #[test]
+    fn keenable_switches_between_the_keyed_and_public_endpoints() {
+        let (url, headers, payload) =
+            api_request(&WebSearchOptions::default(), "keenable", "rust 工具", 8, "keen-key");
+        assert_eq!(url, KEENABLE_ENDPOINT);
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("X-API-Key".to_string(), "keen-key".to_string()),
+            ]
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["query"], "rust 工具");
+        assert_eq!(body["max_results"], 8);
+        assert_eq!(body["disable_cards"], true, "卡片 URL 只活一天，结果里不要它");
+
+        let (url, headers, _) =
+            api_request(&WebSearchOptions::default(), "keenable", "rust", 3, "");
+        assert_eq!(url, KEENABLE_PUBLIC_ENDPOINT);
+        assert!(
+            headers.contains(&(
+                KEENABLE_PUBLIC_TITLE_HEADER.to_string(),
+                KEENABLE_PUBLIC_TITLE.to_string()
+            )),
+            "匿名通道缺应用名头会被 400 拒绝：{headers:?}"
+        );
+        assert!(
+            !headers.iter().any(|(name, _)| name == "X-API-Key"),
+            "匿名通道不该带 Key：{headers:?}"
+        );
+    }
+
+    #[test]
+    fn keenable_works_without_a_key_and_clamps_max_results() {
+        let body = r#"{"query":"rust","mode":"pro","results":[
+            {"title":"甲","url":"https://a.example","description":"","snippet":"摘要甲"},
+            {"title":"乙","url":"https://b.example","snippet":"摘要乙"}
+        ]}"#;
+        let transport = Arc::new(RouteTransport::new(&[("api.keenable.ai", body)]));
+        let options = WebSearchOptions {
+            default_engine: "keenable".to_string(),
+            ..route_options(Arc::clone(&transport))
+        };
+        let output =
+            web_search(&options, &arguments(json!({"query": "rust"}))).expect("没有 Key 也能搜索");
+        assert!(
+            normalize(&output).starts_with("来源：keenable｜查询：rust"),
+            "{output}"
+        );
+        let requests = transport.take_requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].contains("/v1/search/public"),
+            "没有 Key 时走匿名通道：{requests:?}"
+        );
+
+        // 接口硬限制 1–50：本地先夹住，避免调用方传了越界值就必然 400。
+        let (_, _, payload) = api_request(
+            &WebSearchOptions::default(),
+            "keenable",
+            "rust",
+            MAX_RESULTS_PER_ENGINE + 40,
+            "k",
+        );
+        let body: Value = serde_json::from_str(&payload).expect("请求体是 JSON");
+        assert_eq!(body["max_results"], KEENABLE_MAX_RESULTS);
+    }
+
+    /// Keenable 的结果在顶层 `results`，摘要字段是 `snippet`，没有 `description` 时也不为空。
+    #[test]
+    fn keenable_reads_top_level_results() {
+        let body = r#"{"query":"rust","mode":"pro","results":[
+            {"title":"甲","url":"https://a.example","description":"","snippet":"摘要甲"},
+            {"url":"https://b.example","snippet":"缺标题"},
+            {"title":"没 url","url":""}
+        ]}"#;
+        let results = parse_api_results("keenable", body).expect("Keenable 结构");
+        assert_eq!(results.len(), 2, "没有 url 的条目应当被丢弃");
+        assert_eq!(results[0].title, "甲");
+        assert_eq!(results[0].snippet, "摘要甲");
+        assert_eq!(results[1].title, "https://b.example", "缺标题时用 url 顶上");
+
+        let error = parse_api_results("keenable", r#"{"mode":"pro"}"#)
+            .expect_err("缺 results 数组应当报错");
+        assert!(error.message.contains("results"), "{}", error.message);
+    }
+
+    /// Keenable 的 Key 可留空（匿名可用），因此缺凭据不报错；显式配错 Key 才由 401 指路。
+    #[test]
+    fn keenable_key_is_optional_but_a_rejected_key_points_at_the_field() {
+        assert_eq!(WebSearchOptions::default().api_key_for("Keenable"), "");
+        let options = WebSearchOptions {
+            keenable_api_key: " keen-key ".to_string(),
+            ..WebSearchOptions::default()
+        };
+        assert_eq!(options.api_key_for("keenable"), " keen-key ");
+
+        let unauthorized = api_status_message(
+            "keenable",
+            401,
+            r#"{"error":"Invalid key","code":"invalid_api_key","message":"Invalid API key."}"#,
+        );
+        assert!(unauthorized.contains("keenable_api_key"), "{unauthorized}");
+    }
+
     #[test]
     fn api_requests_carry_engine_specific_url_headers_and_body() {
-        let (url, headers, payload) = api_request("tavily", "rust 工具", 3, "tvly-key");
+        let options = WebSearchOptions::default();
+        let (url, headers, payload) = api_request(&options, "tavily", "rust 工具", 3, "tvly-key");
         assert_eq!(url, "https://api.tavily.com/search");
         assert_eq!(
             headers,
@@ -2299,7 +2814,7 @@ mod tests {
         assert_eq!(body["query"], "rust 工具");
         assert_eq!(body["max_results"], 3);
 
-        let (url, headers, payload) = api_request("exa", "rust 工具", 4, "exa-key");
+        let (url, headers, payload) = api_request(&options, "exa", "rust 工具", 4, "exa-key");
         assert_eq!(url, "https://api.exa.ai/search");
         assert_eq!(
             headers,
@@ -2313,7 +2828,7 @@ mod tests {
         assert_eq!(body["numResults"], 4);
         assert_eq!(body["contents"]["text"], true);
 
-        let (url, headers, payload) = api_request("firecrawl", "rust 工具", 5, "fc-key");
+        let (url, headers, payload) = api_request(&options, "firecrawl", "rust 工具", 5, "fc-key");
         assert_eq!(url, "https://api.firecrawl.dev/v1/search");
         assert_eq!(
             headers,
@@ -2330,7 +2845,7 @@ mod tests {
     /// TinyFish：`GET` + `X-API-Key`，查询串带 query，没有请求体。
     #[test]
     fn tinyfish_uses_a_get_request_with_the_api_key_header() {
-        let (url, headers, payload) = api_request("tinyfish", "rust 工具", 20, "tf-key");
+        let (url, headers, payload) = api_request(&WebSearchOptions::default(), "tinyfish", "rust 工具", 20, "tf-key");
         assert_eq!(
             url,
             "https://api.search.tinyfish.ai/?query=rust+%E5%B7%A5%E5%85%B7"

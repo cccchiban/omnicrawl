@@ -1452,6 +1452,7 @@ fn web_search_state() -> SettingsState {
             anysearch_configured: false,
             tinyfish_configured: false,
             github_configured: false,
+            ..WebSearchRow::default()
         }),
     )
 }
@@ -1487,7 +1488,11 @@ fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
     assert_eq!(state.pane(), Pane::Form(FormKind::WebSearch));
 
     let rows = state.form_rows();
-    assert_eq!(rows.len(), 7, "默认引擎 + 五把 API Key + GitHub Token");
+    assert_eq!(
+        rows.len(),
+        13,
+        "默认引擎 + 七把 API Key + GitHub Token + 两个地址 + Grok 模型"
+    );
     assert_eq!(rows[0].value, "tavily", "引擎列显示当前值");
     assert!(rows[0].has_menu, "引擎是候选字段");
     assert_eq!(rows[1].value, "••••••••", "已配凭据只显示掩码");
@@ -1497,7 +1502,7 @@ fn web_search_page_masks_credentials_and_keeps_them_blank_on_save() {
     assert_eq!(rows[5].value, "（未配置）", "TinyFish 未配（无匿名通道）");
     assert_eq!(rows[6].value, "（未配置）", "GitHub Token 未配");
 
-    // 掩码原样保存 = 不改动：五把凭据都折成空串交给宿主。
+    // 掩码原样保存 = 不改动：各把凭据都折成空串交给宿主。
     let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) =
         state.handle_ctrl_key(KeyCode::Char('s'))
     else {
@@ -1540,6 +1545,9 @@ fn web_search_page_offers_every_engine_but_not_retired_ones() {
             "firecrawl",
             "anysearch",
             "tinyfish",
+            "deepseek",
+            "grok",
+            "keenable",
             "mixed"
         ],
         "候选来自 WEB_SEARCH_ENGINES：雅虎与 bing 已下线"
@@ -1584,10 +1592,12 @@ fn web_search_page_stays_put_after_save() {
         anysearch_configured: true,
         tinyfish_configured: true,
         github_configured: true,
+        ..WebSearchRow::default()
     });
     let rows = state.form_rows();
     assert_eq!(rows[0].value, "exa", "引擎对齐到磁盘上的生效值");
-    for row in &rows[1..] {
+    // 只看凭据字段：地址与模型不是凭据，留着空值显示。
+    for row in &rows[1..7] {
         assert_eq!(row.value, "••••••••", "刚录入的明文在保存后立即换回掩码");
     }
 }
@@ -1598,11 +1608,22 @@ fn web_search_form_carries_the_github_token_field() {
     goto(&mut state, "web_search");
     state.handle_key(KeyCode::Enter); // 进联网搜索页
     let rows = state.form_rows();
-    assert_eq!(rows.len(), 7, "默认引擎 + 五把 API Key + GitHub Token");
+    assert_eq!(
+        rows.len(),
+        13,
+        "默认引擎 + 七把 API Key + GitHub Token + 两个地址 + Grok 模型"
+    );
     assert_eq!(rows[4].label, "AnySearch API Key");
     assert_eq!(rows[5].label, "TinyFish API Key");
     assert_eq!(rows[6].label, "GitHub Token");
     assert_eq!(rows[6].value, "（未配置）", "Token 与其余凭据同口径呈现");
+    assert_eq!(rows[7].label, "DeepSeek 接口地址");
+    assert_eq!(rows[8].label, "DeepSeek API Key");
+    assert_eq!(rows[9].label, "Grok 接口地址");
+    assert_eq!(rows[10].label, "Grok API Key");
+    assert_eq!(rows[11].label, "Grok 模型");
+    assert_eq!(rows[12].label, "Keenable API Key");
+    assert_eq!(rows[12].value, "（未配置）", "留空即走匿名通道");
 }
 
 #[test]

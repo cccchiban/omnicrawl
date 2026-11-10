@@ -58,8 +58,15 @@ enabled = true
 # tavily / exa / firecrawl / tinyfish 走各自的检索接口，需要配置对应的 API Key（写入本地 config.toml，不提交仓库）；
 # anysearch 走统一检索接口，anysearch_api_key 可选——留空即按 IP 走匿名免费额度；
 # tinyfish 走 GET 检索接口（每天 12,000 次以内免费），tinyfish_api_key 必填；
+# deepseek 走 POST /v1/tools/search，grok 走 Responses API 的 web_search 服务端工具，
+# 两者都需要各自的 API Key。它们的接口地址与模型都可自定义，便于接第三方网关或自建代理：
+# 留空即用内置默认地址。自定义地址只接受 http(s)，协议需与本家一致。
+# keenable 填不填 keenable_api_key 都能搜索：填了走 /v1/search（按组织限速 10 次/秒、无小时上限、
+# 每月 10 万次免费额度），留空走 /v1/search/public（按 IP 限流：1000 次/小时、10 次/秒，
+# 且与同一出口 IP 的其他流量共享这份公共池）。因此它的 Key 是提高速率的可选项，不影响可用性。
 # 走哪个引擎只看这里的设置：工具调用里的 engine 参数无效，agent 不能按单次任务改搜索通路。
-# mixed 是综合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与（anysearch 始终参与）。
+# mixed 是综合搜索：并发查询上述渠道并去重合并，接口型渠道只在配了凭据时参与（anysearch 始终参与，
+# keenable 因匿名额度是共享池，参与综合搜索需配 Key）。
 [web_search]
 engine = "duckduckgo"
 tavily_api_key = ""
@@ -72,6 +79,17 @@ tinyfish_api_key = ""
 # GitHub Token 可选：配置后 GitHub 引擎改走 REST 检索接口（30 次/分钟），
 # 留空则抓公开搜索页（10 次/分钟）。token 只影响额度，无需勾选任何仓库权限。
 github_token = ""
+# DeepSeek 搜索：留空则用 https://api.deepseek.com/v1/tools/search。
+# 填第三方网关时只写到域名即可，路径会自动补成 /v1/tools/search。
+deepseek_search_url = ""
+deepseek_api_key = ""
+# Grok 搜索：留空则用 https://api.x.ai/v1/responses；模型留空则用 grok-4.7。
+# 填第三方网关时只写到域名即可，路径会自动补成 /v1/responses。
+grok_search_url = ""
+grok_api_key = ""
+grok_model = ""
+# Keenable API Key（可选）：留空走匿名通道（按 IP 限速），填了走付费通道（速率更高）。
+keenable_api_key = ""
 
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。

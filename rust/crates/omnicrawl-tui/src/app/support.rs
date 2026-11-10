@@ -266,6 +266,12 @@ pub(super) fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
         anysearch_configured: !configuration.anysearch_api_key.trim().is_empty(),
         tinyfish_configured: !configuration.tinyfish_api_key.trim().is_empty(),
         github_configured: !configuration.github_token.trim().is_empty(),
+        deepseek_search_url: configuration.deepseek_search_url,
+        deepseek_configured: !configuration.deepseek_api_key.trim().is_empty(),
+        grok_search_url: configuration.grok_search_url,
+        grok_configured: !configuration.grok_api_key.trim().is_empty(),
+        grok_model: configuration.grok_model,
+        keenable_configured: !configuration.keenable_api_key.trim().is_empty(),
     }
 }
 

@@ -261,7 +261,7 @@ impl App {
     /// 联网搜索页：写 `config.toml [web_search]`（字段顺序与 `WEB_SEARCH_FIELDS` 一致），
     /// 再换掉宿主侧搜索运行期。
     ///
-    /// 五把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
+    /// 六把凭据只在非空时写回：界面留空或仍显示掩码都表示「不改动磁盘原值」，
     /// 否则用户只想改默认引擎就会顺手把已存密钥抹掉。
     pub(super) fn apply_web_search_form(
         &mut self,
@@ -290,6 +290,19 @@ impl App {
         }
         if let Some(key) = keep_or_replace(&field_text(values, 6)) {
             configuration.github_token = key;
+        }
+        // URL 与模型可清空（空即回落内置默认值），因此不套 keep_or_replace 的「留空=不改动」。
+        configuration.deepseek_search_url = field_text(values, 7);
+        if let Some(key) = keep_or_replace(&field_text(values, 8)) {
+            configuration.deepseek_api_key = key;
+        }
+        configuration.grok_search_url = field_text(values, 9);
+        if let Some(key) = keep_or_replace(&field_text(values, 10)) {
+            configuration.grok_api_key = key;
+        }
+        configuration.grok_model = field_text(values, 11);
+        if let Some(key) = keep_or_replace(&field_text(values, 12)) {
+            configuration.keenable_api_key = key;
         }
         let path = save_web_search_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;

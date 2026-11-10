@@ -109,13 +109,15 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 
 **`features/web_search`（Rust 专有）**：联网搜索段（`[web_search]`），默认引擎
 （`duckduckgo` / `github` / `arxiv` / `huggingface` /
-`tavily` / `exa` / `firecrawl` / `anysearch` / `tinyfish` / `mixed`，清单由 `WEB_SEARCH_ENGINES`
-唯一提供）与 Tavily / Exa / Firecrawl / AnySearch / TinyFish 五把 API Key（AnySearch 的 Key 可选：
-留空即按 IP 走匿名免费额度；TinyFish 必配，走 `X-API-Key` 的 `GET` 检索接口）。`mixed` 是混合搜索
+`tavily` / `exa` / `firecrawl` / `anysearch` / `tinyfish` / `deepseek` / `grok` / `keenable` /
+`mixed`，清单由 `WEB_SEARCH_ENGINES` 唯一提供）与各接口型引擎的 API Key（AnySearch 的 Key 可选：
+留空即按 IP 走匿名免费额度；TinyFish 必配，走 `X-API-Key` 的 `GET` 检索接口；Keenable 的 Key 同样
+可选——填了走 `/v1/search` 按组织限速，留空走 `/v1/search/public` 按 IP 限流且与同出口 IP 共享公共池，
+两种都能搜索，差别只在速率）。`mixed` 是混合搜索
 （并发查询多个渠道并去重合并，执行体在宿主侧）。引擎只由本段决定：工具参数里的 `engine` 无效，
 agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[tools]` 只管工具
 是否进表，本段管「这台机器走哪条搜索通路、接口型引擎用什么凭据」。因此不进 parity 数据集，
-自带 `tests/web_search_config.rs`：默认值（默认引擎无凭据、五把 Key 为空）、引擎名大小写与
+自带 `tests/web_search_config.rs`：默认值（默认引擎无凭据、各把 Key 为空）、引擎名大小写与
 空白归一、空串按「没填」回落默认值、非法引擎报错并列出全部候选、逐引擎的凭据解析、
 写回只动本段且非法取值不落盘。
 

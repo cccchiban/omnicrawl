@@ -1,4 +1,4 @@
-//! 联网搜索页：默认引擎 + 六把凭据的独立一级设置页。
+//! 联网搜索页：默认引擎 + 各接口型引擎凭据的独立一级设置页。
 //!
 //! 它原先是工具页里的一行入口（`Enter` 才进表单）；既然设置项本身与工具开关无关，
 //! 就与其余表单页同构：左栏一项、右栏一页，草稿从配置投影起步。
@@ -18,6 +18,12 @@ pub(super) fn web_search_form_values(row: &WebSearchRow) -> Vec<FieldValue> {
         FieldValue::Text(secret_draft_for(row.anysearch_configured)),
         FieldValue::Text(secret_draft_for(row.tinyfish_configured)),
         FieldValue::Text(secret_draft_for(row.github_configured)),
+        FieldValue::Text(row.deepseek_search_url.clone()),
+        FieldValue::Text(secret_draft_for(row.deepseek_configured)),
+        FieldValue::Text(row.grok_search_url.clone()),
+        FieldValue::Text(secret_draft_for(row.grok_configured)),
+        FieldValue::Text(row.grok_model.clone()),
+        FieldValue::Text(secret_draft_for(row.keenable_configured)),
     ]
 }
 

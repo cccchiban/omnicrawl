@@ -378,7 +378,7 @@ const IMAGE_GEN_FIELDS: [FieldSpec; 12] = [
 ];
 
 /// 联网搜索的引擎候选（文案 = 取值，都是引擎名；清单来自配置域）。
-const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 10] = [
+const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 13] = [
     ("duckduckgo", "duckduckgo"),
     ("github", "github"),
     ("arxiv", "arxiv"),
@@ -388,17 +388,20 @@ const WEB_SEARCH_ENGINE_OPTIONS: [(&str, &str); 10] = [
     ("firecrawl", "firecrawl"),
     ("anysearch", "anysearch"),
     ("tinyfish", "tinyfish"),
+    ("deepseek", "deepseek"),
+    ("grok", "grok"),
+    ("keenable", "keenable"),
     ("mixed", "mixed"),
 ];
 
 /// 联网搜索页的字段；顺序与 `app.rs` 读值时的下标一一对应。
 ///
-/// 五把 API Key 是凭据：界面只显示掩码、进输入态也从空起步，留空表示保留磁盘原值。
+/// 六把 API Key 是凭据：界面只显示掩码、进输入态也从空起步，留空表示保留磁盘原值。
 ///
-/// GitHub Token 与 AnySearch Key 都是可选项：前者留空即维持未配置（GitHub 引擎照常抓公开
-/// 搜索页），后者留空即走匿名额度。TinyFish 的 Key 必填，但同样允许留空保存（引擎被调用时
-/// 才如实报缺凭据）。
-const WEB_SEARCH_FIELDS: [FieldSpec; 7] = [
+/// GitHub Token、AnySearch Key 与 Keenable Key 都是可选项：GitHub 留空即维持未配置（GitHub
+/// 引擎照常抓公开搜索页），后两者留空即走匿名额度（Keenable 匿名按 IP 限流、共用公共池）。
+/// TinyFish 的 Key 必填，但同样允许留空保存（引擎被调用时才如实报缺凭据）。
+const WEB_SEARCH_FIELDS: [FieldSpec; 13] = [
     FieldSpec::enumerated("搜索引擎", &WEB_SEARCH_ENGINE_OPTIONS),
     FieldSpec::secret("Tavily API Key"),
     FieldSpec::secret("Exa API Key"),
@@ -406,6 +409,12 @@ const WEB_SEARCH_FIELDS: [FieldSpec; 7] = [
     FieldSpec::secret("AnySearch API Key"),
     FieldSpec::secret("TinyFish API Key"),
     FieldSpec::secret("GitHub Token"),
+    FieldSpec::text("DeepSeek 接口地址"),
+    FieldSpec::secret("DeepSeek API Key"),
+    FieldSpec::text("Grok 接口地址"),
+    FieldSpec::secret("Grok API Key"),
+    FieldSpec::text("Grok 模型"),
+    FieldSpec::secret("Keenable API Key"),
 ];
 
 /// 沙盒隔离模式候选（取值与 `[sandbox] mode` 一一对应）。
@@ -457,7 +466,7 @@ pub enum FormKind {
     AgentWorkspace,
     /// 图像生成：开关 + 接口/凭据变量/模型 + 四个默认参数。
     ImageGen,
-    /// 联网搜索：引擎 + Tavily/Exa/Firecrawl/AnySearch/TinyFish 凭据。
+    /// 联网搜索：引擎 + Tavily/Exa/Firecrawl/AnySearch/TinyFish/DeepSeek/Grok/Keenable 凭据。
     WebSearch,
     /// Computer Use：总开关 + 时间预算 + 截图上限 + 桌面模型。
     ComputerUse,

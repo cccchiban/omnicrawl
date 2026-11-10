@@ -28,7 +28,7 @@ fn write_text(path: &Path, text: &str) {
     std::fs::write(path, text).expect("写配置");
 }
 
-/// 没有 `web_search` 段时：默认引擎是无需要凭据的 duckduckgo，五把密钥都为空。
+/// 没有 `web_search` 段时：默认引擎是无需要凭据的 duckduckgo，各把密钥都为空。
 #[test]
 fn missing_section_yields_defaults() {
     let root = temp_root("empty");
@@ -41,6 +41,7 @@ fn missing_section_yields_defaults() {
     assert!(config.firecrawl_api_key.is_empty());
     assert!(config.anysearch_api_key.is_empty());
     assert!(config.tinyfish_api_key.is_empty());
+    assert!(config.keenable_api_key.is_empty(), "Keenable 默认走匿名通道");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -59,6 +60,7 @@ exa_api_key = " exa-key "
 firecrawl_api_key = " fc-key "
 anysearch_api_key = " as-key "
 tinyfish_api_key = " tf-key "
+keenable_api_key = " keen-key "
 "#,
     );
     let env = R::ConfigEnvironment::new(root.to_string_lossy().to_string(), "win32");
@@ -69,6 +71,7 @@ tinyfish_api_key = " tf-key "
     assert_eq!(config.firecrawl_api_key, "fc-key");
     assert_eq!(config.anysearch_api_key, "as-key");
     assert_eq!(config.tinyfish_api_key, "tf-key");
+    assert_eq!(config.keenable_api_key, "keen-key");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -105,7 +108,7 @@ fn unknown_engine_is_rejected_with_the_full_list() {
             WEB_SEARCH_ENGINES.join("、")
         )
     );
-    assert_eq!(WEB_SEARCH_ENGINES.len(), 10);
+    assert_eq!(WEB_SEARCH_ENGINES.len(), 13);
     // 雅虎与 bing 已下线；混合搜索与站点检索引擎都是合法值。
     assert!(!WEB_SEARCH_ENGINES.contains(&"yahoo"));
     assert!(!WEB_SEARCH_ENGINES.contains(&"bing"));
@@ -116,6 +119,7 @@ fn unknown_engine_is_rejected_with_the_full_list() {
     assert!(WEB_SEARCH_ENGINES.contains(&"firecrawl"));
     assert!(WEB_SEARCH_ENGINES.contains(&"anysearch"));
     assert!(WEB_SEARCH_ENGINES.contains(&"tinyfish"));
+    assert!(WEB_SEARCH_ENGINES.contains(&"keenable"), "Keenable 填不填 Key 都能搜索");
     for engine in ["github", "arxiv", "huggingface"] {
         assert!(WEB_SEARCH_ENGINES.contains(&engine), "{engine} 应当合法");
     }
@@ -133,16 +137,101 @@ fn api_key_resolution_is_per_engine() {
         anysearch_api_key: "as-1".to_string(),
         tinyfish_api_key: "tf-1".to_string(),
         github_token: "ghp-1".to_string(),
+        deepseek_api_key: "ds-1".to_string(),
+        grok_api_key: "xai-1".to_string(),
+        keenable_api_key: "keen-1".to_string(),
+        ..WebSearchConfiguration::default()
     };
     assert_eq!(config.api_key_for("tavily"), "tvly-1");
     assert_eq!(config.api_key_for("Exa"), "exa-1", "大小写不敏感");
     assert_eq!(config.api_key_for("Firecrawl"), "fc-1");
     assert_eq!(config.api_key_for("AnySearch"), "as-1");
     assert_eq!(config.api_key_for("TinyFish"), "tf-1", "接口名大小写不敏感");
+    assert_eq!(config.api_key_for("DeepSeek"), "ds-1", "DeepSeek 用自己的 Key");
+    assert_eq!(config.api_key_for("Grok"), "xai-1", "Grok 用自己的 Key");
+    assert_eq!(config.api_key_for("Keenable"), "keen-1", "Keenable 用自己的 Key");
+    assert_eq!(config.api_key_for("keenable"), "keen-1");
     assert_eq!(config.api_key_for("duckduckgo"), "");
     assert_eq!(config.api_key_for("mixed"), "", "混合搜索本身没有凭据");
     // GitHub Token 不参与「缺凭据即报错」的判定：没有它引擎也照常可用。
     assert_eq!(config.api_key_for("github"), "");
+}
+
+/// 自定义地址与模型留空即回落内置默认值，填了就按补全规则使用（第三方接入）。
+#[test]
+fn custom_endpoints_and_model_fall_back_to_defaults() {
+    let bare = WebSearchConfiguration::default();
+    assert_eq!(
+        bare.deepseek_endpoint(),
+        omnicrawl_config::features::web_search::DEFAULT_DEEPSEEK_SEARCH_URL
+    );
+    assert_eq!(
+        bare.grok_endpoint(),
+        omnicrawl_config::features::web_search::DEFAULT_GROK_SEARCH_URL
+    );
+    assert_eq!(
+        bare.grok_model_name(),
+        omnicrawl_config::features::web_search::DEFAULT_GROK_SEARCH_MODEL
+    );
+
+    let custom = WebSearchConfiguration {
+        deepseek_search_url: "  https://gw.example/ds  ".to_string(),
+        grok_search_url: "https://gw.example/grok".to_string(),
+        grok_model: " grok-lite ".to_string(),
+        ..WebSearchConfiguration::default()
+    }
+    .normalize()
+    .expect("自定义地址应当通过校验");
+    assert_eq!(custom.deepseek_endpoint(), "https://gw.example/ds");
+    assert_eq!(custom.grok_endpoint(), "https://gw.example/grok");
+    assert_eq!(custom.grok_model_name(), "grok-lite");
+}
+
+/// 只写到主机名的地址补上默认地址的路径：否则请求会落到站点根路径拿到 HTML。
+#[test]
+fn bare_host_endpoints_gain_the_default_path() {
+    let config = WebSearchConfiguration {
+        deepseek_search_url: "https://gw.example".to_string(),
+        grok_search_url: "https://gw.example".to_string(),
+        ..WebSearchConfiguration::default()
+    }
+    .normalize()
+    .expect("裸域名应当通过校验");
+    assert_eq!(config.deepseek_endpoint(), "https://gw.example/v1/tools/search");
+    assert_eq!(config.grok_endpoint(), "https://gw.example/v1/responses");
+}
+
+/// 末尾斜杠、端口、查询串与已带路由的写法都要各归各位。
+#[test]
+fn endpoint_completion_only_applies_to_host_only_urls() {
+    use omnicrawl_config::features::web_search::complete_search_endpoint;
+
+    let grok_default = omnicrawl_config::features::web_search::DEFAULT_GROK_SEARCH_URL;
+    let cases = [
+        ("https://gw.example/", "https://gw.example/v1/responses"),
+        ("http://gw.example/", "http://gw.example/v1/responses"),
+        ("https://gw.example:8080", "https://gw.example:8080/v1/responses"),
+        ("https://gw.example/v1", "https://gw.example/v1"),
+        ("https://gw.example/v1/responses", "https://gw.example/v1/responses"),
+        ("https://gw.example/openai/deploy/x", "https://gw.example/openai/deploy/x"),
+        ("https://gw.example?key=1", "https://gw.example?key=1"),
+    ];
+    for (configured, expected) in cases {
+        assert_eq!(complete_search_endpoint(configured, grok_default), expected);
+    }
+    assert_eq!(complete_search_endpoint("  ", grok_default), grok_default);
+}
+
+/// 自定义地址只接受 http(s)：写错协议应当在保存时被拒绝，而不是调用时才炸。
+#[test]
+fn custom_endpoint_rejects_non_http_urls() {
+    let error = WebSearchConfiguration {
+        deepseek_search_url: "ftp://gw.example/ds".to_string(),
+        ..WebSearchConfiguration::default()
+    }
+    .normalize()
+    .expect_err("非 http(s) 地址应当被拒绝");
+    assert!(error.message().contains("http"), "{}", error.message());
 }
 
 /// 写回只动 `web_search` 段，其他段保持原样。
@@ -164,6 +253,12 @@ fn save_keeps_other_sections_and_round_trips() {
         anysearch_api_key: String::new(),
         tinyfish_api_key: "tf-key".to_string(),
         github_token: "ghp-key".to_string(),
+        deepseek_api_key: "ds-key".to_string(),
+        grok_api_key: "xai-key".to_string(),
+        grok_model: "grok-lite".to_string(),
+        keenable_api_key: "keen-key".to_string(),
+        deepseek_search_url: "https://gw.example/ds".to_string(),
+        ..WebSearchConfiguration::default()
     };
     save_web_search_configuration(&env, &configuration, None).expect("写回联网搜索配置");
 

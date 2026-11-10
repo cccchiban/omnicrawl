@@ -12,7 +12,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；凭据以明文随协议帧交给内核（`KernelModelConfig.api_key`），不需要子进程环境注入 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效；综合搜索默认只跑 DuckDuckGo 与已配凭据的接口型渠道，GitHub/arXiv/Hugging Face 属垂直站点，需用 `sources` 参数点名才加入）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish/DeepSeek/Grok/Keenable 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`、Keenable 无凭据改打 `/v1/search/public` 并附 `X-Keenable-Title`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效；综合搜索默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享池，参与综合搜索需配 Key），GitHub/arXiv/Hugging Face 属垂直站点，需用 `sources` 参数点名才加入）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
@@ -130,7 +130,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
   总量上限；只有调用方显式给了 `max_results` 才收窄总数。没有分组的中间层，也**没有 25 条上限**
   （旧的分组机制 `RERANK_GROUPS` / `RERANK_GROUP_SIZE` / `RERANK_POOL_LIMIT` / `RERANK_OUTPUT_LIMIT`
   已删除）。单引擎调用就是「唯一一路」，因此排序后同样只回 5 条。
-- **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与）；
+- **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享的公共池，混进综合搜索会持续摊薄它，因此参与综合搜索需配 Key）；
   GitHub / arXiv / Hugging Face 是垂直站点，用 `sources` 参数点名才加进来，单独选它们作引擎时不受影响。
 - **条数**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条候选，排序后每路保留前 5 条；
   总量随渠道数增长、不限，显式 `max_results` 才收窄。单引擎与接口型引擎按 `max_results` 截断，
