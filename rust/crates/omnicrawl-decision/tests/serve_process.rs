@@ -72,21 +72,26 @@ fn free_port() -> u16 {
 }
 
 fn binary() -> PathBuf {
-    // 集成测试的产物与二进制同目录（cargo 约定）；找不到时退回 PATH。
-    let mut path = std::env::current_exe().expect("当前测试可执行文件");
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    let candidate = path.join(if cfg!(windows) {
+    // 测试可执行文件落在 `target/<profile>/build/<crate>-<hash>/out/` 或 `target/<profile>/deps/`，
+    // 而 `cargo test` 产出的 bin 在 `target/<profile>/`，所以向上逐级找。
+    let name = if cfg!(windows) {
         "omnicrawl-decision.exe"
     } else {
         "omnicrawl-decision"
-    });
-    if candidate.is_file() {
-        return candidate;
+    };
+    let mut path = std::env::current_exe().expect("当前测试可执行文件");
+    path.pop();
+    // 最多向上找 4 级：out/ → <crate>-<hash>/ → build/ → <profile>/。
+    for _ in 0..4 {
+        let candidate = path.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+        if !path.pop() {
+            break;
+        }
     }
-    PathBuf::from("omnicrawl-decision")
+    PathBuf::from(name)
 }
 
 /// 等到端口监听；超时返回 false。

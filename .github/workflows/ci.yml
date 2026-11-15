@@ -56,4 +56,8 @@ jobs:
           # 只为省盘与省时：CI 不需要调试信息。
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --workspace --no-fail-fast
+        # 先单独构建 bin：`omnicrawl-decision` 的 serve 用例要拉起同名的真实可执行文件，
+        # 而 `cargo test --workspace` 只保证测试二进制就位，不保证 bin 已产出。
+        run: |
+          cargo build --workspace --bins
+          cargo test --workspace --no-fail-fast
