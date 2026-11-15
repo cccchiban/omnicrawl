@@ -1223,11 +1223,11 @@ fn serialize_image_gen(
 }
 
 fn serialize_tts(
-    general: TtsConfiguration,
-    cloud: TtsCloudConfiguration,
-    openai: TtsApiConfiguration,
-    gemini: GeminiTtsConfiguration,
-    deepseek: DeepSeekTtsConfiguration,
+    general: &TtsConfiguration,
+    cloud: &TtsCloudConfiguration,
+    openai: &TtsApiConfiguration,
+    gemini: &GeminiTtsConfiguration,
+    deepseek: &DeepSeekTtsConfiguration,
 ) -> Value {
     json!({
         "enabled": general.enabled,
