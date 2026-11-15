@@ -103,14 +103,14 @@ mod tests {
         assert!(split_text("   \n  ", 100).is_empty());
     }
 
-    /// 计费口径：汉字算 2，因此同一段文字在 8 个计费字符里只放得下两句。
+    /// 计费口径：汉字算 2、句号算 1，因此「你好。」是 5 而不是 3；上限 10 恰好放下两句。
     #[test]
     fn billed_splitting_weights_han_as_two() {
-        let chunks = split_text_billed("你好。世界。再见。", 8);
+        let chunks = split_text_billed("你好。世界。再见。", 10);
         assert_eq!(chunks, vec!["你好。世界。", "再见。"]);
         assert!(chunks
             .iter()
-            .all(|chunk| split_text_billed_weight(chunk) <= 8));
+            .all(|chunk| split_text_billed_weight(chunk) <= 10));
     }
 
     fn split_text_billed_weight(chunk: &str) -> usize {

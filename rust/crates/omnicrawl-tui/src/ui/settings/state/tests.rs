@@ -2155,7 +2155,7 @@ fn switching_provider_swaps_the_channel_rows() {
     state.handle_key(KeyCode::Enter); // 进入面板
     assert_eq!(
         state.tts_rows().len(),
-        TTS_ROW_COUNT,
+        TTS_ROW_COUNT - 1,
         "OpenAI 下所有行都可见"
     );
     let labels: Vec<&str> = state.tts_rows().iter().map(|row| row.label).collect();
@@ -2171,7 +2171,7 @@ fn switching_provider_swaps_the_channel_rows() {
     assert!(!labels.contains(&"语速 speed"));
     assert_eq!(
         state.tts_rows().len(),
-        TTS_ROW_COUNT - 1,
+        TTS_ROW_COUNT - 2,
         "Gemini 没有语速行"
     );
     let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行应当可见");
@@ -2201,7 +2201,7 @@ fn deepseek_channel_shows_transport_and_hides_model() {
     assert!(labels.contains(&"传输方式 transport"), "{labels:?}");
     assert!(!labels.contains(&"模型 model"), "{labels:?}");
     assert!(!labels.contains(&"语速 speed"), "{labels:?}");
-    assert_eq!(state.tts_rows().len(), TTS_ROW_COUNT - 2, "少模型与语速两行");
+    assert_eq!(state.tts_rows().len(), TTS_ROW_COUNT - 1, "少模型与语速、多传输方式");
     let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行可见");
     assert_eq!(state.tts_rows()[voice].value, "stella", "DeepSeek 默认音色");
     let transport = state
@@ -2254,7 +2254,7 @@ fn tts_selection_marker_follows_the_visible_rows() {
     }
     let rows = state.tts_rows();
     // 语速行被跳过，因此屏幕行号比配置行号小 1。
-    assert_eq!(state.tts_focused_index(), TTS_ROW_API_KEY - 1);
+    assert_eq!(state.tts_focused_index(), TTS_ROW_API_KEY - 2);
     assert_eq!(rows[state.tts_focused_index()].label, "API Key");
     // 每行自报屏幕下标，且只有选中行带焦点：渲染层直接照它画标记。
     for (index, row) in rows.iter().enumerate() {

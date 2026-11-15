@@ -4860,7 +4860,7 @@
     ],
     "hashes": {
       "advisor_design.md": "1e89adcb683577e418474462a3624baa3fc20818c7babc8da85022a5f342042a",
-      "agent_gateway_desensitization_design.md": "03ba5f519e090b1391e750888c155a517cd1395eaa32e821630a45109b7768c0",
+      "agent_gateway_desensitization_design.md": "5c8a8b2ed4dbe99ba94d68256ed80eb791805e1bca098eaea16b86c1db684be5",
       "API.md": "1139c3cfb6d6855b632276be5e58bdf65f619f1b85facb2c427799188b00abdd",
       "decision_api.md": "5a9253c3ce3d003445ee525209d23862e28f020368d1f94d7bf773269addbbed",
       "fetch_api.md": "5e6bdf8433d8db01c92b770c527b0fe55e17f106a56c1d13376ab35a14ecef77",
@@ -4874,7 +4874,7 @@
       "TERMINAL_UI.md": "c25438f81fd32c68306f24f6239f2de5412b2d71adee4fb593f0df1b371c9ebc",
       "TOOL_CALLING.md": "fe807441ab5a12340728df5a372ffcc7effe7277dcce7274bd12be030e62e455",
       "tool_output_compression_design.md": "efab3834a58df6c5aebd0e572b0e17b2a66b3220a887c50cf14ceec46f337af6",
-      "TTS.md": "b655c9b843b14444195033be094be34240b5f48873848a5d9b7cdb09127c71b1",
+      "TTS.md": "a1f1e10bfef359f2341f49fa844f15b67f5d12170500f3ab9f1f62a70a8955df",
       "trigger_api.md": "61edf10ee26a7fdfc491305ccc4f8da12a7d801bfc26397c0817549117c183f0"
     }
   }
