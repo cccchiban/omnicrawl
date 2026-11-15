@@ -130,8 +130,7 @@ impl SettingsState {
                     }
                 }
                 _ => Vec::new(),
-            },
-            other => other.static_options().unwrap_or_default(),
+            }
         }
     }
 

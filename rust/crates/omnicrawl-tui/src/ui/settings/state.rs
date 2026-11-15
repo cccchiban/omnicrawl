@@ -828,17 +828,6 @@ pub enum DropdownField {
     VisionAdd,
 }
 
-impl DropdownField {
-    /// 静态候选在这张表里没有：模型管理页的参数行、表单页的字段与视觉页的候选都随
-    /// 环境变化（渠道与模型列表来自配置，表单项跟着表单页的字段表走），由
-    /// [`SettingsState::options_for`] 提供。
-    fn static_options(self) -> Option<Vec<(String, OptionValue)>> {
-        match self {
-            Self::ModelParam(_) | Self::Form(_) | Self::VisionAdd => None,
-        }
-    }
-}
-
 /// 候选的取值：上下文页是整数，推理强度是文本，模型页是渠道标识。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptionValue {
