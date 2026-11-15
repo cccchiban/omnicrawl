@@ -4830,8 +4830,10 @@ version = "0.5.0"
 dependencies = [
  "base64",
  "omnicrawl-version",
+ "rustls",
  "serde_json",
  "ureq",
+ "webpki-roots",
 ]
 
 [[package]]
