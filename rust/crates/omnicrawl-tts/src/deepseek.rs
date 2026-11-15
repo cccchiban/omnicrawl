@@ -127,11 +127,7 @@ impl DeepSeekTtsConfig {
     /// 整段合成：一次 POST，响应体就是音频。
     fn synthesize_once(&self, text: &str) -> Result<(Vec<u8>, AudioPayload), String> {
         let timeout = Duration::from_secs(self.timeout_seconds.max(1));
-        let response = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let response = response
+        let response = agent()
             .post(&self.base_url)
             .config()
             .timeout_connect(Some(timeout))
@@ -274,6 +270,14 @@ fn is_wide(ch: char) -> bool {
     matches!(ch as u32,
         0x2E80..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x3040..=0x30FF
         | 0xAC00..=0xD7AF | 0x20000..=0x3FFFF)
+}
+
+/// 共用的 ureq 代理：4xx/5xx 不当作传输错误，交给调用方读状态码与响应体。
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into()
 }
 
 #[cfg(test)]
