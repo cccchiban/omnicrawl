@@ -1088,7 +1088,7 @@ pub(super) fn tts_channel_configurations(
     draft: &TtsDraft,
     previous_api: &TtsApiConfiguration,
     previous_gemini: &GeminiTtsConfiguration,
-    previous_deepseek: DeepSeekTtsConfiguration,
+    previous_deepseek: &DeepSeekTtsConfiguration,
 ) -> Result<
     (
         TtsApiConfiguration,
