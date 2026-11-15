@@ -164,6 +164,26 @@ pub trait CommandAgent {
     /// 替换顾问策略配置并重建工具表（advisor 工具据此即时出现/消失）。
     fn apply_advisor_config(&self, config: &AdvisorConfig) -> Result<(), AgentError>;
 
+    /// 会话区是否显示思考段（`ui.show_thinking`）；`None` 表示该入口没有这个开关。
+    fn show_thinking(&self) -> Option<bool> {
+        None
+    }
+
+    /// 运行时切换思考段显示；持久化由调用方负责写 `config.toml`。
+    fn set_show_thinking(&self, _enabled: bool) -> Result<(), AgentError> {
+        Err(AgentError::new("当前入口没有思考段显示开关。"))
+    }
+
+    /// 思考段是否默认折叠（`ui.thinking_collapsed`）；`None` 表示该入口没有这个开关。
+    fn thinking_collapsed(&self) -> Option<bool> {
+        None
+    }
+
+    /// 运行时切换思考段折叠；持久化由调用方负责写 `config.toml`。
+    fn set_thinking_collapsed(&self, _collapsed: bool) -> Result<(), AgentError> {
+        Err(AgentError::new("当前入口没有思考折叠开关。"))
+    }
+
     // ── 工作区 ────────────────────────────────────────────────
 
     /// 切换当前工作区，返回切换后的工作区根。
@@ -250,6 +270,10 @@ pub(crate) mod testing {
         pub session_id: String,
         /// 当前已启用的主 Agent 模式（未启用时为空串）。
         pub active_mode: String,
+        /// 会话区是否显示思考段；`None` 表示这个宿主没有该开关。
+        pub show_thinking: Mutex<Option<bool>>,
+        /// 思考段是否默认折叠；`None` 表示这个宿主没有该开关。
+        pub thinking_collapsed: Mutex<Option<bool>>,
         pub review_report: Mutex<String>,
         pub calls: Mutex<Vec<String>>,
         /// 配置环境；`None` 时按进程环境解析（真实 `~/.OmniCrawl`）。
@@ -281,6 +305,8 @@ pub(crate) mod testing {
                 current_model: String::new(),
                 session_id: String::new(),
                 active_mode: String::new(),
+                show_thinking: Mutex::new(Some(true)),
+                thinking_collapsed: Mutex::new(Some(true)),
                 review_report: Mutex::new(String::new()),
                 calls: Mutex::new(Vec::new()),
                 environment: None,
@@ -461,6 +487,36 @@ pub(crate) mod testing {
             self.record("apply_advisor_config");
             if let Ok(mut calls) = self.calls.lock() {
                 calls.push(format!("advisor_enabled:{}", config.enabled));
+            }
+            Ok(())
+        }
+
+        fn show_thinking(&self) -> Option<bool> {
+            *self.show_thinking.lock().ok()?
+        }
+
+        fn set_show_thinking(&self, enabled: bool) -> Result<(), AgentError> {
+            self.record("set_show_thinking");
+            if let Ok(mut calls) = self.calls.lock() {
+                calls.push(format!("set_show_thinking:{enabled}"));
+            }
+            if let Ok(mut show) = self.show_thinking.lock() {
+                *show = Some(enabled);
+            }
+            Ok(())
+        }
+
+        fn thinking_collapsed(&self) -> Option<bool> {
+            *self.thinking_collapsed.lock().ok()?
+        }
+
+        fn set_thinking_collapsed(&self, collapsed: bool) -> Result<(), AgentError> {
+            self.record("set_thinking_collapsed");
+            if let Ok(mut calls) = self.calls.lock() {
+                calls.push(format!("set_thinking_collapsed:{collapsed}"));
+            }
+            if let Ok(mut current) = self.thinking_collapsed.lock() {
+                *current = Some(collapsed);
             }
             Ok(())
         }

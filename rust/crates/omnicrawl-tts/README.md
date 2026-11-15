@@ -1,13 +1,15 @@
 # omnicrawl-tts
 
-TTS 合成客户端：把文本交给云服务的语音接口，拿回音频并落盘。两条通道——
+TTS 合成客户端：把文本交给云服务的语音接口，拿回音频并落盘。三条通道——
 
 | 通道 | 接口 | 返回 |
 |---|---|---|
 | OpenAI | `POST {base_url}/audio/speech` | WAV（带 RIFF 头） |
 | Gemini | `POST {base_url}/models/{model}:generateContent` | base64 包裹的裸 PCM（24kHz 单声道） |
+| DeepSeek | `wss://{base_url}`（默认流式）/ `POST {base_url}` | 二进制帧里的裸 PCM / WAV |
 
-两家都只需要 HTTP + 一个密钥，因此本 crate 没有 feature 开关、没有原生依赖、没有模型下载。
+三家都只需要 HTTP（DeepSeek 额外用 WebSocket）+ 一个密钥，因此本 crate 没有 feature 开关、
+没有原生依赖、没有模型下载。
 
 ## 模块
 
@@ -15,8 +17,10 @@ TTS 合成客户端：把文本交给云服务的语音接口，拿回音频并�
 |---|---|
 | `openai` | OpenAI `audio/speech` 的请求体与响应处理 |
 | `gemini` | Gemini TTS 的 `generateContent` 请求体、响应解析与 base64 解码 |
-| `synthesis` | 两条通道的公共入口：选路、分块、波形拼接与落盘（`TtsBackend`） |
-| `text` | 长文本按句切块（两家都有单次请求的长度上限） |
+| `deepseek` | DeepSeek TTS 的流式（默认）与整段传输、计费字符切块口径 |
+| `ws` | 最小 WebSocket 客户端：握手、帧编解码、TLS（自实现，不引第三方库） |
+| `synthesis` | 三条通道的公共入口：选路、分块、波形拼接与落盘（`TtsBackend`） |
+| `text` | 长文本按句切块（三家都有单次请求的长度上限） |
 | `codec` | 响应音频的解码：WAV 容器与裸 PCM 16 位 |
 | `audio` | 8/16/24/32 位 PCM WAV 读写（含内存字节解码） |
 | `player` | Windows `PlaySoundW`（同步/异步）、macOS/Linux 系统播放器回退；只返回结果、不写 stderr |
@@ -28,15 +32,21 @@ TTS 合成客户端：把文本交给云服务的语音接口，拿回音频并�
   时长与波形。Gemini 回的是裸 PCM，因此就地补一个 WAV 头再落盘（采样率取官方口径 24kHz）。
 - **只接受 WAV，不引入解码器**：OpenAI 侧固定请求 `response_format = "wav"`；其它格式
   （mp3/opus/aac/flac）要么得自带解码器，要么只能落盘不能自检与播放。
-- **长文本自己分块**：两家都有单次请求的长度上限（OpenAI 4096 字符、Gemini 4000 字节），
-  按句末标点贪心切块，再把各段的波形拼起来（同一模型同一采样率，直接拼接即可）。
-  采样率不一致时明确报错，不静默重采样。
+- **长文本自己分块**：三家都有单次请求的长度上限（OpenAI 4096 字符、Gemini 4000 字节、
+  DeepSeek 10,000 计费字符），按句末标点贪心切块，再把各段的波形拼起来（同一模型同一采样率，
+  直接拼接即可）。采样率不一致时明确报错，不静默重采样。
 - **Gemini 的语气指令写在正文前**：官方接口没有独立的指令字段，语气用自然语言提示表达，
   因此 `instructions` 以正文前缀下发（OpenAI 侧走独立的 `instructions` 字段）。
 - **错误文案带服务端原文**：4xx/5xx 的响应体里通常写着真正的原因（模型名不对、音色不存在、
   密钥无效、内容被安全策略拦下），截断后放进错误信息里便于排障。
 - **只有一个合成入口**：`synthesis::synthesize` 收 `TtsBackend`，宿主只管装配通道，
-  工具面的返回值也因此在两条通路上完全一致。
+  工具面的返回值也因此在三条通路上完全一致。
+- **WebSocket 自实现**：DeepSeek 的流式通道需要 WebSocket，本 crate 只加了 `rustls` +
+  `webpki-roots`，协议栈（握手、掩码帧、ping/pong、TLS 流）自己写。与仓库其余平台接入
+  （`omnicrawl-connectors/src/ws.rs`）是同一取舍：不引第三方 WebSocket 库，也不引异步运行时——
+  合成是同步调用，一条连接用完即弃，异步运行时的代价换不来什么。
+- **流式是默认，整段是回退**：官方两种传输的上限与音色完全一致，因此默认走流式（首帧就能出声），
+  但保留 `transport = "http"` 让网络不允许 WebSocket 升级时仍能用。
 
 ## 历史
 

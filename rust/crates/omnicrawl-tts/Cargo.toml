@@ -14,6 +14,10 @@ path = "src/lib.rs"
 [dependencies]
 serde_json = { workspace = true }
 base64 = "0.23"
-# 出站 User-Agent（`omnicrawl/<产品版本>`）：语音合成的两条云通道报同一身份。
+# 出站 User-Agent（`omnicrawl/<产品版本>`）：语音合成的云通道报同一身份。
 omnicrawl-version = { path = "../omnicrawl-version" }
 ureq = { workspace = true }
+# DeepSeek 的流式通道走 WebSocket：仓库既有的取舍是自实现协议栈而不引第三方
+# 库（见 `omnicrawl-connectors/src/ws.rs`），这里只需要 TLS 与根证书。
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+webpki-roots = "1"

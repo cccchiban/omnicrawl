@@ -11,9 +11,9 @@ use ratatui::Terminal;
 
 use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
-    ChannelRow, ChoiceKind, DecisionRow, DecisionSwitchRow, DropdownField, FieldValue, Focus,
-    FormKind, HitAction, ModelParamRow, Pane, SettingsChange, SettingsEvent, SettingsState,
-    SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
+    ChannelRow, DecisionRow, DecisionSwitchRow, DropdownField, FieldValue, Focus,
+    FormKind, HitAction, KnowledgeRow, MemoryRow, ModelParamRow, Pane, SettingsChange,
+    SettingsEvent, SettingsState, SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
 };
 
 const WIDTH: u16 = 100;
@@ -137,7 +137,7 @@ fn renders_both_columns_with_row_labels() {
 
     assert!(left.contains("模型管理"), "左栏第一项：{left}");
     assert!(left.contains("工具设置"), "左栏项：{left}");
-    assert!(left.contains("思考显示"), "左栏最后一项：{left}");
+    assert!(left.contains("沙盒"), "左栏最后一项：{left}");
     // 合并掉的三项不再作为一级项出现。
     assert!(!left.contains("模型渠道"), "旧「模型渠道」页已合并：{left}");
     assert!(!left.contains("推理强度"), "旧「推理强度」页已合并：{left}");
@@ -667,17 +667,15 @@ fn model_management_reasoning_row_renders_candidate_overlay() {
 }
 
 #[test]
-fn choice_page_status_line_reports_saved_path() {
+fn feature_page_status_line_reports_saved_path() {
     let mut state = state();
     while state.selected_key() != "memory" {
         state.handle_key(KeyCode::Down);
     }
-    assert_eq!(state.pane(), Pane::Choice(ChoiceKind::Memory));
-    assert_eq!(state.choice_value(), "关闭", "缺省关闭");
+    assert_eq!(state.pane(), Pane::Memory);
+    assert_eq!(state.memory_row_value(MemoryRow::Enabled), "已关闭", "缺省关闭");
 
-    state.handle_key(KeyCode::Enter); // 进面板
-    state.handle_key(KeyCode::Enter); // 展开：游标落在「关闭」
-    state.handle_key(KeyCode::Up); // 移到「开启」
+    state.handle_key(KeyCode::Enter); // 进面板后第一行就是开关，直接翻面
     assert_eq!(
         state.handle_key(KeyCode::Enter),
         Some(SettingsEvent::Apply(SettingsChange::Feature {
@@ -696,6 +694,22 @@ fn choice_page_status_line_reports_saved_path() {
     let screen = text(&draw(&state, WIDTH, HEIGHT));
     assert!(screen.contains("记忆功能已开启"), "状态行：{screen}");
     assert!(screen.contains("开启"), "折叠框已翻到开启");
+}
+
+#[test]
+fn knowledge_page_renders_its_three_rows() {
+    let mut state = state();
+    while state.selected_key() != "knowledge" {
+        state.handle_key(KeyCode::Down);
+    }
+    assert_eq!(state.pane(), Pane::Knowledge);
+    assert_eq!(state.knowledge_row_value(KnowledgeRow::Enabled), "已开启", "缺省开启");
+
+    let screen = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(screen.contains("知识库"), "左栏与页内都要有这一项：{screen}");
+    assert!(screen.contains("清除所有知识库"), "缺一行：{screen}");
+    assert!(screen.contains("打开知识库文件夹"), "缺一行：{screen}");
+    assert!(screen.contains("已开启"), "开关状态要显示出来");
 }
 
 /// 带表单初值的设置状态：顾问页（停用 / effort=high / 渠道+模型）与压缩页（启用）。

@@ -111,7 +111,7 @@
       "ops": [
         {
           "op": "feed_text",
-          "text": "ａ｛Desensitized:1｝ｂ",
+          "text": "ａ｛Desensitized:red_tiny_male_cat｝ｂ",
           "result": "ａ值一ｂ",
           "stats": {
             "hits": 1,
@@ -121,7 +121,7 @@
         },
         {
           "op": "feed_text",
-          "text": "｛Desensitized:2｝| {Desensitized: 3 } {Desensitized： 19 } ｛DESENSITIZED:20｝",
+          "text": "｛Desensitized:red_tiny_male_dog｝| {Desensitized: 3 } {Desensitized： 19 } ｛DESENSITIZED:20｝",
           "result": "值二| 值三 {Desensitized： 19 } ｛DESENSITIZED:20｝",
           "stats": {
             "hits": 3,
@@ -191,8 +191,8 @@
       "ops": [
         {
           "op": "feed_text",
-          "text": "未知 ｛Desensitized:99｝",
-          "result": "未知 ｛Desensitized:99｝",
+          "text": "未知 ｛Desensitized:red_tiny_boy_fox｝",
+          "result": "未知 ｛Desensitized:red_tiny_boy_fox｝",
           "stats": {
             "hits": 0,
             "unresolved": 1,
@@ -201,8 +201,8 @@
         },
         {
           "op": "feed_text",
-          "text": " 又一个 ｛Desensitized:88｝",
-          "result": " 又一个 ｛Desensitized:88｝",
+          "text": " 又一个 ｛Desensitized:red_tiny_female_sparrow｝",
+          "result": " 又一个 ｛Desensitized:red_tiny_female_sparrow｝",
           "stats": {
             "hits": 0,
             "unresolved": 2,
@@ -337,7 +337,7 @@
       "ops": [
         {
           "op": "feed_text",
-          "text": "{                                                               ",
+          "text": "{                                                                                                                               ",
           "result": "",
           "stats": {
             "hits": 0,
@@ -348,7 +348,7 @@
         {
           "op": "feed_text",
           "text": "x",
-          "result": "{                                                               x",
+          "result": "{                                                                                                                               x",
           "stats": {
             "hits": 0,
             "unresolved": 0,
@@ -357,8 +357,8 @@
         },
         {
           "op": "feed_text",
-          "text": "{                                                                ",
-          "result": "{                                                                ",
+          "text": "{                                                                                                                                ",
+          "result": "{                                                                                                                                ",
           "stats": {
             "hits": 0,
             "unresolved": 0,
@@ -410,7 +410,7 @@
         },
         {
           "op": "feed_reasoning",
-          "text": "R｛Desensitized:2｝",
+          "text": "R｛Desensitized:red_tiny_male_dog｝",
           "result": "R值二",
           "stats": {
             "hits": 1,
@@ -508,7 +508,7 @@
         {
           "op": "feed_tool_arguments",
           "call_id": "call_2",
-          "text": "｛Desensitized:2｝",
+          "text": "｛Desensitized:red_tiny_male_dog｝",
           "result": "值二",
           "stats": {
             "hits": 2,
@@ -576,8 +576,8 @@
       "ops": [
         {
           "op": "restore_string",
-          "text": "｛Desensitized:18｝｛Desensitized:99｝-尾",
-          "result": "｛Desensitized:18｝｛Desensitized:99｝-尾",
+          "text": "｛Desensitized:red_tiny_male_rabbit｝｛Desensitized:red_tiny_boy_fox｝-尾",
+          "result": "｛Desensitized:red_tiny_male_rabbit｝｛Desensitized:red_tiny_boy_fox｝-尾",
           "stats": {
             "hits": 0,
             "unresolved": 2,
@@ -591,7 +591,7 @@
             "｛Desensitized:2｝": "键不动",
             "nested": {
               "list": [
-                "｛Desensitized:3｝",
+                "｛Desensitized:red_tiny_male_fox｝",
                 7,
                 true,
                 null
@@ -975,7 +975,7 @@
       "ops": [
         {
           "op": "feed_text",
-          "text": "｛Desensitized:99｝",
+          "text": "｛Desensitized:red_tiny_boy_fox｝",
           "error": "还原遇到未注册的脱敏占位符（序号 99）。",
           "stats": {
             "hits": 0,
@@ -1043,7 +1043,7 @@
       "ops": [
         {
           "op": "feed_text",
-          "text": "｛Desensitized:1｝",
+          "text": "｛Desensitized:red_tiny_male_cat｝",
           "result": "值一",
           "stats": {
             "hits": 1,

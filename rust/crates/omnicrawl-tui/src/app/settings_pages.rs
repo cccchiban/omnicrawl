@@ -434,6 +434,8 @@ impl App {
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         let previous_gemini = load_tts_gemini_configuration(&environment, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let previous_deepseek = load_tts_deepseek_configuration(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
 
         // 输出目录界面上不编辑，按磁盘上的原值保留。
         let configuration = TtsConfiguration {
@@ -445,16 +447,23 @@ impl App {
         let cloud = TtsCloudConfiguration {
             provider: draft.provider.clone(),
         };
-        let (api, gemini) = tts_channel_configurations(draft, &previous_api, &previous_gemini)?;
+        let (api, gemini, deepseek) = tts_channel_configurations(
+            draft,
+            &previous_api,
+            &previous_gemini,
+            &previous_deepseek,
+        )?;
 
         let path = save_tts_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         save_tts_cloud_configuration(&environment, &cloud, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        // 两家都写回：界面把草稿里的另一家原样带出来，因此不会覆盖用户改过的值。
+        // 三家都写回：界面把草稿里的另一家原样带出来，因此不会覆盖用户改过的值。
         save_tts_api_configuration(&environment, &api, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         save_tts_gemini_configuration(&environment, &gemini, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        save_tts_deepseek_configuration(&environment, &deepseek, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
 
         let previous_options = self.registry_options.tts.clone();
@@ -468,6 +477,7 @@ impl App {
             let _ = save_tts_cloud_configuration(&environment, &previous_cloud, None);
             let _ = save_tts_api_configuration(&environment, &previous_api, None);
             let _ = save_tts_gemini_configuration(&environment, &previous_gemini, None);
+            let _ = save_tts_deepseek_configuration(&environment, &previous_deepseek, None);
             self.registry_options.tts = previous_options;
             return Err(error);
         }

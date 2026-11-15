@@ -17,6 +17,10 @@ pub mod embedding;
 // 网页抓取接口（`[fetch_api]`）：无鉴权的回环抓取通道（Rust 侧新增，Python 无对映）。
 pub mod fetch_api;
 pub mod image_gen;
+// 知识库开关（`[knowledge] enabled`）：工具组整组进出（Rust 侧新增，Python 无对映）。
+pub mod knowledge;
+// 记忆功能（`[memory]`）：遗忘时间（Rust 侧新增，Python 无对映）。
+pub mod memory;
 pub mod run_guard;
 // 会话上下文闲置换出（`[ui] session_release_seconds`；Rust 侧新增，Python 无对映）。
 pub mod session_release;
@@ -32,7 +36,7 @@ pub mod tools;
 // 触发接口（`[trigger_api]`）：外部事件拉起独立 loop 的回环入口（Rust 侧新增，Python 无对映）。
 pub mod trigger_api;
 pub mod tts;
-// 云端 TTS 的服务商路由与两家接口参数（Rust 侧新增，Python 无对映）。
+// 云端 TTS 的服务商路由与三家接口参数（Rust 侧新增，Python 无对映）。
 pub mod tts_cloud;
 // 联网搜索的通路与凭据（Rust 侧新增，Python 无对映）。
 pub mod web_search;

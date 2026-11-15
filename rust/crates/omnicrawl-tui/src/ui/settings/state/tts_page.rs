@@ -6,7 +6,7 @@ use super::*;
 
 // ---------- TTS 页（云服务通道） ----------
 
-/// TTS 页的行号。前 4 行与通道无关，随后 6 行属于当前服务商。
+/// TTS 页的行号。前 4 行与通道无关，随后是当前服务商的字段。
 pub const TTS_ROW_ENABLED: usize = 0;
 pub const TTS_ROW_PROVIDER: usize = 1;
 pub const TTS_ROW_AUTO_PLAY: usize = 2;
@@ -19,13 +19,15 @@ pub const TTS_ROW_MODEL: usize = 5;
 pub const TTS_ROW_VOICE: usize = 6;
 /// OpenAI 的 `instructions` / Gemini 的语气指令（作为正文前缀）。
 pub const TTS_ROW_INSTRUCTIONS: usize = 7;
-/// OpenAI 的 `speed`；Gemini 没有该参数，该行在 Gemini 下不显示。
+/// OpenAI 的 `speed`；Gemini 与 DeepSeek 没有该参数，该行在它们下不显示。
 pub const TTS_ROW_SPEED: usize = 8;
+/// DeepSeek 的传输方式（`websocket` 流式 / `http` 整段），其余两家没有该行。
+pub const TTS_ROW_TRANSPORT: usize = 9;
 /// 当前服务商的 API Key：直接填明文，保存时写进对应段的 `api_key`。
-pub const TTS_ROW_API_KEY: usize = 9;
-pub const TTS_ROW_SAVE: usize = 10;
+pub const TTS_ROW_API_KEY: usize = 10;
+pub const TTS_ROW_SAVE: usize = 11;
 /// TTS 页的行数。
-pub const TTS_ROW_COUNT: usize = 11;
+pub const TTS_ROW_COUNT: usize = 12;
 
 /// 与通道无关的行标签（顺序与行号一致）。
 pub const TTS_ROW_LABELS: [&str; TTS_ROW_COUNT] = [
@@ -38,12 +40,16 @@ pub const TTS_ROW_LABELS: [&str; TTS_ROW_COUNT] = [
     "音色 voice",
     "语气指令 instructions",
     "语速 speed",
+    "传输方式 transport",
     "API Key",
     "保存",
 ];
 
 /// 服务商候选（取值即配置值，与 `[tts_cloud].provider` 一一对应）。
-pub const TTS_PROVIDER_OPTIONS: [&str; 2] = ["openai", "gemini"];
+pub const TTS_PROVIDER_OPTIONS: [&str; 3] = ["openai", "gemini", "deepseek"];
+
+/// 传输方式候选：流式在前（DeepSeek 的默认档）。
+pub const TTS_TRANSPORT_OPTIONS: [&str; 2] = ["websocket", "http"];
 
 /// 语速候选（OpenAI 的取值域是 0.25~4.0，常用的几档够用）。
 pub const TTS_SPEED_OPTIONS: [&str; 5] = ["0.75", "1", "1.25", "1.5", "2"];
@@ -88,6 +94,9 @@ pub const TTS_GEMINI_VOICES: [&str; 30] = [
     "Sulafat",
 ];
 
+/// DeepSeek TTS 音色：官方只有两只（`stella` 女声为默认，`tide` 男声）。
+pub const TTS_DEEPSEEK_VOICES: [&str; 2] = ["stella", "tide"];
+
 /// TTS 页要宿主做的一件事。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TtsChange {
@@ -126,6 +135,14 @@ pub enum TtsChannelDraft {
         /// 明文密钥；空串表示「不改动磁盘原值」。
         api_key: String,
     },
+    DeepSeek {
+        base_url: String,
+        voice: String,
+        /// `websocket`（流式，默认）或 `http`（整段）。
+        transport: String,
+        /// 明文密钥；空串表示「不改动磁盘原值」。
+        api_key: String,
+    },
 }
 
 /// TTS 页的初值（宿主在打开面板时读配置给出）。
@@ -135,9 +152,10 @@ pub struct TtsValues {
     pub auto_play: bool,
     pub speak_replies: bool,
     pub provider: String,
-    /// 两家的配置都带上：切换服务商行时界面立刻显示另一家的值。
+    /// 三家的配置都带上：切换服务商行时界面立刻显示另一家的值。
     pub openai: TtsChannelValues,
     pub gemini: TtsChannelValues,
+    pub deepseek: TtsChannelValues,
 }
 
 impl Default for TtsValues {
@@ -149,6 +167,7 @@ impl Default for TtsValues {
             provider: "openai".to_string(),
             openai: TtsChannelValues::openai_default(),
             gemini: TtsChannelValues::gemini_default(),
+            deepseek: TtsChannelValues::deepseek_default(),
         }
     }
 }
@@ -162,6 +181,8 @@ pub struct TtsChannelValues {
     pub instructions: String,
     /// OpenAI 的语速（文本形式，便于编辑往返）。
     pub speed: String,
+    /// DeepSeek 的传输方式（其余两家恒为空）。
+    pub transport: String,
     /// 已配置的密钥在界面上只显示掩码占位；输入态从空起步。
     pub api_key: String,
 }
@@ -182,6 +203,15 @@ impl TtsChannelValues {
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             model: "gemini-2.5-flash-preview-tts".to_string(),
             voice: "Kore".to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn deepseek_default() -> Self {
+        Self {
+            base_url: "https://api.deepseek.com/v1/tools/tts".to_string(),
+            voice: "stella".to_string(),
+            transport: "websocket".to_string(),
             ..Self::default()
         }
     }
@@ -208,6 +238,7 @@ pub struct TtsState {
     pub(crate) provider: String,
     pub(crate) openai: TtsChannelValues,
     pub(crate) gemini: TtsChannelValues,
+    pub(crate) deepseek: TtsChannelValues,
     pub(crate) focused: usize,
     /// 文本输入态：`(行号, 缓冲)`，对映 Python 的 `Input` 获得焦点。
     pub(crate) input: Option<(usize, Composer)>,
@@ -223,6 +254,7 @@ impl TtsState {
             provider: values.provider,
             openai: values.openai,
             gemini: values.gemini,
+            deepseek: values.deepseek,
             focused: TTS_ROW_ENABLED,
             input: None,
             status: String::new(),
@@ -231,19 +263,19 @@ impl TtsState {
 
     /// 当前服务商的那一份通道草稿。
     pub(crate) fn channel(&self) -> &TtsChannelValues {
-        if self.is_gemini() {
-            &self.gemini
-        } else {
-            &self.openai
+        match self.provider.as_str() {
+            "gemini" => &self.gemini,
+            "deepseek" => &self.deepseek,
+            _ => &self.openai,
         }
     }
 
     /// 当前服务商那一份通道草稿的可变引用。
     pub(crate) fn channel_mut(&mut self) -> &mut TtsChannelValues {
-        if self.is_gemini() {
-            &mut self.gemini
-        } else {
-            &mut self.openai
+        match self.provider.as_str() {
+            "gemini" => &mut self.gemini,
+            "deepseek" => &mut self.deepseek,
+            _ => &mut self.openai,
         }
     }
 
@@ -251,25 +283,32 @@ impl TtsState {
         self.provider == "gemini"
     }
 
-    /// 当前服务商可见的行（Gemini 没有语速）。
+    pub(crate) fn is_deepseek(&self) -> bool {
+        self.provider == "deepseek"
+    }
+
+    /// 当前服务商可见的行：Gemini 与 DeepSeek 没有语速，只有 DeepSeek 有传输方式与无模型。
     pub(crate) fn visible_rows(&self) -> Vec<usize> {
+        let deepseek = self.is_deepseek();
+        let has_speed = !self.is_gemini() && !deepseek;
         (0..TTS_ROW_COUNT)
-            .filter(|row| *row != TTS_ROW_SPEED || !self.is_gemini())
+            .filter(|row| {
+                (*row != TTS_ROW_SPEED || has_speed)
+                    && (*row != TTS_ROW_TRANSPORT || deepseek)
+                    && (*row != TTS_ROW_MODEL || !deepseek)
+            })
             .collect()
     }
 
     pub(crate) fn current_voices(&self) -> Vec<String> {
-        if self.is_gemini() {
-            TTS_GEMINI_VOICES
-                .iter()
-                .map(|name| name.to_string())
-                .collect()
+        let voices: &[&str] = if self.is_gemini() {
+            &TTS_GEMINI_VOICES
+        } else if self.is_deepseek() {
+            &TTS_DEEPSEEK_VOICES
         } else {
-            TTS_OPENAI_VOICES
-                .iter()
-                .map(|name| name.to_string())
-                .collect()
-        }
+            &TTS_OPENAI_VOICES
+        };
+        voices.iter().map(|name| name.to_string()).collect()
     }
 
     pub(crate) fn draft(&self) -> TtsDraft {
@@ -280,6 +319,13 @@ impl TtsState {
                 model: channel.model.clone(),
                 voice: channel.voice.clone(),
                 instructions: channel.instructions.clone(),
+                api_key: secret_draft(&channel.api_key),
+            }
+        } else if self.is_deepseek() {
+            TtsChannelDraft::DeepSeek {
+                base_url: channel.base_url.clone(),
+                voice: channel.voice.clone(),
+                transport: channel.transport.clone(),
                 api_key: secret_draft(&channel.api_key),
             }
         } else {
@@ -324,6 +370,7 @@ impl TtsState {
             TTS_ROW_VOICE => channel.voice.clone(),
             TTS_ROW_INSTRUCTIONS => channel.instructions.clone(),
             TTS_ROW_SPEED => channel.speed.clone(),
+            TTS_ROW_TRANSPORT => channel.transport.clone(),
             // 明文永不回显：已配置的密钥只显示掩码占位。
             TTS_ROW_API_KEY => match channel.api_key.trim() {
                 "" => "（未配置）".to_string(),
@@ -361,6 +408,7 @@ impl TtsState {
     pub(crate) fn cycle(&mut self, row: usize, direction: isize) {
         // 切换服务商后原来选中的行可能不再可见，落回第一行。
         let gemini = self.is_gemini();
+        let deepseek = self.is_deepseek();
         match row {
             TTS_ROW_ENABLED => self.enabled = !self.enabled,
             TTS_ROW_AUTO_PLAY => self.auto_play = !self.auto_play,
@@ -373,10 +421,18 @@ impl TtsState {
                     self.focused = TTS_ROW_ENABLED;
                 }
             }
+            TTS_ROW_TRANSPORT => {
+                let options: Vec<String> =
+                    TTS_TRANSPORT_OPTIONS.iter().map(|v| v.to_string()).collect();
+                self.deepseek.transport =
+                    cycle_text(&options, &self.deepseek.transport, direction);
+            }
             TTS_ROW_VOICE => {
                 let voices = self.current_voices();
                 let channel = if gemini {
                     &mut self.gemini
+                } else if deepseek {
+                    &mut self.deepseek
                 } else {
                     &mut self.openai
                 };
@@ -412,6 +468,7 @@ impl TtsState {
                     voice: voice.clone(),
                     instructions: instructions.clone(),
                     speed: speed.clone(),
+                    transport: String::new(),
                     // 草稿里的密钥就是刚写盘的明文；界面仍只显示掩码。
                     api_key: api_key.clone(),
                 };
@@ -429,6 +486,23 @@ impl TtsState {
                     voice: voice.clone(),
                     instructions: instructions.clone(),
                     speed: self.gemini.speed.clone(),
+                    transport: String::new(),
+                    api_key: api_key.clone(),
+                };
+            }
+            TtsChannelDraft::DeepSeek {
+                base_url,
+                voice,
+                transport,
+                api_key,
+            } => {
+                self.deepseek = TtsChannelValues {
+                    base_url: base_url.clone(),
+                    model: String::new(),
+                    voice: voice.clone(),
+                    instructions: String::new(),
+                    speed: String::new(),
+                    transport: transport.clone(),
                     api_key: api_key.clone(),
                 };
             }

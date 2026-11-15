@@ -131,17 +131,61 @@ impl App {
         ))
     }
 
-    /// 思考显示：只影响本机界面（消息流里要不要显示思考段），写 `ui.show_thinking`。
-    pub(super) fn apply_show_thinking(&mut self, enabled: bool) -> Result<String, String> {
+    /// 记忆遗忘时间：写 `[memory] forget_after_days`，并立刻跑一次过期清理。
+    ///
+    /// 立刻清理而不是等下次写入：用户调短遗忘时间后，期望是「旧的东西现在就该消失」，
+    /// 而不是再过几天才慢慢减少。清理失败不阻断保存——配置已经写好，只是这次没清掉。
+    pub(super) fn apply_memory_forget_after(&mut self, days: i64) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
-        let path = save_show_thinking(&environment, enabled, None)
-            .map_err(|error| format!("设置未完成：{}", error.message()))?;
-        self.state.set_show_thinking(enabled);
-        Ok(format!(
-            "思考显示已{}，已保存到 {}。",
-            if enabled { "开启" } else { "关闭" },
-            path.display()
-        ))
+        let path = omnicrawl_config::features::memory::save_forget_after_days(
+            &environment,
+            days,
+            None,
+        )
+        .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let days = omnicrawl_config::features::memory::normalize_forget_after_days(days);
+        if let Some(settings) = self.settings.as_mut() {
+            settings.set_memory_forget_after(days);
+        }
+        let label = omnicrawl_config::features::memory::forget_after_label(days);
+        let cleaned = self.clean_expired_memories_with_days(days);
+        Ok(match cleaned {
+            Ok(0) => format!("记忆遗忘时间已设为{label}，已保存到 {}。", path.display()),
+            Ok(count) => format!(
+                "记忆遗忘时间已设为{label}，已保存到 {}；同时清掉 {count} 条过期记忆。",
+                path.display()
+            ),
+            Err(error) => format!(
+                "记忆遗忘时间已设为{label}，已保存到 {}；但本次清理过期记忆失败：{error}",
+                path.display()
+            ),
+        })
+    }
+
+    /// 按给定天数清理三类作用域的过期记忆，返回删掉的条数。
+    fn clean_expired_memories_with_days(&self, days: i64) -> Result<usize, String> {
+        use omnicrawl_controllers::tool_impl::MemoryScope;
+        let scopes = [
+            MemoryScope::Project,
+            MemoryScope::Session,
+            MemoryScope::User,
+        ];
+        let mut deleted = 0_usize;
+        let mut any_enabled = false;
+        for scope in scopes {
+            let Ok(store) = self.registry_options.memory.store(scope) else {
+                continue;
+            };
+            any_enabled = true;
+            let removed = store
+                .clean_expired_memories_with(days as f64)
+                .map_err(|error| error.message().to_string())?;
+            deleted += removed.len();
+        }
+        if !any_enabled {
+            return Err("记忆系统未启用。".to_string());
+        }
+        Ok(deleted)
     }
 
     /// 功能开关：`memory` 立即重建工具表（记忆整组进/出表）。
@@ -156,6 +200,20 @@ impl App {
                 self.rebuild_registry()?;
                 if let Some(settings) = self.settings.as_mut() {
                     settings.refresh_tools(tool_switch_rows(&self.registry));
+                    settings.set_memory_enabled(enabled);
+                }
+                Ok(format!(
+                    "{label}已{}，已保存到 {}。",
+                    if enabled { "开启" } else { "关闭" },
+                    path.display()
+                ))
+            }
+            "knowledge" => {
+                self.registry_options.knowledge_enabled = enabled;
+                self.rebuild_registry()?;
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.refresh_tools(tool_switch_rows(&self.registry));
+                    settings.set_knowledge_enabled(enabled);
                 }
                 Ok(format!(
                     "{label}已{}，已保存到 {}。",

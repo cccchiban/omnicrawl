@@ -85,7 +85,7 @@ fn blocked<T>(what: &str, why: &str) -> Result<T, AgentError> {
 /// 「一个 store 都没有」，报「记忆系统未启用。」。
 ///
 /// 抽成自由函数是为了能在隔离目录上验证：宿主里的选项会把用户级指向真实的
-/// `~/.omnicrawl/User_memory`，端到端跑 `/memory:clean` 会碰到用户的真实记忆。
+/// `~/.omnicrawl/memory/User_memory`，端到端跑 `/memory:clean` 会碰到用户的真实记忆。
 fn clean_expired_memory_scopes(options: &MemoryOptions) -> Result<Vec<String>, String> {
     let scopes = [
         ("project", MemoryScope::Project),
@@ -251,6 +251,26 @@ impl CommandAgent for TuiHostAgent<'_> {
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<String, AgentError> {
         self.app.borrow_mut().command_set_reasoning_effort(effort)
+    }
+
+    fn show_thinking(&self) -> Option<bool> {
+        Some(self.app.borrow().command_show_thinking())
+    }
+
+    fn set_show_thinking(&self, enabled: bool) -> Result<(), AgentError> {
+        self.app.borrow_mut().command_set_show_thinking(enabled);
+        Ok(())
+    }
+
+    fn thinking_collapsed(&self) -> Option<bool> {
+        Some(self.app.borrow().command_thinking_collapsed())
+    }
+
+    fn set_thinking_collapsed(&self, collapsed: bool) -> Result<(), AgentError> {
+        self.app
+            .borrow_mut()
+            .command_set_thinking_collapsed(collapsed);
+        Ok(())
     }
 
     fn current_model(&self) -> String {
@@ -509,7 +529,7 @@ mod tests {
 
     /// 建一个只开项目级的隔离选项。
     ///
-    /// 用户级必须关掉：真实解析会指向 `~/.omnicrawl/User_memory`，测试里不能碰。
+    /// 用户级必须关掉：真实解析会指向 `~/.omnicrawl/memory/User_memory`，测试里不能碰。
     fn isolated_memory_options(workspace: &Path) -> MemoryOptions {
         MemoryOptions {
             workspace_root: workspace.to_path_buf(),

@@ -37,7 +37,7 @@
         "blocks": [
           {
             "Text": {
-              "text": "联系 worker@corp.local 与内网 ｛Desensitized:1｝ 结束"
+              "text": "联系 worker@corp.local 与内网 ｛Desensitized:red_tiny_male_cat｝ 结束"
             }
           }
         ],
@@ -101,11 +101,11 @@
         "blocks": [
           {
             "Text": {
-              "text": "回复正文，｛Desensitized:2｝ 会被屏蔽"
+              "text": "回复正文，｛Desensitized:red_tiny_male_dog｝ 会被屏蔽"
             }
           }
         ],
-        "reasoning": "思考里的 ｛Desensitized:3｝",
+        "reasoning": "思考里的 ｛Desensitized:red_tiny_male_fox｝",
         "tools": []
       },
       "texts": [
@@ -149,13 +149,13 @@
               "call_id": "call_1",
               "name": "write_file",
               "arguments": {
-                "password": "｛Desensitized:4｝",
+                "password": "｛Desensitized:red_tiny_male_wolf｝",
                 "note": "联系 worker@corp.local 结束",
                 "nested": {
-                  "team-token": "｛Desensitized:5｝",
+                  "team-token": "｛Desensitized:red_tiny_male_bear｝",
                   "list": [
                     "plain",
-                    "｛Desensitized:1｝"
+                    "｛Desensitized:red_tiny_male_cat｝"
                   ]
                 }
               },
@@ -195,7 +195,7 @@
             "ToolResult": {
               "call_id": "call_1",
               "ok": true,
-              "content": "结果 ｛Desensitized:6｝ 与 ｛Desensitized:2｝"
+              "content": "结果 ｛Desensitized:red_tiny_male_deer｝ 与 ｛Desensitized:red_tiny_male_dog｝"
             }
           }
         ],
@@ -215,7 +215,7 @@
         "blocks": [
           {
             "Text": {
-              "text": "已有 ｛Desensitized:7｝ 与 10.20.30.40"
+              "text": "已有 ｛Desensitized:red_tiny_male_hare｝ 与 10.20.30.40"
             }
           }
         ],
@@ -227,7 +227,7 @@
         "blocks": [
           {
             "Text": {
-              "text": "已有 ｛Desensitized:7｝ 与 ｛Desensitized:1｝"
+              "text": "已有 ｛Desensitized:red_tiny_male_hare｝ 与 ｛Desensitized:red_tiny_male_cat｝"
             }
           }
         ],
@@ -236,7 +236,7 @@
       },
       "texts": [
         "",
-        "已有 ｛Desensitized:7｝ 与 10.20.30.40"
+        "已有 ｛Desensitized:red_tiny_male_hare｝ 与 10.20.30.40"
       ],
       "referenced": [
         7
@@ -261,7 +261,7 @@
       "blocks": [
         {
           "Text": {
-            "text": "token ｛Desensitized:1｝"
+            "text": "token ｛Desensitized:red_tiny_male_cat｝"
           }
         }
       ],
@@ -269,7 +269,7 @@
       "tools": []
     },
     "value": {
-      "note": "值 ｛Desensitized:1｝",
+      "note": "值 ｛Desensitized:red_tiny_male_cat｝",
       "list": [
         3,
         true,
@@ -279,7 +279,7 @@
     "leaked": [
       1
     ],
-    "assigned_placeholder": "｛Desensitized:1｝"
+    "assigned_placeholder": "｛Desensitized:red_tiny_male_cat｝"
   },
   "oneshot": [
     {
@@ -287,12 +287,12 @@
       "steps": [
         {
           "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
-          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:1｝ 结束",
+          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:red_tiny_male_cat｝ 结束",
           "restored": "联系 worker@corp.local 与卡号 4111111111111111 结束"
         },
         {
           "text": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
-          "masked": "token ｛Desensitized:2｝ 结束",
+          "masked": "token ｛Desensitized:red_tiny_male_dog｝ 结束",
           "restored": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束"
         },
         {
@@ -306,8 +306,8 @@
           "restored": ""
         },
         {
-          "text": "｛Desensitized:999｝",
-          "restored": "｛Desensitized:999｝"
+          "text": "｛Desensitized:red_little_man_lark｝",
+          "restored": "｛Desensitized:red_little_man_lark｝"
         }
       ],
       "stats": {
@@ -318,8 +318,8 @@
         "sequence_reuses": 0
       },
       "after_close": {
-        "text": "｛Desensitized:1｝",
-        "restored": "｛Desensitized:1｝"
+        "text": "｛Desensitized:red_tiny_male_cat｝",
+        "restored": "｛Desensitized:red_tiny_male_cat｝"
       }
     },
     {
@@ -327,12 +327,12 @@
       "steps": [
         {
           "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
-          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:1｝ 结束",
+          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:red_tiny_male_cat｝ 结束",
           "restored": "联系 worker@corp.local 与卡号 4111111111111111 结束"
         },
         {
           "text": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
-          "masked": "token ｛Desensitized:2｝ 结束",
+          "masked": "token ｛Desensitized:red_tiny_male_dog｝ 结束",
           "restored": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束"
         },
         {
@@ -346,7 +346,7 @@
           "restored": ""
         },
         {
-          "text": "｛Desensitized:999｝",
+          "text": "｛Desensitized:red_little_man_lark｝",
           "error": "还原遇到未注册的脱敏占位符（序号 999）。"
         }
       ],
@@ -358,8 +358,8 @@
         "sequence_reuses": 0
       },
       "after_close": {
-        "text": "｛Desensitized:1｝",
-        "restored": "｛Desensitized:1｝"
+        "text": "｛Desensitized:red_tiny_male_cat｝",
+        "restored": "｛Desensitized:red_tiny_male_cat｝"
       }
     }
   ]

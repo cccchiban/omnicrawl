@@ -29,7 +29,7 @@ pub const PASTE_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
 /// 卡太久会让人觉得提交键失灵（对映 Python `PASTE_SINGLE_LINE_PREFIX_TIMEOUT`）。
 pub const PASTE_SINGLE_LINE_PREFIX_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// 按键流与剪贴板｛Desensitized:683｝一为 LF 换行后比较（对映 Python `_normalize_stream_text`）。
+/// 按键流与剪贴板统一为 LF 换行后比较（对映 Python `_normalize_stream_text`）。
 fn normalize_stream_text(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }

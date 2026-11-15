@@ -57,7 +57,7 @@ impl AppState {
 
         /// 清空会话视图（`Ctrl+L` 一类命令）：记录、图片预览与计划清单一起丢掉。
         ///
-        /// 预览必须同步清掉：记录没了以后没有任｛Desensitized:684｝引用那些锚点，留着只占内存。
+        /// 预览必须同步清掉：记录没了以后没有任何记录引用那些锚点，留着只占内存。
         /// 计划清单同理：它画在输入框上方、属于这一屏的会话现场，视图空了还留着上一段的步骤
         /// 就是自相矛盾（`/new` 之后仍显示旧计划即此）。
         pub fn clear_conversation(&mut self) {
@@ -250,6 +250,19 @@ impl AppState {
             }
             self.show_thinking = enabled;
             // 开关变化后整块重排：思考段不再逐帧铺开，避免显示到一半的半句停在屏幕上。
+            self.settle_reasoning_reveal();
+            self.touch_conversation();
+        }
+
+        /// 是否默认折叠思考段（`ui.thinking_collapsed`）。
+        ///
+        /// 折叠只改变每段思考的初始形态（显示最新几行），点击仍可单独展开；
+        /// 因此这里同样要整块失效缓存，让已在屏幕上的段一起换成新形态。
+        pub fn set_thinking_collapsed(&mut self, collapsed: bool) {
+            if self.thinking_collapsed == collapsed {
+                return;
+            }
+            self.thinking_collapsed = collapsed;
             self.settle_reasoning_reveal();
             self.touch_conversation();
         }

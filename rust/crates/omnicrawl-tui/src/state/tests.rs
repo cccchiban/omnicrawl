@@ -1493,7 +1493,7 @@ mod tests {
 
         let Some(Record::User(message)) = state.records.first() else {
             panic!(
-                "第一条记录应当是用｛Desensitized:718｝消息：{:?}",
+                "第一条记录应当是用户消息：{:?}",
                 state.records
             );
         };
@@ -1515,7 +1515,7 @@ mod tests {
         let mut state = state();
         state.begin_turn("t1".to_string(), "只有字".to_string(), Vec::new());
         let Some(Record::User(message)) = state.records.first() else {
-            panic!("第一条记录应当是用｛Desensitized:718｝消息");
+            panic!("第一条记录应当是用户消息");
         };
         assert!(!message.has_images());
         assert!(message.image_key.is_empty());
@@ -1855,7 +1855,7 @@ mod replay_tests {
 
         let Some(Record::User(message)) = state.records.first() else {
             panic!(
-                "第一条记录应当是用｛Desensitized:719｝消息：{:?}",
+                "第一条记录应当是用户消息：{:?}",
                 state.records
             );
         };
@@ -1876,7 +1876,7 @@ mod replay_tests {
         let mut state = state();
         state.replay_events(&[event("user_message", json!({"content": "纯文本"}))]);
         let Some(Record::User(message)) = state.records.first() else {
-            panic!("第一条记录应当是用｛Desensitized:719｝消息");
+            panic!("第一条记录应当是用户消息");
         };
         assert!(!message.has_images());
         assert!(message.image_key.is_empty());
@@ -1989,7 +1989,7 @@ mod paste_tests {
     }
 }
 
-/// 粘贴图片：`Ctrl+V` 贴进来的位图在｛Desensitized:712｝以 `[ #n Image ]` 占位，
+/// 粘贴图片：`Ctrl+V` 贴进来的位图在会话里以 `[ #n Image ]` 占位，
 /// 与文本粘贴折叠同一套占位符语义（对映用户要求）。
 #[cfg(test)]
 mod image_paste_tests {

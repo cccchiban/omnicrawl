@@ -827,7 +827,21 @@ impl MemoryStore {
     }
 
     /// 按 7 + touch_count 天规则清理过期记忆，并移除空目录。
+    ///
+    /// 天数固定为「7 + touch_count」是历史行为；界面上可配遗忘时间之后，新路径走
+    /// [`MemoryStore::clean_expired_memories_with`]，这里保留给不关心配置的调用方。
     pub fn clean_expired_memories(&self) -> Result<Vec<String>, SessionStoreError> {
+        self.clean_expired_memories_with(7.0)
+    }
+
+    /// 按给定基准天数清理：`age_days >= forget_after_days + touch_count` 即过期。
+    ///
+    /// `touch_count` 加成保留：被反复召回的记忆更难被忘掉。天数由调用方从
+    /// `[memory] forget_after_days` 取，配置缺省时是一年。
+    pub fn clean_expired_memories_with(
+        &self,
+        forget_after_days: f64,
+    ) -> Result<Vec<String>, SessionStoreError> {
         let mut entries = self.load_entries()?;
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -839,7 +853,7 @@ impl MemoryStore {
         for entry in std::mem::take(&mut entries) {
             let age_days =
                 (now - entry.timestamp).num_microseconds().unwrap_or(0) as f64 / 1e6 / 86400.0;
-            let expire_days = 7.0 + entry.touch_count as f64;
+            let expire_days = forget_after_days + entry.touch_count as f64;
             if age_days < expire_days {
                 kept.push(entry);
                 continue;
@@ -859,6 +873,30 @@ impl MemoryStore {
             self.clean_empty_directories();
         }
         Ok(deleted_paths)
+    }
+
+    /// 清空全部记忆：删掉根目录下所有索引条目与记忆文件，返回实际删掉的 id。
+    ///
+    /// 与 [`MemoryStore::delete`] 的区别是作用范围：这里不看 id、不看时间，整个 store 清空。
+    /// 界面上是「消除所有记忆」，调用方必须先让用户确认——本方法不做二次确认。
+    pub fn clear_all(&self) -> Result<Vec<String>, SessionStoreError> {
+        let entries = self.load_entries()?;
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut removed: Vec<String> = Vec::new();
+        for entry in &entries {
+            removed.push(entry.id.clone());
+            // 单条删不掉就继续：目标是把能删的都删掉，不该被一个坏条目卡住。
+            if let Ok(path) = self.memory_path(entry) {
+                if path.is_file() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        self.save_entries(&mut Vec::new())?;
+        self.clean_empty_directories();
+        Ok(removed)
     }
 
     /// 递归删除记忆根目录下的空目录（失败忽略）。

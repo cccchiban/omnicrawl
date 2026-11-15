@@ -793,7 +793,8 @@ fn record_lines(state: &AppState, index: usize, width: u16) -> Vec<DisplayLine> 
             text,
             width,
             index,
-            state.is_reasoning_expanded(index),
+            // 「默认展开」与「点了这一段」是同一个结果：整段铺开。
+            !state.thinking_collapsed || state.is_reasoning_expanded(index),
             state.reasoning_visible_chars(index, text.chars().count()),
         ),
         Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
@@ -1286,7 +1287,10 @@ fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
     let head_width = width
         .saturating_sub(display_width(MESSAGE_PAD) + display_width(ASSISTANT_PREFIX))
         .max(1);
-    let block = markdown::render_markdown_with_width(&latex::latex_to_text(&body), head_width);
+    let block = markdown::render_markdown_with_width(
+        &latex::latex_to_text_with_width(&body, head_width),
+        head_width,
+    );
     push_markdown(lines, &block, width, ASSISTANT_PREFIX);
     if over_limit {
         lines.push(DisplayLine::plain(Line::raw(format!(
@@ -3751,6 +3755,22 @@ mod tests {
         let shown = snapshot(&display_lines(&state, width));
         assert_cache_matches(&state, width, "开启思考显示");
         assert_eq!(shown, with_thinking, "重新开启应当完全回到原样");
+
+        // 折叠开关：默认折叠，关掉后每段思考整段铺开（行更多），开关可来回切。
+        state.set_thinking_collapsed(false);
+        assert_cache_matches(&state, width, "展开全部思考");
+        let unfolded = snapshot(&display_lines(&state, width));
+        assert!(
+            unfolded.len() >= shown.len(),
+            "关掉折叠不该反而变少（否则这条用例是空的）"
+        );
+        state.set_thinking_collapsed(true);
+        assert_cache_matches(&state, width, "恢复折叠");
+        assert_eq!(
+            snapshot(&display_lines(&state, width)),
+            shown,
+            "恢复折叠应当回到原样"
+        );
 
         // 工具调用的整条生命周期。
         let call = omnicrawl_core::ToolCall {

@@ -64,8 +64,10 @@ impl App {
                 self.apply_compaction_percent(*percent)?
             }
             SettingsChange::Reasoning { effort } => self.apply_reasoning_effort(effort)?,
-            SettingsChange::ShowThinking { enabled } => self.apply_show_thinking(*enabled)?,
             SettingsChange::Feature { key, enabled } => self.apply_feature(key, *enabled)?,
+            SettingsChange::MemoryForgetAfter { days } => {
+                self.apply_memory_forget_after(*days)?
+            }
             SettingsChange::Form { kind, values } => self.apply_form(*kind, values)?,
             SettingsChange::Subagent(subagent) => self.apply_subagent(subagent)?,
             SettingsChange::Mcp(change) => self.apply_mcp(change)?,
@@ -134,7 +136,7 @@ impl App {
     /// 把本次变更推给内核做热更新；结果在 `handle_frame` 里回填。
     ///
     /// 只有内核持有的设置在协议上有对应字段：工具声明、上下文窗口与压缩阈值、推理强度。
-    /// 思考显示与功能开关属于宿主/配置面，没有帧可发（`params` 为空时直接返回）。
+    /// 功能开关属于宿主/配置面，没有帧可发（`params` 为空时直接返回）。
     pub(super) fn push_session_settings(&mut self, change: &SettingsChange) {
         let compaction = match change {
             SettingsChange::ContextWindow { .. } | SettingsChange::CompactionPercent { .. } => {

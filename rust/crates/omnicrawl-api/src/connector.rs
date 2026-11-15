@@ -51,6 +51,12 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// 下一条消息直接撞上 `RUN_ACTIVE`。
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// 独立回合的会话根目录名：与用户会话分开，后台总结不污染 `/sessions`。
+const ISOLATED_SESSION_DIRNAME: &str = "connector_isolated";
+
+/// 独立回合追加的约束：说清「这是后台动作」。
+const ISOLATED_PROMPT: &str = "本次回合由连接器的后台定时任务发起，没有人在终端前：不要调用 ask_user，不要等待人工确认；只做被要求的那一份归纳，不要额外读写项目文件。";
+
 /// 模型流重试事件：显示层要靠它丢弃作废的半截输出，不能降级成状态提示。
 pub(crate) const ROLLBACK_EVENT: &str = "assistant.rollback";
 
@@ -131,6 +137,8 @@ fn run_qqbot() -> Result<(), String> {
         .to_string());
     }
     let driver = Arc::new(HostConnectorDriver::start(&env)?);
+    // 定时总结跑在独立回合里：先备好那套模板（失败只打日志，不影响收发消息）。
+    driver.prepare_isolated_turns(&env);
     let api = Arc::new(QqApi::with_ureq(&config));
     let bot = Arc::new(QqBot::new(&config, api, Arc::clone(&driver))?);
     eprintln!(
@@ -153,6 +161,17 @@ pub struct HostConnectorDriver {
     /// 当前回合的 Run ID：取消与审批决议都要它。
     current_run: Mutex<String>,
     cancelled: AtomicBool,
+    /// 独立回合的模板（定时总结用）：`None` 表示宿主不支持隔离回合。
+    ///
+    /// 每次跑独立回合都按它另起一套 `AgentService`（独立会话根）：两次总结之间不共享
+    /// 会话，也不会把后台内容写进用户正在看的对话。
+    isolated: Mutex<Option<IsolatedTemplate>>,
+}
+
+/// 起一套隔离服务所需的全部信息：选项模板与内核程序。
+struct IsolatedTemplate {
+    env: ConfigEnvironment,
+    program: PathBuf,
 }
 
 impl HostConnectorDriver {
@@ -180,7 +199,41 @@ impl HostConnectorDriver {
             ask_user: Mutex::new(None),
             current_run: Mutex::new(String::new()),
             cancelled: AtomicBool::new(false),
+            isolated: Mutex::new(None),
         })
+    }
+
+    /// 准备独立回合：按当前配置再取一份选项，并把会话根换到独立目录。
+    ///
+    /// 会话根必须分开：共用主会话根会让总结内容出现在 `/sessions` 里，也会与用户正在用的
+    /// 会话争同一份转录文件。失败只影响定时总结，不影响连接器主循环。
+    pub fn prepare_isolated_turns(&self, env: &ConfigEnvironment) {
+        // 只记下环境与内核程序：选项在每次跑的时候现取，免得把一份 `ServiceOptions`
+        // 长期留在内存里（它内含 `Mutex`，也不实现 `Clone`）。
+        let template = IsolatedTemplate {
+            env: env.clone(),
+            program: resolve_kernel_program(env, None),
+        };
+        if let Ok(mut slot) = self.isolated.lock() {
+            *slot = Some(template);
+        }
+    }
+
+    /// 按隔离模板装配一套选项：会话根独立、审批自动审查、提示词追加无人值守约束。
+    fn isolated_options(template: &IsolatedTemplate) -> Result<ServiceOptions, String> {
+        let mut options: ServiceOptions = connector_options_from_process(&template.env)?;
+        let base = options
+            .session_root
+            .clone()
+            .unwrap_or_else(|| options.workspace_root.clone());
+        options.session_root = Some(base.join(ISOLATED_SESSION_DIRNAME));
+        options.approval = omnicrawl_host::approval::ApprovalMode::Review;
+        options.confirmation_timeout_seconds = options.confirmation_timeout_seconds.min(5.0);
+        options.custody = None;
+        if let Some(runtime) = options.prompt.as_ref() {
+            runtime.set_system_prompt_append(ISOLATED_PROMPT.to_string());
+        }
+        Ok(options)
     }
 
     /// 收尾：请内核退出并回收资源。
@@ -494,6 +547,27 @@ impl AgentDriver for HostConnectorDriver {
         Ok(outcome)
     }
 
+    /// 独立回合：另起一套内核与会话，跑完就关。
+    ///
+    /// 不复用主 `service`：那套内核持有用户的会话与单活动名额，后台总结插进去会和
+    /// 用户的消息抢名额，也会把总结内容写进用户的对话历史。
+    fn run_isolated_turn(&self, text: &str) -> Result<String, String> {
+        let (options, program) = {
+            let slot = self
+                .isolated
+                .lock()
+                .map_err(|_| "独立回合配置不可用。".to_string())?;
+            let template = slot
+                .as_ref()
+                .ok_or_else(|| "当前宿主未启用独立回合。".to_string())?;
+            (Self::isolated_options(template)?, template.program.clone())
+        };
+        let service = Arc::new(AgentService::spawn(options, &program)?);
+        let result = drive_isolated(&service, text);
+        service.close();
+        result
+    }
+
     fn request_cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         let run_id = self.current_run();
@@ -524,6 +598,53 @@ impl AgentDriver for HostConnectorDriver {
         if let Ok(mut slot) = self.ask_user.lock() {
             *slot = Some(handler);
         }
+    }
+}
+
+/// 独立回合的一次执行：受理 → 轮询事件 → 等终态。
+///
+/// 不转发事件（后台动作没有观众），只看终态；超时按失败收口，取消一律请求内核收尾。
+fn drive_isolated(service: &Arc<AgentService>, text: &str) -> Result<String, String> {
+    let record = service
+        .start_run(text)
+        .map_err(|error| format!("受理回合失败：{}", error.message))?;
+    let run_id = record.run_id.clone();
+    let mut cursor = 0_u64;
+    let deadline = Instant::now() + TURN_TIMEOUT;
+    loop {
+        let items = match service.events_after(&run_id, cursor) {
+            Ok(items) => items,
+            // 事件按条数保留：跳过期窗口继续读，长输出不该让整轮报错。
+            Err(error) if error.code == "EVENT_CURSOR_EXPIRED" => {
+                let earliest = error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("earliest_event_id"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if earliest == 0 {
+                    return Err(error.message);
+                }
+                cursor = earliest.saturating_sub(1);
+                continue;
+            }
+            Err(error) => return Err(error.message),
+        };
+        for item in items {
+            cursor = item.id;
+            if let Some(outcome) = terminal_outcome(&item.event, &item.data) {
+                return match outcome {
+                    Ok(text) => Ok(text),
+                    Err(TurnError::Cancelled) => Err("回合已取消。".to_string()),
+                    Err(TurnError::Failed(message)) => Err(message),
+                };
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = service.cancel_run(&run_id);
+            return Err("回合超时未收尾。".to_string());
+        }
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 

@@ -129,11 +129,6 @@ impl SettingsState {
                     already
                 }
             }
-            Pane::Choice(_) => {
-                // 单选页只有一个字段：点它就是「把候选展开」，于是直接走 Enter。
-                self.focus = Focus::Pane;
-                true
-            }
             Pane::Form(_) => {
                 let Some(form) = self.form_mut() else {
                     return false;
@@ -151,6 +146,24 @@ impl SettingsState {
                 let already = self.sessions.selected() == target;
                 if !already {
                     self.sessions.select(target);
+                }
+                already
+            }
+            Pane::Memory => {
+                let target = index.min(MemoryRow::ORDER.len() - 1);
+                let already = self.memory.selected() == target;
+                if !already {
+                    let delta = target as isize - self.memory.selected() as isize;
+                    self.memory.move_selection(delta);
+                }
+                already
+            }
+            Pane::Knowledge => {
+                let target = index.min(KnowledgeRow::ORDER.len() - 1);
+                let already = self.knowledge.selected() == target;
+                if !already {
+                    let delta = target as isize - self.knowledge.selected() as isize;
+                    self.knowledge.move_selection(delta);
                 }
                 already
             }

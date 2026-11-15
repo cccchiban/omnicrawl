@@ -1,19 +1,24 @@
 //! TTS（文本转语音）：云服务合成单链路。
 //!
-//! 两条云通道，由 `omnicrawl-config` 的 `[tts_cloud].provider` 选择：
+//! 三条云通道，由 `omnicrawl-config` 的 `[tts_cloud].provider` 选择：
 //!
 //! * **OpenAI**（[`openai`]）：`POST {base_url}/audio/speech`，返回 WAV/MP3/PCM 等字节。
 //! * **Gemini**（[`gemini`]）：`POST {base_url}/models/{model}:generateContent`，
 //!   返回 base64 的音频（默认裸 PCM，24kHz 单声道）。
+//! * **DeepSeek**（[`deepseek`]）：`/v1/tools/tts`，默认走 WebSocket 流式
+//!   （音频以二进制帧下发），可切换成整段 `POST`。
 //!
-//! 两家都不需要本机模型或系统原生依赖，因此没有 feature 开关：本 crate 只做 HTTP 与音频 I/O。
+//! 三家都不需要本机模型或系统原生依赖，因此没有 feature 开关：本 crate 只做 HTTP、
+//! WebSocket 与音频 I/O。
 //!
 //! | crate 模块 | 职责 |
 //! |---|---|
 //! | [`openai`] | OpenAI `audio/speech` 请求与响应解析 |
 //! | [`gemini`] | Gemini TTS `generateContent` 请求与响应解析 |
-//! | [`synthesis`] | 两条通道的公共入口：选路、分块、拼接与落盘 |
-//! | [`text`] | 长文本按句切块（两家都有单次请求的长度上限） |
+//! | [`deepseek`] | DeepSeek TTS 的整段与 WebSocket 流式传输 |
+//! | [`ws`] | 最小 WebSocket 客户端（握手、帧编解码、TLS） |
+//! | [`synthesis`] | 三条通道的公共入口：选路、分块、拼接与落盘 |
+//! | [`text`] | 长文本按句切块（三家都有单次请求的长度上限） |
 //! | [`codec`] | 云服务返回的音频字节解码（WAV / 裸 PCM） |
 //! | [`audio`] | PCM WAV 读写 |
 //! | [`player`] | 合成后的本地播放 |
@@ -25,11 +30,13 @@
 
 pub mod audio;
 pub mod codec;
+pub mod deepseek;
 pub mod gemini;
 pub mod openai;
 pub mod player;
 pub mod result;
 pub mod synthesis;
 pub mod text;
+pub mod ws;
 
 mod paths;

@@ -72,7 +72,7 @@ impl SettingsState {
                 None
             }
             HitAction::Option(index) => {
-                // 浮层下拉（上下文页 / 单选页 / 表单页 / 视觉页）与渠道表单的内联候选
+                // 浮层下拉（模型管理页 / 表单页 / 视觉页）与渠道表单的内联候选
                 // 是两套结构：前者记在 `self.dropdown`，后者记在渠道表单里。
                 if self.dropdown.is_some() {
                     let count = self.dropdown_options().len();
@@ -94,6 +94,46 @@ impl SettingsState {
                 }
                 self.handle_key(KeyCode::Enter)
             }
+        }
+    }
+
+    /// 滚轮：等价于按一次 `↑` / `↓`。
+    ///
+    /// 各页的可见窗口本来就跟着选中项走（`window_offset`），因此滚动只需移动选中项：
+    /// 按方向键走哪条分支，滚轮就走哪条，不另开一套滚动偏移——否则键盘与滚轮会各滚各的。
+    /// 正在编辑文本时不动：那里 `↑`/`↓` 是挪光标，把光标滚走不是用户想要的。
+    pub fn scroll(&mut self, delta: isize) {
+        if delta == 0 || self.editing_text() {
+            return;
+        }
+        let key = if delta < 0 {
+            KeyCode::Up
+        } else {
+            KeyCode::Down
+        };
+        // 一格滚轮最多折算 `SCROLL_MAX_STEPS` 行：长列表里一次猛滚不该跳过整屏。
+        let repeats = delta.unsigned_abs().min(SCROLL_MAX_STEPS);
+        for _ in 0..repeats {
+            self.handle_key(key);
+        }
+    }
+
+    /// 当前是否正在某个文本字段里编辑。
+    fn editing_text(&self) -> bool {
+        match self.pane {
+            Pane::Tts => self.tts.input.is_some(),
+            Pane::Form(_) => self.form().is_some_and(|form| form.input().is_some()),
+            Pane::ModelManagement => self
+                .model_management
+                .form
+                .as_ref()
+                .is_some_and(|form| form.input.is_some()),
+            Pane::Mcp => self
+                .mcp
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.input.is_some()),
+            _ => false,
         }
     }
 }

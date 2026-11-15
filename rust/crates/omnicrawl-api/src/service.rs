@@ -28,7 +28,7 @@ use omnicrawl_config::models::model_catalog::{
     build_catalog, detect_model_options, ensure_current_model_option, Catalog, CatalogPorts,
     CatalogRequest, DiscoveryCache, ModelOption, MODEL_LIST_TIMEOUT_SECONDS,
 };
-use omnicrawl_controllers::memory::user_data_root;
+use omnicrawl_controllers::memory::{session_memory_root, user_data_root, user_memory_root};
 use omnicrawl_controllers::settings::{
     context_compaction_trigger_tokens, kernel_compaction_settings,
 };
@@ -912,6 +912,15 @@ fn options_from_process_profile(
     // 之后每次 `switch_session` 重起内核都会按目标会话重新绑一次。
     options.registry_options.memory_enabled =
         load_feature_enabled(env, "memory", true, None, None).unwrap_or(true);
+    // 记忆目录归口：把旧的 `~/.omnicrawl/{User_memory,Session_memory}` 迁进 `memory/`。
+    // 失败只告警——无头宿主没有界面可提示，记忆仍按新布局读写，不该拦启动。
+    if options.registry_options.memory_enabled {
+        if let Err(error) = omnicrawl_controllers::memory::ensure_memory_root(&user_data_root(
+            env.home(),
+        )) {
+            eprintln!("[api] 记忆目录归口失败：{}", error.message());
+        }
+    }
     options.registry_options.memory = MemoryOptions {
         project_enabled: true,
         user_enabled: true,
@@ -948,6 +957,16 @@ fn options_from_process_profile(
     // 工具开关（`[tools]` 段）同样在启动期装载：若这里不装，`config.toml` 里关掉的
     // 内置工具（如 `powershell`）启动后仍会照旧进表，模型可见即可调用，开关形同虚设。
     options.registry_options.disabled_tools = load_disabled_tools(env, None).unwrap_or_default();
+    // 知识库组整组进出（`[knowledge] enabled`）：与记忆组同源装配，不装的话配置里
+    // 关掉知识库后工具仍会照旧进表，开关形同虚设。
+    options.registry_options.knowledge_enabled = load_feature_enabled(
+        env,
+        "knowledge",
+        omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED,
+        None,
+        None,
+    )
+    .unwrap_or(omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED);
     // 联网搜索同样在启动期装载：`RegistryOptions::default()` 的搜索选项是「默认引擎 duckduckgo +
     // 无凭据」，这里不装的话 `[web_search]` 里选的 tavily/exa/firecrawl/anysearch/tinyfish 与各自的 API Key 全部
     // 失效，工具会一直报「来源：duckduckgo」（与 TUI 同源，见 `web_search_options_from_config`）。

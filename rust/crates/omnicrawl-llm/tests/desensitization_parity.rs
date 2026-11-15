@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use omnicrawl_llm::desensitization::{
     collect_placeholder_numbers, find_placeholders, format_placeholder, has_placeholder_prefix,
-    sequence_fingerprint, SequenceRegistry, SessionSequenceCache, StableSequenceIndex,
+    sequence_fingerprint, DesensitizationStats, SequenceRegistry, SessionSequenceCache,
+    StableSequenceIndex, StreamRestorer,
 };
 use serde_json::{json, Value};
 
@@ -239,4 +240,76 @@ fn registry_lifecycle_matches_python() {
         json!(registry.stats.cycles_reused),
         expected["stats"]["cycles_reused"]
     );
+}
+
+/// 旧的纯数字占位符必须仍能解析。
+///
+/// 协议已改为单词组标签（`｛Desensitized:red_tiny_male_cat｝`），但历史消息、旧会话转录与
+/// 早先保存的测试夹具里仍有 `｛Desensitized:7｝` 这种形式——解析器不认它们，那些序号就再也
+/// 还原不回来。这条用例是兼容分支的守卫：删掉兼容逻辑会在这里红。
+#[test]
+fn legacy_numeric_placeholders_still_parse() {
+    for (text, seq) in [
+        ("\u{ff5b}Desensitized:7\u{ff5d}", 7_u64),
+        ("前缀 \u{ff5b}Desensitized:123\u{ff5d} 后缀", 123),
+        ("\u{ff5b}DESENSITIZED:9\u{ff5d}", 9),
+        ("{Desensitized:42}", 42),
+    ] {
+        let found = find_placeholders(text);
+        assert_eq!(found.len(), 1, "应解析出一个占位符：{text:?}");
+        let (start, end, parsed) = found[0];
+        assert_eq!(parsed, seq, "序号：{text:?}");
+        assert!(text.is_char_boundary(start) && text.is_char_boundary(end));
+    }
+}
+
+/// 新形式与旧形式在同一段文本里共存时都能解析，且各自拿到正确序号。
+#[test]
+fn word_labels_and_legacy_numbers_coexist() {
+    let worded = format_placeholder(1);
+    let text = format!("{worded} 与 \u{ff5b}Desensitized:7\u{ff5d}");
+    let found = find_placeholders(&text);
+    assert_eq!(found.len(), 2, "两种形式各解析一个");
+    assert_eq!(found[0].2, 1, "单词组标签解出 1");
+    assert_eq!(found[1].2, 7, "旧数字解出 7");
+}
+
+/// 端到端：出站屏蔽产出单词组标签，模型原样复述后能还原成原文；
+/// 旧数字形式同样能还原——这正是本次改动要保证的两件事。
+#[test]
+fn end_to_end_mask_and_restore_both_formats() {
+    let mut registry = SequenceRegistry::with_sequence_source(source(counter(0)));
+    let (mut cycle, _) = registry.begin_cycle("端到端");
+    let secret = "sk-live-8f3a2b1c";
+    let (seq, _) = cycle.seq_for_value(secret);
+
+    let label = format_placeholder(seq);
+    assert!(
+        label.contains("Desensitized:"),
+        "占位符带固定标记：{label}"
+    );
+    // 生成端不应再产出纯数字形式
+    let inside = label
+        .trim_start_matches(['\u{ff5b}', '{'])
+        .trim_end_matches(['\u{ff5d}', '}'])
+        .trim_start_matches("Desensitized:")
+        .trim();
+    assert!(
+        !inside.bytes().all(|b| b.is_ascii_digit()),
+        "生成端已改为单词组，不再输出纯数字：{label}"
+    );
+
+    let mut stats = DesensitizationStats::default();
+
+    // 模型原样复述新形式：还原成原文
+    let mut restorer = StreamRestorer::new(&cycle, &mut stats, false);
+    let restored = restorer.restore_string(&label).expect("还原新形式");
+    assert_eq!(restored, secret, "新形式应还原为原文");
+    drop(restorer);
+
+    // 模型输出旧数字形式：同样还原（历史消息兼容）
+    let legacy = format!("\u{ff5b}Desensitized:{seq}\u{ff5d}");
+    let mut restorer = StreamRestorer::new(&cycle, &mut stats, false);
+    let restored = restorer.restore_string(&legacy).expect("还原旧形式");
+    assert_eq!(restored, secret, "旧数字形式也应还原为原文");
 }

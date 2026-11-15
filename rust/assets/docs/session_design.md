@@ -425,7 +425,7 @@ compact_summary
 | 用户级记忆 | 用户 | 稳定习惯、偏好和用户纠错 | 由 `user_memory_*` 按需检索。 |
 | 提示历史 | 跨会话 | 用户提交过的提示 | 不默认进入，只用于检索复用。 |
 
-存储位置分别为当前工作区 `.omnicrawl/.oclmemory/`、`~/.omnicrawl/Session_memory/<session_id>/` 和 `~/.omnicrawl/User_memory/`。会话压缩只写当前会话级记忆；新会话只绑定新的 Session 目录。删除 Session 时会清理对应会话级记忆，项目级和用户级记忆不受影响。
+存储位置分别为当前工作区 `.omnicrawl/.oclmemory/`、`~/.omnicrawl/memory/Session_memory/<session_id>/` 和 `~/.omnicrawl/memory/User_memory/`。会话压缩只写当前会话级记忆；新会话只绑定新的 Session 目录。删除 Session 时会清理对应会话级记忆，项目级和用户级记忆不受影响。
 
 ## 11. UI 设计要求
 

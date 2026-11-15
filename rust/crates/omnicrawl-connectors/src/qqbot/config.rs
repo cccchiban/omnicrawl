@@ -44,6 +44,10 @@ pub struct QqBotConfig {
     pub intents: i64,
     /// 注入 system prompt 末尾的预设提示词（`persona`）；留空时按昵称生成。
     pub persona: String,
+    /// 群聊消息记录：纯 @ 机器人时带上最近多少条群消息（默认 10）。
+    pub history_context_size: usize,
+    /// 群聊消息的总结间隔（小时）；0 表示关闭定时总结。
+    pub summary_interval_hours: f64,
 }
 
 /// 一次消息的来源，决定按哪张白名单判定。
@@ -171,9 +175,25 @@ pub fn persona_prompt(persona: &str, bot_name: &str) -> String {
 /// 媒体发送约定：不写进提示词，模型就不知道 `[FILE:…]` 这个约定存在，等于发不出图。
 pub const MEDIA_HINT: &str = "发图片、视频、语音或文件时，在回复里单独写一行 [FILE:路径]（工作区相对路径或绝对路径），连接器会把它换成真正的媒体消息。格式与上限：图片 png/jpg ≤20MB，视频 mp4 ≤30MB，语音 silk/mp3/wav/flac/ogg ≤20MB，其余按文件发 ≤200MB；超出格式限制的一律按文件发送。只在用户确实需要成品时发。";
 
-/// 真正的提示词追加段：预设提示词 + 媒体约定。
+/// 事件约束：群聊是公开场合，机器人说的话会留在群里、会被截图，后果由部署者承担。
+///
+/// 写成硬约束而不是建议：涉及敏感政治事件、人名、时间时一律用 `████` 遮蔽，不复述、
+/// 不展开、不评判，也不追问细节。遮蔽优先于「把话说完整」和「回答得有帮助」。
+pub const EVENT_CONSTRAINT: &str = "\
+敏感内容约束（优先于前面所有内容）：
+- 涉及国内敏感政治事件、相关人名、相关时间时，一律用 ████ 遮蔽，不要写出原文、拼音、缩写、谐音或拆字。
+- 不复述、不扩写、不评价、不追问这类内容；群友追问也只用 ████ 回应，并把话题带开。
+- 无法判断某个具体人名或时间是否敏感时，按敏感处理，用 ████ 遮蔽。
+- 这条约束优先于「完整回答」和「保持有用」：宁可少说，也不要把这类内容说进群里。";
+
+/// 真正的提示词追加段：预设提示词 + 媒体约定 + 事件约束。
 pub fn prompt_append(persona: &str, bot_name: &str) -> String {
-    format!("{}\n\n{}", persona_prompt(persona, bot_name), MEDIA_HINT)
+    format!(
+        "{}\n\n{}\n\n{}",
+        persona_prompt(persona, bot_name),
+        MEDIA_HINT,
+        EVENT_CONSTRAINT
+    )
 }
 
 /// 读取 `[qqbot]` 段；缺项回落默认值，类型不对返回中文错误。
@@ -214,6 +234,29 @@ pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String>
         Some(Value::String(text)) => text.trim().to_string(),
         Some(_) => return Err("qqbot.persona 必须是字符串（注入提示词的预设文案）。".to_string()),
     };
+    let history_context_size = match section.get("history_context_size") {
+        None | Some(Value::Null) => crate::qqbot::history::DEFAULT_CONTEXT_LIMIT,
+        Some(raw) => {
+            let value = raw.as_u64().ok_or_else(|| {
+                "qqbot.history_context_size 必须是正整数（纯 @ 时带上的群消息条数）。".to_string()
+            })?;
+            (value as usize).max(1)
+        }
+    };
+    let summary_interval_hours = match section.get("summary_interval_hours") {
+        None | Some(Value::Null) => {
+            crate::qqbot::summary::DEFAULT_SUMMARY_INTERVAL_SECONDS as f64 / 3600.0
+        }
+        Some(raw) => {
+            let value = raw.as_f64().ok_or_else(|| {
+                "qqbot.summary_interval_hours 必须是数字（小时；0 表示关闭定时总结）。".to_string()
+            })?;
+            if value < 0.0 {
+                return Err("qqbot.summary_interval_hours 不能为负数。".to_string());
+            }
+            value
+        }
+    };
 
     Ok(QqBotConfig {
         app_id,
@@ -224,6 +267,8 @@ pub fn load_qqbot_config(section: Option<&Value>) -> Result<QqBotConfig, String>
         sandbox,
         intents,
         persona,
+        history_context_size,
+        summary_interval_hours,
     })
 }
 
@@ -260,6 +305,8 @@ pub fn check_config(config: &QqBotConfig) -> Value {
         "sandbox": config.sandbox,
         "intents": config.intents,
         "persona_present": !config.persona.is_empty(),
+        "history_context_size": config.history_context_size,
+        "summary_interval_hours": config.summary_interval_hours,
         "ready": !config.app_id.is_empty() && !config.app_secret.is_empty(),
     })
 }
@@ -350,6 +397,20 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn the_event_constraint_always_rides_along_and_demands_masking() {
+        let append = prompt_append("你是机器人。", "小囫囵");
+        assert!(append.starts_with("你是机器人。"));
+        assert!(append.contains(MEDIA_HINT));
+        assert!(append.contains(EVENT_CONSTRAINT));
+        // 遮蔽符必须是四个实心方块，不能退化成其他字符。
+        assert!(EVENT_CONSTRAINT.contains("████"));
+        // 约束必须自陈优先级，否则模型会按「尽量有用」压过去。
+        assert!(EVENT_CONSTRAINT.contains("优先"));
+        // 追加段里约束在最后：越靠后越不容易被前面的长文案冲淡。
+        assert!(append.ends_with(EVENT_CONSTRAINT));
     }
 
     #[test]

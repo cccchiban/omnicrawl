@@ -1,7 +1,8 @@
 //! TTS 语音合成工具执行体（云服务通道在 `omnicrawl-tts`）。
 //!
-//! 单链路两通道：`[tts_cloud].provider` 选 OpenAI（`audio/speech`）或 Gemini（TTS 模型），
-//! 参数取各自段（`[tts_api]` / `[tts_gemini]`）。音色由通道配置决定，工具面不暴露音色参数。
+//! 单链路三通道：`[tts_cloud].provider` 选 OpenAI（`audio/speech`）、Gemini（TTS 模型）
+//! 或 DeepSeek（`/v1/tools/tts`，默认 WebSocket 流式），参数取各自段
+//! （`[tts_api]` / `[tts_gemini]` / `[tts_deepseek]`）。音色由通道配置决定，工具面不暴露音色参数。
 //!
 //! 合成后按配置自动播放；成功与失败都回 JSON 信封（失败是 `ok=false` 加 `error`），
 //! 让模型不再重复调用。
@@ -74,6 +75,8 @@ impl TtsOptions {
             "sample_rate": result.sample_rate,
             "duration_seconds": round_two(result.duration_seconds),
             "provider": self.backend.provider(),
+            // 只有 DeepSeek 有两套传输，其余两家恒为 http。
+            "transport": self.backend.transport(),
             "voice": result.voice,
             "text_chunks": result.text_chunks.len(),
         });
@@ -132,23 +135,31 @@ impl TtsOptions {
     }
 }
 
-/// 把两条通道的配置映射成合成后端（宿主在启动与保存设置后各调一次）。
+/// 把三条通道的配置映射成合成后端（宿主在启动与保存设置后各调一次）。
 pub fn tts_backend(
     cloud: &TtsCloudConfiguration,
     openai: omnicrawl_config::features::tts_cloud::TtsApiConfiguration,
     gemini: omnicrawl_config::features::tts_cloud::GeminiTtsConfiguration,
+    deepseek: omnicrawl_config::features::tts_cloud::DeepSeekTtsConfiguration,
 ) -> TtsBackend {
-    if cloud.provider == "gemini" {
-        TtsBackend::Gemini(omnicrawl_tts::gemini::GeminiTtsConfig {
+    match cloud.provider.as_str() {
+        "gemini" => TtsBackend::Gemini(omnicrawl_tts::gemini::GeminiTtsConfig {
             base_url: gemini.base_url,
             api_key: gemini.api_key,
             model: gemini.model,
             voice: gemini.voice,
             instructions: gemini.instructions,
             timeout_seconds: gemini.timeout_seconds.max(1) as u64,
-        })
-    } else {
-        TtsBackend::OpenAi(omnicrawl_tts::openai::OpenAiTtsConfig {
+        }),
+        "deepseek" => TtsBackend::DeepSeek(omnicrawl_tts::deepseek::DeepSeekTtsConfig {
+            base_url: deepseek.base_url,
+            api_key: deepseek.api_key,
+            voice: deepseek.voice,
+            transport: omnicrawl_tts::deepseek::DeepSeekTransport::parse(&deepseek.transport),
+            filter_markdown: deepseek.filter_markdown,
+            timeout_seconds: deepseek.timeout_seconds.max(1) as u64,
+        }),
+        _ => TtsBackend::OpenAi(omnicrawl_tts::openai::OpenAiTtsConfig {
             base_url: openai.base_url,
             api_key: openai.api_key,
             model: openai.model,
@@ -156,7 +167,7 @@ pub fn tts_backend(
             instructions: openai.instructions,
             speed: openai.speed,
             timeout_seconds: openai.timeout_seconds.max(1) as u64,
-        })
+        }),
     }
 }
 
@@ -206,7 +217,9 @@ fn round_two(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omnicrawl_config::features::tts_cloud::{GeminiTtsConfiguration, TtsApiConfiguration};
+    use omnicrawl_config::features::tts_cloud::{
+        DeepSeekTtsConfiguration, GeminiTtsConfiguration, TtsApiConfiguration,
+    };
 
     fn options() -> TtsOptions {
         let configuration = TtsConfiguration {
@@ -221,6 +234,7 @@ mod tests {
                 ..TtsApiConfiguration::default()
             },
             GeminiTtsConfiguration::default(),
+            DeepSeekTtsConfiguration::default(),
         );
         TtsOptions::new(configuration, backend, PathBuf::from("/workspace"))
     }
@@ -264,6 +278,7 @@ mod tests {
             &TtsCloudConfiguration::default(),
             TtsApiConfiguration::default(),
             GeminiTtsConfiguration::default(),
+            DeepSeekTtsConfiguration::default(),
         );
         let options = TtsOptions::new(configuration, backend, PathBuf::from("/ws"));
         assert!(options.default_output_path().starts_with(absolute));
@@ -281,6 +296,7 @@ mod tests {
                 ..TtsApiConfiguration::default()
             },
             GeminiTtsConfiguration::default(),
+            DeepSeekTtsConfiguration::default(),
         );
         assert_eq!(openai.provider(), "openai");
         assert_eq!(openai.voice(), "coral");
@@ -294,9 +310,25 @@ mod tests {
                 voice: "Puck".to_string(),
                 ..GeminiTtsConfiguration::default()
             },
+            DeepSeekTtsConfiguration::default(),
         );
         assert_eq!(gemini.provider(), "gemini");
         assert_eq!(gemini.voice(), "Puck");
+
+        let deepseek = tts_backend(
+            &TtsCloudConfiguration {
+                provider: "deepseek".to_string(),
+            },
+            TtsApiConfiguration::default(),
+            GeminiTtsConfiguration::default(),
+            DeepSeekTtsConfiguration {
+                voice: "tide".to_string(),
+                ..DeepSeekTtsConfiguration::default()
+            },
+        );
+        assert_eq!(deepseek.provider(), "deepseek");
+        assert_eq!(deepseek.voice(), "tide");
+        assert_eq!(deepseek.transport(), "websocket", "默认走流式");
     }
 
     /// 未声明的参数（工具面只认 text 与 path）不参与合成，多传也不影响结果。

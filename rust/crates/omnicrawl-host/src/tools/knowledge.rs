@@ -524,6 +524,36 @@ impl KnowledgeBase {
         Ok(meta)
     }
 
+    /// 清空知识库里的全部笔记，并刷新索引。
+    ///
+    /// 只删 `scan_note_files` 认到的笔记（`.md`、跳过隐藏项与 `INDEX.md` / `README.md`）：
+    /// 根目录、`attachments/` 里的图片与手工放的其它文件都不动。返回被删笔记的相对路径。
+    ///
+    /// 删除失败的条目记进错误信息但不中断：能删多少删多少，最后如实报告。
+    pub fn clear_notes(&self) -> Result<Vec<String>, ToolError> {
+        let mut removed: Vec<String> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        for (path, rel_path) in self.scan_note_files() {
+            match fs::remove_file(&path) {
+                Ok(()) => removed.push(rel_path),
+                Err(error) => failures.push(format!(
+                    "{}：{}",
+                    rel_path,
+                    python_os_error(&error)
+                )),
+            }
+        }
+        if !failures.is_empty() {
+            return Err(ToolError::new(format!(
+                "已删除 {} 篇，但以下笔记删除失败：{}",
+                removed.len(),
+                failures.join("；")
+            )));
+        }
+        self.refresh_index()?;
+        Ok(removed)
+    }
+
     fn meta_for(&self, target: &Path) -> Result<NoteMeta, ToolError> {
         let bytes = fs::read(target).map_err(|error| {
             ToolError::new(format!("读取知识库笔记失败：{}。", python_os_error(&error)))
@@ -752,7 +782,11 @@ fn parse_frontmatter(text: &str) -> (Map<String, Value>, String, Vec<(String, Va
     };
     let mut meta = Map::new();
     let mut extra: Vec<(String, Value)> = Vec::new();
-    for line in &lines[1..end_index] {
+    let front = &lines[1..end_index];
+    let mut index = 0;
+    while index < front.len() {
+        let line = front[index];
+        index += 1;
         let stripped = line.trim();
         if stripped.is_empty() || stripped.starts_with('#') || !line.contains(':') {
             continue;
@@ -762,7 +796,25 @@ fn parse_frontmatter(text: &str) -> (Map<String, Value>, String, Vec<(String, Va
         if key.is_empty() {
             continue;
         }
-        let parsed = parse_scalar(value);
+        let value = value.trim();
+        let parsed = if value.is_empty() || value.starts_with('#') {
+            // Obsidian 的 Properties 面板把列表改写成块状：`key:` 后跟 `- item` 续行。
+            let mut items = Vec::new();
+            while index < front.len() {
+                let Some(item) = block_list_item(front[index]) else {
+                    break;
+                };
+                items.push(Value::String(item));
+                index += 1;
+            }
+            if items.is_empty() {
+                Value::String(String::new())
+            } else {
+                Value::Array(items)
+            }
+        } else {
+            parse_scalar(value)
+        };
         if FRONTMATTER_FIELD_ORDER.contains(&key) {
             meta.insert(key.to_string(), parsed);
         } else {
@@ -803,6 +855,38 @@ fn unquote_yaml(value: &str) -> String {
         return inner.replace("\\\"", "\"");
     }
     value.to_string()
+}
+
+/// 识别 `key:` 之后的块状列表项；非列表行返回 `None` 以便外层继续按普通键值解析。
+fn block_list_item(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if !line.starts_with(char::is_whitespace) || !trimmed.starts_with('-') {
+        return None;
+    }
+    let rest = trimmed[1..].trim_start();
+    if rest.starts_with('-') {
+        return None;
+    }
+    Some(unquote_yaml(strip_yaml_comment(rest)))
+}
+
+/// 去掉行尾 `#` 注释：引号内的 `#` 不算注释。
+fn strip_yaml_comment(value: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut previous_is_boundary = true;
+    for (index, character) in value.char_indices() {
+        match quote {
+            Some(active) if character == active => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if character == '#' && previous_is_boundary => {
+                return value[..index].trim_end();
+            }
+            None => {}
+        }
+        previous_is_boundary = character.is_whitespace();
+    }
+    value
 }
 
 fn parse_scalar(value: &str) -> Value {
@@ -1223,6 +1307,59 @@ mod tests {
         value.as_object().cloned().unwrap_or_default()
     }
 
+    /// Obsidian 的 Properties 面板会把 `tags: [a, b]` 改成块状列表，读回时不能丢标签。
+    #[test]
+    fn block_style_frontmatter_lists_are_parsed() {
+        let text = "---\ntitle: 块状标签\ncreated: 2026-11-01\nupdated: 2026-11-02\n\
+                    project: omnicrawl\ntags:\n  - tui\n  - rendering\n  - wrap\n\
+                    type: log\nstatus: done\naliases:\n  - 别名一\n  - 别名二\n---\n正文\n";
+        let (meta, body, extra) = parse_frontmatter(text);
+        assert_eq!(body.trim(), "正文");
+        let tags = meta_tags(meta.get("tags"));
+        assert_eq!(tags, vec!["tui", "rendering", "wrap"]);
+        assert_eq!(
+            extra
+                .iter()
+                .find(|(key, _)| key == "aliases")
+                .map(|(_, value)| scalar_text(value)),
+            Some("['别名一', '别名二']".to_string())
+        );
+    }
+
+    /// 块状列表里的引号、行尾注释与带 `#` 的标签都要按 YAML 语义还原。
+    #[test]
+    fn block_list_items_unquote_and_drop_trailing_comments() {
+        let text = "---\ntitle: 引号与注释\ntags:\n  - plain\n  - 'quoted tag'\n  \
+                    - \"hash#inside\"\n  - commented # 行尾说明\n  - '#leading'\n---\n";
+        let (meta, _, _) = parse_frontmatter(text);
+        assert_eq!(
+            meta_tags(meta.get("tags")),
+            vec!["plain", "quoted tag", "hash#inside", "commented", "#leading"]
+        );
+    }
+
+    /// 行内写法的既有行为不能被子串匹配或块状分支改动破坏。
+    #[test]
+    fn inline_list_still_parses_after_block_support() {
+        let text = "---\ntitle: 行内\ntags: [a, b]\ntype: note\nstatus: draft\n---\n";
+        let (meta, _, extra) = parse_frontmatter(text);
+        assert_eq!(meta_tags(meta.get("tags")), vec!["a", "b"]);
+        assert!(
+            extra.is_empty(),
+            "白名单外观测到的键不该重复：{extra:?}"
+        );
+    }
+
+    /// 键值对之间的空列表 `tags:` 之后若紧跟下一个键，应按空字符串而不是吞掉后续键。
+    #[test]
+    fn empty_block_list_does_not_swallow_following_keys() {
+        let text = "---\ntitle: 空标签\ntags:\ntype: note\nstatus: done\n---\n";
+        let (meta, _, _) = parse_frontmatter(text);
+        assert_eq!(meta_tags(meta.get("tags")), Vec::<String>::new());
+        assert_eq!(text_field(&meta, "type"), "note");
+        assert_eq!(text_field(&meta, "status"), "done");
+    }
+
     #[test]
     fn dot_dot_paths_are_rejected() {
         let base = KnowledgeBase::new(temp_root("escape"));
@@ -1478,6 +1615,40 @@ mod tests {
             );
             assert!(root.join(name).is_file(), "{name} 不该被删掉");
         }
+    }
+
+    /// 清除知识库只删笔记：根目录、`README.md`、`INDEX.md` 与非 Markdown 文件都留下。
+    #[test]
+    fn clear_notes_keeps_the_directory_and_managed_files() {
+        let root = temp_root("clear-notes");
+        let base = KnowledgeBase::new(&root);
+        std::fs::create_dir_all(root.join("projects")).expect("建子目录");
+        std::fs::create_dir_all(root.join("attachments")).expect("建附件目录");
+        base.refresh_index().expect("索引已建立");
+        std::fs::write(root.join("README.md"), "# 说明\n").expect("写 README");
+        std::fs::write(root.join("a.md"), "---\ntitle: A\n---\n正文\n").expect("写笔记");
+        std::fs::write(root.join("projects/b.md"), "---\ntitle: B\n---\n正文\n").expect("写笔记");
+        std::fs::write(root.join("attachments/pic.png"), "png").expect("写附件");
+
+        let mut removed = base.clear_notes().expect("清除应当成功");
+        removed.sort();
+
+        assert_eq!(removed, vec!["a.md".to_string(), "projects/b.md".to_string()]);
+        assert!(root.is_dir(), "根目录不该被删");
+        assert!(root.join("README.md").is_file(), "README 由知识库维护");
+        assert!(root.join(INDEX_FILENAME).is_file(), "索引要重建出来");
+        assert!(root.join("attachments/pic.png").is_file(), "附件不是笔记");
+        assert!(!root.join("a.md").exists());
+        assert!(!root.join("projects/b.md").exists());
+        assert!(base.list_notes().is_empty(), "笔记应当全没了");
+    }
+
+    /// 空知识库清除不报错，返回空清单。
+    #[test]
+    fn clearing_an_empty_knowledge_base_is_a_no_op() {
+        let root = temp_root("clear-empty");
+        let base = KnowledgeBase::new(&root);
+        assert!(base.clear_notes().expect("空库也算成功").is_empty());
     }
 
     /// 越界路径与 write/read 同口径，一律拒绝。

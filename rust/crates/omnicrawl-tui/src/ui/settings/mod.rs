@@ -6,8 +6,8 @@
 //! 这样设置面板可以脱离内核单独用 `TestBackend` 驱动。
 //!
 //! 已落地 `settings.py` 的一级菜单，以及模型管理、工具开关、联网搜索、子任务设置、视觉、
-//! 三个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成、
-//! 沙盒等表单页、TTS 页与 MCP 设置。
+//! 顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成、沙盒等表单页、
+//! TTS 页与 MCP 设置。
 
 pub mod form;
 pub mod hit;
@@ -23,20 +23,22 @@ pub use picker::{split_token, ModelDiscovery};
 
 pub use state::{
     channel_field_value, decision_field_value, display_value, embedding_field_value,
-    ChannelDropdown, ChannelField, ChannelFormView, ChannelRow, ChoiceKind, DecisionDropdown,
+    ChannelDropdown, ChannelField, ChannelFormView, ChannelRow, DecisionDropdown,
     DecisionField, DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues,
     DecisionRow, DecisionSwitchRow, Dropdown, DropdownField, EmbeddingChannelKind,
     EmbeddingField, EmbeddingFormView, EmbeddingRow, Focus, McpChange, McpEditorRowView,
     McpRowView, McpServerDraft, McpServerRow,
-    McpSettingsValues, ModelParamRow, OptionValue, Pane, SessionRow, SettingsChange, SettingsEvent,
+    McpSettingsValues, KnowledgeRow, MemoryRow, ModelParamRow, OptionValue, Pane, SessionRow,
+    SettingsChange,
+    SettingsEvent,
     SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow, ToolSwitchRow,
     TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsValues, VisionChange,
     VisionModelRef, WebSearchRow, DECISION_LOCAL_ROW_COUNT, DECISION_LOCAL_SECTION,
     DECISION_MODE_OPTIONS, DECISION_SWITCH_SECTION, MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS,
     MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS, MODEL_PARAM_SECTION,
     SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_APPROVAL_ROW,
-    TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS,
-    TTS_SPEED_OPTIONS, MASKED_SECRET,
+    TTS_DEEPSEEK_VOICES, TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS,
+    TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_SPEED_OPTIONS, TTS_TRANSPORT_OPTIONS, MASKED_SECRET,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。
@@ -62,10 +64,10 @@ pub const ROW_ORDER: [&str; 21] = [
     "agent_workspace",
     "desensitization",
     "memory",
+    "knowledge",
     "subagents",
     "sessions",
     "sandbox",
-    "show_thinking",
 ];
 
 /// 一级项的界面文案（对映 Python 的 `_row_labels`）；未知键回落为键名本身。
@@ -88,10 +90,10 @@ pub fn row_label(key: &str) -> String {
         "agent_workspace" => "隔离工作区",
         "desensitization" => "消息脱敏",
         "memory" => "记忆功能",
+        "knowledge" => "知识库",
         "subagents" => "子任务设置",
         "sessions" => "会话管理",
         "sandbox" => "沙盒",
-        "show_thinking" => "思考显示",
         other => other,
     };
     label.to_string()
@@ -225,20 +227,6 @@ pub fn reasoning_label(effort: &str) -> String {
     }
 }
 
-/// 某个单选页的候选（文案 + 取值）。
-///
-/// 两个单选页都是开关，候选与 Python 的 SelectPane 一致；候选随环境变化的字段
-/// （渠道与模型、上下文与推理档位）挂在模型管理页与表单页上，不在静态表里。
-pub fn choice_field_options(kind: ChoiceKind) -> Vec<(String, OptionValue)> {
-    match kind {
-        // 「思考显示 / 记忆」都是开关，候选与 Python 的 SelectPane 一致。
-        ChoiceKind::ShowThinking | ChoiceKind::Memory => vec![
-            ("开启".to_string(), OptionValue::Flag(true)),
-            ("关闭".to_string(), OptionValue::Flag(false)),
-        ],
-    }
-}
-
 /// 上下文长度的候选（文案 + Token）。
 pub fn context_window_options() -> Vec<(String, i64)> {
     CONTEXT_WINDOW_OPTIONS_K
@@ -288,20 +276,6 @@ mod tests {
         assert_eq!(reasoning_label("xhigh"), "超高");
         assert_eq!(reasoning_label("none"), "关闭");
         assert_eq!(reasoning_label("没见过的值"), "none");
-    }
-
-    #[test]
-    fn choice_options_cover_every_kind() {
-        for kind in [ChoiceKind::ShowThinking, ChoiceKind::Memory] {
-            assert_eq!(
-                choice_field_options(kind),
-                vec![
-                    ("开启".to_string(), OptionValue::Flag(true)),
-                    ("关闭".to_string(), OptionValue::Flag(false)),
-                ],
-                "开关类单选页的候选与 Python 的 SelectPane 一致"
-            );
-        }
     }
 
     #[test]

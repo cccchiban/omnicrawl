@@ -1193,7 +1193,7 @@
         "ok": true,
         "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/ws-mem/.omnicrawl/.oclmemory",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/memory/User_memory",
         "error": null
       },
       {
@@ -1203,7 +1203,7 @@
         "ok": true,
         "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/ws-mem/inside",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/memory/User_memory",
         "error": null
       },
       {
@@ -1234,7 +1234,7 @@
         "session_state": true,
         "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/Session_memory/abc-1_2",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/memory/Session_memory/abc-1_2",
         "error": null
       },
       {
@@ -1243,7 +1243,7 @@
         "session_state": true,
         "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/Session_memory/abc",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/memory/Session_memory/abc",
         "error": null
       },
       {
@@ -1343,7 +1343,7 @@
         "error": "记忆系统未启用。"
       }
     ],
-    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/User_memory"
+    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpy3xw60hi/userdata/memory/User_memory"
   },
   "output": {
     "batch_budget": [

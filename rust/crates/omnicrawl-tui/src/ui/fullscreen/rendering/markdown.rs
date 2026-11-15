@@ -9,7 +9,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use unicode_width::UnicodeWidthChar;
 
 use super::highlight::{highlight_line, ScanState};
-use crate::ui::fullscreen::terminal::theme::REASONING_BACKGROUND;
+use crate::ui::fullscreen::terminal::theme::{ACCENT_AMBER, ACCENT_CYAN, ACCENT_WHITE, REASONING_BACKGROUND};
 use crate::ui::fullscreen::text::StyledText;
 
 /// 行内代码：青色前景 + 代码块同款灰底（Rich 默认 `markdown.code` 为青底黑字同族）。
@@ -117,12 +117,14 @@ pub fn continuation_prefix(text: &str) -> String {
     prefix
 }
 
-/// 一级标题最重（加下划线），二级只加粗，三级及以下再加暗色，形成可读的层级差。
-fn heading_style(level: HeadingLevel) -> &'static str {
+/// 标题样式：H1 黄、H2 青、H3 及以下白，均加粗。
+///
+/// 颜色走主题令牌，不写字面色名：令牌换成真彩色时标题跟着换。
+fn heading_style(level: HeadingLevel) -> &'static [&'static str] {
     match level {
-        HeadingLevel::H1 => "bold underline",
-        HeadingLevel::H2 => "bold",
-        _ => "bold dim",
+        HeadingLevel::H1 => &["bold", ACCENT_AMBER],
+        HeadingLevel::H2 => &["bold", ACCENT_CYAN],
+        _ => &["bold", ACCENT_WHITE],
     }
 }
 
@@ -390,7 +392,7 @@ impl Renderer {
             Tag::Paragraph => self.push_newline(),
             Tag::Heading { level, .. } => {
                 self.push_newline();
-                self.modifiers.push(heading_style(level));
+                self.modifiers.extend(heading_style(level));
             }
             Tag::CodeBlock(kind) => {
                 self.push_newline();
@@ -541,7 +543,7 @@ fn fence_language(kind: &CodeBlockKind<'_>) -> String {
     }
 }
 
-/// 表格：按内容定列宽，知道窗口宽度时按比例收紧，超宽单元格以 `…` 收尾。
+/// 表格：按内容定列宽，知道窗口宽度时按比例收紧，超宽单元格折行显示。
 ///
 /// 表格骨架（`│` 与表头下划线）用弱化色，单元格内容保留自己的样式（表头加粗）。
 fn render_table(table: &TableState, width: usize) -> StyledText {
@@ -569,16 +571,33 @@ fn render_table(table: &TableState, width: usize) -> StyledText {
         if row_index > 0 {
             rendered.push("\n", "");
         }
-        for (index, column) in widths.iter().enumerate() {
-            if index > 0 {
-                rendered.push(TABLE_SEPARATOR, "dim");
+        // 每个单元格先各自折成若干行，再按本行最高的一格逐行拼接：
+        // 这样短单元格与长单元格在同一物理行上仍然对齐。
+        let cells: Vec<Vec<StyledText>> = widths
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                cell_lines(
+                    row.get(index),
+                    *column,
+                    table.aligns.get(index).copied(),
+                )
+            })
+            .collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        for line_index in 0..height {
+            if line_index > 0 {
+                rendered.push("\n", "");
             }
-            push_cell(
-                &mut rendered,
-                row.get(index),
-                *column,
-                table.aligns.get(index).copied(),
-            );
+            for (index, column_lines) in cells.iter().enumerate() {
+                if index > 0 {
+                    rendered.push(TABLE_SEPARATOR, "dim");
+                }
+                match column_lines.get(line_index) {
+                    Some(line) => rendered.append_text(line),
+                    None => rendered.push(&" ".repeat(widths[index]), ""),
+                }
+            }
         }
         // 表头下面铺一行横线，把表头与数据行分开。
         if row_index + 1 == table.header_rows {
@@ -619,69 +638,122 @@ fn shrink_columns(widths: &mut [usize], budget: usize) {
     }
 }
 
-/// 一个单元格：按列宽截断并补齐到整列，对齐方式取自分隔行。
-fn push_cell(
-    rendered: &mut StyledText,
+/// 一个单元格按列宽折成若干行，每行都已补齐到整列宽。
+///
+/// 超宽内容换行而不是截断——表格里的长文本（URL、路径、句子）被 `…` 吃掉就等于没显示。
+fn cell_lines(
     cell: Option<&StyledText>,
     column: usize,
     align: Option<Alignment>,
-) {
-    let used = cell.map(StyledText::display_width).unwrap_or(0);
-    let (left, right) = match align {
-        Some(Alignment::Right) => (column.saturating_sub(used), 0),
-        Some(Alignment::Center) => {
-            let pad = column.saturating_sub(used);
-            (pad / 2, pad - pad / 2)
-        }
-        _ => (0, column.saturating_sub(used)),
+) -> Vec<StyledText> {
+    let Some(cell) = cell else {
+        return vec![StyledText::styled(&" ".repeat(column), "")];
     };
-    if left > 0 {
-        rendered.push(&" ".repeat(left), "");
+    let mut lines: Vec<StyledText> = Vec::new();
+    for source in cell.split_lines() {
+        let wrapped = wrap_styled(&source, column);
+        if wrapped.is_empty() {
+            lines.push(StyledText::styled(&" ".repeat(column), ""));
+        } else {
+            for line in wrapped {
+                lines.push(align_line(&line, column, align));
+            }
+        }
     }
-    if let Some(cell) = cell {
-        // 左右补白已经占掉一部分列宽，正文只剩中间这段；超宽时由 `push_clipped` 补 `…`。
-        push_clipped(rendered, cell, column.saturating_sub(left + right));
+    if lines.is_empty() {
+        lines.push(StyledText::styled(&" ".repeat(column), ""));
     }
-    if right > 0 {
-        rendered.push(&" ".repeat(right), "");
-    }
+    lines
 }
 
-/// 单元格内容压进 `budget` 列：超宽时留一格给 `…`，避免整行被列宽撑破。
-fn push_clipped(rendered: &mut StyledText, cell: &StyledText, budget: usize) {
-    let limit = if cell.display_width() > budget {
-        budget.saturating_sub(1)
-    } else {
-        budget
-    };
-    let mut used = 0usize;
-    let mut truncated = false;
+/// 把一行 `StyledText` 按显示宽度折成多行，保留每段的样式。
+///
+/// 优先在空白处断行（英文按词折，不至于把单词劈成两半）；找不到空白就硬断，
+/// 长 URL、长路径这类没有空白的串照此处理。宽度为 0 时直接返回空。
+fn wrap_styled(cell: &StyledText, width: usize) -> Vec<StyledText> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if cell.display_width() <= width {
+        return vec![cell.clone()];
+    }
+    // 先摊平成 `(字符, 样式)`：断行要同时切字符和样式，用字符流算最省心。
+    let mut chars: Vec<(char, String)> = Vec::new();
     for span in cell.spans() {
         let style = if span.style.is_empty() {
-            cell.base_style()
+            cell.base_style().to_string()
         } else {
-            span.style.as_str()
+            span.style.clone()
         };
-        let mut chunk = String::new();
         for ch in span.text.chars() {
-            let cells = char_width(ch);
-            if used + cells > limit {
-                truncated = true;
+            chars.push((ch, style.clone()));
+        }
+    }
+
+    let mut lines: Vec<StyledText> = Vec::new();
+    let mut start = 0usize;
+    while start < chars.len() {
+        // 段首的空换行直接吃掉：它对应的就是一个空行，交给外层按空行处理。
+        if chars[start].0 == '\n' {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        let mut used = 0usize;
+        // 行内最后一个空白之后的位置：在那里断行能保住词的完整。
+        let mut break_after: Option<usize> = None;
+        while end < chars.len() {
+            let (ch, _) = &chars[end];
+            if *ch == '\n' {
+                break;
+            }
+            let cells = char_width(*ch);
+            if used + cells > width {
                 break;
             }
             used += cells;
-            chunk.push(ch);
+            end += 1;
+            if ch.is_whitespace() {
+                break_after = Some(end);
+            }
         }
-        if !chunk.is_empty() {
-            rendered.push(&chunk, style);
+        // 极窄列里连一个字符都放不下时硬吃一个，否则会原地打转。
+        if end == start {
+            end = start + 1;
         }
-        if truncated {
-            break;
+        // 只在行中间断开时回退到空白处；行尾的空白不必回退。
+        let cut = match break_after {
+            Some(at) if at > start && at < end => at,
+            _ => end,
+        };
+        let mut piece = StyledText::new();
+        for (ch, style) in &chars[start..cut] {
+            piece.push(&ch.to_string(), style);
         }
+        lines.push(piece);
+        start = cut;
     }
-    if truncated {
-        rendered.push("…", "dim");
+    lines
+}
+
+/// 按对齐方式把一行补到整列宽。
+fn align_line(line: &StyledText, column: usize, align: Option<Alignment>) -> StyledText {
+    let used = line.display_width();
+    let pad = column.saturating_sub(used);
+    let (left, right) = match align {
+        Some(Alignment::Right) => (pad, 0),
+        Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+        _ => (0, pad),
+    };
+    let mut out = StyledText::new();
+    if left > 0 {
+        out.push(&" ".repeat(left), "");
     }
+    out.append_text(line);
+    if right > 0 {
+        out.push(&" ".repeat(right), "");
+    }
+    out
 }
 
 /// 对映 `_UniformGrayMarkdown`：保留 Markdown 结构，把全部前景统一为思考区灰阶。
@@ -726,14 +798,37 @@ mod tests {
 
     #[test]
     fn heading_levels_are_distinguishable() {
-        // 一级标题带下划线，二级只加粗，三级再加暗色：层级在终端里要看得出来。
-        let h1 = render_markdown("# 一");
-        let h2 = render_markdown("## 二");
-        let h3 = render_markdown("### 三");
-        assert!(h1.spans()[0].style.contains("underline"));
-        assert!(!h2.spans()[0].style.contains("underline"));
-        assert!(h2.spans()[0].style.contains("bold"));
-        assert!(h3.spans()[0].style.contains("dim"));
+        // H1 黄、H2 青、H3 及以下白，三者都加粗：层级靠色相区分，不靠下划线或压暗。
+        let cases = [("# 一", "yellow"), ("## 二", "cyan"), ("### 三", "white")];
+        for (source, color) in cases {
+            let style = render_markdown(source).spans()[0].style.clone();
+            assert!(style.contains("bold"), "{source} 应当加粗，实际 {style}");
+            assert!(
+                style.contains(color),
+                "{source} 应当是 {color}，实际 {style}"
+            );
+            assert!(
+                !style.contains("dim"),
+                "{source} 不该再压暗，实际 {style}"
+            );
+        }
+    }
+
+    #[test]
+    fn deeper_headings_stay_white() {
+        for source in ["#### 四", "##### 五", "###### 六"] {
+            let style = render_markdown(source).spans()[0].style.clone();
+            assert!(style.contains("bold") && style.contains("white"), "{source} → {style}");
+        }
+    }
+
+    #[test]
+    fn no_heading_is_underlined() {
+        // 下划线原来是 H1 的层级标记，现在层级改由颜色表达，标题一律不带它。
+        for source in ["# 一", "## 二", "### 三"] {
+            let style = render_markdown(source).spans()[0].style.clone();
+            assert!(!style.contains("underline"), "{source} → {style}");
+        }
     }
 
     #[test]
@@ -955,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn table_shrinks_to_the_window_and_clips_wide_cells() {
+    fn table_shrinks_to_the_window_and_wraps_wide_cells() {
         let markdown = "| 项目 | 说明 |\n| --- | --- |\n| 甲 | 一段非常长的说明文字 |";
         let wide = render_markdown_with_width(markdown, 80);
         let narrow = render_markdown_with_width(markdown, 24);
@@ -968,14 +1063,24 @@ mod tests {
         };
         assert!(widest(&wide) <= 80);
         assert!(widest(&narrow) <= 24, "窄窗口下表格要收进来");
+        // 内容超出列宽要换行，而不是拿 `…` 省略掉。
+        let plain = narrow.plain();
         assert!(
-            narrow.plain().contains('…'),
-            "超宽单元格要截断：{:?}",
-            narrow.plain()
+            !plain.contains('…'),
+            "不该再出现省略号：{plain:?}"
+        );
+        assert!(
+            plain.contains("非常长的"),
+            "被折开的内容要完整保留：{plain:?}"
+        );
+        // 宽窗口下不该被折行：整句在同一行里。
+        assert!(
+            wide.plain().contains("一段非常长的说明文字"),
+            "宽窗口不折行：{:?}",
+            wide.plain()
         );
         // 收进来之后各行列数必须一致，否则列关系就断了（末尾换行切出的空行不算表格行）。
-        let widths: Vec<usize> = narrow
-            .plain()
+        let widths: Vec<usize> = plain
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(text_width)
@@ -983,6 +1088,53 @@ mod tests {
         assert!(
             widths.windows(2).all(|pair| pair[0] == pair[1]),
             "各行应等宽：{widths:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_url_wraps_without_being_truncated() {
+        // 没有空白的串只能硬断，但一个字符都不能少。
+        let url = "https://example.com/very/long/path/that/never/ends/anywhere.html";
+        let markdown = format!("| 链接 |\n| --- |\n| {url} |");
+        let rendered = render_markdown_with_width(&markdown, 20);
+        let plain = rendered.plain();
+        assert!(!plain.contains('…'), "不该省略：{plain:?}");
+        let joined: String = plain.chars().filter(|ch| !ch.is_whitespace() && *ch != '│').collect();
+        assert!(
+            joined.contains(url),
+            "URL 要完整保留（允许被折行切开）：{plain:?}"
+        );
+    }
+
+    #[test]
+    fn english_wraps_at_spaces_not_mid_word() {
+        // 有空白的英文按词折，不该把单词劈成两半。
+        let markdown = "| 说明 |\n| --- |\n| alpha beta gamma delta |";
+        let rendered = render_markdown_with_width(markdown, 16);
+        let plain = rendered.plain();
+        assert!(!plain.contains('…'), "不该省略：{plain:?}");
+        for word in ["alpha", "beta", "gamma", "delta"] {
+            assert!(plain.contains(word), "单词 {word} 不该被拆开：{plain:?}");
+        }
+    }
+
+    #[test]
+    fn wrapped_cells_keep_rows_in_column() {
+        // 一格折成两行时，同一行的其他格要跟着占两行，竖线才对得齐。
+        let markdown = "| 名 | 说明 |\n| --- | --- |\n| 甲 | 一二三四五六七八九十 |\n| 乙 | 短 |";
+        let rendered = render_markdown_with_width(markdown, 20);
+        let plain = rendered.plain();
+        // 不能 trim_end：行尾空格是补齐列宽的一部分，去掉它就等于不校验对齐。
+        let lines: Vec<&str> = plain
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        // 表头 + 分隔线 + 数据行（第一行两物理行、第二行一行）至少 5 行。
+        assert!(lines.len() >= 5, "长内容应折成多行：{lines:?}");
+        let widths: Vec<usize> = lines.iter().map(|line| text_width(line)).collect();
+        assert!(
+            widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "折行后每行仍应等宽：{widths:?} / {lines:?}"
         );
     }
 

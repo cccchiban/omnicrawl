@@ -86,7 +86,8 @@ impl SettingsState {
             | TTS_ROW_AUTO_PLAY
             | TTS_ROW_SPEAK_REPLIES
             | TTS_ROW_VOICE
-            | TTS_ROW_SPEED => {
+            | TTS_ROW_SPEED
+            | TTS_ROW_TRANSPORT => {
                 self.tts.cycle(row, 1);
                 None
             }

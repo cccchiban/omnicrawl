@@ -126,8 +126,8 @@ image_size = ""
 n = 1
 timeout_seconds = 120
 
-# TTS 语音合成（云服务）：两条通道按 tts_cloud.provider 二选一，本机不需要模型文件
-# 或 espeak-ng 一类原生依赖，只要 HTTP 与密钥。在 TUI /settings → TTS 中配置。
+# TTS 语音合成（云服务）：三条通道按 tts_cloud.provider 三选一，本机不需要模型文件
+# 或 espeak-ng 一类原生依赖，只要 HTTP/WebSocket 与密钥。在 TUI /settings → TTS 中配置。
 [tts]
 enabled = false
 auto_play = true
@@ -135,7 +135,7 @@ auto_play = true
 speak_replies = false
 output_dir = ".omnicrawl/.agent_tmp/tts"
 
-# 服务商路由：openai / gemini。
+# 服务商路由：openai / gemini / deepseek。
 [tts_cloud]
 provider = "openai"
 
@@ -162,6 +162,19 @@ model = "gemini-2.5-flash-preview-tts"
 voice = "Kore"
 # 语气指令：Gemini 没有独立的指令字段，这段文本作为正文前缀下发。
 instructions = ""
+timeout_seconds = 120
+
+# DeepSeek 通道（provider = "deepseek" 时生效）：/v1/tools/tts。
+# 默认走 WebSocket 流式（音频以二进制帧边合成边下发）；transport = "http" 改为整段 POST。
+[tts_deepseek]
+base_url = "https://api.deepseek.com/v1/tools/tts"
+api_key = ""
+# 音色：stella（女声，默认）/ tide（男声）。语种不用配，服务端按文本自动识别。
+voice = "stella"
+# websocket（默认，流式）/ http（整段）。
+transport = "websocket"
+# 朗读前去掉 Markdown 格式（官方默认开启）。
+filter_markdown = true
 timeout_seconds = 120
 
 [approval]
@@ -247,7 +260,7 @@ review_model = ""
 # cpu_rate_percent = 0
 
 # 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
-# 对话区渲染思考块（Markdown 渲染）。可在 TUI /settings 中切换。
+# 对话区渲染思考块（Markdown 渲染）。改完下次启动生效。
 [ui]
 show_thinking = true
 # 会话上下文闲置换出：回合结束闲置这么多秒后，请内核把会话历史缓冲换出内存，
@@ -336,7 +349,8 @@ allow_cross_provider = false
 failure_fallback = "deterministic"
 
 # AI 消息可逆脱敏（opt-in，默认关闭）：把发往模型的消息副本中命中的敏感值
-# 替换为 ｛Desensitized:n｝ 占位符，模型返回后按序号还原；原文不出本机。
+# 替换为 ｛Desensitized:<标签>｝ 占位符（标签是形如 red_tiny_male_cat 的单词组），
+# 模型返回后按标签还原；原文不出本机。
 # 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计文档见
 # omnicrawl://docs/agent_gateway_desensitization_design.md。
 # 说明：熵检测兜底（entropy_*）为 P2 增强，键位已保留。

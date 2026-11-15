@@ -1196,8 +1196,10 @@ pub struct AppState {
     pub mcp_servers: u64,
     /// 本回合开始时刻；状态行的 spinner 按它推进。
     pub turn_started: Option<Instant>,
-    /// 是否在消息流里显示思考段（`ui.show_thinking`，由设置面板的「思考显示」页更新）。
+    /// 是否在消息流里显示思考段（`ui.show_thinking`，启动期按配置文件定初值）。
     pub show_thinking: bool,
+    /// 思考段是否默认折叠（`ui.thinking_collapsed`，由 `/thinking_collapsed` 更新）。
+    pub thinking_collapsed: bool,
     /// 空会话首屏的欢迎 Logo：未收到任何记录时展示（对映 Python 的 `#welcome-logo`
     /// 静态块，以及只在首次挂载播放一次的入场动画）。
     pub logo: LogoAnimation,
@@ -1312,6 +1314,8 @@ impl AppState {
             net_approval: None,
             // 缺省显示思考（与 Python 的 `ui.show_thinking` 缺省一致），启动期由宿主按配置覆盖。
             show_thinking: true,
+            // 缺省折叠（与 `ui.thinking_collapsed` 的缺省一致），启动期由宿主按配置覆盖。
+            thinking_collapsed: true,
             logo: LogoAnimation::new(),
             pending_inputs: VecDeque::new(),
             pending_queue_expanded: false,

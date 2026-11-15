@@ -16,6 +16,7 @@ use crate::framework::{
 };
 use chrono::{DateTime, Local};
 use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::settings::save_thinking_collapsed;
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::{
     clear_advisor_config, load_advisor_config, save_advisor_config, AdvisorConfig,
@@ -78,6 +79,7 @@ pub use agent_commands::{
     handle_approval_query_command, handle_approval_manual_command, handle_approval_auto_command,
     handle_approval_review_command, handle_reasoning_command, handle_model_command,
     handle_advisor_command, handle_mode_command, handle_speaking_style_command,
+    handle_think_command, handle_thinking_collapsed_command,
     handle_skills_command, handle_memory_clean_command, handle_mcp_command,
     handle_new_command, handle_quit_command, handle_settings_command,
     persist_workspace_root, workspace_switch_success_message, WORKSPACE_SWITCH_PENDING_MESSAGE,
@@ -138,7 +140,7 @@ mod tests {
             .iter()
             .map(|command| command.name.clone())
             .collect();
-        assert_eq!(names.len(), 32);
+        assert_eq!(names.len(), 34);
         assert_eq!(names[0], "tasks");
         assert!(names.contains(&"memory:clean".to_string()));
         assert!(names.contains(&"approval:auto".to_string()));
@@ -146,6 +148,8 @@ mod tests {
         assert!(names.contains(&"solve".to_string()));
         assert!(names.contains(&"deepsearch".to_string()));
         assert!(names.contains(&"speaking-style".to_string()));
+        assert!(names.contains(&"think".to_string()));
+        assert!(names.contains(&"thinking_collapsed".to_string()));
         assert!(names.contains(&"sandbox".to_string()));
         assert!(names.contains(&"sandbox:set".to_string()));
         assert_eq!(names.last().map(String::as_str), Some("workspace"));
@@ -734,6 +738,87 @@ mod tests {
 
         let usage = registry().dispatch("/speaking-style 呀", &agent, Channel::Qqbot, None);
         assert!(usage.message.unwrap_or_default().contains("用法"));
+    }
+
+    #[test]
+    fn think_command_sets_reasoning_effort() {
+        let (environment, root) = sandbox_env("think");
+        std::fs::create_dir_all(root.join(".OmniCrawl")).ok();
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment.clone());
+        agent.reasoning_effort = Some("medium".to_string());
+
+        let query = run_slash(&agent, "/think").message.expect("应有文案");
+        assert!(query.contains("medium"), "{query}");
+
+        // `off` 走的是思考强度：命令层原样交给 agent，由它归一化成关闭档位。
+        let off = run_slash(&agent, "/think off");
+        let text = off.message.unwrap_or_default();
+        assert!(text.contains("off"), "{text}");
+        assert!(agent.calls().iter().any(|call| call == "set_reasoning_effort"));
+
+        // `on` 回到默认档位，而不是要求用户背档位名。
+        let on = run_slash(&agent, "/think on").message.expect("应有文案");
+        assert!(on.contains("medium"), "{on}");
+
+        // 不认得的档位由配置域的别名表拒绝，命令层如实转述。
+        let usage = run_slash(&agent, "/think 呀").message.expect("应有文案");
+        assert!(usage.contains("仅支持"), "{usage}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn thinking_collapsed_command_toggles_collapse() {
+        let (environment, root) = sandbox_env("collapsed");
+        std::fs::create_dir_all(root.join(".OmniCrawl")).ok();
+        let mut agent = FakeAgent::default();
+        agent.environment = Some(environment.clone());
+
+        let query = run_slash(&agent, "/thinking_collapsed")
+            .message
+            .expect("应有文案");
+        assert!(query.contains("折叠"), "{query}");
+
+        let off = run_slash(&agent, "/thinking_collapsed off");
+        assert!(off.message.unwrap_or_default().contains("关闭"));
+        assert!(agent
+            .calls()
+            .iter()
+            .any(|call| call == "set_thinking_collapsed:false"));
+        assert_eq!(
+            omnicrawl_config::core::settings::load_thinking_collapsed(&environment, None),
+            Ok(false),
+            "开关要写回 ui.thinking_collapsed"
+        );
+
+        // 已经是同一态：不再重复切换，只回报状态。
+        let again = run_slash(&agent, "/thinking_collapsed off")
+            .message
+            .expect("应有文案");
+        assert!(again.contains("关闭"), "{again}");
+        assert_eq!(
+            agent
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_thinking_collapsed:false")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn thinking_collapsed_reports_hosts_without_the_switch() {
+        let mut agent = FakeAgent::default();
+        *agent.thinking_collapsed.get_mut().expect("锁可读") = None;
+        let text = run_slash(&agent, "/thinking_collapsed off")
+            .message
+            .expect("应有文案");
+        assert!(text.contains("没有思考折叠开关"), "{text}");
+        assert!(!agent
+            .calls()
+            .iter()
+            .any(|call| call == "set_thinking_collapsed"));
     }
 
     #[test]

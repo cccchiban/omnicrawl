@@ -1,20 +1,22 @@
 # TTS 语音合成
 
-OmniCrawl 的语音合成走**云服务**，两条通道按配置二选一：
+OmniCrawl 的语音合成走**云服务**，三条通道按配置三选一：
 
 | 通道 | `provider` | 接口 |
 | --- | --- | --- |
 | **OpenAI** | `openai` | `POST {base_url}/audio/speech` |
 | **Gemini** | `gemini` | `POST {base_url}/models/{model}:generateContent` |
+| **DeepSeek** | `deepseek` | `wss://{base_url}`（默认流式）或 `POST {base_url}` |
 
-本机不再需要模型文件或 `espeak-ng` 一类原生依赖：只有 HTTP 与密钥。`tts.enabled` 是总开关，
-`tts_cloud.provider` 决定这次合成走哪家。**朗读语言不用配**：两家都按输入文本自动判断，
-Gemini 的请求里不下发 `languageCode`。
+本机不再需要模型文件或 `espeak-ng` 一类原生依赖：只有 HTTP/WebSocket 与密钥。
+`tts.enabled` 是总开关，`tts_cloud.provider` 决定这次合成走哪家。**朗读语言不用配**：三家都按输入
+文本自动判断，Gemini 的请求里不下发 `languageCode`，DeepSeek 干脆没有语种参数。
 
 ## 配置
 
-三段各司其职：`[tts]` 是与后端无关的通用键，`[tts_cloud]` 是服务商路由，
-`[tts_api]` / `[tts_gemini]` 是两家各自的接口参数。切换服务商**不会**丢掉另一家的配置。
+四段各司其职：`[tts]` 是与后端无关的通用键，`[tts_cloud]` 是服务商路由，
+`[tts_api]` / `[tts_gemini]` / `[tts_deepseek]` 是三家各自的接口参数。切换服务商**不会**丢掉
+另一家的配置。
 
 ```toml
 [tts]
@@ -24,7 +26,7 @@ speak_replies = false     # 回合结束后朗读助手回复（不经工具面�
 output_dir = ".omnicrawl/.agent_tmp/tts"   # 无 path 参数时的默认保存目录（相对工作区）
 
 [tts_cloud]
-provider = "openai"       # openai / gemini
+provider = "openai"       # openai / gemini / deepseek
 
 # OpenAI 通道（provider = "openai" 时生效）
 [tts_api]
@@ -44,12 +46,21 @@ model = "gemini-2.5-flash-preview-tts"
 voice = "Kore"            # 预置音色名，如 Kore、Puck、Zephyr
 instructions = ""         # 语气指令，作为正文前缀交给模型
 timeout_seconds = 120
+
+# DeepSeek 通道（provider = "deepseek" 时生效）
+[tts_deepseek]
+base_url = "https://api.deepseek.com/v1/tools/tts"
+api_key = ""              # 明文密钥；可在设置面板直接填写
+voice = "stella"          # stella（女声，默认）/ tide（男声）
+transport = "websocket"   # websocket（默认，流式）/ http（整段）
+filter_markdown = true    # 朗读前去掉 Markdown
+timeout_seconds = 120
 ```
 
-配置由 Rust 的 `omnicrawl-config`（`[tts]`、`[tts_cloud]`、`[tts_api]`、`[tts_gemini]`）读写，
-也可在 TUI 设置面板（`/settings → TTS 语音合成`）中直接修改并写回；面板保存后立刻重建工具表，
-即刻生效。**密钥在面板里直接填写**（界面只显示掩码，进输入态从空起步、留空表示不改动磁盘原值），
-写回对应服务商段的 `api_key`。
+配置由 Rust 的 `omnicrawl-config`（`[tts]`、`[tts_cloud]`、`[tts_api]`、`[tts_gemini]`、
+`[tts_deepseek]`）读写，也可在 TUI 设置面板（`/settings → TTS 语音合成`）中直接修改并写回；
+面板保存后立刻重建工具表，即刻生效。**密钥在面板里直接填写**（界面只显示掩码，进输入态从空起步、
+留空表示不改动磁盘原值），写回对应服务商段的 `api_key`。
 
 ## OpenAI 通道
 
@@ -73,10 +84,31 @@ timeout_seconds = 120
 - **音色**：预置音色名如 `Kore`、`Puck`、`Zephyr`（设置面板下拉取自官方语音列表）。
 - **单次请求上限更紧**：文本字段 4000 字节，因此切块按字节算（比 OpenAI 的字符口径更保守）。
 
+## DeepSeek 通道
+
+- **两条传输，默认流式**：`transport = "websocket"`（默认）走 `wss://{base_url}`，服务端边合成边
+  下发二进制音频帧；`transport = "http"` 走一次 `POST {base_url}`，响应体就是音频。
+- **流式协议**：连上后发 `{"event":"text","text":...}`，末段之后发 `{"event":"finish_text"}`；
+  音频以二进制消息回来；会话以文本消息 `{"event":"finish","code":...,"message":...}` 结束，
+  `code` 为 `success` 才成功（否则是 `invalid_input` / `content_filter` / `input_timeout` /
+  `service_error` 之类），错误码与原文一并进报错文案。
+- **握手鉴权**：请求头 `Authorization: Bearer <API Key>`；`voice_id`、`format=pcm`、
+  `filter_markdown` 走查询参数。服务端每 25 秒发一次 WebSocket ping，客户端就地回 pong。
+- **返回裸 PCM**（流式）：24kHz、16 位、单声道，落盘时由本项目补 WAV 头。
+- **两条音色**：`stella`（海星，女声，默认）与 `tide`（暗潮，男声）。设置面板的下拉即这两项。
+- **没有语种参数**：语种按文本自动识别（支持 `zh`/`yue`/`en`/`ja`/`ko`/`ms`/`ar`/`id`/`th`/`vi`）。
+- **没有模型与语速**：接口不收 `model`、也不支持调节语速，因此设置面板在 DeepSeek 下隐藏
+  「模型 model」与「语速 speed」两行，并多出「传输方式 transport」行。
+- **切块按计费字符**：官方上限 10,000 个计费字符（汉字算 2、其余算 1），本项目按该口径切块
+  （取 9,000 留余量），与另外两家的「字符 / 字节」口径不同。
+- **超时与会话限制**：60 秒内没有文字会话即结束、单次会话最长 30 分钟；本项目只按
+  `timeout_seconds` 兜底，不默认等满 30 分钟。
+
 ## 通用行为
 
-- **长文本自动分块**：按句末标点切块（OpenAI 单块 ≤2000 字符，Gemini 按字节预算），
-  逐块请求后沿时间轴拼接，最后只写一次 WAV。采样率不一致时明确报错，不静默重采样。
+- **长文本自动分块**：按句末标点切块（OpenAI 单块 ≤2000 字符，Gemini 按字节预算，
+  DeepSeek 按计费字符预算），逐块请求后沿时间轴拼接，最后只写一次 WAV。采样率不一致时明确报错，
+  不静默重采样。
 - **自动播放**：合成完成后默认本地播放（Windows `winmm` 的 `PlaySoundW`，macOS/Linux 回退
   `afplay`/`aplay`/`paplay`），可用配置关闭。播放本身不往终端写任何提示——播放失败只上报
   一条诊断（TUI 里进会话流并落 `logs/tui.log`），不会盖住画布。
@@ -102,9 +134,10 @@ timeout_seconds = 120
 | `text` | 必填。要朗读的文本。 |
 | `path` | 可选。WAV 保存路径；缺省写入配置 `output_dir`（时间戳命名，不覆盖）。 |
 
-返回 JSON：`ok` / `audio_path` / `sample_rate` / `duration_seconds` / `provider` / `voice` /
-`text_chunks`。**失败时同样返回 JSON（`ok=false` + `error`）**，模型可直接判断成败，避免因
-结果不明重复调用。工具未启用（`tts.enabled=false`）时返回明确指引。
+返回 JSON：`ok` / `audio_path` / `sample_rate` / `duration_seconds` / `provider` / `transport` /
+`voice` / `text_chunks`。其中 `transport` 只有 DeepSeek 会给出 `websocket`，其余两家恒为 `http`。
+**失败时同样返回 JSON（`ok=false` + `error`）**，模型可直接判断成败，避免因结果不明重复调用。
+工具未启用（`tts.enabled=false`）时返回明确指引。
 
 音色不由工具参数决定，取当前服务商的 `voice`；工具面只认 `text` 与 `path`，多传的参数不参与
 合成。
@@ -115,24 +148,30 @@ timeout_seconds = 120
 ## 常见问题
 
 - **报「未配置密钥」？** 在设置面板 TTS 页的 `API Key` 行填写，或直接在 config.toml 对应段的
-  `api_key` 里写明文（`[tts_api]` 或 `[tts_gemini]`）。
+  `api_key` 里写明文（`[tts_api]` / `[tts_gemini]` / `[tts_deepseek]`）。
 - **为什么合成没有声音？** 检查 `tts.auto_play` 是否开启；Windows 播放走 `winmm`（只认 WAV），
   macOS/Linux 回退 `afplay`/`aplay`/`paplay`（未找到播放器时只上报一条诊断，不影响合成结果）。
 - **为什么开了自动播放，AI 回答还是不出声？** `auto_play` 不是「自动朗读回复」——它只在
   `tts_synthesize` 工具被调用后生效。要让每轮回复都被读出来，改用 `tts.speak_replies`
   （设置面板 TTS 页的「自动朗读回复」行）。
-- **读错了语言？** 朗读语言不配置：两家都按输入文本自动判断。要调节奏或语气用 `instructions`。
-- **音色不存在？** 两家的音色名不通用（OpenAI 是小写英文名、Gemini 是星名），
-  切换 `provider` 后记着把 `voice` 也换成那家的候选。
+- **读错了语言？** 朗读语言不配置：三家都按输入文本自动判断。要调节奏或语气用 `instructions`
+  （DeepSeek 没有该参数）。
+- **音色不存在？** 三家的音色名不通用（OpenAI 是小写英文名、Gemini 是星名、DeepSeek 只有
+  `stella`/`tide`），切换 `provider` 后记着把 `voice` 也换成那家的候选。
+- **DeepSeek 流式连不上？** 确认 `transport = "websocket"` 时 `base_url` 是 `https://` 开头的
+  `/v1/tools/tts` 地址（客户端自动换成 `wss://`）；网络需允许 WebSocket 升级。想规避长连接就先
+  改成 `transport = "http"`。
 
 ## 实现位置
 
 | 部分 | 位置 |
 |---|---|
-| 服务商路由与两家参数 | `omnicrawl-config/src/features/{tts,tts_cloud}.rs` |
+| 服务商路由与三家参数 | `omnicrawl-config/src/features/{tts,tts_cloud}.rs` |
 | 合成入口（选路/分块/拼接/落盘） | `omnicrawl-tts/src/synthesis.rs` |
 | OpenAI 通道 | `omnicrawl-tts/src/openai.rs` |
 | Gemini 通道 | `omnicrawl-tts/src/gemini.rs` |
+| DeepSeek 通道（流式 + 整段） | `omnicrawl-tts/src/deepseek.rs` |
+| 最小 WebSocket 客户端（握手/帧/TLS） | `omnicrawl-tts/src/ws.rs` |
 | 响应音频解码 | `omnicrawl-tts/src/codec.rs` |
 | 长文本切块 | `omnicrawl-tts/src/text.rs` |
 | 音频 I/O 与播放 | `omnicrawl-tts/src/{audio,player}.rs` |
@@ -144,4 +183,6 @@ timeout_seconds = 120
 的接口后端只留本地推理。之后反向调整：本地推理链路（含 `ort` / `espeak-ng` 依赖、音素化、
 音色库、模型下载与 `onnx` feature）整体删除，TTS 只走云服务；随后又删掉凭据的环境变量通道
 （`api_key_env`）与 Gemini 的朗读语言（`language_code`，改为按输入文本自判），密钥统一在
-设置面板直接填写并写回 config.toml。
+设置面板直接填写并写回 config.toml。最后按 DeepSeek 官方文档新增第三条通道：默认走 WebSocket 流式
+（仓库既有取舍是自实现协议栈，因此 `omnicrawl-tts` 只加了 `rustls` + `webpki-roots`，
+不引第三方 WebSocket 库、也不引异步运行时），并保留整段 POST 作为 `transport = "http"` 的回退。

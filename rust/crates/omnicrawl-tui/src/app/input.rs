@@ -407,7 +407,8 @@ impl App {
         })
     }
 
-    /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
+    /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派，
+    /// 滚轮等价于按 `↑` / `↓`。
     ///
     /// 面板是整屏模态页，各页的滚动都跟着选中项走；唯一例外是提问建议页的 Skill 详情：
     /// 那段描述本身比窗口长，滚轮直接滚它。
@@ -429,6 +430,23 @@ impl App {
                         1
                     },
                 );
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let Some(settings) = self.settings.as_mut() else {
+                    return;
+                };
+                // 滚轮作用在哪一栏由落点决定：落在左栏就滚一级项列表，落在右栏就滚当前页。
+                // 焦点随之移过去，后续按键与滚轮就都落在同一栏（与点击的语义一致）。
+                match settings.hit_at(mouse.column, mouse.row) {
+                    Some(crate::ui::settings::HitAction::Row(_)) => settings.back_to_list(),
+                    Some(_) => settings.enter_pane(),
+                    None => {}
+                }
+                settings.scroll(if mouse.kind == MouseEventKind::ScrollUp {
+                    -1
+                } else {
+                    1
+                });
             }
             MouseEventKind::Moved => {
                 if let Some(settings) = self.settings.as_mut() {

@@ -184,6 +184,26 @@ impl App {
         Ok(normalized.to_string())
     }
 
+    /// 会话区是否显示思考段（`ui.show_thinking` 的当前值由启动期读盘决定）。
+    pub(crate) fn command_show_thinking(&self) -> bool {
+        self.state.show_thinking
+    }
+
+    /// 切换思考段显示：只改本机消息流（写盘由命令处理器负责）。
+    pub(crate) fn command_set_show_thinking(&mut self, enabled: bool) {
+        self.state.set_show_thinking(enabled);
+    }
+
+    /// 思考段是否默认折叠（`ui.thinking_collapsed` 的当前值由启动期读盘决定）。
+    pub(crate) fn command_thinking_collapsed(&self) -> bool {
+        self.state.thinking_collapsed
+    }
+
+    /// 切换思考段折叠：只改本机消息流（写盘由命令处理器负责）。
+    pub(crate) fn command_set_thinking_collapsed(&mut self, collapsed: bool) {
+        self.state.set_thinking_collapsed(collapsed);
+    }
+
     /// 后台 SubAgent 任务的查询与取消：内核持有任务管理器，走一次快速往返。
     pub(crate) fn command_subagent_query(
         &mut self,

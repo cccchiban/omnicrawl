@@ -3,9 +3,9 @@
     "omnicrawl/llm/desensitization/registry.py"
   ],
   "formatted": [
-    "｛Desensitized:1｝",
-    "｛Desensitized:12｝",
-    "｛Desensitized:999｝"
+    "｛Desensitized:red_tiny_male_cat｝",
+    "｛Desensitized:red_tiny_male_shark｝",
+    "｛Desensitized:red_little_man_lark｝"
   ],
   "placeholders": [
     {

@@ -285,23 +285,18 @@ impl AgentService {
 
         /// `POST /memory/clean`：清理项目级、当前会话级与用户级的过期记忆。
         pub fn clean_memory(&self) -> Result<Vec<String>, ApiError> {
-            let user_root = user_config_dir(&self.options.env)
-                .parent()
-                .map(|home| home.join(".omnicrawl"))
-                .unwrap_or_else(|| PathBuf::from(".omnicrawl"));
-            let stores = [
+            let user_root = user_data_root(self.options.env.home());
+            let mut stores: Vec<(&str, PathBuf)> = vec![
                 (
                     "project",
                     self.workspace_root().join(".omnicrawl/.oclmemory"),
                 ),
-                (
-                    "session",
-                    user_root
-                        .join("Session_memory")
-                        .join(self.current_session_id()),
-                ),
-                ("user", user_root.join("User_memory")),
+                ("user", user_memory_root(&user_root)),
             ];
+            // 会话 ID 非法时不清理会话级：拿空路径建 store 会打到一个不存在的位置。
+            if let Ok(session_root) = session_memory_root(&user_root, &self.current_session_id()) {
+                stores.push(("session", session_root));
+            }
             let mut deleted: Vec<String> = Vec::new();
             for (scope, root) in stores {
                 let store = MemoryStore::open(root);

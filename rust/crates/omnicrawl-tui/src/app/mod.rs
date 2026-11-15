@@ -27,9 +27,10 @@ use omnicrawl_commands::slash::{
 use omnicrawl_commands::SessionSummary;
 use omnicrawl_config::core::runtime::{resolve_config_path, user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::{
-    load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
-    save_context_window_tokens, save_feature_enabled, save_mcp_config, save_show_thinking,
-    save_subagent_setting, McpConfigData, McpPolicyData, McpServerData,
+    load_feature_enabled, load_show_thinking, load_thinking_collapsed,
+    save_context_compaction_trigger_percent,
+    save_context_window_tokens, save_feature_enabled, save_mcp_config, save_subagent_setting,
+    McpConfigData, McpPolicyData, McpServerData,
 };
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::{
@@ -732,6 +733,24 @@ impl App {
         // 导致记忆整组工具永远进不了表，而 Python 侧缺省是进的。
         let memory_enabled =
             load_feature_enabled(&environment, "memory", true, None, None).unwrap_or(true);
+        // 记忆目录归口：启动时把旧的 `~/.omnicrawl/{User_memory,Session_memory}` 迁进
+        // `~/.omnicrawl/memory/`。失败只告警——记忆仍能按新布局读写，不该拦启动。
+        if memory_enabled {
+            if let Err(error) = omnicrawl_controllers::memory::ensure_memory_root(
+                &omnicrawl_controllers::memory::user_data_root(environment.home()),
+            ) {
+                report_startup_log(LogLevel::Warning, &format!("记忆目录归口失败：{}", error.message()));
+            }
+        }
+        // 知识库组同理：`[knowledge] enabled` 缺省开启，读不出来也按开启（既有能力不该消失）。
+        let knowledge_enabled = load_feature_enabled(
+            &environment,
+            "knowledge",
+            omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED,
+            None,
+            None,
+        )
+        .unwrap_or(omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED);
         // `[tools]` 段的禁用开关同样要在构造期装载：此前只在设置面板切换
         // （`apply_tool_switch`）时才赋值，启动路径漏装，配置里关掉的工具重启后照旧进表。
         let disabled_tools = load_disabled_tools(&environment, None).unwrap_or_default();
@@ -768,6 +787,7 @@ impl App {
             // 用户级常开（目录由 `MemoryOptions::store` 按 `DEFAULT_MEMORY_DIRECTORY` 与
             // `$HOME` 解析）。会话级目录要 session id，而 id 只在内核回执里出现。
             memory_enabled,
+            knowledge_enabled,
             memory: MemoryOptions {
                 project_enabled: true,
                 user_enabled: true,
@@ -876,9 +896,13 @@ impl App {
         // 子代理窗口由工作台自己拉起：可执行文件就是本进程，流水落在用户配置目录下。
         state.subagent_window_exe = std::env::current_exe().ok();
         state.telemetry.context_window = options.context_window_tokens;
-        // 思考显示是纯界面开关：启动期按 `ui.show_thinking` 定初值，设置面板里可即时改。
+        // 思考显示是纯界面开关：启动期按 `ui.show_thinking` 定初值（只有配置文件能改）。
         state.set_show_thinking(
             load_show_thinking(&ConfigEnvironment::from_process(), None).unwrap_or(true),
+        );
+        // 折叠同样是纯界面开关：`ui.thinking_collapsed` 由 `/thinking_collapsed` 改。
+        state.set_thinking_collapsed(
+            load_thinking_collapsed(&ConfigEnvironment::from_process(), None).unwrap_or(true),
         );
         state.mcp_servers = registry
             .mcp()

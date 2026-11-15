@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    /// 读设置面板的初始值：上下文两页、四个单选页与内置工具开关。
+    /// 读设置面板的初始值：上下文、推理档位、记忆开关与内置工具开关。
     ///
     /// 上下文取自「命令行/环境显式给定 > config.toml 的 llm 段」，压缩阈值优先用配置里记着的
     /// 百分比，没有就按阈值 Token 反推（与 Python 的 `_context_compaction_percent` 同口径）；
@@ -58,7 +58,6 @@ impl App {
                 compaction.trigger_context_tokens * 100 / context_window_tokens.max(1),
             ),
         };
-        let show_thinking = load_show_thinking(&environment, None).unwrap_or(true);
         let model_key = self.active_model_key(&environment, &llm);
         let (channel_rows, default_channel_key) = self.channel_views(&environment);
         // 决策模型页的初值：渠道、功能开关与自部署分区（读不出来就用配置默认值）。
@@ -140,8 +139,12 @@ impl App {
         .with_decision_local(decision_local)
         .with_choices(
             &llm.reasoning_effort,
-            show_thinking,
             self.registry_options.memory_enabled,
+        )
+        .with_memory_forget_after(
+            omnicrawl_config::features::memory::load_memory_config(&environment, None)
+                .map(|config| config.forget_after_days)
+                .unwrap_or(omnicrawl_config::features::memory::DEFAULT_FORGET_AFTER_DAYS),
         )
         .with_form(
             FormKind::Advisor,
@@ -376,7 +379,134 @@ impl App {
                 self.delete_session_from_settings(&session_id)
             }
             Some(SettingsEvent::RefreshSessions) => self.reload_session_rows(),
+            Some(SettingsEvent::ClearAllMemories) => self.clear_all_memories_from_settings(),
+            Some(SettingsEvent::OpenMemoryFolder) => self.open_memory_folder_from_settings(),
+            Some(SettingsEvent::ClearAllKnowledge) => self.clear_all_knowledge_from_settings(),
+            Some(SettingsEvent::OpenKnowledgeFolder) => self.open_knowledge_folder_from_settings(),
         }
+    }
+
+    /// 设置面板「记忆功能」页：清空三类作用域的全部记忆。
+    ///
+    /// 不可逆，界面已二次确认过；这里只负责执行与回填状态行。清理失败按作用域汇报，
+    /// 不假装成功。
+    pub(super) fn clear_all_memories_from_settings(&mut self) {
+        use omnicrawl_controllers::tool_impl::MemoryScope;
+        let scopes = [
+            ("项目级", MemoryScope::Project),
+            ("会话级", MemoryScope::Session),
+            ("用户级", MemoryScope::User),
+        ];
+        let mut total = 0_usize;
+        let mut failures: Vec<String> = Vec::new();
+        for (label, scope) in scopes {
+            let Ok(store) = self.registry_options.memory.store(scope) else {
+                continue;
+            };
+            match store.clear_all() {
+                Ok(ids) => total += ids.len(),
+                Err(error) => failures.push(format!("{label}：{}", error.message())),
+            }
+        }
+        let message = if failures.is_empty() {
+            format!("已消除所有记忆，共 {total} 条。")
+        } else {
+            format!(
+                "已消除 {total} 条记忆，但部分作用域失败：{}",
+                failures.join("；")
+            )
+        };
+        if let Some(settings) = self.settings.as_mut() {
+            settings.apply_failed(message.clone());
+        }
+        self.state.show_notice_line(message, Instant::now());
+    }
+
+    /// 把记忆文件夹交给系统文件管理器打开。
+    ///
+    /// 打开的是记忆汇总根（`~/.omnicrawl/memory`），不是用户数据根：后者还装着配置、会话、
+    /// 知识库与日志，把那一整片当「记忆文件夹」打开只会让人找不到记忆。用户级与会话级记忆
+    /// 都归口在这个根下，打开前先做一次归口迁移，旧布局的目录会就位。
+    pub(super) fn open_memory_folder_from_settings(&mut self) {
+        let environment = ConfigEnvironment::from_process();
+        let user_root = omnicrawl_controllers::memory::user_data_root(environment.home());
+        let root = omnicrawl_controllers::memory::memory_root(&user_root);
+        // 目录不存在就先建出来：用户点的就是「我要看看记忆在哪」，给个错误不如给个空目录。
+        if let Err(error) = omnicrawl_controllers::memory::ensure_memory_root(&user_root) {
+            let message = format!("准备记忆文件夹失败：{}", error.message());
+            if let Some(settings) = self.settings.as_mut() {
+                settings.apply_failed(message.clone());
+            }
+            self.state
+                .show_notice_line(message.clone(), Instant::now());
+            return;
+        }
+        let program = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let message = match std::process::Command::new(program).arg(&root).spawn() {
+            Ok(_) => format!("已打开记忆文件夹：{}", root.display()),
+            Err(error) => format!("打开记忆文件夹失败：{error}"),
+        };
+        if let Some(settings) = self.settings.as_mut() {
+            settings.apply_failed(message.clone());
+        }
+        self.state.show_notice_line(message, Instant::now());
+    }
+
+    /// 设置面板「知识库」页：清空知识库根目录下的全部笔记。
+    ///
+    /// 只删 `.md` 笔记，并重建 `INDEX.md`：根目录本身、`attachments/` 里用户放的图片
+    /// 与 `README.md` 都不动——「清除知识库」是清内容，不是删目录。
+    pub(super) fn clear_all_knowledge_from_settings(&mut self) {
+        let base = omnicrawl_host::tools::knowledge::KnowledgeBase::new(
+            omnicrawl_host::tools::knowledge::default_root(),
+        );
+        let message = match base.clear_notes() {
+            Ok(removed) => format!("已清除所有知识库笔记，共 {} 篇。", removed.len()),
+            Err(error) => format!("清除知识库失败：{}", error.message),
+        };
+        if let Some(settings) = self.settings.as_mut() {
+            settings.apply_failed(message.clone());
+        }
+        self.state.show_notice_line(message, Instant::now());
+    }
+
+    /// 把知识库文件夹交给系统文件管理器打开。
+    ///
+    /// 目录不存在就先建出来：用户点的就是「我要看看知识库在哪」，给个空目录比报错有用。
+    pub(super) fn open_knowledge_folder_from_settings(&mut self) {
+        let root = omnicrawl_host::tools::knowledge::default_root();
+        if !root.is_dir() {
+            if let Err(error) = std::fs::create_dir_all(&root) {
+                let message = format!("创建知识库文件夹失败：{error}");
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.apply_failed(message.clone());
+                }
+                self.state
+                    .show_notice_line(message.clone(), Instant::now());
+                return;
+            }
+        }
+        let program = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let message = match std::process::Command::new(program).arg(&root).spawn() {
+            Ok(_) => format!("已打开知识库文件夹：{}", root.display()),
+            Err(error) => format!("打开知识库文件夹失败：{error}"),
+        };
+        if let Some(settings) = self.settings.as_mut() {
+            settings.apply_failed(message.clone());
+        }
+        self.state.show_notice_line(message, Instant::now());
     }
 
     /// 设置面板「会话管理」页：从内核读会话列表并回填。

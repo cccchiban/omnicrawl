@@ -95,10 +95,11 @@ impl SettingsState {
             Pane::ModelManagement => self.handle_model_management_key(key),
             Pane::DecisionModels => self.handle_decision_models_key(key),
             Pane::EmbeddingModels => self.handle_embedding_models_key(key),
-            Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
             Pane::Sessions => self.handle_sessions_key(key),
+            Pane::Memory => self.handle_memory_key(key),
+            Pane::Knowledge => self.handle_knowledge_key(key),
             Pane::Pending => match key {
                 KeyCode::Esc | KeyCode::Left => {
                     self.back_to_list();
@@ -215,25 +216,6 @@ impl SettingsState {
             KeyCode::Enter => self.confirm_dropdown(),
             KeyCode::Esc => {
                 self.dropdown = None;
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// 单选页：只有一个下拉，键位与 Textual `Select` 一致（与模型管理页的参数行同源）。
-    pub(super) fn handle_choice_key(
-        &mut self,
-        key: KeyCode,
-        _kind: ChoiceKind,
-    ) -> Option<SettingsEvent> {
-        match key {
-            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
-                self.open_dropdown();
-                None
-            }
-            KeyCode::Esc | KeyCode::Left => {
-                self.back_to_list();
                 None
             }
             _ => None,

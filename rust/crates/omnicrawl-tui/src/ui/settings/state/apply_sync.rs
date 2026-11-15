@@ -177,23 +177,25 @@ impl SettingsState {
                 self.model_management.reasoning = effort.clone();
                 self.model_management.status = message;
             }
-            SettingsChange::ShowThinking { enabled } => {
-                self.choices.show_thinking = *enabled;
-                self.choices.status[ChoiceKind::ShowThinking.index()] = message;
-            }
+            // 记忆与知识库开关挂在各自的页上，状态写进那一页。
             SettingsChange::Feature { key, enabled } => {
-                let kind = if key == "memory" {
-                    self.choices.memory = *enabled;
-                    ChoiceKind::Memory
-                } else {
-                    ChoiceKind::ShowThinking
-                };
-                self.choices.status[kind.index()] = message;
+                if key == "memory" {
+                    self.memory.sync(*enabled, self.memory.forget_after_days());
+                    self.memory.status = message;
+                } else if key == "knowledge" {
+                    self.knowledge.sync(*enabled);
+                    self.knowledge.status = message;
+                }
             }
             SettingsChange::Tts(TtsChange::Save(draft)) => {
                 // 保存成功：把草稿的明文换成刚写盘的生效值（另一家的配置由宿主另行推回）。
                 self.tts.apply_saved(draft);
                 self.tts.status = message;
+            }
+            SettingsChange::MemoryForgetAfter { days } => {
+                let enabled = self.memory.enabled();
+                self.memory.sync(enabled, *days);
+                self.memory.status = message;
             }
             SettingsChange::Mcp(change) => self.apply_mcp_succeeded(change, message),
         }
@@ -284,7 +286,6 @@ impl SettingsState {
             // 决策页同理：保留表单。
             Pane::DecisionModels => self.decision_models.status = message,
             Pane::EmbeddingModels => self.embedding_models.status = message,
-            Pane::Choice(kind) => self.choices.status[kind.index()] = message,
             // 表单页失败时同样保留草稿。
             Pane::Form(_) => {
                 if let Some(form) = self.form_mut() {
@@ -293,6 +294,8 @@ impl SettingsState {
             }
             Pane::Tts => self.tts.status = message,
             Pane::Sessions => self.sessions.status = message,
+            Pane::Memory => self.memory.status = message,
+            Pane::Knowledge => self.knowledge.status = message,
             Pane::Pending => {}
         }
         self.dropdown = None;
@@ -328,18 +331,12 @@ impl SettingsState {
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::SuggestionSwitch { .. } => self.suggestion.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
-            SettingsChange::ShowThinking { .. } => {
-                self.choices
-                    .status_mut(ChoiceKind::ShowThinking)
-                    .push_str(note);
-            }
             SettingsChange::Feature { key, .. } => {
-                let kind = if key == "memory" {
-                    ChoiceKind::Memory
-                } else {
-                    ChoiceKind::ShowThinking
-                };
-                self.choices.status_mut(kind).push_str(note);
+                if key == "memory" {
+                    self.memory.status.push_str(note);
+                } else if key == "knowledge" {
+                    self.knowledge.status.push_str(note);
+                }
             }
             SettingsChange::Form { kind, .. } => {
                 if let Some(form) = self.forms.get_mut(kind.index()) {
@@ -349,6 +346,7 @@ impl SettingsState {
                 }
             }
             SettingsChange::Tts(_) => self.tts.status.push_str(note),
+            SettingsChange::MemoryForgetAfter { .. } => self.memory.status.push_str(note),
         }
     }
 

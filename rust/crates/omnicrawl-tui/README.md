@@ -29,7 +29,7 @@
 
 | 块 | 内容 | 脏源 |
 | --- | --- | --- |
-| 会话 | 消息流（含欢迎 Logo、拖选高亮）与右缘滚动条 | 记录增删改、工具卡展开、思考显示、Logo 入场动画 |
+| 会话 | 消息流（含欢迎 Logo、拖选高亮）与右缘滚动条 | 记录增删改、工具卡展开、思考段显隐、Logo 入场动画 |
 | 输入框 | 待决面板 + 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上边框的运行状态） | 键盘与鼠标输入、清单与队列变化、状态行 spinner |
 | 底部 | 单行 HUD（遥测 + 工作区） | 遥测刷新（文本真的变了才置脏） |
 
@@ -48,8 +48,8 @@
   成本与总行数无关；
 - 2000 行上限（`CONVERSATION_MAX_LINES`）只在取窗口时裁剪，不复制整份行。
 
-整块失效（`mark_all_dirty`）只留给这些情况：记录被清空或重放、`ui.show_thinking` 变化、
-文本区宽度变化、回合结束清侧信道。时间相关的量单独驱动：回合在跑时 `AppState::tick_activity`
+整块失效（`mark_all_dirty`）只留给这些情况：记录被清空或重放、切换 `ui.show_thinking`、
+切换 `ui.thinking_collapsed`、文本区宽度变化、回合结束清侧信道。时间相关的量单独驱动：回合在跑时 `AppState::tick_activity`
 逐帧把运行中的工具卡重新置脏（标题里的耗时在变），空闲时什么都不做。
 
 实测（`--release`，201 条记录 / 顶到 **2000 行**上限的满会话，180 列宽 × 40 行窗口，
@@ -302,7 +302,8 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 - **候选来源**：`src/commands.rs` 的 `command_options()` 取统一命令源的 `registry().options(false)`，启动时交给输入框（`Composer::set_commands`）；输入框每次文本变化自己重刷菜单，不必在每个改动点手动同步。
 - **选择键**：菜单开着时 `Up`/`Down` 在候选间移动、`Enter`/`Tab` 只补全而**完整命令放行提交**（否则 `/settings` 这类无参数命令永远打不开）；菜单收起时这些键照旧归输入框与消息区。
 - **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
-- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
+- **思考折叠**（`/thinking_collapsed on|off`）：折叠只改本机消息流的默认形态（`AppState::set_thinking_collapsed`，会话区整块重排），写回 `ui.thinking_collapsed`，启动期按该键定初值；折叠态每段思考仍只显示最新五行并可单独点击展开，`off` 则整段铺开。隐藏整段思考是另一件事：`ui.show_thinking` 只在启动期读一次，改了要下次启动才生效；`/think off` 属于思考强度、关的是模型的思考，不动这个开关。非 TUI 入口没有折叠开关时如实回一句原因。
+- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、思考段显隐（`ui.show_thinking`，只读启动值，改写走配置文件）、思考折叠（`/thinking_collapsed`）、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
 - **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。切换是事务式的：候选装配失败时旧运行态原样保留。
 - **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 窗口受理提示与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` 可覆盖。握手时下发的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled` 缺省开启时），`compaction` 由 `[context_compaction]` 整段映射（触发阈值优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）—— 内核不读配置文件，不给就等于回落默认值（摘要预算 2000 token、记忆回写关闭），用户配置形同没写。
   内核按 Python 的口径把工具事件一并落进转录：每次模型请求工具先落 `tool_call_requested`（公开参数 + 本批 assistant 原文的 `assistant_content` / 思考回传字段 / `function_name`），整批执行且输出预算/视觉/压缩处理过之后落 `tool_result`（`output` 展示全文、`model_output` 模型可见输出，超长输出由会话存储落 artifact），被拒绝的调用另有 `tool_call_denied`；因此回放出的历史页能还原工具卡，`/undo` 的 `event_ids` 也自然覆盖这些事件。已知缺口只剩两处：`tool_call_approved` 仍未落盘（审批在宿主侧完成，协议里还没有宿主→内核的审批通知），以及宿主协议观察不带 `ui_artifact`，事件里按 Python 缺省写 `{}`。子代理内部的工具调用**不落父会话**（Python 的 `persist_session_events=False` 口径）。
@@ -642,18 +643,18 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 （聚焦/展开换白色粗边框）、展开的候选列表是白框浮层且高亮项用琥珀底色。
 
 键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
-右侧 `Esc`/`←` 先回左栏；模型管理页的参数分区行与三个开关单选页共用 Textual `Select` 的键位：
+右侧 `Esc`/`←` 先回左栏；模型管理页的参数分区行与各表单页的枚举字段共用 Textual `Select` 的键位：
 `Enter`/`↑`/`↓`/`空格` 展开候选，展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起；
 工具设置页 `↑`/`↓` 选行，`←`/`→`/`Enter`/`空格` 改选中行（首行「工具调用审查」按方向换档，其余行切换工具开关）；
 联网搜索是左栏的独立一级项（表单页）：`↑↓`/`Tab` 换字段、`Enter` 编辑或展开候选、`Ctrl+S` 保存、`Esc` 返回；
 结构化决策模型页的渠道行 `Enter`/`→` 进表单，其下方的功能开关行同样用 `←`/`→`/`Enter`/空格 就地切换。
+会话区的思考段显隐由 `ui.show_thinking` 决定（启动期读一次，改了要下次启动才生效）；思考段默认折叠由 `/thinking_collapsed on|off` 切换（写 `ui.thinking_collapsed`，见下文「斜杠命令接线」）。
 
 本批落地的一级项与二级面板：
 
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
 | 模型管理 | 已实现 | 渠道列表 + 单条渠道表单 + 「模型与参数」分区，合并了原「模型」「模型渠道」「上下文」「推理强度」四个一级项。**渠道列表**：两行行式（`› [x] 渠道名 [默认]` + `Provider / 协议  模型 ID  Base URL`），`↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；**渠道表单**（渠道名称 / 请求方式 / 请求协议 / Base URL / **API Key** / 模型 ID / User-Agent（可选） / 启用）：`↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时以明文随帧下发。**模型 ID 自动检测的凭据**：只取该行的明文密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（`window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**「模型与参数」分区**（渠道列表之后，`↑↓` 与渠道行连成一条行序）：当前模型渠道 / 上下文长度 / 上下文阈值 / 推理强度，四项都选中即保存——首行写 `llm.active_model` 并把整条渠道推给内核（本会话即刻生效），后三行分别写 `llm.context_window_tokens`、`context_compaction.trigger_context_*` 与 `llm.reasoning_effort`。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空——留空时启动闸门会拦下并提示补问） |
-| 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
 | 会话管理 | 已实现 | 列出当前工作区最近会话（标题 + 条数），`↑↓` 选、`D` **连按两次**确认删除、`R` 刷新、`Esc` 返回。删除走内核 `session.delete`（转录 + 关联 artifact + 索引条目一并移除），**不可逆**；当前会话标 `（当前）` 且拒绝删除，界面先给出原因而不是按了没反应。列表在进入该页时按需读取一次（`session.list`），删除成功后就地摘行并回执，失败原因写在状态行 |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭（只画工具英文名与 `已启用`/`已关闭`，不带括号说明），写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调） |
@@ -721,14 +722,14 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 应用路径分三层，**不假装即时生效**：
 
 1. 写盘：复用 `omnicrawl-config` 的 `save_context_window_tokens` / `save_context_compaction_trigger_percent` /
-   `save_tool_switch` / `save_reasoning_effort` / `save_show_thinking` / `save_feature_enabled`，
+   `save_tool_switch` / `save_reasoning_effort` / `save_feature_enabled`，
    不做第二套 TOML 读写；模型管理页的参数行按 Python 的口径「先写窗口、再写阈值，第二段失败就把窗口改回旧值」，
    不留「新窗口 + 旧百分比」的自相矛盾配置。
 2. 宿主侧：工具开关与记忆开关立刻重建工具表（`rebuild_registry`）；重建时把旧表的 `MonitorManager` 与
-   `CancelToken` 带过去，否则一次开关会把在跑的后台任务从宿主账上抹掉。思考显示改的是界面状态本身。
+   `CancelToken` 带过去，否则一次开关会把在跑的后台任务从宿主账上抹掉。
 3. 内核侧：发协议 v1 的 `session.settings` 做热更新（模型与整条渠道、工具声明、上下文窗口与压缩阈值、
    推理强度）。内核拒绝（如未持有模型配置）时，状态行如实追加「内核未接受即时更新（原因），将在下次会话生效。」
-   ——配置已落盘、宿主侧已生效，不回滚也不掩饰。没有对应协议字段的项（思考显示、记忆开关）不发帧。
+   ——配置已落盘、宿主侧已生效，不回滚也不掩饰。没有对应协议字段的项（记忆开关）不发帧。
 
 已知差异：左栏列表与工具列表超出可视高度时按选中项滚动，不做 Python 的滚动条与实际滚动动画；
 右侧面板状态文本按面板各自保存（Python 是每个面板实例各存一份，效果一致）；
@@ -746,7 +747,10 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 - 浮层候选：单击即选中并确认（浮层本来就是为这一次选择展开的），包括渠道表单的内联候选；
 - 悬停：`App::handle_settings_mouse` 只记录动作，加亮在渲染末尾统一涂（按行而不是按格：中文标签
   的续格 `skip` 为真、刷新时会被跳过）；
-- 未接线：设置页各页的滚动仍然只跟随选中项，滚轮不接管。
+- 滚轮：等价于按一次 `↑` / `↓`。落点在左栏就滚一级项列表，落在右栏就滚当前页（焦点随之
+   移过去，后续按键与滚轮都落在同一栏）；候选浮层展开时滚的是候选项。一格最多折算
+   `SCROLL_MAX_STEPS`（3）行。正在编辑文本字段时不接管：那里 `↑`/`↓` 是挪光标，把光标滚走
+   不是预期；提问建议页的 Skill 详情仍然直接滚正文（那段描述比窗口长）。
 
 **工具执行**：已接入三十个真实执行体（`read` / `read_image` / `image_gen` / `tts_synthesize` /
 `write_file` / `Edit_file` / `bash` / `powershell` / `monitor` / `list` / `find` / `grep` / `git` / `kb_*` /
@@ -819,14 +823,14 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    点击工具卡省略提示行展开完整正文、展开态点击卡片收起、点击思考段切换折叠（见上文「生成期间的
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）；子代理改走独立窗口（见上文「子代理独立窗口」）。
-   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
+   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/think`、`/thinking_collapsed`、`/model`、`/skills`、`/skill:<名>`、`/tasks`、`/task`、`/undo`、`/compact`、
    `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/programming`、`/solve`、`/deepsearch`、`/workspace`、`/sandbox`、`/sandbox:set` 能真正执行；
    `/mcp` 已接线（见上文）；
    `/deepsearch <搜索目标>` 由宿主接管：先启用深度搜索模式（模式区块经 `session.settings` 下发），
    再把搜索目标当一轮提交，因此回车即开始（不带目标时只切模式）；
    `/skill:<名>` 是运行期命令（Skill 不在注册表里）：命中时先经 `session.settings` 把技能正文下发为本轮上下文、
    回合收尾再换回常规上下文，未命中时把带可用名称的说明当本轮文本；菜单候选与实际可执行的清单同源（`command_options_with_skills`）；设置面板的一级菜单全部落地
-   （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、顾问、工具输出压缩、视觉、
+   （模型、模型渠道、上下文、工具、推理强度、记忆、顾问、工具输出压缩、视觉、
    图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP）；
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
    自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的

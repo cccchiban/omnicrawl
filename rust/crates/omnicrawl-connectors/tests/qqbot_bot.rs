@@ -419,7 +419,7 @@ fn group_bot_with(driver: Arc<MockDriver>, port: Arc<MockPort>) -> Arc<QqBot<Moc
         "app_id": "102012345",
         "app_secret": "secret",
         "allowed_user_ids": ["F6A8"],
-        "allowed_group_ids": ["A1B2"],
+        "allowed_group_ids": ["A1B2", "C3D4"],
         "confirmation_timeout_seconds": 5,
     });
     let config = load_qqbot_config(Some(&section)).expect("配置可解析");
@@ -1779,7 +1779,10 @@ fn ready_injects_the_persona_with_the_bot_nickname() {
     }));
     assert_eq!(
         driver.prompt_append(),
-        "你是 小囫囵，一个在 QQ 上的 OmniCrawl 机器人。\n\n".to_string() + omnicrawl_connectors::qqbot::MEDIA_HINT
+        "你是 小囫囵，一个在 QQ 上的 OmniCrawl 机器人。\n\n".to_string()
+            + omnicrawl_connectors::qqbot::MEDIA_HINT
+            + "\n\n"
+            + omnicrawl_connectors::qqbot::EVENT_CONSTRAINT
     );
 }
 
@@ -1814,6 +1817,8 @@ fn the_configured_persona_wins_over_the_default_line() {
         driver.prompt_append(),
         "你是塔斯汀家的机器人，只在群里回答。\n\n".to_string()
             + omnicrawl_connectors::qqbot::MEDIA_HINT
+            + "\n\n"
+            + omnicrawl_connectors::qqbot::EVENT_CONSTRAINT
     );
 }
 
@@ -1838,4 +1843,98 @@ fn messages_that_only_mention_other_members_are_ignored() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(driver.turns().is_empty());
     assert!(port.calls().is_empty());
+}
+
+#[test]
+fn a_bare_mention_brings_the_recent_group_messages() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = group_bot_with(driver.clone(), port.clone());
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    driver.set_script(json!({"reply": "知道了。"}));
+    // 两条没 @ 机器人的群消息：它们是「纯 @ 时带上的前十条」的来源。
+    for (index, text) in ["今天发版吗", "我看下日志"].iter().enumerate() {
+        let inbound = json!({
+            "id": format!("m-h{index}"),
+            "content": text,
+            "group_openid": "A1B2",
+            "author": {"member_openid": "M-9", "username": "小明"},
+        });
+        bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &inbound);
+    }
+    // 纯 @（没有正文）：只靠历史也要有上下文。
+    let bare = json!({
+        "id": "m-bare",
+        "content": "@小囫囵",
+        "group_openid": "A1B2",
+        "author": {"member_openid": "M-9", "username": "小明"},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &bare);
+    wait_for(5.0, || driver.turns().len() == 1);
+
+    let turns = driver.turns();
+    assert!(turns[0].contains("今天发版吗"), "{turns:?}");
+    assert!(turns[0].contains("我看下日志"), "{turns:?}");
+    assert!(turns[0].contains("这个群最近的消息"), "{turns:?}");
+}
+
+#[test]
+fn another_group_does_not_leak_into_the_context() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = group_bot_with(driver.clone(), port.clone());
+    bot.handle_ready(&json!({
+        "session_id": "s-1",
+        "user": {"id": "BOT-ID", "username": "小囫囵"},
+    }));
+    driver.set_script(json!({"reply": "好。"}));
+    let other = json!({
+        "id": "m-o1",
+        "content": "另一个群的秘密内容",
+        "group_openid": "A1B2",
+        "author": {"member_openid": "M-9", "username": "小明"},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &other);
+    // 换个群 openid：记录必须隔离。先给本群一条自己的消息，
+    // 纯 @ 才有可用的上下文（没有历史的纯 @ 会被忽略，见 `has_group_context`）。
+    let own = json!({
+        "id": "m-m0",
+        "content": "本群的内容",
+        "group_openid": "C3D4",
+        "author": {"member_openid": "M-9", "username": "小明"},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &own);
+    let mine = json!({
+        "id": "m-m1",
+        "content": "@小囫囵 在吗",
+        "group_openid": "C3D4",
+        "author": {"member_openid": "M-9", "username": "小明"},
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &mine);
+    wait_for(5.0, || driver.turns().len() == 1);
+    let turns = driver.turns();
+    assert!(!turns[0].contains("另一个群的秘密内容"), "{turns:?}");
+}
+
+#[test]
+fn group_history_records_images_as_markers_only() {
+    let driver = Arc::new(MockDriver::default());
+    let port = Arc::new(MockPort::default());
+    let bot = group_bot_with(driver.clone(), port.clone());
+    let inbound = json!({
+        "id": "m-img",
+        "content": "",
+        "group_openid": "A1B2",
+        "author": {"member_openid": "M-9", "username": "小明"},
+        "attachments": [{"url": "https://example.invalid/a.png", "filename": "a.png"}],
+    });
+    bot.handle_event(omnicrawl_connectors::qqbot::EVENT_GROUP_MESSAGE, &inbound);
+    let records = bot.history().recent("A1B2", 10, omnicrawl_connectors::qqbot::files::unix_seconds());
+    assert_eq!(records.len(), 1);
+    assert!(records[0].media.contains(&omnicrawl_connectors::qqbot::MediaNote::Image));
+    // 展示行里只有标记，不能出现地址。
+    assert!(!records[0].line().contains("http"));
 }

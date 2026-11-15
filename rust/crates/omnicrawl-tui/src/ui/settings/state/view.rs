@@ -15,14 +15,6 @@ impl SettingsState {
         self.dropdown
     }
 
-    /// 单选页当前值的显示文本；不在单选页时返回空串。
-    pub fn choice_value(&self) -> String {
-        match self.pane {
-            Pane::Choice(kind) => display_value(&kind.value(&self.choices)),
-            _ => String::new(),
-        }
-    }
-
     pub fn tool_rows(&self) -> &[ToolSwitchRow] {
         &self.tools.rows
     }
@@ -288,10 +280,11 @@ impl SettingsState {
             Pane::ModelManagement => &self.model_management.status,
             Pane::DecisionModels => &self.decision_models.status,
             Pane::EmbeddingModels => &self.embedding_models.status,
-            Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
             Pane::Sessions => &self.sessions.status,
+            Pane::Memory => &self.memory.status,
+            Pane::Knowledge => &self.knowledge.status,
             Pane::Pending => "",
         }
     }
@@ -339,14 +332,14 @@ impl SettingsState {
                     EMBEDDING_LIST_HINT
                 }
             }
-            // Python 的单选面板只有下拉与状态行，没有提示行。
-            Pane::Choice(_) => "",
             Pane::Form(FormKind::ToolOutputCompression) => COMPRESSION_HINT,
             Pane::Form(FormKind::WebSearch) => WEB_SEARCH_HINT,
             Pane::Form(FormKind::Sandbox) => SANDBOX_HINT,
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::Sessions => SESSIONS_HINT,
+            Pane::Memory => MEMORY_HINT,
+            Pane::Knowledge => KNOWLEDGE_HINT,
             Pane::Pending => "",
         }
     }
@@ -395,6 +388,61 @@ impl SettingsState {
     /// 右侧当前是否挂在会话管理页（宿主据此决定要不要读列表）。
     pub fn is_sessions_pane(&self) -> bool {
         matches!(self.pane, Pane::Sessions)
+    }
+
+    /// 右侧当前是否挂在记忆功能页。
+    pub fn is_memory_pane(&self) -> bool {
+        matches!(self.pane, Pane::Memory)
+    }
+
+    /// 记忆页当前选中的行（渲染与宿主回填用）。
+    pub fn memory_selected(&self) -> usize {
+        self.memory.selected()
+    }
+
+    /// 记忆页某一行的展示值。
+    pub fn memory_row_value(&self, row: MemoryRow) -> String {
+        self.memory.row_value(row)
+    }
+
+    /// 记忆页是否处于「消除所有记忆」的待确认态。
+    pub fn memory_confirming_clear(&self) -> bool {
+        self.memory.confirming_clear()
+    }
+
+    /// 宿主回填：记忆开关的最新值（写盘成功后调用）。
+    pub fn set_memory_enabled(&mut self, enabled: bool) {
+        self.memory.sync(enabled, self.memory.forget_after_days());
+    }
+
+    /// 宿主回填：遗忘时间的最新值（写盘成功后调用）。
+    pub fn set_memory_forget_after(&mut self, days: i64) {
+        self.memory.sync(self.memory.enabled(), days);
+    }
+
+    /// 右侧当前是否挂在知识库页。
+    pub fn is_knowledge_pane(&self) -> bool {
+        matches!(self.pane, Pane::Knowledge)
+    }
+
+    /// 知识库页当前选中的行（渲染与宿主回填用）。
+    pub fn knowledge_selected(&self) -> usize {
+        self.knowledge.selected()
+    }
+
+    /// 知识库页某一行的展示值。
+    pub fn knowledge_row_value(&self, row: KnowledgeRow) -> String {
+        self.knowledge.row_value(row)
+    }
+
+    /// 知识库页是否处于「清除所有知识库」的待确认态。
+    pub fn knowledge_confirming_clear(&self) -> bool {
+        self.knowledge.confirming_clear()
+    }
+
+    /// 宿主回填：知识库开关的最新值（写盘成功后调用）。
+    pub fn set_knowledge_enabled(&mut self, enabled: bool) {
+        self.knowledge.sync(enabled);
     }
 
     /// 当前列表（宿主注入、渲染读取）。

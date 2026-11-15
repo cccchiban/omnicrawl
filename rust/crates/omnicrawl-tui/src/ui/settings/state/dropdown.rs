@@ -9,7 +9,6 @@ impl SettingsState {
     /// 的开关与整数项）时为 `None`。
     pub(super) fn active_field(&self) -> Option<DropdownField> {
         match self.pane {
-            Pane::Choice(kind) => Some(DropdownField::Choice(kind)),
             Pane::ModelManagement if self.model_management.form.is_none() => self
                 .model_management
                 .param_selected()
@@ -30,6 +29,8 @@ impl SettingsState {
             | Pane::Vision
             | Pane::Tts
             | Pane::Sessions
+            | Pane::Memory
+            | Pane::Knowledge
             | Pane::Pending => None,
         }
     }
@@ -51,7 +52,6 @@ impl SettingsState {
             DropdownField::ModelParam(ModelParamRow::Reasoning) => {
                 OptionValue::Text(self.model_management.reasoning.clone())
             }
-            DropdownField::Choice(kind) => kind.value(&self.choices),
             // 视觉页的候选没有「当前值」：游标停在第一项。
             DropdownField::VisionAdd => OptionValue::Text(String::new()),
             // 表单页的模型项与文本项都按字段值定位游标。
@@ -189,7 +189,7 @@ impl SettingsState {
         let options = self.options_for(dropdown.field);
         let (_, value) = options.get(dropdown.selected)?.clone();
         match (dropdown.field, value) {
-            // 模型管理页的参数行：与单选页同义，选中即保存。
+            // 模型管理页的参数行：选中即保存。
             (DropdownField::ModelParam(ModelParamRow::Channel), OptionValue::Model(key)) => {
                 if key == self.model_management.model_key {
                     return None;
@@ -217,32 +217,6 @@ impl SettingsState {
                     return None;
                 }
                 Some(SettingsEvent::Apply(SettingsChange::Reasoning { effort }))
-            }
-            (DropdownField::Choice(ChoiceKind::ShowThinking), OptionValue::Flag(enabled)) => {
-                if enabled == self.choices.show_thinking {
-                    return None;
-                }
-                Some(SettingsEvent::Apply(SettingsChange::ShowThinking {
-                    enabled,
-                }))
-            }
-            (DropdownField::Choice(kind), OptionValue::Flag(enabled)) => {
-                let key = match kind {
-                    ChoiceKind::Memory => "memory",
-                    // 思考显示走独立分支；走到这里说明面板映射写错了。
-                    ChoiceKind::ShowThinking => return None,
-                };
-                let current = match kind {
-                    ChoiceKind::Memory => self.choices.memory,
-                    ChoiceKind::ShowThinking => self.choices.show_thinking,
-                };
-                if enabled == current {
-                    return None;
-                }
-                Some(SettingsEvent::Apply(SettingsChange::Feature {
-                    key: key.to_string(),
-                    enabled,
-                }))
             }
             // 表单页的候选只落进草稿，不即时保存（等 `Ctrl+S`）。
             (DropdownField::Form(index), value) => {

@@ -11,8 +11,10 @@ pub mod config;
 pub mod dispatch;
 pub mod files;
 pub mod gateway;
+pub mod history;
 pub mod markdown;
 pub mod media;
+pub mod summary;
 pub mod upload;
 
 pub use crate::http::{HttpReply, HttpTransport, UreqTransport};
@@ -33,7 +35,7 @@ pub use bot::{
 pub use config::{
     check_config, load_qqbot_config, mask_secret, persona_prompt, prompt_append, validate_config,
     AccessPolicy, AccessScope, QqBotConfig, DEFAULT_BASE_URL, DEFAULT_CONFIRM_TIMEOUT_SECONDS,
-    DEFAULT_INTENTS, MEDIA_HINT, SANDBOX_BASE_URL,
+    DEFAULT_INTENTS, EVENT_CONSTRAINT, MEDIA_HINT, SANDBOX_BASE_URL,
 };
 pub use dispatch::{
     attachments_of, classify, command_name, mention_others_text, parse_message,
@@ -50,6 +52,14 @@ pub use gateway::{
     heartbeat_payload, identify_payload, parse_hello_interval, parse_signal, resume_payload,
     GatewayConnection, GatewaySignal, DEFAULT_HEARTBEAT,
 };
+pub use history::{
+    GroupHistory, GroupMessage, MediaNote, DEFAULT_CONTEXT_LIMIT, MAX_RECORDS_PER_GROUP,
+    MAX_RECORD_CHARS, RETENTION_SECONDS,
+};
 pub use markdown::{starts_block, to_markdown, MAX_MARKDOWN_CHARS};
 pub use media::{kind_of_path, MediaKind, MediaUpload, MAX_CHUNKED_BYTES, MAX_MEDIA_BYTES};
+pub use summary::{
+    due_jobs, sample_records, spawn_scheduler, summary_prompt, GroupSummarizer, SummaryJob,
+    DEFAULT_SUMMARY_INTERVAL_SECONDS, MAX_SUMMARY_MESSAGES,
+};
 pub use upload::{checksums, plan_parts, Checksums, MD5_10M_BYTES};

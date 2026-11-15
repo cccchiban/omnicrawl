@@ -41,9 +41,13 @@ use super::dispatch::{
     classify, parse_thinking_command, route_event_with_bot, workspace_argument, BotIdentity,
     Command, EventRoute, Inbound, ThinkingCommand,
 };
-use super::files::{classify_file_name, relative_display_path, safe_name};
+use super::files::{
+    classify_file_name, destination, relative_display_path, safe_name,
+};
 use super::gateway::{GatewayConnection, GatewaySignal};
+use super::history::{GroupHistory, GroupMessage, MediaNote, MAX_RECORD_CHARS};
 use super::markdown;
+use super::summary::{due_jobs, summary_prompt, GroupSummarizer, SummaryJob};
 use super::media::{self, MediaUpload};
 use crate::agent::{
     AgentDriver, AskUserHandler, ConfirmHandler, ToolCall, ToolResult, TurnError, TurnEvent,
@@ -704,6 +708,8 @@ impl PendingQuestion {
 pub struct ActiveTask {
     pub sender: String,
     pub text: String,
+    /// 群聊历史里的图片（`(url, 建议文件名)`）：任务线程开工前尽量补下来交给 Agent。
+    pub photos: Vec<(String, String)>,
     pub reply: Arc<ReplyHandle>,
     pub cancel: Arc<AtomicBool>,
     pub started_at: Instant,
@@ -756,6 +762,14 @@ pub struct QqBot<D: AgentDriver> {
     bot_name: Mutex<String>,
     /// 主动消息额度：被动回复不可用时所有会话共用这一份。
     active_budget: Arc<ActiveBudget>,
+    /// 群聊消息记录：给「纯 @ 机器人」提供最近上下文，按群隔离。
+    history: Arc<GroupHistory>,
+    /// 纯 @ 时带上的群消息条数（`[qqbot] history_context_size`）。
+    context_size: usize,
+    /// 定时总结是否启用（`[qqbot] summary_interval_hours > 0`）。
+    summary_enabled: bool,
+    /// 群聊总结的调度器：间隔与每群上次成功时间。
+    summarizer: Arc<GroupSummarizer>,
 }
 
 impl<D: AgentDriver> QqBot<D> {
@@ -763,6 +777,8 @@ impl<D: AgentDriver> QqBot<D> {
     pub fn new(config: &QqBotConfig, api: Arc<QqApi>, driver: Arc<D>) -> Result<QqBot<D>, String> {
         validate_config(config)?;
         let port: Arc<dyn QqPort> = api.clone();
+        // 记录目录取在 `driver` 被移进结构体之前。
+        let records_root = driver.temp_root();
         Ok(QqBot {
             api,
             port,
@@ -780,7 +796,82 @@ impl<D: AgentDriver> QqBot<D> {
             bot_openid: Mutex::new(String::new()),
             bot_name: Mutex::new(String::new()),
             active_budget: Arc::new(ActiveBudget::per_minute()),
+            history: Arc::new(GroupHistory::open(records_root)),
+            summarizer: Arc::new(GroupSummarizer::new(Duration::from_secs_f64(
+                config.summary_interval_hours * 3600.0,
+            ))),
+            context_size: config.history_context_size,
+            summary_enabled: config.summary_interval_hours > 0.0,
         })
+    }
+
+    /// 测试与自定义记录窗口用：替换群聊记录。
+    pub fn with_history(mut self, history: Arc<GroupHistory>) -> QqBot<D> {
+        self.history = history;
+        self
+    }
+
+    /// 群聊记录窗口：纯 @ 时注入最近多少条群消息。
+    pub fn history(&self) -> Arc<GroupHistory> {
+        Arc::clone(&self.history)
+    }
+
+    /// 替换总结器（配置化间隔与测试用）。
+    pub fn with_summarizer(mut self, summarizer: Arc<GroupSummarizer>) -> QqBot<D> {
+        self.summarizer = summarizer;
+        self
+    }
+
+    /// 起后台总结线程：每 `summarizer.interval()` 把到期群的记录交独立回合总结并落记忆。
+    ///
+    /// 间隔配成 0（`summary_interval_hours = 0`）时用 `with_summarizer` 传一个关闭态进来，
+    /// 这里只按 `enabled` 判断是否真起线程。
+    pub fn start_summarizer(self: &Arc<Self>) {
+        if !self.summary_enabled {
+            eprintln!("[qqbot] 已关闭群聊消息定时总结（summary_interval_hours = 0）。");
+            return;
+        }
+        let history = Arc::clone(&self.history);
+        let summarizer = Arc::clone(&self.summarizer);
+        let bot = Arc::clone(self);
+        // 线程随连接器进程存在：不保留句柄，进程退出时自然结束。
+        let _handle =
+            super::summary::spawn_scheduler(history, summarizer, move |job| {
+                bot.summarize_group(job)
+            });
+        eprintln!(
+            "[qqbot] 群聊消息总结已启动：每 {} 小时一次（独立回合，不影响主循环）。",
+            self.summarizer.interval().as_secs() / 3600
+        );
+    }
+
+    /// 跑一个群的总结：独立回合 → Agent 自己 `memory_write` 落项目级记忆。
+    fn summarize_group(&self, job: &SummaryJob) -> Result<(), String> {
+        if self.is_stopped() {
+            return Err("服务已停止。".to_string());
+        }
+        let prompt = summary_prompt(&job.group, &job.records);
+        self.driver
+            .run_isolated_turn(&prompt)
+            .map(|_reply| ())
+            .map_err(|error| redact_sensitive_text(&error))
+    }
+
+    /// 立刻跑一轮到期总结（测试与手动触发用），返回跑过总结的群数。
+    pub fn summarize_due_now(&self) -> usize {
+        let now = super::files::unix_seconds();
+        let jobs = due_jobs(&self.history, &self.summarizer, now);
+        let mut done = 0_usize;
+        for job in jobs {
+            match self.summarize_group(&job) {
+                Ok(()) => {
+                    self.summarizer.mark_done(&job.group, now);
+                    done += 1;
+                }
+                Err(error) => eprintln!("[qqbot] 群 {} 的消息总结失败：{error}", job.group),
+            }
+        }
+        done
     }
 
     /// 测试与自定义传输用：替换平台端口。
@@ -800,6 +891,8 @@ impl<D: AgentDriver> QqBot<D> {
         self.bind_handlers();
         // 远程端默认要短回复：平台单条消息有上限、回复条数也有限，长文体验很差。
         self.enable_default_speaking_style();
+        // 独立回合的定时总结：与主循环并行，不占对话名额。
+        self.start_summarizer();
         self.run_forever()
     }
 
@@ -1029,6 +1122,8 @@ impl<D: AgentDriver> QqBot<D> {
                 conversation,
                 detail,
             } => {
+                // 群里没 @ 机器人的消息同样要记：它们是「纯 @ 时带上的前十条」的来源。
+                self.record_group_message(data);
                 eprintln!("[qqbot] 群消息未 @ 机器人，忽略：{conversation}（{event}）；{detail}");
             }
             EventRoute::Malformed { event } => {
@@ -1060,18 +1155,137 @@ impl<D: AgentDriver> QqBot<D> {
     /// 这样「你引用的这张图」才有东西可看。
     fn handle_message(self: &Arc<Self>, inbound: &Inbound) {
         let reply = Arc::new(self.reply_for(inbound));
+        // 群聊里 @ 机器人的消息也是一条群消息：先入记录，再当指令处理。
+        self.record_inbound(inbound);
         if self.resolve_pending_question(inbound) {
             return;
         }
         if inbound.content.is_empty() && inbound.attachments.is_empty() && inbound.quoted.is_empty()
         {
-            return;
+            // 群里的纯 @（只 @ 机器人、没有正文）不是空消息：它靠该群最近的消息提供
+            // 上下文，历史本身就是这次提问的全部内容。历史也空才算真的没事可做。
+            if !matches!(inbound.target, Target::Group(_)) || !self.has_group_context(inbound) {
+                return;
+            }
         }
         if !inbound.attachments.is_empty() || !quoted_attachments(inbound).is_empty() {
             self.spawn_file_task(inbound.clone(), reply);
             return;
         }
         self.dispatch(inbound, reply);
+    }
+
+    /// 没有 @ 机器人的群消息：从原始事件里取群与作者，入本群记录。
+    fn record_group_message(&self, data: &Value) {
+        let bot_openid = self
+            .bot_openid
+            .lock()
+            .map(|id| id.clone())
+            .unwrap_or_default();
+        let bot_name = self
+            .bot_name
+            .lock()
+            .map(|name| name.clone())
+            .unwrap_or_default();
+        let Some(inbound) = super::dispatch::parse_message_with_bot(
+            super::dispatch::EVENT_GROUP_MESSAGE,
+            data,
+            super::dispatch::BotIdentity {
+                openid: &bot_openid,
+                name: &bot_name,
+            },
+        ) else {
+            return;
+        };
+        self.store_group_record(&inbound);
+    }
+
+    /// @ 机器人的群消息：同样入本群记录（此时正文已剥掉提及）。
+    fn record_inbound(&self, inbound: &Inbound) {
+        if matches!(inbound.target, Target::Group(_)) {
+            self.store_group_record(inbound);
+        }
+    }
+
+    /// 落一条群记录：正文与标记入库，图片只留可下载的引用（供纯 @ 时补图）。
+    fn store_group_record(&self, inbound: &Inbound) {
+        let Target::Group(group) = &inbound.target else {
+            return;
+        };
+        let content = clamp_content(&inbound.content);
+        let media: Vec<MediaNote> = inbound
+            .attachments
+            .iter()
+            .map(|(_url, name)| MediaNote::of_name(name))
+            .collect();
+        if content.is_empty() && media.is_empty() {
+            return;
+        }
+        // 只留图片的地址：视频/文件不补，签链接过期与体积都不值得。
+        let photos: Vec<(String, String)> = inbound
+            .attachments
+            .iter()
+            .filter(|(_url, name)| MediaNote::of_name(name) == MediaNote::Image)
+            .cloned()
+            .collect();
+        let record = GroupMessage {
+            at: super::files::unix_seconds(),
+            sender: inbound.sender.clone(),
+            sender_name: inbound.sender_name.clone(),
+            content,
+            media,
+            photos,
+        };
+        self.history
+            .push(group, record, super::files::unix_seconds());
+    }
+
+    /// 该群是否有可供纯 @ 使用的历史（排除本次提问自身的记录）。
+    fn has_group_context(&self, inbound: &Inbound) -> bool {
+        let Target::Group(group) = &inbound.target else {
+            return false;
+        };
+        let now = super::files::unix_seconds();
+        let records = self.history.recent(group, self.context_size, now);
+        group_context_of(&records, inbound).is_some()
+    }
+
+    /// 任务文本：群聊带上该群最近的消息（纯 @ 也有上下文），其余场景与原来一致。
+    fn task_text_for(&self, inbound: &Inbound) -> String {
+        let context = match &inbound.target {
+            Target::Group(group) => {
+                let now = super::files::unix_seconds();
+                let records = self.history.recent(group, self.context_size, now);
+                group_context_of(&records, inbound)
+            }
+            Target::User(_) | Target::Channel(_) => None,
+        };
+        task_text_with_context(inbound, context)
+    }
+
+    /// 群聊历史里最近的图片（最多 `context_size` 条消息里的）。
+    ///
+    /// 只取图片：视频与文件既不补也补不动（体积、过期都不可控）。本次提问自己带的附件
+    /// 不走这条路——那条链路会把文件落盘并单独告知路径。
+    fn history_photos(&self, inbound: &Inbound) -> Vec<(String, String)> {
+        let Target::Group(group) = &inbound.target else {
+            return Vec::new();
+        };
+        let now = super::files::unix_seconds();
+        let records = self.history.recent(group, self.context_size, now);
+        let mut photos: Vec<(String, String)> = Vec::new();
+        for record in records.iter() {
+            // 本次提问本身也在这批记录里：它自己的附件已经走过落盘链路。
+            if record.sender == inbound.sender && record.content == inbound.content {
+                continue;
+            }
+            for (url, name) in record.photos.iter() {
+                if !url.trim().is_empty() {
+                    photos.push((url.clone(), name.clone()));
+                }
+            }
+        }
+        photos
     }
 
     /// 挂起提问在等答案时，这条消息就是答案。
@@ -1208,7 +1422,8 @@ impl<D: AgentDriver> QqBot<D> {
     ) -> bool {
         let task = Arc::new(ActiveTask {
             sender: inbound.sender.clone(),
-            text: task_text_of(&inbound),
+            photos: self.history_photos(&inbound),
+            text: self.task_text_for(&inbound),
             reply: Arc::clone(&reply),
             cancel: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
@@ -1229,6 +1444,47 @@ impl<D: AgentDriver> QqBot<D> {
                 false
             }
         }
+    }
+
+    /// 把历史图片下载到 `.agent_tmp` 并拼进任务文本；单张失败只跳过，不影响本轮。
+    fn with_history_photos(&self, task: &ActiveTask) -> String {
+        if task.photos.is_empty() {
+            return task.text.clone();
+        }
+        let temp_root = self.driver.temp_root();
+        let workspace_root = PathBuf::from(self.driver.status().workspace_root);
+        let stamp = super::files::unix_seconds();
+        let mut saved: Vec<String> = Vec::new();
+        for (index, (url, name)) in task.photos.iter().enumerate() {
+            let content = match self.port.download(url) {
+                Ok(content) => content,
+                Err(error) => {
+                    // 签名链接过期是常态，只记日志：历史上的一张图丢了不该让本轮回答失败。
+                    eprintln!(
+                        "[qqbot] 历史图片下载失败：{}",
+                        redact_sensitive_text(&error)
+                    );
+                    continue;
+                }
+            };
+            let file_name = safe_name(name, url, stamp + index as i64, "");
+            let subdir = classify_file_name(&file_name);
+            let Ok(target) = destination(&temp_root, subdir, &file_name) else {
+                continue;
+            };
+            if fs::write(&target, &content).is_err() {
+                continue;
+            }
+            saved.push(relative_display_path(&target, &workspace_root));
+        }
+        if saved.is_empty() {
+            return task.text.clone();
+        }
+        format!(
+            "{}\n\n这个群最近消息里出现过的图片（已取到本地，需要时用 read_image 查看）：{}",
+            task.text,
+            saved.join("、")
+        )
     }
 
     /// 当前任务结束后推进队伍：把队首变成新任务接着跑。
@@ -1256,10 +1512,11 @@ impl<D: AgentDriver> QqBot<D> {
 
     /// 任务线程：驱动回合，并把事件映射成按发生顺序发出的消息。
     fn execute_task(self: &Arc<Self>, task: Arc<ActiveTask>) {
+        let text = self.with_history_photos(task.as_ref());
         let mut timeline = TaskTimeline::new(self, Arc::clone(&task.reply));
         let result = {
             let mut events = |event: TurnEvent| timeline.handle(event);
-            self.driver.run_turn(&task.text, &mut events)
+            self.driver.run_turn(&text, &mut events)
         };
         let cancelled = task.cancel.load(Ordering::SeqCst);
         self.finish_task(task.as_ref(), &mut timeline, result, cancelled);
@@ -1759,11 +2016,19 @@ fn quoted_context(inbound: &Inbound, saved: &[String]) -> Option<String> {
 /// 连接器只发用户原话时，模型看不出这句话是在 QQ 群里被 @ 出来的、也不知道发言人是谁，
 /// 于是会拿「用户」当本地终端里的人。这里把来源写成结构化的一行，让模型自己判断语气。
 fn task_text_of(inbound: &Inbound) -> String {
+    task_text_with_context(inbound, None)
+}
+
+/// 任务文本；`context` 非空时插入群聊历史段（在来源行之后、用户消息之前）。
+fn task_text_with_context(inbound: &Inbound, context: Option<String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     parts.push(source_line(inbound));
     let others = super::dispatch::mention_others_text(&inbound.others);
     if !others.is_empty() {
         parts.push(others);
+    }
+    if let Some(context) = context {
+        parts.push(context);
     }
     if !inbound.quoted.is_empty() {
         let mut lines = vec!["用户引用的消息：".to_string()];
@@ -1776,6 +2041,36 @@ fn task_text_of(inbound: &Inbound) -> String {
         parts.push(format!("用户消息：{}", inbound.content));
     }
     parts.join("\n\n")
+}
+
+/// 群聊历史段：`最近的群聊消息（新→旧）`。
+///
+/// 只在群聊里出现，且**不含本次提问本身**——它在记录里也有一份，重复一遍会让 Agent 以为
+/// 有人说了两次。
+fn group_context_of(records: &[GroupMessage], inbound: &Inbound) -> Option<String> {
+    let lines: Vec<String> = records
+        .iter()
+        .filter(|record| record.sender != inbound.sender || record.content != inbound.content)
+        .map(GroupMessage::line)
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "这个群最近的消息（共 {} 条，供你理解上下文；不含多媒体内容）：\n{}",
+        lines.len(),
+        lines.join("\n")
+    ))
+}
+
+/// 记录里的正文上限：超长只留开头。
+fn clamp_content(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= MAX_RECORD_CHARS {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(MAX_RECORD_CHARS).collect();
+    format!("{head}…")
 }
 
 /// 来源行：`来自 QQ 群 <群 openid> 的 <昵称>（<openid>）` 等。

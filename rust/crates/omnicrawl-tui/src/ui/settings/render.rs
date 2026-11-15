@@ -3,8 +3,7 @@
 //! 视觉对映 Python 的 `SettingsScreen.CSS` 与 `terminal_select_css`：
 //! 左右两栏都是圆角框（`round $terminal-border-strong`），焦点所在的一栏换成
 //! 准星边框（四角 `⇘ ⇙ ⇗ ⇖`，`$terminal-amber`）；右侧标题在框内缩进 2 格、
-//! 加粗；折叠态下拉是 3 行细边框，聚焦/展开时换成白色粗边框；展开的候选列表
-//! 是白框浮层，高亮项用琥珀底色。
+//! 加粗；展开的候选列表是白框浮层，高亮项用琥珀底色。
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -18,7 +17,7 @@ use super::picker::window_bounds;
 use super::state::{
     visible_decision_fields, visible_embedding_fields, ChannelField, ChannelFormView,
     DecisionField, DecisionFormView, DropdownField, EmbeddingChannelKind, Focus,
-    ModelParamRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
+    ModelParamRow, MemoryRow, KnowledgeRow, Pane, SettingsState, ToolSwitchRow, DECISION_LOCAL_SECTION,
     DECISION_PROGRESS_BAR_WIDTH, DECISION_SWITCH_SECTION, MODEL_PARAM_SECTION,
     SUGGESTION_DETAIL_ROWS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_ROW, TOOLS_SWITCH_ROW_OFFSET,
 };
@@ -263,10 +262,11 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::ModelManagement => render_model_management(frame, body, state, focused),
         Pane::DecisionModels => render_decision_models(frame, body, state, focused),
         Pane::EmbeddingModels => render_embedding_models(frame, body, state, focused),
-        Pane::Choice(_) => render_choice(frame, body, state, focused),
         Pane::Form(_) => render_form(frame, body, state, focused),
         Pane::Tts => render_tts(frame, body, state, focused),
         Pane::Sessions => render_sessions(frame, body, state, focused),
+        Pane::Memory => render_memory(frame, body, state, focused),
+        Pane::Knowledge => render_knowledge(frame, body, state, focused),
         Pane::Pending => render_pending(frame, body),
     }
     render_dropdown_overlay(frame, body, state, focused);
@@ -1113,8 +1113,7 @@ fn render_channel_form(
 
 /// 展开的候选浮层的顶行；面板与该字段对不上时返回 `None`。
 ///
-/// 浮层紧贴被展开的那个字段：模型管理页贴那一行参数的下沿、单选页贴下拉框下沿、
-/// 表单页贴那一行字段的下沿。
+/// 浮层紧贴被展开的那个字段：模型管理页贴那一行参数的下沿，表单页贴那一行字段的下沿。
 fn dropdown_overlay_y(
     pane: Pane,
     field: DropdownField,
@@ -1137,7 +1136,6 @@ fn dropdown_overlay_y(
                 .saturating_sub(offset);
             Some(area.y + (line as u16) + 1)
         }
-        (Pane::Choice(_), DropdownField::Choice(_)) => Some(area.y + 3),
         // 视觉页：头部两行之后是列表，`A` 的候选贴在列表上方。
         (Pane::Vision, DropdownField::VisionAdd) => Some(area.y + 3),
         // 表单页一行一个字段：字段表可能滚动，先减掉窗口起点。
@@ -1182,38 +1180,6 @@ fn form_window_offset(state: &SettingsState, area: Rect) -> usize {
         state.form_field_count(),
         rows.height.max(1) as usize,
     )
-}
-
-/// 单选页：一个下拉框（面板不重复标题，与 Python 的 `SelectPane` 一致）+ 状态行。
-fn render_choice(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
-    // `SelectCurrent:focus { border: tall $terminal-white }`：聚焦即白色粗边框。
-    let (style, kind) = if focused {
-        (theme::rich_style(theme::ACCENT_WHITE), BorderType::Thick)
-    } else {
-        (theme::rich_style(theme::BORDER_SUBTLE), BorderType::Plain)
-    };
-    let box_area = Rect {
-        height: 3.min(area.height),
-        ..area
-    };
-    state.record_hit(box_area, HitAction::PaneRow(0));
-    render_field_box(frame, box_area, &state.choice_value(), style, kind);
-
-    // `#select-pane-status { height: 2; margin-top: 2; color: $terminal-text-secondary }`：
-    // 下拉框只有 1 行内容框（3 行含边框），下面空 2 行再写状态。
-    let offset = 4.min(area.height);
-    let tail = Rect {
-        y: area.y + offset,
-        height: area.height.saturating_sub(offset),
-        ..area
-    };
-    render_pane_tail(
-        frame,
-        tail,
-        state.status(),
-        state.pane_hint(),
-        theme::rich_style(theme::TEXT_SECONDARY),
-    );
 }
 
 /// 表单页：一行一个字段（`› 标签：值 ▼`），候选展开时用公共浮层。
@@ -1271,24 +1237,6 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, _focused: b
         state.pane_hint(),
         theme::rich_style(theme::TEXT_MUTED),
     );
-}
-
-/// 折叠态下拉框：3 行边框 + 值（`padding: 0 1`）。
-fn render_field_box(frame: &mut Frame, area: Rect, value: &str, style: Style, kind: BorderType) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let block = Block::bordered().border_type(kind).border_style(style);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-    let line = Line::styled(
-        fit(&format!(" {value}"), inner.width as usize),
-        theme::rich_style(theme::TEXT_PRIMARY),
-    );
-    Paragraph::new(line).render(Rect { height: 1, ..inner }, frame.buffer_mut());
 }
 
 fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
@@ -1927,6 +1875,111 @@ fn render_sessions(frame: &mut Frame, area: Rect, state: &SettingsState, focused
     let status = match state.session_confirming() {
         Some(pending) => format!("再按 D 确认删除：{}（Esc 取消）", pending.title),
         None => state.status().to_string(),
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        &status,
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+/// 记忆功能页：四行（开关、遗忘时间、清空、打开目录）+ 底部状态。
+fn render_memory(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let tail_height = FORM_TAIL_HEIGHT.min(area.height);
+    let list_area = Rect {
+        height: area.height.saturating_sub(tail_height),
+        ..area
+    };
+    let visible = list_area.height.max(1) as usize;
+    let rows = MemoryRow::ORDER;
+    let offset = window_offset(state.memory_selected(), rows.len(), visible);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
+        let selected = index == state.memory_selected();
+        let cursor = if selected { "› " } else { "  " };
+        let value = state.memory_row_value(*row);
+        let text = if value.is_empty() {
+            format!("{cursor}{}", row.label())
+        } else {
+            format!("{cursor}{}：{value}", row.label())
+        };
+        let style = if selected && focused {
+            theme::rich_style(theme::ACCENT_WHITE)
+        } else if selected {
+            theme::rich_style(theme::TEXT_SECONDARY)
+        } else {
+            theme::rich_style(theme::TEXT_MUTED)
+        };
+        state.record_hit(row_hit(list_area, lines.len()), HitAction::PaneRow(index));
+        lines.push(Line::styled(fit(&text, area.width as usize), style));
+    }
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(tail_height),
+        height: tail_height,
+        ..area
+    };
+    // 确认态压过普通状态：这时最重要的是让人看清「再按一次就清空」。
+    let status = if state.memory_confirming_clear() {
+        "再按 Enter 或 D 确认消除所有记忆（Esc 取消）".to_string()
+    } else {
+        state.status().to_string()
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        &status,
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
+}
+
+fn render_knowledge(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let tail_height = FORM_TAIL_HEIGHT.min(area.height);
+    let list_area = Rect {
+        height: area.height.saturating_sub(tail_height),
+        ..area
+    };
+    let visible = list_area.height.max(1) as usize;
+    let rows = KnowledgeRow::ORDER;
+    let offset = window_offset(state.knowledge_selected(), rows.len(), visible);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
+        let selected = index == state.knowledge_selected();
+        let cursor = if selected { "› " } else { "  " };
+        let value = state.knowledge_row_value(*row);
+        let text = if value.is_empty() {
+            format!("{cursor}{}", row.label())
+        } else {
+            format!("{cursor}{}：{value}", row.label())
+        };
+        let style = if selected && focused {
+            theme::rich_style(theme::ACCENT_WHITE)
+        } else if selected {
+            theme::rich_style(theme::TEXT_SECONDARY)
+        } else {
+            theme::rich_style(theme::TEXT_MUTED)
+        };
+        state.record_hit(row_hit(list_area, lines.len()), HitAction::PaneRow(index));
+        lines.push(Line::styled(fit(&text, area.width as usize), style));
+    }
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(tail_height),
+        height: tail_height,
+        ..area
+    };
+    // 确认态压过普通状态：这时最重要的是让人看清「再按一次就清空」。
+    let status = if state.knowledge_confirming_clear() {
+        "再按 Enter 或 D 确认清除所有知识库（Esc 取消）".to_string()
+    } else {
+        state.status().to_string()
     };
     render_pane_tail(
         frame,

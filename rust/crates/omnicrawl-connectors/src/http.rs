@@ -9,6 +9,8 @@
 use std::io::Read;
 use std::time::Duration;
 
+use ureq::config::IpFamily;
+
 /// 一次 HTTP 响应：状态码、原始响应体（图片/文件下载不能按文本读）与响应头。
 ///
 /// 响应头名统一小写存：文件下载的 `Content-Disposition` 文件名解析需要它，查表也因此
@@ -111,44 +113,104 @@ impl HttpTransport for UreqTransport {
         body: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<HttpReply, String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_connect(Some(timeout))
-            .timeout_recv_response(Some(timeout))
-            .timeout_recv_body(Some(timeout))
-            .build()
-            .into();
-        let mut builder = ureq::http::Request::builder().method(method).uri(url);
-        for (key, value) in headers {
-            builder = builder.header(key.as_str(), value.as_str());
+        let error = match send(method, url, headers, body, timeout, IpFamily::Any) {
+            Ok(reply) => return Ok(reply),
+            Err(error) => error,
+        };
+        if !denied_by_local_policy(&error) {
+            return Err(error.to_string());
         }
-        let request = builder
-            .body(body.unwrap_or(&[]).to_vec())
-            .map_err(|error| error.to_string())?;
-        match agent.run(request) {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                // 头要在 `into_body()` 之前取：那个调用会消耗响应。
-                let headers: Vec<(String, String)> = response
-                    .headers()
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.as_str().to_ascii_lowercase(),
-                            value.to_str().unwrap_or_default().to_string(),
-                        )
-                    })
-                    .collect();
-                let mut raw = Vec::new();
-                let _ = response.into_body().into_reader().read_to_end(&mut raw);
-                Ok(HttpReply {
-                    status,
-                    body: raw,
-                    headers,
-                })
+        // 本机安全策略拒绝的是**某个具体地址**：典型情形是域名先解析出 IPv6，而防火墙只
+        // 放行 IPv4。ureq 只在「地址不可达」类错误上换下一个地址，EACCES 直接让整个请求
+        // 失败，于是 QQ 附件（`multimedia.nt.qq.com.cn` 是双栈，其余 QQ 域名只有 IPv4）
+        // 会整条链路报错。这里按地址族各重试一次。
+        //
+        // 重试只给幂等方法：传输层分不出「连接就被拒」与「连上后读响应被拒」，对会写东西
+        // 的请求重发有可能造成重复副作用，宁可按原样失败。
+        if idempotent(method) {
+            for family in [IpFamily::Ipv4Only, IpFamily::Ipv6Only] {
+                if let Ok(reply) = send(method, url, headers, body, timeout, family) {
+                    return Ok(reply);
+                }
             }
-            Err(error) => Err(error.to_string()),
         }
+        Err(format!(
+            "{}（本机安全策略拒绝了与 {} 的连接：请检查防火墙或安全软件是否允许本程序出网）",
+            error,
+            host_of(url)
+        ))
+    }
+}
+
+/// 重发不会造成重复副作用的方法。
+fn idempotent(method: &str) -> bool {
+    method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
+}
+
+/// 一次真实发送：`ip_family` 限定解析出的地址族。
+fn send(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    timeout: Duration,
+    ip_family: IpFamily,
+) -> Result<HttpReply, ureq::Error> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .ip_family(ip_family)
+        .timeout_connect(Some(timeout))
+        .timeout_recv_response(Some(timeout))
+        .timeout_recv_body(Some(timeout))
+        .build()
+        .into();
+    let mut builder = ureq::http::Request::builder().method(method).uri(url);
+    for (key, value) in headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    let request = builder.body(body.unwrap_or(&[]).to_vec())?;
+    let response = agent.run(request)?;
+    let status = response.status().as_u16();
+    // 头要在 `into_body()` 之前取：那个调用会消耗响应。
+    let headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_ascii_lowercase(),
+                value.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let mut raw = Vec::new();
+    // 读正文期间同样可能被拦（长下载中途断掉）：忽略错误会让附件静默存成残缺文件。
+    response
+        .into_body()
+        .into_reader()
+        .read_to_end(&mut raw)?;
+    Ok(HttpReply {
+        status,
+        body: raw,
+        headers,
+    })
+}
+
+/// `connect()` 被本机安全策略拒绝：Unix 是 EACCES，Windows 是 `WSAEACCES`，两者都
+/// 归到 [`std::io::ErrorKind::PermissionDenied`]。
+fn denied_by_local_policy(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Io(inner) => inner.kind() == std::io::ErrorKind::PermissionDenied,
+        _ => false,
+    }
+}
+
+/// 诊断文案里的主机名：`https://host[:port]/path` → `host`。
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_scheme, rest)| rest).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => host,
+        None => authority,
     }
 }
 
@@ -207,5 +269,37 @@ mod tests {
         assert_eq!(with_query("https://x/y", &pairs), "https://x/y?offset=3");
         assert_eq!(encode_form(&pairs), "offset=3");
         assert_eq!(with_query("https://x/y", &[]), "https://x/y");
+    }
+
+    #[test]
+    fn diagnostics_name_the_host_without_userinfo_or_path() {
+        assert_eq!(
+            host_of("https://multimedia.nt.qq.com.cn/download?fileid=abc&rkey=1"),
+            "multimedia.nt.qq.com.cn"
+        );
+        assert_eq!(host_of("https://api.sgroup.qq.com:8443/v2/users"), "api.sgroup.qq.com:8443");
+        // 签名链接可能带 userinfo：诊断文案里不能把它当主机名。
+        assert_eq!(host_of("https://k:v@host.example/a"), "host.example");
+        assert_eq!(host_of("host.example/a"), "host.example");
+    }
+
+    #[test]
+    fn only_permission_denied_counts_as_a_local_policy_denial() {
+        let denied = ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(denied_by_local_policy(&denied));
+        let refused = ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(!denied_by_local_policy(&refused));
+        assert!(!denied_by_local_policy(&ureq::Error::HostNotFound));
+    }
+
+    #[test]
+    fn only_read_only_requests_are_retried() {
+        assert!(idempotent("GET"));
+        assert!(idempotent("get"));
+        assert!(idempotent("HEAD"));
+        // 重发 PUT/POST 可能重复写入：这类请求不换地址族重试。
+        assert!(!idempotent("POST"));
+        assert!(!idempotent("PUT"));
+        assert!(!idempotent("PATCH"));
     }
 }

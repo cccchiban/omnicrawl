@@ -1,22 +1,24 @@
 //! 合成入口：按服务商选路、长文本分块、波形拼接与落盘。
 //!
-//! 两家都有单次请求的长度上限，因此统一「切块 → 逐块请求 → 沿时间轴拼接 → 只写一次 WAV」。
+//! 三家都有单次请求的长度上限，因此统一「切块 → 逐块请求 → 沿时间轴拼接 → 只写一次 WAV」。
 //! 采样率不一致时直接报错而不是静默重采样：同一家同一模型不该出现这种情况，出现了就是
 //! 配置或服务端行为变了，报出来比听一段变速音频好。
 
 use std::path::Path;
 
 use crate::audio::{write_wav, AudioBuffer};
+use crate::deepseek::DeepSeekTtsConfig;
 use crate::gemini::GeminiTtsConfig;
 use crate::openai::OpenAiTtsConfig;
 use crate::result::TtsResult;
-use crate::text::split_text;
+use crate::text::{split_text, split_text_billed};
 
 /// 合成通道（与 `[tts_cloud].provider` 一一对应）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsBackend {
     OpenAi(OpenAiTtsConfig),
     Gemini(GeminiTtsConfig),
+    DeepSeek(DeepSeekTtsConfig),
 }
 
 impl TtsBackend {
@@ -25,6 +27,7 @@ impl TtsBackend {
         match self {
             TtsBackend::OpenAi(_) => "openai",
             TtsBackend::Gemini(_) => "gemini",
+            TtsBackend::DeepSeek(_) => "deepseek",
         }
     }
 
@@ -33,6 +36,15 @@ impl TtsBackend {
         match self {
             TtsBackend::OpenAi(config) => &config.voice,
             TtsBackend::Gemini(config) => &config.voice,
+            TtsBackend::DeepSeek(config) => &config.voice,
+        }
+    }
+
+    /// 实际使用的传输方式（只有 DeepSeek 有两套；其余两家各自一种）。
+    pub fn transport(&self) -> &'static str {
+        match self {
+            TtsBackend::DeepSeek(config) => config.transport.as_str(),
+            _ => "http",
         }
     }
 }
@@ -45,12 +57,14 @@ pub fn synthesize(
     text: &str,
     output_path: &Path,
 ) -> Result<TtsResult, String> {
-    // Gemini 的文本上限按字节算，因此切块上限用它自己的口径。
-    let limit = match backend {
-        TtsBackend::OpenAi(_) => crate::openai::MAX_CHUNK_CHARS,
-        TtsBackend::Gemini(config) => chunk_chars_for_bytes(config),
+    // 各家的长度上限口径不同：Gemini 按字节、DeepSeek 按计费字符、OpenAI 按字符。
+    let chunks = match backend {
+        TtsBackend::OpenAi(_) => split_text(text, crate::openai::MAX_CHUNK_CHARS),
+        TtsBackend::Gemini(config) => split_text(text, chunk_chars_for_bytes(config)),
+        TtsBackend::DeepSeek(_) => {
+            split_text_billed(text, crate::deepseek::MAX_BILLED_CHARS)
+        }
     };
-    let chunks = split_text(text, limit);
     if chunks.is_empty() {
         return Err("text 不能为空。".to_string());
     }
@@ -61,6 +75,7 @@ pub fn synthesize(
         let (bytes, payload) = match backend {
             TtsBackend::OpenAi(config) => config.synthesize(chunk, &config.voice)?,
             TtsBackend::Gemini(config) => config.synthesize(chunk)?,
+            TtsBackend::DeepSeek(config) => config.synthesize(chunk)?,
         };
         let (waveform, rate) = payload.decode(&bytes).map_err(|error| {
             format!(
@@ -103,6 +118,7 @@ fn chunk_chars_for_bytes(config: &GeminiTtsConfig) -> usize {
 fn provider_label(provider: &str) -> &'static str {
     match provider {
         "gemini" => "Gemini",
+        "deepseek" => "DeepSeek",
         _ => "OpenAI",
     }
 }
@@ -144,10 +160,16 @@ mod tests {
         });
         assert_eq!(openai.provider(), "openai");
         assert_eq!(openai.voice(), "coral");
+        assert_eq!(openai.transport(), "http");
 
         let gemini = TtsBackend::Gemini(GeminiTtsConfig::default());
         assert_eq!(gemini.provider(), "gemini");
         assert_eq!(gemini.voice(), "Kore");
+
+        let deepseek = TtsBackend::DeepSeek(DeepSeekTtsConfig::default());
+        assert_eq!(deepseek.provider(), "deepseek");
+        assert_eq!(deepseek.voice(), "stella");
+        assert_eq!(deepseek.transport(), "websocket", "DeepSeek 默认流式");
     }
 
     #[test]

@@ -109,6 +109,8 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
     let tts_api = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
     let tts_gemini =
         tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
+    let tts_deepseek =
+        tts_cloud::load_tts_deepseek_configuration(env, None).map_err(invalid_setting)?;
     let subagents = load_subagent_config(env, None).map_err(invalid_setting)?;
     let tool_switches = load_tool_switches(env, None).map_err(invalid_setting)?;
     // 与 Python 一致：这三项读不出来时给空载荷，而不是让整个快照失败。
@@ -169,7 +171,7 @@ async fn get_settings(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
         "agent_workspace": serialize_agent_workspace(&workspace),
         "vision": serialize_vision(&vision),
         "image_gen": serialize_image_gen(&image_gen),
-        "tts": serialize_tts(&tts, &tts_cloud_config, &tts_api, &tts_gemini),
+        "tts": serialize_tts(&tts, &tts_cloud_config, &tts_api, &tts_gemini, &tts_deepseek),
         "advisor": {
             "enabled": advisor.enabled,
             "model_key": advisor.model_key,
@@ -499,6 +501,8 @@ async fn put_tts(
     let mut openai = tts_cloud::load_tts_api_configuration(env, None).map_err(invalid_setting)?;
     let mut gemini =
         tts_cloud::load_tts_gemini_configuration(env, None).map_err(invalid_setting)?;
+    let mut deepseek =
+        tts_cloud::load_tts_deepseek_configuration(env, None).map_err(invalid_setting)?;
 
     if let Some(raw) = provided(&body, "enabled") {
         general.enabled = body_required_bool("enabled", Some(raw))?;
@@ -548,11 +552,13 @@ async fn put_tts(
     )? {
         openai.timeout_seconds = value;
         gemini.timeout_seconds = value;
+        deepseek.timeout_seconds = value;
     }
     // 凭据按服务商分别接收明文（与设置面板同一口径）；缺省或 null 表示保持原值。
     for (field, target) in [
         ("api_key", &mut openai.api_key),
         ("gemini_api_key", &mut gemini.api_key),
+        ("deepseek_api_key", &mut deepseek.api_key),
     ] {
         if let Some(text) = body_string_field(&body, field)? {
             if text.chars().count() > MAX_SETTING_TEXT_CHARS {
@@ -593,18 +599,37 @@ async fn put_tts(
             *target = text;
         }
     }
+    for (field, target) in [
+        ("deepseek_base_url", &mut deepseek.base_url),
+        ("deepseek_voice", &mut deepseek.voice),
+        ("deepseek_transport", &mut deepseek.transport),
+    ] {
+        if let Some(text) = body_string_field(&body, field)? {
+            if text.chars().count() > MAX_SETTING_TEXT_CHARS {
+                return Err(invalid_setting(ConfigError::new(format!(
+                    "tts_deepseek.{field} 过长。"
+                ))));
+            }
+            *target = text;
+        }
+    }
+    if let Some(raw) = provided(&body, "deepseek_filter_markdown") {
+        deepseek.filter_markdown = body_required_bool("deepseek_filter_markdown", Some(raw))?;
+    }
 
     let general = general.normalize().map_err(invalid_setting)?;
     let cloud = cloud.normalize().map_err(invalid_setting)?;
     let openai = openai.normalize().map_err(invalid_setting)?;
     let gemini = gemini.normalize().map_err(invalid_setting)?;
+    let deepseek = deepseek.normalize().map_err(invalid_setting)?;
 
     let path = save_tts_configuration(env, &general, None).map_err(invalid_setting)?;
     tts_cloud::save_tts_cloud_configuration(env, &cloud, None).map_err(invalid_setting)?;
     tts_cloud::save_tts_api_configuration(env, &openai, None).map_err(invalid_setting)?;
     tts_cloud::save_tts_gemini_configuration(env, &gemini, None).map_err(invalid_setting)?;
+    tts_cloud::save_tts_deepseek_configuration(env, &deepseek, None).map_err(invalid_setting)?;
     Ok(data(with_saved_path(
-        serialize_tts(&general, &cloud, &openai, &gemini),
+        serialize_tts(&general, &cloud, &openai, &gemini, &deepseek),
         &path.to_string_lossy(),
     )))
 }
@@ -1199,6 +1224,7 @@ fn serialize_tts(
     cloud: &TtsCloudConfiguration,
     openai: &TtsApiConfiguration,
     gemini: &GeminiTtsConfiguration,
+    deepseek: ｛Desensitized:red_tiny_male_ox｝,
 ) -> Value {
     json!({
         "enabled": general.enabled,
@@ -1218,6 +1244,11 @@ fn serialize_tts(
         "gemini_model": gemini.model,
         "gemini_voice": gemini.voice,
         "gemini_instructions": gemini.instructions,
+        "deepseek_api_key": deepseek.api_key,
+        "deepseek_base_url": deepseek.base_url,
+        "deepseek_voice": deepseek.voice,
+        "deepseek_transport": deepseek.transport,
+        "deepseek_filter_markdown": deepseek.filter_markdown,
     })
 }
 

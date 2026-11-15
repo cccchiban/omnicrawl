@@ -1,14 +1,14 @@
 //! 云端 TTS 的配置：服务商路由（`[tts_cloud]`）与各服务商的接口参数。
 //!
-//! 三段分开是因为职责不同：`[tts]` 只有与后端无关的通用键，`[tts_cloud]` 决定这次合成
-//! 走哪家（与 `[web_search].engine` 同款的口径），`[tts_api]` / `[tts_gemini]` 各自持有
-//! 一家的地址、凭据、模型与音色。切换服务商不会丢掉另一家的配置。
+//! 四段分开是因为职责不同：`[tts]` 只有与后端无关的通用键，`[tts_cloud]` 决定这次合成
+//! 走哪家（与 `[web_search].engine` 同款的口径），`[tts_api]` / `[tts_gemini]` / `[tts_deepseek]`
+//! 各自持有一家的地址、凭据与音色。切换服务商不会丢掉另一家的配置。
 //!
 //! 凭据只认段里的明文 `api_key`（在设置面板直接填写并写回 config.toml），不再有读环境变量
-//! 的通道；朗读语言也不再配置：两家都按输入文本自动判断，Gemini 不下发 `languageCode`。
+//! 的通道；朗读语言也不再配置：三家都按输入文本自动判断，Gemini 不下发 `languageCode`、
+//! DeepSeek 根本没有语种参数。
 //!
-//! 这三段都是 Rust 侧新增，Python 没有对映实现，因此不进 parity 数据集，
-//! 自带 `tests/tts_cloud_config.rs`。
+//! 这几段都是 Rust 侧新增，Python 没有对映实现，因此不进 parity 数据集。
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +17,8 @@ use crate::error::ConfigError;
 use crate::toml::{Table, Value};
 use crate::value::{python_str, truthy};
 
-/// 可选服务商：OpenAI 的 `audio/speech` 与 Gemini 的 TTS 模型。
-pub const TTS_PROVIDERS: [&str; 2] = ["openai", "gemini"];
+/// 可选服务商：OpenAI 的 `audio/speech`、Gemini 的 TTS 模型与 DeepSeek 的 TTS 工具接口。
+pub const TTS_PROVIDERS: [&str; 3] = ["openai", "gemini", "deepseek"];
 
 /// 默认服务商。
 pub const DEFAULT_TTS_PROVIDER: &str = "openai";
@@ -31,6 +31,13 @@ pub const DEFAULT_TTS_API_VOICE: &str = "alloy";
 pub const DEFAULT_TTS_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 pub const DEFAULT_TTS_GEMINI_MODEL: &str = "gemini-2.5-flash-preview-tts";
 pub const DEFAULT_TTS_GEMINI_VOICE: &str = "Kore";
+
+pub const DEFAULT_TTS_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1/tools/tts";
+/// 官方两只音色之一（`stella` 女声是默认档）。
+pub const DEFAULT_TTS_DEEPSEEK_VOICE: &str = "stella";
+
+/// 合成传输：DeepSeek 有整段与流式两条通路，默认走流式。
+pub const DEFAULT_TTS_DEEPSEEK_TRANSPORT: &str = "websocket";
 
 const DEFAULT_TIMEOUT_SECONDS: i64 = 120;
 
@@ -201,6 +208,76 @@ impl GeminiTtsConfiguration {
     }
 }
 
+/// DeepSeek 的 TTS 工具接口参数（`/v1/tools/tts`，整段与 WebSocket 流式共用同一地址）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeepSeekTtsConfiguration {
+    pub base_url: String,
+    pub api_key: String,
+    /// 音色：官方只有 `stella`（女声）与 `tide`（男声），没有语种参数。
+    pub voice: String,
+    /// 传输：`websocket`（默认，流式）或 `http`（整段）。
+    pub transport: String,
+    /// 朗读前是否去掉 Markdown 格式（官方默认 true，这里显式下发）。
+    pub filter_markdown: bool,
+    pub timeout_seconds: i64,
+}
+
+impl Default for DeepSeekTtsConfiguration {
+    fn default() -> Self {
+        Self {
+            base_url: DEFAULT_TTS_DEEPSEEK_BASE_URL.to_string(),
+            api_key: String::new(),
+            voice: DEFAULT_TTS_DEEPSEEK_VOICE.to_string(),
+            transport: DEFAULT_TTS_DEEPSEEK_TRANSPORT.to_string(),
+            filter_markdown: true,
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
+        }
+    }
+}
+
+impl DeepSeekTtsConfiguration {
+    pub fn normalize(mut self) -> Result<Self, ConfigError> {
+        let base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        if base_url.is_empty() {
+            return Err(ConfigError::new("tts_deepseek.base_url 不能为空。"));
+        }
+        if !base_url.starts_with("http://")
+            && !base_url.starts_with("https://")
+            && !base_url.starts_with("ws://")
+            && !base_url.starts_with("wss://")
+        {
+            return Err(ConfigError::new(
+                "tts_deepseek.base_url 必须以 http:// 、https:// 、ws:// 或 wss:// 开头。",
+            ));
+        }
+        let voice = self.voice.trim().to_string();
+        if voice.is_empty() {
+            return Err(ConfigError::new("tts_deepseek.voice 不能为空。"));
+        }
+        let transport = self.transport.trim().to_lowercase();
+        let transport = if transport.is_empty() {
+            DEFAULT_TTS_DEEPSEEK_TRANSPORT.to_string()
+        } else {
+            transport
+        };
+        if !matches!(transport.as_str(), "websocket" | "http") {
+            return Err(ConfigError::new(
+                "tts_deepseek.transport 仅支持 websocket（默认，流式）或 http（整段）。",
+            ));
+        }
+        if !(1..=600).contains(&self.timeout_seconds) {
+            return Err(ConfigError::new(
+                "tts_deepseek.timeout_seconds 必须是 1~600 的整数。",
+            ));
+        }
+        self.base_url = base_url;
+        self.voice = voice;
+        self.transport = transport;
+        self.api_key = self.api_key.trim().to_string();
+        Ok(self)
+    }
+}
+
 /// 读取服务商路由；缺少 `tts_cloud` 段时返回默认服务商。
 pub fn load_tts_cloud_configuration(
     env: &ConfigEnvironment,
@@ -365,6 +442,74 @@ pub fn save_tts_gemini_configuration(
         Value::Integer(configuration.timeout_seconds),
     );
     data.insert("tts_gemini".to_string(), Value::Table(section));
+    save_config_data(env, &data, config_path)
+}
+
+/// 读取 DeepSeek 通道配置。
+pub fn load_tts_deepseek_configuration(
+    env: &ConfigEnvironment,
+    config_path: Option<&Path>,
+) -> Result<DeepSeekTtsConfiguration, ConfigError> {
+    let data = load_config_data(env, config_path)?;
+    let section = match data.get("tts_deepseek") {
+        None => Table::new(),
+        Some(Value::String(text)) if text.is_empty() => Table::new(),
+        Some(Value::Table(section)) => section.clone(),
+        Some(_) => return Err(ConfigError::new("配置段 tts_deepseek 必须是对象。")),
+    };
+    DeepSeekTtsConfiguration {
+        base_url: text_field(&section, "base_url", DEFAULT_TTS_DEEPSEEK_BASE_URL),
+        api_key: text_field(&section, "api_key", ""),
+        voice: text_field(&section, "voice", DEFAULT_TTS_DEEPSEEK_VOICE),
+        transport: text_field(&section, "transport", DEFAULT_TTS_DEEPSEEK_TRANSPORT),
+        filter_markdown: section
+            .get("filter_markdown")
+            .map(truthy)
+            .unwrap_or(true),
+        timeout_seconds: int_field(
+            &section,
+            "timeout_seconds",
+            DEFAULT_TIMEOUT_SECONDS,
+            "tts_deepseek",
+        )?,
+    }
+    .normalize()
+}
+
+/// 保留其他配置段，只更新 DeepSeek 通道配置。
+pub fn save_tts_deepseek_configuration(
+    env: &ConfigEnvironment,
+    configuration: ｛Desensitized:red_tiny_male_ox｝,
+    config_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    let configuration = configuration.clone().normalize()?;
+    let mut data = load_config_data(env, config_path)?;
+    let mut section = Table::new();
+    section.insert(
+        "base_url".to_string(),
+        Value::String(configuration.base_url.clone()),
+    );
+    section.insert(
+        "api_key".to_string(),
+        Value::String(configuration.api_key.clone()),
+    );
+    section.insert(
+        "voice".to_string(),
+        Value::String(configuration.voice.clone()),
+    );
+    section.insert(
+        "transport".to_string(),
+        Value::String(configuration.transport.clone()),
+    );
+    section.insert(
+        "filter_markdown".to_string(),
+        Value::Boolean(configuration.filter_markdown),
+    );
+    section.insert(
+        "timeout_seconds".to_string(),
+        Value::Integer(configuration.timeout_seconds),
+    );
+    data.insert("tts_deepseek".to_string(), Value::Table(section));
     save_config_data(env, &data, config_path)
 }
 

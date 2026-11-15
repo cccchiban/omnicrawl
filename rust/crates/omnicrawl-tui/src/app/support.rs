@@ -402,6 +402,7 @@ pub(super) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
 pub(super) fn feature_label(key: &str) -> String {
     match key {
         "memory" => "记忆功能".to_string(),
+        "knowledge" => "知识库".to_string(),
         other => other.to_string(),
     }
 }
@@ -1020,19 +1021,21 @@ pub(super) fn tts_options_from(
     };
     let openai = load_tts_api_configuration(environment, None).unwrap_or_default();
     let gemini = load_tts_gemini_configuration(environment, None).unwrap_or_default();
+    let deepseek = load_tts_deepseek_configuration(environment, None).unwrap_or_default();
     Some(Arc::new(TtsOptions::new(
         configuration.clone(),
-        tts_backend(&cloud, openai, gemini),
+        tts_backend(&cloud, openai, gemini, deepseek),
         workspace.to_path_buf(),
     )))
 }
 
-/// TTS 设置页的初值：通用键 + 两条通道（界面按 `provider` 显示其中一家）。
+/// TTS 设置页的初值：通用键 + 三条通道（界面按 `provider` 显示其中一家）。
 pub(super) fn tts_settings_values(environment: &ConfigEnvironment) -> TtsValues {
     let general = load_tts_configuration(environment, None).unwrap_or_default();
     let cloud = load_tts_cloud_configuration(environment, None).unwrap_or_default();
     let openai = load_tts_api_configuration(environment, None).unwrap_or_default();
     let gemini = load_tts_gemini_configuration(environment, None).unwrap_or_default();
+    let deepseek = load_tts_deepseek_configuration(environment, None).unwrap_or_default();
     TtsValues {
         enabled: general.enabled,
         auto_play: general.auto_play,
@@ -1044,6 +1047,7 @@ pub(super) fn tts_settings_values(environment: &ConfigEnvironment) -> TtsValues 
             voice: openai.voice,
             instructions: openai.instructions,
             speed: format_speed(openai.speed),
+            transport: String::new(),
             api_key: openai.api_key,
         },
         gemini: TtsChannelValues {
@@ -1052,7 +1056,17 @@ pub(super) fn tts_settings_values(environment: &ConfigEnvironment) -> TtsValues 
             voice: gemini.voice,
             instructions: gemini.instructions,
             speed: String::new(),
+            transport: String::new(),
             api_key: gemini.api_key,
+        },
+        deepseek: TtsChannelValues {
+            base_url: deepseek.base_url,
+            model: String::new(),
+            voice: deepseek.voice,
+            instructions: String::new(),
+            speed: String::new(),
+            transport: deepseek.transport,
+            api_key: deepseek.api_key,
         },
     }
 }
@@ -1074,9 +1088,18 @@ pub(super) fn tts_channel_configurations(
     draft: &TtsDraft,
     previous_api: &TtsApiConfiguration,
     previous_gemini: &GeminiTtsConfiguration,
-) -> Result<(TtsApiConfiguration, GeminiTtsConfiguration), String> {
+    previous_deepseek: DeepSeekTtsConfiguration,
+) -> Result<
+    (
+        TtsApiConfiguration,
+        GeminiTtsConfiguration,
+        DeepSeekTtsConfiguration,
+    ),
+    String,
+> {
     let mut api = previous_api.clone();
     let mut gemini = previous_gemini.clone();
+    let mut deepseek = previous_deepseek.clone();
     match &draft.channel {
         TtsChannelDraft::OpenAi {
             base_url,
@@ -1113,8 +1136,21 @@ pub(super) fn tts_channel_configurations(
                 gemini.api_key = key;
             }
         }
+        TtsChannelDraft::DeepSeek {
+            base_url,
+            voice,
+            transport,
+            api_key,
+        } => {
+            deepseek.base_url = base_url.trim().to_string();
+            deepseek.voice = voice.trim().to_string();
+            deepseek.transport = transport.trim().to_string();
+            if let Some(key) = keep_or_replace(api_key) {
+                deepseek.api_key = key;
+            }
+        }
     }
-    Ok((api, gemini))
+    Ok((api, gemini, deepseek))
 }
 
 /// 装配 MCP 管理器：读配置、发现能力，失败只警告不阻断启动。

@@ -153,6 +153,24 @@ pub fn build_registry() -> Result<CommandRegistry, CommandParseError> {
     )?;
 
     registry.register(
+        Command::new("think", handle_think_command)
+            .description("查看或切换思考强度（/think off 关闭思考）。")
+            .usage("/think [on|off|none|low|medium|high|xhigh|max]")
+            // 带参数时写 config.toml，按状态变更处理：排队执行。
+            .command_type(CommandType::Action)
+            .arg_prompt("强度"),
+    )?;
+
+    registry.register(
+        Command::new("thinking_collapsed", handle_thinking_collapsed_command)
+            .description("查看或切换思考段折叠（/thinking_collapsed off 展开全部）。")
+            .usage("/thinking_collapsed [on|off]")
+            // 带参数时写 config.toml，按状态变更处理：排队执行。
+            .command_type(CommandType::Action)
+            .arg_prompt("on|off"),
+    )?;
+
+    registry.register(
         Command::new("model", handle_model_command)
             .description("查看或切换当前模型（从下一次请求开始生效）。")
             .usage("/model <key|profile/model_id|model_id>")

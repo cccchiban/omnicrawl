@@ -30,6 +30,8 @@ pub const ACCENT_AMBER: &str = "yellow";
 /// （标准 `yellow` 在白底终端上过硬，这里用低饱和的真彩色）。
 pub const ACCENT_PALE_AMBER: &str = "#e8d9a0";
 pub const ACCENT_RED: &str = "red";
+/// 青色：二级标题用（与一级的黄拉开层级，又不至于像白那样和正文混同）。
+pub const ACCENT_CYAN: &str = "cyan";
 /// 工具进行中的边框色（白色）：与成功/失败语义色区分开，不引入新色相。
 pub const ACCENT_WHITE: &str = "white";
 

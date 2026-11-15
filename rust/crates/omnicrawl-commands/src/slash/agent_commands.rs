@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// `/think on` 恢复到的档位：与设置面板的缺省档位一致。
+const THINK_ON_EFFORT: &str = "medium";
+
 /// 查看当前工具审批模式；远程连接器额外提示不支持完全自动。
 pub fn handle_approval_query_command(ctx: &CommandContext<'_>) -> CommandResult {
     let label = approval_mode_label(&ctx.agent.approval_mode());
@@ -81,6 +84,11 @@ pub fn handle_reasoning_command(ctx: &CommandContext<'_>) -> CommandResult {
         .with_refresh_context();
     }
 
+    apply_reasoning_effort(ctx, effort)
+}
+
+/// 切换推理强度并写盘：`/reasoning` 与 `/think` 共用这一段。
+fn apply_reasoning_effort(ctx: &CommandContext<'_>, effort: &str) -> CommandResult {
     let normalized = match ctx.agent.set_reasoning_effort(effort) {
         Ok(value) => value,
         Err(error) => {
@@ -462,6 +470,82 @@ fn format_speaking_style_state(active: &str) -> String {
         "简洁回复模式：未开启。/speaking-style on 开启。".to_string()
     } else {
         format!("简洁回复模式：未开启（当前模式：{active}）。/speaking-style on 开启。")
+    }
+}
+
+/// `/think [on|off|<档位>]`：思考强度的简写入口（`off` 即关闭思考）。
+///
+/// `on` 把关闭状态恢复到默认档位；要指定别的档位用 `/think low`、`/think high`
+/// 或完整的 `/reasoning`。写盘与报错文案与 [`handle_reasoning_command`] 同源。
+pub fn handle_think_command(ctx: &CommandContext<'_>) -> CommandResult {
+    let argument = ctx.arg().trim().to_lowercase();
+    if argument.is_empty() {
+        let current = ctx
+            .agent
+            .reasoning_effort()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "默认".to_string());
+        return CommandResult::message(format!(
+            "当前思考强度：{current}。
+用法：/think off 关闭思考，/think on 恢复默认档位，/think low|medium|high|xhigh|max 指定档位。"
+        ))
+        .with_refresh_context();
+    }
+    let effort = match argument.as_str() {
+        "on" | "1" | "true" | "yes" | "开" | "开启" => THINK_ON_EFFORT,
+        "off" | "0" | "false" | "no" | "关" | "关闭" => "off",
+        other => other,
+    };
+    apply_reasoning_effort(ctx, effort)
+}
+
+/// `/thinking_collapsed [on|off]`：查看或切换思考段是否默认折叠（写 `ui.thinking_collapsed`）。
+///
+/// 只影响本机消息流的默认形态：折叠时每段思考只展示最新几行并给一行提示，
+/// 点击那一段仍可单独展开；隐藏整段思考用 `/think off`。
+pub fn handle_thinking_collapsed_command(ctx: &CommandContext<'_>) -> CommandResult {
+    let Some(current) = ctx.agent.thinking_collapsed() else {
+        return CommandResult::message("当前入口没有思考折叠开关。");
+    };
+    let collapsed = match ctx.arg().trim().to_lowercase().as_str() {
+        "" => return CommandResult::message(format_thinking_collapsed_state(current)),
+        "on" | "1" | "true" | "yes" | "折叠" | "开" | "开启" => true,
+        "off" | "0" | "false" | "no" | "展开" | "关" | "关闭" => false,
+        _ => {
+            return CommandResult::message(
+                "用法：/thinking_collapsed on 折叠思考段（只显示最新几行），/thinking_collapsed off 展开全部，不带参数查看状态。",
+            )
+        }
+    };
+    if collapsed == current {
+        return CommandResult::message(format_thinking_collapsed_state(current));
+    }
+    if let Err(error) = ctx.agent.set_thinking_collapsed(collapsed) {
+        return CommandResult::message(format!("思考折叠切换失败：{error}"));
+    }
+    let environment = ctx.agent.config_environment();
+    match save_thinking_collapsed(&environment, collapsed, None) {
+        Ok(path) => CommandResult::message(format!(
+            "{}，已保存到 {}。",
+            format_thinking_collapsed_state(collapsed),
+            path.display()
+        ))
+        .with_refresh_context(),
+        Err(error) => CommandResult::message(format!(
+            "{}，但写入 config.toml 失败：{}",
+            format_thinking_collapsed_state(collapsed),
+            error.message()
+        ))
+        .with_refresh_context(),
+    }
+}
+
+fn format_thinking_collapsed_state(collapsed: bool) -> String {
+    if collapsed {
+        "思考段折叠：开启（只显示最新行，点击单段展开）。/thinking_collapsed off 展开全部。"
+            .to_string()
+    } else {
+        "思考段折叠：关闭（每段思考整段展开）。/thinking_collapsed on 折叠。".to_string()
     }
 }
 

@@ -15,6 +15,7 @@
 pub mod difflib;
 pub mod highlight;
 pub mod latex;
+pub mod latex_box;
 pub mod logo_anim;
 pub mod markdown;
 pub mod tool_diff;

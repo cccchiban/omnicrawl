@@ -293,6 +293,38 @@ pub fn load_show_thinking(
     }
 }
 
+/// 读取 `ui.thinking_collapsed`，缺省时默认折叠。
+pub fn load_thinking_collapsed(
+    env: &ConfigEnvironment,
+    config_path: Option<&Path>,
+) -> Result<bool, ConfigError> {
+    let data = load_config_data(env, config_path)?;
+    let section = get_section(&data, "ui")?;
+    match section.get("thinking_collapsed") {
+        None => Ok(true),
+        Some(Value::Boolean(flag)) => Ok(*flag),
+        Some(_) => Err(ConfigError::new(
+            "配置项 ui.thinking_collapsed 必须是布尔值。",
+        )),
+    }
+}
+
+/// 保留 `ui` 段其余字段，只更新 `thinking_collapsed` 并原子写回。
+pub fn save_thinking_collapsed(
+    env: &ConfigEnvironment,
+    collapsed: bool,
+    config_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    let mut data = load_config_data(env, config_path)?;
+    let mut section = get_section(&data, "ui")?;
+    section.insert(
+        "thinking_collapsed".to_string(),
+        Value::Boolean(collapsed),
+    );
+    data.insert("ui".to_string(), Value::Table(section));
+    save_config_data(env, &data, config_path)
+}
+
 /// 保留 `ui` 段其余字段，只更新 `show_thinking` 并原子写回。
 pub fn save_show_thinking(
     env: &ConfigEnvironment,

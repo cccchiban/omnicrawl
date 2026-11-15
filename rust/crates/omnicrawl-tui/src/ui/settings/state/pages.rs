@@ -396,17 +396,3 @@ pub(super) struct VisionState {
     pub(crate) native_previous: Option<bool>,
     pub(crate) status: String,
 }
-
-/// 两个单选页的当前值与状态文本（Python 每个面板实例各存一份状态）。
-#[derive(Debug, Clone)]
-pub(super) struct ChoicesState {
-    pub(crate) show_thinking: bool,
-    pub(crate) memory: bool,
-    pub(crate) status: [String; 2],
-}
-
-impl ChoicesState {
-    pub(crate) fn status_mut(&mut self, kind: ChoiceKind) -> &mut String {
-        &mut self.status[kind.index()]
-    }
-}

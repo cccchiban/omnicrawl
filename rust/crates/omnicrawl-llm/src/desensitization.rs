@@ -28,6 +28,7 @@ pub mod oneshot;
 pub mod plan_cache;
 pub mod rules;
 pub mod stream;
+pub mod words;
 
 pub use engine::{
     find_entropy_spans, is_entropy_candidate, is_entropy_exempt, mask_structured_value, mask_text,
@@ -98,9 +99,16 @@ pub fn next_sequence_number() -> u64 {
     SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-/// 生成端唯一规范：全角花括号、序号无前导零。
+/// 生成端唯一规范：全角花括号、序号编码为单词组标签。
+///
+/// 形如 `｛Desensitized:red_tiny_male_cat｝`。用单词组而非纯数字，是因为纯数字信息量太低，
+/// 模型搬运时偶发记错一位就会让还原查不到序号、占位符落进代码与脚本里变成语法错误；
+/// 单词组各段语义独立，复述时不易串形。序号仍由注册表分配，标签只是它的双射编码。
 pub fn format_placeholder(seq: u64) -> String {
-    format!("{FULLWIDTH_OPEN_BRACE}{PLACEHOLDER_MARKER}:{seq}{FULLWIDTH_CLOSE_BRACE}")
+    format!(
+        "{FULLWIDTH_OPEN_BRACE}{PLACEHOLDER_MARKER}:{}{FULLWIDTH_CLOSE_BRACE}",
+        words::encode(seq)
+    )
 }
 
 /// 解析占位符，返回 `(起始字节, 结束字节, 序号)`。
@@ -646,22 +654,27 @@ fn match_placeholder(characters: &[char], index: usize) -> Option<(usize, u64)> 
         _ => return None,
     }
     cursor = skip_whitespace(characters, cursor);
-    // 序号同样接受全角数字（`１２`）：模型把整段占位符全角化时数字通常一起变全角。
-    let digits_start = cursor;
-    while characters
-        .get(cursor)
-        .is_some_and(|character| normalize_ascii_width(*character).is_ascii_digit())
-    {
+    // 序号区：新形式是单词组标签（`red_tiny_male_cat`），旧形式是纯数字。
+    // 两种都要认——历史消息、旧会话与旧测试夹具里仍有纯数字占位符，不认就永远还原不回来。
+    let label_start = cursor;
+    while characters.get(cursor).is_some_and(|character| {
+        let normalized = normalize_ascii_width(*character);
+        normalized.is_ascii_alphanumeric() || normalized == '_'
+    }) {
         cursor += 1;
     }
-    if cursor == digits_start {
+    if cursor == label_start {
         return None;
     }
-    let digits: String = characters[digits_start..cursor]
+    let label: String = characters[label_start..cursor]
         .iter()
         .map(|character| normalize_ascii_width(*character))
         .collect();
-    let seq = digits.parse::<u64>().ok()?;
+    let seq = if label.bytes().all(|byte| byte.is_ascii_digit()) {
+        label.parse::<u64>().ok()?
+    } else {
+        words::decode(&label)?
+    };
     cursor = skip_whitespace(characters, cursor);
     if !is_close_brace(characters.get(cursor)) {
         return None;

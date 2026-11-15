@@ -14,7 +14,7 @@
     {
       "text": "API_KEY=A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
       "note": "env 赋值",
-      "masked": "API_KEY=｛Desensitized:1｝",
+      "masked": "API_KEY=｛Desensitized:red_tiny_male_cat｝",
       "stats": {
         "values_masked": 1,
         "skipped_values": 0,
@@ -25,7 +25,7 @@
     {
       "text": "export DB_PASSWORD = 'hunter2000!!'",
       "note": "env 带 export 与引号",
-      "masked": "export DB_PASSWORD = '｛Desensitized:2｝'",
+      "masked": "export DB_PASSWORD = '｛Desensitized:red_tiny_male_dog｝'",
       "stats": {
         "values_masked": 2,
         "skipped_values": 0,
@@ -36,7 +36,7 @@
     {
       "text": "TOKEN=abc123  # 行内注释保留",
       "note": "env 无引号带注释",
-      "masked": "TOKEN=｛Desensitized:3｝  # 行内注释保留",
+      "masked": "TOKEN=｛Desensitized:red_tiny_male_fox｝  # 行内注释保留",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -47,7 +47,7 @@
     {
       "text": "SECRET=\"abc123\" # 引号外注释保留",
       "note": "env 引号外注释",
-      "masked": "SECRET=\"｛Desensitized:3｝\" # 引号外注释保留",
+      "masked": "SECRET=\"｛Desensitized:red_tiny_male_fox｝\" # 引号外注释保留",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -58,7 +58,7 @@
     {
       "text": "TOKEN=abc123 # 注释",
       "note": "env 无引号单注释",
-      "masked": "TOKEN=｛Desensitized:3｝ # 注释",
+      "masked": "TOKEN=｛Desensitized:red_tiny_male_fox｝ # 注释",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -69,7 +69,7 @@
     {
       "text": "password: hunter2000!!",
       "note": "kv 形态",
-      "masked": "password: ｛Desensitized:2｝",
+      "masked": "password: ｛Desensitized:red_tiny_male_dog｝",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -91,7 +91,7 @@
     {
       "text": "PWD : hunter2000!!",
       "note": "kv 冒号前空格",
-      "masked": "PWD : ｛Desensitized:2｝",
+      "masked": "PWD : ｛Desensitized:red_tiny_male_dog｝",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -102,7 +102,7 @@
     {
       "text": "{\"api_key\": \"hunter2000!!\", \"name\": \"zhang\"}",
       "note": "json 串键敏感",
-      "masked": "{\"api_key\": \"｛Desensitized:2｝\", \"name\": \"zhang\"}",
+      "masked": "{\"api_key\": \"｛Desensitized:red_tiny_male_dog｝\", \"name\": \"zhang\"}",
       "stats": {
         "values_masked": 3,
         "skipped_values": 0,
@@ -113,7 +113,7 @@
     {
       "text": "{\"password\": \"abc\\\"123\", \"name\": \"zhang\"}",
       "note": "json 串含转义引号",
-      "masked": "{\"password\": \"｛Desensitized:4｝\", \"name\": \"zhang\"}",
+      "masked": "{\"password\": \"｛Desensitized:red_tiny_male_wolf｝\", \"name\": \"zhang\"}",
       "stats": {
         "values_masked": 4,
         "skipped_values": 0,
@@ -135,7 +135,7 @@
     {
       "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
       "note": "规则层邮箱与银行卡",
-      "masked": "联系 ｛Desensitized:6｝ 与卡号 ｛Desensitized:5｝ 结束",
+      "masked": "联系 ｛Desensitized:red_tiny_male_deer｝ 与卡号 ｛Desensitized:red_tiny_male_bear｝ 结束",
       "stats": {
         "values_masked": 6,
         "skipped_values": 0,
@@ -146,7 +146,7 @@
     {
       "text": "内网 10.20.30.40 与网卡 00:1A:2B:3C:4D:5E 结束",
       "note": "规则层 IP 与 MAC",
-      "masked": "内网 ｛Desensitized:8｝ 与网卡 ｛Desensitized:7｝ 结束",
+      "masked": "内网 ｛Desensitized:red_tiny_male_mouse｝ 与网卡 ｛Desensitized:red_tiny_male_hare｝ 结束",
       "stats": {
         "values_masked": 8,
         "skipped_values": 0,
@@ -157,7 +157,7 @@
     {
       "text": "网址 https://db.corp.local/app 与车牌 沪BD12345 结束",
       "note": "规则层网址与车牌",
-      "masked": "网址 ｛Desensitized:10｝ 与车牌 ｛Desensitized:9｝ 结束",
+      "masked": "网址 ｛Desensitized:red_tiny_male_seal｝ 与车牌 ｛Desensitized:red_tiny_male_otter｝ 结束",
       "stats": {
         "values_masked": 10,
         "skipped_values": 0,
@@ -168,7 +168,7 @@
     {
       "text": "普通文本 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
       "note": "熵兜底裸值",
-      "masked": "普通文本 ｛Desensitized:1｝ 结束",
+      "masked": "普通文本 ｛Desensitized:red_tiny_male_cat｝ 结束",
       "stats": {
         "values_masked": 10,
         "skipped_values": 0,
@@ -177,9 +177,9 @@
       }
     },
     {
-      "text": "已经是 *** 与 ｛Desensitized:7｝ 结束",
+      "text": "已经是 *** 与 ｛Desensitized:red_tiny_male_hare｝ 结束",
       "note": "跳过已脱敏与占位符",
-      "masked": "已经是 *** 与 ｛Desensitized:7｝ 结束",
+      "masked": "已经是 *** 与 ｛Desensitized:red_tiny_male_hare｝ 结束",
       "stats": {
         "values_masked": 10,
         "skipped_values": 0,
@@ -256,7 +256,7 @@
     {
       "text": "Authorization=Bearer A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
       "note": "凭据键 + 熵兜底",
-      "masked": "Authorization=｛Desensitized:11｝",
+      "masked": "Authorization=｛Desensitized:red_tiny_male_whale｝",
       "stats": {
         "values_masked": 11,
         "skipped_values": 0,
@@ -291,7 +291,7 @@
     {
       "text": "纯数字 98765432109876543210 结束",
       "note": "纯数字开关",
-      "masked": "纯数字 ｛Desensitized:1｝ 结束",
+      "masked": "纯数字 ｛Desensitized:red_tiny_male_cat｝ 结束",
       "stats": {
         "values_masked": 1,
         "skipped_values": 0,
@@ -302,7 +302,7 @@
     {
       "text": "混合 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
       "note": "混合仍走熵判定",
-      "masked": "混合 ｛Desensitized:2｝ 结束",
+      "masked": "混合 ｛Desensitized:red_tiny_male_dog｝ 结束",
       "stats": {
         "values_masked": 2,
         "skipped_values": 0,
@@ -330,15 +330,15 @@
         ]
       },
       "masked": {
-        "api_key": "｛Desensitized:1｝",
+        "api_key": "｛Desensitized:red_tiny_male_cat｝",
         "user": {
-          "password": "｛Desensitized:1｝",
+          "password": "｛Desensitized:red_tiny_male_cat｝",
           "name": "zhang"
         },
         "list": [
           "secret_token",
           {
-            "nested_token": "｛Desensitized:1｝"
+            "nested_token": "｛Desensitized:red_tiny_male_cat｝"
           },
           42,
           true,
@@ -356,10 +356,10 @@
       },
       "masked": {
         "name": "zhang",
-        "note": "联系 ｛Desensitized:3｝ 与 ｛Desensitized:2｝ 结束",
+        "note": "联系 ｛Desensitized:red_tiny_male_fox｝ 与 ｛Desensitized:red_tiny_male_dog｝ 结束",
         "public_key": "not-secret",
         "example": "not-secret",
-        "team-token": "｛Desensitized:1｝"
+        "team-token": "｛Desensitized:red_tiny_male_cat｝"
       }
     },
     {
@@ -607,11 +607,11 @@
       "skip": false
     },
     {
-      "value": "｛Desensitized:3｝",
+      "value": "｛Desensitized:red_tiny_male_fox｝",
       "skip": true
     },
     {
-      "value": "x ｛Desensitized:3｝",
+      "value": "x ｛Desensitized:red_tiny_male_fox｝",
       "skip": false
     },
     {
@@ -693,7 +693,7 @@
       "exempt": true
     },
     {
-      "token": "｛Desensitized:31｝",
+      "token": "｛Desensitized:red_tiny_male_crane｝",
       "exempt": true
     },
     {

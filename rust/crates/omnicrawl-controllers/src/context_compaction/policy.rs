@@ -231,7 +231,7 @@ impl SourceEvent {
     }
 }
 
-/// 交给摘要模型的载荷：图片的 Base64 正｛Desensitized:708｝换成一行描述。
+/// 交给摘要模型的载荷：图片的 Base64 正被替换成一行描述。
 ///
 /// 用户消息可以带粘贴的图片，图片原文（几百 KB 的 Base64）**不属于可摘要的内容**：
 /// 留在提示里只会把摘要输入撑爆、让 Token 估算与实际上下文完全脱节（估算按字符数算，
@@ -1057,7 +1057,7 @@ mod prompt_payload_tests {
         }
     }
 
-    /// 图片的 Base64 不进摘要提示：只留类型与大小，否则摘要输入｛Desensitized:721｝Context 估算都被撑爆。
+    /// 图片的 Base64 不进摘要提示：只留类型与大小，否则摘要输入与 Context 估算都被撑爆。
     #[test]
     fn image_payload_is_summarized_before_reaching_the_summary_prompt() {
         let prompt = event(serde_json::json!({

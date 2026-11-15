@@ -25,8 +25,8 @@ use super::form::{paste_into, FieldKind, FieldSpec, FieldValue, FormKind, FormSt
 use super::hit::{HitAction, HitRegion};
 use super::picker::ModelDiscovery;
 use super::{
-    choice_field_options, context_compaction_options, context_window_options,
-    cycle_subagent_option, nearest_compaction_percent, nearest_context_window_tokens,
+    context_compaction_options, context_window_options, cycle_subagent_option,
+    nearest_compaction_percent, nearest_context_window_tokens,
     normalize_reasoning, reasoning_label, row_label, REASONING_OPTIONS, ROW_ORDER,
     SUBAGENT_ADVANCED_SPECS,
 };
@@ -54,6 +54,18 @@ pub(crate) use shared::{mask_api_key, secret_draft, secret_draft_for};
 pub(super) use shared::cycle_text;
 
 mod decision_page;
+
+mod memory;
+
+mod memory_page;
+
+mod knowledge;
+
+mod knowledge_page;
+
+pub use knowledge::{KnowledgeRow, KnowledgeState};
+
+pub use memory::{MemoryRow, MemoryState};
 
 pub use decision_page::{
     visible_decision_fields, visible_embedding_fields, DecisionDropdown, DecisionField,
@@ -88,14 +100,14 @@ pub use sessions_page::{PendingDelete, SessionRow, SessionsState};
 
 pub use tts_page::{
     TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsRowView, TtsState, TtsValues,
-    TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS, TTS_ROW_COUNT, TTS_ROW_LABELS,
-    TTS_SPEED_OPTIONS,
+    TTS_DEEPSEEK_VOICES, TTS_GEMINI_VOICES, TTS_OPENAI_VOICES, TTS_PROVIDER_OPTIONS,
+    TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_SPEED_OPTIONS, TTS_TRANSPORT_OPTIONS,
 };
 
 // 行号只被同目录的 `tts.rs` 与 `tests.rs` 读，不进 `state` 的对外名字空间。
 pub(super) use tts_page::{
     TTS_ROW_AUTO_PLAY, TTS_ROW_ENABLED, TTS_ROW_PROVIDER, TTS_ROW_SAVE, TTS_ROW_SPEAK_REPLIES,
-    TTS_ROW_SPEED, TTS_ROW_VOICE,
+    TTS_ROW_SPEED, TTS_ROW_TRANSPORT, TTS_ROW_VOICE,
 };
 // 只有 `tests.rs` 读这两行，非测试构建下不引入。
 #[cfg(test)]
@@ -113,7 +125,7 @@ pub use pages::{
     MCP_TRANSPORT_OPTIONS, TOOLS_APPROVAL_LABEL, TOOLS_APPROVAL_OPTIONS, TOOLS_SWITCH_ROW_OFFSET,
 };
 
-use pages::{ChoicesState, McpState, SubagentsState, SuggestionState, ToolsState, VisionState};
+use pages::{McpState, SubagentsState, SuggestionState, ToolsState, VisionState};
 
 pub(crate) use pages::{cycle_static, McpEditor};
 
@@ -144,6 +156,9 @@ pub enum Focus {
     Pane,
 }
 
+/// 一格滚轮最多折算多少行：长列表里一次猛滚不该跳过整屏内容。
+pub const SCROLL_MAX_STEPS: usize = 3;
+
 /// 右侧当前挂载的二级面板。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -163,14 +178,16 @@ pub enum Pane {
     DecisionModels,
     /// 向量模型：向量渠道列表 + 单条向量渠道表单。
     EmbeddingModels,
-    /// 单选页：一个下拉候选，选中即保存。
-    Choice(ChoiceKind),
     /// 表单页：若干字段 + `Ctrl+S` 保存。
     Form(FormKind),
     /// TTS 设置页：开关 / 服务商 / 播放行为 + 当前服务商的接口参数。
     Tts,
     /// 会话管理页：列出会话并二次确认后删除（走内核 `session.delete`）。
     Sessions,
+    /// 记忆功能页：开关、遗忘时间，以及清空记忆与打开记忆目录两个操作。
+    Memory,
+    /// 知识库页：开关，以及清除知识库与打开知识库目录两个操作。
+    Knowledge,
     /// 未知一级项（一级表与面板表不同步时的兜底）。
     Pending,
 }
@@ -195,37 +212,11 @@ impl Pane {
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
             "suggestion" => Self::Suggestion,
-            "show_thinking" => Self::Choice(ChoiceKind::ShowThinking),
-            "memory" => Self::Choice(ChoiceKind::Memory),
+            "memory" => Self::Memory,
+            "knowledge" => Self::Knowledge,
             "tts" => Self::Tts,
             "sessions" => Self::Sessions,
             _ => Self::Pending,
-        }
-    }
-}
-
-/// 单选页：各自一个下拉候选，选中即保存。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChoiceKind {
-    /// 思考显示：开启 / 关闭。
-    ShowThinking,
-    /// 记忆功能：开启 / 关闭。
-    Memory,
-}
-
-impl ChoiceKind {
-    pub fn index(self) -> usize {
-        match self {
-            Self::ShowThinking => 0,
-            Self::Memory => 1,
-        }
-    }
-
-    /// 折叠框里显示的当前值（对映 Textual `Select` 显示选中项文案）。
-    fn value(self, choices: &ChoicesState) -> OptionValue {
-        match self {
-            Self::ShowThinking => OptionValue::Flag(choices.show_thinking),
-            Self::Memory => OptionValue::Flag(choices.memory),
         }
     }
 }
@@ -562,8 +553,11 @@ pub struct SettingsValues {
     pub suggestion_enabled: bool,
     /// 提问建议页下方列表里的 Skill（本机已索引的那些）。
     pub suggestion_skills: Vec<SuggestionSkillRow>,
-    pub show_thinking: bool,
     pub memory_enabled: bool,
+    /// 知识库开关（`[knowledge] enabled`）。
+    pub knowledge_enabled: bool,
+    /// 记忆遗忘时间（天，`[memory] forget_after_days`）。
+    pub memory_forget_after_days: i64,
     pub tools: Vec<ToolSwitchRow>,
     /// 工具调用审查模式（`manual` / `review` / `auto`），取自 `[approval] mode`。
     pub approval_mode: String,
@@ -586,9 +580,8 @@ pub struct SettingsValues {
 impl SettingsValues {
     /// 上下文长度与压缩比例都折算到候选档位后再进界面。
     ///
-    /// 单选页取与 Python 侧一致的缺省值（推理强度 `none`、思考显示开启、
-    /// 记忆关闭），由 [`SettingsValues::with_choices`] / [`SettingsValues::with_model`]
-    /// 按当前配置覆盖。
+    /// 推理档位取与 Python 侧一致的缺省值（`none`、记忆关闭），由
+    /// [`SettingsValues::with_choices`] / [`SettingsValues::with_model`] 按当前配置覆盖。
     pub fn new(
         context_window_tokens: i64,
         compaction_percent: i64,
@@ -617,8 +610,11 @@ impl SettingsValues {
             decision_local: DecisionLocalValues::default(),
             suggestion_enabled: false,
             suggestion_skills: Vec::new(),
-            show_thinking: true,
             memory_enabled: false,
+            knowledge_enabled:
+                omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED,
+            memory_forget_after_days:
+                omnicrawl_config::features::memory::DEFAULT_FORGET_AFTER_DAYS,
             tools,
             approval_mode: APPROVAL_MODE_REVIEW.to_string(),
             web_search: WebSearchRow::default(),
@@ -750,16 +746,23 @@ impl SettingsValues {
         self
     }
 
-    /// 覆盖三个开关单选页与推理档位的初始值（宿主从配置与运行时读出当前值后调用）。
-    pub fn with_choices(
-        mut self,
-        reasoning_effort: &str,
-        show_thinking: bool,
-        memory_enabled: bool,
-    ) -> Self {
+    /// 覆盖推理档位与记忆开关的初始值（宿主从配置与运行时读出当前值后调用）。
+    pub fn with_choices(mut self, reasoning_effort: &str, memory_enabled: bool) -> Self {
         self.reasoning_effort = normalize_reasoning(reasoning_effort);
-        self.show_thinking = show_thinking;
         self.memory_enabled = memory_enabled;
+        self
+    }
+
+    /// 记忆页的遗忘时间初值（`[memory] forget_after_days`）。
+    pub fn with_memory_forget_after(mut self, days: i64) -> Self {
+        self.memory_forget_after_days =
+            omnicrawl_config::features::memory::normalize_forget_after_days(days);
+        self
+    }
+
+    /// 知识库页的开关初值（`[knowledge] enabled`）。
+    pub fn with_knowledge_enabled(mut self, enabled: bool) -> Self {
+        self.knowledge_enabled = enabled;
         self
     }
 
@@ -814,38 +817,33 @@ pub struct Dropdown {
     pub selected: usize,
 }
 
-/// 能展开候选的字段：模型管理页的参数分区行、某个开关单选页、表单页某个字段，
-/// 或视觉页的「A 添加」。表单页的「渠道」与「模型」两列各有一套候选，由字段类型区分。
+/// 能展开候选的字段：模型管理页的参数分区行、表单页某个字段，或视觉页的「A 添加」。
+/// 表单页的「渠道」与「模型」两列各有一套候选，由字段类型区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropdownField {
     /// 模型管理页「模型与参数」分区里的一行。
     ModelParam(ModelParamRow),
-    Choice(ChoiceKind),
     Form(usize),
     /// 视觉页的「A 添加视觉模型」候选（渠道列表）。
     VisionAdd,
 }
 
 impl DropdownField {
-    /// 静态候选（开关类单选页）。
-    ///
-    /// 模型管理页的参数行、表单页的字段与视觉页的候选都随环境变化（渠道与模型列表
-    /// 来自配置，表单项跟着表单页的字段表走），由 [`SettingsState::options_for`] 提供，
-    /// 因此这里是 `None`。
+    /// 静态候选在这张表里没有：模型管理页的参数行、表单页的字段与视觉页的候选都随
+    /// 环境变化（渠道与模型列表来自配置，表单项跟着表单页的字段表走），由
+    /// [`SettingsState::options_for`] 提供。
     fn static_options(self) -> Option<Vec<(String, OptionValue)>> {
         match self {
-            Self::Choice(kind) => Some(choice_field_options(kind)),
             Self::ModelParam(_) | Self::Form(_) | Self::VisionAdd => None,
         }
     }
 }
 
-/// 候选的取值：上下文页是整数，推理强度是文本，其余开关是布尔，模型页是渠道标识。
+/// 候选的取值：上下文页是整数，推理强度是文本，模型页是渠道标识。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptionValue {
     Int(i64),
     Text(String),
-    Flag(bool),
     /// 模型/渠道标识（候选的显示文案另给，二者不同）。
     Model(String),
 }
@@ -854,8 +852,6 @@ pub enum OptionValue {
 pub fn display_value(value: &OptionValue) -> String {
     match value {
         OptionValue::Text(text) => reasoning_label(text),
-        OptionValue::Flag(true) => "开启".to_string(),
-        OptionValue::Flag(false) => "关闭".to_string(),
         OptionValue::Int(number) => number.to_string(),
         OptionValue::Model(text) => text.clone(),
     }
@@ -882,10 +878,10 @@ pub enum SettingsChange {
     Vision(VisionChange),
     /// 推理强度（归一化后的档位）。
     Reasoning { effort: String },
-    /// 思考显示的开关。
-    ShowThinking { enabled: bool },
     /// 功能开关：`key` 目前只有 `memory`。
     Feature { key: String, enabled: bool },
+    /// 记忆遗忘时间（`[memory] forget_after_days`，单位天）。
+    MemoryForgetAfter { days: i64 },
     /// 保存整份渠道配置（渠道列表 + 默认渠道 key）。
     Channels {
         rows: Vec<ChannelRow>,
@@ -944,6 +940,14 @@ pub enum SettingsEvent {
     DeleteSession { session_id: String },
     /// 重新读取会话列表（宿主走内核 `session.list` 后回填）。
     RefreshSessions,
+    /// 消除所有记忆（三作用域全清，不可撤销；界面已二次确认）。
+    ClearAllMemories,
+    /// 打开记忆文件夹（宿主用系统文件管理器打开记忆根目录）。
+    OpenMemoryFolder,
+    /// 清除所有知识库（知识库根目录下的笔记全删，不可撤销；界面已二次确认）。
+    ClearAllKnowledge,
+    /// 打开知识库文件夹（宿主用系统文件管理器打开知识库根目录）。
+    OpenKnowledgeFolder,
 }
 
 const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
@@ -972,6 +976,8 @@ const EMBEDDING_LIST_HINT: &str = "↑↓ 选择  Enter/→ 编辑渠道或切�
 const EMBEDDING_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  Ctrl+S 保存  Esc 返回列表";
 /// 会话管理页：删除要按两次（先确认再执行），当前会话拒绝删除。
 const SESSIONS_HINT: &str = "↑↓ 选择  D 删除（连按两次确认）  R 刷新  Esc 返回";
+const MEMORY_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
+const KNOWLEDGE_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  D 清除  O 打开目录  Esc 返回";
 /// 沙盒页：列表字段用逗号分隔；保存后当场重建工具表。
 const SANDBOX_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回（列表用逗号分隔；保存后本会话即刻生效）";
 
@@ -1116,7 +1122,6 @@ pub struct SettingsState {
     vision: VisionState,
     /// 提问建议页：一个开关与下方的 Skill 列表。
     suggestion: SuggestionState,
-    choices: ChoicesState,
     model_management: ModelManagementState,
     decision_models: DecisionModelsState,
     embedding_models: EmbeddingModelsState,
@@ -1128,6 +1133,10 @@ pub struct SettingsState {
     tts: TtsState,
     /// 会话管理页：会话列表与删除确认。
     sessions: SessionsState,
+    /// 记忆功能页：开关、遗忘时间与两个操作行。
+    memory: MemoryState,
+    /// 知识库页：开关与两个操作行。
+    knowledge: KnowledgeState,
     /// 本次渲染记录下来的可点区域：渲染只拿 `&self`，所以用 `RefCell`。
     hits: RefCell<Vec<HitRegion>>,
     /// 提问建议页详情正文上一次折行的总行数（渲染层写，滚轮/按键读）。
@@ -1188,11 +1197,6 @@ impl SettingsState {
                 native_previous: values.vision_native,
                 status: String::new(),
             },
-            choices: ChoicesState {
-                show_thinking: values.show_thinking,
-                memory: values.memory_enabled,
-                status: Default::default(),
-            },
             model_management: ModelManagementState {
                 rows: values.channels,
                 default_key: values.default_channel_key,
@@ -1238,6 +1242,16 @@ impl SettingsState {
             model_discoveries: FORM_KINDS.iter().map(|_| ModelDiscovery::new()).collect(),
             tts: TtsState::new(values.tts),
             sessions: SessionsState::default(),
+            memory: {
+                let mut memory = MemoryState::default();
+                memory.sync(values.memory_enabled, values.memory_forget_after_days);
+                memory
+            },
+            knowledge: {
+                let mut knowledge = KnowledgeState::default();
+                knowledge.sync(values.knowledge_enabled);
+                knowledge
+            },
             hits: RefCell::new(Vec::new()),
             suggestion_detail_total: std::cell::Cell::new(0),
             hover: None,

@@ -769,7 +769,9 @@ fn memory_delete_session_matches_python() {
         let session_id = case["session_id"].as_str().expect("session_id");
         let root = temp_path("delete");
         let _ = std::fs::remove_dir_all(&root);
-        let target = root.join(memory::SESSION_MEMORY_DIRECTORY).join(session_id);
+        let target = memory::memory_root(&root)
+            .join(memory::SESSION_MEMORY_DIRECTORY)
+            .join(session_id);
         if case["existed_before"].as_bool().expect("existed_before") {
             std::fs::create_dir_all(&target).expect("建目录");
         }
@@ -833,10 +835,12 @@ fn memory_clean_memory_matches_python() {
 fn memory_user_memory_root_matches_python() {
     let data = fixture();
     let expected = data["memory"]["user_memory_root"].as_str().expect("root");
-    let user_root = Path::new(expected)
+    let memory_root = Path::new(expected)
         .parent()
-        .expect("user root")
+        .expect("记忆汇总根")
         .to_path_buf();
+    let user_root = memory_root.parent().expect("用户数据根").to_path_buf();
+    assert_eq!(norm(&memory::memory_root(&user_root)), norm(&memory_root));
     assert_eq!(norm(&memory::user_memory_root(&user_root)), expected);
 }
 

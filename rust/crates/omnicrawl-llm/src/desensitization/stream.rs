@@ -1,14 +1,14 @@
 //! 流式响应还原：占位符感知的尾部挂起缓冲与结构化还原。
 //!
 //! 语义基准是 Python `omnicrawl/llm/desensitization/stream.py`。文本分片可能把占位符
-//! 切在中间（`…｛Desensitized:1` + `2｝…`）；朴素替换会漏还原或误还原。这里只挂起
+//! 切在中间（`…｛Desensitized:red_tiny_male_ca` + `t｝…`）；朴素替换会漏还原或误还原。这里只挂起
 //! 「可能是占位符前缀 / 未闭合占位符」的尾串（长度有界），其余照常输出；完整占位符
 //! 出现即还原。工具调用参数增量走同一套尾部挂起缓冲（跨分片的占位符同样要还原），
 //! 参数已解析成结构值之后做递归还原（键与结构件不动）。
 //!
 //! 与 Python 的差异（都不出现在真实语料里）：`\s` / `str.isspace()` 含 `\x1c`–`\x1f`
-//! 这类控制分隔符，Rust 的 `char::is_whitespace` 不含；占位符里的序号只认 ASCII 数字，
-//! Python 的 `\d` 还认 Unicode 数字。
+//! 这类控制分隔符，Rust 的 `char::is_whitespace` 不含。占位符标签是单词组（见 `words` 模块），
+//! 旧数字形式仍被接受，两者都能跨分片挂起。
 
 use omnicrawl_protocol::ProviderWarning;
 use serde_json::Value;
@@ -38,7 +38,10 @@ const ARGS_CHANNEL_PREFIX: &str = "args:";
 const STOP_FINISH_REASON: &str = "stop";
 
 /// 占位符最长合理长度（防止「疑似前缀」在异常输入下无限挂起）。
-const MAX_HOLD_CHARS: usize = 64;
+///
+/// 单词组标签形如 `red_tiny_male_cat`（约 18 字符），四段一组、超容量再追加，
+/// 这里的上限只是防御性界限，留出足够余量给长标签与全角变体。
+const MAX_HOLD_CHARS: usize = 128;
 
 /// 单次流式响应的还原状态机（每个尝试一个实例）。
 ///
@@ -394,10 +397,10 @@ fn is_partial_prefix(tail: &str) -> bool {
         return false;
     }
     index = skip_whitespace(&characters, index + 1);
-    while characters
-        .get(index)
-        .is_some_and(|character| normalize_ascii_width(*character).is_ascii_digit())
-    {
+    while characters.get(index).is_some_and(|character| {
+        let normalized = normalize_ascii_width(*character);
+        normalized.is_ascii_alphanumeric() || normalized == '_'
+    }) {
         index += 1;
     }
     index = skip_whitespace(&characters, index);

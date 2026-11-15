@@ -480,7 +480,7 @@ fn split_seq(chars: &[char], separator: &[char]) -> Vec<Vec<char>> {
 ///
 /// 与 Python 的 `\\([a-zA-Z]+|.)` 同语义：优先吃掉整段 ASCII 字母，否则吃单个
 /// 字符；`.` 不匹配换行，因此反斜杠后紧跟换行时无匹配。
-fn match_cmd(chars: &[char], index: usize) -> Option<(usize, String, String)> {
+pub(crate) fn match_cmd(chars: &[char], index: usize) -> Option<(usize, String, String)> {
     if index >= chars.len() || chars[index] != '\\' {
         return None;
     }
@@ -583,7 +583,7 @@ fn to_subscript(text: &str) -> String {
 ///
 /// 返回 `(参数内容, 结束位置)`；参数内容不含外层花括号。反斜杠后无字符时
 /// 对应 Python 里的 `assert match is not None` 失败，用 `Err` 让整次转换回退原文。
-fn read_group(text: &[char], mut index: usize) -> Result<(String, usize), ()> {
+pub(crate) fn read_group(text: &[char], mut index: usize) -> Result<(String, usize), ()> {
     let n = text.len();
     while index < n && text[index] == ' ' {
         index += 1;
@@ -1349,8 +1349,12 @@ fn normalize_redundant_block_dollars(markdown: &str) -> String {
 fn match_formula_span(chars: &[char], index: usize) -> Option<(usize, String, bool)> {
     // 块级 $$..$$（正文至少一个字符，取最近的闭合符）
     if starts_with(chars, index, "$$") {
-        if let Some(close) = find_from(chars, index + 3, "$$") {
-            return Some((close + 2, chars[index + 2..close].iter().collect(), true));
+        // 起点必须是正文开头（`index + 2`）：从 `index + 3` 找会漏掉单字符正文的闭合符，
+        // 例如 `$$x$$` 就找不到结尾，整段退回一维。
+        if let Some(close) = find_from(chars, index + 2, "$$") {
+            if close > index + 2 {
+                return Some((close + 2, chars[index + 2..close].iter().collect(), true));
+            }
         }
     }
     // 块级 \[..\]
@@ -1392,9 +1396,28 @@ fn match_formula_span(chars: &[char], index: usize) -> Option<(usize, String, bo
 }
 
 /// 对映 `_replace_span`。
-fn render_formula_span(body: &str, is_block: bool, raw: &str) -> Result<String, ()> {
+fn render_formula_span(
+    body: &str,
+    is_block: bool,
+    raw: &str,
+    width: Option<usize>,
+) -> Result<String, ()> {
     if body.chars().count() > MAX_FORMULA_LEN {
         return Ok(raw.to_string());
+    }
+    // 块级公式优先二维排版（分数上下叠、根号罩线）：只有块级才占得起多行，
+    // 行内公式必须留在同一行里。排不下（超宽）就退回下面的一维转换。
+    if is_block {
+        if let Some(width) = width {
+            if let Some(boxed) = super::latex_box::layout(body.trim(), width) {
+                let text = boxed.to_string();
+                if !text.trim().is_empty() {
+                    return Ok(format!("
+{text}
+"));
+                }
+            }
+        }
     }
     let body_chars: Vec<char> = body.chars().collect();
     let converted = convert_expr(&body_chars, is_block, 0)?;
@@ -1411,7 +1434,7 @@ fn render_formula_span(body: &str, is_block: bool, raw: &str) -> Result<String, 
 }
 
 /// 对映 `_LATEX_SPANS_RE.sub(_replace_span, ...)`。
-fn replace_formula_spans(text: &str) -> Result<String, ()> {
+fn replace_formula_spans(text: &str, width: Option<usize>) -> Result<String, ()> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out = String::new();
@@ -1421,7 +1444,7 @@ fn replace_formula_spans(text: &str) -> Result<String, ()> {
         if let Some((end, body, is_block)) = match_formula_span(&chars, index) {
             out.push_str(&chars[position..index].iter().collect::<String>());
             let raw: String = chars[index..end].iter().collect();
-            out.push_str(&render_formula_span(&body, is_block, &raw)?);
+            out.push_str(&render_formula_span(&body, is_block, &raw, width)?);
             position = end;
             index = end;
             continue;
@@ -1509,6 +1532,17 @@ pub fn split_blocks(markdown: &str) -> Vec<(String, Option<String>)> {
     }
 }
 
+/// 把一段不含定界符的公式体转成一维 Unicode 文本。
+///
+/// 二维排版层用它处理叶子节点（希腊字母、上下标等）：二维结构自己排，其余仍走这里。
+pub(crate) fn convert_inline(expr: &str) -> String {
+    let chars: Vec<char> = expr.chars().collect();
+    match convert_expr(&chars, false, 0) {
+        Ok(text) => text,
+        Err(()) => expr.to_string(),
+    }
+}
+
 /// 把 Markdown 文本中的 LaTeX 公式片段转换为 Unicode 可读文本。
 ///
 /// 无公式标记时原样返回（快速路径）；任何解析失败都回退原文，
@@ -1520,13 +1554,30 @@ pub fn latex_to_text(markdown: &str) -> String {
     if !markdown.contains('$') && !markdown.contains('\\') && !has_block_formula(markdown) {
         return markdown.to_string();
     }
-    match latex_to_text_inner(markdown) {
+    match latex_to_text_inner(markdown, None) {
         Ok(text) => text,
         Err(()) => markdown.to_string(),
     }
 }
 
-fn latex_to_text_inner(markdown: &str) -> Result<String, ()> {
+/// 同 [`latex_to_text`]，但知道可用列宽：块级公式按二维排版。
+///
+/// 宽度只影响块级公式（`$$..$$`、`\[..\]`、数学围栏）：`rac` 会上下叠放、
+/// `\sqrt` 会用横线罩住被开方数。排出来超过 `width` 时自动退回一维，不会撑破正文。
+pub fn latex_to_text_with_width(markdown: &str, width: usize) -> String {
+    if markdown.is_empty() {
+        return markdown.to_string();
+    }
+    if !markdown.contains('$') && !markdown.contains('\\') && !has_block_formula(markdown) {
+        return markdown.to_string();
+    }
+    match latex_to_text_inner(markdown, Some(width)) {
+        Ok(text) => text,
+        Err(()) => markdown.to_string(),
+    }
+}
+
+fn latex_to_text_inner(markdown: &str, width: Option<usize>) -> Result<String, ()> {
     // 数学 fenced 归一化为 $$...$$；普通代码 fenced 先替换为占位符，
     // 防止其中的 $x$ 被误当作公式，最终再完整恢复原文。
     let (mut guarded, protected_fences) = normalize_fenced_blocks(markdown);
@@ -1536,7 +1587,7 @@ fn latex_to_text_inner(markdown: &str) -> Result<String, ()> {
     guarded = guarded.replace("\\(", "$").replace("\\)", "$");
     guarded = guarded.replace("\\$", &ESCAPED_DOLLAR.to_string());
     guarded = normalize_redundant_block_dollars(&guarded);
-    let mut converted = replace_formula_spans(&guarded)?;
+    let mut converted = replace_formula_spans(&guarded, width)?;
     converted = converted.replace(ESCAPED_DOLLAR, "$");
     for (token, original) in protected_fences {
         converted = converted.replace(&token, &original);
@@ -1612,6 +1663,42 @@ mod tests {
     fn explanatory_sentence_is_not_treated_as_math() {
         let text = "Use \\frac{a}{b} for fractions";
         assert_eq!(latex_to_text(text), text);
+    }
+
+    #[test]
+    fn block_formula_renders_in_two_dimensions() {
+        // 块级公式：分数上下叠放，分子分母居中对齐。
+        let rendered = latex_to_text_with_width(r"$$\frac{a+b}{c}$$", 40);
+        let lines: Vec<&str> = rendered.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines, vec!["a+b", "───", " c"], "块级分数要上下叠放");
+        assert!(!rendered.contains("(a+b)/c"), "不该退回一维斜杠除式");
+    }
+
+    #[test]
+    fn inline_formula_stays_on_one_line() {
+        // 行内公式没有多行的余地：仍然是一维斜杠除式。
+        let rendered = latex_to_text_with_width(r"值是 $\frac{a+b}{c}$ 结束", 40);
+        assert!(rendered.contains("(a+b)/c") || rendered.contains("a+b/c"), "{rendered:?}");
+        assert_eq!(
+            rendered.lines().filter(|l| !l.trim().is_empty()).count(),
+            1,
+            "行内不能拆成多行：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_window_falls_back_to_one_dimension() {
+        // 装不下二维结构时退回一维，绝不撑破正文。
+        let rendered = latex_to_text_with_width(r"$$\frac{alpha+beta}{gamma}$$", 3);
+        assert!(!rendered.contains('─'), "窄窗不该画分数线：{rendered:?}");
+    }
+
+    #[test]
+    fn sqrt_block_puts_a_bar_over_the_body() {
+        let rendered = latex_to_text_with_width(r"$$\sqrt{x^2+y^2}$$", 40);
+        assert!(rendered.contains('─'), "根号要有横线：{rendered:?}");
+        assert!(rendered.contains('√'), "根号要有符号：{rendered:?}");
+        assert!(rendered.contains("x²"), "指数仍走一维转换：{rendered:?}");
     }
 
     #[test]

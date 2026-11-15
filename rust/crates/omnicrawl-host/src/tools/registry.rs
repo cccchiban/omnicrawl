@@ -170,7 +170,7 @@ impl Default for ToolExecution {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RegistryOptions {
     /// 记忆工具是否注册。
     pub memory_enabled: bool,
@@ -190,6 +190,11 @@ pub struct RegistryOptions {
     pub allowed_tools: Option<Vec<String>>,
     /// 知识库根目录；未配置时用 `~/.OmniCrawl/knowledge`。
     pub knowledge_root: Option<PathBuf>,
+    /// 知识库工具是否注册（`[knowledge] enabled`）：整组进表或整组不进表。
+    ///
+    /// 默认开启，与 `[knowledge]` 缺省时的业务默认值一致：知识库是既有能力，
+    /// 升级后不该悄悄消失。装配处仍应显式按配置填入真值。
+    pub knowledge_enabled: bool,
     /// 配置工具的配置环境；未注入时按进程环境解析 `~/.OmniCrawl`。
     pub config_env: Option<ConfigEnvironment>,
     /// 沙盒运行期配置；未注入时按 `~/.OmniCrawl/config.toml` 的 `[sandbox]` 段构造。
@@ -233,6 +238,39 @@ pub struct RegistryOptions {
 impl crate::host::ToolFacts for ToolRegistry {
     fn facts(&self, tool: &str) -> Option<(String, String)> {
         self.approval_facts(tool)
+    }
+}
+
+impl Default for RegistryOptions {
+    fn default() -> Self {
+        Self {
+            memory_enabled: false,
+            memory: MemoryOptions::default(),
+            subagent_roles: Vec::new(),
+            session_held_by_kernel: false,
+            disabled_tools: Vec::new(),
+            allowed_tools: None,
+            knowledge_root: None,
+            // 知识库是既有能力：缺省构造也必须开启，否则凡是没显式装配的宿主
+            // （测试、子代理子回合）都会看到「知识库工具整组消失」。
+            knowledge_enabled: true,
+            config_env: None,
+            sandbox: None,
+            knowledge_rerank: Arc::default(),
+            skill_rerank: Arc::default(),
+            search_embedding: Arc::default(),
+            web_search: WebSearchOptions::default(),
+            fetcher: FetcherOptions::default(),
+            image_gen: ImageGenOptions::default(),
+            tts: None,
+            advisor: AdvisorOptions::default(),
+            computer_use: false,
+            windows_tools: false,
+            mcp: None,
+            monitors: None,
+            cancel: None,
+            net_approval_interactive: false,
+        }
     }
 }
 
@@ -319,13 +357,17 @@ impl ToolRegistry {
         let mut available: Vec<String> = META_RUNNERS
             .iter()
             .chain(BOUND_RUNNERS.iter())
-            .chain(KNOWLEDGE_RUNNERS.iter())
             .chain(MEMORY_RUNNERS.iter())
             .chain(NET_RUNNERS.iter())
             .chain(SKILL_RUNNERS.iter())
             .chain(IMAGE_RUNNERS.iter())
             .map(|name| (*name).to_string())
             .collect();
+        // 知识库组整组进表或整组不进表（`[knowledge] enabled`）：与记忆组同一口径，
+        // 关掉之后模型看不到 `kb_*`，也就不会去调用必然失败的入口。
+        if options.knowledge_enabled {
+            available.extend(KNOWLEDGE_RUNNERS.iter().map(|name| (*name).to_string()));
+        }
         if options.tts.is_some() {
             available.extend(TTS_RUNNERS.iter().map(|name| (*name).to_string()));
         }
@@ -1327,6 +1369,7 @@ mode = \"review\"
                     &omnicrawl_config::features::tts_cloud::TtsCloudConfiguration::default(),
                     omnicrawl_config::features::tts_cloud::TtsApiConfiguration::default(),
                     omnicrawl_config::features::tts_cloud::GeminiTtsConfiguration::default(),
+                    omnicrawl_config::features::tts_cloud::DeepSeekTtsConfiguration::default(),
                 ),
                 root.clone(),
             ))),
@@ -1424,6 +1467,37 @@ mode = \"review\"
             "{}",
             found.output
         );
+    }
+
+    #[test]
+    fn knowledge_tools_follow_the_switch() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-knowledge-switch");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+
+        let on = RegistryOptions {
+            knowledge_enabled: true,
+            knowledge_root: Some(root.join("kb-on")),
+            ..RegistryOptions::default()
+        };
+        let names = declared_names(&ToolRegistry::new(&root, &on, 360).expect("工具表应当构建成功"));
+        for expected in KNOWLEDGE_RUNNERS {
+            assert!(names.contains(expected), "开关开启时缺少 {expected}");
+        }
+
+        // 关掉之后整组消失：模型看不到入口，也就不会去调用必然失败的 `kb_*`。
+        let off = RegistryOptions {
+            knowledge_enabled: false,
+            knowledge_root: Some(root.join("kb-off")),
+            ..RegistryOptions::default()
+        };
+        let names = declared_names(&ToolRegistry::new(&root, &off, 360).expect("工具表应当构建成功"));
+        for gone in KNOWLEDGE_RUNNERS {
+            assert!(!names.contains(gone), "开关关闭时不该出现 {gone}");
+        }
+        // 别的组不受牵连（记忆组在 default() 里本就是关闭的，换 core 工具做对照）。
+        assert!(names.contains("read"), "核心工具不该被连坐");
+        assert!(names.contains("web_search"), "联网工具不该被连坐");
     }
 
     #[test]

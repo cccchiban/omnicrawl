@@ -195,6 +195,15 @@ pub trait AgentDriver: Send + Sync + 'static {
     /// 执行一个回合：事件经 `events` 外发，返回最终回答文本。
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError>;
 
+    /// 跑一个**独立于主循环**的回合：不占主会话、不写主对话历史、不参与单活动名额，
+    /// 供定时总结这类后台动作使用。
+    ///
+    /// 宿主应另起一套会话（自己的会话根）来跑；不支持隔离回合的宿主返回错误，
+    /// 连接器只记日志、不阻断主循环。
+    fn run_isolated_turn(&self, _text: &str) -> Result<String, String> {
+        Err("当前宿主不支持独立回合。".to_string())
+    }
+
     /// 请求取消当前回合（建议性，宿主在下一个模型或工具批次边界检查）。
     fn request_cancel(&self);
 

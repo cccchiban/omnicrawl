@@ -171,7 +171,7 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
   （索引元数据 + 转录投影 + `pending_user_text` / `todo_items`）。
 - 会话根已对齐 Python 的 `~/.OmniCrawl/.agent_sessions`（不绑工作区）。
 - 交给内核的 `session` 块带齐**记忆根与整段压缩策略**：`memory_root` 取用户数据根（`[memory] enabled`
-  缺省开启时；与 `/memory/clean` 同一个根），`compaction` 由 `[context_compaction]` 整段映射（触发阈值
+  缺省开启时；会话级目录由内核按 `~/.omnicrawl/memory/Session_memory/<id>` 解析，与 `/memory/clean` 同根），`compaction` 由 `[context_compaction]` 整段映射（触发阈值
   优先按当前窗口的百分比换算，`target_summary_tokens = 0` 原样传「不限预算」）。内核不读配置文件，
   不给就是默认值（摘要预算 2000 token、记忆回写关闭）；启动与「切会话 / 切工作区重起内核」共用同一份
   口径（`service::session_config_defaults`）。运行期切模型时窗口与阈值成对下发，避免「新窗口 + 旧阈值」。

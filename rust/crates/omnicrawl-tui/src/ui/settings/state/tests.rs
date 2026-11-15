@@ -154,10 +154,10 @@ fn embedding_delete_is_ignored_on_switch_row() {
     assert!(state.embedding_switch_selected());
 }
 
-/// 单选页的初始值：推理强度 medium、思考显示开启、记忆开启。
-fn choice_state() -> SettingsState {
+/// 开关类页面的初始值：推理强度 medium、记忆开启。
+fn page_state() -> SettingsState {
     SettingsState::new(
-        SettingsValues::new(128_000, 80, tool_rows()).with_choices("medium", true, true),
+        SettingsValues::new(128_000, 80, tool_rows()).with_choices("medium", true),
     )
 }
 
@@ -174,7 +174,7 @@ fn model_state(current: &str) -> SettingsState {
                 ChannelRow::default(),
             )
             .with_model(current)
-            .with_choices("medium", true, true),
+            .with_choices("medium", true),
     )
 }
 
@@ -251,9 +251,9 @@ fn list_navigation_wraps_and_switches_panes() {
     assert_eq!(state.selected_key(), "model_management");
     assert_eq!(state.pane(), Pane::ModelManagement);
 
-    // 循环：模型管理已是首行，再上翻直接回到末行，下翻再回首行。
+    // 循环：模型管理已是首行，再上翻直接回到末行（沙盒），下翻再回首行。
     state.handle_key(KeyCode::Up);
-    assert_eq!(state.selected_key(), "show_thinking");
+    assert_eq!(state.selected_key(), "sandbox");
     state.handle_key(KeyCode::Down);
     assert_eq!(state.selected_key(), "model_management");
 }
@@ -600,48 +600,13 @@ fn approval_cycle_matches_python_approval_options() {
 }
 
 #[test]
-fn shown_choice_pages_keep_their_option_lists() {
-    for kind in [ChoiceKind::ShowThinking, ChoiceKind::Memory] {
-        let options = choice_field_options(kind);
-        assert_eq!(
-            options,
-            vec![
-                ("开启".to_string(), OptionValue::Flag(true)),
-                ("关闭".to_string(), OptionValue::Flag(false)),
-            ],
-            "开关类单选页的候选与 Python 的 SelectPane 一致"
-        );
-    }
-}
+fn memory_page_toggle_emits_feature_change() {
+    let mut state = page_state();
+    state.select_key("memory");
+    assert_eq!(state.pane(), Pane::Memory);
+    assert_eq!(state.memory_row_value(MemoryRow::Enabled), "已开启");
 
-#[test]
-fn show_thinking_page_toggles_to_disabled() {
-    let mut state = choice_state();
-    goto(&mut state, "show_thinking");
-    assert_eq!(state.choice_value(), "开启");
-
-    state.handle_key(KeyCode::Enter); // 进面板
-    state.handle_key(KeyCode::Enter); // 展开：游标落在「开启」
-    assert_eq!(state.dropdown().map(|dropdown| dropdown.selected), Some(0));
-    state.handle_key(KeyCode::Down);
-    assert_eq!(
-        state.handle_key(KeyCode::Enter),
-        Some(SettingsEvent::Apply(SettingsChange::ShowThinking {
-            enabled: false
-        }))
-    );
-}
-
-#[test]
-fn memory_toggle_emits_feature_change() {
-    let mut state = choice_state();
-    goto(&mut state, "memory");
-    assert_eq!(state.pane(), Pane::Choice(ChoiceKind::Memory));
-    assert_eq!(state.choice_value(), "开启");
-
-    state.handle_key(KeyCode::Enter);
-    state.handle_key(KeyCode::Char(' ')); // 空格与 Enter 同义：展开候选
-    state.handle_key(KeyCode::Down);
+    // 第一行是开关，`Enter` 直接翻面。
     assert_eq!(
         state.handle_key(KeyCode::Enter),
         Some(SettingsEvent::Apply(SettingsChange::Feature {
@@ -649,25 +614,82 @@ fn memory_toggle_emits_feature_change() {
             enabled: false,
         }))
     );
+    assert_eq!(state.memory_row_value(MemoryRow::Enabled), "已关闭");
 }
 
 #[test]
-fn choice_pages_keep_their_own_status() {
-    let mut state = choice_state();
-    goto(&mut state, "memory");
-    assert_eq!(state.pane_hint(), "", "单选页没有提示行");
+fn knowledge_page_toggle_emits_feature_change() {
+    let mut state = page_state();
+    state.select_key("knowledge");
+    assert_eq!(state.pane(), Pane::Knowledge);
+    assert_eq!(state.knowledge_row_value(KnowledgeRow::Enabled), "已开启");
+
+    // 第一行是开关，`Enter` 直接翻面并交给宿主写盘。
+    assert_eq!(
+        state.handle_key(KeyCode::Enter),
+        Some(SettingsEvent::Apply(SettingsChange::Feature {
+            key: "knowledge".to_string(),
+            enabled: false,
+        }))
+    );
+    assert_eq!(state.knowledge_row_value(KnowledgeRow::Enabled), "已关闭");
+}
+
+#[test]
+fn knowledge_clear_needs_two_presses() {
+    let mut state = page_state();
+    state.select_key("knowledge");
+    state.handle_key(KeyCode::Down); // 落到「清除所有知识库」
+
+    assert_eq!(state.handle_key(KeyCode::Char('d')), None, "第一次只进确认");
+    assert!(state.knowledge_confirming_clear());
+    assert_eq!(
+        state.handle_key(KeyCode::Char('d')),
+        Some(SettingsEvent::ClearAllKnowledge),
+        "第二次才真的发出"
+    );
+    assert!(!state.knowledge_confirming_clear());
+}
+
+#[test]
+fn knowledge_esc_cancels_the_pending_clear_instead_of_leaving() {
+    let mut state = page_state();
+    state.select_key("knowledge");
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Char('d'));
+    assert!(state.knowledge_confirming_clear());
+
+    assert_eq!(state.handle_key(KeyCode::Esc), None);
+    assert!(!state.knowledge_confirming_clear(), "Esc 先取消确认");
+    assert_eq!(state.pane(), Pane::Knowledge, "不连带退出页面");
+}
+
+#[test]
+fn knowledge_open_folder_has_its_own_key() {
+    let mut state = page_state();
+    state.select_key("knowledge");
+    assert_eq!(
+        state.handle_key(KeyCode::Char('o')),
+        Some(SettingsEvent::OpenKnowledgeFolder)
+    );
+}
+
+#[test]
+fn panes_keep_their_own_status() {
+    let mut state = page_state();
+    goto(&mut state, "knowledge");
     state.apply_failed("设置未完成：磁盘只读。".to_string());
     assert_eq!(state.status(), "设置未完成：磁盘只读。");
 
-    state.handle_key(KeyCode::Down); // 焦点仍在左侧：换到下一行
-    assert_eq!(state.selected_key(), "subagents");
-    assert_eq!(state.status(), "", "别的页还没有状态文本");
-    state.handle_key(KeyCode::Up);
+    state.handle_key(KeyCode::Up); // 焦点仍在左侧：换到上一行
     assert_eq!(state.selected_key(), "memory");
+    assert_eq!(state.status(), "", "别的页还没有状态文本");
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.selected_key(), "knowledge");
     assert_eq!(
         state.status(),
         "设置未完成：磁盘只读。",
-        "回到记忆页仍是自己的文本"
+        "回到原页仍是自己的文本"
     );
 }
 
@@ -936,7 +958,7 @@ fn empty_reasoning_value_falls_back_to_none() {
                 ChannelRow::default(),
             )
             .with_model("gpt-main")
-            .with_choices("", true, false),
+            .with_choices("", false),
     );
     goto(&mut state, "model_management");
     assert_eq!(state.model_param_rows()[3].1, "关闭", "空串折算到 none");
@@ -2160,6 +2182,60 @@ fn switching_provider_swaps_the_channel_rows() {
     );
 }
 
+/// 切到 DeepSeek：没有模型与语速行，多出传输方式行，音色换成官方的两只。
+#[test]
+fn deepseek_channel_shows_transport_and_hides_model() {
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues::default()),
+    );
+    goto(&mut state, "tts");
+    state.handle_key(KeyCode::Enter);
+    for _ in 0..TTS_ROW_PROVIDER {
+        state.handle_key(KeyCode::Down);
+    }
+    assert_eq!(state.tts_focused(), TTS_ROW_PROVIDER);
+    // openai → gemini → deepseek
+    state.handle_key(KeyCode::Right);
+    state.handle_key(KeyCode::Right);
+    let labels: Vec<&str> = state.tts_rows().iter().map(|row| row.label).collect();
+    assert!(labels.contains(&"传输方式 transport"), "{labels:?}");
+    assert!(!labels.contains(&"模型 model"), "{labels:?}");
+    assert!(!labels.contains(&"语速 speed"), "{labels:?}");
+    assert_eq!(state.tts_rows().len(), TTS_ROW_COUNT - 2, "少模型与语速两行");
+    let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行可见");
+    assert_eq!(state.tts_rows()[voice].value, "stella", "DeepSeek 默认音色");
+    let transport = state
+        .tts_row_index(TTS_ROW_TRANSPORT)
+        .expect("传输方式行可见");
+    assert_eq!(
+        state.tts_rows()[transport].value,
+        "websocket",
+        "默认 WebSocket 流式"
+    );
+}
+
+/// DeepSeek 的传输方式行就地切档，并落进草稿。
+#[test]
+fn deepseek_transport_row_cycles_and_lands_in_the_draft() {
+    let mut state = SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows()).with_tts(TtsValues {
+            provider: "deepseek".to_string(),
+            ..TtsValues::default()
+        }),
+    );
+    goto(&mut state, "tts");
+    state.handle_key(KeyCode::Enter);
+    while state.tts_focused() != TTS_ROW_TRANSPORT {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Right);
+    let draft = state.tts.draft();
+    match draft.channel {
+        TtsChannelDraft::DeepSeek { transport, .. } => assert_eq!(transport, "http"),
+        other => panic!("应当是 DeepSeek 草稿：{other:?}"),
+    }
+}
+
 /// 选中标记必须落在光标那一行：Gemini 下可见行少一行，与配置行号比会错位。
 #[test]
 fn tts_selection_marker_follows_the_visible_rows() {
@@ -2673,4 +2749,58 @@ fn sandbox_form_values_round_trip_through_the_field_table() {
         values[3].text().parse::<u32>().expect("CPU 上限应是数字"),
         config.limits.cpu_rate_percent
     );
+}
+
+/// 滚轮等价于 `↑` / `↓`：右栏按行移动，到顶不越界。
+#[test]
+fn scroll_wheel_moves_the_pane_selection() {
+    let mut state = page_state();
+    state.select_key("memory");
+    state.scroll(1);
+    assert_eq!(state.memory_selected(), 1);
+    state.scroll(-1);
+    assert_eq!(state.memory_selected(), 0);
+    state.scroll(-1);
+    assert_eq!(state.memory_selected(), 0, "到顶再向上滚不越界");
+}
+
+/// 焦点在左栏时，滚轮换的是一级项而不是右栏的行。
+#[test]
+fn scroll_wheel_moves_the_left_list() {
+    let mut state = page_state();
+    state.back_to_list();
+    let first = state.selected_key();
+    state.scroll(1);
+    assert_ne!(state.selected_key(), first, "左栏滚轮应当换到下一项");
+    state.scroll(-1);
+    assert_eq!(state.selected_key(), first);
+}
+
+/// 一格滚轮最多折算 `SCROLL_MAX_STEPS` 行，避免长列表一次猛滚跳过整屏。
+#[test]
+fn scroll_wheel_is_capped_per_click() {
+    let mut state = page_state();
+    state.select_key("tts");
+    let before = state.tts_focused();
+    state.scroll(10_000);
+    let moved = state.tts_focused().saturating_sub(before);
+    assert!(moved <= SCROLL_MAX_STEPS, "一次滚轮滚了 {moved} 行");
+}
+
+/// 候选浮层展开时，滚轮移动的是候选项本身。
+#[test]
+fn scroll_wheel_moves_the_open_candidate_list() {
+    let mut state = model_state("gpt-main");
+    state.select_key("model_management");
+    // 挪到最后一行参数（推理强度），`Enter` 展开候选。
+    for _ in 0..ModelParamRow::ORDER.len() {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    assert!(state.dropdown().is_some(), "参数行应当展开候选");
+    let before = state.dropdown().map(|dropdown| dropdown.selected);
+    // 向上滚：`medium` 可能已经落在候选末段，向上一定有可移动的余地。
+    state.scroll(-1);
+    let after = state.dropdown().map(|dropdown| dropdown.selected);
+    assert_ne!(before, after, "滚轮应当移动候选项");
 }
