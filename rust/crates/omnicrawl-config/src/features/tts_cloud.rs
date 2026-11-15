@@ -479,7 +479,7 @@ pub fn load_tts_deepseek_configuration(
 /// 保留其他配置段，只更新 DeepSeek 通道配置。
 pub fn save_tts_deepseek_configuration(
     env: &ConfigEnvironment,
-    configuration: ｛Desensitized:red_tiny_male_ox｝,
+    configuration: DeepSeekTtsConfiguration,
     config_path: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
     let configuration = configuration.clone().normalize()?;

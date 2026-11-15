@@ -36,9 +36,12 @@ use omnicrawl_config::features::image_gen::{
 use omnicrawl_config::features::run_guard::{load_run_guard_config, save_run_guard_config};
 use omnicrawl_config::features::subagents::load_subagent_config;
 use omnicrawl_config::features::tools::{load_tool_switches, save_tool_switches};
-use omnicrawl_config::features::tts::{load_tts_configuration, save_tts_configuration};
+use omnicrawl_config::features::tts::{
+    load_tts_configuration, save_tts_configuration, TtsConfiguration,
+};
 use omnicrawl_config::features::tts_cloud::{
-    self, GeminiTtsConfiguration, TtsApiConfiguration, TtsCloudConfiguration,
+    self, DeepSeekTtsConfiguration, GeminiTtsConfiguration, TtsApiConfiguration,
+    TtsCloudConfiguration,
 };
 use omnicrawl_config::models::channels::load_channel_configuration;
 use omnicrawl_config::models::llm::{load_llm_config, ActiveModelRef};
@@ -1220,11 +1223,11 @@ fn serialize_image_gen(
 }
 
 fn serialize_tts(
-    general: &omnicrawl_config::features::tts::TtsConfiguration,
-    cloud: &TtsCloudConfiguration,
-    openai: &TtsApiConfiguration,
-    gemini: &GeminiTtsConfiguration,
-    deepseek: ｛Desensitized:red_tiny_male_ox｝,
+    general: TtsConfiguration,
+    cloud: TtsCloudConfiguration,
+    openai: TtsApiConfiguration,
+    gemini: GeminiTtsConfiguration,
+    deepseek: DeepSeekTtsConfiguration,
 ) -> Value {
     json!({
         "enabled": general.enabled,
