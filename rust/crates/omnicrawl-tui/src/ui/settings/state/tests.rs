@@ -2201,7 +2201,8 @@ fn deepseek_channel_shows_transport_and_hides_model() {
     assert!(labels.contains(&"传输方式 transport"), "{labels:?}");
     assert!(!labels.contains(&"模型 model"), "{labels:?}");
     assert!(!labels.contains(&"语速 speed"), "{labels:?}");
-    assert_eq!(state.tts_rows().len(), TTS_ROW_COUNT - 1, "少模型与语速、多传输方式");
+    // 12 项里隐藏「模型 model」与「语速 speed」，transport 本来就在表内。
+    assert_eq!(state.tts_rows().len(), TTS_ROW_COUNT - 2, "少模型与语速两行");
     let voice = state.tts_row_index(TTS_ROW_VOICE).expect("音色行可见");
     assert_eq!(state.tts_rows()[voice].value, "stella", "DeepSeek 默认音色");
     let transport = state

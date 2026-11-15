@@ -4860,7 +4860,7 @@
     ],
     "hashes": {
       "advisor_design.md": "1e89adcb683577e418474462a3624baa3fc20818c7babc8da85022a5f342042a",
-      "agent_gateway_desensitization_design.md": "5c8a8b2ed4dbe99ba94d68256ed80eb791805e1bca098eaea16b86c1db684be5",
+      "agent_gateway_desensitization_design.md": "4e85590c8631675844314edd4d26a6ab0b64d2ace2e2a9e5b6331f6869ab254e",
       "API.md": "1139c3cfb6d6855b632276be5e58bdf65f619f1b85facb2c427799188b00abdd",
       "decision_api.md": "5a9253c3ce3d003445ee525209d23862e28f020368d1f94d7bf773269addbbed",
       "fetch_api.md": "5e6bdf8433d8db01c92b770c527b0fe55e17f106a56c1d13376ab35a14ecef77",
