@@ -73,22 +73,23 @@ fn free_port() -> u16 {
 
 fn binary() -> PathBuf {
     // 测试可执行文件落在 `target/<profile>/build/<crate>-<hash>/out/` 或 `target/<profile>/deps/`，
-    // 而 `cargo test` 产出的 bin 在 `target/<profile>/`，所以向上逐级找。
+    // 而 cargo 产出的 bin 在 `target/<profile>/`：从测试可执行文件向上找那个 profile 目录。
     let name = if cfg!(windows) {
         "omnicrawl-decision.exe"
     } else {
         "omnicrawl-decision"
     };
-    let mut path = std::env::current_exe().expect("当前测试可执行文件");
-    path.pop();
-    // 最多向上找 4 级：out/ → <crate>-<hash>/ → build/ → <profile>/。
-    for _ in 0..4 {
-        let candidate = path.join(name);
-        if candidate.is_file() {
-            return candidate;
-        }
-        if !path.pop() {
-            break;
+    let exe = std::env::current_exe().expect("当前测试可执行文件");
+    for ancestor in exe.ancestors().skip(1) {
+        let is_profile = matches!(
+            ancestor.file_name().and_then(|part| part.to_str()),
+            Some("debug") | Some("release")
+        );
+        if is_profile {
+            let candidate = ancestor.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
         }
     }
     PathBuf::from(name)
