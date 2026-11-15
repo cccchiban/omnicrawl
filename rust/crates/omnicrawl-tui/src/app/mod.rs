@@ -75,8 +75,11 @@ use omnicrawl_config::features::tts::{
     load_tts_configuration, save_tts_configuration, TtsConfiguration,
 };
 use omnicrawl_config::features::tts_cloud::{
-    load_tts_api_configuration, load_tts_cloud_configuration, load_tts_gemini_configuration,
-    save_tts_api_configuration, save_tts_cloud_configuration, save_tts_gemini_configuration,
+    load_tts_api_configuration, load_tts_cloud_configuration,
+    load_tts_deepseek_configuration,
+    load_tts_gemini_configuration, save_tts_api_configuration,
+    save_tts_cloud_configuration, save_tts_deepseek_configuration,
+    save_tts_gemini_configuration, DeepSeekTtsConfiguration,
     GeminiTtsConfiguration, TtsApiConfiguration, TtsCloudConfiguration,
 };
 use omnicrawl_config::features::web_search::{

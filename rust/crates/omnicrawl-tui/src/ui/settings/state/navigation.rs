@@ -233,12 +233,12 @@ impl SettingsState {
         self.dropdown = None;
     }
 
-    pub(super) fn enter_pane(&mut self) {
+    pub(crate) fn enter_pane(&mut self) {
         self.focus = Focus::Pane;
         self.dropdown = None;
     }
 
-    pub(super) fn back_to_list(&mut self) {
+    pub(crate) fn back_to_list(&mut self) {
         self.focus = Focus::List;
         self.dropdown = None;
     }
