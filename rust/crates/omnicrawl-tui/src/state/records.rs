@@ -387,3 +387,235 @@ impl AppState {
         }
 
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    Running,
+    Ok,
+    Failed,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCard {
+    pub call_id: String,
+    pub name: String,
+    pub summary: String,
+    /// 原始参数（模型给的那份）：标题行走对映层的 `tool_disclosure_title`，
+    /// 它要按参数拼出路径 / 命令 / 行数统计，因此不能只留 `summary` 文本。
+    pub arguments: serde_json::Value,
+    pub status: ToolStatus,
+    pub elapsed: Option<Duration>,
+    pub(crate) started: Instant,
+    pub body: String,
+}
+
+impl ToolCard {
+    /// 当前耗时：终态用落定值，运行中按起始时刻实时算。
+    ///
+    /// 对映 Python `ToolDisclosure` 标题行的活动计时器：运行中的卡片也要显示已耗时，
+    /// 收口后不再变化（渲染保持只读，只是读了一个随时间变化的量）。
+    pub fn live_elapsed_seconds(&self) -> f64 {
+        match self.elapsed {
+            Some(duration) => duration.as_secs_f64(),
+            None => self.started.elapsed().as_secs_f64(),
+        }
+    }
+
+    /// 这张卡上的「立即结束」按钮该结束哪个后台任务；不是运行中的 monitor 卡时 `None`。
+    ///
+    /// 两类卡片都要认：模型调 `monitor` 工具形成的真实工具卡（`call_id` 是内核 id，
+    /// 任务 id 在参数里），以及本地归并出来的 `monitor:<id>` 卡（任务 id 在 `call_id` 里）。
+    /// 参数还在流里时卡片自己的参数是空的，任务 id 只存在于侧信道的半截 JSON 里。
+    pub fn monitor_task_id(&self, streaming: Option<&StreamingTool>) -> Option<String> {
+        if let Some(monitor_id) = self
+            .call_id
+            .strip_prefix("monitor:")
+            .filter(|id| !id.is_empty())
+        {
+            return Some(monitor_id.to_string());
+        }
+        if self.status != ToolStatus::Running || !is_monitor_tool(&self.name) {
+            return None;
+        }
+        [
+            Some(&self.arguments),
+            streaming.map(|entry| &entry.arguments),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|arguments| {
+            arguments
+                .get("monitor_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|monitor_id| !monitor_id.is_empty())
+                .map(str::to_string)
+        })
+    }
+}
+
+/// 这张卡是不是模型调 `monitor` 工具形成的卡（工具名可带命名空间前缀）。
+///
+/// 与 `ui::conversation::is_monitor_card` 同一判据：`monitor` 工具卡与本地归并出来的
+/// `monitor:<id>` 卡都算后台任务卡。
+pub fn is_monitor_tool(name: &str) -> bool {
+    name.rsplit('.').next().unwrap_or(name) == "monitor"
+}
+
+/// 一次工具调用在「参数还在流里」阶段的侧信道状态（按 call_id 索引）。
+///
+/// 不塞进 `ToolCard` 的理由：卡片由批次执行（`tool.started`）创建，而这里的条目从模型
+/// 刚吐出 `tool.started`（`turn.tool_call_started`）就存在，两者生命周期不同；压缩提示
+/// 也要在批次执行之后继续挂在卡片上方，所以整轮都留着，回合结束再清。
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamingTool {
+    /// 累积的 arguments 原文（可能还是半截 JSON）。
+    pub text: String,
+    /// 容错解析出来的参数：流式阶段标题行与文件预览都从这里取。
+    pub arguments: serde_json::Value,
+    /// 压缩阶段提示（`正在压缩…`）或失败文案（压缩超时/压缩失败）。
+    pub compression: Option<String>,
+    /// 提示是不是失败文案：渲染时用红色，好和正常的计量提示区分。
+    pub compression_failed: bool,
+    /// 是否仍在写参数（批次执行开始后置 false，卡片正文改由真实载荷驱动）。
+    pub streaming: bool,
+}
+
+/// 一条用户消息：正文 + 图片预览锚点 + 随行文档路径。
+///
+/// 图片 Base64 只在提交/重放时短暂存在，交给 [`ImagePreviews`] 解码后立即释放；
+/// 记录里只留锚点，否则每条历史消息都会把整张原图常驻在内存里。
+/// 文档只留路径（本来就是磁盘上的文件，没有可缓存的内容），渲染时逐行显示在正文下方。
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserRecord {
+    pub text: String,
+    /// 图片预览在 [`ImagePreviews`] 里的锚点（与工具卡用 `call_id` 同一思路）。
+    ///
+    /// 每条用户消息一个：同一条消息的多张图属于同一块，滚动/重算都按这个键找回。
+    pub image_key: String,
+    /// 随这条消息发出的文档完整路径（多个按粘贴顺序上下排列）。
+    pub documents: Vec<String>,
+}
+
+impl UserRecord {
+    /// 纯文本消息（没有粘贴图片，或旧重放路径没带图片）。
+    pub fn text_only(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            image_key: String::new(),
+            documents: Vec::new(),
+        }
+    }
+
+    /// 这条消息会不会出图。
+    pub fn has_images(&self) -> bool {
+        !self.image_key.is_empty()
+    }
+
+    /// 这条消息有没有随行文档。
+    pub fn has_documents(&self) -> bool {
+        !self.documents.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Record {
+    User(UserRecord),
+    Reasoning(String),
+    Assistant(String),
+    Tool(ToolCard),
+    Notice(String),
+    /// 回合失败的提示：正文 + 是否提供「重试」按钮。
+    ///
+    /// 只有**可重发**的失败才带按钮（网络中断、上游 5xx、重试用尽）：点击后用原样的
+    /// 用户消息再提交一次，等价于用户手动重发，从而重新进入自动重试循环。
+    /// 取消、上下文超限、工具状态被拒这类需要先改输入或先压缩的失败不带按钮。
+    Failure {
+        message: String,
+        retryable: bool,
+    },
+    /// 一个 SubAgent 批次在宿主侧的独立窗口受理提示。
+    ///
+    /// 子代理的过程文本与工具调用不再进消息流（它们由 `subagent-window` 子进程渲染），
+    /// 消息流里只留这一行，避免把主会话撑成进度树。
+    SubagentWindow(SubagentWindowNotice),
+}
+
+/// 窗口受理提示：批次号 + 流水文件（用户可据此自己重开窗口）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentWindowNotice {
+    pub batch_id: String,
+    pub stream: String,
+}
+
+impl SubagentWindowNotice {
+    /// 消息流里那一行（渲染成 `· ` 提示行）。
+    pub fn line(&self) -> String {
+        format!(
+            "子代理在独立窗口运行（批次 {}，结束自动关闭）；流水：{}",
+            self.batch_id, self.stream
+        )
+    }
+}
+
+/// 子代理窗口流水的默认落盘目录：与诊断日志同根（`~/.omnicrawl/logs/subagents`）。
+///
+/// 放在日志目录下是因为它和 `tui.log` 一样是「现场」，任务结束后仍值得回看。
+pub(crate) fn default_subagent_stream_root() -> PathBuf {
+    user_config_dir(&ConfigEnvironment::from_process())
+        .join("logs")
+        .join("subagents")
+}
+
+/// Monitor 任务状态 → 卡片状态：字符串取值与 `MonitorManager` 的快照同源。
+///
+/// `stopped`（被显式终止）归「成功」是因为它同样是终态；用词不精确但原始状态字符串
+/// 仍在卡片正文里（`Monitor · id · stopped`），不必为了措辞新增一个渲染分支。
+pub(crate) fn monitor_status(status: &str) -> ToolStatus {
+    match status {
+        "running" => ToolStatus::Running,
+        "failed" => ToolStatus::Failed,
+        _ => ToolStatus::Ok,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnState {
+    Idle,
+    Running { turn_id: String },
+}
+
+impl TurnState {
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
+    pub fn turn_id(&self) -> Option<&str> {
+        match self {
+            Self::Running { turn_id } => Some(turn_id),
+            Self::Idle => None,
+        }
+    }
+}
+
+/// 上一个回合的结局：终端标签页标题据此显示 ✓ / ⩍ / ✕。
+///
+/// `None` 表示还没跑过回合（标题仍是待机标记）。进行中不看这里，看 [`TurnState`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// 回合正常收尾。
+    Done,
+    /// 回合收尾但需用户留意：被模型暂停（`turn.finished` 的 `paused`）。
+    Warning,
+    /// 回合以失败结束：上游错误、取消、内核退出。
+    Failed,
+}
+
+/// 子任务状态是否已是终态（独立窗口用它挡住迟到的活动事件）。
+pub fn subagent_status_is_terminal(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "approval_cancelled"
+    )
+}

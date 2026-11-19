@@ -322,3 +322,215 @@ impl AppState {
         }
     }
 }
+
+/// 从「可能还是半截」的 arguments 原文里尽力取出已经到达的字段。
+///
+/// 模型流里的 arguments 是分片到达的，中途必然是半截 JSON
+/// （`{"path": "a.py", "content": "第一`）。但标题行与 `write_file` / `Edit_file` 的内容预览
+/// 要跟着流一起长出来，所以这里做一次容错解析：先用 `serde_json` 正常解析，失败就按
+/// 「补上收尾」的候选逐个再试（补未闭合的字符串 / 补未闭合的对象），最后退化成
+/// 「截到最后一个完整字段」。
+pub(crate) fn partial_arguments(text: &str) -> serde_json::Value {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if value.is_object() {
+            return value;
+        }
+    }
+    let trimmed = text.trim_end();
+    let quote = '"';
+    let mut candidates = vec![format!("{trimmed}{quote}}}"), format!("{trimmed}}}")];
+    if let Some(cut) = last_complete_field(trimmed) {
+        // 截到最后一个完整字段：末尾那个逗号要去掉，否则补出来的对象带尾逗号仍然不合法。
+        candidates.push(format!(
+            "{}}}",
+            trimmed[..cut].trim_end().trim_end_matches(',')
+        ));
+    }
+    for candidate in candidates {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            if value.is_object() {
+                return value;
+            }
+        }
+    }
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// 半截 JSON 里最后一个「完整顶层字段」的结束位置（逗号之后），没有就返回 None。
+///
+/// 扫描时跟踪字符串状态：字段值内部的逗号不能当分隔符。
+fn last_complete_field(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut last = None;
+    for (index, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth <= 1 => last = Some(index + 1),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// `tool_call_summary` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 计量取事件自己记下的原始与概括字符数：回放时重算不出来（正文已含落盘说明），
+/// 而实时通知与回放必须显示同一行，否则恢复会话后边界会变样。
+fn replay_compaction_notice(payload: &serde_json::Value) -> Option<String> {
+    let raw = payload
+        .get("raw_chars")
+        .and_then(serde_json::Value::as_u64)?;
+    let summary = payload
+        .get("summary_chars")
+        .and_then(serde_json::Value::as_u64)?;
+    // 没有净省就不显示：实时那条也不显示，回放必须与它逐字一致。
+    omnicrawl_controllers::compression::saved_tokens_notice(raw as usize, summary as usize)
+}
+
+/// `tool_call_eviction` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 淘汰的净省量是剔除前后实测出来的（不是按字符数折算），事件里直接记着最终值，
+/// 回放照原样显示即可——旧事件没有该字段时宁可不显示，也不显示一个假的 0。
+fn replay_eviction_notice(payload: &serde_json::Value) -> Option<String> {
+    let saved = payload
+        .get("saved_tokens")
+        .and_then(serde_json::Value::as_i64)?;
+    Some(omnicrawl_controllers::turn::compaction::format_compaction_savings_notice(saved))
+}
+
+/// `turn_compaction` 事件 → 会话区计量行；载荷缺计量字段时返回 `None`。
+///
+/// 这是回合末的**合并**计量：逐批工具输出压缩与决策模型淘汰在同一回合里各自不再成行，
+/// 净省量已经由内核累加好，回放照原样显示即可。
+fn replay_merged_notice(payload: &serde_json::Value) -> Option<String> {
+    let saved = payload
+        .get("saved_tokens")
+        .and_then(serde_json::Value::as_i64)?;
+    omnicrawl_controllers::turn::compaction::format_compaction_savings_option(saved)
+}
+
+/// 已经带合并计量行的回合序号集合（`user_message` 从 1 起算，与回放循环里的计数同口径）。
+///
+/// 回放要先知道「哪些回合已经有合并行」，才能在扫到同回合的 `tool_call_summary` /
+/// `tool_call_eviction` 时跳过那些分项提示——否则新会话会同时画出合并行与分项行。
+/// 旧会话没有 `turn_compaction` 事件，集合为空，分项提示照旧逐条重建。
+fn replayed_merged_turns(events: &[serde_json::Value]) -> std::collections::HashSet<usize> {
+    let mut turns = std::collections::HashSet::new();
+    let mut turn_index = 0usize;
+    for event in events {
+        let event_type = event
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match event_type {
+            "user_message" => turn_index += 1,
+            "turn_compaction" => {
+                turns.insert(turn_index);
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// 回放取文本字段：非空字符串才算命中（对映 Python 的 `isinstance(value, str) and value`）。
+fn replay_text(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// 回放 `user_message` 载荷里的图片附件；没有（或形状不对）时返回空表。
+///
+/// 与 `turn.submit` 的 `TurnImageAttachment` 同形状：旧事件没有该字段，退回纯文本。
+fn replay_user_images(payload: &serde_json::Value) -> Vec<TurnImageAttachment> {
+    let Some(items) = payload.get("images").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            Some(TurnImageAttachment {
+                media_type: item.get("media_type")?.as_str()?.to_string(),
+                data_base64: item.get("data_base64")?.as_str()?.to_string(),
+                detail: item
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 事件时间戳（`created_at`，RFC3339）；缺失或不可解析时为空。
+fn replay_time(event: &serde_json::Value) -> Option<DateTime<Utc>> {
+    event
+        .get("created_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+/// 回放工具卡耗时：两端时间戳齐备且顺序正确时给出差值，否则不显示耗时。
+fn replay_elapsed(
+    started: Option<DateTime<Utc>>,
+    finished: Option<DateTime<Utc>>,
+) -> Option<Duration> {
+    let delta = finished?.signed_duration_since(started?);
+    let millis = delta.num_milliseconds();
+    if millis < 0 {
+        None
+    } else {
+        Some(Duration::from_millis(millis as u64))
+    }
+}
+
+/// 回放取工具正文：优先 UI 正文，其次模型可见输出（与 Python `_replay_tool_output` 同口径）。
+fn replay_output(payload: &serde_json::Value) -> String {
+    for key in ["full_output", "output", "model_output", "output_preview"] {
+        if let Some(value) = replay_text(payload, key) {
+            return value;
+        }
+    }
+    "无输出".to_string()
+}
+
+/// 取非空字符串字段；缺失、类型不符或空串都按「未提供」处理（对映 Python 的 `x or 默认值`）。
+fn payload_text<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+/// 转录里的 SubAgent 事件类型 → 实时通知名（对映 Python `subagent_event_names`）。
+fn replay_subagent_event_name(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "subagent_task_queued" => Some("subagent.task.queued"),
+        "subagent_task_started" => Some("subagent.task.started"),
+        "subagent_task_running" => Some("subagent.task.running"),
+        "subagent_task_waiting_approval" => Some("subagent.task.waiting_approval"),
+        "subagent_task_completed" => Some("subagent.task.completed"),
+        "subagent_task_failed" => Some("subagent.task.failed"),
+        "subagent_task_cancelled" => Some("subagent.task.cancelled"),
+        "subagent_task_approval_cancelled" => Some("subagent.task.approval_cancelled"),
+        _ => None,
+    }
+}
