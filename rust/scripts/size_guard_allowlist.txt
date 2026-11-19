@@ -17,7 +17,6 @@ crates/omnicrawl-tui/src/ui/fullscreen/rendering/latex.rs  1597
 crates/omnicrawl-tls/src/session.rs  1592
 crates/omnicrawl-controllers/src/approval.rs  1552
 crates/omnicrawl-jsdom/src/browser_env/media.rs  1488
-crates/omnicrawl-api/src/service.rs  1387
 crates/omnicrawl-mcp/src/client.rs  1374
 crates/omnicrawl-api/src/routes/settings.rs  1301
 crates/omnicrawl-llm/src/desensitization/engine.rs  1300
