@@ -251,7 +251,7 @@ cargo run -p omnicrawl-tui -- --model deepseek-v4-flash --session-root ../.agent
 | `--session-root <目录>` | 空 | 给了就让内核自己持有会话（转录与压缩） |
 | `--context-window <N>` | 空 | HUD 上下文占用条的分母 |
 | `--approval <manual\|review\|auto>` | config.toml 的 `[approval] mode`（没配时为 `review`） | 命令行给的模式优先；不给时读配置（对齐 Python `load_approval_mode`，含别名与默认值），配置读不出来或取值非法直接报错而不静默降级；`manual` 下非自持工具先弹确认 |
-| `--command-timeout <秒>` | `360` | 命令类工具默认超时（与 `MAX_COMMAND_TIMEOUT_SECONDS` 一致，上限 360） |
+| `--command-timeout <秒>` | `360` | 命令类工具默认超时（只接受正整数，无上限；单次调用可用 `timeout_seconds` 覆盖） |
 | `--tool-timeout <秒>` | `600` | 单批工具执行的最长等待（上限 3600）：超时把未完成的调用写成超时观察、回合继续推进，后台结果被丢弃 |
 
 按键：`Enter` 提交、`Ctrl+J` 换行、`Esc` 取消当前回合（空闲时清空输入）、`↑`/`↓`/`PageUp`/`PageDown`

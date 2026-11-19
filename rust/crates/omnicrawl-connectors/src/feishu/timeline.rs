@@ -16,7 +16,7 @@ use crate::render::{
     todos_text, tool_body, tool_summary, SubagentNode, SUBAGENT_EVENT_STATUS,
     SUBAGENT_TERMINAL_STATUSES, TOOL_TERMINAL_STATUSES,
 };
-use crate::text::{clean_text, split_segment_for_card};
+use crate::text::{clean_text, split_segment_for_card, text_of};
 
 /// 平台消息端口：发送/更新卡片与发送文本。
 pub trait MessagePort: Send + Sync {

@@ -2446,6 +2446,82 @@ mod streaming_tests {
     }
 
     #[test]
+    fn running_card_shows_real_arguments_when_no_deltas_arrive() {
+        // 回归：anthropic / gemini 协议只发 ToolCallStarted，不发参数增量——侧信道参数
+        // 整轮都是空对象。执行开始后真实参数已经由 ToolStarted 填进卡片，此时标题必须
+        // 立刻显示参数，否则「参数」要等结果回填才和结果一起冒出来（用户报的现象）。
+        let mut state = AppState::new(
+            "proj".to_string(),
+            "model".to_string(),
+            ApprovalMode::Manual,
+        );
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        // 没有 ToolCallArguments：模拟不发增量的协议。
+        let call = omnicrawl_core::ToolCall {
+            name: "bash".to_string(),
+            arguments: json!({"command": "cargo check"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            id: "call-1".to_string(),
+            function_name: "bash".to_string(),
+        };
+        state.begin_tool_run(&call, now);
+        let entry = state.streaming_tool("call-1").expect("应当有侧信道状态");
+        assert!(
+            entry.arguments.as_object().is_some_and(|map| map.is_empty()),
+            "前提：这条协议没有喂过参数增量"
+        );
+        assert!(!entry.streaming, "执行开始后不再是流式态");
+
+        let title_now = tool_card_title(&state);
+        assert!(
+            title_now.contains("cargo check"),
+            "执行中就该显示参数，实际：{title_now}"
+        );
+
+        // 结果回填后标题保持同一份参数（不能变空，也不能退回流式预览）。
+        state.finish_tool_run(
+            &call,
+            &omnicrawl_core::ToolResult {
+                ok: true,
+                output: "ok".to_string(),
+                full_output: String::new(),
+                error_code: None,
+                retryable: false,
+            },
+            now,
+        );
+        let title_done = tool_card_title(&state);
+        assert!(
+            title_done.contains("cargo check"),
+            "完成后仍应显示参数，实际：{title_done}"
+        );
+    }
+
+    /// 会话区里第一条含工具名的标题行文本。
+    fn tool_card_title(state: &AppState) -> String {
+        crate::ui::conversation::display_lines(state, 100)
+            .iter()
+            .map(|line| {
+                line.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .find(|text| text.contains("bash"))
+            .unwrap_or_default()
+    }
+
+    #[test]
     fn compression_note_tracks_the_two_phases() {
         let mut state = AppState::new(
             "proj".to_string(),

@@ -7379,7 +7379,7 @@
           {
             "name": "bash",
             "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -7387,7 +7387,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -7610,7 +7610,7 @@
           {
             "name": "bash",
             "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -7618,7 +7618,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -7893,7 +7893,7 @@
           {
             "name": "bash",
             "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -7901,7 +7901,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8097,7 +8097,7 @@
           {
             "name": "bash",
             "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8105,7 +8105,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8317,7 +8317,7 @@
           {
             "name": "bash",
             "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8325,7 +8325,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
@@ -8519,7 +8519,7 @@
           {
             "name": "powershell",
             "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
             "run_in_subprocess": true

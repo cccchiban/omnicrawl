@@ -21,7 +21,7 @@ use crate::render::{
     tool_summary, SubagentNode, SUBAGENT_EVENT_STATUS, SUBAGENT_TERMINAL_STATUSES,
     TOOL_TERMINAL_STATUSES,
 };
-use crate::text::clean_text;
+use crate::text::{clean_text, text_of};
 
 /// 平台消息端口：创建消息、编辑消息与发送普通文本。
 pub trait MessagePort: Send + Sync {

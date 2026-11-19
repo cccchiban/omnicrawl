@@ -26,7 +26,6 @@ use crate::sandbox::gate::{IsolationGate, Plan};
 use crate::sandbox::Sandbox;
 
 pub const DEFAULT_COMMAND_TIMEOUT_SECONDS: i64 = 360;
-pub const MAX_COMMAND_TIMEOUT_SECONDS: i64 = 360;
 /// 与 Python `workspace/temp.py` 的默认 Agent 临时目录一致。
 pub const AGENT_TEMP_DIRECTORY: &str = ".omnicrawl/.agent_tmp";
 /// 未识别参数时的提示前缀（与 Python 同文案）。
@@ -154,7 +153,7 @@ impl CommandRunner {
     ) -> Self {
         Self {
             root: root.into(),
-            timeout_seconds: timeout_seconds.clamp(1, MAX_COMMAND_TIMEOUT_SECONDS),
+            timeout_seconds: timeout_seconds.max(1),
             gate: IsolationGate::new(sandbox),
         }
     }
@@ -199,13 +198,7 @@ impl CommandRunner {
                 return Err(ToolError::new("diagnostic_command 必须是字符串。"));
             }
         };
-        let timeout = limited_int(
-            arguments,
-            "timeout_seconds",
-            self.timeout_seconds,
-            1,
-            MAX_COMMAND_TIMEOUT_SECONDS,
-        );
+        let timeout = limited_int(arguments, "timeout_seconds", self.timeout_seconds, 1, i64::MAX);
 
         let primary = self.run_invocation(&command, shell, timeout, cancel)?;
         if diagnostic_command.is_empty() {
@@ -310,7 +303,7 @@ impl CommandRunner {
         let stdout = child.stdout.take().map(spawn_reader);
         let stderr = child.stderr.take().map(spawn_reader);
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_seconds.max(1) as u64);
+        let deadline = deadline_after(timeout_seconds);
         let mut cancelled = false;
         let status = loop {
             if let Ok(Some(status)) = child.try_wait() {
@@ -321,7 +314,7 @@ impl CommandRunner {
                 cancelled = true;
                 break None;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 kill_process_tree(&mut child, job.take());
                 cancel.unregister(pid);
                 return Err(ToolError::new(format!(
@@ -375,7 +368,7 @@ impl CommandRunner {
         let pid = spawned.child.id();
         cancel.register(pid);
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_seconds.max(1) as u64);
+        let deadline = deadline_after(timeout_seconds);
         let mut cancelled = false;
         let exit_code = loop {
             if let Some(code) = spawned.child.try_wait() {
@@ -386,7 +379,7 @@ impl CommandRunner {
                 cancelled = true;
                 break None;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 spawned.child.kill();
                 cancel.unregister(pid);
                 return Err(ToolError::new(format!(
@@ -477,6 +470,15 @@ fn decode_console_bytes(bytes: &[u8]) -> String {
             decoded.to_string()
         }
     }
+}
+
+/// 超时截止时间：秒数大到 `Instant` 装不下时按「不设超时」处理。
+///
+/// 上限已取消，模型可以直接给一个天文数字；`Instant + Duration` 溢出会 panic，
+/// 在这里换成 `None` 后循环里永不判超时，取消与 kill-on-close 仍然生效。
+fn deadline_after(timeout_seconds: i64) -> Option<Instant> {
+    let seconds = u64::try_from(timeout_seconds.max(1)).ok()?;
+    Instant::now().checked_add(Duration::from_secs(seconds))
 }
 
 fn spawn_reader<R: Read + Send + 'static>(mut stream: R) -> thread::JoinHandle<String> {
@@ -889,6 +891,22 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(diagnostic_type.message, "diagnostic_command 必须是字符串。");
+    }
+
+    #[test]
+    fn oversized_timeouts_are_not_clamped() {
+        // 上限取消后，模型给的秒数原样生效；只有下限 1 秒与「装不下即不设超时」两条兜底。
+        let args_with = |seconds: i64| args(json!({"command": "echo hi", "timeout_seconds": seconds}));
+        assert_eq!(
+            limited_int(&args_with(9999), "timeout_seconds", 360, 1, i64::MAX),
+            9999
+        );
+        assert_eq!(
+            limited_int(&args_with(0), "timeout_seconds", 360, 1, i64::MAX),
+            1
+        );
+        assert_eq!(deadline_after(i64::MAX), None);
+        assert!(deadline_after(1).is_some());
     }
 
     #[test]

@@ -214,7 +214,7 @@ fn parse_with(
                     .trim()
                     .parse::<i64>()
                     .map_err(|_| format!("--command-timeout 需要正整数秒，收到：{value}"))?;
-                command_timeout = Some(parsed.clamp(1, 360));
+                command_timeout = Some(parsed.max(1));
             }
             "--tool-timeout" => {
                 let value = take_value(args, &mut index, flag)?;
@@ -510,9 +510,9 @@ mod tests {
     }
 
     #[test]
-    fn command_timeout_is_clamped_to_the_python_range() {
-        let clamped = options(&["--model", "m", "--command-timeout", "9999"]);
-        assert_eq!(clamped.command_timeout_seconds, 360);
+    fn command_timeout_accepts_large_values() {
+        let large = options(&["--model", "m", "--command-timeout", "9999"]);
+        assert_eq!(large.command_timeout_seconds, 9999);
         let custom = options(&["--model", "m", "--command-timeout", "30"]);
         assert_eq!(custom.command_timeout_seconds, 30);
         let error = options_err(&["--model", "m", "--command-timeout", "abc"]);

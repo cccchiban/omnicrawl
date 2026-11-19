@@ -1503,14 +1503,16 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     let expanded = state.is_tool_expanded(&card.call_id);
     let result_text = card.body.as_str();
     // 参数来源：还在「模型写参数」的流式阶段用侧信道的容错解析结果（可能是半截 JSON，
-    // 但已经到达的 path / command / content 足够把标题与文件预览画出来）；批次执行
-    // 之后一律用卡片自己的真实参数。
-    // 只有**还在跑**的卡片才用流式阶段的半截参数做预览；一旦终态，一律用卡片自己的
-    // 真实参数与结果——否则会出现「工具调用完成了却还显示调用中/预览」的错位。
+    // 但已经到达的 path / command / content 足够把标题与文件预览画出来）；一旦模型写完
+    // （`ToolStarted` 把侧信道置为非流式）就用卡片自己的真实参数。
+    // 判据必须是侧信道的 `streaming` 标记而不是卡片状态：`ToolStarted` 到达时卡片仍是
+    // `Running`，此时真实参数已经在卡片上，继续读侧信道会让「执行中」的卡片显示空参数
+    // （anthropic / gemini 协议不发参数增量，侧信道整轮都是空对象），参数要等结果回填
+    // 才冒出来。终态同理。
     let streaming = state.streaming_tool(&card.call_id);
     let running = card.status == ToolStatus::Running;
     let arguments = match streaming {
-        Some(entry) if running => &entry.arguments,
+        Some(entry) if entry.streaming => &entry.arguments,
         _ => &card.arguments,
     };
     let title = tool_diff::tool_disclosure_title(

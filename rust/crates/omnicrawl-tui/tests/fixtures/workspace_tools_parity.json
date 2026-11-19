@@ -108,8 +108,7 @@
               },
               "timeout_seconds": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": 360
+                "minimum": 1
               }
             },
             "required": [
@@ -140,8 +139,7 @@
               },
               "timeout_seconds": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": 360
+                "minimum": 1
               }
             },
             "required": [
