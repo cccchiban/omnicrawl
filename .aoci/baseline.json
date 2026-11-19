@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-19T05:51:58Z",
-  "updated_at": "2026-11-19T10:05:26Z",
+  "updated_at": "2026-11-19T15:04:59Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -47,9 +47,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "4727854f6990efaf9f853f2d2fd0bdbcaddea11623b3b1cdeec3933e6f8e15e8",
-      "size": 310764,
-      "normalized_sha256": "4727854f6990efaf9f853f2d2fd0bdbcaddea11623b3b1cdeec3933e6f8e15e8"
+      "sha256": "a11967f82b6a45f5451f02822b253bd3bc19075ad32fc35bcb5b95e0bc0e0fd2",
+      "size": 321354,
+      "normalized_sha256": "a11967f82b6a45f5451f02822b253bd3bc19075ad32fc35bcb5b95e0bc0e0fd2"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -716,15 +716,21 @@
     },
     "rust/crates/omnicrawl-api/src/service.rs": {
       "role": "index",
-      "sha256": "f958f1afd9b3a0aeae20f532c14b0d2f2557eb5f104b50e194fbeb1a95101aa9",
-      "size": 61160,
-      "normalized_sha256": "f958f1afd9b3a0aeae20f532c14b0d2f2557eb5f104b50e194fbeb1a95101aa9"
+      "sha256": "d0001d1da71b35681c70628913226055667714480c58d17db86abff630c8883f",
+      "size": 30697,
+      "normalized_sha256": "d0001d1da71b35681c70628913226055667714480c58d17db86abff630c8883f"
     },
     "rust/crates/omnicrawl-api/src/service/catalog.rs": {
       "role": "index",
       "sha256": "c8189a43c1c4e8cb35628ec3b110697947e412a5d0552d1b9fecfebe2878ff26",
       "size": 14253,
       "normalized_sha256": "c8189a43c1c4e8cb35628ec3b110697947e412a5d0552d1b9fecfebe2878ff26"
+    },
+    "rust/crates/omnicrawl-api/src/service/errors.rs": {
+      "role": "index",
+      "sha256": "c3f228b8ab7d4c9bbdeee8eb7358d184355013f076789bca64f83910561fe9ec",
+      "size": 4051,
+      "normalized_sha256": "c3f228b8ab7d4c9bbdeee8eb7358d184355013f076789bca64f83910561fe9ec"
     },
     "rust/crates/omnicrawl-api/src/service/mcp.rs": {
       "role": "index",
@@ -737,6 +743,12 @@
       "sha256": "20a6342b1a0d2b182e25ba9df71f9d6e6bb990164048d994f185f33aac28d139",
       "size": 6390,
       "normalized_sha256": "2aeeae8b9dc77229e1381471d8ac972e2c29a9e751ff5b55bbcca93a7d9c3a0e"
+    },
+    "rust/crates/omnicrawl-api/src/service/options.rs": {
+      "role": "index",
+      "sha256": "9fa752e603c42160a78220cb120235f4f5f7da56752385d6512078c89b4e7c6f",
+      "size": 24749,
+      "normalized_sha256": "9fa752e603c42160a78220cb120235f4f5f7da56752385d6512078c89b4e7c6f"
     },
     "rust/crates/omnicrawl-api/src/service/runs.rs": {
       "role": "index",
@@ -761,6 +773,12 @@
       "sha256": "15a71dea160b197dcb15a54b73404931333d5ed8fd66b8d64d9c301923b37a41",
       "size": 6874,
       "normalized_sha256": "06e4b70ae7aa90eb107d676e0b9461a72ef26db112c9a9dd27cb880bd145a18b"
+    },
+    "rust/crates/omnicrawl-api/src/service/util.rs": {
+      "role": "index",
+      "sha256": "7cd04f838e86be2127e2ddaf630beeef0753a83aad228b1c09b3b92157aabaf0",
+      "size": 2993,
+      "normalized_sha256": "7cd04f838e86be2127e2ddaf630beeef0753a83aad228b1c09b3b92157aabaf0"
     },
     "rust/crates/omnicrawl-api/src/shared_store.rs": {
       "role": "index",
@@ -1694,9 +1712,9 @@
     },
     "rust/crates/omnicrawl-connectors/src/qqbot/bot.rs": {
       "role": "index",
-      "sha256": "e2ce2e6b78099f9ab5cdc010926f8a8e0a6797396f63518333f2e08bac2518e8",
-      "size": 41456,
-      "normalized_sha256": "6ea0b91ff8876b8bd9fbf8c12bd60d4f8cf9b1821d1f70d9d5e3aea4773b7187"
+      "sha256": "4bb2bb3e1d18782b86e9cf20ff75b37035be0dd787758e99deb5736e652e40da",
+      "size": 41403,
+      "normalized_sha256": "c033c652d333ef16d37f280cf64fba30e17743dc2219fc37d183f6eb87dde706"
     },
     "rust/crates/omnicrawl-connectors/src/qqbot/bot/attachments.rs": {
       "role": "index",
@@ -2825,6 +2843,54 @@
       "sha256": "8c6a407689e372f6c549f0927e248a0481e0d6b634bd8ab75d2882ba76040667",
       "size": 104095,
       "normalized_sha256": "ac9f17f0bedcd4aa8403d46d6ae7c150ace08711f0271e450fe4101c34aad8f5"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/acl.rs": {
+      "role": "index",
+      "sha256": "f1b2c8ae87c7ae9512c5ba29156b8e5a2148881af41a40a56e1827748977eb5a",
+      "size": 12424,
+      "normalized_sha256": "313975a1bf741d9bb175480fc0796e4dc5a444ca78406562154eff7bd85ef032"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/base.rs": {
+      "role": "index",
+      "sha256": "69600b5121c3e3d46845bfcf48eba275cbbccb7546b9b18e0bf6513edeb7ff51",
+      "size": 3443,
+      "normalized_sha256": "b13ee9ad738b40bbebec0de2c0b2f68d77014e5405a0afe346df1a9fc2f0e646"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/environment.rs": {
+      "role": "index",
+      "sha256": "4a89137aed25f26398a4fe3be920cc789f541ff9a4e874dd9f4ceaf499b13201",
+      "size": 17105,
+      "normalized_sha256": "5bb391d5a75c751e422c13e07c2ec1e74bd37c8885a739c24a92dea658703e9b"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/isolation.rs": {
+      "role": "index",
+      "sha256": "317e96a64d74916ef42d5012090b8d83da9bc1efeb78f4a8d22dc143862ce59c",
+      "size": 29660,
+      "normalized_sha256": "b11f53db4a53c512b77646ae008eadf505c66e37fec46ce497b33039b24453a2"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/mod.rs": {
+      "role": "index",
+      "sha256": "919726eaa8c093b455fe807e599cf6478bd5474d593045629d1c43c6e43e506c",
+      "size": 2025,
+      "normalized_sha256": "919726eaa8c093b455fe807e599cf6478bd5474d593045629d1c43c6e43e506c"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/network.rs": {
+      "role": "index",
+      "sha256": "8d6b7a164f9ce8961d1307b67b9c1945e61d998f6a536ea4967ff3a048fe784a",
+      "size": 6522,
+      "normalized_sha256": "246598086c3266219dca4d0a2392257c2744f941c22fb92dbbc4ec035d6fc38e"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/process.rs": {
+      "role": "index",
+      "sha256": "d1fb38efd43522b7e1f75d5ce6ff288a29a6661a9799039b6eb292095c413dc8",
+      "size": 14745,
+      "normalized_sha256": "763b77135e6b5b6aa8ae137e6a05ef1b8482f792f67333f3cc8a7c9867601e65"
+    },
+    "rust/crates/omnicrawl-host/src/sandbox/windows/toolchain.rs": {
+      "role": "index",
+      "sha256": "eef1c4308095d4e28b62f692de120e7ee6f47c78583fe0547052ed9ac85ba2c6",
+      "size": 7411,
+      "normalized_sha256": "751cdde93715e478ea2099cbba5fbd2a91f34ac07783ad442a9f9944de32f801"
     },
     "rust/crates/omnicrawl-host/src/tools/advisor.rs": {
       "role": "index",
@@ -4734,6 +4800,30 @@
       "size": 49144,
       "normalized_sha256": "a97564d1f38f67f1e1bcdc2b53e01ddfc6f0b8b3128541a85604340fa8a7f769"
     },
+    "rust/crates/omnicrawl-tui/src/app/support/forms.rs": {
+      "role": "index",
+      "sha256": "c8acf68821df7caa5a491820d0ce4f31d95feb96f1783cf9cc9dae24bcf7f369",
+      "size": 17274,
+      "normalized_sha256": "c8acf68821df7caa5a491820d0ce4f31d95feb96f1783cf9cc9dae24bcf7f369"
+    },
+    "rust/crates/omnicrawl-tui/src/app/support/mod.rs": {
+      "role": "index",
+      "sha256": "f3e1a6907d333fc5fdfc7415ba8b6497e82c5725652e25e5e403d04581d679ac",
+      "size": 537,
+      "normalized_sha256": "f3e1a6907d333fc5fdfc7415ba8b6497e82c5725652e25e5e403d04581d679ac"
+    },
+    "rust/crates/omnicrawl-tui/src/app/support/rows.rs": {
+      "role": "index",
+      "sha256": "3ca3d32df85ec0c2851e0498c55baefc87b4ef0f57e018312547a225f695e132",
+      "size": 11293,
+      "normalized_sha256": "3ca3d32df85ec0c2851e0498c55baefc87b4ef0f57e018312547a225f695e132"
+    },
+    "rust/crates/omnicrawl-tui/src/app/support/runtime.rs": {
+      "role": "index",
+      "sha256": "20cdfd5b7f691ef8cde21c8169419f261b8e40e3728c2a7c5710c4569936226b",
+      "size": 20620,
+      "normalized_sha256": "20cdfd5b7f691ef8cde21c8169419f261b8e40e3728c2a7c5710c4569936226b"
+    },
     "rust/crates/omnicrawl-tui/src/app/ticks.rs": {
       "role": "index",
       "sha256": "859e73d83d747de906bcd802273ba34614079e3ec390a69a9e2dce6d23b110f2",
@@ -4826,9 +4916,9 @@
     },
     "rust/crates/omnicrawl-tui/src/state.rs": {
       "role": "index",
-      "sha256": "db6d043c57a3c49bd2e9062dd3482341ce0eb1a664ea4d7cdcd7828c77aef9d8",
-      "size": 89944,
-      "normalized_sha256": "c2dab5080fc9cb4cd0ff8cf05111b4d6628d758f613f967962a057723153d8d1"
+      "sha256": "6d9958a0a906bd275e5b820f7d45a271f818bff2a09c519ad45c4f2881c5d55e",
+      "size": 29765,
+      "normalized_sha256": "7339457efc4d4b60f31cdc4c500f5802209f354d7451876fbfa0571bc1093d8a"
     },
     "rust/crates/omnicrawl-tui/src/state/activity.rs": {
       "role": "index",
@@ -4841,6 +4931,12 @@
       "sha256": "d85215ad477fd942f2d19ec11565e79d9d642793f36f61fa03b67369e079314d",
       "size": 15384,
       "normalized_sha256": "a6c54225e3b5f177cdda4f9bbff3a65c5793936159c189be7789e1daea9f73ad"
+    },
+    "rust/crates/omnicrawl-tui/src/state/composer.rs": {
+      "role": "index",
+      "sha256": "3a21f510778084675c8ae144150fb09bb8c34616d070f2fcecb1ee264ea3cc9f",
+      "size": 35464,
+      "normalized_sha256": "3a21f510778084675c8ae144150fb09bb8c34616d070f2fcecb1ee264ea3cc9f"
     },
     "rust/crates/omnicrawl-tui/src/state/composer_flow.rs": {
       "role": "index",
@@ -4856,21 +4952,33 @@
     },
     "rust/crates/omnicrawl-tui/src/state/records.rs": {
       "role": "index",
-      "sha256": "1ecd655403fd4b6097b7e629a0375a67aebfdf2f3ce4fd693ef9865588bed36a",
-      "size": 17790,
-      "normalized_sha256": "c1e09802f1662a3c0ddd582ddff3b08b244be4679f5f068beb6f2a8925f35fa3"
+      "sha256": "f568e158820655bcf1dbe261e4478f1741047304f2e2121d0f32d496bc5b1719",
+      "size": 26902,
+      "normalized_sha256": "dcef2006a6415494cfd55440c047cc74dbaeb4d3cdd1333f9dcabb0d2a8f746d"
     },
     "rust/crates/omnicrawl-tui/src/state/replay.rs": {
       "role": "index",
-      "sha256": "b7f690f4e06ac0183287b6fd6e4f7277ba427a49ab18a8024456c54f4c7c4216",
-      "size": 17426,
-      "normalized_sha256": "b7f690f4e06ac0183287b6fd6e4f7277ba427a49ab18a8024456c54f4c7c4216"
+      "sha256": "4c3ec04da59a018b6b1a5fea1b7bdc862d1f1324c84b9f66d18e505e417ba3ea",
+      "size": 26877,
+      "normalized_sha256": "025af818fbbe40fd44f61f0e04106f9c36b5fadb37e66b4a84ae38583adf018c"
+    },
+    "rust/crates/omnicrawl-tui/src/state/selection.rs": {
+      "role": "index",
+      "sha256": "6a0d7dc6b89a6d8cdbe1261678c7d54631958aeabe6b58981d733974053624ec",
+      "size": 5341,
+      "normalized_sha256": "305d88ee6342303330eaf9fa7baf2cb51293b7c7798e95e5ffd0aa279563764b"
     },
     "rust/crates/omnicrawl-tui/src/state/subagent_flow.rs": {
       "role": "index",
       "sha256": "7b89c654487aa747a857ba5e4fc8c5618be0fca9e5d9596a86a3240ef8d75bc8",
       "size": 11794,
       "normalized_sha256": "c3bb562af3b5268fc0778b737e63e2c333af34064a9ee2e0889da8fcd6350593"
+    },
+    "rust/crates/omnicrawl-tui/src/state/telemetry.rs": {
+      "role": "index",
+      "sha256": "d6cacdc74b6affb6456c0bb90f4da077fbf762950a193628c5f91895a919218c",
+      "size": 2108,
+      "normalized_sha256": "35de356bf73cefb9a862fc6bb112bbe615800ae5c9331157e3ec706db958f33a"
     },
     "rust/crates/omnicrawl-tui/src/state/tests.rs": {
       "role": "index",
@@ -5618,9 +5726,9 @@
     },
     "rust/scripts/size_guard_allowlist.txt": {
       "role": "index",
-      "sha256": "aebb86daaa476bfb2c3f6bde1fceb987b71203497cc53b715e71d55753900d83",
-      "size": 2508,
-      "normalized_sha256": "aebb86daaa476bfb2c3f6bde1fceb987b71203497cc53b715e71d55753900d83"
+      "sha256": "6990f1867e99b447f0abc8f511361418db57e17dd62d716cec884a3b899a3c9f",
+      "size": 2329,
+      "normalized_sha256": "6990f1867e99b447f0abc8f511361418db57e17dd62d716cec884a3b899a3c9f"
     }
   },
   "managed_scope": {

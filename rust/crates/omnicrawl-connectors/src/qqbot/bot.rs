@@ -54,8 +54,7 @@ mod timeline;
 
 pub use reply::{split_content, ActiveBudget, QqPort, ReplyHandle, MAX_ACTIVE_PER_MINUTE};
 use query::{match_answer, quoted_attachments, suggest_command};
-use task::{ActiveTask, BotState, GatewaySession, PendingConfirm, PendingQuestion, QueuedTask};
-use timeline::TaskTimeline;
+use task::{BotState, GatewaySession, PendingConfirm, PendingQuestion};
 
 /// 单条文本消息的安全上限（协议没有下发上限，社区实现普遍按 2000 字符保守处理）。
 pub const MAX_CONTENT_CHARS: usize = 1800;
