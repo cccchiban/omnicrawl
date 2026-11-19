@@ -26,7 +26,6 @@ crates/omnicrawl-host/src/tools/knowledge.rs  1293
 crates/omnicrawl-connectors/src/telegram/bot.rs  1268
 crates/omnicrawl-session/src/store.rs  1257
 crates/omnicrawl-tui/src/ui/settings/state.rs  1238
-crates/omnicrawl-tui/src/app/support.rs  1225
 crates/omnicrawl-tui/src/app/mod.rs  1222
 crates/omnicrawl-host/src/tools/monitor.rs  1221
 crates/omnicrawl-host/src/turn.rs  1207
