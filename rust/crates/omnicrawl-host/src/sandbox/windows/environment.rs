@@ -7,11 +7,11 @@ use crate::sandbox::runtime::RuntimeRoot;
 ///
 /// `TEMP`/`TMP`/`USERPROFILE`/`HOME` 全部改指向沙盒专用目录：否则子进程往真实 `%TEMP%`
 /// 写临时文件会 ACL 被拒，而报错位置离真正原因很远。
-pub(super) fn debug_environment(temp_dir: &Path, workspace: &Path) -> Vec<u16> {
+pub fn debug_environment(temp_dir: &Path, workspace: &Path) -> Vec<u16> {
     build_environment_with(temp_dir, workspace, &[], None)
 }
 
-pub(super) fn build_environment(
+pub fn build_environment(
     temp_dir: &Path,
     workspace: &Path,
     runtimes: &[RuntimeRoot],

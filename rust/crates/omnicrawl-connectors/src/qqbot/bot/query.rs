@@ -113,11 +113,7 @@ pub(super) fn quoted_context(inbound: &Inbound, saved: &[String]) -> Option<Stri
 ///
 /// 连接器只发用户原话时，模型看不出这句话是在 QQ 群里被 @ 出来的、也不知道发言人是谁，
 /// 于是会拿「用户」当本地终端里的人。这里把来源写成结构化的一行，让模型自己判断语气。
-pub(super) fn task_text_of(inbound: &Inbound) -> String {
-    task_text_with_context(inbound, None)
-}
-
-/// 任务文本；`context` 非空时插入群聊历史段（在来源行之后、用户消息之前）。
+/// `context` 非空时插入群聊历史段（在来源行之后、用户消息之前）。
 pub(super) fn task_text_with_context(inbound: &Inbound, context: Option<String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     parts.push(source_line(inbound));

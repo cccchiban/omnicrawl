@@ -112,8 +112,8 @@ impl<D: AgentDriver> QqBot<D> {
             }
             task_text.push_str(&format!("用户补充说明：{}", inbound.content));
         }
-        // 来源与「同时 @ 了谁」由 `task_text_of` 统一补在最前面：附件任务的正文是上面那段
-        // 拼出来的说明，来源信息不能因此丢失。
+        // 来源与「同时 @ 了谁」由 `task_text_with_context` 统一补在最前面：附件任务的正文是
+        // 上面那段拼出来的说明，来源信息不能因此丢失。
         self.start_task(
             Inbound {
                 target: inbound.target.clone(),

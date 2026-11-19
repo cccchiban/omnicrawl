@@ -76,9 +76,11 @@ mod errors;
 mod options;
 mod util;
 
-pub(super) use errors::*;
+// errors / util 里的项都是 `pub(super)`，只到 service 模块可见；这里用普通 `use`
+// 把它们带进本模块，不要写成 `pub(super) use`——那会试图放大可见性并触发 unused_imports。
+use errors::*;
 use options::*;
-pub(super) use util::*;
+use util::*;
 
 // 这几个原本就是 `pub`，crate 内其它模块用 `crate::service::` 取。
 pub use options::{

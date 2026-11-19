@@ -30,6 +30,7 @@ mod process;
 mod toolchain;
 
 pub use process::{append_quoted, build_command_line};
+pub use environment::{build_environment, debug_environment};
 pub use isolation::{Container, Isolation};
 pub use network::LoopbackExemption;
 pub use process::{SandboxChild, Spawned, Streamed, Terminator};

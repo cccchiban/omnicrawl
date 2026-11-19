@@ -64,15 +64,6 @@ impl ActiveBudget {
     }
 }
 
-/// 断线重连的退避上限（秒）。
-const MAX_BACKOFF_SECONDS: f64 = 30.0;
-
-/// 确认提示里参数 JSON 的最大长度。
-const CONFIRM_ARGUMENTS_LIMIT: usize = 1200;
-
-/// 简洁回复模式的模式标识（与主 Agent 模板 `templates/speaking-style.md` 同名）。
-const SPEAKING_STYLE_MODE: &str = "speaking-style";
-
 /// 平台下发入口：发消息、上传并发送富媒体、下载附件。
 ///
 /// 真实实现是 [`QqApi`]，测试用记录型桩件替换。
