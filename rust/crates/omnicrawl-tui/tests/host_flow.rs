@@ -719,11 +719,7 @@ fn skill_suggestion_lands_in_the_submitted_text() {
         ("kimi-docx".to_string(), "处理 Word".to_string()),
     ]);
 
-    harness
-        .app
-        .state
-        .composer
-        .set_text("把这份 pdf 转成 word");
+    harness.app.state.composer.set_text("把这份 pdf 转成 word");
     harness.press(KeyCode::Enter);
     harness.expect_ready(
         |app| app.state.turn.is_running(),
@@ -789,11 +785,7 @@ fn suggestion_runs_off_the_ui_thread_and_lands_in_the_submitted_text() {
     ]);
 
     // 提一条普通提问：建议在后台跑，UI 线程不该等它。
-    harness
-        .app
-        .state
-        .composer
-        .set_text("把这份 pdf 读一遍");
+    harness.app.state.composer.set_text("把这份 pdf 读一遍");
     let started = Instant::now();
     harness.press(KeyCode::Enter);
     let elapsed = started.elapsed();
@@ -1079,6 +1071,54 @@ fn composer_click_places_the_caret_and_drag_copies_the_selection() {
             "提示行应说明复制失败：{notice}"
         );
     }
+}
+
+/// 滚轮落在输入框正文上时滚输入框（用户要求多行输入可上下翻看），落点在别处照旧滚消息区。
+#[test]
+fn wheel_over_the_composer_scrolls_the_input_not_the_conversation() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+    let text = (1..=9)
+        .map(|index| format!("第{index}行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    harness.app.state.composer.set_text(&text);
+    let area = harness.app.composer_text_rect();
+    assert_eq!(area.height, 5, "九行输入只显示五行：{area:?}");
+
+    // 默认窗口跟着插入点（在末行）：首行是「第5行」。
+    let first = harness.app.state.composer.visible_window(area.width).0;
+    assert_eq!(first.first().map(String::as_str), Some("第5行"));
+
+    // 消息区先离开底部，这样「输入框接管滚轮」才有可分辨的证据。
+    harness.app.state.scroll_by(-3);
+    assert_eq!(harness.app.state.scroll_from_bottom, 3);
+
+    harness.app.handle_event(mouse(
+        MouseEventKind::ScrollUp,
+        area.x + 1,
+        area.y + 1,
+    ));
+    let first = harness.app.state.composer.visible_window(area.width).0;
+    assert_eq!(
+        first.first().map(String::as_str),
+        Some("第2行"),
+        "一格滚轮三行：窗口从「第5行」上移三行"
+    );
+    assert_eq!(
+        harness.app.state.scroll_from_bottom, 3,
+        "消息区不该跟着滚：滚轮被输入框接管了"
+    );
+
+    // 落在输入框之外（会话区）照旧滚消息区。
+    harness.app.state.composer.set_text("单行");
+    harness.app.handle_event(mouse(MouseEventKind::ScrollUp, 1, 0));
+    assert!(
+        harness.app.state.scroll_from_bottom > 3,
+        "滚轮没落在输入框上时仍滚会话区：{}",
+        harness.app.state.scroll_from_bottom
+    );
 }
 
 /// 一只不按修饰键的鼠标事件（鼠标用例专用）。
@@ -1736,6 +1776,17 @@ fn session_entry_json() -> String {
 fn resume_command_asks_the_kernel_and_replays_history() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 120, 30));
+    harness.app.state.telemetry.context_window = Some(200_000);
+    // 上一个会话的用量：切过去之后不能留在底栏上。
+    harness.app.state.apply(
+        &omnicrawl_ipc::HostEvent::TokenUsage(omnicrawl_ipc::bridge::TokenUsagePayload {
+            input_tokens: 12_345,
+            output_tokens: 678,
+            cached_input_tokens: 5_000,
+        }),
+        std::time::Instant::now(),
+    );
     harness.send(&format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"session_id\":\"{SESSION_ID}\",\
          \"session\":{},\"history\":[{{\"role\":\"user\",\"content\":\"第一问\"}},\
@@ -1780,12 +1831,70 @@ fn resume_command_asks_the_kernel_and_replays_history() {
         })
         .collect();
     assert_eq!(texts, vec!["第一问", "第一答"], "历史应当成为对话视图");
+    let hud = harness.app.state.hud_text.plain();
+    assert!(
+        hud.contains("↑0") && hud.contains("↓0") && hud.contains("†0"),
+        "切到别份会话后，上一份会话的用量不能留在底栏：{hud}"
+    );
     assert!(
         harness
             .frames()
             .iter()
             .all(|frame| frame.method() != Some("turn.submit")),
         "会话命令不能退化成模型对话"
+    );
+}
+
+/// `/new` 换到空会话后，底部遥测清零：上一会话的 ↑/↓/†/速率不属于新会话。
+///
+/// 用户报的场景：`/new` 之后底部遥测栏还挂着上一个会话的用量。
+#[test]
+fn new_session_clears_the_telemetry_hud() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 120, 30));
+    harness.app.state.telemetry.context_window = Some(200_000);
+    // 先把上一个会话的用量塞进遥测，并让它落到 HUD 文本上。
+    harness.app.state.apply(
+        &omnicrawl_ipc::HostEvent::TokenUsage(omnicrawl_ipc::bridge::TokenUsagePayload {
+            input_tokens: 12_345,
+            output_tokens: 678,
+            cached_input_tokens: 5_000,
+        }),
+        std::time::Instant::now(),
+    );
+    harness.app.tick_hud();
+    let before = harness.app.state.hud_text.plain();
+    assert!(
+        before.contains("↑12.3K") && before.contains("↓678"),
+        "先确认旧会话的用量确实在底栏上：{before}"
+    );
+
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"session_id\":\"20260102-000000-abcdef\"}}\n",
+    );
+    type_text(&mut harness, "/new");
+    harness.press(KeyCode::Enter);
+
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .any(|frame| frame.method() == Some("session.new")),
+        "应当下发 session.new"
+    );
+    let after = harness.app.state.hud_text.plain();
+    assert!(
+        after.contains("↑0") && after.contains("↓0") && after.contains("†0"),
+        "新会话的用量应当清零：{after}"
+    );
+    assert!(
+        !after.contains("12.3K"),
+        "旧会话的用量不能留在底栏：{after}"
+    );
+    assert!(
+        after.contains("200K") || after.contains("0/200K"),
+        "窗口大小与选哪份会话无关，应当保留：{after}"
     );
 }
 
@@ -2740,19 +2849,18 @@ fn view_session_button_opens_the_window_only_when_clicked() {
     harness.app.state.subagent_window_exe = None;
 
     let now = Instant::now();
-    harness
-        .app
-        .state
-        .begin_turn("turn-1".to_string(), "查一查".to_string(), Vec::new());
+    harness.app.state.begin_turn(
+        "turn-1".to_string(),
+        "查一查".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     harness.app.state.apply(
         &omnicrawl_ipc::bridge::HostEvent::ToolStarted(omnicrawl_ipc::bridge::ToolStartedPayload {
             step: 1,
             call: omnicrawl_core::ToolCall {
                 name: "subagent_run".to_string(),
-                arguments: json!({})
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
+                arguments: json!({}).as_object().cloned().unwrap_or_default(),
                 id: "call_child".to_string(),
                 function_name: "subagent_run".to_string(),
             },
@@ -2835,10 +2943,12 @@ fn stop_button_on_a_monitor_tool_call_brightens_and_interrupts_the_wait() {
     harness.app.set_viewport(Rect::new(0, 0, 100, 30));
 
     let now = Instant::now();
-    harness
-        .app
-        .state
-        .begin_turn("turn-1".to_string(), "等后台任务".to_string(), Vec::new());
+    harness.app.state.begin_turn(
+        "turn-1".to_string(),
+        "等后台任务".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     harness.app.state.apply(
         &omnicrawl_ipc::bridge::HostEvent::ToolStarted(omnicrawl_ipc::bridge::ToolStartedPayload {
             step: 1,
@@ -2936,8 +3046,8 @@ fn retry_button_brightens_on_hover_and_resends_the_turn() {
         "失败响应后应当留下一条失败记录",
     );
 
-    let conversation = omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state)
-        .conversation;
+    let conversation =
+        omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state).conversation;
     let text = omnicrawl_tui::ui::conversation::text_area(conversation);
     let row = (0..conversation.height as usize)
         .find(|row| {
@@ -2967,9 +3077,11 @@ fn retry_button_brightens_on_hover_and_resends_the_turn() {
         .into_iter()
         .filter(|frame| frame.method() == Some("turn.submit"))
         .count();
-    harness
-        .app
-        .handle_event(mouse(MouseEventKind::Down(MouseButton::Left), text.x + 2, screen_row));
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        text.x + 2,
+        screen_row,
+    ));
     let after = harness
         .frames()
         .into_iter()
@@ -3018,8 +3130,8 @@ fn a_turn_failing_mid_batch_does_not_freeze_the_mouse() {
         "失败响应后应当留下一条失败记录",
     );
 
-    let conversation = omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state)
-        .conversation;
+    let conversation =
+        omnicrawl_tui::ui::layout(Rect::new(0, 0, 100, 30), &harness.app.state).conversation;
     let text = omnicrawl_tui::ui::conversation::text_area(conversation);
     let row = (0..conversation.height as usize)
         .find(|row| {

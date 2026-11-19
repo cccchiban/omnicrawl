@@ -99,29 +99,32 @@ keenable_api_key = ""
 enabled = false
 models = []
 
-# 图像生成：两条通道按 provider 二选一——OpenAI 兼容 Image API 与 Gemini 的
-# generateContent。接口地址、Key、模型与默认参数在 TUI /settings → 图像生成 中配置；
-# api_key 写入本地 config.toml（不提交仓库）。size/quality 是 OpenAI 通道的口径，
-# aspect_ratio/image_size 是 Gemini 通道的口径，切换服务商不会丢掉另一家的取值。
+# 图像生成：按 provider 五选一——OpenAI 兼容 Image API、Gemini 的 generateContent、
+# xAI 的 /images/generations、DALL·E 3 与 Midjourney 代理。接口地址、Key、模型与默认
+# 参数在 TUI /settings → 图像生成 中配置；api_key 写入本地 config.toml（不提交仓库）。
+# size/quality 是 OpenAI 与 DALL·E 3 的口径，aspect_ratio/image_size 是 Gemini、Grok 的
+# 口径，切换服务商不会丢掉别家的取值。
 [image_gen]
 enabled = false
-# 服务商：openai / gemini。
+# 服务商：openai / gemini / grok / dall-e-3 / mj。
 provider = "openai"
-# OpenAI 通道：https://api.openai.com/v1；Gemini 通道：
-# https://generativelanguage.googleapis.com/v1beta。
+# openai 与 dall-e-3：https://api.openai.com/v1；gemini：
+# https://generativelanguage.googleapis.com/v1beta；grok：https://api.x.ai/v1；
+# mj：Midjourney 代理根地址（接口在其下的 /mj 路径）。
 base_url = "https://api.openai.com/v1"
 api_key = ""
-# OpenAI 通道默认 gpt-image-2；Gemini 通道默认 gemini-2.5-flash-image。
+# openai 默认 gpt-image-2；gemini 默认 gemini-2.5-flash-image；
+# grok 默认 grok-imagine-image-2.0；dall-e-3 固定 dall-e-3；mj 不按模型路由。
 model = "gpt-image-2"
-# 仅 OpenAI 通道使用：auto 或 宽x高。
+# openai：auto 或 宽x高；dall-e-3：仅 1024x1024 / 1792x1024 / 1024x1792。
 size = "auto"
-# 仅 OpenAI 通道使用：auto / low / medium / high。
+# openai：auto / low / medium / high；dall-e-3：auto / standard / hd。
 quality = "auto"
-# 仅 OpenAI 通道使用：png / jpeg / webp（Gemini 恒为 png）。
+# 落盘格式：png / jpeg / webp（gemini 恒为 png，mj 以代理返回的图为准）。
 output_format = "png"
-# 仅 Gemini 通道使用：画面比例，14 种之一（留空由模型取默认）。
+# gemini / grok 使用：画面比例（gemini 认 14 种，grok 另认 19.5:9 等；留空取默认）。
 aspect_ratio = ""
-# 仅 Gemini 通道使用：分辨率档位 1K / 2K / 4K（留空由模型取默认）。
+# gemini / grok 使用：gemini 为 1K / 2K / 4K，grok 仅 1K / 2K（留空取默认）。
 image_size = ""
 n = 1
 timeout_seconds = 120

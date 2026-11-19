@@ -13,6 +13,7 @@ use omnicrawl_core::AgentLoopObservation;
 use omnicrawl_ipc::{HostEvent, Id};
 
 use crate::args::ApprovalMode;
+pub use crate::document_path::PendingDocument;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::conversation::ConversationCache;
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
@@ -61,12 +62,10 @@ const REASONING_REVEAL_CATCHUP_DIVISOR: usize = 3;
 /// 防止「整段思考一次性到达」时出现肉眼可见的整屏跳变，把最大的突发也摊平成连续铺开。
 const REASONING_REVEAL_MAX_CHARS: usize = 96;
 
-/// 生成期间 FIFO 排队预览的可见条数上限与摘要长度上限。
+/// 生成期间 FIFO 排队预览的可见条数上限。
 ///
 /// 直接复用对映层常量，不另立一份：预览行数与 HUD 的 `QUEUE` 段读的是同一组值。
-pub use crate::ui::fullscreen::status::indicators::{
-    QUEUE_PREVIEW_MAX_ROWS, QUEUE_PREVIEW_SUMMARY_LIMIT,
-};
+pub use crate::ui::fullscreen::status::indicators::QUEUE_PREVIEW_MAX_ROWS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -162,10 +161,11 @@ pub struct StreamingTool {
     pub streaming: bool,
 }
 
-/// 一条用户消息：正文 + 图片预览锚点。
+/// 一条用户消息：正文 + 图片预览锚点 + 随行文档路径。
 ///
 /// 图片 Base64 只在提交/重放时短暂存在，交给 [`ImagePreviews`] 解码后立即释放；
 /// 记录里只留锚点，否则每条历史消息都会把整张原图常驻在内存里。
+/// 文档只留路径（本来就是磁盘上的文件，没有可缓存的内容），渲染时逐行显示在正文下方。
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserRecord {
     pub text: String,
@@ -173,6 +173,8 @@ pub struct UserRecord {
     ///
     /// 每条用户消息一个：同一条消息的多张图属于同一块，滚动/重算都按这个键找回。
     pub image_key: String,
+    /// 随这条消息发出的文档完整路径（多个按粘贴顺序上下排列）。
+    pub documents: Vec<String>,
 }
 
 impl UserRecord {
@@ -181,12 +183,18 @@ impl UserRecord {
         Self {
             text: text.into(),
             image_key: String::new(),
+            documents: Vec::new(),
         }
     }
 
     /// 这条消息会不会出图。
     pub fn has_images(&self) -> bool {
         !self.image_key.is_empty()
+    }
+
+    /// 这条消息有没有随行文档。
+    pub fn has_documents(&self) -> bool {
+        !self.documents.is_empty()
     }
 }
 
@@ -367,12 +375,22 @@ pub struct Composer {
     /// 删除/左右移动都按块处理，提交时按顺序抽出图片随 prompt 一起送出。
     images: Vec<(String, PendingImage)>,
     image_sequence: usize,
+    /// 粘贴的文档：占位符 → 文档（`[ #1 .pdf ]`）。
+    ///
+    /// 同样是一整块；提交时占位符展开成**文件名**，完整路径另挂在 user 消息下方。
+    documents: Vec<(String, PendingDocument)>,
+    document_sequence: usize,
     /// 已发送消息的历史，供上下键回看（对映 Python `Composer._history`）。
     history: Vec<String>,
     /// -1 表示输入框里是用户自己的草稿；>= 0 表示正在浏览第 N 条历史。
     history_index: isize,
     /// 进入历史浏览前输入框里的内容，翻到最新一条之后再按一次下键即恢复。
     history_draft: String,
+    /// 滚轮翻看时窗口的起点行；`None` 表示窗口跟随光标。
+    ///
+    /// 只在滚轮滚动输入框时变成 `Some`：一旦编辑文本、移动光标或替换全文就回到跟随光标，
+    /// 否则光标会在看不见的地方打字（插入点跑到窗口之外，用户以为按键丢了）。
+    scroll: Option<usize>,
 }
 
 /// 粘贴折叠的阈值：超过这么多行就折成一个占位符（对映 Python `_PASTE_COMPACT_LINE_THRESHOLD`）。
@@ -419,14 +437,15 @@ pub struct PendingImage {
     pub archive: bool,
 }
 
-/// 一条「已从输入框交出、尚未发往内核」的提问：文本 + 随行的图片。
+/// 一条「已从输入框交出、尚未发往内核」的提问：文本 + 随行的图片与文档。
 ///
-/// 生成期间进来的提问先进 FIFO 队列，回合结束后按顺序提交；图片必须与文本同行，
-/// 否则排队等一轮就会把图片丢掉。
+/// 生成期间进来的提问先进 FIFO 队列，回合结束后按顺序提交；图片与文档必须与文本同行，
+/// 否则排队等一轮就会把它们丢掉。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingSubmission {
     pub text: String,
     pub images: Vec<PendingImage>,
+    pub documents: Vec<PendingDocument>,
 }
 
 /// 粘贴图片的占位符（对映用户要求的 `[ #1 Image ]`）。
@@ -435,6 +454,11 @@ pub struct PendingSubmission {
 /// 删除、左右移动都按块处理，不会停在块中间。
 fn image_placeholder(sequence: usize) -> String {
     format!("[ #{sequence} Image ]")
+}
+
+/// 粘贴文档的占位符：`[ #1 .pdf ]`——与图片块同形，把类型名换成扩展名。
+fn document_placeholder(sequence: usize, extension: &str) -> String {
+    format!("[ #{sequence} .{extension} ]")
 }
 
 impl Composer {
@@ -452,6 +476,7 @@ impl Composer {
         self.cursor = 0;
         self.pastes.clear();
         self.images.clear();
+        self.documents.clear();
         self.exit_browse_mode();
         self.refresh_menu();
     }
@@ -536,6 +561,7 @@ impl Composer {
     fn replace_history_text(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
+        self.follow_caret();
         self.prune_pastes();
         self.menu.hide();
     }
@@ -546,13 +572,18 @@ impl Composer {
     /// 提交前调 `_expand_compact_paste_placeholders` 再清空映射）。
     ///
     /// 图片块不展开成文本（`[ #1 Image ]` 照旧留在文本里），附件由 [`Self::take_images`]
-    /// 单独取走；这里一并清掉图片状态，避免取消提交后残留。
+    /// 单独取走；文档块相反——它没有附件通路，模型只能按路径读文件，因此占位符在这里
+    /// 展开成**文件名**，完整路径另挂在 user 消息下方（用户选定）。
+    ///
+    /// 文档表与图片表**不在这里清**：图片附件由 [`Self::take_images`] 取走，文档展开要用
+    /// 它自己的表、路径由 [`Self::take_documents`] 取走。调用顺序固定为
+    /// `take()` → `take_images()` → `take_documents()`（见 `AppState::submit`），
+    /// 三者合起来才算把输入框交空。
     pub fn take(&mut self) -> String {
         let text = self.expanded_text();
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
-        self.images.clear();
         self.exit_browse_mode();
         self.refresh_menu();
         text
@@ -613,6 +644,37 @@ impl Composer {
         self.images.drain(..).map(|(_, image)| image).collect()
     }
 
+    /// 粘贴文档的入口：在光标处插入 `[ #n .ext ]` 占位符，路径按序号存起来。
+    ///
+    /// 与图片块同一套语义（整块删除、左右移动不停在块中间）；不同之处是不读文件字节：
+    /// 文档只能由模型按路径读，附件里不带内容。
+    pub fn insert_document(&mut self, path: &str) {
+        self.document_sequence += 1;
+        let extension = crate::document_path::PendingDocument::extension_of(path);
+        let placeholder = document_placeholder(self.document_sequence, &extension);
+        self.documents.push((
+            placeholder.clone(),
+            PendingDocument {
+                placeholder: placeholder.clone(),
+                path: path.to_string(),
+            },
+        ));
+        self.insert(&placeholder);
+    }
+
+    /// 取走待发文档（按粘贴顺序），并清掉文档块状态。
+    pub fn take_documents(&mut self) -> Vec<PendingDocument> {
+        self.documents.drain(..).map(|(_, doc)| doc).collect()
+    }
+
+    /// 把这些文档按各自的占位符挂回输入框（撤回排队消息时用）。
+    pub fn restore_documents(&mut self, documents: Vec<PendingDocument>) {
+        for document in documents {
+            let placeholder = document.placeholder.clone();
+            self.documents.push((placeholder, document));
+        }
+    }
+
     /// 把这些图片按各自的占位符挂回输入框（撤回排队消息时用）。
     ///
     /// 占位符已在文本里，因此只重建映射、不重新编号：撤回的那条消息回到输入框后，
@@ -629,18 +691,34 @@ impl Composer {
         self.images.len()
     }
 
+    /// 输入框里当前有几个待发文档。
+    pub fn document_count(&self) -> usize {
+        self.documents.len()
+    }
+
     /// 展开全部占位符；`take()` 与命令分派核对都读它。
+    ///
+    /// 三类块的处理不同：粘贴文本还原成原文，文档换成文件名，图片块原样留着
+    /// （它靠 `take_images` 单独交出附件）。
     pub fn expanded_text(&self) -> String {
         let mut expanded = self.text.clone();
         for (placeholder, original) in &self.pastes {
             expanded = expanded.replace(placeholder.as_str(), original.as_str());
+        }
+        for (placeholder, document) in &self.documents {
+            // 相邻两个文档块之间补一个空格：文件名直接贴在一起会读成一条
+            // （`报告 (1).pdf名单.docx`），模型也难分辨这是两个文件。
+            expanded = expanded.replace(
+                placeholder.as_str(),
+                &format!("{} ", document.file_name()),
+            );
         }
         expanded
     }
 
     /// 字符下标 `index` 落在哪个占位符里（左闭右开），没有就是 `None`。
     ///
-    /// 粘贴文本块与图片块共用这套判定：两者在输入框里都是一整块。
+    /// 粘贴文本块、图片块与文档块共用这套判定：三者在输入框里都是一整块。
     fn placeholder_span(&self, index: usize) -> Option<(usize, usize)> {
         let chars: Vec<char> = self.text.chars().collect();
         let placeholders = self
@@ -649,6 +727,11 @@ impl Composer {
             .map(|(placeholder, _)| placeholder.as_str())
             .chain(
                 self.images
+                    .iter()
+                    .map(|(placeholder, _)| placeholder.as_str()),
+            )
+            .chain(
+                self.documents
                     .iter()
                     .map(|(placeholder, _)| placeholder.as_str()),
             );
@@ -685,15 +768,17 @@ impl Composer {
     /// 丢掉已经不在文本里的占位符，避免原文一直挂着占内存
     /// （对映 Python `_prune_compact_paste_placeholders`）。
     ///
-    /// 图片块同样在这里回收：占位符被删掉后附件就不该再随提交发出去。
+    /// 图片块与文档块同样在这里回收：占位符被删掉后附件就不该再随提交发出去。
     fn prune_pastes(&mut self) {
-        if self.pastes.is_empty() && self.images.is_empty() {
+        if self.pastes.is_empty() && self.images.is_empty() && self.documents.is_empty() {
             return;
         }
         let text = self.text.clone();
         self.pastes
             .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
         self.images
+            .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
+        self.documents
             .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
     }
 
@@ -724,12 +809,19 @@ impl Composer {
     /// 不一致」。只动光标的 [`Self::move_left`] 等不刷新菜单，那边单独清。
     fn refresh_menu(&mut self) {
         self.clear_mouse_selection();
+        self.follow_caret();
         self.menu.refresh(&self.text, &self.commands);
     }
 
     /// 作废鼠标选区（见 [`Self::refresh_menu`] 的说明）。
     fn clear_mouse_selection(&mut self) {
         self.selection = None;
+    }
+
+    /// 把可见窗口交还给光标：文本一改或光标一动，滚轮翻过的位置就作废，
+    /// 否则插入点会停在窗口之外，用户打字看不到自己刚敲的字。
+    fn follow_caret(&mut self) {
+        self.scroll = None;
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -786,6 +878,7 @@ impl Composer {
     /// 左右移动把占位符当一格：光标停在块首/块尾，不会停到块中间。
     pub fn move_left(&mut self) {
         self.clear_mouse_selection();
+        self.follow_caret();
         if self.cursor == 0 {
             return;
         }
@@ -804,6 +897,7 @@ impl Composer {
 
     pub fn move_right(&mut self) {
         self.clear_mouse_selection();
+        self.follow_caret();
         let length = self.text.chars().count();
         if self.cursor >= length {
             return;
@@ -816,6 +910,7 @@ impl Composer {
 
     pub fn move_home(&mut self) {
         self.clear_mouse_selection();
+        self.follow_caret();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[..at]
@@ -827,6 +922,7 @@ impl Composer {
 
     pub fn move_end(&mut self) {
         self.clear_mouse_selection();
+        self.follow_caret();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[at..]
@@ -854,6 +950,7 @@ impl Composer {
         let index = self.clamped_index(index);
         self.selection = Some((index, index));
         self.cursor = index;
+        self.follow_caret();
     }
 
     /// 拖动中：把选区的另一端（也是插入点，供粗光标与窗口跟随）挪到新位置。
@@ -862,6 +959,7 @@ impl Composer {
         if let Some((anchor, _)) = self.selection {
             self.selection = Some((anchor, index));
             self.cursor = index;
+            self.follow_caret();
         }
     }
 
@@ -987,27 +1085,55 @@ impl Composer {
     }
 
     /// 需要展示的行与光标在其中的行号：超过行数上限时随光标滚动。
-    pub fn visible_lines(&self, width: u16) -> (Vec<String>, usize) {
+    pub fn visible_lines(&self, width: u16) -> (Vec<String>, Option<usize>) {
         let (lines, cursor, _, _) = self.visible_window(width);
         (lines, cursor)
     }
 
+    /// 滚轮翻看：把可见窗口按 `delta` 行上下移动（负为向上）；返回是否由输入框消费。
+    ///
+    /// 内容不超过 [`COMPOSER_MAX_LINES`] 行时窗口里本来就是全文，没有可翻的，返回 `false`
+    /// 让滚轮落回消息区。翻过之后窗口不再跟随光标——滚到哪看哪；滚回光标所在那一屏
+    /// 就交还给跟随，之后继续打字不会把插入点顶到窗口外。
+    pub fn scroll_rows(&mut self, delta: isize, width: u16) -> bool {
+        let total = self.wrapped_lines(width).len();
+        if total <= COMPOSER_MAX_LINES {
+            // 内容变短（删行、窗口变宽）后不再有可翻的：顺手清掉旧起点，
+            // 免得下次内容又变长时沿用一个过时的窗口。
+            self.scroll = None;
+            return false;
+        }
+        let limit = total - COMPOSER_MAX_LINES;
+        let (row, _) = self.cursor_position(width);
+        let follow = row.saturating_sub(COMPOSER_MAX_LINES - 1).min(limit);
+        let current = self.scroll.unwrap_or(follow) as isize;
+        // 上下都夹在可翻范围内：越界会让窗口露出空白。
+        let next = (current.saturating_add(delta)).clamp(0, limit as isize) as usize;
+        self.scroll = (next != follow).then_some(next);
+        true
+    }
+
     /// 可见窗口：行（带全文字符区间）+ 光标在窗口里的行号 + 窗口起点行号 + 总行数。
     ///
-    /// 窗口算法只在这一处：折行、跟着光标滚动、上限裁剪都在这里定，
+    /// 窗口算法只在这一处：折行、跟着光标滚动、滚轮翻看、上限裁剪都在这里定，
     /// [`Self::visible_lines`] 与 [`Self::visible_window`] 都从它派生——高度计算、
     /// 渲染与鼠标点击换算因此共用同一套换行结果，不会各算一份而对不上。
-    pub fn visible_rows(&self, width: u16) -> (Vec<ComposerRow>, usize, usize, usize) {
+    pub fn visible_rows(&self, width: u16) -> (Vec<ComposerRow>, Option<usize>, usize, usize) {
         let lines = self.wrapped_lines(width);
         let total = lines.len();
         let (row, _) = self.cursor_position(width);
         let (start, count, cursor) = if total <= COMPOSER_MAX_LINES {
-            (0, total, row.min(COMPOSER_MAX_LINES - 1))
+            (0, total, Some(row.min(COMPOSER_MAX_LINES - 1)))
         } else {
-            let start = row
+            let follow = row
                 .saturating_sub(COMPOSER_MAX_LINES - 1)
                 .min(total - COMPOSER_MAX_LINES);
-            (start, COMPOSER_MAX_LINES, row - start)
+            // `scroll` 只在 [`Self::scroll_rows`] 里写入；窗口变窄/变宽后总行数会变，
+            // 这里再夹一次，避免沿用一个已经越过末尾的起点（那样窗口会整块空白）。
+            let start = self.scroll.unwrap_or(follow).min(total - COMPOSER_MAX_LINES);
+            // 滚轮把窗口挪开后，插入点可能落在窗口之外：那里没有行号，渲染也就不画光标。
+            let cursor = (row >= start && row - start < COMPOSER_MAX_LINES).then(|| row - start);
+            (start, COMPOSER_MAX_LINES, cursor)
         };
         // 每行在全文里的字符区间：折行行内不含换行符，行与行之间把它跳过去。
         let chars: Vec<char> = self.text.chars().collect();
@@ -1033,7 +1159,7 @@ impl Composer {
     /// 与 [`Self::visible_rows`] 同一个窗口，另外给出窗口起点与总行数。
     ///
     /// 输入卡右侧的细线滚动条要画滑块，需要知道「当前可见的是哪一段」。
-    pub fn visible_window(&self, width: u16) -> (Vec<String>, usize, usize, usize) {
+    pub fn visible_window(&self, width: u16) -> (Vec<String>, Option<usize>, usize, usize) {
         let (rows, cursor, start, total) = self.visible_rows(width);
         (
             rows.into_iter().map(|row| row.text).collect(),
@@ -1469,9 +1595,9 @@ impl AppState {
                     // 卡片正文与折叠统计都基于压缩文本。
                     if let Some(card) = self.tool_card_mut(&payload.call_id) {
                         card.body = crate::ui::fullscreen::rendering::tool_diff::stored_result_text(
-                        &card.name,
-                        &payload.output,
-                    );
+                            &card.name,
+                            &payload.output,
+                        );
                     }
                 }
                 // 压缩发生在工具调用之后，所以这里可以放心新建侧信道条目：

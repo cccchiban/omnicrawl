@@ -40,9 +40,9 @@ impl App {
                 }
             }
             Event::Paste(text) if !self.kernel_lost => {
-                // 整段就是一个存在的图片路径 → 转成图片附件；否则按文本折叠
+                // 整段就是一个存在的文档/图片路径 → 转成对应块；否则按文本折叠
                 // （多行折成 `[粘贴 #n +N 行]`，提交时还原）。
-                if !self.paste_image_path(&text) {
+                if !self.paste_document_path(&text) && !self.paste_image_path(&text) {
                     self.state.composer.insert_paste(&text);
                 }
             }
@@ -98,8 +98,8 @@ impl App {
                 }
             }
             MouseEventKind::Moved => self.update_conversation_hover(mouse.column, mouse.row),
-            MouseEventKind::ScrollUp => self.state.scroll_by(-WHEEL_STEP),
-            MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
+            MouseEventKind::ScrollUp => self.scroll_wheel(-WHEEL_STEP, mouse.column, mouse.row),
+            MouseEventKind::ScrollDown => self.scroll_wheel(WHEEL_STEP, mouse.column, mouse.row),
             MouseEventKind::Down(MouseButton::Left) if interactive => {
                 // 点输入框：把插入点挪到点中的那一格（用户要求鼠标能定插入位置），
                 // 同时起选区锚点：接着拖就是选取输入框里的文字。
@@ -157,6 +157,20 @@ impl App {
     /// 测的就不再是真正在敲的那个区域了。
     pub fn composer_text_rect(&self) -> Rect {
         ui::composer::text_rect(ui::layout(self.viewport, &self.state).composer)
+    }
+
+    /// 滚轮：落点在输入框正文区且那里有可翻的内容时滚输入框，否则滚消息区。
+    ///
+    /// 与点选共用 [`ui::composer::text_rect`]：落在框内正文上就算「滚输入框」，
+    /// 落在边框、占位区或会话区照旧滚消息区。`delta` 为负是向上（看更早的行）。
+    pub(super) fn scroll_wheel(&mut self, delta: isize, column: u16, row: u16) {
+        let area = self.composer_text_rect();
+        if area.contains(Position::new(column, row))
+            && self.state.composer.scroll_rows(delta, area.width)
+        {
+            return;
+        }
+        self.state.scroll_by(delta);
     }
 
     /// 屏幕坐标 → 输入框里的字符下标；不在输入框正文区时返回 `None`。
@@ -423,13 +437,11 @@ impl App {
                 let Some(settings) = self.settings.as_mut() else {
                     return;
                 };
-                settings.scroll_suggestion_detail(
-                    if mouse.kind == MouseEventKind::ScrollUp {
-                        -1
-                    } else {
-                        1
-                    },
-                );
+                settings.scroll_suggestion_detail(if mouse.kind == MouseEventKind::ScrollUp {
+                    -1
+                } else {
+                    1
+                });
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let Some(settings) = self.settings.as_mut() else {
@@ -478,7 +490,7 @@ impl App {
 
         if areas.queue.contains(point) {
             let index = (row - areas.queue.y) as usize;
-            match queue::hit(&self.state, index) {
+            match queue::hit(&self.state, areas.queue.width, index) {
                 Some(QueueHit::Withdraw(index)) => {
                     if !self.state.withdraw_pending(index) {
                         return;

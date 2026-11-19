@@ -150,6 +150,41 @@ fn value_as_text(value: &Value) -> String {
     }
 }
 
+/// JSON 值转字符串（`null` 为空串、字符串取原文、其余走 JSON 表示）。
+///
+/// 三个连接器解析载荷字段时都按这套规则，避免各自写一份一遇 `null` 就输出 `"null"`。
+pub fn text_of(value: &Value) -> String {
+    value_as_text(value)
+}
+
+/// 按字符数截断，**不**追加省略号。
+///
+/// 用于给平台侧设硬上限（分段预算、参数展示）；需要「截断即提示」的场合用
+/// [`take_chars_with_ellipsis`]，两者语义不同，不可互换。
+pub fn take_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
+/// 按字符数截断，截断时补 `…`：用户能看出内容被截了。
+pub fn take_chars_with_ellipsis(text: &str, limit: usize) -> String {
+    let total = text.chars().count();
+    let clipped: String = text.chars().take(limit).collect();
+    if total > limit {
+        format!("{clipped}…")
+    } else {
+        clipped
+    }
+}
+
+/// 取对象里的文本字段：字符串去首尾空白、数字转字符串、其余为空串。
+pub fn field_text(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// 剔除 `<thinking>…</thinking>` 等内部标签段；无闭合标签时保留原文（与正则行为一致）。
 fn strip_display_tags(text: &str) -> String {
     let mut result = String::new();
@@ -220,6 +255,35 @@ fn collapse_trailing_spaces(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_chars_does_not_mark_truncation() {
+        // 平台侧硬上限用这个：多一个省略号就挤掉一个真实字符。
+        assert_eq!(take_chars("abcdef", 3), "abc");
+        assert_eq!(take_chars("ab", 5), "ab");
+    }
+
+    #[test]
+    fn take_chars_with_ellipsis_marks_truncation() {
+        assert_eq!(take_chars_with_ellipsis("abcdef", 3), "abc…");
+        assert_eq!(take_chars_with_ellipsis("ab", 5), "ab");
+    }
+
+    #[test]
+    fn text_of_maps_null_to_empty() {
+        assert_eq!(text_of(&serde_json::Value::Null), "");
+        assert_eq!(text_of(&serde_json::json!("x")), "x");
+        assert_eq!(text_of(&serde_json::json!(12)), "12");
+    }
+
+    #[test]
+    fn field_text_trims_strings_and_reads_numbers() {
+        let value = serde_json::json!({ "a": "  x  ", "b": 7, "c": null });
+        assert_eq!(field_text(&value, "a"), "x");
+        assert_eq!(field_text(&value, "b"), "7");
+        assert_eq!(field_text(&value, "c"), "");
+        assert_eq!(field_text(&value, "missing"), "");
+    }
 
     #[test]
     fn internal_tags_are_removed() {

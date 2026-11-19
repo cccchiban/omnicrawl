@@ -15,8 +15,21 @@ pub const DEFAULT_IMAGE_GEN_GEMINI_BASE_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta";
 pub const DEFAULT_IMAGE_GEN_GEMINI_MODEL: &str = "gemini-2.5-flash-image";
 
-/// 可选出图服务商：OpenAI 兼容 Image API 与 Gemini 的 `generateContent`。
-pub const IMAGE_GEN_PROVIDERS: [&str; 2] = ["openai", "gemini"];
+/// xAI（Grok）通道的默认端点与模型。
+pub const DEFAULT_IMAGE_GEN_GROK_BASE_URL: &str = "https://api.x.ai/v1";
+pub const DEFAULT_IMAGE_GEN_GROK_MODEL: &str = "grok-imagine-image-2.0";
+
+/// DALL·E 3 通道：端点是 OpenAI 的，模型固定为 `dall-e-3`。
+pub const DEFAULT_IMAGE_GEN_DALLE3_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_IMAGE_GEN_DALLE3_MODEL: &str = "dall-e-3";
+
+/// Midjourney 代理通道的默认端点（本机代理根地址，接口在其下的 `/mj` 路径）。
+pub const DEFAULT_IMAGE_GEN_MJ_BASE_URL: &str = "http://127.0.0.1:8080";
+pub const DEFAULT_IMAGE_GEN_MJ_MODEL: &str = "midjourney";
+
+/// 可选出图服务商：OpenAI 兼容 Image API、Gemini 的 `generateContent`、
+/// xAI 的 `/images/generations`、DALL·E 3 与 Midjourney 代理。
+pub const IMAGE_GEN_PROVIDERS: [&str; 5] = ["openai", "gemini", "grok", "dall-e-3", "mj"];
 
 /// 默认服务商（保持既有 `[image_gen]` 段的语义不变）。
 pub const DEFAULT_IMAGE_GEN_PROVIDER: &str = "openai";
@@ -32,6 +45,13 @@ pub const IMAGE_GEN_IMAGE_SIZES: [&str; 3] = ["1K", "2K", "4K"];
 
 const IMAGE_GEN_QUALITIES: [&str; 4] = ["auto", "low", "medium", "high"];
 const IMAGE_GEN_FORMATS: [&str; 3] = ["png", "jpeg", "webp"];
+
+/// DALL·E 3 的固定尺寸档；`quality` 只认 `standard` / `hd`（与 gpt-image 系列不同）。
+pub const IMAGE_GEN_DALLE3_SIZES: [&str; 3] = ["1024x1024", "1792x1024", "1024x1792"];
+const IMAGE_GEN_DALLE3_QUALITIES: [&str; 3] = ["auto", "standard", "hd"];
+
+/// Grok 的分辨率档位（xAI 只支持 1k / 2k，下发时折成小写）。
+const IMAGE_GEN_GROK_IMAGE_SIZES: [&str; 2] = ["1K", "2K"];
 
 /// 图像生成服务的开关与接口参数。
 ///
@@ -97,10 +117,10 @@ impl ImageGenConfiguration {
         // 否则请求会打到 `api.openai.com/v1/models/gpt-image-2:generateContent`。
         // 用户显式填过的值一律不动。
         if provider == "gemini" {
-            if self.base_url.trim().trim_end_matches('/') == DEFAULT_IMAGE_GEN_BASE_URL {
+            if is_stock_base_url(&self.base_url) {
                 self.base_url = DEFAULT_IMAGE_GEN_GEMINI_BASE_URL.to_string();
             }
-            if self.model.trim() == DEFAULT_IMAGE_GEN_MODEL {
+            if is_stock_model(&self.model) {
                 self.model = DEFAULT_IMAGE_GEN_GEMINI_MODEL.to_string();
             }
         }
@@ -113,13 +133,38 @@ impl ImageGenConfiguration {
                 "image_gen.base_url 必须以 http:// 或 https:// 开头。",
             ));
         }
-        let model = self.model.trim().to_string();
+        let mut model = self.model.trim().to_string();
         if model.is_empty() {
             return Err(ConfigError::new("image_gen.model 不能为空。"));
         }
+        // Grok / DALL·E 3 / MJ 各有自己的端点与模型：切过去时把「还是别家的出厂值」
+        // 折算成本通道的，否则会拿着 `gpt-image-2` 打 Grok、或拿着 Gemini 的模型打 DALL·E 3。
+        if provider == "grok" {
+            if is_stock_base_url(&self.base_url) {
+                self.base_url = DEFAULT_IMAGE_GEN_GROK_BASE_URL.to_string();
+            }
+            if is_stock_model(&model) {
+                model = DEFAULT_IMAGE_GEN_GROK_MODEL.to_string();
+            }
+        }
+        if provider == "dall-e-3" {
+            if is_stock_base_url(&self.base_url) {
+                self.base_url = DEFAULT_IMAGE_GEN_DALLE3_BASE_URL.to_string();
+            }
+            // DALL·E 3 的模型名是固定的：该通道下忽略别处填来的模型。
+            model = DEFAULT_IMAGE_GEN_DALLE3_MODEL.to_string();
+        }
+        if provider == "mj" {
+            if is_stock_base_url(&self.base_url) {
+                self.base_url = DEFAULT_IMAGE_GEN_MJ_BASE_URL.to_string();
+            }
+            if is_stock_model(&model) {
+                model = DEFAULT_IMAGE_GEN_MJ_MODEL.to_string();
+            }
+        }
 
         let aspect_ratio = self.aspect_ratio.trim().to_string();
-        let image_size = self.image_size.trim().to_uppercase();
+        let mut image_size = self.image_size.trim().to_uppercase();
         if provider == "gemini" {
             if !aspect_ratio.is_empty() && !IMAGE_GEN_ASPECT_RATIOS.contains(&aspect_ratio.as_str())
             {
@@ -137,6 +182,43 @@ impl ImageGenConfiguration {
             // `size` / `quality` / `output_format` 是 OpenAI 通道的口径：Gemini 不使用它们
             // （出图恒为 PNG、尺寸由 `aspect_ratio` + `image_size` 决定），因此原样保留、
             // 既不校验也不改写——切回 OpenAI 时那三个值还在。
+        } else if provider == "grok" {
+            // Grok：尺寸由 aspect_ratio 决定，`size` 不下发；`quality`/`output_format`
+            // 沿用 OpenAI 的取值域，切回 openai 时无损。
+            if !IMAGE_GEN_QUALITIES.contains(&self.quality.as_str()) {
+                return Err(ConfigError::new(format!(
+                    "image_gen.quality 仅支持 {}。",
+                    IMAGE_GEN_QUALITIES.join("、")
+                )));
+            }
+            if !IMAGE_GEN_FORMATS.contains(&self.output_format.as_str()) {
+                return Err(ConfigError::new(format!(
+                    "image_gen.output_format 仅支持 {}。",
+                    IMAGE_GEN_FORMATS.join("、")
+                )));
+            }
+            if !image_size.is_empty() && !IMAGE_GEN_GROK_IMAGE_SIZES.contains(&image_size.as_str())
+            {
+                // 从 Gemini 切来时可能是 4K：Grok 不支持，按默认（1K）回落，留空即不下发。
+                image_size = String::new();
+            }
+        } else if provider == "dall-e-3" {
+            // DALL·E 3：尺寸与质量都是固定枚举，不接受 auto。切换通道时草稿里可能还是
+            // 别家的取值（auto / low / …），这里按通道语义回落，而不是把保存拦下来。
+            if !IMAGE_GEN_DALLE3_SIZES.contains(&self.size.as_str()) {
+                self.size = IMAGE_GEN_DALLE3_SIZES[0].to_string();
+            }
+            if !IMAGE_GEN_DALLE3_QUALITIES.contains(&self.quality.as_str()) {
+                self.quality = "auto".to_string();
+            }
+        } else if provider == "mj" {
+            // Midjourney：尺寸与质量由提示词里的 `--ar` 等参数表达，这里只管落盘格式。
+            if !IMAGE_GEN_FORMATS.contains(&self.output_format.as_str()) {
+                return Err(ConfigError::new(format!(
+                    "image_gen.output_format 仅支持 {}。",
+                    IMAGE_GEN_FORMATS.join("、")
+                )));
+            }
         } else {
             if self.size != "auto" && !is_size_shape(&self.size) {
                 return Err(ConfigError::new(
@@ -177,6 +259,33 @@ impl ImageGenConfiguration {
     pub fn resolve_api_key(&self, _env: &ConfigEnvironment) -> String {
         self.api_key.trim().to_string()
     }
+}
+
+/// 是否为任一家出厂端点（`/` 差异不计）：是则视为用户没填过、该按通道折算。
+fn is_stock_base_url(text: &str) -> bool {
+    let normalized = text.trim().trim_end_matches('/');
+    [
+        DEFAULT_IMAGE_GEN_BASE_URL,
+        DEFAULT_IMAGE_GEN_GEMINI_BASE_URL,
+        DEFAULT_IMAGE_GEN_GROK_BASE_URL,
+        DEFAULT_IMAGE_GEN_MJ_BASE_URL,
+    ]
+    .iter()
+    .any(|stock| stock.trim_end_matches('/') == normalized)
+}
+
+/// 是否为任一家出厂模型名。
+fn is_stock_model(text: &str) -> bool {
+    let normalized = text.trim();
+    [
+        DEFAULT_IMAGE_GEN_MODEL,
+        DEFAULT_IMAGE_GEN_GEMINI_MODEL,
+        DEFAULT_IMAGE_GEN_GROK_MODEL,
+        DEFAULT_IMAGE_GEN_DALLE3_MODEL,
+        DEFAULT_IMAGE_GEN_MJ_MODEL,
+    ]
+    .iter()
+    .any(|stock| *stock == normalized)
 }
 
 /// 读取图像生成配置；缺少 `image_gen` 段时返回关闭的默认配置。

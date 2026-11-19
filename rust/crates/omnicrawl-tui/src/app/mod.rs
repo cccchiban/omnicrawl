@@ -28,9 +28,8 @@ use omnicrawl_commands::SessionSummary;
 use omnicrawl_config::core::runtime::{resolve_config_path, user_config_dir, ConfigEnvironment};
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, load_thinking_collapsed,
-    save_context_compaction_trigger_percent,
-    save_context_window_tokens, save_feature_enabled, save_mcp_config, save_subagent_setting,
-    McpConfigData, McpPolicyData, McpServerData,
+    save_context_compaction_trigger_percent, save_context_window_tokens, save_feature_enabled,
+    save_mcp_config, save_subagent_setting, McpConfigData, McpPolicyData, McpServerData,
 };
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::{
@@ -75,11 +74,9 @@ use omnicrawl_config::features::tts::{
     load_tts_configuration, save_tts_configuration, TtsConfiguration,
 };
 use omnicrawl_config::features::tts_cloud::{
-    load_tts_api_configuration, load_tts_cloud_configuration,
-    load_tts_deepseek_configuration,
-    load_tts_gemini_configuration, save_tts_api_configuration,
-    save_tts_cloud_configuration, save_tts_deepseek_configuration,
-    save_tts_gemini_configuration, DeepSeekTtsConfiguration,
+    load_tts_api_configuration, load_tts_cloud_configuration, load_tts_deepseek_configuration,
+    load_tts_gemini_configuration, save_tts_api_configuration, save_tts_cloud_configuration,
+    save_tts_deepseek_configuration, save_tts_gemini_configuration, DeepSeekTtsConfiguration,
     GeminiTtsConfiguration, TtsApiConfiguration, TtsCloudConfiguration,
 };
 use omnicrawl_config::features::web_search::{
@@ -135,9 +132,8 @@ use omnicrawl_ipc::{
     bridge::{
         Command, ContextPruneRequest, ContextPruneResult, HostEvent, InitializeParams,
         KernelCompactionConfig, KernelModelConfig, KernelSessionConfig, SessionAppendParams,
-        SessionDeleteParams, SessionEventsParams,
-        SessionHistoryParams, SessionListParams, SessionModelSettings, SessionRenameParams,
-        SessionResumeParams, SessionSettingsParams,
+        SessionDeleteParams, SessionEventsParams, SessionHistoryParams, SessionListParams,
+        SessionModelSettings, SessionRenameParams, SessionResumeParams, SessionSettingsParams,
         SubagentRunParams, ToolBatch,
     },
     error_code, Frame, Id, PROTOCOL_VERSION,
@@ -162,7 +158,7 @@ use crate::args::{ApprovalMode, Options};
 use crate::commands::{self, TuiHostAgent};
 use crate::host::{self, BatchStep, Waiting};
 use crate::kernel::KernelClient;
-use crate::state::{AppState, PendingImage, Record};
+use crate::state::{AppState, PendingDocument, PendingImage, Record};
 use crate::tools::{
     tts_backend, AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry,
     TtsOptions,
@@ -176,11 +172,9 @@ use crate::ui::settings::{
     nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
     McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
-    SettingsEvent,
-    SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow, ToolSwitchRow,
-    TtsChange,
-    TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange, VisionModelRef,
-    WebSearchRow, MASKED_SECRET, SUBAGENT_ADVANCED_SPECS,
+    SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow,
+    ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange,
+    VisionModelRef, WebSearchRow, MASKED_SECRET, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 
@@ -204,12 +198,12 @@ mod host_commands;
 mod input;
 mod kernel_flow;
 mod onejev;
-mod turn_flow;
-mod workspace;
 mod settings_apply;
 mod settings_pages;
 mod settings_view;
 mod support;
+mod turn_flow;
+mod workspace;
 
 mod kernel;
 
@@ -261,7 +255,6 @@ fn prepare_workspace(
         }
     }
 }
-
 
 /// 一次工具执行的完成通知。
 struct ToolCompletion {
@@ -625,6 +618,7 @@ pub struct App {
 struct SuggestTaskResult {
     text: String,
     images: Vec<PendingImage>,
+    documents: Vec<PendingDocument>,
 }
 
 /// 渠道模型列表自动检测的产出：候选模型 ID 与失败原因。
@@ -742,7 +736,10 @@ impl App {
             if let Err(error) = omnicrawl_controllers::memory::ensure_memory_root(
                 &omnicrawl_controllers::memory::user_data_root(environment.home()),
             ) {
-                report_startup_log(LogLevel::Warning, &format!("记忆目录归口失败：{}", error.message()));
+                report_startup_log(
+                    LogLevel::Warning,
+                    &format!("记忆目录归口失败：{}", error.message()),
+                );
             }
         }
         // 知识库组同理：`[knowledge] enabled` 缺省开启，读不出来也按开启（既有能力不该消失）。
@@ -758,8 +755,11 @@ impl App {
         // （`apply_tool_switch`）时才赋值，启动路径漏装，配置里关掉的工具重启后照旧进表。
         let disabled_tools = load_disabled_tools(&environment, None).unwrap_or_default();
         // 会话上下文闲置换出：缺省 0（关闭），读不出来也按关闭处理。
-        let session_release_seconds = omnicrawl_config::features::session_release::
-            load_session_release_seconds(&environment, None)
+        let session_release_seconds =
+            omnicrawl_config::features::session_release::load_session_release_seconds(
+                &environment,
+                None,
+            )
             .unwrap_or(0);
         // Agent 临时目录：创建分类子目录、按 `[agent_temp]` 间隔补清理并起后台线程。
         // 此前这部分只在对照测试里被调用，宿主侧实际只靠字符串常量拼路径，产物从不回收。
@@ -873,6 +873,10 @@ impl App {
             },
             // 只受 `[computer_use] enabled` 约束：普通子代理关掉不影响桌面操作。
             computer_use: computer_use_enabled(&environment),
+            // 桌面四件套进执行表：Computer Use 子代理在自己回合里发的 `windows_*` 调用要靠
+            // 宿主执行。它们**不进主代理的声明**（见 `ToolRegistry::declarations`），
+            // 模型仍然只经 `computer_use` 这一个入口驱动桌面。
+            windows_tools: computer_use_enabled(&environment),
             // 沙盒 `ask` 档的网络审批由本界面接管：没有这一句，代理线程会认为
             // "没人能回答"而立即拒绝，表现为 ask 与 offline 等价。
             // 无人值守入口（本地 API、触发接口）保持默认 `false`，这是刻意的。
@@ -957,9 +961,7 @@ impl App {
         let skill_suggest = Some(omnicrawl_host::tools::suggest_options_from_config(
             &environment,
         ));
-        let suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(
-            &llm,
-        )));
+        let suggest_keywords = Some(omnicrawl_host::tools::keyword_client(keyword_channel(&llm)));
         // 命令菜单的候选表来自统一命令源（注册表声明）加运行期 Skill；启动时装载一次，
         // 工作区切换与设置变更后由 `refresh_command_menu` 重装。
         state
@@ -1217,7 +1219,6 @@ impl KernelCommand {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

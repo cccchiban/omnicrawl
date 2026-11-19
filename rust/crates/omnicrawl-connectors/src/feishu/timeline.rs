@@ -419,11 +419,3 @@ impl SubAgentMessage {
         self.base.deliver(&markdown_card(&content))
     }
 }
-
-fn text_of(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}

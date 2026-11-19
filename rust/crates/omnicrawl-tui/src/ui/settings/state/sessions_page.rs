@@ -122,8 +122,4 @@ impl SessionsState {
         }
     }
 
-    /// 放弃待确认。
-    pub fn cancel_confirm(&mut self) {
-        self.confirming = None;
-    }
 }

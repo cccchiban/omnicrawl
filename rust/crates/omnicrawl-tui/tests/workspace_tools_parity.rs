@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-use omnicrawl_tui::tools::declarations::declaration;
+use omnicrawl_controllers::tool_declarations::declaration;
 use omnicrawl_tui::tools::read::READ_MAX_LINE_LENGTH;
 use omnicrawl_tui::tools::{
     edit, read, sample, write, RegistryOptions, ToolRegistry, WorkspacePaths,

@@ -16,6 +16,8 @@
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载、鼠标拖选选区 |
 | `src/clipboard.rs` | 剪切板读写（Windows 走宿主 Win32 实现：文本 `CF_UNICODETEXT`、位图 `CF_DIBV5` / `CF_DIB` → PNG；其余平台文本走 `pbcopy`/`wl-copy`/`xclip`、位图不可用） |
 | `src/image_archive.rs` | 粘贴图片的落盘：发送时把 `Ctrl+V` 的剪贴板位图写进 `.omnicrawl/.agent_tmp/images/`，路径追加进提问正文 |
+| `src/document_path.rs` | 粘贴文档（PDF / Word / 表格等）的识别：整段就是一个存在的文档路径才转成 `[ #n .ext ]` 块 |
+| `src/document_note.rs` | 粘贴文档的正文注脚：发送时把完整路径追加到提问末尾（占位符本身展开成文件名） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：本地 Kokoro-82M ONNX 推理（`onnx` feature，宿主固定开启，需系统 espeak-ng 做音素化）、音频 I/O、音色库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表 |
 | `src/ui/` | 渲染：`mod.rs`（三块刷新的版本号与分块绘制）、`hud.rs`、`conversation.rs`（含会话区分块增量缓存与工具卡图片区）、`image_preview.rs`（工具附件的缩略图：后台解码 + 半块字形）、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`form.rs` 表单页字段表、`picker.rs` 模型发现状态与 token 折算） |
@@ -32,6 +34,11 @@
 | 会话 | 消息流（含欢迎 Logo、拖选高亮）与右缘滚动条 | 记录增删改、工具卡展开、思考段显隐、Logo 入场动画 |
 | 输入框 | 待决面板 + 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上边框的运行状态） | 键盘与鼠标输入、清单与队列变化、状态行 spinner |
 | 底部 | 单行 HUD（遥测 + 工作区） | 遥测刷新（文本真的变了才置脏） |
+
+遥测随会话走：`/new`（以及 `/archive` 归档后自动新开）换到的是一份空会话，`AppState::reset_telemetry`
+把 ↑/↓/† 与速率清零并重建底栏——沿用上一份会话的用量就是底栏在报旧账。`context_window`
+（上下文占用条的分母）按配置口径算，与哪份会话无关，因此保留；`Ctrl+L` 只清视图不动会话，
+也就不动遥测。
 
 三块都干净时**一帧都不画**：空闲的 TUI 不再以 20fps 空转（以前每 50ms 都要把整段会话
 从头渲染一遍）。模态弹层（设置 / 配置对话 / 文件选择）铺满整屏，自己每帧重画。
@@ -117,6 +124,25 @@ try_read_clipboard_image_png`：`CF_DIBV5` / `CF_DIB` → RGBA → PNG），本 
   文件签名裁决：扩展名不在 `png/jpg/jpeg/gif/webp` 内、文件不存在或内容不是图片都不转。
 - **判定链与 `read_image` 同源**（`omnicrawl_host::tools::read_image::read_local_image`）：
   同一份签名表、同一套相对路径绑工作区与越界规则、同一套错误文案。
+
+### 粘贴文档（`Ctrl+V` 与 `Event::Paste`）
+
+在资源管理器里复制 PDF / Word / 表格等文档后按 `Ctrl+V`，或直接粘贴一条文档路径，
+输入框里折成一块 `[ #1 .pdf ]`（序号按粘贴顺序递增，扩展名就是文件类型）：
+
+- **整块占位符**。与图片块同一套机制（`Composer::insert_document`）：退格 / Delete 整块删掉，
+  左右键把块当一格；占位符被删掉后路径记录随之丢弃（`prune_pastes`），不会悄悄发出去。
+- **判定链**（`src/document_path.rs`）：粘贴内容整段必须就是一条路径（夹正文、引号、换行都不算），
+  扩展名属于 `pdf/doc/docx/xls/xlsx/ppt/pptx/csv/md/txt/rtf`，且文件真实存在。相对路径按工作区解析。
+  只按扩展名筛，不读文件内容——判定的是「该不该折成附件」，真伪由模型读文件时裁决。
+- **提交时占位符展开成文件名**（`Composer::take` → `expanded_text`），完整路径由
+  `take_documents` 单独交出：正文里因此只剩文件名，路径另由 `src/document_note.rs` 追加成
+  正文末尾的「粘贴的文档：」注脚（模型只能按路径读文件，与剪贴板位图补路径是同一个理由）。
+- **不占用附件通路**：文档不随 `turn.submit` 发字节，也不要求原生视觉；`Record::User` 只带
+  `documents: Vec<String>`（路径），在正文下方逐行显示（`push_user_documents`），多个文档上下叠加。
+  路径不进会话事件，重放历史时不再显示。
+- **一次复制多个文档**：宿主侧 `try_read_clipboard_files` 解析 `CF_HDROP` 的整串名字（双 NUL 结尾），
+  全部读出后逐个入框；只取第一个会静默丢掉后两个。
 
 ### 事件循环的等待与唤醒
 
@@ -333,7 +359,7 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 
 | Rust 文件 | 对映 Python | 说明 |
 | --- | --- | --- |
-| `src/ui/queue.rs` | `status/indicators.py` 的 `PendingQueue` / `QueueDelete` / `QueueToggle` | 排队预览条（标题 + FIFO 摘要行 + 行尾 `[ DELETE ]` 热区 + 展开/收起提示行）；行数、摘要、行序、命中区与展开关卡都复用对映层纯函数 |
+| `src/ui/queue.rs` | `status/indicators.py` 的 `PendingQueue` / `QueueDelete` / `QueueToggle` | 排队预览条（标题 + FIFO 摘要行 + 行尾 `[ DELETE ]` 热区 + 展开/收起提示行）；摘要只取首行并压缩空白，**按框内真实列宽折行**（一条消息最多 3 行物理行，超出以 `…` 收尾），行数、渲染与鼠标命中读同一份排版结果，一条消息折开的每一行都是它的撤回热区 |
 | `src/ui/conversation.rs` | `rendering/widgets.py` 的 `ToolDisclosure` / `ReasoningDisclosure` 点击 | 每条显示行携带 `LineHit`（提示行 / 卡片 / 思考段）；`collapsed_body` 按「有效行」首尾各 2 行采样，提示行文案 `点击展开 N 行`；`hit_test` 按窗口起止下标把区内行号换算成绝对行号 |
 | `src/ui/hud.rs` | `status/hud.py` 的内容驱动分段 | 不再用固定列宽：分段贴齐、超长值 `compact_hud_value` 截断、窄屏逐段收缩（版本号优先保留），任何宽度都恰好填满一行 |
 | `src/ui/fullscreen/terminal/console_heal.rs` | `terminal/handling.py` 的 `_restore_windows_vt_input_mode_if_needed` | 控制台模式自愈（只声明 `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`，不引入 `windows-sys` 到 TUI）；目标值是 crossterm 鼠标捕获的整值 `0x0098`，不是 Python 的 VT 输入位 |
@@ -529,6 +555,14 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 内容超过 5 行时右侧画与消息区同款的细线滚动条（`█` 滑块，透明轨道）；光标由自绘的**白色粗块**
 （白底黑字，宽字符连占位格一起染）代替终端光标，既够粗也不会闪。
 
+**多行输入可用鼠标滚轮翻看**：滚轮落点在输入框正文区（`ui::composer::text_rect`，与点选同一套
+命中）且内容超出 5 行时滚的是输入框——`Composer::scroll_rows` 把窗口起点存进 `scroll`
+（`Some` 表示不再跟随光标），一格三行、上下都夹在 `[0, 总行数 - 5]` 内；插入点被翻出窗口时
+不画粗块、也不再登记终端光标（那一行并不是插入点）。翻过之后**一编辑或一移光标就回到跟随**
+（`refresh_menu` / 四个 `move_*` / 点选拖选都调 `follow_caret`），否则插入点停在窗口外、用户
+敲的字看不见。内容装得下时 `scroll_rows` 返回 `false`，滚轮照旧滚消息区；落点不在正文区
+（边框、会话区）也一样。
+
 **终端光标跟着插入点走**（`main::settle_terminal_cursor`）：粗块是自绘的，终端光标全程隐藏，
 但输入法的候选窗与前摄文本跟的是**终端光标的位置**——不挪它就停在最后一处写屏位置（通常是
 会话区末尾），打字时前摄文字飘到那边、看起来「焦点不在输入栏」。所以 `ui::composer::render`
@@ -632,9 +666,10 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 （同 Python 的 `len(self.screen_stack) == 1` 守卫）。`/settings` 属于「立即命令」，生成期间也当场
 打开面板、不入队；`/undo` 需要回合空闲，因此照常排队。
 
-纯计算（行数、摘要、行序、可撤回/可展开判定）复用 `ui/fullscreen/status/indicators.rs` 的对映层，
-`ui/queue.rs` 只负责「对映行 → ratatui 行 + 点击命中区」；预览条占几行由 `pending_queue_rows`
-算出后参与 `ui::layout`，鼠标命中与渲染因此共用同一套布局计算（`ui::UiAreas`）。
+纯计算（摘要、行序、可撤回/可展开判定）复用 `ui/fullscreen/status/indicators.rs` 的对映层；
+`ui/queue.rs` 拿到框内列宽后排出物理行（消息按栏宽折行、行尾 `[ DELETE ]`、逐行点击命中区），
+预览条占几行就是这份排版结果的行数，参与 `ui::layout` 后鼠标命中与渲染因此共用同一套计算
+（`ui::UiAreas`）。折行不按字数硬截：一条消息最多占 3 行物理行，再长就把末行收成 `…`。
 
 ## 设置面板（`/settings`）
 

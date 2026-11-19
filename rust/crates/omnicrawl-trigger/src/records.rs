@@ -324,10 +324,14 @@ impl TriggerStore {
         let mut inner = self.lock();
         purge_expired(&mut inner, self.retention_seconds);
         if !spec.idempotency_key.is_empty() {
+            let now = now_seconds();
             if let Some(existing) = inner
                 .records
                 .iter()
-                .find(|record| record.idempotency_key == spec.idempotency_key)
+                .find(|record| {
+                    record.idempotency_key == spec.idempotency_key
+                        && now - record.created_at <= IDEMPOTENCY_WINDOW_SECONDS
+                })
                 .cloned()
             {
                 return Ok((existing, true));

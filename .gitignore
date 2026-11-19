@@ -23,7 +23,6 @@ logs/
 generated_audio/
 
 CLAUDE.md
-AGENTS.md
 
 subagents.toml
 

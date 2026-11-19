@@ -27,7 +27,6 @@ use super::web_transport::{
 pub const DEFAULT_OUTPUT_DIR: &str = ".omnicrawl/.agent_tmp/images";
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-image-2";
-pub const DEFAULT_API_KEY_ENV: &str = "OPENAI_API_KEY";
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 120.0;
 pub const DEFAULT_PROVIDER: &str = "openai";
 const DEFAULT_OUTPUT_FORMAT: &str = "png";

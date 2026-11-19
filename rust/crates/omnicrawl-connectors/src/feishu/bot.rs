@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,7 +35,8 @@ use crate::json;
 use crate::render::{
     question_card_json, question_resolved_card_json, ASK_USER_TOOL_NAME, TODO_TOOL_NAME,
 };
-use crate::text::{display_text, parse_json_object, resolve_final_text, text_value};
+use crate::platform::{BotSwitches, PendingSlot};
+use crate::text::{display_text, field_text, parse_json_object, resolve_final_text, text_value};
 
 /// 流式 patch 节拍（秒）：飞书对消息更新有频率限制，不做逐字 patch。
 pub const STREAM_PATCH_INTERVAL_SECONDS: f64 = 1.5;
@@ -49,26 +50,31 @@ struct PendingConfirmation {
     receive_id: String,
     receive_id_type: String,
     sender_open_id: String,
-    decision: Mutex<Option<bool>>,
-    signal: Condvar,
+    slot: PendingSlot<bool>,
 }
 
 impl PendingConfirmation {
+    fn new(tool_name: &str, task: &ActiveTask) -> PendingConfirmation {
+        PendingConfirmation {
+            tool_name: tool_name.to_string(),
+            receive_id: task.receive_id.clone(),
+            receive_id_type: task.receive_id_type.clone(),
+            sender_open_id: task.sender_open_id.clone(),
+            slot: PendingSlot::new(),
+        }
+    }
+
     fn wait(&self, timeout: Duration) -> Option<bool> {
-        let guard = self.decision.lock().expect("审批锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |decision| decision.is_none())
-            .expect("审批锁中毒");
-        *guard
+        self.slot.wait(timeout)
     }
 
     fn resolve(&self, decision: bool) {
-        let mut guard = self.decision.lock().expect("审批锁中毒");
-        if guard.is_none() {
-            *guard = Some(decision);
-        }
-        self.signal.notify_all();
+        self.slot.resolve(Some(decision));
+    }
+
+    /// 停止指令：解除等待但不记录答复，调用方按超时（拒绝）处理。
+    fn release(&self) {
+        self.slot.release();
     }
 }
 
@@ -82,26 +88,21 @@ struct PendingQuestion {
     receive_id_type: String,
     sender_open_id: String,
     message_id: Mutex<Option<String>>,
-    answer: Mutex<Option<String>>,
-    signal: Condvar,
+    slot: PendingSlot<String>,
 }
 
 impl PendingQuestion {
     fn resolve(&self, answer: Option<String>) {
-        let mut guard = self.answer.lock().expect("提问锁中毒");
-        if guard.is_none() {
-            *guard = answer;
-        }
-        self.signal.notify_all();
+        self.slot.resolve(answer);
+    }
+
+    /// 停止指令：解除等待但不记录答复，本轮按未作答继续。
+    fn release(&self) {
+        self.slot.release();
     }
 
     fn wait(&self, timeout: Duration) -> Option<String> {
-        let guard = self.answer.lock().expect("提问锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |answer| answer.is_none())
-            .expect("提问锁中毒");
-        guard.clone()
+        self.slot.wait(timeout)
     }
 }
 
@@ -157,8 +158,7 @@ pub struct FeishuBot<D: AgentDriver> {
     public_access: bool,
     confirmation_timeout: Duration,
     state: Mutex<BotState>,
-    stopped: AtomicBool,
-    show_thinking: AtomicBool,
+    switches: BotSwitches,
     temp_root: PathBuf,
 }
 
@@ -178,8 +178,7 @@ impl<D: AgentDriver> FeishuBot<D> {
             allowed_user_ids,
             confirmation_timeout: Duration::from_secs_f64(confirmation_timeout_seconds.max(1.0)),
             state: Mutex::new(BotState::default()),
-            stopped: AtomicBool::new(false),
-            show_thinking: AtomicBool::new(false),
+            switches: BotSwitches::new(false),
         }
     }
 
@@ -277,16 +276,29 @@ impl<D: AgentDriver> FeishuBot<D> {
     }
 
     /// 供测试与信号处理触发退出。
+    ///
+    /// 与 `close` 一样要释放挂起的确认与提问：否则任务线程会一直阻塞到审批超时，
+    /// `/stop` 在用户看来「没反应」。
     pub fn request_stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.switches.mark_stopped();
+        let (confirmation, question) = {
+            let state = self.state.lock().expect("状态锁中毒");
+            (state.confirmation.clone(), state.question.clone())
+        };
+        if let Some(confirmation) = confirmation {
+            confirmation.release();
+        }
+        if let Some(question) = question {
+            question.release();
+        }
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+        self.switches.is_stopped()
     }
 
     pub fn show_thinking(&self) -> bool {
-        self.show_thinking.load(Ordering::SeqCst)
+        self.switches.show_thinking()
     }
 
     /// `im.message.receive_v1` 事件入口。
@@ -746,7 +758,7 @@ impl<D: AgentDriver> FeishuBot<D> {
         }
         match parts[1].to_lowercase().as_str() {
             "on" | "1" | "true" | "yes" | "开" | "开启" => {
-                self.show_thinking.store(true, Ordering::SeqCst);
+                self.switches.set_show_thinking(true);
                 self.api.send_text(
                     receive_id,
                     "已开启思考内容显示（💭 折叠面板）。",
@@ -754,7 +766,7 @@ impl<D: AgentDriver> FeishuBot<D> {
                 );
             }
             "off" | "0" | "false" | "no" | "关" | "关闭" => {
-                self.show_thinking.store(false, Ordering::SeqCst);
+                self.switches.set_show_thinking(false);
                 self.api
                     .send_text(receive_id, "已关闭思考内容显示。", receive_id_type);
             }
@@ -1041,18 +1053,12 @@ impl<D: AgentDriver> FeishuBot<D> {
     }
 
     fn sleep_until_stopped(&self, seconds: f64) {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds.max(0.0));
-        while Instant::now() < deadline {
-            if self.is_stopped() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        self.switches.sleep_until_stopped(seconds);
     }
 
     /// 关闭连接器：停止任务、释放挂起审批与提问，并通知宿主回收资源。
     pub fn close(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.switches.mark_stopped();
         let (task, confirmation, question) = {
             let state = self.state.lock().expect("状态锁中毒");
             (
@@ -1090,14 +1096,7 @@ impl<D: AgentDriver> ConfirmHandler for FeishuBot<D> {
         if self.is_stopped() {
             return false;
         }
-        let pending = Arc::new(PendingConfirmation {
-            tool_name: tool_name.to_string(),
-            receive_id: task.receive_id.clone(),
-            receive_id_type: task.receive_id_type.clone(),
-            sender_open_id: task.sender_open_id.clone(),
-            decision: Mutex::new(None),
-            signal: Condvar::new(),
-        });
+        let pending = Arc::new(PendingConfirmation::new(tool_name, task.as_ref()));
         {
             let mut state = self.state.lock().expect("状态锁中毒");
             state.confirmation = Some(pending.clone());
@@ -1180,8 +1179,7 @@ impl<D: AgentDriver> AskUserHandler for FeishuBot<D> {
             receive_id_type: task.receive_id_type.clone(),
             sender_open_id: task.sender_open_id.clone(),
             message_id: Mutex::new(None),
-            answer: Mutex::new(None),
-            signal: Condvar::new(),
+            slot: PendingSlot::new(),
         });
         {
             let mut state = self.state.lock().expect("状态锁中毒");
@@ -1254,7 +1252,7 @@ impl<D: AgentDriver> AskUserHandler for FeishuBot<D> {
 
 impl PendingQuestion {
     fn is_answered(&self) -> bool {
-        self.answer.lock().expect("提问锁中毒").is_some()
+        self.slot.is_resolved()
     }
 }
 
@@ -1572,23 +1570,12 @@ fn sender_open_id(event: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn field_text(value: &Value, key: &str) -> String {
-    match value.get(key) {
-        Some(Value::String(text)) => text.trim().to_string(),
-        Some(Value::Number(number)) => number.to_string(),
-        _ => String::new(),
-    }
-}
-
 fn take_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    }
+    crate::text::text_of(value)
 }
 
 fn take_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
+    crate::text::take_chars(text, limit)
 }
 
 fn relative_display(path: &std::path::Path, root: &std::path::Path) -> String {

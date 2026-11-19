@@ -13,8 +13,11 @@ use crate::ui::fullscreen::text::StyledText;
 
 /// 排队预览条折叠时可见的消息条数（对映 `OmniCrawlApp.QUEUE_PREVIEW_MAX_ROWS`）。
 pub const QUEUE_PREVIEW_MAX_ROWS: usize = 3;
-/// 排队预览条每行摘要的最大字符数（对映 `QUEUE_PREVIEW_SUMMARY_LIMIT`）。
-pub const QUEUE_PREVIEW_SUMMARY_LIMIT: usize = 40;
+
+/// 一条排队消息最多占的物理行数：超长首行按栏宽折行后仍超出时，末行以 `…` 收尾。
+///
+/// 不设上限会让一条长消息把输入区方框撑到整屏，压掉会话区。
+pub const QUEUE_PREVIEW_ITEM_LINES: usize = 3;
 
 /// 底部单行 HUD 的数据源快照。
 ///
@@ -77,16 +80,17 @@ pub enum QueueRow {
     /// 标题行：排队总数。
     Title,
     /// 消息摘要行；`index` 是该消息在队列中的下标（撤回用）。
+    ///
+    /// 摘要只取消息首行并压缩空白，不按字符数截断：放不下时由渲染层按栏宽折行。
     Item { index: usize, summary: String },
     /// 展开/收起提示行。
     Toggle { label: String },
 }
 
 /// 取消息首行并压缩空白的摘要（对映 `update_items` 里的 summary 计算）。
-pub fn queue_summary(text: &str, limit: usize) -> String {
+pub fn queue_summary(text: &str) -> String {
     let first_line = text.lines().next().unwrap_or("");
-    let collapsed = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(limit).collect()
+    first_line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// 标题行文本：`⏳ N 条消息排队`。
@@ -97,9 +101,14 @@ pub fn queue_title(count: usize) -> StyledText {
     )
 }
 
+/// 消息行的行首前缀：`  1. `（渲染折行时续行按它的列宽缩进）。
+pub fn queue_item_prefix(index: usize) -> String {
+    format!("  {}. ", index + 1)
+}
+
 /// 消息摘要行文本（对映 `Static(f"  {index + 1}. {summary}")`）。
 pub fn queue_item_text(index: usize, summary: &str) -> String {
-    format!("  {}. {summary}", index + 1)
+    format!("{}{summary}", queue_item_prefix(index))
 }
 
 /// 展开/收起提示行文本。
@@ -112,12 +121,10 @@ pub fn queue_toggle_label(count: usize, max_visible: usize, show_all: bool) -> S
 }
 
 /// 按当前队列内容重建预览行；空队列返回空表（调用方不显示该组件）。
-pub fn queue_preview_rows(
-    items: &[String],
-    expanded: bool,
-    max_visible: usize,
-    summary_limit: usize,
-) -> Vec<QueueRow> {
+///
+/// 这里是逻辑行（一条消息一行）；按栏宽折行、行尾 `[ DELETE ]` 与逐行命中区由
+/// [`crate::ui::queue`] 在拿到真实列宽后补上。
+pub fn queue_preview_rows(items: &[String], expanded: bool, max_visible: usize) -> Vec<QueueRow> {
     let count = items.len();
     let mut rows: Vec<QueueRow> = Vec::new();
     if count == 0 {
@@ -133,32 +140,13 @@ pub fn queue_preview_rows(
     for (index, text) in visible.iter().enumerate() {
         rows.push(QueueRow::Item {
             index,
-            summary: queue_summary(text, summary_limit),
+            summary: queue_summary(text),
         });
     }
     if count > max_visible {
         rows.push(QueueRow::Toggle {
             label: queue_toggle_label(count, max_visible, show_all),
         });
-    }
-    rows
-}
-
-/// 排队预览条当前应占用的行数（无排队时为 0）。
-///
-/// 行数 = 1 行标题 + 可见消息行数 + （超出可见上限时）1 行展开/收起提示行。
-pub fn pending_queue_rows(count: usize, expanded: bool, max_visible: usize) -> usize {
-    if count == 0 {
-        return 0;
-    }
-    let visible = if expanded && count > max_visible {
-        count
-    } else {
-        count.min(max_visible)
-    };
-    let mut rows = 1 + visible;
-    if count > max_visible {
-        rows += 1;
     }
     rows
 }
@@ -250,17 +238,18 @@ mod tests {
     #[test]
     fn queue_summary_collapses_first_line() {
         assert_eq!(
-            queue_summary("  第一行   有   空白\n第二行", 40),
+            queue_summary("  第一行   有   空白\n第二行"),
             "第一行 有 空白"
         );
-        assert_eq!(queue_summary("", 40), "");
-        assert_eq!(queue_summary("abcdef", 3), "abc");
+        assert_eq!(queue_summary(""), "");
+        // 不按字符数截断：长首行原样保留，折行交渲染层。
+        assert_eq!(queue_summary("abcdef"), "abcdef");
     }
 
     #[test]
     fn queue_preview_rows_fold_and_expand() {
         let items: Vec<String> = (1..=5).map(|index| format!("消息{index}")).collect();
-        let folded = queue_preview_rows(&items, false, QUEUE_PREVIEW_MAX_ROWS, 40);
+        let folded = queue_preview_rows(&items, false, QUEUE_PREVIEW_MAX_ROWS);
         assert_eq!(folded.len(), 5);
         assert_eq!(folded[0], QueueRow::Title);
         assert_eq!(
@@ -276,7 +265,7 @@ mod tests {
                 label: "  … 还有 2 条 ›".to_string()
             }
         );
-        let expanded = queue_preview_rows(&items, true, QUEUE_PREVIEW_MAX_ROWS, 40);
+        let expanded = queue_preview_rows(&items, true, QUEUE_PREVIEW_MAX_ROWS);
         assert_eq!(expanded.len(), 7);
         assert_eq!(
             expanded[6],
@@ -284,7 +273,7 @@ mod tests {
                 label: "  « 收起".to_string()
             }
         );
-        assert!(queue_preview_rows(&[], false, QUEUE_PREVIEW_MAX_ROWS, 40).is_empty());
+        assert!(queue_preview_rows(&[], false, QUEUE_PREVIEW_MAX_ROWS).is_empty());
     }
 
     #[test]
@@ -294,15 +283,6 @@ mod tests {
         assert_eq!(queue_toggle_label(5, 3, true), "  « 收起");
         assert_eq!(queue_title(3).plain(), "⏳ 3 条消息排队");
         assert_eq!(queue_title(3).spans()[0].style, "bold yellow");
-    }
-
-    #[test]
-    fn pending_queue_rows_counts_title_and_toggle() {
-        assert_eq!(pending_queue_rows(0, false, QUEUE_PREVIEW_MAX_ROWS), 0);
-        assert_eq!(pending_queue_rows(1, false, QUEUE_PREVIEW_MAX_ROWS), 2);
-        assert_eq!(pending_queue_rows(3, false, QUEUE_PREVIEW_MAX_ROWS), 4);
-        assert_eq!(pending_queue_rows(5, false, QUEUE_PREVIEW_MAX_ROWS), 5);
-        assert_eq!(pending_queue_rows(5, true, QUEUE_PREVIEW_MAX_ROWS), 7);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use crate::text::text_of;
 
 /// 图片扩展名（与飞书消息资源类型 `image` 对应）。
 pub const IMAGE_EXTENSIONS: [&str; 10] = [
@@ -359,13 +360,6 @@ pub fn resource_file_key(content: &Value) -> Option<String> {
     None
 }
 
-fn text_of(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
 
 #[cfg(test)]
 mod tests {

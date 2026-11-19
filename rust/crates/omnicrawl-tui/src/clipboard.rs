@@ -35,10 +35,18 @@ pub fn read_image_png() -> Option<Vec<u8>> {
     imp::read_image()
 }
 
+/// 读剪贴板里被复制的文件路径（资源管理器「复制」写的是 `CF_HDROP`）。
+///
+/// 用途：`Ctrl+V` 粘贴文档。不是文件列表时返回空表，调用方据此退回图片/文本通路。
+pub fn read_file_paths() -> Vec<String> {
+    imp::read_files()
+}
+
 #[cfg(windows)]
 mod imp {
     use omnicrawl_host::tools::windows::clipboard::{
-        try_read_clipboard_image_png, try_read_clipboard_text, write_clipboard_text,
+        try_read_clipboard_files, try_read_clipboard_image_png, try_read_clipboard_text,
+        write_clipboard_text,
     };
 
     pub fn copy(text: &str) -> Result<(), String> {
@@ -51,6 +59,10 @@ mod imp {
 
     pub fn read_image() -> Option<Vec<u8>> {
         try_read_clipboard_image_png()
+    }
+
+    pub fn read_files() -> Vec<String> {
+        try_read_clipboard_files()
     }
 }
 
@@ -102,6 +114,10 @@ mod imp {
     /// 非 Windows 没有这份实现：粘贴图片在那里不可用（`Ctrl+V` 只粘文本）。
     pub fn read_image() -> Option<Vec<u8>> {
         None
+    }
+
+    pub fn read_files() -> Vec<String> {
+        Vec::new()
     }
 }
 

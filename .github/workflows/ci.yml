@@ -50,6 +50,11 @@ jobs:
         with:
           node-version: "22"
 
+      # 纯文本规模门禁：不编译、不下载，只按生产行数检查（剥离 #[cfg(test)] 之后）。
+      # 名单在 rust/scripts/size_guard_allowlist.txt，只允许减不允许增。
+      - name: 源码规模门禁
+        run: python rust/scripts/size_guard.py
+
       - name: 构建与测试
         working-directory: rust
         env:

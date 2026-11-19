@@ -50,7 +50,7 @@ npm registry、升级方式换成 `npm install -g`。
 ## 本地开发
 
 ```bash
-cargo build --release -p omnicrawl-cli        # 产物：rust/target/release/omnicrawl[.exe]
+cargo build --release -p omnicrawl-cli        # 产物在 cargo 报告的 target 目录下（见下）
 node packages/cli/scripts/build-host.mjs      # 宿主载荷：dist/host/<platform>/payload
 node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc  # 产物目录跟 --target 走
 node packages/cli/scripts/prepare.mjs         # 暂存发布产物（缺的平台只警告）
@@ -58,6 +58,11 @@ node packages/cli/scripts/host-smoke.mjs      # 宿主冒烟：无终端提示 +
 node packages/cli/scripts/install-smoke.mjs   # 安装冒烟：干净前缀里真装真跑
 npm test -w omnicrawl-cli                     # e2e：真二进制 + 协议 v1
 ```
+
+产物目录不写死在脚本里：`build-host.mjs` 与 e2e 测试都问
+`cargo metadata` 的 `target_directory`，因此 `CARGO_TARGET_DIR`、以及项目级
+`rust/.cargo/config.toml` 里的 `[build] target-dir` 都会被认。要换本机 target 目录就写那份
+config（它不入库）：`target-dir = "D:\\build_temp"`。
 
 宿主载荷是纯 Rust 产物，按构建机的目标构建即可（TTS 已改为云服务，`omnicrawl-tts` 只剩
 HTTP 与音频 I/O，原先挡住 musl 的 `ort` / `espeak-ng` 已移出依赖树，本机实测见

@@ -390,11 +390,6 @@ impl SettingsState {
         matches!(self.pane, Pane::Sessions)
     }
 
-    /// 右侧当前是否挂在记忆功能页。
-    pub fn is_memory_pane(&self) -> bool {
-        matches!(self.pane, Pane::Memory)
-    }
-
     /// 记忆页当前选中的行（渲染与宿主回填用）。
     pub fn memory_selected(&self) -> usize {
         self.memory.selected()
@@ -418,11 +413,6 @@ impl SettingsState {
     /// 宿主回填：遗忘时间的最新值（写盘成功后调用）。
     pub fn set_memory_forget_after(&mut self, days: i64) {
         self.memory.sync(self.memory.enabled(), days);
-    }
-
-    /// 右侧当前是否挂在知识库页。
-    pub fn is_knowledge_pane(&self) -> bool {
-        matches!(self.pane, Pane::Knowledge)
     }
 
     /// 知识库页当前选中的行（渲染与宿主回填用）。

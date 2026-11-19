@@ -844,10 +844,10 @@ fn schemas() -> Value {
         },
         "ImageGenSetting": {
             "type": "object",
-            "description": "图像生成：provider 决定走 OpenAI 兼容 Image API 还是 Gemini；size/quality 与 aspect_ratio/image_size 分属两条通道。",
+            "description": "图像生成：provider 决定走哪条通道（OpenAI 兼容 Image API / Gemini / xAI Grok / DALL·E 3 / Midjourney 代理）；size/quality 与 aspect_ratio/image_size 分属不同通道。",
             "properties": {
                 "enabled": {"type": "boolean"},
-                "provider": {"type": "string", "enum": ["openai", "gemini"]},
+                "provider": {"type": "string", "enum": ["openai", "gemini", "grok", "dall-e-3", "mj"]},
                 "base_url": {"type": "string"},
                 "api_key": {"type": "string"},
                 "model": {"type": "string"},

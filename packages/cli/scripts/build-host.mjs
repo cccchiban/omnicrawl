@@ -135,9 +135,17 @@ function buildRust() {
     execFileSync('cargo', cargoArgs, { cwd: join(repoRoot, 'rust'), stdio: 'inherit' })
   }
 
+  // 产物目录问 cargo 自己，不要拼 `rust/target`：项目级/用户级 config 的 `build.target-dir`
+  // 与 `CARGO_TARGET_DIR` 都会改变它，写死会在 `--skip-build` 时找不到产物。
+  const targetDir = JSON.parse(
+    execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+      cwd: join(repoRoot, 'rust'),
+      encoding: 'utf8',
+    }),
+  ).target_directory
   const releaseDir = rustTarget
-    ? join(repoRoot, 'rust', 'target', rustTarget, 'release')
-    : join(repoRoot, 'rust', 'target', 'release')
+    ? join(targetDir, rustTarget, 'release')
+    : join(targetDir, 'release')
   const suffix = executableSuffix()
 
   rmSync(outRoot, { recursive: true, force: true })

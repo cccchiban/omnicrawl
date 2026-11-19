@@ -9,6 +9,7 @@ pub mod feishu;
 pub mod http;
 pub mod json;
 pub mod mqtt;
+pub mod platform;
 pub mod qqbot;
 pub mod render;
 pub mod telegram;

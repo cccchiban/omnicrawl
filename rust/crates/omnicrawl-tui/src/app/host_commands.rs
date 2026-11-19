@@ -336,6 +336,8 @@ impl App {
         // 新会话没有历史可换出：清掉上一个会话的排程。
         self.session_release_at = None;
         self.session_released = false;
+        // 换了一份空会话：底部遥测同样不能留着上一份的用量。
+        self.state.reset_telemetry();
         // 新会话没有历史：视图清空是「已归档并新开」的如实投影，不只是提示文案。
         self.state.replay_history(&[]);
         self.retarget_session_memory();
@@ -372,6 +374,8 @@ impl App {
         // 新会话没有历史可换出：清掉上一个会话的排程。
         self.session_release_at = None;
         self.session_released = false;
+        // 上一个会话的用量/速率不属于新会话：底部遥测跟着清零。
+        self.state.reset_telemetry();
         self.state.replay_history(&[]);
         self.retarget_session_memory();
         Ok(self.session_id.clone())
@@ -405,6 +409,9 @@ impl App {
         // 换了会话就重新计闲置：上一份会话的换出状态不适用于这一份。
         self.session_release_at = None;
         self.session_released = false;
+        // 用量属于会话：被恢复的会话在本进程里还没跑过回合，内核回包也不带它的历史用量，
+        // 因此清零而不是留着上一份会话的数（下一回合的 `turn.token_usage` 会带回真实值）。
+        self.state.reset_telemetry();
         // 兼容旧内核/测试桩：它们可能忽略 `include_history=false` 仍然带回历史；
         // 这份历史已经拿到，直接用它，不再额外等一次 `session.events`。
         let inline_history = result

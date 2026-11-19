@@ -1,0 +1,46 @@
+# 生产行（剥离 #[cfg(test)] 之后）> 1000 的文件名单。
+#
+# 规则：只允许减，不允许增。拆到红线以下就把对应行删掉；新增超标会让
+# `python rust/scripts/size_guard.py` 失败（CI 的「源码规模门禁」步骤）。
+#
+# 行的格式：<相对 rust/ 的路径>  <登记时的生产行数>
+crates/omnicrawl-connectors/src/qqbot/bot.rs  2478
+crates/omnicrawl-tui/src/ui/settings/render.rs  2116
+crates/omnicrawl-host/src/tools/web_search.rs  2052
+crates/omnicrawl-host/src/sandbox/windows.rs  2034
+crates/omnicrawl-tui/src/state.rs  1973
+crates/omnicrawl-tui/src/ui/conversation.rs  1921
+crates/omnicrawl-workspace/src/agent_isolation.rs  1871
+crates/omnicrawl-connectors/src/feishu/bot.rs  1633
+crates/omnicrawl-llm/src/desensitization/rules.rs  1608
+crates/omnicrawl-tui/src/ui/fullscreen/rendering/latex.rs  1597
+crates/omnicrawl-tls/src/session.rs  1592
+crates/omnicrawl-controllers/src/approval.rs  1552
+crates/omnicrawl-jsdom/src/browser_env/media.rs  1488
+crates/omnicrawl-api/src/service.rs  1387
+crates/omnicrawl-mcp/src/client.rs  1374
+crates/omnicrawl-api/src/routes/settings.rs  1301
+crates/omnicrawl-llm/src/desensitization/engine.rs  1300
+crates/omnicrawl-host/src/tools/knowledge.rs  1293
+crates/omnicrawl-connectors/src/telegram/bot.rs  1289
+crates/omnicrawl-session/src/store.rs  1257
+crates/omnicrawl-tui/src/ui/settings/state.rs  1238
+crates/omnicrawl-tui/src/app/support.rs  1225
+crates/omnicrawl-tui/src/app/mod.rs  1222
+crates/omnicrawl-host/src/tools/monitor.rs  1221
+crates/omnicrawl-host/src/turn.rs  1207
+crates/omnicrawl-jsdom/src/fetch_api.rs  1186
+crates/omnicrawl-llm/src/runtime.rs  1168
+crates/omnicrawl-controllers/src/tool_args.rs  1155
+crates/omnicrawl-session/src/memory_store.rs  1133
+crates/omnicrawl-ipc/src/bridge.rs  1124
+crates/omnicrawl-controllers/src/subagents/tasks.rs  1107
+crates/omnicrawl-host/src/tools/git_native.rs  1100
+crates/omnicrawl-tui/src/app/settings_apply.rs  1092
+crates/omnicrawl-controllers/src/subagents/definitions.rs  1073
+crates/omnicrawl-jsdom/src/engine.rs  1067
+crates/omnicrawl-controllers/src/context_compaction/policy.rs  1048
+crates/omnicrawl-api/src/shared_store.rs  1043
+crates/omnicrawl-api/src/connector.rs  1014
+crates/omnicrawl-host/src/review.rs  1012
+crates/omnicrawl-host/src/tools/grep.rs  1011

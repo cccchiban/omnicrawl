@@ -32,22 +32,12 @@ pub const WEB_SEARCH_ENGINES: [&str; 13] = [
     "mixed",
 ];
 
-/// DeepSeek 搜索引擎名。
-pub const DEEPSEEK_WEB_SEARCH_ENGINE: &str = "deepseek";
-/// Grok（xAI）搜索引擎名。
-pub const GROK_WEB_SEARCH_ENGINE: &str = "grok";
-/// Keenable 搜索引擎名。
-pub const KEENABLE_WEB_SEARCH_ENGINE: &str = "keenable";
-
 /// DeepSeek 搜索接口的默认地址（`POST /v1/tools/search`）。
 pub const DEFAULT_DEEPSEEK_SEARCH_URL: &str = "https://api.deepseek.com/v1/tools/search";
 /// Grok 搜索接口的默认地址（Responses API + `web_search` 服务端工具）。
 pub const DEFAULT_GROK_SEARCH_URL: &str = "https://api.x.ai/v1/responses";
 /// Grok 搜索默认模型。
 pub const DEFAULT_GROK_SEARCH_MODEL: &str = "grok-4.7";
-/// Keenable 搜索接口的默认地址（`POST /v1/search`；匿名调用改走 `/v1/search/public`）。
-pub const DEFAULT_KEENABLE_SEARCH_URL: &str = "https://api.keenable.ai/v1/search";
-
 /// 混合搜索的引擎名。
 pub const MIXED_WEB_SEARCH_ENGINE: &str = "mixed";
 

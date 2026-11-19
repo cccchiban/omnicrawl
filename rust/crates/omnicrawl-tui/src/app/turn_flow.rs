@@ -31,14 +31,16 @@ impl App {
                 if parsed.command.command_type.immediate() {
                     self.dispatch_command(text, parsed);
                 } else {
-                    self.state.queue_pending(text, submission.images);
+                    self.state
+                        .queue_pending(text, submission.images, submission.documents);
                 }
                 return;
             }
-            self.state.queue_pending(text, submission.images);
+            self.state
+                .queue_pending(text, submission.images, submission.documents);
             return;
         }
-        self.dispatch_submission(text, submission.images);
+        self.dispatch_submission(text, submission.images, submission.documents);
     }
 
     /// 把一次提交派发到斜杠命令或内核。
@@ -46,18 +48,25 @@ impl App {
     /// 命中注册表即交给命令层（未命中的输入照旧当成一轮对话）；需要内核往返的两条
     /// （`/undo`、`/compact`）先在宿主侧拦下来异步下发。
     ///
-    /// `images` 是随这次提问粘贴的图片：斜杠命令不走模型，因此命中命令时按「没地方去」
-    /// 处理——提醒一句，不让图片悄悄消失。
-    pub(super) fn dispatch_submission(&mut self, text: String, images: Vec<PendingImage>) {
+    /// `images` / `documents` 是随这次提问粘贴的图片与文档：斜杠命令不走模型，因此命中
+    /// 命令时按「没地方去」处理——提醒一句，不让附件悄悄消失。
+    pub(super) fn dispatch_submission(
+        &mut self,
+        text: String,
+        images: Vec<PendingImage>,
+        documents: Vec<PendingDocument>,
+    ) {
         // 内核没了就什么都不发：界面已常显退出指引，往死连接里写只会刷出「发送失败」噪音。
         // 键盘路径到不了这里（Enter 在该状态下是退出），这是给鼠标等旁路的兜底。
         if self.kernel_lost {
             return;
         }
         if let Some(parsed) = command_registry().parse(&text) {
-            if !images.is_empty() {
-                self.state
-                    .show_notice_line("斜杠命令不接受图片，已忽略粘贴的图片。", Instant::now());
+            if !images.is_empty() || !documents.is_empty() {
+                self.state.show_notice_line(
+                    "斜杠命令不接受附件，已忽略粘贴的图片与文档。",
+                    Instant::now(),
+                );
             }
             self.dispatch_command(text, parsed);
             return;
@@ -76,14 +85,14 @@ impl App {
         self.session_released = false;
         // 建议还在后台跑：这一条排队等它——两条同时提交会被内核按 `TURN_BUSY` 拒掉一条。
         if self.suggest_in_flight > 0 {
-            self.state.queue_pending(text, images);
+            self.state.queue_pending(text, images, documents);
             return;
         }
         // 建议：先由主模型把这条提问识别成「技能词」，再用本地 BM25 检索本机 Skill 索引
         // （识别要出网，不能占 UI 线程），结果回来再提交；识别不可用或没有建议时立即提交，
         // 原文照发（fail-open）。
-        if let Some((text, images)) = self.start_suggestion(text, images) {
-            self.submit_to_kernel(text, images);
+        if let Some((text, images, documents)) = self.start_suggestion(text, images, documents) {
+            self.submit_to_kernel(text, images, documents);
         }
     }
 
@@ -95,11 +104,12 @@ impl App {
         &mut self,
         text: String,
         images: Vec<PendingImage>,
-    ) -> Option<(String, Vec<PendingImage>)> {
+        documents: Vec<PendingDocument>,
+    ) -> Option<(String, Vec<PendingImage>, Vec<PendingDocument>)> {
         let skill_suggest = self.skill_suggest.clone().unwrap_or_default();
         // 开关关着：立即提交，原文照发，连索引都不必扫。
         if !skill_suggest.active() {
-            return Some((text, images));
+            return Some((text, images, documents));
         }
         // Skill 候选要扫一次索引（读每个 SKILL.md 的正文分词），钉死了就直接用。
         let skill_source = match self.suggest_skills.clone() {
@@ -121,7 +131,11 @@ impl App {
                 &prompt,
             );
             let text = omnicrawl_host::tools::insert_suggestions(&prompt, &lines);
-            let _ = sender.send(SuggestTaskResult { text, images });
+            let _ = sender.send(SuggestTaskResult {
+                text,
+                images,
+                documents,
+            });
         });
         None
     }
@@ -130,7 +144,7 @@ impl App {
     pub(super) fn drain_suggest_results(&mut self) {
         while let Ok(result) = self.suggest_results.try_recv() {
             self.suggest_in_flight = self.suggest_in_flight.saturating_sub(1);
-            self.submit_to_kernel(result.text, result.images);
+            self.submit_to_kernel(result.text, result.images, result.documents);
         }
         // 建议期间排队的输入接着按 FIFO 提交（对映回合结束后的排空）。
         if self.suggest_in_flight == 0 {
@@ -139,16 +153,27 @@ impl App {
     }
 
     /// 把一次提交发给内核：`turn.start` 在进内核之前分发，界面显示最终文本。
-    pub(super) fn submit_to_kernel(&mut self, text: String, images: Vec<PendingImage>) {
-        self.submit_turn(text, images, false)
+    pub(super) fn submit_to_kernel(
+        &mut self,
+        text: String,
+        images: Vec<PendingImage>,
+        documents: Vec<PendingDocument>,
+    ) {
+        self.submit_turn(text, images, documents, false)
     }
 
     /// 重试上一回合：原样重发那条用户消息，但**不再**新增一条用户记录与转录事件。
     pub(super) fn retry_to_kernel(&mut self, text: String) {
-        self.submit_turn(text, Vec::new(), true)
+        self.submit_turn(text, Vec::new(), Vec::new(), true)
     }
 
-    fn submit_turn(&mut self, text: String, images: Vec<PendingImage>, retry: bool) {
+    fn submit_turn(
+        &mut self,
+        text: String,
+        images: Vec<PendingImage>,
+        documents: Vec<PendingDocument>,
+        retry: bool,
+    ) {
         if self.kernel_lost {
             // 内核对不上就不发；顺手丢掉本轮的活动 Skill 上下文，免得落到下一轮。
             self.pending_skill_context = None;
@@ -162,6 +187,9 @@ impl App {
             Some(note) => format!("{text}\n\n{note}"),
             None => text,
         };
+        // 文档路径只在正文里留一段注脚：模型按路径自己读文件，界面另在消息下方逐行显示。
+        let documents_paths: Vec<String> = documents.into_iter().map(|doc| doc.path).collect();
+        let text = crate::document_note::append_document_paths(text, documents_paths.clone());
         let images = images
             .into_iter()
             .map(|image| omnicrawl_ipc::bridge::TurnImageAttachment {
@@ -174,8 +202,12 @@ impl App {
             // 失败那轮的用户记录还在消息流里，重试只把状态切回运行态。
             self.state.begin_retry_turn(turn_id.clone());
         } else {
-            self.state
-                .begin_turn(turn_id.clone(), text.clone(), images.clone());
+            self.state.begin_turn(
+                turn_id.clone(),
+                text.clone(),
+                images.clone(),
+                documents_paths,
+            );
         }
         // 终端标签页的会话标题按内核同一规则本地跟进（首条用户消息即命名）：
         // 若等内核回执再查索引，标签页会在整轮请求期间一直停在产品名。
@@ -285,7 +317,7 @@ impl App {
             return;
         }
         self.state.set_status(Some(format!("深度搜索中：{target}")));
-        self.submit_to_kernel(target.to_string(), Vec::new());
+        self.submit_to_kernel(target.to_string(), Vec::new(), Vec::new());
     }
 
     /// 处理 `/skill:<名> [余下任务]`：命中就加载技能正文并提交余下任务，未命中回可用列表。
@@ -321,7 +353,7 @@ impl App {
                 skill_not_found_message(&name, &self.skill_names())
             }
         };
-        self.submit_to_kernel(task, Vec::new());
+        self.submit_to_kernel(task, Vec::new(), Vec::new());
     }
 
     /// `/skill:` 未命中时列出的可用名称（与 `/skills` 展示同源）。
@@ -392,7 +424,7 @@ impl App {
         // 状态变更类命令在回合进行中等回合结束（与排队语义一致）。
         // 斜杠命令不接受图片（`dispatch_submission` 已拦下并提示），排队项里不带图。
         if self.state.turn.is_running() {
-            self.state.queue_pending(text, Vec::new());
+            self.state.queue_pending(text, Vec::new(), Vec::new());
             return;
         }
         // 同类命令不并发：`/review HEAD~3` 与 `/review` 算同类（label 相同）。
@@ -434,11 +466,6 @@ impl App {
         self.pending_commands.insert(id, kind);
     }
 
-    /// 当前回合 id（无在途回合时为空）。
-    pub(super) fn current_turn_id(&self) -> Option<String> {
-        self.state.turn.turn_id().map(|value| value.to_string())
-    }
-
     /// 回合结束后按 FIFO 排空排队消息（对映 Python `_drain_pending_inputs`）。
     ///
     /// 模态页（设置面板）打开时不排空，与 Python 的 `len(self.screen_stack) == 1`
@@ -463,7 +490,7 @@ impl App {
             let Some(submission) = self.state.take_next_pending() else {
                 return;
             };
-            self.dispatch_submission(submission.text, submission.images);
+            self.dispatch_submission(submission.text, submission.images, submission.documents);
             // 消息又被排回队尾（没有开启新回合）：本帧到此为止，避免原地空转。
             if !self.state.turn.is_running() && self.state.pending_len() >= queued {
                 return;
@@ -539,6 +566,4 @@ impl App {
             }
         }
     }
-
-
 }

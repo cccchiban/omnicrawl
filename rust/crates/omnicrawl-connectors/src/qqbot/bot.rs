@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,7 @@ use crate::render::{
     ASK_USER_TOOL_NAME, SUBAGENT_EVENT_STATUS, SUBAGENT_TERMINAL_STATUSES, TODO_TOOL_NAME,
 };
 use crate::text::{clean_text, resolve_final_text};
+use crate::platform::{BotSwitches, PendingSlot};
 
 /// 单条文本消息的安全上限（协议没有下发上限，社区实现普遍按 2000 字符保守处理）。
 pub const MAX_CONTENT_CHARS: usize = 1800;
@@ -633,27 +634,31 @@ pub fn split_content(text: &str) -> Vec<String> {
 struct PendingConfirm {
     tool_name: String,
     sender: String,
-    decision: Mutex<Option<bool>>,
-    signal: Condvar,
+    slot: PendingSlot<bool>,
 }
 
 impl PendingConfirm {
+    fn new(tool_name: &str, sender: &str) -> PendingConfirm {
+        PendingConfirm {
+            tool_name: tool_name.to_string(),
+            sender: sender.to_string(),
+            slot: PendingSlot::new(),
+        }
+    }
+
     fn wait(&self, timeout: Duration) -> Option<bool> {
-        let guard = self.decision.lock().expect("确认状态锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |decision| decision.is_none())
-            .expect("确认状态锁中毒");
-        *guard
+        self.slot.wait(timeout)
     }
 
     fn resolve(&self, decision: bool) {
-        let mut guard = self.decision.lock().expect("确认状态锁中毒");
-        if guard.is_none() {
-            *guard = Some(decision);
-        }
-        self.signal.notify_all();
+        self.slot.resolve(Some(decision));
     }
+
+    /// 停止指令：解除等待但不记录答复，调用方按超时（拒绝）处理。
+    fn release(&self) {
+        self.slot.release();
+    }
+
 }
 
 /// 一次等待用户回答的 `ask_user` 请求。
@@ -662,8 +667,7 @@ struct PendingQuestion {
     question: String,
     options: Vec<String>,
     sender: String,
-    answer: Mutex<Option<String>>,
-    signal: Condvar,
+    slot: PendingSlot<String>,
 }
 
 impl PendingQuestion {
@@ -687,21 +691,18 @@ impl PendingQuestion {
     }
 
     fn wait(&self, timeout: Duration) -> Option<String> {
-        let guard = self.answer.lock().expect("提问状态锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |answer| answer.is_none())
-            .expect("提问状态锁中毒");
-        guard.clone()
+        self.slot.wait(timeout)
     }
 
     fn resolve(&self, answer: Option<String>) {
-        let mut guard = self.answer.lock().expect("提问状态锁中毒");
-        if guard.is_none() {
-            *guard = answer;
-        }
-        self.signal.notify_all();
+        self.slot.resolve(answer);
     }
+
+    /// 停止指令：解除等待但不记录答复，本轮按未作答继续。
+    fn release(&self) {
+        self.slot.release();
+    }
+
 }
 
 /// 当前正在执行的任务。
@@ -753,8 +754,7 @@ pub struct QqBot<D: AgentDriver> {
     /// 注入 system prompt 末尾的预设提示词（`[qqbot] persona`）：`READY` 取到昵称后才下发。
     persona: String,
     state: Mutex<BotState>,
-    stopped: AtomicBool,
-    show_thinking: AtomicBool,
+    switches: BotSwitches,
     session: Mutex<GatewaySession>,
     /// 机器人自身 openid（`READY.user.id`）：兼容 `<@openid>` 占位符写法。
     bot_openid: Mutex<String>,
@@ -790,8 +790,7 @@ impl<D: AgentDriver> QqBot<D> {
             intents: config.intents,
             persona: config.persona.clone(),
             state: Mutex::new(BotState::default()),
-            stopped: AtomicBool::new(false),
-            show_thinking: AtomicBool::new(false),
+            switches: BotSwitches::new(false),
             session: Mutex::new(GatewaySession::default()),
             bot_openid: Mutex::new(String::new()),
             bot_name: Mutex::new(String::new()),
@@ -803,12 +802,6 @@ impl<D: AgentDriver> QqBot<D> {
             context_size: config.history_context_size,
             summary_enabled: config.summary_interval_hours > 0.0,
         })
-    }
-
-    /// 测试与自定义记录窗口用：替换群聊记录。
-    pub fn with_history(mut self, history: Arc<GroupHistory>) -> QqBot<D> {
-        self.history = history;
-        self
     }
 
     /// 群聊记录窗口：纯 @ 时注入最近多少条群消息。
@@ -855,23 +848,6 @@ impl<D: AgentDriver> QqBot<D> {
             .run_isolated_turn(&prompt)
             .map(|_reply| ())
             .map_err(|error| redact_sensitive_text(&error))
-    }
-
-    /// 立刻跑一轮到期总结（测试与手动触发用），返回跑过总结的群数。
-    pub fn summarize_due_now(&self) -> usize {
-        let now = super::files::unix_seconds();
-        let jobs = due_jobs(&self.history, &self.summarizer, now);
-        let mut done = 0_usize;
-        for job in jobs {
-            match self.summarize_group(&job) {
-                Ok(()) => {
-                    self.summarizer.mark_done(&job.group, now);
-                    done += 1;
-                }
-                Err(error) => eprintln!("[qqbot] 群 {} 的消息总结失败：{error}", job.group),
-            }
-        }
-        done
     }
 
     /// 测试与自定义传输用：替换平台端口。
@@ -1654,11 +1630,11 @@ impl<D: AgentDriver> QqBot<D> {
                 ));
             }
             ThinkingCommand::Enable => {
-                self.show_thinking.store(true, Ordering::SeqCst);
+                self.switches.set_show_thinking(true);
                 let _ = reply.send_final("已开启思考内容显示（🧠 独立消息）。");
             }
             ThinkingCommand::Disable => {
-                self.show_thinking.store(false, Ordering::SeqCst);
+                self.switches.set_show_thinking(false);
                 let _ = reply.send_final("已关闭思考内容显示。");
             }
             ThinkingCommand::Usage => {
@@ -1814,25 +1790,25 @@ impl<D: AgentDriver> QqBot<D> {
     }
 
     pub fn show_thinking(&self) -> bool {
-        self.show_thinking.load(Ordering::SeqCst)
+        self.switches.show_thinking()
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+        self.switches.is_stopped()
     }
 
     /// 停止网关循环；挂起的确认与提问一并释放，避免任务线程一直等到超时。
     pub fn request_stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.switches.mark_stopped();
         let (pending, question) = {
             let state = self.state.lock().expect("状态锁中毒");
             (state.pending.clone(), state.question.clone())
         };
         if let Some(pending) = pending {
-            pending.resolve(false);
+            pending.release();
         }
         if let Some(question) = question {
-            question.resolve(None);
+            question.release();
         }
     }
 
@@ -1847,14 +1823,7 @@ impl<D: AgentDriver> QqBot<D> {
     }
 
     fn sleep_until_stopped(&self, seconds: f64) -> bool {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds.max(0.0));
-        while Instant::now() < deadline {
-            if self.is_stopped() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        self.is_stopped()
+        self.switches.sleep_until_stopped(seconds)
     }
 
     fn status_text(&self) -> String {
@@ -2303,12 +2272,7 @@ impl<D: AgentDriver> ConfirmHandler for QqBot<D> {
             state.active.clone()
         };
         let Some(task) = task else { return false };
-        let pending = Arc::new(PendingConfirm {
-            tool_name: tool_name.to_string(),
-            sender: task.sender.clone(),
-            decision: Mutex::new(None),
-            signal: Condvar::new(),
-        });
+        let pending = Arc::new(PendingConfirm::new(tool_name, &task.sender));
         {
             let mut state = self.state.lock().expect("状态锁中毒");
             state.pending = Some(Arc::clone(&pending));
@@ -2384,8 +2348,7 @@ impl<D: AgentDriver> AskUserHandler for QqBot<D> {
                 })
                 .unwrap_or_default(),
             sender: task.sender.clone(),
-            answer: Mutex::new(None),
-            signal: Condvar::new(),
+            slot: PendingSlot::new(),
         };
         if question.question.is_empty() {
             return None;
@@ -2467,21 +2430,7 @@ fn remaining_after(sent: &[String], text: &str) -> String {
 }
 
 fn take_chars(text: &str, limit: usize) -> String {
-    let total = text.chars().count();
-    let clipped: String = text.chars().take(limit).collect();
-    if total > limit {
-        format!("{clipped}…")
-    } else {
-        clipped
-    }
-}
-
-fn text_of(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
+    crate::text::take_chars_with_ellipsis(text, limit)
 }
 
 /// 供启动日志用的诊断：远端会看到的机器人身份。

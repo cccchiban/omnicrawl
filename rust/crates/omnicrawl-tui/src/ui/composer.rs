@@ -8,7 +8,9 @@
 //! 占位文案 `› 输入消息或 / 命令`（Python 把 `› ` 写在占位符里，正文不再带提示符）。
 //!
 //! 内容超过 5 行（[`COMPOSER_MAX_LINES`]）时框内随光标滚动，右侧画一条与消息区同款的
-//! 细线滚动条；光标由我们自己画成白色粗块（`█` 风格的反白格），不依赖终端那个会闪烁的细光标。
+//! 细线滚动条；鼠标滚轮落在正文上则按行翻看窗口（`Composer::scroll_rows`），此时插入点
+//! 可能落在窗口之外，那一帧不画粗光标。光标由我们自己画成白色粗块（`█` 风格的反白格），
+//! 不依赖终端那个会闪烁的细光标。
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -43,12 +45,13 @@ pub fn height(state: &AppState, inner_width: u16) -> u16 {
 /// 组内各区间的行数沿用它们自己的计算（`panels::todo_height` / `queue::height` /
 /// `notice_line_height` / [`menu_height`]），所以布局与各自渲染永远一致。
 pub fn group_height(state: &AppState, outer_width: u16) -> u16 {
+    let inner = inner_width(outer_width);
     2 * BORDER
         + super::panels::todo_height(state)
-        + super::queue::height(state)
+        + super::queue::height(state, inner)
         + super::notice_line_height(state)
         + menu_height(state)
-        + height(state, inner_width(outer_width))
+        + height(state, inner)
 }
 
 /// 方框内侧宽度：整组宽度扣掉左右两条边框。
@@ -195,6 +198,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let rendered: Vec<Line<'static>> = rows.iter().map(|row| styled_row(row, selection)).collect();
     frame.render_widget(Paragraph::new(rendered), text);
 
+    // 滚轮把窗口翻到看不见插入点的地方时不画光标，也不登记终端光标：
+    // 光标停在框内某一行反而是假的（那一行并不是插入点所在）。
+    let Some(cursor_row) = cursor_row else {
+        state.set_composer_caret(None);
+        return;
+    };
     let (_, column) = state.composer.cursor_position(body);
     let cursor_line = rows
         .get(cursor_row)

@@ -71,11 +71,11 @@ pub fn burst_text(events: &[KeyEvent]) -> Option<String> {
 
 /// 按键流与剪贴板是否**完整匹配**：是则返回该粘贴内容（用剪贴板原文，含用户复制的原始换行）。
 ///
-/// 只处理含换行的流，外加一条例外：[`crate::image_path::is_lone_image_path`]——控制台把一次
+/// 只处理含换行的流，外加一条例外：[`is_lone_attachment_path`]——控制台把一次
 /// 粘贴按批切开时，只有整串与剪贴板完全一致才能确认「这批按键是一次粘贴」，否则后半截会被
 /// 当成独立输入。其余单行粘贴走普通按键路径就能正确插入，不必为每次击键读剪贴板。
 pub fn clipboard_paste(text: &str, clipboard: &str) -> Option<String> {
-    if !text.contains('\n') && !crate::image_path::is_lone_image_path(clipboard) {
+    if !text.contains('\n') && !is_lone_attachment_path(clipboard) {
         return None;
     }
     if clipboard.is_empty() {
@@ -88,20 +88,26 @@ pub fn clipboard_paste(text: &str, clipboard: &str) -> Option<String> {
     None
 }
 
+/// 剪贴板里是不是「一个附件路径」（图片或文档）。
+///
+/// 文档与图片同理：控制台会把一次粘贴按批切开，单行路径也会被拆成几段；只有先认出它是
+/// 附件路径，才能让这些批次挂起、拼成一次完整的 `Event::Paste`。
+fn is_lone_attachment_path(text: &str) -> bool {
+    crate::image_path::is_lone_image_path(text) || crate::document_path::is_lone_document_path(text)
+}
+
 /// 按键流是否为多行剪贴板的**严格前缀**（等后续批次，不能立刻当普通输入）。
 ///
 /// 判定要点与 Python `_is_pending_clipboard_prefix` 一致：
 /// * 单独的换行不算（那是用户按 Enter，不能被挂起）；
 /// * 剥离控制字符后为空也不算——空串是任意文本的前缀，会把编辑键无限挂起；
-/// * 剪贴板一般是多行；单行只在它是**图片路径**时参与（剪贴板里放着一张图片的路径时，
-///   控制台会把粘贴按批切开，不挂起就只能各批各自成段，永远拼不出完整路径）。
+/// * 剪贴板一般是多行；单行只在它是**附件路径**（图片或文档）时参与——控制台会把粘贴
+///   按批切开，不挂起就只能各批各自成段，永远拼不出完整路径。
 pub fn is_pending_clipboard_prefix(text: &str, clipboard: &str) -> bool {
     if matches!(text, "\r" | "\n" | "\r\n") {
         return false;
     }
-    if clipboard.is_empty()
-        || (!clipboard.contains('\n') && !crate::image_path::is_lone_image_path(clipboard))
-    {
+    if clipboard.is_empty() || (!clipboard.contains('\n') && !is_lone_attachment_path(clipboard)) {
         return false;
     }
     let stream = normalize_stream_text(strip_stream_control_prefix(text));

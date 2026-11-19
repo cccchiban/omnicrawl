@@ -10,8 +10,8 @@
 //! Gemini、OpenAI 兼容校验）眼里是「工具定义不合规」（HTTP 400
 //! `invalid_function_parameters`），因此声明前统一收敛一次。
 
-use omnicrawl_controllers::tool_args::{compact_tool_description, compact_tool_schema};
-use omnicrawl_controllers::tool_catalog::ToolSpec;
+use crate::tool_args::{compact_tool_description, compact_tool_schema};
+use crate::tool_catalog::ToolSpec;
 use serde_json::{json, Map, Value};
 
 /// 一条工具的 provider 声明。

@@ -8,6 +8,9 @@
 > 位置说明：本文件放在 `rust/` 根目录而非 `rust/docs/`——后者被 `.gitignore` 的 `docs/` 规则忽略（历史文件因已入库仍在跟踪）。
 >
 > **执行进度见文末「九、执行记录」**：前 6 名已拆完 2 个、未接线功能已双通、零引用代码已清空。
+> **2026-11-19 有第三轮**（死码清理口径修正、trigger 去重缺陷修复、纯文本规模门禁），
+> 结论不在本文件内，见知识库 `projects/OmniCrawl/code-health-audit-round3.md`；
+> 本轮实测基线：生产行 >1000 的文件 **40 个**，门禁名单为 `rust/scripts/size_guard_allowlist.txt`。
 
 ---
 

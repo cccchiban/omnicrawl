@@ -38,11 +38,6 @@ impl GroupSummarizer {
         }
     }
 
-    /// 默认 12 小时。
-    pub fn default_interval() -> GroupSummarizer {
-        GroupSummarizer::new(Duration::from_secs(DEFAULT_SUMMARY_INTERVAL_SECONDS))
-    }
-
     pub fn interval(&self) -> Duration {
         self.interval
     }

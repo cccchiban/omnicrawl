@@ -2,7 +2,7 @@
 //!
 //! 这条边界很容易被「组规则」或「父子交白名单」之类的旧逻辑悄悄破坏，因此单独钉住。
 
-use omnicrawl_controllers::tool_catalog::{build_agent_tools, ToolCatalogOptions};
+use omnicrawl_controllers::tool_catalog::{build_agent_tools, windows_tool_specs, ToolCatalogOptions};
 
 const WINDOWS_TOOLS: [&str; 5] = [
     "windows_window",
@@ -82,4 +82,27 @@ fn a_partial_windows_group_is_still_rejected_for_the_subagent() {
     };
     let error = build_agent_tools(&options).expect_err("只给一半应当报错");
     assert_eq!(error.message(), "Windows 桌面工具必须作为完整工具组注册。");
+}
+
+/// 内置目录提供的桌面规格：一整套、带可用说明（参数契约是示例式的，由
+/// `tool_declarations::declaration` 统一推断成 Schema，这里只钉住目录本身完整）。
+#[test]
+fn the_builtin_catalog_offers_the_whole_desktop_group() {
+    let specs = windows_tool_specs();
+    let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
+    assert_eq!(names, WINDOWS_TOOLS.to_vec(), "桌面组必须完整：{names:?}");
+    for spec in &specs {
+        assert!(
+            !spec.description.trim().is_empty(),
+            "{} 缺少说明，模型会不知道它做什么",
+            spec.name
+        );
+        let contract: serde_json::Value =
+            serde_json::from_str(&spec.argument_schema).expect("参数契约应当是合法 JSON");
+        assert!(
+            contract.is_object(),
+            "{} 的参数契约要是对象：{contract}",
+            spec.name
+        );
+    }
 }

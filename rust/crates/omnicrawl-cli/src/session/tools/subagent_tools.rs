@@ -212,23 +212,17 @@ pub(crate) fn run_computer_use_loop(
 }
 
 /// 专职子代理的模型配置：换掉系统提示词与模型，工具只留桌面那几件。
+///
+/// 工具声明不能从父表过滤：主代理**不再声明** `windows_*`（桌面操作由本子代理全权负责），
+/// 从父表取子集的结果就是空表——模型看不到任何桌面工具，Computer Use 直接失效。
+/// 因此走 [`crate::computer_use::child_tool_declarations`]：父表有的沿用，缺的按白名单补。
 pub(crate) fn child_config(
     parent: &KernelModelConfig,
     runtime: &crate::computer_use::ComputerUseRuntime,
     tool_names: &[String],
 ) -> KernelModelConfig {
     let mut config = parent.clone();
-    config.tools = parent
-        .tools
-        .iter()
-        .filter(|item| {
-            item.pointer("/function/name")
-                .and_then(Value::as_str)
-                .map(|name| tool_names.iter().any(|candidate| candidate == name))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
+    config.tools = crate::computer_use::child_tool_declarations(&parent.tools, tool_names);
     config.system_prompt = runtime.definition.system_prompt.clone();
     // 模型优先级：定义文件 < `[computer_use] model`（显式配置优先于角色模板）。
     let model = runtime

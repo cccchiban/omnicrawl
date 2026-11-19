@@ -118,6 +118,27 @@ fn read_clipboard_locked() -> Result<String, ToolError> {
 ///
 /// 取一个就够：粘贴识别只需一个可与按键流比对的完整路径。
 fn read_clipboard_file_path_locked() -> Option<String> {
+    read_clipboard_files_locked()?.into_iter().next()
+}
+
+/// 一次尝试读出剪贴板里全部被复制的文件路径（资源管理器「复制」写的就是 `CF_HDROP`）。
+///
+/// 与 [`try_read_clipboard_image_png`] 同样单次尝试、不重试不睡眠：`Ctrl+V` 粘贴文档
+/// 挂在按键热路径上。剪贴板里不是文件列表（纯文本、位图）时返回空表。
+pub fn try_read_clipboard_files() -> Vec<String> {
+    if unsafe { ffi::OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Vec::new();
+    }
+    let files = read_clipboard_files_locked().unwrap_or_default();
+    unsafe { ffi::CloseClipboard() };
+    files
+}
+
+/// 解析 `CF_HDROP`（`DROPFILES` 头 + 一串以 NUL 结尾的文件名）。
+///
+/// 多选粘贴时这一串有多个名字，因此按双 NUL 结尾切开、全部读出：只取第一个会让
+/// 「一次复制三个文档」静默丢掉后两个。
+fn read_clipboard_files_locked() -> Option<Vec<String>> {
     let handle = unsafe { ffi::GetClipboardData(ffi::CF_HDROP) };
     if handle.is_null() {
         return None;
@@ -129,6 +150,11 @@ fn read_clipboard_file_path_locked() -> Option<String> {
     let size = unsafe { ffi::GlobalSize(handle) };
     let bytes = unsafe { std::slice::from_raw_parts(pointer, size) }.to_vec();
     unsafe { ffi::GlobalUnlock(handle) };
+    parse_dropfiles(&bytes)
+}
+
+/// 解析 `DROPFILES` 结构体本身（与 Win32 解耦，便于单测）。
+fn parse_dropfiles(bytes: &[u8]) -> Option<Vec<String>> {
     // DROPFILES：`pFiles` 是文件名的字节偏移，`fWide` 表示名字是 UTF-16。
     if bytes.len() < 20 {
         return None;
@@ -138,29 +164,23 @@ fn read_clipboard_file_path_locked() -> Option<String> {
     if offset >= bytes.len() {
         return None;
     }
-    if wide {
-        let rest = &bytes[offset..];
-        let units: Vec<u16> = rest
-            .chunks_exact(2)
+    let rest = &bytes[offset..];
+    // 名字串以「双 NUL」收尾：先按 NUL 切段，末段的空串（收尾 NUL 之后）自然被滤掉。
+    let files: Vec<String> = if wide {
+        rest.chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .take_while(|unit| *unit != 0)
-            .collect();
-        if units.is_empty() {
-            return None;
-        }
-        String::from_utf16(&units).ok()
+            .collect::<Vec<u16>>()
+            .split(|unit| *unit == 0)
+            .filter(|name| !name.is_empty())
+            .filter_map(|name| String::from_utf16(name).ok())
+            .collect()
     } else {
-        let rest = &bytes[offset..];
-        let text: Vec<u8> = rest
-            .iter()
-            .take_while(|byte| **byte != 0)
-            .copied()
-            .collect();
-        if text.is_empty() {
-            return None;
-        }
-        Some(text.iter().map(|byte| char::from(*byte)).collect())
-    }
+        rest.split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.iter().map(|byte| char::from(*byte)).collect())
+            .collect()
+    };
+    (!files.is_empty()).then_some(files)
 }
 
 /// 读剪贴板的位图（`CF_DIB` / `CF_DIBV5`）并编码成 PNG 字节；里面没有图片时返回 `None`。
@@ -522,6 +542,33 @@ mod tests {
         let mut argb = with_masks.clone();
         argb[40..44].copy_from_slice(&0xFF00_0000u32.to_le_bytes());
         assert!(dib_to_png(&argb).is_none());
+    }
+
+    #[test]
+    fn dropfiles_yields_every_copied_file() {
+        // DROPFILES：20 字节头（pFiles=20, fWide=1）+ UTF-16 名字串，以双 NUL 收尾。
+        fn dropfiles(names: &[&str]) -> Vec<u8> {
+            let mut bytes = vec![0u8; 20];
+            bytes[0..4].copy_from_slice(&20u32.to_le_bytes());
+            bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+            for name in names {
+                for unit in name.encode_utf16() {
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
+                bytes.extend_from_slice(&[0, 0]);
+            }
+            bytes.extend_from_slice(&[0, 0]);
+            bytes
+        }
+
+        let parsed = parse_dropfiles(&dropfiles(&[r"C:\a\报告.pdf", r"C:\a\名单.docx"]))
+            .expect("应当解析出两个路径");
+        assert_eq!(parsed, vec![r"C:\a\报告.pdf", r"C:\a\名单.docx"]);
+
+        assert!(
+            parse_dropfiles(&[0u8; 8]).is_none(),
+            "头部都不完整的结构没有路径"
+        );
     }
 
     #[test]

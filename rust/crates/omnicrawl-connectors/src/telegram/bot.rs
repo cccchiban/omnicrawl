@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,8 @@ use crate::agent::{
 };
 use crate::http::HttpTransport;
 use crate::render::{operation_of, ASK_USER_TOOL_NAME, TODO_TOOL_NAME};
-use crate::text::{display_text, resolve_final_text};
+use crate::platform::{BotSwitches, PendingSlot};
+use crate::text::{display_text, field_text, resolve_final_text};
 
 /// `close()` 等待任务线程退出的最大时长。
 pub const CLOSE_TASK_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,8 +67,7 @@ struct PendingConfirm {
     tool_name: String,
     chat_id: i64,
     user_id: i64,
-    decision: Mutex<Option<bool>>,
-    signal: Condvar,
+    slot: PendingSlot<bool>,
 }
 
 impl PendingConfirm {
@@ -76,27 +76,21 @@ impl PendingConfirm {
             tool_name: tool_name.to_string(),
             chat_id,
             user_id,
-            decision: Mutex::new(None),
-            signal: Condvar::new(),
+            slot: PendingSlot::new(),
         }
     }
 
-    /// 返回 `Some(decision)` 表示已答复；`None` 表示等待超时。
+    /// 返回 `Some(decision)` 表示已答复；`None` 表示等待超时或已停止。
     fn wait(&self, timeout: Duration) -> Option<bool> {
-        let guard = self.decision.lock().expect("确认状态锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |decision| decision.is_none())
-            .expect("确认状态锁中毒");
-        *guard
+        self.slot.wait(timeout)
     }
 
     fn resolve(&self, decision: bool) {
-        let mut guard = self.decision.lock().expect("确认状态锁中毒");
-        if guard.is_none() {
-            *guard = Some(decision);
-        }
-        self.signal.notify_all();
+        self.slot.resolve(Some(decision));
+    }
+
+    fn release(&self) {
+        self.slot.release();
     }
 }
 
@@ -107,8 +101,7 @@ struct PendingQuestion {
     options: Vec<String>,
     chat_id: i64,
     user_id: i64,
-    answer: Mutex<Option<String>>,
-    signal: Condvar,
+    slot: PendingSlot<String>,
 }
 
 impl PendingQuestion {
@@ -125,8 +118,7 @@ impl PendingQuestion {
             options,
             chat_id,
             user_id,
-            answer: Mutex::new(None),
-            signal: Condvar::new(),
+            slot: PendingSlot::new(),
         }
     }
 
@@ -149,22 +141,17 @@ impl PendingQuestion {
         format!("❓ {}\n{list}\n直接回复选项正文即可作答。", self.question)
     }
 
-    /// 返回 `Some(answer)` 表示已作答；`None` 表示等待超时或未作答。
+    /// 返回 `Some(answer)` 表示已作答；`None` 表示等待超时、已停止或未作答。
     fn wait(&self, timeout: Duration) -> Option<String> {
-        let guard = self.answer.lock().expect("提问状态锁中毒");
-        let (guard, _) = self
-            .signal
-            .wait_timeout_while(guard, timeout, |answer| answer.is_none())
-            .expect("提问状态锁中毒");
-        guard.clone()
+        self.slot.wait(timeout)
     }
 
     fn resolve(&self, answer: Option<String>) {
-        let mut guard = self.answer.lock().expect("提问状态锁中毒");
-        if guard.is_none() {
-            *guard = answer;
-        }
-        self.signal.notify_all();
+        self.slot.resolve(answer);
+    }
+
+    fn release(&self) {
+        self.slot.release();
     }
 }
 
@@ -182,8 +169,7 @@ pub struct TelegramBot<D: AgentDriver> {
     allowed: HashSet<i64>,
     confirm_timeout: Duration,
     state: Mutex<BotState>,
-    stopped: AtomicBool,
-    show_thinking: AtomicBool,
+    switches: BotSwitches,
 }
 
 impl<D: AgentDriver> TelegramBot<D> {
@@ -202,8 +188,7 @@ impl<D: AgentDriver> TelegramBot<D> {
                 config.confirm_timeout_seconds,
             )),
             state: Mutex::new(BotState::default()),
-            stopped: AtomicBool::new(false),
-            show_thinking: AtomicBool::new(false),
+            switches: BotSwitches::new(false),
         })
     }
 
@@ -277,7 +262,7 @@ impl<D: AgentDriver> TelegramBot<D> {
     /// 先置停止/取消事件并释放挂起的工具确认与提问（否则两条桥都会阻塞到超时），
     /// 再等待任务线程自行退出（上限 [`CLOSE_TASK_JOIN_TIMEOUT`]），最后通知宿主关闭。
     pub fn close(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.switches.mark_stopped();
         let (task, pending, question) = {
             let state = self.state.lock().expect("状态锁中毒");
             (
@@ -312,8 +297,20 @@ impl<D: AgentDriver> TelegramBot<D> {
     }
 
     /// 供信号处理或测试从其他线程触发退出。
+    ///
+    /// 与 `close` 同序释放挂起的确认与提问，否则 `/stop` 之后任务线程要等到审批超时才回神。
     pub fn request_stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.switches.mark_stopped();
+        let (pending, question) = {
+            let state = self.state.lock().expect("状态锁中毒");
+            (state.pending.clone(), state.question.clone())
+        };
+        if let Some(pending) = pending {
+            pending.release();
+        }
+        if let Some(question) = question {
+            question.release();
+        }
     }
 
     /// 处理一条更新：白名单 → 提问回答 → 命令 / 任务 / 文件。
@@ -610,11 +607,11 @@ impl<D: AgentDriver> TelegramBot<D> {
                 );
             }
             ThinkingCommand::Enable => {
-                self.show_thinking.store(true, Ordering::SeqCst);
+                self.switches.set_show_thinking(true);
                 self.send(chat_id, "已开启思考内容显示（🧠 独立消息）。");
             }
             ThinkingCommand::Disable => {
-                self.show_thinking.store(false, Ordering::SeqCst);
+                self.switches.set_show_thinking(false);
                 self.send(chat_id, "已关闭思考内容显示。");
             }
             ThinkingCommand::Usage => self.send(chat_id, "用法：/thinking on 或 /thinking off。"),
@@ -755,11 +752,11 @@ impl<D: AgentDriver> TelegramBot<D> {
     }
 
     pub fn show_thinking(&self) -> bool {
-        self.show_thinking.load(Ordering::SeqCst)
+        self.switches.show_thinking()
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+        self.switches.is_stopped()
     }
 
     /// 是否有任务线程在跑（`/status` 与单活动校验共用）。
@@ -777,14 +774,7 @@ impl<D: AgentDriver> TelegramBot<D> {
     }
 
     fn sleep_until_stopped(&self, seconds: f64) -> bool {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds.max(0.0));
-        while Instant::now() < deadline {
-            if self.is_stopped() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        self.is_stopped()
+        self.switches.sleep_until_stopped(seconds)
     }
 
     fn status_text(&self) -> String {
@@ -1233,19 +1223,8 @@ impl<'a, D: AgentDriver> TaskTimeline<'a, D> {
     }
 }
 
-fn field_text(value: &Value, key: &str) -> String {
-    match value.get(key) {
-        Some(Value::String(text)) => text.trim().to_string(),
-        Some(Value::Number(number)) => number.to_string(),
-        _ => String::new(),
-    }
-}
-
 fn take_chars(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    text.chars().take(limit).collect()
+    crate::text::take_chars(text, limit)
 }
 
 const HELP_TEXT: &str = "🤖 OmniCrawl 远程控制\n\n\

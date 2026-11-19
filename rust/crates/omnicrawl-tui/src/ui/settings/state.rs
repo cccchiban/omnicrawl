@@ -760,12 +760,6 @@ impl SettingsValues {
         self
     }
 
-    /// 知识库页的开关初值（`[knowledge] enabled`）。
-    pub fn with_knowledge_enabled(mut self, enabled: bool) -> Self {
-        self.knowledge_enabled = enabled;
-        self
-    }
-
     /// TTS 页的初值（通用键 + 两条通道的配置）。
     pub fn with_tts(mut self, values: TtsValues) -> Self {
         self.tts = values;

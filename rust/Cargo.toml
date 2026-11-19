@@ -98,6 +98,11 @@ gix = { version = "0.90", default-features = false, features = [
 # 这些命令根本不 spawn 进程。名字里的 `experimental-` 是上游的保守语气，功能本身可用。
 brush-shell = { version = "0.4", features = ["experimental-bundled-coreutils"] }
 
+[profile.dev]
+# 开发档默认写完整调试信息（debug = 2），是 target 里增长最快、也最没必要的一项：
+# 本机调试靠回溯的「文件:行号」，不要类型/变量描述。line-tables-only 保留前者。
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

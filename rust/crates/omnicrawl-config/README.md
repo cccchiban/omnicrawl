@@ -100,8 +100,9 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 **`features/` 其余模块**：`advisor`（默认关闭、推理档位校验、执行者黑名单归一化）、
 `agent_workspace`（worktree/local 与退出策略枚举校验）、`desensitization`（27 个字段的开关、
 熵参数与 NER 取值域校验）、`image_gen`（Base URL、`auto|宽x高` 尺寸、质量与格式枚举；
-另带 `provider` 服务商路由与 Gemini 侧的 `aspect_ratio`/`image_size` 取值域，切到
-`gemini` 且沿用 OpenAI 默认端点/模型时折算成 Gemini 的默认值）、
+另带 `provider` 服务商路由（openai / gemini / grok / dall-e-3 / mj）与 Gemini、Grok 侧的
+`aspect_ratio`/`image_size` 取值域；切到某通道且沿用别家的出厂端点/模型时折算成该通道的默认值，
+DALL·E 3 另按固定三档尺寸与 `standard|hd` 校验）、
 `tool_output_compression`（思考档位与四个正整数预算）、`tts`（总开关、播放行为与输出目录三个
 通用键）、`tts_cloud`（服务商路由与 OpenAI / Gemini 两家的接口参数，凭据只认段内明文 `api_key`，
 没有环境变量通道）、`subagents`（独立 `subagents.toml`、

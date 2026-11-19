@@ -5,13 +5,10 @@
 use super::*;
 
 impl App {
-
-
     /// 接管内核 stderr 通道：由 [`Self::drain_kernel_logs`] 把报错转成会话区提示。
     pub fn attach_kernel_logs(&mut self, logs: Receiver<String>) {
         self.kernel_logs = Some(logs);
     }
-
 
     /// 接管运行期诊断通道：由 [`Self::drain_diagnostics`] 把每条诊断写进会话流。
     ///
@@ -21,12 +18,10 @@ impl App {
         self.diagnostic_lines = Some(lines);
     }
 
-
     /// 挂载主 Agent 隔离区会话：退出收尾时自动 apply + 清理。
     pub fn attach_isolation_session(&mut self, session: IsolationSession) {
         self.isolation = Some(session);
     }
-
 
     /// 退出收尾：按 `[agent_workspace]` 的 `apply_on_exit` / `cleanup_on_exit` 处理隔离区，
     /// 再按 auto 策略收尾 SubAgent worktree（只清理无变更的，成果绝不自动 apply）。
@@ -58,12 +53,10 @@ impl App {
         }
     }
 
-
     /// 记录当前终端区域（每帧由事件循环在渲染前更新）。
     pub fn set_viewport(&mut self, area: Rect) {
         self.viewport = area;
     }
-
 
     /// 重装命令菜单候选表：注册表声明 + 当前工作区发现的 Skill。
     ///
@@ -75,7 +68,6 @@ impl App {
             .composer
             .set_commands(commands::command_options_with_skills(&skills));
     }
-
 
     /// 本帧是否需要重画：三个刷新块（会话 / 输入框 / 底部）自上次绘制以来是否变过，
     /// 再加上终端是否换过尺寸。
@@ -96,17 +88,14 @@ impl App {
         false
     }
 
-
     /// 本批实际使用的工具表：隔离批次用临时表，其余用共享表。
     pub(super) fn batch(&self) -> &Arc<ToolRegistry> {
         self.batch_registry.as_ref().unwrap_or(&self.registry)
     }
 
-
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
     }
-
 
     /// 退出收尾：回收后台进程、收尾隔离工作区后请内核退出。
     pub fn shutdown(&mut self) {
@@ -126,14 +115,12 @@ impl App {
         self.request_shutdown();
     }
 
-
-        pub(super) fn start_shutdown(&mut self) {
+    pub(super) fn start_shutdown(&mut self) {
         // 退出前丢开未提交的排队消息（对映 Python `_pending_inputs.clear()`）。
         self.state.clear_pending();
         self.request_shutdown();
         self.quit = true;
     }
-
 
     /// 请内核退出；连接已断时什么都不做。
     pub fn request_shutdown(&mut self) {
@@ -143,7 +130,6 @@ impl App {
         self.send(Command::Shutdown);
     }
 
-
     /// 粘贴的图片有没有去处：只有原生视觉能处理**用户消息**里的图片。
     ///
     /// `[vision]` 代理只分析工具产出的带图观察（内核 `apply_observations`），从不处理
@@ -152,7 +138,6 @@ impl App {
     pub(super) fn vision_route_available(&self) -> bool {
         self.native_vision_enabled()
     }
-
 
     /// 把剪贴板里的位图粘进输入框；返回是否真的插入了一张图片。
     ///
@@ -178,6 +163,45 @@ impl App {
         true
     }
 
+    /// 把剪贴板里的文档贴进输入框；返回是否真的插入了。
+    ///
+    /// 只认资源管理器「复制文件」那种 `CF_HDROP`：剪贴板里是纯文本或位图时返回 `false`，
+    /// 让 Ctrl+V 的图片通路与文本粘贴照常处理。与图片不同，文档**不需要**视觉通路——
+    /// 它不随请求发字节，模型按路径自己读。
+    pub(super) fn paste_clipboard_documents(&mut self) -> bool {
+        if self.settings.is_some() {
+            return false;
+        }
+        let paths = crate::clipboard::read_file_paths();
+        let documents: Vec<String> = paths
+            .into_iter()
+            .filter_map(|path| {
+                crate::document_path::read_pasted_document_path(&path, &self.workspace)
+            })
+            .collect();
+        if documents.is_empty() {
+            return false;
+        }
+        for path in documents {
+            self.state.composer.insert_document(&path);
+        }
+        self.state.touch_composer();
+        true
+    }
+
+    /// 粘贴内容整段就是一个存在的文档文件路径时，把它转成文档块；返回是否真的插入了。
+    pub(super) fn paste_document_path(&mut self, text: &str) -> bool {
+        if self.settings.is_some() {
+            return false;
+        }
+        let Some(path) = crate::document_path::read_pasted_document_path(text, &self.workspace)
+        else {
+            return false;
+        };
+        self.state.composer.insert_document(&path);
+        self.state.touch_composer();
+        true
+    }
 
     /// 粘贴内容整段就是一个存在的图片文件路径时，把它转成图片附件；返回是否真的插入了。
     ///
@@ -201,14 +225,17 @@ impl App {
         true
     }
 
-
-
-    /// Ctrl+V 的抬起事件：图片粘贴就挂在这里。
+    /// Ctrl+V 的抬起事件：图片与文档粘贴都挂在这里。
     ///
     /// Windows Terminal 把 `ctrl+v` 绑成它自己的粘贴动作，**按下被它吃掉**（只把抬起
     /// 透传过来），因此 `Ctrl+V` 的按下事件永远到不了这里——挂在按下上的图片粘贴是死代码。
     /// 抬起也照旧携带 Control，用它当触发点对 conhost 同样成立（那里按下与抬起都会到达）。
     pub(super) fn handle_ctrl_v_release(&mut self) {
+        // 文档先试：资源管理器里复制文件时剪贴板只有 `CF_HDROP`，位图那条读不到东西，
+        // 两者不会互相抢按键。
+        if self.paste_clipboard_documents() {
+            return;
+        }
         self.paste_clipboard_image();
     }
 }

@@ -323,12 +323,6 @@ pub fn join_compaction_sections(tools: &str, replies: &str) -> Option<String> {
     Some(parts.join("\n\n"))
 }
 
-// ── 阈值触发的模型回复压缩 ─────────────────────────────────────────────────
-
-/// 历史回复在压缩提示里的包裹标记。
-pub const REPLIES_OPEN: &str = "<<<MODEL_REPLIES_START>>>";
-pub const REPLIES_CLOSE: &str = "<<<MODEL_REPLIES_END>>>";
-
 // ── 阈值触发的双段压缩 ────────────────────────────────────────────────────
 
 /// 一次双段压缩的输入：被压缩的工具调用、模型回复与落盘位置。

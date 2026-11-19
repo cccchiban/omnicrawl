@@ -16,6 +16,7 @@ use omnicrawl_controllers::tool_args::{
 use omnicrawl_controllers::tool_catalog::{
     build_agent_tools, McpItemRef, McpToolRef, ToolCatalogOptions, ToolSpec,
 };
+use omnicrawl_controllers::tool_declarations::declaration;
 use omnicrawl_controllers::types::ToolImageAttachment;
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_mcp::client::McpClientManager;
@@ -25,7 +26,6 @@ use super::advisor::{self, AdvisorOptions};
 use super::command::{CancelToken, CommandRunner, Shell, DEFAULT_COMMAND_TIMEOUT_SECONDS};
 use super::config_tool;
 use super::decision_search::RerankOptions;
-use super::declarations::declaration;
 use super::error::{attach_notice, command_result, text_failure, text_success, ToolError};
 use super::fetcher::{self, FetcherOptions};
 use super::image_gen::{self, ImageGenOptions};
@@ -609,8 +609,16 @@ impl ToolRegistry {
     }
 
     /// provider 声明（`initialize.model.tools`）。
+    ///
+    /// 桌面工具在这里被排除：它们进执行表（宿主能执行 Computer Use 子代理发来的调用），
+    /// 但不进主代理的声明——主代理只持有 `computer_use(prompt)` 这一个入口，而
+    /// `windows_*` 的声明由内核在子回合里按 `child_tool_names()` 自己生成。
     pub fn declarations(&self) -> Vec<Value> {
-        self.specs.iter().map(declaration).collect()
+        self.specs
+            .iter()
+            .filter(|spec| !WINDOWS_RUNNERS.contains(&spec.name.as_str()))
+            .map(declaration)
+            .collect()
     }
 
     /// 审批判定所需的两条事实：工具说明与参数 schema 文本。
@@ -1675,6 +1683,47 @@ mode = \"review\"
             .expect("read 应当被本宿主处理");
         assert!(plain.images.is_empty());
         assert!(plain.vision_prompt.is_empty());
+    }
+
+    /// 桌面工具注册进执行表、但不进主代理的声明：宿主能执行子代理发来的调用，
+    /// 主代理的模型仍然只看得到 `computer_use` 这一个入口。
+    #[test]
+    fn desktop_tools_execute_but_are_not_declared() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-windows-declared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        let options = RegistryOptions {
+            windows_tools: true,
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+
+        // 进执行表：`specs` 里有，`execute` 才找得到执行体（否则回 None 变成「不可用」）。
+        let specs: Vec<&str> = registry.specs().iter().map(|spec| spec.name.as_str()).collect();
+        for tool in WINDOWS_RUNNERS {
+            assert!(specs.contains(&tool), "{tool} 应当进执行表：{specs:?}");
+        }
+
+        // 不进声明：模型侧看不到它们，桌面操作只能经 `computer_use` 驱动。
+        let declared: Vec<String> = registry
+            .declarations()
+            .iter()
+            .filter_map(|item| {
+                item.pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        for tool in WINDOWS_RUNNERS {
+            assert!(
+                !declared.contains(&tool.to_string()),
+                "{tool} 不该出现在主代理的声明里：{declared:?}"
+            );
+        }
+        assert!(
+            declared.iter().any(|name| name == "read"),
+            "其余工具照常声明：{declared:?}"
+        );
     }
 
     /// 桌面操作工具的确认截图必须走宿主同一条视觉附件通路，否则模型仍然看不到画面。

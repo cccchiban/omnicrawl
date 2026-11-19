@@ -43,7 +43,12 @@ mod tests {
     fn deltas_merge_into_one_record_per_segment() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
             now,
@@ -86,7 +91,12 @@ mod tests {
     fn reasoning_reveal_spreads_a_burst_across_frames() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let burst: String = "想".repeat(300);
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload {
@@ -127,7 +137,12 @@ mod tests {
     fn reasoning_reveal_keeps_up_with_a_slow_stream() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
             now,
@@ -149,7 +164,12 @@ mod tests {
     fn toggling_a_reasoning_block_does_not_restart_the_stream() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload {
                 text: "第一段".repeat(20),
@@ -194,7 +214,12 @@ mod tests {
     fn repeated_toggles_keep_the_full_text_visible() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload {
                 text: "想".repeat(100),
@@ -221,7 +246,12 @@ mod tests {
     fn reasoning_reveal_settles_on_turn_end_and_replay() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::ReasoningDelta(TextPayload {
                 text: "想".repeat(200),
@@ -273,7 +303,12 @@ mod tests {
     fn reasoning_reveal_never_truncates_assistant_text() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问一句".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.apply(
             &HostEvent::Delta(TextPayload {
                 text: "正".repeat(500),
@@ -291,7 +326,12 @@ mod tests {
     fn tool_cards_track_status_body_and_elapsed() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "跑一下".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "跑一下".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let tool_call = call("c1", "bash");
         state.apply(
             &HostEvent::ToolStarted(ToolStartedPayload {
@@ -447,7 +487,7 @@ mod tests {
     fn stream_rollback_drops_half_streamed_record() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::Delta(TextPayload {
                 text: "半截".into(),
@@ -468,7 +508,7 @@ mod tests {
     fn kernel_status_events_mark_the_composer_dirty() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         let base = state.refresh_versions();
 
         state.apply(
@@ -510,7 +550,7 @@ mod tests {
     fn streaming_clears_the_retry_prompt() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::RetryStatus(omnicrawl_ipc::bridge::MessagePayload {
                 message: "请求失败，正在自动重试（第1次）".to_string(),
@@ -572,7 +612,7 @@ mod tests {
     fn token_usage_and_finish_reset_status() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
                 message: "正在分析".to_string(),
@@ -612,7 +652,7 @@ mod tests {
         let mut state = state();
         let now = Instant::now();
         assert_eq!(state.turn_outcome, None, "还没跑过回合");
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         assert_eq!(state.turn_outcome, None, "进行中不写结局");
         state.apply(
             &HostEvent::TurnFinished(TurnFinishedPayload {
@@ -628,7 +668,7 @@ mod tests {
         );
         assert_eq!(state.turn_outcome, Some(TurnOutcome::Done));
 
-        state.begin_turn("t2".to_string(), "再问".to_string(), Vec::new());
+        state.begin_turn("t2".to_string(), "再问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::TurnFinished(TurnFinishedPayload {
                 turn_id: "t2".to_string(),
@@ -643,7 +683,7 @@ mod tests {
         );
         assert_eq!(state.turn_outcome, Some(TurnOutcome::Warning));
 
-        state.begin_turn("t3".to_string(), "三问".to_string(), Vec::new());
+        state.begin_turn("t3".to_string(), "三问".to_string(), Vec::new(), Vec::new());
         state.fail_turn("上游错误".to_string());
         assert_eq!(state.turn_outcome, Some(TurnOutcome::Failed));
     }
@@ -686,7 +726,7 @@ mod tests {
     fn turn_finished_carries_the_tool_compaction_size() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::TokenUsage(TokenUsagePayload {
                 input_tokens: 10,
@@ -712,12 +752,44 @@ mod tests {
         assert_eq!(state.telemetry.cached_input_tokens, 0);
     }
 
+    /// 换到空会话时遥测清零，但窗口大小（模型上下文上限）保留：它与哪份会话无关。
+    #[test]
+    fn reset_telemetry_clears_usage_and_keeps_the_context_window() {
+        let mut state = state();
+        state.telemetry.context_window = Some(200_000);
+        state.apply(
+            &HostEvent::TokenUsage(TokenUsagePayload {
+                input_tokens: 1_234,
+                output_tokens: 56,
+                cached_input_tokens: 7,
+            }),
+            Instant::now(),
+        );
+        state.refresh_hud();
+        assert!(state.hud_text.plain().contains("↑1.2K"));
+
+        state.reset_telemetry();
+
+        assert_eq!(state.telemetry.input_tokens, 0, "↑ 是上一个会话的用量");
+        assert_eq!(state.telemetry.output_tokens, 0, "↓ 同上");
+        assert_eq!(state.telemetry.cached_input_tokens, 0, "† 同上");
+        assert!(state.telemetry.rate.value().is_none(), "速率属于上一个会话");
+        assert_eq!(
+            state.telemetry.context_window,
+            Some(200_000),
+            "窗口大小按配置口径算，不随会话变"
+        );
+        let hud = state.hud_text.plain();
+        assert!(hud.contains("↑0") && hud.contains("↓0") && hud.contains("†0"));
+        assert!(hud.contains("0/200K"), "CTX 分母仍是窗口大小：{hud}");
+    }
+
     /// 没有压缩的回合不能动遥测：字段缺省时维持模型请求回报的用量。
     #[test]
     fn turn_finished_without_compaction_keeps_the_usage() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::TokenUsage(TokenUsagePayload {
                 input_tokens: 10,
@@ -748,7 +820,7 @@ mod tests {
     fn notice_events_go_to_the_conversation_and_keep_the_status_line() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::Status(omnicrawl_ipc::bridge::MessagePayload {
                 message: "正在调用".to_string(),
@@ -781,7 +853,7 @@ mod tests {
     fn notice_mid_stream_does_not_split_the_reply() {
         let mut state = state();
         let now = Instant::now();
-        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问".to_string(), Vec::new(), Vec::new());
         state.apply(
             &HostEvent::Delta(TextPayload {
                 text: "前半".into(),
@@ -897,7 +969,12 @@ mod tests {
     #[test]
     fn failing_a_turn_drops_the_pending_batch() {
         let mut state = state();
-        state.begin_turn("t1".to_string(), "跑个工具".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "跑个工具".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.start_batch(Id::Number(12), vec![call("c1", "bash")]);
         assert!(state.waiting().is_some(), "批次应当挂起等审批");
 
@@ -1303,7 +1380,7 @@ mod tests {
         let mut composer = Composer::default();
         composer.set_text("1\n2\n3\n4\n5\n6\n7");
         let (rows, cursor, start, total) = composer.visible_rows(40);
-        assert_eq!((rows.len(), cursor, start, total), (5, 4, 2, 7));
+        assert_eq!((rows.len(), cursor, start, total), (5, Some(4), 2, 7));
         assert_eq!(rows[0].text, "3");
         // 窗口第一行第 0 格 → 全文里的「3」（下标 4：`1\n2\n` 各占一格）。
         assert_eq!(composer.char_index_at(40, 0, 0), 4);
@@ -1455,7 +1532,58 @@ mod tests {
         }
         let (lines, cursor_row) = composer.visible_lines(40);
         assert_eq!(lines.len(), COMPOSER_MAX_LINES);
+        let cursor_row = cursor_row.expect("跟随光标时插入点必在窗口内");
         assert_eq!(lines[cursor_row], "第7行", "光标所在行必须在窗口内");
+    }
+
+    /// 滚轮翻看：窗口按行上下移动，翻到看不见插入点的位置时光标行号消失。
+    #[test]
+    fn wheel_scroll_moves_the_window_and_drops_the_caret_row() {
+        let mut composer = Composer::default();
+        composer.set_text("1\n2\n3\n4\n5\n6\n7");
+        let (_, cursor, start, _) = composer.visible_rows(40);
+        assert_eq!((cursor, start), (Some(4), 2), "默认跟随光标：显示末五行");
+
+        // 向上翻两行：窗口到顶，插入点在窗口之外。
+        assert!(composer.scroll_rows(-2, 40));
+        let (rows, cursor, start, total) = composer.visible_rows(40);
+        assert_eq!((start, total), (0, 7));
+        assert_eq!(rows[0].text, "1");
+        assert_eq!(cursor, None, "光标行滚出窗口后不画光标");
+
+        // 向下翻回光标所在那一屏：交还给「跟随光标」。
+        assert!(composer.scroll_rows(2, 40));
+        let (_, cursor, start, _) = composer.visible_rows(40);
+        assert_eq!((cursor, start), (Some(4), 2));
+
+        // 越界不外溢：已经到底再往下滚还是那一屏。
+        assert!(composer.scroll_rows(9, 40));
+        let (_, _, start, _) = composer.visible_rows(40);
+        assert_eq!(start, 2);
+
+        // 内容装得下时没有可翻的，滚轮交还给消息区。
+        composer.set_text("一行");
+        assert!(!composer.scroll_rows(-3, 40));
+    }
+
+    /// 翻过之后一打字就回到跟随光标：否则插入点在窗口外，自己敲的字看不见。
+    #[test]
+    fn editing_after_wheel_scroll_follows_the_caret_again() {
+        let mut composer = Composer::default();
+        composer.set_text("1\n2\n3\n4\n5\n6\n7");
+        composer.scroll_rows(-3, 40);
+        assert_eq!(composer.visible_rows(40).1, None, "先确认光标已滚出窗口");
+
+        composer.move_left();
+        let (_, cursor, start, _) = composer.visible_rows(40);
+        assert_eq!(start, 2, "移动光标后窗口回到跟随");
+        assert_eq!(cursor, Some(4));
+
+        composer.scroll_rows(-3, 40);
+        composer.insert("x");
+        let (_, cursor, start, _) = composer.visible_rows(40);
+        assert_eq!(start, 2, "编辑文本后窗口回到跟随");
+        assert_eq!(cursor, Some(4));
     }
 
     #[test]
@@ -1489,13 +1617,15 @@ mod tests {
             data_base64: "AAA".to_string(),
             detail: "auto".to_string(),
         };
-        state.begin_turn("t1".to_string(), "看图".to_string(), vec![image]);
+        state.begin_turn(
+            "t1".to_string(),
+            "看图".to_string(),
+            vec![image],
+            Vec::new(),
+        );
 
         let Some(Record::User(message)) = state.records.first() else {
-            panic!(
-                "第一条记录应当是用户消息：{:?}",
-                state.records
-            );
+            panic!("第一条记录应当是用户消息：{:?}", state.records);
         };
         assert_eq!(message.text, "看图");
         assert!(message.has_images(), "有附件就该出图片块");
@@ -1513,7 +1643,12 @@ mod tests {
     #[test]
     fn a_text_only_message_has_no_image_block() {
         let mut state = state();
-        state.begin_turn("t1".to_string(), "只有字".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "只有字".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let Some(Record::User(message)) = state.records.first() else {
             panic!("第一条记录应当是用户消息");
         };
@@ -1854,10 +1989,7 @@ mod replay_tests {
         )]);
 
         let Some(Record::User(message)) = state.records.first() else {
-            panic!(
-                "第一条记录应当是用户消息：{:?}",
-                state.records
-            );
+            panic!("第一条记录应当是用户消息：{:?}", state.records);
         };
         assert_eq!(message.text, "看一下这张图");
         assert!(message.has_images(), "重放的图片也要出图片块");
@@ -2048,12 +2180,15 @@ mod image_paste_tests {
     }
 
     #[test]
-    fn take_clears_images_without_dropping_the_placeholder_text() {
+    fn take_keeps_images_for_take_images_and_clears_with_it() {
         let mut composer = Composer::default();
         composer.insert_image("image/png", png());
         // 文本仍带占位符（提交时随 prompt 一起送），附件由 `take_images` 单独取。
+        // 顺序固定：`take()` 先展开、`take_images()` 再取走，两者合起来才交空。
         assert_eq!(composer.take(), "[ #1 Image ]");
-        assert_eq!(composer.image_count(), 0, "take 也要清掉图片状态，避免残留");
+        assert_eq!(composer.image_count(), 1, "附件留给 take_images");
+        assert_eq!(composer.take_images().len(), 1);
+        assert_eq!(composer.image_count(), 0, "取走后不残留");
     }
 
     #[test]
@@ -2063,6 +2198,38 @@ mod image_paste_tests {
         composer.clear();
         assert!(composer.is_empty());
         assert_eq!(composer.image_count(), 0);
+    }
+
+    #[test]
+    fn a_pasted_document_folds_into_one_block_naming_its_type() {
+        let mut composer = Composer::default();
+        composer.insert_document("C:/a/报告.pdf");
+        composer.insert_document("C:/a/名单.docx");
+        assert_eq!(composer.text(), "[ #1 .pdf ][ #2 .docx ]");
+        assert_eq!(composer.document_count(), 2);
+    }
+
+    #[test]
+    fn a_document_block_is_deleted_whole() {
+        let mut composer = Composer::default();
+        composer.insert_document("C:/a/报告.pdf");
+        // 光标在块尾：退格整块删掉，不留半个占位符。
+        composer.backspace();
+        assert!(composer.is_empty(), "{}", composer.text());
+        assert_eq!(composer.document_count(), 0, "删掉占位符后路径也要回收");
+    }
+
+    #[test]
+    fn take_expands_a_document_block_into_its_file_name() {
+        let mut composer = Composer::default();
+        composer.insert("看看这个 ");
+        composer.insert_document("C:/a/报告.pdf");
+        // 正文里只留文件名（后跟一个空格，免得与相邻块粘连）：完整路径由
+        // `take_documents` 单独交给消息流与正文注脚。
+        assert_eq!(composer.take(), "看看这个 报告.pdf ");
+        assert_eq!(composer.document_count(), 1, "文档表留给 take_documents 清");
+        assert_eq!(composer.take_documents().len(), 1);
+        assert_eq!(composer.document_count(), 0, "取走路径后不残留");
     }
 }
 
@@ -2607,7 +2774,7 @@ mod streaming_tests {
             "model".to_string(),
             ApprovalMode::Manual,
         );
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         state
     }
 
@@ -2683,7 +2850,7 @@ mod streaming_tests {
         assert_eq!(state.refresh_versions(), idle, "空闲时不该有活动刷新");
 
         // 回合在跑：状态行 spinner 与运行中卡片耗时都要重画。
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         let running = state.refresh_versions();
         state.tick_activity();
         let ticked = state.refresh_versions();
@@ -2719,4 +2886,3 @@ mod streaming_tests {
         );
     }
 }
-

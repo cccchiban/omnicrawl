@@ -20,7 +20,6 @@ pub mod cookies;
 pub mod decision_choice;
 pub mod decision_prune;
 pub mod decision_search;
-pub mod declarations;
 pub mod edit;
 pub mod error;
 pub mod fetch_metadata;

@@ -66,7 +66,12 @@ fn chatting_state() -> AppState {
     );
     state.telemetry.context_window = Some(1_000_000);
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "你好，帮我看看".to_string(), Vec::new());
+    state.begin_turn(
+        "t1".to_string(),
+        "你好，帮我看看".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     state.apply(
         &HostEvent::ReasoningDelta(TextPayload {
             text: "先读文件".to_string(),
@@ -125,7 +130,12 @@ fn status_line_follows_retry_and_streaming() {
         ApprovalMode::Manual,
     );
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "问问看".to_string(), Vec::new());
+    state.begin_turn(
+        "t1".to_string(),
+        "问问看".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
 
     let status_top = |lines: &[String]| {
         lines
@@ -343,7 +353,11 @@ fn terminal_cursor_follows_the_composer_caret() {
     terminal
         .draw(|frame| ui::render(frame, &state, Some(&settings)))
         .expect("渲染不应失败");
-    assert_eq!(state.composer_caret(), None, "设置面板下没有主输入框的插入点");
+    assert_eq!(
+        state.composer_caret(),
+        None,
+        "设置面板下没有主输入框的插入点"
+    );
 }
 
 /// 渲染一帧（只画，不取文本）。
@@ -373,6 +387,57 @@ fn long_composer_input_shows_a_scrollbar() {
 }
 
 #[test]
+fn queued_message_wraps_to_the_composer_width() {
+    // 用户报告：排队预览里的长消息不换行，只被截成一行。
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state.begin_turn("t1".to_string(), "先跑一轮".to_string(), Vec::new(), Vec::new());
+    let long = "这是一条很长的排队消息，用来确认预览条会按栏宽折行".repeat(3);
+    state.queue_pending(long.clone(), Vec::new(), Vec::new());
+
+    let width = 60u16;
+    let lines = screen(&state, width, 20);
+    let body: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains("1. ") || line.contains("排队消息"))
+        .collect();
+    assert!(
+        body.len() >= 2,
+        "排队消息应当折成多行而不是一行截断：{lines:?}"
+    );
+    // 折出的每一行都不越过方框右缘，且除末行外都排满栏宽。
+    for line in &body {
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= width as usize,
+            "排队行不能超宽：{line:?}"
+        );
+    }
+    assert!(
+        !lines.join("\n").contains("…条"),
+        "不该用省略号截断内容：{lines:?}"
+    );
+}
+
+#[test]
+fn queued_message_wrap_keeps_the_whole_message_reachable() {
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state.begin_turn("t1".to_string(), "先跑一轮".to_string(), Vec::new(), Vec::new());
+    state.queue_pending("短消息".to_string(), Vec::new(), Vec::new());
+    let lines = screen(&state, 60, 18);
+    let text = lines.join("\n");
+    assert!(text.contains("⏳ 1 条消息排队"), "缺少标题行：{text}");
+    assert!(text.contains("1. 短消息"), "短消息照常一行显示：{text}");
+    assert!(text.contains("[ DELETE ]"), "行尾撤回热区仍在：{text}");
+}
+
+#[test]
 fn history_scroll_hides_the_newest_lines() {
     let mut state = AppState::new(
         "omnicrawl".to_string(),
@@ -380,9 +445,19 @@ fn history_scroll_hides_the_newest_lines() {
         ApprovalMode::Manual,
     );
     for index in 1..=20 {
-        state.begin_turn(format!("t{index}"), format!("第{index}条消息"), Vec::new());
+        state.begin_turn(
+            format!("t{index}"),
+            format!("第{index}条消息"),
+            Vec::new(),
+            Vec::new(),
+        );
     }
-    state.begin_turn("t21".to_string(), "最后一条".to_string(), Vec::new());
+    state.begin_turn(
+        "t21".to_string(),
+        "最后一条".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     let bottom = screen(&state, 80, 14).join("\n");
     assert!(bottom.contains("最后一条"), "默认应跟随最新：{bottom}");
     assert!(
@@ -469,7 +544,12 @@ fn read_image_state() -> AppState {
     );
     state.telemetry.context_window = Some(1_000_000);
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "看看这张图".to_string(), Vec::new());
+    state.begin_turn(
+        "t1".to_string(),
+        "看看这张图".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     let call = tool_call(
         "read_image",
         serde_json::json!({"path": "shot.png", "prompt": "描述"}),
@@ -570,7 +650,12 @@ fn an_image_tool_without_attachments_keeps_its_payload() {
     );
     state.telemetry.context_window = Some(1_000_000);
     let now = Instant::now();
-    state.begin_turn("t1".to_string(), "看看这张图".to_string(), Vec::new());
+    state.begin_turn(
+        "t1".to_string(),
+        "看看这张图".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     let call = tool_call(
         "read_image",
         serde_json::json!({"path": "shot.png", "prompt": "描述"}),
@@ -643,10 +728,7 @@ fn welcome_logo_shows_the_session_badge_beneath_it() {
 
     // 四段可点区都登记上了（模型名 / 推理档 / 审批模式 / MCP 数量）：同一行、从左到右。
     let areas = state.welcome_badge_areas();
-    assert!(
-        areas.iter().all(Option::is_some),
-        "四段都应可点：{areas:?}"
-    );
+    assert!(areas.iter().all(Option::is_some), "四段都应可点：{areas:?}");
     let row = areas[0].expect("模型名可点").y;
     assert!(
         areas.iter().all(|area| area.expect("可点区").y == row),

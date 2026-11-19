@@ -220,6 +220,17 @@ pub fn build_mcp_tools(options: &ToolCatalogOptions<'_>) -> Vec<ToolSpec> {
     tools
 }
 
+/// 桌面工具的规格：按名字从内置目录取，一整套返回。
+///
+/// 专职 Computer Use 子代理的子回合靠它自备工具声明：那些工具**不在**主代理的声明里
+/// （主代理只有 `computer_use` 入口），因此不能从父表过滤，必须从目录直接取。
+pub fn windows_tool_specs() -> Vec<ToolSpec> {
+    group("windows")
+        .iter()
+        .map(ToolSpec::from_entry)
+        .collect()
+}
+
 /// 构建 Agent 可用工具表；执行函数仍由宿主绑定提供。
 ///
 /// `options.disabled_tools` 中的名称（含 MCP 动态工具）不会出现在结果里：模型不可见即

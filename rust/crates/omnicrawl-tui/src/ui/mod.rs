@@ -106,10 +106,11 @@ pub fn layout(area: Rect, state: &AppState) -> UiAreas {
         Constraint::Length(HUD_HEIGHT),
     ])
     .areas(area);
-    // 组内各区排进方框内部（扣掉一圈边框）。
+    // 组内各区排进方框内部（扣掉一圈边框）。排队预览按框内宽度折行，行数因此要带上宽度。
+    let queue_width = composer::inner_width(width);
     let [todos, queue, notice, menu, composer] = Layout::vertical([
         Constraint::Length(panels::todo_height(state)),
-        Constraint::Length(queue::height(state)),
+        Constraint::Length(queue::height(state, queue_width)),
         Constraint::Length(notice_line_height(state)),
         Constraint::Length(composer::menu_height(state)),
         Constraint::Fill(1),

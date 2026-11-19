@@ -910,7 +910,11 @@ fn welcome_logo_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
     let last = rendered.len().saturating_sub(1);
     for (index, line) in rendered.iter().enumerate() {
         // 徽标是最后一行：鼠标停在某一小段时只把那段描成淡黄色（块字与标签不动）。
-        let line = match (index == last, state.welcome_badge_hover(), state.logo.subtitle()) {
+        let line = match (
+            index == last,
+            state.welcome_badge_hover(),
+            state.logo.subtitle(),
+        ) {
             (true, Some(segment), Some(badge)) => highlight_badge_segment(line, badge, segment),
             _ => line.clone(),
         };
@@ -1200,7 +1204,29 @@ fn push_user(lines: &mut Vec<DisplayLine>, message: &UserRecord, width: usize, s
             stripe,
         )));
     }
+    push_user_documents(lines, message, body_width, stripe);
     push_user_images(lines, message, width, state);
+}
+
+/// 用户消息随行的文档：正文之后逐行铺完整路径，多个文档上下叠加。
+///
+/// 只显示路径本身（与用户要求的那张 `…\pebrel-paste-xxxx.png` 同形）：模型拿到的正文
+/// 注脚里有同一批路径，这里给用户核对的是「到底发了哪个文件」。
+fn push_user_documents(
+    lines: &mut Vec<DisplayLine>,
+    message: &UserRecord,
+    body_width: usize,
+    stripe: Style,
+) {
+    for path in message.documents.iter() {
+        for chunk in wrap_display(path, body_width) {
+            lines.push(DisplayLine::plain(striped_line(
+                &format!("{MESSAGE_PAD}{chunk}"),
+                theme::rich_style(theme::TEXT_MUTED),
+                stripe,
+            )));
+        }
+    }
 }
 
 /// 用户消息随行的图片：正文之后铺一块缩略图区，走与工具卡相同的那条图片通路。
@@ -1310,10 +1336,7 @@ fn push_markdown(lines: &mut Vec<DisplayLine>, block: &StyledText, width: usize,
     let pad = display_width(MESSAGE_PAD);
     let body = width.saturating_sub(pad).max(1);
     // 首行行首要放 `◇ `：首行预算相应收窄，否则整行会被撑出屏幕再被终端折一次。
-    let head = body
-        .saturating_sub(display_width(prefix))
-        .max(1)
-        .min(body);
+    let head = body.saturating_sub(display_width(prefix)).max(1).min(body);
     for (index, line) in block.split_lines().iter().enumerate() {
         // 代码块里的 `• ` / `1. ` 是内容，不是列表标记：不给它算悬挂缩进。
         let indent = if markdown::is_code_line(line) {
@@ -1934,7 +1957,7 @@ mod tests {
     /// 把一段带 Markdown/LaTeX 的助手正文喂进状态机，再取实际显示行。
     fn assistant_lines(markdown: &str) -> (AppState, Vec<DisplayLine>) {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         state.apply(
             &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                 text: markdown.to_string(),
@@ -1950,7 +1973,7 @@ mod tests {
         // 单条记录的展开规模同样要封顶：`CONVERSATION_MAX_LINES` 只裁剪算完的块，
         // 截不住这一条的峰值，而它在 `trim_prefix` 里是永远不能丢的块。
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         state.apply(
             &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                 text: "很长的一段正文。".repeat(10_000),
@@ -2018,7 +2041,7 @@ mod tests {
             "model".to_string(),
             ApprovalMode::Manual,
         );
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         let status = runtime_status(&state, 60).expect("运行中应当有状态行");
         assert_eq!(
             status.spans.first().map(|span| span.content.as_ref()),
@@ -2047,7 +2070,8 @@ mod tests {
     #[test]
     fn assistant_table_renders_as_aligned_columns_within_the_width() {
         // 表格以前被压成一串文本（`Tag::Table` 没分支），在终端里完全读不出列关系。
-        let (_state, display) = assistant_lines("| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 12 |\n| 香蕉 | 3 |");
+        let (_state, display) =
+            assistant_lines("| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 12 |\n| 香蕉 | 3 |");
         let rendered = plain(&display);
         let table: Vec<&String> = rendered
             .iter()
@@ -2111,9 +2135,8 @@ mod tests {
     fn assistant_table_never_overflows_the_message_width() {
         // 表格按列宽排好后不能再被渲染层折一次，否则列关系会被折断。
         for width in [40u16, 60, 100] {
-            let mut state =
-                AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-            state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+            let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+            state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
             state.apply(
                 &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                     text: "| 名称 | 说明 |\n| --- | --- |\n| 甲 | 一段很长的说明文字需要被处理 |"
@@ -2169,7 +2192,7 @@ mod tests {
     #[test]
     fn streaming_deltas_accumulate_into_one_assistant_record() {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         let now = Instant::now();
         for chunk in ["第一段", "第二段", "第三段"] {
             state.apply(
@@ -2209,7 +2232,7 @@ mod tests {
     #[test]
     fn selection_text_joins_lines_and_stops_at_the_last_column() {
         let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "问题".to_string(), Vec::new(), Vec::new());
         state.apply(
             &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
                 // 空行分段：Markdown 会把段内单换行当软换行合并成空格（与 Rich 一致）。
@@ -2265,7 +2288,12 @@ mod tests {
     /// 起一个带正文的工具卡（`read` 之外的工具才有正文）。
     fn state_with_tool(ok: bool, body_lines: usize) -> AppState {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "跑工具".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let now = Instant::now();
         let call = omnicrawl_core::ToolCall {
             name: "bash".to_string(),
@@ -2438,7 +2466,12 @@ mod tests {
     #[test]
     fn monitor_tool_call_card_gets_a_clickable_stop_button() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "等后台任务".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "等后台任务".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let call = omnicrawl_core::ToolCall {
             name: "monitor".to_string(),
             arguments: serde_json::json!({
@@ -2489,7 +2522,7 @@ mod tests {
     #[test]
     fn failed_turn_shows_a_retry_button_that_turns_amber_on_hover() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new(), Vec::new());
         state.fail_turn_with("上游错误已达到本回合自动重试上限".to_string(), true);
 
         let display = display_lines(&state, 60);
@@ -2532,7 +2565,7 @@ mod tests {
     #[test]
     fn retry_button_does_not_take_the_tool_card_button_slot() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new(), Vec::new());
         state.fail_turn_with("上游错误已达到本回合自动重试上限".to_string(), true);
 
         let row = display_lines(&state, 60)
@@ -2548,7 +2581,7 @@ mod tests {
     #[test]
     fn non_retryable_failure_has_no_retry_button() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new());
+        state.begin_turn("t1".to_string(), "你好".to_string(), Vec::new(), Vec::new());
         state.set_status(Some("请求失败，正在自动重试（第4次）".to_string()));
         state.fail_turn("已取消当前回合。".to_string());
         // 修复点：重试耗尽后状态行必须复位，不能停在「正在自动重试」。
@@ -2565,7 +2598,12 @@ mod tests {
     #[test]
     fn retry_marks_the_old_failure_spent_and_reuses_the_user_message() {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), "重发我".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "重发我".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state.fail_turn_with("网络中断".to_string(), true);
         let index = state.last_failure_slot().expect("有失败记录");
 
@@ -2685,6 +2723,7 @@ mod tests {
             "t1".to_string(),
             "这是一个很长的用户问题需要折行".to_string(),
             Vec::new(),
+            Vec::new(),
         );
         state.apply(
             &omnicrawl_ipc::bridge::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
@@ -2726,9 +2765,10 @@ mod tests {
     /// 终端把越界的那列裁掉，末尾若是 CJK（两列）就整个字不画——表现是每行少一个字。
     #[test]
     fn user_text_wraps_without_dropping_characters() {
-        let text = "修改提问建议功能：把纯BM25改成先让主模型识别操作关键词与技能关键词再分组检索。".repeat(3);
+        let text = "修改提问建议功能：把纯BM25改成先让主模型识别操作关键词与技能关键词再分组检索。"
+            .repeat(3);
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
-        state.begin_turn("t1".to_string(), text.clone(), Vec::new());
+        state.begin_turn("t1".to_string(), text.clone(), Vec::new(), Vec::new());
         let rendered = plain(&display_lines(&state, 41));
         for line in &rendered {
             assert!(
@@ -2754,6 +2794,7 @@ mod tests {
             "t1".to_string(),
             "改一下显示\n\n建议使用skills：kimi-docx、agent-browser-cli。".to_string(),
             Vec::new(),
+            Vec::new(),
         );
         let rendered = plain(&display_lines(&state, 60));
         let label = rendered
@@ -2770,11 +2811,7 @@ mod tests {
             .iter()
             .position(|line| line.trim_start().starts_with("建议使用skills："))
             .unwrap_or_else(|| panic!("建议行应当独立成行：{rendered:?}"));
-        assert_eq!(
-            suggestion,
-            label + 1,
-            "建议块紧跟在标签之后：{rendered:?}"
-        );
+        assert_eq!(suggestion, label + 1, "建议块紧跟在标签之后：{rendered:?}");
         assert!(
             rendered[suggestion].contains("kimi-docx、agent-browser-cli"),
             "建议内容完整：{:?}",
@@ -2796,6 +2833,7 @@ mod tests {
             "t1".to_string(),
             "把 pdf 转成文本\n\n建议使用skills：kimi-docx、kimi-pdf、agent-browser-cli。"
                 .to_string(),
+            Vec::new(),
             Vec::new(),
         );
         let rendered = plain(&display_lines(&state, 100));
@@ -3052,7 +3090,12 @@ mod tests {
     fn state_with_named_tool(name: &str, arguments: serde_json::Value, output: &str) -> AppState {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
         state.telemetry.context_window = Some(1_000_000);
-        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "跑工具".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let now = Instant::now();
         let call = omnicrawl_core::ToolCall {
             name: name.to_string(),
@@ -3090,8 +3133,7 @@ mod tests {
     /// 子代理调用卡的「查看会话」入口：跟在工具调用后面单独一行，灰色、悬停转淡黄。
     #[test]
     fn a_subagent_card_gets_a_grey_view_session_button_after_the_call() {
-        let mut state =
-            state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
+        let mut state = state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
         state.subagent_stream_root =
             std::env::temp_dir().join(format!("oc-conv-view-{}", std::process::id()));
         state.apply(
@@ -3136,8 +3178,7 @@ mod tests {
     /// 批次收尾后入口撤下：窗口进程会自己关，按钮留着只能点出一个马上退出的空窗。
     #[test]
     fn a_finished_subagent_batch_removes_the_button() {
-        let mut state =
-            state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
+        let mut state = state_with_named_tool("subagent_run", serde_json::json!({}), "完成");
         state.subagent_stream_root =
             std::env::temp_dir().join(format!("oc-conv-view-done-{}", std::process::id()));
         for name in ["subagent.batch.created", "subagent.batch.finished"] {
@@ -3269,6 +3310,34 @@ mod tests {
     }
 
     #[test]
+    fn a_user_message_lists_its_documents_under_the_text() {
+        // 文档路径逐行铺在正文下面（与用户要求的 `…\pebrel-paste-xxxx.png` 同形），
+        // 多个文档上下叠加、顺序与粘贴一致。
+        let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn(
+            "t1".to_string(),
+            "总结一下".to_string(),
+            Vec::new(),
+            vec!["C:/a/报告.pdf".to_string(), "C:/a/名单.docx".to_string()],
+        );
+        let rendered = plain(&display_lines(&state, 80));
+        let text_at = rendered
+            .iter()
+            .position(|line| line.contains("总结一下"))
+            .unwrap_or_else(|| panic!("应有正文行：{rendered:?}"));
+        let first_doc = rendered
+            .iter()
+            .position(|line| line.contains("C:/a/报告.pdf"))
+            .unwrap_or_else(|| panic!("应有第一个文档路径：{rendered:?}"));
+        let second_doc = rendered
+            .iter()
+            .position(|line| line.contains("C:/a/名单.docx"))
+            .unwrap_or_else(|| panic!("应有第二个文档路径：{rendered:?}"));
+        assert!(first_doc > text_at, "文档行在正文下方：{rendered:?}");
+        assert!(second_doc > first_doc, "多个文档上下叠加：{rendered:?}");
+    }
+
+    #[test]
     fn a_user_message_with_images_renders_a_thumbnail_block() {
         // 用户粘贴的图片和工具附件走同一条图片通路：正文之后铺一块缩略图占位区。
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
@@ -3280,6 +3349,7 @@ mod tests {
                 data_base64: PNG_1X1.to_string(),
                 detail: "auto".to_string(),
             }],
+            Vec::new(),
         );
         let rendered = plain(&display_lines(&state, 80));
         assert!(
@@ -3647,7 +3717,9 @@ mod tests {
             crate::args::ApprovalMode::Manual,
         );
         for index in 0..6000 {
-            state.records.push(Record::Notice(format!("第 {index} 条提示")));
+            state
+                .records
+                .push(Record::Notice(format!("第 {index} 条提示")));
         }
         state.touch_conversation();
 
@@ -3663,7 +3735,10 @@ mod tests {
             "保留量应受显示行预算约束：{}",
             state.records.len()
         );
-        assert_eq!(state.conversation_cache().borrow().retained_from_record(), 0);
+        assert_eq!(
+            state.conversation_cache().borrow().retained_from_record(),
+            0
+        );
         assert_cache_matches(&state, 60, "records 裁剪后");
     }
 
@@ -3673,7 +3748,12 @@ mod tests {
             "m".to_string(),
             crate::args::ApprovalMode::Manual,
         );
-        state.begin_turn("t1".to_string(), "跑工具".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "跑工具".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         state
     }
 
@@ -3716,7 +3796,12 @@ mod tests {
             assert_cache_matches(&state, width, "Logo 动画");
         }
 
-        state.begin_turn("t1".to_string(), "第一个问题".to_string(), Vec::new());
+        state.begin_turn(
+            "t1".to_string(),
+            "第一个问题".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_cache_matches(&state, width, "begin_turn");
 
         for chunk in ["第一段", "**加粗**", " `code`"] {
@@ -4079,7 +4164,12 @@ mod tests {
         assert_eq!(cache_rebuilds(&state), baseline, "空转刷新不应触发重算");
 
         // 流式追加正文：只重算最后一条记录。
-        state.begin_turn("t2".to_string(), "第二个问题".to_string(), Vec::new());
+        state.begin_turn(
+            "t2".to_string(),
+            "第二个问题".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let _ = display_lines(&state, 60);
         let after_turn = cache_rebuilds(&state);
         assert_eq!(after_turn - baseline, 1, "追加记录只补算新记录");
@@ -4172,7 +4262,12 @@ mod tests {
         );
 
         // 流式增量同样只碰最后一条。
-        state.begin_turn("t2".to_string(), "又一个问题".to_string(), Vec::new());
+        state.begin_turn(
+            "t2".to_string(),
+            "又一个问题".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
         let after_turn = cache_rebuilds(&state);
         for _ in 0..5 {
             state.apply(

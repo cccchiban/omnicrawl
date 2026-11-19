@@ -629,10 +629,6 @@ impl SettingsState {
         &self.embedding_models.group(kind).default_key
     }
 
-    pub fn embedding_default_key(&self) -> &str {
-        self.embedding_default_key_of(EmbeddingChannelKind::Embedding)
-    }
-
     pub fn rerank_default_key(&self) -> &str {
         self.embedding_default_key_of(EmbeddingChannelKind::Rerank)
     }

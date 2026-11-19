@@ -200,6 +200,20 @@ impl AppState {
             self.touch_bottom();
         }
 
+        /// 换到一份空会话时清掉遥测：上下文占用、↑/↓/†与速率都是上一个会话的度量。
+        ///
+        /// 新建/归档出来的会话没有上下文也没有回合，沿用旧值就是底部拦在报旧账
+        /// （`/new` 之后仍显示上一会话的用量即此）。`context_window` 是模型窗口大小、
+        /// 按配置口径算出来的，与哪份会话无关，因此保留下来继续当分母。
+        pub fn reset_telemetry(&mut self) {
+            let context_window = self.telemetry.context_window;
+            self.telemetry = Telemetry {
+                context_window,
+                ..Telemetry::default()
+            };
+            self.refresh_hud();
+        }
+
         /// 工作区名是否被鼠标悬停（悬停时那段在渲染层染成淡黄色）。
         pub fn hud_workspace_hover(&self) -> bool {
             self.hud_workspace_hover

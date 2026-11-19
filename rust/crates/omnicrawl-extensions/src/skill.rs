@@ -16,7 +16,6 @@ pub const MAX_NAME_LENGTH: usize = 64;
 pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const SKILL_MANIFEST_FILE_NAME: &str = "manifest.json";
-pub const DEFAULT_MATCH_THRESHOLD: f64 = 0.3;
 /// 默认扫描的作用域目录（优先级从低到高，后加载的覆盖先加载的）。
 pub const SKILL_SCOPES: [(&str, &str); 3] = [
     ("enterprise", "OMNICRAWL_ENTERPRISE_DIR"),
@@ -475,38 +474,6 @@ impl SkillManager {
         Some(meta)
     }
 
-    /// 基于用户输入与 Skill description 的关键词匹配；`disable-model-invocation` 的技能不参与。
-    pub fn match_skills(
-        &self,
-        user_input: &str,
-        max_results: usize,
-        threshold: f64,
-    ) -> Vec<SkillMatchResult> {
-        let input_lower = user_input.to_lowercase();
-        let mut results: Vec<SkillMatchResult> = Vec::new();
-        for (_, meta) in &self.index {
-            if meta.disable_model_invocation {
-                continue;
-            }
-            let (score, reason) = score_match(&input_lower, meta);
-            if score >= threshold {
-                results.push(SkillMatchResult {
-                    skill: self.load_skill(meta),
-                    score,
-                    reason,
-                });
-            }
-        }
-        results.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results.truncate(max_results);
-        results
-    }
-
     /// 按名称精确获取 Skill；索引未命中时自动 re-discover 一次，
     /// 覆盖 AI 在当前会话内安装新 Skill 的场景。
     pub fn match_by_name(&mut self, name: &str) -> Option<Skill> {
@@ -601,11 +568,6 @@ impl SkillManager {
             meta.description,
             body
         ))
-    }
-
-    /// 兼容旧调用：Skill 指令不再注入 system prompt，原样返回。
-    pub fn inject(&self, system_prompt: &str) -> String {
-        system_prompt.to_string()
     }
 
     /// 返回所有已索引的 Skill 元数据（按名称排序）。
@@ -908,116 +870,3 @@ fn take_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-/// 多级打分：名称整体命中 → 名称分词 → 描述关键词子串 → Jaccard 相似度。
-fn score_match(input_lower: &str, meta: &SkillMeta) -> (f64, String) {
-    let mut reasons: Vec<String> = Vec::new();
-
-    let name_parts = meta.name.replace('-', " ");
-    if input_lower.contains(&name_parts) {
-        return (1.0, format!("Skill 名称命中：{}", meta.name));
-    }
-
-    let name_keywords: HashSet<String> = name_parts
-        .split_whitespace()
-        .map(|item| item.to_string())
-        .collect();
-    let mut name_hits: Vec<String> = name_keywords
-        .iter()
-        .filter(|item| item.chars().count() >= 2 && input_lower.contains(item.as_str()))
-        .cloned()
-        .collect();
-    name_hits.sort();
-    let name_bonus = name_hits.len() as f64 * 0.25;
-    if !name_hits.is_empty() {
-        reasons.push(format!("名称分词命中：{}", name_hits.join(", ")));
-    }
-
-    let desc_lower = meta.description.to_lowercase();
-    let desc_keywords = extract_keywords(&desc_lower);
-    let input_keywords = extract_keywords(input_lower);
-
-    if desc_keywords.is_empty() && name_keywords.is_empty() {
-        return (0.0, "无有效关键词".to_string());
-    }
-
-    let intersection: HashSet<&String> = desc_keywords.intersection(&input_keywords).collect();
-    let union: HashSet<&String> = desc_keywords.union(&input_keywords).collect();
-    let jaccard = if union.is_empty() {
-        0.0
-    } else {
-        intersection.len() as f64 / union.len() as f64
-    };
-
-    // 按排序后的顺序累加：Python 的 set 迭代序受哈希随机化影响，排序可保证两侧一致。
-    let mut sorted_desc: Vec<&String> = desc_keywords.iter().collect();
-    sorted_desc.sort();
-    let mut substring_bonus = 0.0;
-    for keyword in sorted_desc {
-        if keyword.chars().count() >= 2 && input_lower.contains(keyword.as_str()) {
-            substring_bonus += 0.15;
-        }
-    }
-
-    let score = (jaccard + substring_bonus + name_bonus).min(1.0);
-    if !intersection.is_empty() {
-        let mut hits: Vec<&String> = intersection.into_iter().collect();
-        hits.sort();
-        let text: Vec<String> = hits.iter().map(|item| (*item).clone()).collect();
-        reasons.push(format!("关键词命中：{}", text.join(", ")));
-    }
-
-    let reason = if reasons.is_empty() {
-        "低相关度".to_string()
-    } else {
-        reasons.join("; ")
-    };
-    (score, reason)
-}
-
-/// 从文本中提取中文和英文关键词：CJK 连续片段按 2-4 字切块，英文取长度 ≥3 的单词。
-fn extract_keywords(text: &str) -> HashSet<String> {
-    let mut words: HashSet<String> = HashSet::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if is_cjk(chars[index]) {
-            let start = index;
-            while index < chars.len() && is_cjk(chars[index]) {
-                index += 1;
-            }
-            let run = &chars[start..index];
-            let mut offset = 0;
-            while offset < run.len() {
-                let take = (run.len() - offset).min(4);
-                if take < 2 {
-                    break;
-                }
-                words.insert(run[offset..offset + take].iter().collect());
-                offset += take;
-            }
-        } else {
-            index += 1;
-        }
-    }
-
-    let mut run = String::new();
-    for ch in text.chars() {
-        if ch.is_ascii_alphabetic() {
-            run.push(ch);
-            continue;
-        }
-        if run.len() >= 3 {
-            words.insert(run.to_lowercase());
-        }
-        run.clear();
-    }
-    if run.len() >= 3 {
-        words.insert(run.to_lowercase());
-    }
-    words
-}
-
-/// `[一-鿿]`：CJK 统一表意文字基本区。
-fn is_cjk(ch: char) -> bool {
-    ('\u{4e00}'..='\u{9fff}').contains(&ch)
-}

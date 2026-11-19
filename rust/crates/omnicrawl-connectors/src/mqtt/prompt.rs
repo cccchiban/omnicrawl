@@ -117,11 +117,6 @@ pub fn decision_questions(actions: &[ActionSpec]) -> Value {
     })
 }
 
-/// 决策通道返回的选择下标 → 动作 id。
-pub fn action_at(actions: &[ActionSpec], index: usize) -> Option<&ActionSpec> {
-    actions.get(index)
-}
-
 /// 模型给出的原始动作（校验前）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawPlan {

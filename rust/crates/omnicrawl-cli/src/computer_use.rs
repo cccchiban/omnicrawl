@@ -16,6 +16,8 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::computer_use::{load_computer_use_config, ComputerUseConfig};
 use omnicrawl_controllers::subagents::coordinator::is_reserved_role;
 use omnicrawl_controllers::subagents::definitions::{AgentDefinition, AgentDefinitionRegistry};
+use omnicrawl_controllers::tool_catalog::windows_tool_specs;
+use omnicrawl_controllers::tool_declarations;
 use serde_json::{json, Map, Value};
 
 /// 工具名：与工具目录里的 `computer_use` 一致。
@@ -157,6 +159,40 @@ pub fn child_tool_names() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// 子代理的工具声明（provider 形状：`type` + `function{name,description,parameters}`）。
+///
+/// 与 [`child_tool_names`] 配对：**白名单里的每一项都必须有一条声明**。不能像普通子代理
+/// 那样从父工具表取交集——主代理不声明 `windows_*`，那样过滤出来是空表，模型连桌面工具
+/// 叫什么都不知道，Computer Use 等于没有能力。
+///
+/// 父表里恰好也有的（`read` / `list` / `read_image`）沿用父表那份：宿主已经把它收敛成
+/// 各网关都认的形状，重建一遍只会引入差异。缺的按内置目录现造，用的是与宿主同一个
+/// [`tool_declarations::declaration`]——示例式契约怎么推断成 Schema 只该有一处说法。
+pub fn child_tool_declarations(parent: &[Value], tool_names: &[String]) -> Vec<Value> {
+    let mut declarations: Vec<Value> = Vec::new();
+    for name in tool_names {
+        if let Some(found) = parent
+            .iter()
+            .find(|item| declaration_name(item) == Some(name.as_str()))
+        {
+            declarations.push(found.clone());
+            continue;
+        }
+        if let Some(spec) = windows_tool_specs()
+            .into_iter()
+            .find(|spec| &spec.name == name)
+        {
+            declarations.push(tool_declarations::declaration(&spec));
+        }
+    }
+    declarations
+}
+
+/// 一条声明里的工具名。
+fn declaration_name(item: &Value) -> Option<&str> {
+    item.pointer("/function/name").and_then(Value::as_str)
 }
 
 /// 从子代理收尾文本里取结构化回报；解析不出时退化为纯文本摘要。
@@ -418,6 +454,74 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "顺序稳定：{names:?}");
+    }
+
+    /// 白名单里的每一项都必须有声明：父表没有 `windows_*`（主代理不声明它们），
+    /// 子代理必须自己补齐，否则模型一个桌面工具都看不到。
+    #[test]
+    fn child_declarations_cover_the_whole_whitelist() {
+        // 父表只给白名单里的非桌面项：这正是主代理真实的声明形状。
+        let parent = vec![
+            json!({"type": "function", "function": {"name": "read"}}),
+            json!({"type": "function", "function": {"name": "list"}}),
+            json!({"type": "function", "function": {"name": "read_image"}}),
+            // 父表里的其它工具不该混进子代理。
+            json!({"type": "function", "function": {"name": "powershell"}}),
+        ];
+        let declarations = child_tool_declarations(&parent, &child_tool_names());
+        let names: Vec<&str> = declarations
+            .iter()
+            .filter_map(|item| item.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        for expected in [
+            "windows_window",
+            "windows_screenshot",
+            "windows_input",
+            "windows_control",
+            "read_image",
+            "list",
+            "read",
+        ] {
+            assert!(names.contains(&expected), "子代理缺少 {expected}：{names:?}");
+        }
+        assert_eq!(names.len(), CHILD_TOOLS.len(), "白名单之外不得混入：{names:?}");
+        assert!(
+            !names.contains(&"powershell"),
+            "父表里的非白名单工具不得混入：{names:?}"
+        );
+    }
+
+    /// 现场补出来的桌面声明要能直接用：示例式契约要被推断成真 JSON Schema。
+    #[test]
+    fn generated_desktop_declarations_carry_a_usable_schema() {
+        let declarations = child_tool_declarations(&[], &["windows_control".to_string()]);
+        assert_eq!(declarations.len(), 1);
+        let item = &declarations[0];
+        assert_eq!(item["type"], "function");
+        assert_eq!(item["function"]["name"], "windows_control");
+        let parameters = &item["function"]["parameters"];
+        assert_eq!(parameters["type"], "object", "参数契约要是对象：{parameters}");
+        let properties = parameters["properties"]
+            .as_object()
+            .expect("参数契约要带 properties");
+        // 示例式契约里的键要真的被推断出来，否则模型不知道能传什么。
+        assert!(
+            properties.contains_key("action") && properties.contains_key("window_handle"),
+            "应当推断出示例里的键：{:?}",
+            properties.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            properties["action"]["type"], "string",
+            "示例里的字符串要推断成 string：{}",
+            properties["action"]
+        );
+        assert!(
+            !item["function"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "声明必须带说明，否则模型不知道这个工具做什么"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //
 // 前置：cargo build --release -p omnicrawl-cli && node packages/cli/scripts/prepare.mjs
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,11 +12,26 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '../../..')
 const launcher = join(here, '..', 'bin', 'omnicrawl.mjs')
 const binaryName = process.platform === 'win32' ? 'omnicrawl.exe' : 'omnicrawl'
-const binary = join(repoRoot, 'rust', 'target', 'release', binaryName)
+// 问 cargo 要 target 目录：`build.target-dir` / `CARGO_TARGET_DIR` 都会改变产物位置，
+// 写死 `rust/target` 时找不到产物，测试只会被 skip 掉——绿的假象比失败更糟。
+function targetReleaseDir() {
+  try {
+    const targetDir = JSON.parse(
+      execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+        cwd: join(repoRoot, 'rust'),
+        encoding: 'utf8',
+      }),
+    ).target_directory
+    return join(targetDir, 'release')
+  } catch {
+    return join(repoRoot, 'rust', 'target', 'release')
+  }
+}
+const binary = join(targetReleaseDir(), binaryName)
 
 const SKIP = existsSync(binary)
   ? false
-  : '未找到 cargo 产物（rust/target/release）：先 cargo build --release -p omnicrawl-cli'
+  : '未找到 cargo 产物（cargo metadata 报告的 target 目录下没有 release）：先 cargo build --release -p omnicrawl-cli'
 
 const toolCall = {
   name: 'read_file',

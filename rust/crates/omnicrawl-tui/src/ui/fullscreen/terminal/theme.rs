@@ -8,7 +8,6 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const TRANSPARENT: &str = "transparent";
 // Rich 使用 default/标准色名，Textual CSS 使用 ansi_default/ansi_*；
 // 两种表示最终都交给终端自己的前景色与 ANSI 调色板解析。
 pub const TEXT_PRIMARY: &str = "default";
@@ -17,7 +16,6 @@ pub const TEXT_MUTED: &str = "dim";
 pub const TEXT_FAINT: &str = "dim";
 pub const TEXT_ON_ACCENT: &str = "default";
 
-pub const BORDER_SUBTLE: &str = "dim";
 pub const BORDER_STRONG: &str = "default";
 pub const SCROLLBAR: &str = "default";
 /// 顶部 HUD 分隔符使用的灰色（ANSI 亮黑）：比 dim 更清晰可见，又比默认前景克制。
