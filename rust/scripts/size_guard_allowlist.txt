@@ -9,7 +9,6 @@
 #
 # 行的格式：<相对 rust/ 的路径>  <登记时的生产行数>
 crates/omnicrawl-host/src/tools/web_search.rs  2052
-crates/omnicrawl-host/src/sandbox/windows.rs  2034
 crates/omnicrawl-tui/src/state.rs  1973
 crates/omnicrawl-tui/src/ui/conversation.rs  1921
 crates/omnicrawl-workspace/src/agent_isolation.rs  1871
