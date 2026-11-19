@@ -3,15 +3,19 @@
 # 规则：只允许减，不允许增。拆到红线以下就把对应行删掉；新增超标会让
 # `python rust/scripts/size_guard.py` 失败（CI 的「源码规模门禁」步骤）。
 #
+# 拆分优先级与每个文件内部有哪些互不相关的职责，见
+# `rust/code-health-split-list.md`（知识库同名条目：projects/OmniCrawl/big-file-split-list.md）。
+# 其中只有 6 个是真正的「多功能综合文件」，其余多为单一职责或数据表。
+#
 # 行的格式：<相对 rust/ 的路径>  <登记时的生产行数>
-crates/omnicrawl-connectors/src/qqbot/bot.rs  2478
+crates/omnicrawl-connectors/src/qqbot/bot.rs  2450
 crates/omnicrawl-tui/src/ui/settings/render.rs  2116
 crates/omnicrawl-host/src/tools/web_search.rs  2052
 crates/omnicrawl-host/src/sandbox/windows.rs  2034
 crates/omnicrawl-tui/src/state.rs  1973
 crates/omnicrawl-tui/src/ui/conversation.rs  1921
 crates/omnicrawl-workspace/src/agent_isolation.rs  1871
-crates/omnicrawl-connectors/src/feishu/bot.rs  1633
+crates/omnicrawl-connectors/src/feishu/bot.rs  1620
 crates/omnicrawl-llm/src/desensitization/rules.rs  1608
 crates/omnicrawl-tui/src/ui/fullscreen/rendering/latex.rs  1597
 crates/omnicrawl-tls/src/session.rs  1592
@@ -22,7 +26,7 @@ crates/omnicrawl-mcp/src/client.rs  1374
 crates/omnicrawl-api/src/routes/settings.rs  1301
 crates/omnicrawl-llm/src/desensitization/engine.rs  1300
 crates/omnicrawl-host/src/tools/knowledge.rs  1293
-crates/omnicrawl-connectors/src/telegram/bot.rs  1289
+crates/omnicrawl-connectors/src/telegram/bot.rs  1268
 crates/omnicrawl-session/src/store.rs  1257
 crates/omnicrawl-tui/src/ui/settings/state.rs  1238
 crates/omnicrawl-tui/src/app/support.rs  1225
