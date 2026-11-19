@@ -1,0 +1,935 @@
+#AOCI-CODE-VOLUME: 1
+
+===/<repository>/===
+.gitattributes[FG4T]: F:声明仓库级换行归一与二进制判定，让文本类检出统一为 LF、构建产物与模型权重按二进制处理 | R:- | A:- | S:删掉某扩展的 eol=lf 规则会让该类型在 Windows 检出为 CRLF，产生只差换行符的整文件差异
+.gitignore[FZ7T]: F:排除依赖树、构建产物、本机配置与锁文件，使检出只含源码 | R:- | A:- | S:认知资产 aoci.txt、aoci.meta.txt、aoci.code.txt 与 AGENTS.md 一旦被忽略会被 aoci scan 静默跳过，索引建不起来
+AGENTS.md[SZ8S]: F:向模型说明本仓库的 AOCI 认知层：Entry 的 F/R/A/S 语义、建立与恢复认知的顺序、上下文压缩后的强制重载、维护与修复流程 | R:code:aoci.txt,code:aoci.meta.txt,code:aoci.code.txt | A:- | S:这份文件规定会话流程而非业务实现，结构判据以工具 Schema、Guide、Spec 与 Validator 为准，静态文本不得覆盖机器事实；用户明确禁止写 aoci.txt 与 .aoci 时必须停写并如实报告剩余不一致
+LICENSE[SZ3T]: F:声明项目以 MIT 协议开源 | R:- | A:- | S:-
+README.md[SZ9S]: F:交代 OmniCrawl 的定位、上下文压缩与三级记忆等特性、安装与源码构建、TUI 与本地 API 的启动方式 | R:code:packages/cli/README.md,code:rust/README.md | A:omnicrawl、omnicrawl api、omnicrawl decision、omnicrawl kernel | S:平台分包按 os/cpu 自动分发，纯 Rust 单文件交付且零运行时依赖；本地 API 除健康检查与文档接口外一律需要 Bearer 令牌，令牌为空或 CORS 来源为 * 时拒绝启动
+package.json[FV4T]: F:声明私有 npm workspace 根，工作区成员为 packages 下全部子包 | R:code:packages/cli/package.json | A:- | S:根清单没有 version 字段，读它取版本会得到 undefined，版本只认 packages/cli/package.json
+
+===/<repository>/.github/workflows/===
+ci.yml[TQ5T]: F:在 push 与 PR 上跑源码规模门禁与全工作区 Rust 测试，只验证不发布；同一分支连续推送取消上一轮 | R:code:rust/Cargo.toml,code:rust/scripts/size_guard.py | A:- | S:测试前必须单独 cargo build --workspace --bins：omnicrawl-decision 的 serve 用例要拉起同名真实可执行文件，而 cargo test 只保证测试二进制就位；规模门禁是纯文本步骤、不触发编译，它失败只能靠拆文件解决，往 size_guard_allowlist.txt 加条目等于放弃这条红线
+publish-npm.yml[OV8M]: F:在 npm-v* tag 或手动触发时构建五个平台的内核与宿主载荷，暂存平台分包后按 Trusted Publishing 顺序发布 | R:code:packages/cli/scripts/prepare.mjs,code:packages/cli/scripts/build-host.mjs | A:npm-v<版本> tag、dry_run 输入 | S:矩阵项的 platform 必须显式声明载荷键，靠构建机推导会把 32 位载荷落到 win32-x64 键下，prepare.mjs 便找不到 hostKey 而静默发出只带内核的包；发布必须平台包在前、启动器在后，否则启动器的精确版本 optionalDependencies 装不到；tag 与包版本不一致时发布直接失败
+
+===/<repository>/assets/===
+ASCII.txt[FZ4T]: F:存放 OmniCrawl 块字品牌 Logo，先是无色副本、后是纯白着色副本 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/welcome_logo.rs | A:- | S:块字行首缩进是字形升部定位，去掉后各字母列对齐会错位
+
+===/<repository>/native/===
+README.md[SZ7S]: F:交代原生搜索扩展的组成、构建方式与相对 ripgrep 的行为对齐和已知差异 | R:code:native/build.py,code:native/ocsearch/doc.go | A:- | S:Go 模块零第三方依赖，离线也能构建；cgo 不接受 MSVC 的 cl.exe，Windows 需 MinGW-w64；缺 Go 或 C 编译器时构建降级为运行时回退 PATH 上的 rg
+benchmark.py[XG6S]: F:用同一组 ripgrep 参数对比实测原生后端与 rg 在同负载下的耗时，语料缺失时自动跳过 | R:code:native/ocsearch/run.go | A:--rg、--corpus、--large | S:两种后端共用同一份参数，差异才只来自实现本身；rg 不可用时只报绝对耗时，不做倍数对比
+build.py[XV8S]: F:把 Go 搜索核心经 cgo 编译成 CPython 的 abi3 扩展，Windows 产出 .pyd、其余平台产出 .so，并清理 c-shared 顺带生成的同名头文件 | R:code:native/cmod/main.go,code:native/cmod/module.c | A:--out、--quiet | S:输出路径必须相对调用方先解析成绝对路径，否则产物会落到 native/ 而不是 wheel 内的包目录；Windows 必须链接稳定 ABI 导入库 python3.lib，缺它要报错而不是产出符号无法解析的扩展；go build 的构建目录固定为 native/
+go.mod[FV3T]: F:声明原生搜索扩展的 Go 模块路径与最低 Go 版本 | R:- | A:- | S:模块路径与仓库 GitHub 地址一致，改仓库归属时必须同步修改，否则导入路径失效
+
+===/<repository>/native/cmod/===
+main.go[XG5T]: F:把 ocsearch 包装成 C ABI 导出 oc_search 与 oc_version，并把错误与超时映射成结构化 JSON 响应 | R:code:native/ocsearch/run.go | A:oc_search、oc_version | S:直接 go build 本包会因缺少 Python 头文件失败，必须经 native/build.py 带上 CGO 参数构建；oc_version 的协议号与 pyproject 版本相互独立，只用于 Python 侧判断扩展与包装层是否匹配
+module.c[XI6T]: F:实现 CPython 扩展入口 PyInit__ocsearch，在稳定 ABI 下搬运 JSON 字符串并在搜索期间释放 GIL | R:code:native/cmod/main.go | A:run、version、PyInit__ocsearch | S:未定义 OCSEARCH_WITH_PYTHON 时只编译占位实现，正因如此 go vet 与 go build 在无 Python 头文件的机器上也能通过；Py_LIMITED_API 固定 3.9，一份产物跨解释器版本复用
+
+===/<repository>/native/ocsearch/===
+doc.go[SZ6T]: F:说明 ocsearch 是用 Go 重写的 ripgrep 替代实现及其保留的关键行为 | R:code:native/ocsearch/run.go | A:- | S:-
+glob.go[KM8M]: F:编译 gitignore 与 --glob 共用的 glob 语法子集（** 跨段、段内 * 与 ?、字符集、转义、! 取反、结尾 / 仅目录、锚定规则），无通配符的 basename 规则退化为一次字面量比较 | R:code:native/ocsearch/ignore.go,code:native/ocsearch/walk.go | A:compileGlob | S:前缀或中部出现 / 表示锚定到规则所在目录，只有前导 **/ 才保持任意层级；gitignore 的 a/** 只匹配 a 之下而不含 a 本身，必须展开成 a/*/** 才能与 ripgrep 一致
+ignore.go[KM7S]: F:维护按目录继承的忽略规则链，按 gitignore 优先级判定条目是否被忽略，并从搜索根向上收集祖先规则直到 git 仓库根 | R:code:native/ocsearch/glob.go | A:ignored、loadIgnoreNode、initialIgnoreNode | S:同一目录内后解析的 .rgignore 覆盖 .ignore 再覆盖 .gitignore，单文件内后出现的规则覆盖先出现的；Windows 上 filepath.Rel 返回反斜杠分段，必须先转 / 再切段，否则祖先规则在子目录中全部失配
+prefilter.go[KR8L]: F:从正则模式里安全抽出每次匹配都必须出现的字面量，在进入正则引擎前整行排除；忽略大小写时用 Boyer-Moore-Horspool 做 ASCII 折叠搜索 | R:code:native/ocsearch/run.go | A:extractLiteralFilter、indexFoldASCII | S:字面量的折叠等价类含非 ASCII 字符（如 ſ↔s）时必须放弃预筛，否则会漏匹配；顶层出现无法安全解析的构造（选择、命名分组、环视）时整体放弃；只在最外层收集且跳过最小重复为 0 的量词
+run.go[KR9L]: F:解析项目实际用到的 ripgrep 参数子集，遍历并扫描文件后按 --json/--count/--files-with-matches/--files 渲染输出，超时以 ErrTimeout 上报 | R:code:native/ocsearch/walk.go,code:native/ocsearch/prefilter.go | A:Run、ErrTimeout | S:未支持的参数直接报错而不静默忽略，避免结果与调用方预期不符；正则必须在遍历前编译完成，无效模式不该白扫一遍目录树；前 8KB 含 NUL 视为二进制跳过，.git 永不搜索
+walk.go[KR7M]: F:并发展开目录并按忽略规则与 glob 剪枝，命中的文件路径最终排序返回 | R:code:native/ocsearch/ignore.go | A:collectFiles | S:信号量只包住目录列举与筛选，派生分支前必须释放，否则子目录互相等待而死锁；显式指定的文件不参与忽略规则但仍受 glob 过滤
+
+===/<repository>/packages/cli/===
+README.md[SZ7S]: F:交代启动器的分发形态、命令面、启动自动更新行为与本地开发发布流程 | R:code:packages/cli/bin/omnicrawl.mjs,code:packages/cli/scripts/prepare.mjs | A:omnicrawl、omnicrawl api、omnicrawl kernel | S:平台分包、os/cpu 与平台依赖只出现在发布产物里，仓库内的 packages/cli*/package.json 带上它们会让 npm install 直接 notsup
+package.json[FV5T]: F:声明启动器包的身份、bin 入口、发布文件集与版本基线 | R:code:packages/cli/bin/omnicrawl.mjs | A:- | S:发布 tag 校验与平台包版本都以这里的 version 为准，升版必须与 npm-v<版本> tag 同步
+
+===/<repository>/packages/cli/bin/===
+omnicrawl.mjs[EV8S]: F:按 platform-arch 解析平台分包并启动宿主，kernel 子命令把 stdio 交给内核二进制，支持以环境变量直接指定宿主或内核 | R:code:packages/cli/bin/update.mjs,code:packages/cli/scripts/prepare.mjs | A:omnicrawl、omnicrawl api、omnicrawl kernel、--version、--resume | S:OMNICRAWL_BINARY 让启动器退化为纯透传、不再介入 stdio 协议帧；没有宿主载荷的平台退回内核直连并说明该平台只支持协议模式
+update.mjs[XW8M]: F:启动时检查 npm registry 上的最新版，落后则全局升级并重新拉起启动器，任何失败只提示并继续用当前版本 | R:code:packages/cli/bin/omnicrawl.mjs | A:runStartupUpdateIfDue、shouldCheckUpdate、isNewerVersion | S:源码检出、OMNICRAWL_SKIP_AUTO_UPDATE=1、逃生口环境变量与 api/kernel 子命令都不做更新检查；升级前必须写入 OMNICRAWL_AUTO_UPDATE_ATTEMPTED=1，否则探测异常时重启会无限循环；版本缓存 24 小时，registry 请求 3 秒超时
+
+===/<repository>/packages/cli/scripts/===
+build-host.mjs[OV8M]: F:构建宿主载荷：cargo release 产物叠加模板与扩展资源，写入 dist/host/<platform>/payload 并生成 host-meta.json | R:code:packages/cli/scripts/prepare.mjs,code:rust/Cargo.toml | A:--target、--platform、--zigbuild、--skip-build | S:交叉构建别的平台时 --platform 必须显式给，否则载荷落到构建机的键下而 prepare.mjs 按目标 hostKey 找不到；--zigbuild 必须与 --target 同时出现，否则会把错架构产物当交叉产物；产物目录要问 cargo metadata 的 target_directory
+host-smoke.mjs[TQ6T]: F:在无终端环境下验证宿主载荷给出可执行提示而不是崩溃或静默退出 | R:code:packages/cli/scripts/build-host.mjs | A:--platform | S:交叉构建时 --platform 必须与 build-host.mjs 一致；断言 stderr 含无终端提示且退出码为 2
+install-smoke.mjs[TQ7S]: F:在干净前缀里真装 dist/npm 的发布产物，验证启动器解析平台包、给出命令面并真的拉起宿主 | R:code:packages/cli/scripts/prepare.mjs,code:packages/cli/bin/omnicrawl.mjs | A:--keep | S:必须断言 .bin/omnicrawl 指向启动器：平台包若同样声明 omnicrawl 会抢走该条目，使 omnicrawl 变成直连内核；非 Windows 还要断言宿主载荷九个可执行文件都有可执行位，否则安装后拉起同目录二进制会 Permission denied
+prepare.mjs[OV9M]: F:把内核与宿主载荷装配成五个平台分包与启动器到 dist/npm，并写入发布用的 package.json 与 version.json | R:code:packages/cli/scripts/build-host.mjs,code:packages/cli/package.json | A:--require-all、--require-host、--launcher-only | S:平台包在 node_modules/.bin 里必须叫 omnicrawl-kernel 而不是 omnicrawl，撞名会让启动器的 .bin/omnicrawl 被平台包抢走；宿主的九个可执行文件必须列进 bin 字段，否则 npm pack 写成 0644 导致运行时 Permission denied；不带 --target 的产物只属于宿主机架构；目录级 cpSync 在本机会静默崩掉整个进程
+
+===/<repository>/packages/cli/test/===
+e2e.test.mjs[TQ7M]: F:通过启动器驱动真实内核二进制，覆盖协议 v1 的完整回合、回合内取消、握手与错误码 | R:code:packages/cli/bin/omnicrawl.mjs | A:- | S:产物目录必须问 cargo metadata 的 target_directory，写死 rust/target 时找不到产物只会被静默 skip，绿的假象比失败更糟
+update.test.mjs[TQ7M]: F:用注入的取版本、安装与重启实现覆盖版本比较、缓存、配置开关与各项护栏 | R:code:packages/cli/bin/update.mjs | A:- | S:全部依赖注入，用例不得触网也不得动真实 HOME，否则会把开发机的全局安装真的升级掉
+
+===/<repository>/rust/===
+.gitignore[FZ4T]: F:排除 Rust 构建产物与本机 cargo 配置 | R:- | A:- | S:.cargo/config.toml 记录本机 target-dir，入库会让别处的构建把产物写进同一个绝对路径
+Cargo.toml[FV9S]: F:定义 28 个 crate 的工作区成员、共享依赖与版本、MSRV 及 release 档优化参数 | R:code:rust/README.md | A:- | S:MSRV 由依赖树里最高的声明决定，工作区级声明无法只对单个 crate 抬高；serde_json 必须保序，字典序会让会话转录与请求体字节与既有实现不一致；release 关掉溢出检查并 strip 符号，panic=abort 后无回溯可用
+README.md[SZ9L]: F:交代 Rust 内核分层、逐 crate 目录与职责、构建验证命令、命名对应关系、对照工作流与已知差异 | R:code:rust/Cargo.toml | A:- | S:各 crate 的 tests/*_parity.rs 与 fixtures 是冻结的对照契约且是唯一事实来源，没有生成脚本；实现失配时先判断是实现回归还是契约要更新，契约变更须在同一提交里同时改实现与 fixture 并说明
+code-health-audit.md[SZ8L]: F:记录对全仓源码的静态健康度调查（行数分桶、职责聚类、引用计数、重复实现与无用代码）与拆分方案，并逐轮登记执行进度 | R:code:rust/Cargo.toml,code:rust/scripts/size_guard_allowlist.txt | A:- | S:调查只用静态分析，未跑构建与测试，结论不能当作编译或运行事实；文件刻意放在 rust/ 根而非 rust/docs/，因为后者被 .gitignore 的 docs/ 规则忽略；每轮新结论写进知识库并按日期的「第N轮」小节登记，正文顶部的执行进度指针要同步改，否则读者会拿着过期数字开工
+
+===/<repository>/rust/assets/config-templates/===
+config.example.toml[FC9L]: F:作为首次启动配置模板，声明模型渠道与协议、联网搜索、视觉、图像生成、语音合成、审批与沙盒、记忆、上下文压缩、本地 API、抓取与触发接口、MCP 策略等配置段与取值语义 | R:code:rust/assets/config-templates/models.example.toml | A:- | S:沙盒的 mode 与平台必须对应，写成另一平台的档位会直接报错而不是悄悄退化成不隔离；沙盒内 Linux 只放行回环代理端口，Windows 的 PowerShell 自读 WinINET 代理可绕开域名判定，要严格不出网须设 policy=offline；API Key 只写明文且留在本机 config.toml
+decision_models.example.toml[FC8S]: F:给出结构化决策模型的渠道模板：jev、chat_completions、cloudflare_workers_ai、onejev 四种请求方式与密钥字段 | R:code:rust/assets/config-templates/config.example.toml | A:- | S:决策模型在独立命名空间中，不出现在 models.toml 的对话模型目录里；cloudflare_workers_ai 没有可填 base_url，地址由账户号折算，且请求体的 model 只认最后一段；用 OpenAI 兼容路径调决策模型会被判缺少 model/state/questions
+embedding_models.example.toml[FC8S]: F:给出两阶段检索的渠道模板：嵌入模型负责粗筛召回，重排模型负责精排，均走 OpenAI 兼容接口 | R:code:rust/assets/config-templates/config.example.toml | A:- | S:未配置、未启用或缺凭据时检索退回纯关键词排序，这是刻意的兜底而非错误；改嵌入维度或换模型后旧向量自然失效（缓存键带渠道指纹）
+models.example.toml[FC8T]: F:给出对话模型目录模板：每条模型的渠道、协议、上下文与输出上限、能力位与别名 | R:code:rust/assets/config-templates/config.example.toml | A:- | S:目录里不得写 api_key 等凭据，凭据只留在 config.toml 的渠道段；capabilities 是显式能力声明，native_vision 省略时按模型能力推断
+subagents.example.toml[FC8T]: F:给出子代理模板：全局边界（深度、超时、并发、worktree 与共享工作区写权限）与按角色覆盖模型 | R:code:rust/assets/config-templates/config.example.toml | A:- | S:子代理设置已从 config.toml 完全迁到本文件，程序只读 subagents.toml 且不回退读 [subagents] 段；allow_background 只为兼容旧配置保留，子代理已改为回合内同步串行执行
+
+===/<repository>/rust/assets/docs/===
+API.md[SZ8M]: F:说明本地 HTTP/SSE API 的配置段、Bearer 鉴权、路线清单、事件流与客户端接入方式 | R:code:rust/crates/omnicrawl-api/src/config.rs,code:rust/crates/omnicrawl-api/src/app.rs | A:omnicrawl api | S:这份文档的示例仍写着 Python 启动方式（pip install、python -m omnicrawl.api），与本仓库纯 Rust 交付不一致；令牌可用 OMNICRAWL_API_TOKEN 覆盖配置文件；仅绑定回环地址，令牌为空或 CORS 来源为 * 时拒绝启动
+FSAPP.md[SZ8L]: F:说明飞书机器人连接器的原理、飞书开放平台应用创建、[feishu] 配置、宿主承载与内核承载的差别、验证与排障 | R:code:rust/crates/omnicrawl-connectors/src/feishu/mod.rs | A:- | S:当前不支持扫码授权，只能用自建应用的 App ID 与 App Secret；App Secret 只写本机配置，不得提交或粘进聊天；用户白名单必填，缺失时任何飞书用户都能操作 Agent；无宿主载荷的平台（如 armv7）退回内核承载，只能对话不能执行工具
+MCP_USAGE.md[SZ8M]: F:给出 MCP 的渐进式使用规范：先读最低成本摘要，再按任务类型定位源码与设计文档，并覆盖配置、设置面板三级管理、调用、审批、审计与排障 | R:code:rust/crates/omnicrawl-mcp/client.rs | A:- | S:新 server 的配置写进 ~/.OmniCrawl/config.toml 的 [mcp.servers.*] 段，不在工作区；改完配置需要重连或重启会话才生效；不要在普通任务中一次性读取全部 MCP 源码
+MQTT.md[SZ8M]: F:说明 MQTT 自动化回路的定位（遥测进、动作出）、三段漏斗、配置、报文契约、安全边界与两种规划器 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/mod.rs | A:- | S:模型只能从配置里声明的动作表中选动作，不能自造；规则命中且持续 sustain_seconds 后才唤醒一次模型，避免每条报文进上下文；下发指令带 request_id 与 TTL
+QQBOT.md[SZ8L]: F:说明 QQ 机器人的接入方式：单聊、群聊@、频道@ 远程操作 Agent，含配置步骤、支持命令、消息排队、附件接收、安全边界与排障 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/mod.rs | A:- | S:机器人凭据与用户白名单只写本机配置；附件落在会话文件边界内，不得写到工作区之外
+SKILL_INSTALLATION.md[SZ8M]: F:说明 Skill 的安装位置、最小可用形态、渐进式披露规则、安装流程与验证清单 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:- | S:启动时只注入 Skill 的元数据索引，正文在命中或用户显式调用时才读取，否则每个 Skill 都会吃掉上下文；Skill 目录在工作区之外，不能用 find 或 grep 去搜
+TELEGRAM.md[SZ8M]: F:说明 Telegram Bot 远程接入的工作原理、BotFather 与应用层配置、支持命令、安全边界、健壮性行为与文件边界 | R:code:rust/crates/omnicrawl-connectors/src/telegram/mod.rs | A:- | S:用户 ID 白名单必填，缺失时任何 Telegram 用户都能操作 Agent；敏感工具确认与提问都有超时，超时按拒绝处理；TUI 启动时按配置自动拉起连接器子进程，同一平台与用户下只允许单个活动实例
+TERMINAL_UI.md[SZ8S]: F:说明终端工作台的视觉与交互约定：两行 HUD、透明背景、思考块与工具记录的呈现层次、窄屏换行规则 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/mod.rs | A:- | S:这份文档仍以 Textual/Python 为实现前提，当前实现是 ratatui/crossterm；背景透明与 ANSI 状态色属于约定，改实现时要保持同一视觉语义
+TOOL_CALLING.md[SZ8S]: F:说明工具调用协议：Provider 顶层注册全部工具、模型原生调用、Host 二次校验并回填，以及回合内去重与声明压缩 | R:code:rust/crates/omnicrawl-controllers/src/tool_declarations.rs | A:- | S:不再有 search_tools 元工具，工具从第一轮就对模型完全可见，因此描述与 Schema 必须在注册时压缩；同一回合按归一化工具名与参数去重，Provider 生成不同 call_id 不代表可以重复执行；超时视为执行状态未知，写入与命令调用不得立即重放
+TTS.md[SZ8S]: F:说明语音合成的三条云通道（OpenAI、Gemini、DeepSeek）配置、通用行为、自动朗读与 tts_synthesize 工具 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:tts_synthesize | S:语音合成已全部改为云服务，早期 Kokoro ONNX 本地模型路径不再存在；三条通道按 provider 三选一，其余通道字段被忽略
+advisor_design.md[SZ8S]: F:说明顾问策略的定位与数据流、行为红线、转发内容、结果信封、配置与命令、实现落点与已知边界 | R:code:rust/crates/omnicrawl-controllers/src/advisor.rs,code:rust/crates/omnicrawl-config/src/features/advisor.rs | A:advisor、/advisor | S:顾问输出只面向执行者而非最终用户，且只允许 plan、correction、stop 三类首行标记；顾问只读共享上下文，不改工作区，执行动作仍由上级 Agent 负责；本文与代码或测试不一致时以后者为准
+agent_gateway_desensitization_design.md[SZ8L]: F:说明出网消息脱敏的定位与范围、匹配引擎、可逆占位符协议、序号注册表生命周期、流式还原、失败策略与配置 | R:code:rust/crates/omnicrawl-llm/src/desensitization/engine.rs,code:rust/crates/omnicrawl-config/src/features/desensitization.rs | A:｛Desensitized:<标签>｝ 占位符 | S:占位符的全角花括号与标签必须原样复述，改写、合并或重编号都会让还原失败并把占位符原文落进代码与脚本；序号注册表按会话存续，还原依赖同一注册表；失败时按 fail_closed 配置决定放行还是中断
+decision_api.md[SZ8M]: F:说明决策接口的适用场景、启动与配置、回环无鉴权访问、decide、choice、rank、review 端点、常驻复用与安全边界 | R:code:rust/crates/omnicrawl-decision/src/routes.rs,code:rust/crates/omnicrawl-config/src/features/decision_model.rs | A:omnicrawl decision、/v1/decide、/v1/choice、/v1/rank、/v1/review | S:接口只绑回环且不校验令牌，任何本机进程都能调用，因此不得暴露到公网或容器外；它与对话模型互不相干，走 decision_models.toml 的渠道配置
+fetch_api.md[SZ8M]: F:说明抓取接口的适用场景、[fetch_api] 配置、无鉴权回环访问、/v1/fetch 端点与批量脚本调用方式 | R:code:rust/crates/omnicrawl-fetch/src/routes.rs,code:rust/crates/omnicrawl-host/src/tools/fetcher.rs | A:omnicrawl fetch、/v1/fetch | S:抓取接口与 fetcher 工具同源，语义与安全边界一致（含 robots.txt 判定与不绕验证码）；接口无鉴权且只绑回环，暴露出去等于给出任意抓取能力
+memory_system_design.md[SZ8L]: F:说明记忆系统的目标、三级作用域、单条记忆结构、存储与分类目录、接口、加深回忆、清理机制与会话压缩自动记忆 | R:code:rust/crates/omnicrawl-session/src/memory.rs | A:memory_search、memory_read、memory_write、memory_delete | S:三级作用域必须隔离，session 级不得读取跨会话事实；任何作用域都禁止保存凭据；清理按访问频次淘汰，高频记忆才沉淀下来；调用规则以系统提示词的记忆使用协议为准，本文只讲实现边界
+sandbox_linux_design.md[SZ8L]: F:给出 Linux 进程级轻量沙箱方案：Landlock 文件白名单、端口层网络控制与域名层代理判定、资源约束、配置形状与失败降级 | R:code:rust/crates/omnicrawl-host/src/sandbox/linux/policy.rs | A:- | S:文档头标着设计稿未实现，但 rust/crates/omnicrawl-host/src/sandbox/linux/ 已有落地代码，两者不一致时以代码与配置模板为准；Linux 侧靠内核 Landlock 而无镜像无 root，端口控制要内核 6.7+，UDP 端口要 6.12+；同 UID 的沙盒进程仍可向宿主发信号、可读 /proc
+sandbox_windows_design.md[SZ8L]: F:给出 Windows 沙盒方案：AppContainer 身份加 Job Object 限额、文件系统隔离、网络审批代理、工具语义变化与失败降级 | R:code:rust/crates/omnicrawl-host/src/sandbox/windows.rs | A:- | S:文档头标着设计稿未实现，而 Windows 真隔离已落地（见配置模板的沙盒段），两者不一致时以代码与配置模板为准；容器没有 internetClient，出网只能经宿主回环代理，且直接读 WinINET 代理设置的 .NET 客户端能绕开判定；AppContainer 打不开 /dev/null，因此 bash 与 git.exe 在沙盒内改用进程内实现
+session_design.md[SZ8L]: F:说明会话系统：目标架构、JSONL 转录、生命周期、事件模型、恢复与归档导出、长会话压缩、artifact 与数据安全边界 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:/sessions、/compact、/undo | S:文档第 3 节保留实施前基线只用于追溯，不代表当前缺口；转录行要按 Python 的 dict 插入序写，字典序会让两侧字节不一致；压缩后被压缩的工具调用原文独立落盘，摘要里只给路径
+tool_output_compression_design.md[SZ8S]: F:说明工具输出压缩的定位与数据流、行为红线、参与工具范围、净省计量与回放重建 | R:code:rust/crates/omnicrawl-controllers/src/compression.rs | A:- | S:默认关闭，enabled 为假或 model_key 为空时不构造压缩器也不发请求；只有 bash、powershell、git、grep 四个工具参与压缩，其余工具保留原文；压缩文本同时是模型可见文本与工具卡正文，原始输出不再附在后面
+trigger_api.md[SZ8L]: F:说明触发接口的适用场景、与 runs 接口的分工、[trigger_api] 配置、/v1/triggers 端点、注入格式、结果投递、错误码与安全边界 | R:code:rust/crates/omnicrawl-trigger/src/routes.rs,code:rust/crates/omnicrawl-config/src/features/trigger_api.rs | A:omnicrawl trigger、/v1/triggers | S:条件判定留给外部组件，接口只负责拉起独立 loop，不要在这里做阈值与迟滞；无人值守路径不能等人工审批，因此必须给工具白名单；重复提交同一事件需要幂等键
+
+===/<repository>/rust/assets/extensions/===
+onejev_worker.py[XG7M]: F:作为 OneJev 决策服务的 Python 工作进程，按请求加载模型并返回答案 | R:code:rust/crates/omnicrawl-decision/src/upstream.rs | A:- | S:进程与 Rust 侧经回环或命名管道通信，模型加载是重操作，不能按请求重建；凭据从环境读取，不写进脚本
+
+===/<repository>/rust/assets/templates/===
+advisor_system.md[FZ5T]: F:作为顾问模型的系统提示词，规定只输出 plan、correction、stop 三类首行标记与面向执行者的纯文本指导 | R:code:rust/assets/templates/system_prompt.md | A:plan、correction、stop | S:禁止调用工具、输出 JSON 或代码围栏，也禁止产生面向最终用户的展示文本；这些约束一旦放宽，上级 Agent 就无法解析顾问答复
+deepsearch.md[FZ8S]: F:作为深度搜索模式的提示词，规定六阶段检索流程、信源层级、完备性判定与交叉比对交付格式 | R:code:rust/assets/templates/system_prompt.md | A:- | S:六个阶段不得跳步或合并；每条关键事实都要能说出所属信源层级，否则视为未查清
+plan.md[FZ7S]: F:作为计划模式的提示词，规定只读探索边界、四阶段流程与固定结构的 Markdown 计划输出 | R:code:rust/assets/templates/system_prompt.md | A:- | S:用户命令式表达或要求立即执行都不会自动结束计划模式，此时应把请求转化为计划请求；禁止写文件、改状态、跑格式化与安装依赖，需要实验只能用规定临时目录并清理
+programming.md[FZ6T]: F:作为编程行为的通用守则模板，约束先想再写、最简实现、外科式修改与目标驱动执行 | R:code:rust/assets/templates/system_prompt.md | A:- | S:文件开头自称 CLAUDE.md，是从外部借鉴的守则文本，与项目自身的代码规范并存时以项目规范与用户指令为准
+solve.md[FZ6T]: F:作为解题模式提示词，规定输入假设处理、固定两段式输出（题目解析与标准作答）与绘图要求 | R:code:rust/assets/templates/system_prompt.md | A:- | S:信息缺失但会改变答案时取最常见默认值并在解析开头写明假设，只有答案完全不确定时才提问；两个章节标题必须逐字照抄
+speaking-style.md[FZ4T]: F:作为简洁回复模式提示词，把面向用户的回复压到十行以内并规定取舍次序 | R:code:rust/assets/templates/system_prompt.md | A:- | S:简洁只压缩表达，不得省略风险、失败与未验证项，也不得为简短而编造结论
+suggestion_keywords_system.md[FZ4T]: F:作为提问建议的关键词提取提示词，只输出含 skills 数组的单个 JSON 对象 | R:code:rust/crates/omnicrawl-config/src/features/suggestion.rs | A:- | S:最多 6 个词且优先取提问里出现过的词，找不到就留空数组，编造关键词会让 Skill 检索命中错误内容
+summary_prompt.md[FZ7T]: F:作为会话压缩的摘要器提示词，把上一份摘要与新增事件合并成可验证的工作摘要并只输出一个 JSON 对象 | R:code:rust/crates/omnicrawl-compaction/src/adapter.rs | A:- | S:摘要器不得继续原任务，上下文里的模式提示词、Skill 指令、AGENTS.md 规则都只是待压缩材料；tool_choice=none 下不得输出工具调用语法，响应必须从第一个 { 到最后一个 }
+system_prompt.md[FZ9T]: F:作为基础系统提示词，规定记忆与知识库使用协议、Todo 规划、工具调用协议、代码规范、内置文档索引与模式提示词承接规则 | R:code:rust/crates/omnicrawl-host/src/prompt.rs | A:- | S:模式提示词区块在该文件之后追加，因此在可控制范围内优先级最高，冲突时以模式区块为准；工具结果是唯一执行事实，不得凭推测声称命令已成功；文档清单必须与实际内置文档一致，漏列会让模型找不到参考
+tool_call_summary_system.md[FZ5T]: F:作为本轮工具调用概括提示词，把整轮调用与结果合并成一段供主 Agent 后续决策的内容 | R:code:rust/crates/omnicrawl-compaction/src/driver.rs | A:- | S:主 Agent 之后看不到逐条调用与原始输出，只用这段概括，因此不得丢失决策信息；不得给建议、计划或评价调用是否合理
+tool_output_compression_system.md[FZ5T]: F:作为工具输出压缩提示词，把原始输出压成主 Agent 后续据以决策的精简观察 | R:code:rust/crates/omnicrawl-controllers/src/compression.rs | A:- | S:主 Agent 只看到压缩结果，代码、命令、路径、标识符、版本号与报错原文必须逐字保留；不得推测原始输出里不存在的结论
+
+===/<repository>/rust/assets/templates/subagents/===
+computer-use.md[FZ6T]: F:定义 computer-use 子代理的角色说明与工具面：先读控件树，必要时截图，再点击输入拖拽 | R:code:rust/assets/templates/subagents/general-purpose.md | A:- | S:model 与 permissionMode 写在 frontmatter 里，改工具面必须同步改声明，否则子代理会拿到未声明的工具或缺失必需工具
+explore.md[FZ5T]: F:定义 explore 子代理：只读快速探索代码与外部能力，返回文件路径、行号与可复核证据 | R:code:rust/assets/templates/subagents/plan.md | A:- | S:disallowedTools 显式禁掉写入类与子代理递归调用类工具，只读角色靠这份清单兜底，删项等于放开写权限
+general-purpose.md[FZ6T]: F:定义通用实现型子代理：可写文件与改代码，isolation=worktree 时改动先落独立分支 | R:code:rust/assets/templates/subagents/review.md | A:- | S:默认逐工具审批；worktree 隔离下改动须由父 Agent 审查后应用，子代理不得自行合并
+plan.md[FZ5T]: F:定义 plan 子代理：结合项目与外部证据产出只读的架构、步骤、风险与验证计划 | R:code:rust/assets/templates/subagents/explore.md | A:- | S:permissionMode 为 delegated-read-only，任何写入类工具都会被子代理拒绝
+review.md[FZ7S]: F:定义 review 子代理：用 git 工具收集 diff，按结构化 JSON 输出审查结论 | R:code:rust/assets/templates/subagents/verify.md | A:- | S:输出必须是结构化 JSON，宿主按字段解析审查结论，自由文本会让审查结果无法回填
+verify.md[FZ5T]: F:定义 verify 子代理：运行受控的本地测试、编译与差异检查并返回可复现结论 | R:code:rust/assets/templates/subagents/review.md | A:verify_command | S:只能用 verify_command 执行受控命令，没有 bash 与 powershell，避免绕过命令审查
+
+===/<repository>/rust/crates/omnicrawl-api/===
+Cargo.toml[FV7T]: F:声明本地 API crate 的库与二进制目标及其依赖，HTTP 栈用 axum 加 tokio | R:code:rust/Cargo.toml | A:- | S:这里引入 async 运行时与工作区「内核不引异步运行时」并不冲突：客户端只需一次请求响应，服务端要同时扛住多条 SSE 长连接；ureq 已是既有 HTTP 客户端栈，不得再引入第二个
+README.md[SZ7S]: F:交代 API crate 的移植范围、分工划分、凭据交付方式与跨进程状态存储的实现差异 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:- | S:Python 侧跨进程状态用 SQLite，Rust 侧改成单文件 JSON 快照加跨进程文件锁，语义需逐条对齐；起内核时把解析出的 api_key 明文随帧放进 model 块，内核不再读环境变量
+
+===/<repository>/rust/crates/omnicrawl-api/src/===
+app.rs[IN8M]: F:装配 HTTP 应用：公共路由、Bearer 鉴权中间件、CORS 与框架级错误响应，并把资源路由统一挂在鉴权层之下 | R:code:rust/crates/omnicrawl-api/src/error.rs,code:rust/crates/omnicrawl-api/src/service.rs | A:build_router、build_app、api_routes、merge_guarded、serve、token_matches | S:服务未就绪时 /api/v1 下的资源路由回 503 而不是 404，远程端据此区分「宿主还在起内核」与「接口不存在」；未配置来源白名单时不装 CORS；鉴权比较必须是常量时间
+config.rs[FC7M]: F:装载并校验 API 配置：令牌、监听地址、CORS 来源与确认超时，环境变量优先于 config.toml 的 api 段 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:load_api_config、api_config_from_section、ApiConfig | S:令牌为空、监听地址不是回环或 CORS 来源含 * 时拒绝启动，而不是降级放行；校验顺序与文案逐字对齐 Python 侧
+connector.rs[IN8L]: F:在宿主进程内承载消息平台连接器，把连接器的 AgentDriver 面接到同一个 AgentService 上，复用宿主真实工具表、会话存储与命令注册表 | R:code:rust/crates/omnicrawl-api/src/service.rs,code:rust/crates/omnicrawl-connectors/src/agent.rs | A:run、run_with_args、HostConnectorDriver | S:内核自带的 --connector 只自持 update_todos、ask_user、pause_work 三个工具且会话不落盘，那条路径只能对话，无法访问项目仓库；后台定时任务发起的隔离回合使用不含 ask_user 等待的专用提示词，因为它前面没有人
+error.rs[IN7S]: F:定义 API 错误类型与统一响应信封：data 包装成功结果，ApiError 产出 code、message、details 并映射状态码 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:ApiError、data、framework_detail | S:信封形状是与 Python 客户端的契约，改字段名会打断所有既有调用方；框架级 404 与 405 也沿用同一形状，不能回裸文本
+lib.rs[IN7T]: F:作为 API crate 的模块根，声明 HTTP 面各模块并重导出对外类型 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:- | S:recursion_limit 抬到 512 是因为 OpenAPI 的 schemas 用一个 json! 描述全部请求体，默认 128 的宏展开深度不够
+main.rs[IN8S]: F:启动本地 API 服务进程：先分流沙盒 launcher 与连接器模式，再装载配置、按 worker 数选运行后端、起内核子进程握手后对外提供服务 | R:code:rust/crates/omnicrawl-api/src/config.rs,code:rust/crates/omnicrawl-api/src/service.rs | A:omnicrawl-api、api.workers | S:沙盒 launcher 与连接器必须在装载 API 配置之前分流，否则会被令牌与监听地址校验拦下；api.workers 大于 1 时切换到跨进程共享存储并启用 SO_REUSEPORT；退出前必须回收内核子进程
+model_discovery.rs[IN7T]: F:提供模型目录的两个网络端口：一次 Profile 的模型列表发现与一次 /models 端点拉取 | R:code:rust/crates/omnicrawl-config/src/models/model_catalog.rs | A:discover_profile、fetch_model_list | S:这里只做网络，目录聚合与失败文案留在 config 侧，避免第二套实现；HTTP 状态不转错误，上游 4xx 与 5xx 的正文要留给诊断，失败分类由本模块给出
+mqtt.rs[IN8L]: F:装配 MQTT 自动化回路：按 planner 选择 agent 或 decision 规划路径，接审计后交给连接器主循环 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/mod.rs,code:rust/crates/omnicrawl-host/src/review.rs | A:run、[mqtt] planner、[mqtt] tools | S:agent 路径审批固定为自动审查且工具表收窄到 [mqtt] tools，白名单同时兑现「有工具可用」与「不被传感器报文牵着乱跑」；两条路径都必须过同一份 validate_plan，动作必须在动作表内、参数按 min 与 max 夹取；决策请求有 60 秒上限
+openapi.rs[IN7L]: F:手工构造 OpenAPI 3.1 文档与 Swagger UI 页面，逐条对照路由清单的路径、方法、标签、参数与请求体模型 | R:code:rust/crates/omnicrawl-api/src/routes/mod.rs | A:/openapi.json、/docs | S:两个端点都在鉴权层之外；这里没有反射，改路由时必须手工同步本文档，否则文档与实现静默漂移；对象显式构造而不是靠 json! 解析嵌套表达式
+qqbind.rs[IN7S]: F:实现 connector qqbot --bind：打印二维码扫码接收凭据，并把 AppID、AppSecret 与白名单写进 config.toml 的 [qqbot] 段 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/bind.rs | A:run_bind、write_credentials | S:写配置时必须保留其它段；凭据以 AES-256-GCM 加密下发且密钥只在本地；白名单留空即公开访问模式，首次绑定会把扫码者自己的 openid 写进白名单
+runs.rs[IN8L]: F:实现单进程语义下的运行记录与事件流存储：状态机、事件递增 ID 与保留窗口、游标校验、审批与提问的待决与终态规则 | R:code:rust/crates/omnicrawl-api/src/shared_store.rs | A:RunStore、RunRecord、RunEvent、RunStatus、RunStoreError | S:活动运行不因保留上限被回收，否则进行中的任务会从列表里消失；终态运行的审批与提问必须一次性置为终态，重复决议报冲突、未知 ID 报缺失；事件 SSE 分帧形状是与客户端的契约
+service.rs[IN8L]: F:编排 Agent 服务：单活动运行的宿主驱动、起内核子进程与握手、审批与提问的阻塞等待、内核通知到 SSE 事件的翻译，以及进程级选项装配 | R:code:rust/crates/omnicrawl-api/src/runs.rs,code:rust/crates/omnicrawl-api/src/service/runs.rs | A:AgentService、ServiceOptions、options_from_process、resolve_kernel_program | S:宿主没有常驻 Agent，会话与项目按需现开现读，文件即事实来源；起内核与运行期重起内核时把 api_key 明文随帧放进 model 块，内核不再读环境变量；服务未就绪时对外回 503 而不是宣称可用
+shared_store.rs[IN8L]: F:实现多 worker 下的跨进程运行状态存储：单文件 JSON 快照加跨进程文件锁，覆盖运行、事件、人工决策、子代理事件与任务来源分区 | R:code:rust/crates/omnicrawl-api/src/runs.rs,code:rust/crates/omnicrawl-session/src/locking.rs | A:SharedRunStore、shared_run_store_filename、Decision | S:每次操作都在锁内完成读改写与原子写回，等价于 SQLite 事务，绕过锁就会出现丢失更新；淘汰运行记录时必须连带清理它的 events、decisions、confirmations、questions 与 task_sources；孤儿运行的 owner PID 已死时要能被回收，否则会永久占住单活动位
+
+===/<repository>/rust/crates/omnicrawl-api/src/routes/===
+configuration.rs[IN8M]: F:提供模型、推理强度与审批模式的读写路由，先落盘再经 session.settings 下发内核 | R:code:rust/crates/omnicrawl-api/src/service.rs | A:GET /models、GET /models/catalog、POST /models/refresh、PUT /model、/reasoning、/approval | S:落盘失败时内核保持旧配置，不出现「磁盘没改但运行期已改」；内核主循环跑回合时被占用，因此回合在途时这些端点回 409 RUN_ACTIVE 而不是排队等待
+mod.rs[IN7T]: F:汇总按资源分组的资源路由模块并统一挂在鉴权层之下 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:- | S:新增资源模块必须同时加进这里与 openapi.rs 的路由清单，漏一处就表现为接口存在但文档缺失或文档存在但 404
+monitors.rs[IN7S]: F:提供后台 Monitor 任务的只读查询与事件流路由 | R:code:rust/crates/omnicrawl-host/src/tools/monitor.rs | A:GET /monitors、/monitors/{id}、/monitors/{id}/events | S:启动与停止后台任务只能走 Agent 的 monitor 工具，HTTP 面刻意不提供；任务由宿主 MonitorManager 持有并与工具表共享同一实例
+projects.rs[IN7S]: F:提供项目列表、概览、创建、导入、重命名、固定、删除与工作区切换路由 | R:code:rust/crates/omnicrawl-api/src/routes/query.rs | A:GET 与 POST /projects、PATCH /projects、DELETE /projects、POST /projects/switch | S:请求体限长按 Pydantic 口径（name 1 到 200、path 0 到 32768），放宽会让越界值进到会话存储；切换工作区要动内核工作区，与只读路由不是同一失败面
+query.rs[IN7S]: F:搬移 FastAPI 与 Pydantic 的取值校验形状：布尔、带界整数、限长字符串，失败回 VALIDATION_ERROR 并带 loc | R:code:rust/crates/omnicrawl-api/src/error.rs | A:last_event_id、query_bool、query_int、body_text、body_int | S:查询参数与请求体的 loc 前缀与 type 取值不同（query 与 body），混用会让客户端按字段定位失效；Last-Event-ID 空头按未提供、负数按 0 处理
+runs.rs[IN8M]: F:提供生成任务的创建、查询、事件流、取消与人工确认和提问答复路由，事件流走 SSE 并按游标续传 | R:code:rust/crates/omnicrawl-api/src/runs.rs,code:rust/crates/omnicrawl-api/src/service.rs | A:POST /runs、GET /runs/{id}、/runs/{id}/events、POST /runs/{id}/cancel、confirmations、questions | S:只能有一个活动运行，第二个提交必须被拒；取消要把待决确认与提问一并置为终态，否则 SSE 订阅方会永久等一个不会来的答复
+sessions.rs[IN8M]: F:提供会话的文件面路由：列表、诊断、事件读取、重命名、删除、导出与 artifact 读取 | R:code:rust/crates/omnicrawl-api/src/service/sessions.rs | A:GET /sessions、/sessions/{id}/events、/diagnostics、PATCH /sessions/{id}、POST /sessions/{id}/export | S:要动内核上下文的三条（新建、恢复、压缩归档当前会话）不在这里；标题上限 200 字符；artifact 读取只允许会话目录内的路径
+settings.rs[IN8L]: F:提供 GET /settings 全量只读与 PUT /settings/<域> 增量写，按域接收白名单字段 | R:code:rust/crates/omnicrawl-api/src/service/settings.rs | A:GET /settings、PUT /settings/system、/model、/tools、/skills、/mcp | S:敏感字段（api_key 与各类令牌）不回传明文也不接受明文写入，只回 has_* 标记；未传字段保持当前值；先构造并校验新配置再原子落盘，落盘失败时磁盘不会被改坏
+subagents.rs[IN7S]: F:提供当前会话后台 SubAgent 任务的查询、取消与事件流控制面路由 | R:code:rust/crates/omnicrawl-ipc/src/bridge.rs | A:GET /subagents、/subagents/{id}、POST /subagents/{id}/cancel、/subagents/events | S:控制面不提供创建任务的能力，远程客户端不能经 HTTP 创建或重新分发任务，任务范围始终是当前会话；任务本体归内核 SubAgentTaskManager，宿主只经协议转发
+support.rs[IN7T]: F:提供历史、Skill、MCP 状态与记忆清理的支持路由 | R:code:rust/crates/omnicrawl-api/src/routes/query.rs | A:GET /history、/skills、/mcp、POST /memory/clean | S:历史查询走分页与游标，无界拉全会把整个转录塞进一次响应
+system.rs[IN7T]: F:提供运行期快照路由，返回当前模型、审批模式、推理强度等运行状态 | R:code:rust/crates/omnicrawl-api/src/service/settings.rs | A:GET /runtime | S:-
+
+===/<repository>/rust/crates/omnicrawl-api/src/service/===
+catalog.rs[IN8M]: F:承载项目、模型目录、模式激活与提示词追加等服务入口，模式切换后重算 system prompt 与上下文消息再下发内核 | R:code:rust/crates/omnicrawl-api/src/service.rs,code:rust/crates/omnicrawl-host/src/prompt.rs | A:activate_mode、deactivate_mode、set_prompt_append、compact_current_session、model_catalog、create_project | S:模式提示词由宿主装配，切换模式必须与握手走同一份装配，否则内核与宿主看到不同的系统提示词
+mcp.rs[IN8M]: F:承载 MCP 子系统的启用判定、状态查询、配置热重载与工具开关重载 | R:code:rust/crates/omnicrawl-mcp/client.rs | A:mcp_enabled、mcp_status、reload_mcp、reload_tool_switches | S:管理器缺失按未启用处理而不是报错；热重载换上的管理器必须同时挂回工具表，否则状态显示已连但工具仍不可用
+monitors.rs[IN7S]: F:承载 SubAgent 任务与后台 Monitor 的查询、事件轮询与等待，并冻结当前 API 可见的会话 | R:code:rust/crates/omnicrawl-api/src/shared_store.rs | A:current_subagent_session_id、list_subagent_tasks、list_monitors、wait_for_monitor_events | S:多 worker 下不能取本进程内核的会话，否则 SSE 会订到错误的 Session；没有跑过 Run 的 worker 才退回本进程会话
+runs.rs[IN8L]: F:受理生成任务并驱动回合：登记运行、起回合线程、取消、审批与提问决议，以及回合外的事件泵 | R:code:rust/crates/omnicrawl-api/src/runs.rs,code:rust/crates/omnicrawl-api/src/service.rs | A:start_run、cancel_run、decide_confirmation、decide_question、start_event_pump | S:空消息必须直接拒；回合线程与事件泵是两个来源，事件顺序要经存储统一编号才可续传；取消后待决项必须一并收口
+sessions.rs[IN8M]: F:承载会话存储访问与会话生命周期：列表、事件、诊断、重命名、删除、导出、artifact 读取、切换、归档与撤销 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:list_sessions、switch_session、archive_current_session、undo_current_session、export_current_session_markdown | S:会话系统未启用时相关端点回 503 而不是空列表；切换会话要重起内核并重建历史，不能只改宿主侧指针；artifact 读取限制在会话目录内
+settings.rs[IN8M]: F:承载运行期设置的读与热应用：当前模型、审批模式、推理强度、运行快照、顾问配置与审查配置 | R:code:rust/crates/omnicrawl-config/src/features/approval.rs | A:current_model、runtime_snapshot、apply_model_switch、apply_reasoning_effort、set_runtime_approval_mode、apply_advisor_config | S:外部改 config.toml 后由轮询热应用，读取失败要保留现有运行期并等下次重试，一次瞬时读失败不能把审查降级；运行期与磁盘配置必须同源
+tests.rs[IN7S]: F:覆盖服务装配与解析的单元用例，用隔离的临时主目录模拟读不到用户配置的环境 | R:code:rust/crates/omnicrawl-api/src/service.rs | A:- | S:用例必须隔离家目录，否则会读到真实 config.toml 而结果随开发机变化
+
+===/<repository>/rust/crates/omnicrawl-brush/===
+Cargo.toml[XV7T]: F:声明沙盒内 bash 执行体 crate 的二进制目标与 brush-shell 依赖 | R:code:rust/Cargo.toml | A:- | S:必须打开 experimental-bundled-coreutils，沙盒内 PATH 上没有 GNU 工具，不内建 cat、ls、grep 等命令时多数脚本第一行就失败
+
+===/<repository>/rust/crates/omnicrawl-brush/src/===
+main.rs[XV5T]: F:作为沙盒内 bash 的执行入口，直接交给 brush-shell 运行 | R:code:rust/crates/omnicrawl-brush/Cargo.toml | A:- | S:绝不能改成在宿主进程内解释脚本，那会让脚本里每条命令都以宿主权限执行，等于没有沙盒；参数形状与 Git Bash 保持一致（-o pipefail -lc 脚本），因此调用方只需切换可执行文件
+
+===/<repository>/rust/crates/omnicrawl-cli/===
+Cargo.toml[EV7T]: F:声明内核二进制 omnicrawl 的目标与依赖 | R:code:rust/Cargo.toml | A:- | S:二进制名必须是 omnicrawl：宿主与启动器按同目录同名查找内核，改名会让宿主找不到内核
+README.md[SZ8M]: F:交代内核进程的职责与协议端口、会话与压缩行为、工具名线上形态、并发与流式通知、输出预算、审批审计、撤销、设置热更新与错误映射 | R:code:rust/crates/omnicrawl-cli/src/session.rs | A:- | S:失败与取消也要补写终态事件并写回运行期历史，否则用户报错后重发会丢掉上一轮任务；重试只针对非取消的请求失败，上下文超限走压缩恢复路径而不是重试；子代理的工具调用不进父会话
+
+===/<repository>/rust/crates/omnicrawl-cli/src/===
+approval_audit.rs[EV7S]: F:把宿主拒绝的工具调用补写成会话里的 tool_call_denied 事件，参数经公开投影后落盘 | R:code:rust/crates/omnicrawl-controllers/src/approval.rs | A:record_denied_calls | S:落盘参数必须先经 public_tool_arguments 投影，会话转录里不能出现 shell 全文或密钥原文；写盘失败只少记一条审计，不阻断工具批次
+compaction.rs[EV8L]: F:承载内核侧会话状态与压缩接线：压缩配置装配、回合后触发、手动压缩、上下文超限恢复与摘要证据召回 | R:code:rust/crates/omnicrawl-compaction/src/driver.rs,code:rust/crates/omnicrawl-controllers/src/context_compaction/service.rs | A:KernelSession、compact_after_turn、compact_now、recover_after_overflow、recall_session_evidence | S:摘要提示词在编译期嵌入二进制，不能依赖运行时目录；被压缩窗口的原始事件要归档到 archive/compacted/ 才能被证据召回读取；超限恢复失败时必须把原错误返回宿主，不能吞掉
+compression.rs[EV8M]: F:在回合运行中按批触发工具输出压缩旁路，模型连接沿用内核那条、只换 model 名 | R:code:rust/crates/omnicrawl-controllers/src/compression.rs | A:KernelCompressor | S:旁路请求不写会话、用量不计入主对话统计；触发点是下一批开始前对刚变老的那一批，而不是回合结束统一压
+computer_use.rs[EV8L]: F:内核自持 computer_use 工具：加载专职子代理定义、限定子工具声明、解析子代理回报并收集截图 | R:code:rust/crates/omnicrawl-controllers/src/subagents/definitions.rs | A:acquire_desktop、ComputerUseRuntime、parse_child_report、collect_screenshots | S:桌面是独占资源，并发恒为 1，靠全局锁串行化；不设步数上限而由超时收敛；专职子代理不进 subagent 的角色枚举，模型只能经本工具驱动；内部批次免审，因此工具面必须收窄到声明清单
+connector.rs[EV8L]: F:内核自带的连接器宿主：在进程内驱动 Telegram、飞书与 QQ 接入，实现 AgentDriver 并处理工具请求 | R:code:rust/crates/omnicrawl-connectors/src/agent.rs | A:run、run_telegram、run_feishu、run_qqbot | S:本模式不向模型宣告工具，工具实现在宿主侧，模型若仍请求工具要回「本模式不可用」的观察而不是静默丢弃；这条路只用于没有宿主载荷的平台，其余平台应由宿主承载
+main.rs[EV6T]: F:内核进程入口：处理 --connector、--version、--help，其余情况进入 stdio 协议会话 | R:code:rust/crates/omnicrawl-cli/src/session.rs | A:--connector、--version、--help | S:连接器模式必须在协议会话之前分流，它不读写 stdio 协议帧
+output_budget.rs[EV7S]: F:按单工具阈值与批次聚合预算裁剪模型可见输出，超限内容落进会话 artifact 只留头尾预览与路径 | R:code:rust/crates/omnicrawl-controllers/src/output.rs | A:apply_batch_output_budget | S:会话不在内核时不落盘、只替换成预览，与「会话系统未启用时降级为纯预览提示」一致；预览必须给出落盘路径，否则模型无从读取全文
+session.rs[EV8M]: F:在一条 NDJSON 流上承载协议 v1：握手、回合提交、取消与关闭、两个宿主端口外发 | R:code:rust/crates/omnicrawl-cli/src/session/model_port.rs,code:rust/crates/omnicrawl-ipc/src/frame.rs | A:run_stdio | S:一个回合只跑一个，第二个 turn.submit 回 -32002；回合进行中的 turn.cancel 与 shutdown 要立即中止当前端口调用，其余请求照常应答；未握手前除 initialize 外的请求回 -32600，主版本不匹配回 -32001
+settings.rs[EV8L]: F:校验并应用 session.settings：只对内核持有的模型配置与会话压缩配置生效，任一字段被拒时整体不写入 | R:code:rust/crates/omnicrawl-cli/src/compaction.rs | A:apply、SettingsRejection、applied_result | S:设置只对后续回合生效，正在跑的回合在开始时已快照模型配置与工具声明；拒绝原因写进错误响应的 data.kind，宿主据此区分「下次会话生效」与重试
+subagent.rs[EV8M]: F:装配内核自持的子代理工具族：任务准备与校验、角色定义发现、工具白名单选择与结果投影 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:PreparedTask、SubAgentRuntime | S:命中即由内核作答而不占宿主批次，但子模型请求与子工具批次仍经协议外发；子工具批次的 turn_id 用子任务号，宿主才能把审批与生命周期与父回合分开
+tool_events.rs[EV8M]: F:落盘内核侧工具事件：请求前写 tool_call_requested、整批处理完成后写 tool_result | R:code:rust/crates/omnicrawl-controllers/src/tool_args.rs | A:record_requested_calls、record_results | S:落盘参数必须走公开投影，转录里不能出现 shell 全文与密钥原文；tool_result 必须在输出预算、视觉与压缩都处理过之后写，否则回放看到的是未经处理的长文本；后台子任务批次不落这些事件
+turn_summary.rs[EV7T]: F:把刚变老的那批工具调用概括成一段文本，替换上下文里的逐条请求与结果并把原文落盘 | R:code:rust/crates/omnicrawl-cli/src/compression.rs | A:summarize_batch、TurnSummaryOutcome | S:压缩点必须贴着上下文尾部（下一批执行之前），最新一批永不参与；概括失败一律回退原文且不写事件，避免留下覆盖不全的概括
+undo.rs[EV8M]: F:实现 /undo 的宿主侧：把回退判定面接到 git 子进程、快照存储与会话存储 | R:code:rust/crates/omnicrawl-controllers/src/undo.rs,code:rust/crates/omnicrawl-session/src/store.rs | A:KernelSnapshotStore、TurnUndo、undo_last_turn | S:判定与文案在 controllers，这里只补 git 子进程、会话存储与锁，两边不能各写一套快照语义；快照应用前必须做安全预检，工作区脏时不得强行回退
+vision_proxy.rs[EV8M]: F:实现独立视觉模型代理：把带图观察交给 [vision].models 里的模型取回文本分析，按配置顺序逐候选降级 | R:code:rust/crates/omnicrawl-config/src/models/vision.rs | A:has_vision_observation、KernelVisionProxy | S:请求是旁路调用：不流式、不写会话、无工具与系统提示，reasoning_effort 固定为 none；前一个候选失败才换下一个，全部失败要回明确的视觉失败错误而不是空分析
+worktree.rs[EV8L]: F:管理子代理 git worktree 隔离的生命周期：创建、收集产物、统计变更、应用到主树与清理，并落盘会话元数据 | R:code:rust/crates/omnicrawl-controllers/src/subagents/worktrees.rs | A:create_session、collect_artifacts、summarize_changes、apply_to_main | S:刻意不做复用，目录已存在时直接报错让父 Agent 看到残留；元数据里的 cleanup_on_exit=auto 让残留进入宿主启动清扫范围，满一个月无新提交才回收；主树脏时必须拦下
+
+===/<repository>/rust/crates/omnicrawl-cli/src/session/===
+model_port.rs[EV8L]: F:一个回合内的模型用量累计、最近一次请求消息、上下文超限标记，以及模型端口与协议端口的对接 | R:code:rust/crates/omnicrawl-cli/src/session.rs | A:TurnUsage | S:上下文超限必须与普通失败区分开：命中即走压缩恢复再重试同一回合，普通失败才走退避重试；用量要区分输入、输出与缓存命中三路，否则压缩阈值判定会偏
+protocol.rs[EV8M]: F:解析入站 NDJSON 帧并分发协议 v1 方法：会话查询与生命周期、子代理运行、工作区切换与回合调用，读取端关闭时结束进程 | R:code:rust/crates/omnicrawl-cli/src/session/turn.rs,code:rust/crates/omnicrawl-cli/src/session/session_query.rs | A:run_stdio、Inbound | S:帧必须装箱走通道，直接内联会让每次投递搬几百字节并撑大枚举尺寸；读取端关闭要与协议错误区分开，前者是正常退出
+session_query.rs[EV8L]: F:实现会话查询与生命周期方法：事件窗口投影、手动压缩与撤销、重命名、归档、删除、新建与恢复 | R:code:rust/crates/omnicrawl-session/src/store.rs,code:rust/crates/omnicrawl-cli/src/session/turn.rs | A:respond_compact、respond_undo、respond_session_query、respond_session_archive、respond_session_new | S:事件窗口按字节预算截取并优先保留清单类事件，否则大会话的投影会撑爆宿主；内核不持有会话时相关方法必须回 no_session 错误而不是空结果；撤销要经宿主 git 与快照，不能只删事件
+subagent_run.rs[EV7S]: F:实现 subagent.run：派生单个子 Agent 并等它跑完，把子 Agent 的收尾文本原样交给宿主 | R:code:rust/crates/omnicrawl-cli/src/session/tools/subagent_tools.rs | A:respond_subagent_run | S:与 subagent_run 工具同一条执行路径（定义发现、工具白名单、worktree 隔离一致），差别只在结果不做公开摘要；/review 要自己解析子 Agent 的 JSON 报告，改写这段文本会破坏解析
+tools.rs[EV8L]: F:实现工具端口：把整批工具调用交给宿主执行并按调用顺序取回观察，同时处理子代理工具的分流 | R:code:rust/crates/omnicrawl-cli/src/session/protocol.rs,code:rust/crates/omnicrawl-controllers/src/tool_args.rs | A:RemoteTools | S:观察必须按调用顺序回填，乱序会让模型的并行调用与结果错配；子代理类工具由内核自持，不能整批外发给宿主
+turn.rs[EV6T]: F:作为回合模块根，汇总连接状态、模型端口、工具端口与收尾逻辑的子模块 | R:code:rust/crates/omnicrawl-cli/src/session/turn/turn_run.rs | A:- | S:-
+
+===/<repository>/rust/crates/omnicrawl-cli/src/session/tools/===
+background.rs[EV8L]: F:实现子代理的子回合：模型请求直连而工具批次就地借连接执行，按取消令牌收敛并回报进度事件 | R:code:rust/crates/omnicrawl-cli/src/session/tools/subagent_tools.rs | A:run_background_task | S:子回合的工具批次借用父连接，因此不能重入父回合的端口调用；取消令牌必须贯穿整段子回合，否则父回合取消后子代理仍在跑
+subagent_tools.rs[EV8L]: F:实现内核自持的子代理类工具与 computer_use 的执行体，并在隔离工作树里跑任务、汇总失败码 | R:code:rust/crates/omnicrawl-cli/src/session/tools/background.rs,code:rust/crates/omnicrawl-cli/src/worktree.rs | A:run_computer_use、emit_subagent_event、next_subagent_batch_id、run_task_in_isolation | S:computer_use 全程持桌面锁且由超时收敛，子代理可主动停下并以 Ok 结束；隔离工作树跑完后改动只能经父 Agent 审查后应用
+
+===/<repository>/rust/crates/omnicrawl-cli/src/session/turn/===
+conn.rs[EV8L]: F:维护一次会话的连接状态，并估算压缩后的上下文 Token（稳定上下文加运行期历史） | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/meter.rs | A:post_compaction_context_tokens | S:Token 估算必须与压缩驱动共用同一份实现，否则宿主显示的压缩后大小与实际进入下一次请求的内容不一致；图片按句柄计价不能把 Base64 算进来；取不到模型配置时返回 None 而不是偏小的数
+settle.rs[EV8L]: F:维护回合内的续跑痕迹（待续文本、逐次续跑事件与终态）并在收尾时按固定顺序写进会话转录 | R:code:rust/crates/omnicrawl-cli/src/session/turn/turn_run.rs | A:TurnRunGuard | S:收尾事件顺序是回放契约（user_message、run_guard_continue、run_guard_paused 或 assistant_message、run_guard_continue_exhausted），换序会让历史页把续跑误显示成多轮用户输入
+turn_run.rs[EV8L]: F:驱动一次完整回合：读取续跑配置与清单、补齐历史、拼接多段回复与推理，并按守卫规则决定是否自动续跑 | R:code:rust/crates/omnicrawl-cli/src/session/turn/settle.rs,code:rust/crates/omnicrawl-config/src/features/run_guard.rs | A:load_continue_config | S:总开关或续跑开关关闭、配置读不出来都返回 None，调用点因此无需区分「没配置」与「关掉了」；历史末尾的占位消息要被清理，否则续跑会在空用户消息上启动
+
+===/<repository>/rust/crates/omnicrawl-commands/===
+Cargo.toml[FV7T]: F:声明斜杠命令 crate 的依赖：配置、控制器、扩展与会话 | R:code:rust/Cargo.toml | A:- | S:依赖方向必须是单向的，本 crate 不得反向依赖宿主 crate，否则宿主与命令层会互相引用
+README.md[SZ7T]: F:交代命令框架的模块划分、与 Python 侧的两处必要差异（能力经 trait 注入、延迟执行把宿主当参数）与宿主接线现状 | R:code:rust/crates/omnicrawl-commands/src/framework.rs | A:- | S:宿主缺某项能力必须显式报错而不是静默降级，只有 Python 本身写了兜底的分支才给默认实现；/undo、/compact、/review 三条慢命令不进注册表，由宿主在分发前拦下，同步等会死锁
+
+===/<repository>/rust/crates/omnicrawl-commands/src/===
+agent.rs[FV8L]: F:定义命令处理器依赖的宿主能力面 CommandAgent 与命令用到的值类型，并约定返回值与 Python 同形 | R:code:rust/crates/omnicrawl-commands/src/framework.rs,code:rust/crates/omnicrawl-session/src/index.rs | A:CommandAgent、SessionSummary、SubAgentRun、GitOutput、SubagentEventCallback | S:宿主没有这项能力时必须显式返回 AgentError 并沿用 Python 文案，不允许静默成功；返回值直接复用会话与控制器已有类型，命令层不得再造数据契约
+framework.rs[FV8L]: F:实现声明式命令框架：解析、注册与别名冲突检测、分发、列表与帮助派生 | R:code:rust/crates/omnicrawl-commands/src/agent.rs | A:CommandRegistry、Command、ParsedCommand、CommandResult、CommandContext、CommandType、Channel | S:注册期就要检测重名与别名冲突，否则运行期会出现命令被后注册者静默覆盖；帮助、补全与可执行命令必须由同一份声明派生，不能各自硬编码；未命中返回 unhandled 由调用方决定是否按普通对话处理
+lib.rs[FV6T]: F:作为命令 crate 的模块根，声明框架、能力面与内置命令模块并重导出对外类型 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:- | S:AgentError 从控制器重导出，命令层与宿主实现共用同一个错误类型，避免两套错误文案
+slash.rs[FV8L]: F:声明内置斜杠命令与处理器：帮助、模型、审批、推理强度、会话、记忆、Skill、MCP、沙盒、工作区与退出等 | R:code:rust/crates/omnicrawl-commands/src/slash/registry.rs,code:rust/crates/omnicrawl-commands/src/framework.rs | A:registry、build_registry | S:远端入口的安全边界要逐条保留（/approval:auto、/quit、/settings 对远程通道的拒绝），放宽等于让远端用户改本机策略；处理器的宿主副作用一律走 CommandAgent
+
+===/<repository>/rust/crates/omnicrawl-commands/src/slash/===
+agent_commands.rs[FV8L]: F:实现审批、推理强度、模型、顾问、模式、说话风格、Skill 与记忆、MCP、新建与退出、设置类命令 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:handle_approval_query_command、apply_approval_mode、handle_reasoning_command | S:/think on 恢复到的档位必须与设置面板缺省档位一致，两处硬编码不同会让用户在命令与面板间看到不同值；审批模式切换既要写盘又要更新运行期
+registry.rs[FV8M]: F:声明内置命令表并提供进程内唯一注册表的懒加载与构建校验 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:registry、build_registry | S:注册表是全仓库唯一命令事实来源，新增命令只在这里声明一次；构建失败必须上抛而不是吞掉，否则入口拿到的是一张残缺的命令表
+render.rs[FV8L]: F:生成工具确认提示与各类列表的展示文案，只读能力面与参数表、不改状态 | R:code:rust/crates/omnicrawl-controllers/src/tool_args.rs | A:format_tool_confirmation、format_dangerous_tool_detail | S:高危工具的确认文案要如实给出会被执行的实质内容（命令全文、删除目标），含糊的确认等于让用户在不知情时批准；文案要与 Python 逐字对齐，测试按文本断言
+review.rs[FV8M]: F:实现 /review 的前置条件检查、任务提示词构建与审查报告格式化 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:check_review_preconditions、build_review_task_prompt、extract_review_json、format_review_report | S:报告解析要容忍代码围栏，但拿不到结构化 JSON 时必须如实显示原文而不是伪造结论；前置条件不满足要给出可执行的下一步
+sandbox_commands.rs[FV7S]: F:实现沙盒模式查询与开关、模式的写回命令 | R:code:rust/crates/omnicrawl-config/src/features/sandbox.rs | A:handle_sandbox_command、handle_sandbox_set_command | S:当前只有查询与切换，不做隔离本身；模式与平台必须对应，写成另一平台的档位要直接报错而不是悄悄退化成不隔离；dry-run 的判定随命令输出回显，命令层不单独取
+session_commands.rs[FV7S]: F:实现会话类命令：任务、会话与归档列表、历史、撤销、压缩、重命名与恢复 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:handle_tasks_command、handle_sessions_command、handle_history_command、handle_undo_command、handle_compact_command | S:撤销与压缩是慢命令，命令层只回「已交给宿主」而不就地执行，同步等会与内核互锁
+skill_suggestions.rs[FV6T]: F:拼接运行期的斜杠命令候选与补全选项，把已安装 Skill 与内置命令合并成菜单 | R:code:rust/crates/omnicrawl-commands/src/slash/registry.rs | A:build_slash_commands、build_slash_command_options | S:Skill 候选要与内置命令分属不同类别，混在一起会让用户以为 Skill 是内置能力
+workspace_commands.rs[FV6T]: F:实现工作区查询与切换命令及所需提示文案 | R:code:rust/crates/omnicrawl-commands/src/slash.rs | A:handle_workspace_command | S:切换工作区要经宿主转发到内核并同步会话转录里的 workspace_switched，只改宿主指针会让历史与工具执行指向不同目录
+
+===/<repository>/rust/crates/omnicrawl-compaction/===
+Cargo.toml[FV7T]: F:声明上下文压缩 crate 的依赖：控制器、LLM、协议与会话 | R:code:rust/Cargo.toml | A:- | S:-
+
+===/<repository>/rust/crates/omnicrawl-compaction/src/===
+adapter.rs[FV8S]: F:把摘要请求接到内核模型运行时：复用主请求的系统提示词、消息前缀与工具面，按 tool_choice=none 发一次不流式的请求 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/summary.rs | A:SummaryAdapterSettings、SummaryModelAdapter | S:前缀必须与主请求逐字一致才能命中前缀缓存，没有前缀时不得发请求，因为待压缩正文只存在于复用前缀里；工具声明发送前要做同一套线上名收敛，否则 MCP 风格名会被网关直接 400
+driver.rs[FV8L]: F:编排压缩会话与记忆：测量、触发判定、摘要、归档被压缩窗口、落盘压缩事件与摘要、记忆回写与自动召回、重建历史与边界提示 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/service.rs,code:rust/crates/omnicrawl-session/src/store.rs | A:CompactionDriver、CompactionConfig、TurnBoundary、AfterTurnReport | S:步骤顺序与事件形状是回放契约；被压缩窗口的原始事件必须归档后才能被证据召回读取；摘要阶段禁用工具调用，工具压缩与整轮压缩两个端口要分开，混用会丢原文
+dual.rs[FV8S]: F:把整轮工具调用（请求加结果）写进工作区临时目录，返回路径与字符数供概述引用 | R:code:rust/crates/omnicrawl-compaction/src/driver.rs | A:raw_chars、render_raw_archive、write_raw_archive、RawToolCall | S:落点必须是工作区的 .omnicrawl/.agent_tmp 内，与宿主和连接器的约定一致；概述里必须带路径，否则模型无从逐字核对被压缩的原文
+lib.rs[FV6T]: F:作为压缩 crate 的模块根，声明适配器、驱动与原文归档模块并重导出 | R:code:rust/crates/omnicrawl-compaction/src/driver.rs | A:- | S:判定与文案在控制器 crate，本 crate 只做会话与记忆的读写，两边分工不能混
+
+===/<repository>/rust/crates/omnicrawl-config/===
+Cargo.toml[FV7T]: F:声明配置 crate 的依赖，TOML 解析用 toml crate 并保留键序 | R:code:rust/Cargo.toml | A:- | S:toml 必须打开 preserve_order，否则写回时表顺序会变，与 Python 侧逐字节对齐的契约立即失效
+README.md[SZ7M]: F:交代配置域已搬范围：路径解析与原子写回、自实现 TOML 写回、模型与能力声明、各功能段校验 | R:code:rust/crates/omnicrawl-config/src/toml.rs | A:- | S:两侧会交替读写同一份 config.toml，因此写回文本必须与 Python 的 tomli_w 逐字节对齐，只改序列化器就会造成整文件 diff；配置路径只认显式传入或用户目录，没有环境变量这一级
+
+===/<repository>/rust/crates/omnicrawl-config/src/core/===
+bootstrap.rs[FC8L]: F:首次启动时创建用户配置并输出运行环境诊断，模板资源、交互输入与渠道向导经端口注入 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:initialize_user_configuration、format_startup_report、StartupPorts、StartupSetup | S:模板与交互全部端口化，内核只保留编排与判定，直接读文件或读 stdin 会把内核绑死在终端；已存在配置时不得覆盖
+context.rs[FC7T]: F:确定当前工作区路径并生成注入系统提示词的项目上下文说明 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:detect_project_context、ProjectContext | S:工作区固定取启动目录，不向上查找项目标记也不做项目根回退，加了向上查找会让 Agent 操作到用户预期之外的上层目录
+mod.rs[FC6T]: F:作为配置核心模块根，声明运行时仓库、上下文、启动初始化、通用设置与工作区模块 | R:code:rust/crates/omnicrawl-config/src/lib.rs | A:- | S:-
+runtime.rs[FC8L]: F:实现 TOML 运行配置仓库：路径解析、UTF-8 含 BOM 读取、子段读取、原子写回、旧用户目录迁移与环境注入 | R:code:rust/crates/omnicrawl-config/src/toml.rs | A:ConfigEnvironment、user_config_dir、resolve_config_path、load_config_data、save_config_data、migrate_legacy_user_config | S:写回是同目录临时文件加替换，Windows 上要按退避重试短暂 Access Denied，直接覆盖会写出半份配置；迁移遇同名冲突要落 .migrated.bak 并保留旧目录，任何失败都不删旧数据
+settings.rs[FC8M]: F:读写交互式设置用到的通用功能开关与 MCP 服务配置，只改目标键、其余段与键原样保留后原子写回 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:load_feature_enabled、save_feature_enabled、save_mcp_config、save_context_window_tokens、save_subagent_setting | S:MCP 服务配置写在 [mcp.servers.<名>] 段，命令与参数是本机绑定绝对路径，入库即在别处失效；只写目标键是必须的，整表重写会抹掉用户手写的其它配置
+workspace.rs[FC7T]: F:把当前工作区根目录持久化到 [workspace] root 并读回 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:load_workspace_root、save_workspace_root | S:这条配置是跨进程工作区同步的唯一通道，TUI、API 与连接器都靠它对齐；写入前要做用户目录展开与绝对化
+
+===/<repository>/rust/crates/omnicrawl-config/src/===
+error.rs[FC6T]: F:定义配置域的错误类型，按字符串保真搬运 Python 的 RuntimeConfigError 文案 | R:code:rust/crates/omnicrawl-config/src/lib.rs | A:ConfigError | S:文案直接进 UI，因此这里不做错误分类也不改写措辞，分类会让同一原因在不同入口显示不同提示
+lib.rs[FC6T]: F:作为配置 crate 的模块根，按 core、models、features 三层声明模块并说明与 Python 的差异边界 | R:code:rust/crates/omnicrawl-config/src/core/mod.rs | A:- | S:进程外信息一律由 ConfigEnvironment 注入；需要网络或子进程的判定只搬判定与文案，不做 I/O，否则配置层会耦合到网络栈
+toml.rs[FC7S]: F:解析 TOML 文档并自实现写回，逐字节对齐 Python 的 tomli_w 输出形状 | R:code:rust/crates/omnicrawl-config/src/value.rs | A:parse_document、dump_document、float_repr | S:写回刻意不用 toml crate 的序列化器：顶标量在前、子表随后空行分隔、非空数组一律多行、浮点用 Python repr，这些规则由 fixture 对照保证；换成默认序列化器会造成整文件 diff
+value.rs[FC7S]: F:桥接 TOML 值与 Python 语义：truthiness、python_str、python_repr，以及 TOML 与 JSON 的双向转换 | R:code:rust/crates/omnicrawl-config/src/toml.rs | A:truthy、python_str、python_repr、toml_to_json、json_to_toml | S:配置解析大量依赖 Python 的 truthiness（0、false、空串、空表都折成空串），把这层语义显式写出来才不至于在移植时改动文案
+
+===/<repository>/rust/crates/omnicrawl-config/src/features/===
+advisor.rs[FC8S]: F:读写顾问策略配置：启用开关、顾问模型 key、推理强度，并给出可选档位 | R:code:rust/crates/omnicrawl-config/src/features/approval.rs | A:load_advisor_config、save_advisor_config、clear_advisor_config、AdvisorConfig | S:默认关闭，只有显式启用且选定了顾问模型时 active 才为真；档位列表必须与 LLM 的推理强度表同源，各写一份会让 /advisor 接受一个内核不认识的值
+agent_workspace.rs[FC8M]: F:读写主 Agent 隔离工作区配置：是否启用、worktree 或 local 模式、基线分支、退出时回写与清理策略、同步未提交改动 | R:code:rust/crates/omnicrawl-workspace/src/agent_isolation.rs | A:load_agent_workspace_config、save_agent_workspace_config、AgentWorkspaceConfig | S:启用后主 Agent 在隔离区里工作，退出时的 apply 与 cleanup 决定改动是否会回到主树，配错会让用户以为改了代码实际全在分支上；copy_dirs 与环境脚本只应指向必须带进隔离区的东西
+approval.rs[FC8S]: F:实现审批模式的别名表、归一化、中文标签与读写，并解析审查模型 | R:code:rust/crates/omnicrawl-config/src/features/advisor.rs | A:normalize_approval_mode、load_approval_mode、save_approval_mode、load_approval_review_model、APPROVAL_MODE_MANUAL | S:别名与解析顺序是唯一实现，控制器域的同名函数应改为再导出本模块，各写一份会让同一份配置在不同入口解析出不同模式；只有三种合法模式，未知取值必须报错而不是回落默许
+computer_use.rs[FC8M]: F:读写 Computer Use 配置：开关、专职子代理模型、超时、截图最大边长与思考强度，并做区间校验 | R:code:rust/crates/omnicrawl-config/src/features/subagents.rs | A:load_computer_use_config、ComputerUseConfig、DEFAULT_TIMEOUT_SECONDS | S:本段与 [subagents] 完全独立，关掉子代理不该连坐关掉桌面操作，两者的语义不同；超时与截图边长都有上下界，越界要被拒而不是夹取到边界后静默生效
+context_compaction.rs[FC8M]: F:读取并严格校验上下文压缩配置：整数区间、比值范围、失败回退策略，并忽略已废弃字段 | R:code:rust/crates/omnicrawl-compaction/src/driver.rs | A:load_context_compaction_config、ContextCompactionConfig | S:minimum_turns_between_model_compactions 是已删除项，旧配置里残留时必须忽略而不是让严格校验拒绝启动；未知配置项要拒绝，否则用户以为改项生效而实际没有
+decision_model.rs[FC8L]: F:读写结构化决策模型配置：四种请求方式、渠道与密钥、Cloudflare 账户号折算的端点、本机 OneJev 地址与功能开关 | R:code:rust/crates/omnicrawl-config/src/features/embedding.rs | A:load_decision_model_config、DECISION_MODES、cloudflare_ai_base_url | S:cloudflare_workers_ai 的地址由账户号折算，填了 base_url 也会被覆盖，且请求体里的 model 只认最后一段；用 OpenAI 兼容路径调决策模型会被判缺少 model/state/questions；决策模型的命名空间与对话模型目录互不相干
+desensitization.rs[FC8M]: F:读写出网消息脱敏配置：总开关、失败策略、严格还原、按类型的检测开关、熵兜底阈值与 gitleaks 设置 | R:code:rust/crates/omnicrawl-llm/src/desensitization.rs | A:load_desensitization_config、save_desensitization_config、DesensitizationConfig | S:默认关闭时运行时不做任何包装，因此零成本；fail_closed 决定脱敏失败时中断还是放行，改成放行等于让疑似凭据照原样出网；熵兜底的阈值过低会把正常代码判成秘密
+embedding.rs[FC8L]: F:读写向量模型配置：嵌入渠道与重排渠道两组，含地址、模型、维度、批大小与超时 | R:code:rust/crates/omnicrawl-config/src/features/decision_model.rs | A:load_embedding_config、EmbeddingChannelConfig、RerankChannelConfig | S:与 models.toml 和 decision_models.toml 刻意分开：混进对话模型目录会被当成候选模型，与决策模型语义也不同（出坐标而非答案）；未配置或缺凭据时检索退回纯关键词排序是刻意的兜底
+fetch_api.rs[FC8M]: F:读写抓取接口配置：启用开关、监听地址与端口 | R:code:rust/crates/omnicrawl-fetch/src/config.rs | A:load_fetch_api_configuration、save_fetch_api_configuration、FetchApiConfig | S:只接受回环地址：接口不做鉴权，「只有本机程序能调用」是唯一准入控制，绑到全部网卡等于对外提供任意抓取；与 [api] 分开是因为那套要令牌且承载会话与审批
+image_gen.rs[FC8L]: F:读写图像生成配置：五条通道（OpenAI 兼容、Gemini、Grok、DALL·E 3、Midjourney 代理）的地址、凭据、模型与尺寸质量参数 | R:code:rust/crates/omnicrawl-config/src/features/tts_cloud.rs | A:load_image_gen_config、DEFAULT_IMAGE_GEN_MODEL | S:各通道能力不同：DALL·E 3 与 Midjourney 通道不支持参考图，尺寸等参数在 MJ 要写进提示词；凭据只认段里的明文 api_key 并留在本机配置
+knowledge.rs[FC7T]: F:提供知识库工具组的默认开关值 | R:code:rust/crates/omnicrawl-config/src/core/settings.rs | A:DEFAULT_KNOWLEDGE_ENABLED | S:知识库工具整组进表或整组不进表；默认开启，升级后不该悄悄消失；读写走通用功能开关链路，本模块不重复实现同一键的读写
+memory.rs[FC8S]: F:读写记忆遗忘时间配置：可选天数档位、归一化与中文标签 | R:code:rust/crates/omnicrawl-session/src/memory.rs | A:load_memory_config、save_forget_after_days、normalize_forget_after_days、FORGET_AFTER_DAYS_CHOICES | S:只有遗忘时间在这里，enabled 仍走通用功能开关链路，两处都能改同一键会让配置与界面不同步；归一化把任意天数折到最近档位，别处再算一次会出现两个值
+mod.rs[FC6T]: F:作为功能配置模块根，声明审批、压缩、工具、运行护栏、子代理、图像、TTS、脱敏等子模块 | R:code:rust/crates/omnicrawl-config/src/lib.rs | A:- | S:computer_use、decision_model、embedding、fetch_api、trigger_api、web_search、tts_cloud 等是 Rust 侧新增段，Python 无对映，因此不进 parity 数据集
+run_guard.rs[FC8L]: F:读写运行护栏与自动续跑配置：重复检测窗口与阈值、最大阻断次数、自动续跑次数上限 | R:code:rust/crates/omnicrawl-cli/src/session/turn/turn_run.rs | A:load_run_guard_config、save_run_guard_config、RunGuardConfig、ContinueConfig、ReasoningGuardConfig | S:续跑次数上限决定失控时能自动重试几次，调大等于放大重复输出的代价；总开关与续跑开关是两级，读配置失败必须按关闭处理，不能默认放开
+sandbox.rs[FC8L]: F:读写沙盒配置并折算成策略：三档开关、可读写路径、网络策略与白名单、资源限额，含跨平台档位校验 | R:code:rust/crates/omnicrawl-config/src/features/tools.rs | A:load_sandbox_config、save_sandbox_config、validate、SandboxConfig、SANDBOX_MODES | S:模式与平台必须对应，写成另一平台的档位会直接报错而不是悄悄退化成不隔离；dry-run 只判定不拦，先跑一段时间 dry-run 再开启真隔离；回环永远放行，且 offline 档下本地 dev server 也连不上
+session_release.rs[FC7T]: F:读写会话上下文闲置换出秒数并做区间校验 | R:code:rust/crates/omnicrawl-config/src/features/context_compaction.rs | A:load_session_release_seconds、DEFAULT_SESSION_RELEASE_SECONDS | S:缺省 1800 秒开启；重放要重新解析转录，大会话有可见停顿，把这个代价摊到整段闲置上才划算；设 0 即关闭，历史一直驻留到进程退出
+skills.rs[FC7T]: F:读取 Skill 额外路径配置，把用户指定目录或单文件并入 Skill 发现范围 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:load_skills_config、SkillsConfig | S:extra_paths 优先级最高但在个人级与项目级之后扫描，同名时不覆盖前面已加载的，顺序反过来会让内置 Skill 被用户目录的同名文件顶掉
+subagents.rs[FC8M]: F:读写子代理运行配置：全局边界、角色级模型覆盖与高级项校验 | R:code:rust/crates/omnicrawl-config/src/features/computer_use.rs | A:load_subagent_config、SubAgentConfig、validate_subagent_advanced_setting | S:只读 subagents.toml 的 subagents 段且不回退读 config.toml，两条读路径会让同一份配置出现两个事实来源；allow_worktree 与 allow_shared_workspace_writes 决定子代理能否改主树，放开等于取消隔离
+suggestion.rs[FC8S]: F:读写提问建议配置：开关与建议 Skill 项 | R:code:rust/crates/omnicrawl-config/src/features/skills.rs | A:load_suggestion_config、save_suggestion_config、save_suggestion_switch、SuggestionConfig | S:默认关闭，建议只是提示不该默认改变发出去的文本；关键词识别走主模型渠道而检索纯本地，因此配置独立成段不能再与决策模型共用开关表
+tls_resumption.rs[FC7S]: F:读写 TLS 会话恢复（PSK）开关、缓存条目上限与有效期 | R:code:rust/crates/omnicrawl-tls/src/session_cache.rs | A:load_tls_resumption_configuration、save_tls_resumption_configuration、TlsResumptionConfiguration | S:默认关闭：会话恢复改的是密钥调度，算错时症状可能是连接成功但解出垃圾；开启后仍必须保留握手失败回退完整握手的路径；Python 侧无对映，不进 parity 数据集
+tool_output_compression.rs[FC8S]: F:读写工具输出压缩配置：开关、压缩模型 key、输入输出字符上限、超时与思考强度 | R:code:rust/crates/omnicrawl-controllers/src/compression.rs | A:load_tool_output_compression_config、ToolOutputCompressionConfig | S:默认关闭，显式启用并选定模型后才构造压缩器；input 与 output 字符上限之差就是压缩比承诺，把上限调小会使压缩结果比原文更长
+tools.rs[FC8S]: F:维护 32 个内置工具的开关键表与默认表，读写开关并归一化旧版记忆工具名 | R:code:rust/crates/omnicrawl-config/src/core/settings.rs | A:TOOL_SWITCH_KEYS、default_tool_switches、load_tool_switches、save_tool_switches、legacy_tool_switch_alias | S:默认除 powershell 全开；批量写回要先全校验再一次性写盘，中途失败会让一半工具被关掉；开关只影响工具表注册，不影响工具实现是否存在
+trigger_api.rs[FC8L]: F:读写触发接口配置：监听地址与端口、并发与排队上限、会话模式、工具白名单、超时与结果投递 | R:code:rust/crates/omnicrawl-trigger/src/config.rs | A:load_trigger_api_configuration、save_trigger_api_configuration、DEFAULT_TRIGGER_TOOLS、SESSION_MODES | S:只接受回环地址且不做鉴权；无人值守路径不能等人工审批，因此工具白名单是必填的事实边界；per_trigger 与 keyed 两种会话模式决定是否共用上下文，选错会让互不相关的事件读到彼此的对话
+tts.rs[FC7S]: F:读写 TTS 通用项：开关、自动播放、朗读回复与输出目录 | R:code:rust/crates/omnicrawl-config/src/features/tts_cloud.rs | A:load_tts_configuration、save_tts_configuration、DEFAULT_TTS_OUTPUT_DIR | S:本段只放与后端无关的键，服务商选择在 [tts_cloud]、各家参数在 [tts_api] 与 [tts_gemini]；本地推理时代的 voice 与 model_dir 已删除，残留项不参与判定
+tts_cloud.rs[FC8L]: F:读写云端 TTS 的服务商路由与三家接口参数（地址、凭据、模型、音色、指令、语速、超时） | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:load_tts_cloud_configuration、TTS_PROVIDERS、DEFAULT_TTS_PROVIDER | S:provider 三选一，其余两家的字段被忽略，切换服务商不会丢掉另一家的配置；凭据只认段里的明文 api_key，没有读环境变量的通道；朗读语言不再配置，三家都按文本自动判断
+web_search.rs[FC8M]: F:读写联网搜索配置：引擎选择、各 API 类引擎的凭据与可选自定义地址与模型 | R:code:rust/crates/omnicrawl-host/src/tools/web_search.rs | A:load_web_search_config、WEB_SEARCH_ENGINES、MIXED_WEB_SEARCH_ENGINE | S:走哪个引擎只看这里，工具调用里的 engine 参数无效，Agent 不能按单次任务改搜索通路；自定义地址只接受 http(s) 且协议须与引擎本家一致；anysearch 不配 Key 也有匿名额度，但 keenable 的匿名额度是共享公共池；引擎名只在 WEB_SEARCH_ENGINES 表里维护一份，另立同值常量会变成不会被读的第二份事实
+
+===/<repository>/rust/crates/omnicrawl-config/src/models/===
+channels.rs[FC8L]: F:读写模型渠道：把 config.toml 的 profile 与 models.toml 的自定义条目当成一对视图读出与写回 | R:code:rust/crates/omnicrawl-config/src/models/model_store.rs | A:load_channel_configuration、save_channel_configuration、ChannelConfig | S:写回要两侧一起更新且 models.toml 不得落凭据，两次写盘任一步失败都要回滚已写入的文件，否则会留下半份渠道配置
+llm.rs[FC8M]: F:定义 LLM 配置模型与归一化校验：推理强度、思考开关、上下文窗口、超时与重试、活动模型引用与写回 | R:code:rust/crates/omnicrawl-config/src/models/llm_multi.rs | A:load_llm_config、save_reasoning_effort、save_active_model_ref、VALID_REASONING_EFFORTS、ActiveModelRef | S:prompt_cache 是 Provider 能力声明，只由自定义模型条目填充，detected 与 legacy 路径保持未设置；用户代理里的换行会让请求头非法，必须在归一化阶段拒掉；单模型与多模型两条路径都只读配置段，不各自兜底
+llm_multi.rs[FC8L]: F:解析多模型 Profile 与 active_model：来源判定、存在与启用校验、协议匹配、凭据解析、窗口覆盖与模型选择 | R:code:rust/crates/omnicrawl-config/src/models/llm.rs | A:parse_profiles、load_multi_model_llm_config、apply_model_selection、llm_config_to_profile_and_descriptor | S:模型选择要同时支持自定义 key 与别名、profile/model_id 与裸 model_id 三种写法，缺任何一种都会让用户既有配置失效；凭据只认明文 api_key，读环境变量的老路径已经取消
+mod.rs[FC6T]: F:作为模型配置模块根，声明渠道、LLM、多模型、目录、存储与视觉模块并定义 ProviderProfile | R:code:rust/crates/omnicrawl-config/src/models/llm.rs | A:ProviderProfile | S:-
+model_catalog.rs[FC8L]: F:聚合双列模型目录（自定义条目与各 Profile 的发现结果），管理发现的网络端口、TTL 与 LRU 缓存上限 | R:code:rust/crates/omnicrawl-config/src/models/model_store.rs | A:ModelOption、CatalogModel、DiscoveryCache、MODEL_LIST_TIMEOUT_SECONDS、MAX_MODELS_PER_PROFILE | S:网络与时钟都由端口注入，内核只保留聚合与文案，配置层不得自己发请求；/models 响应体有字节上限，无上限读取会让异常上游把内存吃满
+model_store.rs[FC8L]: F:读写 models.toml：条目校验、凭据字段拒绝、别名冲突、排序、能力与窗口的双向回填、写回只保留有意义的非默认能力 | R:code:rust/crates/omnicrawl-config/src/models/channels.rs | A:load_model_store、parse_model_store、save_model_store、FORBIDDEN_CREDENTIAL_FIELDS | S:模型条目里出现 api_key、token、cookie、authorization 一律拒绝，凭据只属于 config.toml 的渠道 profile；排序规则固定（sort_order、显示名小写、key），换序会让设置面板里的顺序跳变
+vision.rs[FC8M]: F:读写视觉代理配置：开关、有序失败转移模型引用（含重复检测）与原生视觉三态开关的默认与保存 | R:code:rust/crates/omnicrawl-config/src/models/llm.rs | A:load_vision_configuration、parse_native_vision、resolve_native_vision、save_native_vision | S:原生视觉按模型覆盖大于渠道覆盖大于未配置解析，三态不能折成布尔，否则「未配置」与「显式关闭」分不开；模型引用列表重复会让同一个失败候选被重试两次
+
+===/<repository>/rust/crates/omnicrawl-connectors/===
+Cargo.toml[FV7T]: F:声明连接器 crate 的依赖：配置、会话、工作区、rustls 与 ureq、aes-gcm 与 qrcode | R:code:rust/Cargo.toml | A:- | S:依赖工作区层的连接器单例锁与进程树回收，连接器单例不是重新实现一遍锁；用 rustls 而不是引入第二套 TLS 栈
+README.md[SZ7M]: F:交代连接器只做平台 I/O 与显示映射的边界、承载方决定的能力差异、逐模块目录与对照工作流 | R:code:rust/crates/omnicrawl-connectors/src/agent.rs | A:- | S:内核自带的 --connector 只自持三个工具且会话不落盘，只能对话，远程用户会看到无法访问项目仓库；宿主承载路径才有真实工具表与会话存储，这是两条能力差异极大的路径
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/===
+agent.rs[IN8M]: F:定义连接器与 Agent 宿主之间的边界：工具调用与结果、回合事件与错误、状态快照，以及驱动回合、审批与提问的三个 trait | R:code:rust/crates/omnicrawl-ipc/src/bridge.rs | A:TurnEvent、TurnError、AgentDriver、ConfirmHandler、AskUserHandler、AgentStatus | S:TurnEvent 的形状与协议 v1 的同名通知一致，两侧共用一套映射，各写一份会让同一事件在 TUI 与聊天里显示成两件事；连接器不持有回合逻辑，宿主实现必须经这些 trait 注入
+autostart.rs[IN8L]: F:启动时读取连接器配置并判断平台是否已配置，对已配置平台拉起独立子进程，宿主退出时回收子进程与后代 | R:code:rust/crates/omnicrawl-workspace/src/connector_singleton.rs | A:start_configured_connectors、ConnectorProcessManager、default_connector_specs、AutoStartDecision | S:平台单例锁必须覆盖连接器子进程的整个运行期，只在启动瞬间持锁挡不住并存的宿主，同一平台会出现多个长连接；凭据只由子进程从环境变量或 config.toml 读取，绝不出现在命令行参数里
+http.rs[IN7S]: F:提供连接器共用的阻塞式 HTTP 传输与表单百分号编码，可被记录型实现替换以便离线测试 | R:code:rust/crates/omnicrawl-connectors/src/feishu/api.rs | A:HttpTransport、HttpReply、UreqTransport、encode_form、with_query | S:两种连接器都只做发一次拿回状态码与响应体，错误分类与重试留给各自的 API 层；测试必须用记录型实现替换传输，否则用例会真的出网
+json.rs[IN7T]: F:实现与 Python json.dumps 等价（ensure_ascii 关闭、默认分隔符）的序列化供平台负载使用 | R:code:rust/crates/omnicrawl-connectors/src/render.rs | A:dumps、dumps_indent | S:平台负载的字节形状属于对照语义，serde_json 的紧凑写法没有空格，直接用它会让卡片与提示文案与既有实现不一致；浮点仍沿用短写法，这一处与内核既有差异清单一致
+lib.rs[IN6T]: F:作为连接器 crate 的模块根，声明 Telegram、飞书、QQ、MQTT 与共用的 HTTP、JSON、文本、渲染、WebSocket、平台运行态模块 | R:code:rust/crates/omnicrawl-connectors/src/agent.rs,code:rust/crates/omnicrawl-connectors/src/platform/mod.rs | A:- | S:回合驱动不在本 crate，连接器只做平台 I/O 与显示映射；platform 模块与 target_os 的平台概念同名但无关，不要混淆
+render.rs[IN8L]: F:把工具调用、文件变更、执行计划与子任务进度映射成聊天显示文本与消息卡片 JSON | R:code:rust/crates/omnicrawl-connectors/src/text.rs,code:rust/crates/omnicrawl-connectors/src/json.rs | A:tool_status_icon、format_duration、sample_output_lines、fenced_body | S:显示规则与 TUI 消息流同规则，两边不一致会让同一任务在终端与聊天里显示不同状态；变更统计逐行移植 difflib 的序列匹配，换算法会改变变更行数
+text.rs[IN8M]: F:处理平台无关的展示文本：内部标签清理、脱敏、分段与正文定型、卡片分段、JSON 取值与按字符截断 | R:code:rust/crates/omnicrawl-session/src/redaction.rs | A:split_text、clean_text、display_text、resolve_final_text、split_segment_for_card、text_of、field_text、take_chars | S:分段边界按字符计且与 Python 非贪婪匹配一致，本 crate 不引入 regex 因此正则改写成了手写扫描；所有出站文本都要经脱敏，否则密钥会随显示漏进聊天；take_chars 与 take_chars_with_ellipsis 语义不同（后者补省略号），平台侧硬上限必须用前者，否则会挤掉一个真实字符
+ws.rs[IN7L]: F:实现平台无关的 WebSocket 客户端原语：握手请求与接受值计算、帧编解码、掩码、TLS 建连与 SHA-1 | R:code:rust/crates/omnicrawl-connectors/src/feishu/ws.rs | A:WebSocket、WsPoll、handshake_request、encode_frame、decode_frame、connect_wss | S:协议栈自实现不引入第三方 WebSocket 库，与仓库既有手写匹配器同取舍；不完整帧必须返回等待而不是报错，否则半包会被当成协议错误导致频繁重连
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/feishu/===
+api.rs[IN8L]: F:实现飞书开放接口客户端：租户令牌缓存与提前续期、消息创建与更新、消息资源下载、长连接端点获取 | R:code:rust/crates/omnicrawl-connectors/src/http.rs,code:rust/crates/omnicrawl-connectors/src/feishu/ws.rs | A:FeishuApi、ClientConfig、WsEndpoint | S:令牌按 expire 提前 60 秒续期，不留余量会在长任务中途撞上过期；HTTP 失败只记录并让调用方兜底，不在传输层重试
+bot.rs[IN8L]: F:实现飞书连接器主循环：事件白名单与去重、回答挂起提问、命令分发、任务排队与时间线显示、长连接维持 | R:code:rust/crates/omnicrawl-connectors/src/feishu/timeline.rs,code:rust/crates/omnicrawl-connectors/src/feishu/inbox.rs,code:rust/crates/omnicrawl-connectors/src/platform/mod.rs | A:FeishuBot、ActiveTask、PendingConfirmation、PendingQuestion | S:任务执行期间每个条目独立成一条消息并按发生顺序出现，合并成一条会让长任务在聊天里堆成一坨；入站队列是进程内的，没有跨重启重放，重启窗口内的消息会丢；request_stop 与 close 都必须释放挂起的确认与提问，只置停止标志会让回合线程一直阻塞到审批超时
+config.rs[IN7S]: F:解析飞书接入配置：凭据优先 [feishu] 段、其次根级 fs_ 前缀别名，并生成脱敏后的诊断摘要 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:load_feishu_config、check_config、mask_secret、coerce_string_set | S:诊断输出必须经 mask_secret 脱敏，App Secret 一旦进日志就等于泄露；白名单为空按公开访问处理，绑定与配置时要显式提醒
+dedupe.rs[IN7S]: F:实现飞书事件去重：进程内短期去重表与跨重启的重投递指纹 | R:code:rust/crates/omnicrawl-connectors/src/feishu/inbox.rs | A:SeenMessages、inbox_dedupe_key | S:指纹必须稳定（消息标识的哈希前缀），换算法会让重启后同一事件被再次处理；进程内表容量有上限，否则长跑会持续增长
+file_send.rs[IN7S]: F:编排 [FILE:] 发文件：按扩展名分流到 image、media 或 file 通道，上传成功才发消息，失败给出固定文案 | R:code:rust/crates/omnicrawl-connectors/src/feishu/files.rs | A:route_for_suffix、send_local_file、send_generated_files、file_marker_matches | S:网络与消息发送由宿主经端口注入，判定与文案留在内核；上传失败必须回固定文案并保留路径，静默丢弃会让用户以为文件已发
+files.rs[IN7L]: F:处理飞书消息资源：扩展名分类、临时目录落盘与重名递增、post 富文本解析、文件标记与资源键提取 | R:code:rust/crates/omnicrawl-connectors/src/telegram/files.rs,code:rust/crates/omnicrawl-connectors/src/text.rs | A:classify_filename、resolve_temp_destination、post_text_and_images、file_marker_paths | S:落盘必须限制在临时目录内并对重名递增，直接按远端文件名写会覆盖用户已有文件或越出工作区
+inbox.rs[IN8M]: F:实现飞书入站持久队列：事件先落 pending 日志再登记内存，重启时回放未确认事件，并提供跨进程 24 小时去重 | R:code:rust/crates/omnicrawl-connectors/src/feishu/dedupe.rs | A:FeishuInbox、InboxRecord | S:文件损坏或不可写时降级为纯内存，写失败只记录状态绝不阻断消息接收；去重键默认用消息标识且在 24 小时窗口内跨进程生效
+mod.rs[IN6T]: F:作为飞书连接器模块根，声明接口客户端、服务主循环、配置、去重、发文件、资源、入站队列、时间线与上传模块 | R:code:rust/crates/omnicrawl-connectors/src/feishu/bot.rs | A:- | S:-
+timeline.rs[IN8L]: F:装配飞书时间线条目：正文、工具、思考、执行计划与子任务各自一条消息，首次发送卡片之后原地更新 | R:code:rust/crates/omnicrawl-connectors/src/render.rs | A:TimelineMessage、TextMessage、ToolMessage、ReasoningMessage、PlanMessage、SubAgentMessage | S:卡片不可用时正文必须回退成普通文本消息，否则关键内容直接丢失；条目只更新自己那条消息，跨条目更新会互相覆盖；本文件的发送语义与 Telegram 的 timeline.rs 同构，但消息 id 是 String 且载荷是卡片 JSON，不能与纯文本实现合并
+upload.rs[IN7T]: F:组装飞书文件上传的 multipart 请求体：字段顺序、边界与通用内容类型 | R:code:rust/crates/omnicrawl-connectors/src/feishu/files.rs | A:file_type_for、new_boundary、multipart_body | S:字段顺序要与 SDK 一致（文本字段在前、文件字段在后），换序会让接口判参数缺失；文件部分用通用二进制类型，SDK 不暴露细粒度 MIME
+ws.rs[IN8L]: F:实现飞书长连接：二进制帧编解码、握手与心跳、事件应答与重连退避 | R:code:rust/crates/omnicrawl-connectors/src/ws.rs,code:rust/crates/omnicrawl-connectors/src/feishu/api.rs | A:LongConnection、ReconnectPolicy、ping_interval_seconds、connect | S:心跳周期要按平台配置计算而不是硬编码，太短会被限流、太长会被判超时断连；重连退避必须有上界，否则故障期会持续冲击接口
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/mqtt/===
+audit.rs[IN7T]: F:把每次决策写成一行 JSON 审计，同时作为下一次唤醒的最近动作来源 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/bot.rs | A:AuditLog | S:写失败只记诊断，绝不能让审计把控制回路拖停；坏行只影响回放不影响主循环
+bot.rs[IN8L]: F:实现触发器主循环：订阅遥测、窗口聚合、规则判定、唤醒模型、校验动作、下发指令、等待回执与写审计 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/policy.rs,code:rust/crates/omnicrawl-connectors/src/mqtt/prompt.rs | A:MqttBot | S:模型不常驻，只在规则命中时被调一次，两次触发之间它不存在；决策期间到达的新遥测不参与当轮判断（本来也会被窗口聚合掉）；模型超时、输出不合法或动作越界都回落规则里声明的兜底
+client.rs[IN7T]: F:实现阻塞式 MQTT 客户端：TCP 与 TLS 建连、订阅、发布与心跳 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/codec.rs | A:MqttClient、parse_broker_url、BrokerAddress | S:只有一条连接与一个读线程，问答式流程不需要并发读写，单一所有者省掉了半包交错与跨线程同步的麻烦
+codec.rs[IN7S]: F:编解码 MQTT 3.1.1 的最小报文面：连接、订阅、发布、确认与心跳 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/client.rs | A:CONNECT、PUBLISH、SUBSCRIBE、PUBACK | S:剩余长度要按字节读到最高位清零为止再整包读入，超时只会发生在包边界；半包超时一律按致命错误让调用方重连，继续读会丢同步
+config.rs[IN7S]: F:解析 MQTT 接入配置：broker、主题、keepalive、窗口、冷却、回执超时、TTL 与动作表 | R:code:rust/crates/omnicrawl-config/src/features/web_search.rs | A:load_mqtt_config、validate_config、DEFAULT_KEEPALIVE_SECONDS | S:keepalive 要留足 broker 的 1.5 倍容忍窗口，决策可能阻塞几十秒；本段只描述接入、规则与动作表，不含任何模型选择
+mod.rs[IN7T]: F:作为 MQTT 自动化回路模块根，声明策略、规划器、模板、主循环、客户端、编解码、配置与审计模块 | R:code:rust/crates/omnicrawl-api/src/mqtt.rs | A:- | S:这一组是事件源加执行器的形态，入口是传感器报文而不是人发的消息，出口是下发指令而不是回复
+planner.rs[IN7S]: F:定义规划器边界：把一次唤醒变成一条原始动作，实现由宿主提供 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/prompt.rs | A:Planner、PlannerMode | S:只依赖这个抽象面，策略层与协议层才能脱离模型凭据独立测试
+policy.rs[IN8M]: F:实现确定性策略层：遥测解析、窗口聚合、阈值规则、迟滞、冷却与触发去重 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/prompt.rs | A:Engine、Window、Reading、Trigger、parse_readings | S:这一层永远跑在模型之前，判断要不要叫醒模型不能交给模型自己，否则稳态数据也会把 token 烧光；迟滞与冷却缺失会让阈值附近的波动反复触发
+prompt.rs[IN8S]: F:把现场情况拼成模型输入（动作表、窗口快照、最近动作、命中规则）并把模型输出收敛成可下发动作 | R:code:rust/crates/omnicrawl-connectors/src/mqtt/policy.rs | A:SYSTEM_PROMPT、PlanRequest、RawPlan、ValidatedPlan、decision_questions | S:校验只在这里做一份，文本通道与决策模型选项通道都汇到同一处，各写一份会让动作越界从另一条通道漏过去；模型无状态，每次唤醒都必须重新给出全部现场
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/qqbot/===
+api.rs[IN8L]: F:实现 QQ 开放平台客户端：凭据换 AccessToken 并提前续期、网关地址获取、被动与主动消息下发、媒体下载与分片上传 | R:code:rust/crates/omnicrawl-connectors/src/http.rs | A:QqApi | S:被动回复有权额硬限制（单聊 60 分钟内 5 条、群聊 5 分钟内 5 条），超出会被平台拒；令牌 7200 秒且提前 5 分钟续期，业务请求头格式为 QQBot 前缀
+bind.rs[IN7S]: F:实现扫码绑定：创建绑定任务、展示二维码、轮询结果并用本地随机密钥解密拿到的凭据 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/config.rs | A:generate_bind_key、build_connect_url、BindCredentials、BindTask | S:密钥必须本地生成且 Secret 只在本地解密，任何上传路径都会把凭据交给第三方；加密载荷形状固定为 nonce、密文与 tag 的拼接
+bot.rs[IN8L]: F:实现 QQ 机器人服务：网关事件接入、命令分发、被动回复额管理与降级成主动消息、工具确认桥、群历史与定时总结 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/api.rs,code:rust/crates/omnicrawl-connectors/src/qqbot/summary.rs,code:rust/crates/omnicrawl-connectors/src/platform/mod.rs | A:QqBot、ReplyHandle、ActiveBudget、ActiveTask、TaskTimeline | S:默认被动回复带 msg_id 且不占主动额度，额度耗尽才降级为主动消息，顺序反过来会浪费有限额度；消息不能编辑，因此没有流式预览，时间线只能按已发正文段累加并用剩余部分补发，超出分段上限要按内容切分；本地 take_chars 带省略号，与飞书、Telegram 的纯截断不同名不同义
+config.rs[IN7S]: F:解析 QQ 机器人配置与访问策略：凭据、白名单、人格与提示词追加、接入校验 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/bind.rs | A:load_qqbot_config、validate_config、AccessPolicy、persona_prompt、prompt_append | S:白名单按机器人判定：不同 AppID 下同一用户的 openid 不同，跨机器人复用白名单等于全部失效；app_id 与 app_secret 可用扫码直接写入，手填时不得写进仓库
+dispatch.rs[IN7S]: F:把网关事件解析成单聊、群聊@与频道@三类入站，含引用、提及扫描与白名单判定，并复用 Telegram 的命令分类 | R:code:rust/crates/omnicrawl-connectors/src/telegram/dispatch.rs | A:route_event、Inbound、Quoted、MentionScan | S:三类场景的 openid 字段不同，按单一字段判定会让其中一类永远匹配不上白名单
+files.rs[IN7T]: F:QQ 附件的分类与落盘命名，复用 Telegram 的扩展名分类与重名递增规则 | R:code:rust/crates/omnicrawl-connectors/src/telegram/files.rs | A:fallback_name、safe_name、suffix_for_mime、destination | S:三个连接器把文件落到同一棵临时目录树里，命名与重名规则必须一致，否则 Agent 在不同通道看到的路径约定不同
+gateway.rs[IN7S]: F:实现 QQ 网关长连接：握手与心跳、Identify 与 Resume、事件信号解析与重连 | R:code:rust/crates/omnicrawl-connectors/src/ws.rs | A:GatewayConnection、identify_payload、resume_payload、heartbeat_payload、parse_signal | S:心跳周期由服务端下发的 Hello 给出，硬编码会被判超时；会话失效信号必须重新 Identify 而不是 Resume，否则会一直补不上事件
+history.rs[IN7S]: F:按群分别维护最近消息的滚动窗口，为纯 @ 提问提供上下文 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/summary.rs | A:GroupHistory、GroupMessage | S:平台不提供群聊历史接口，上下文只能由连接器自己攒，且需开启接收所有群消息；窗口有容量上限与时间范围两条约束，只按条数限会让突发刷屏挤掉真实上下文
+markdown.rs[IN7S]: F:判定 QQ Markdown 消息的适用范围并把正文规整到平台支持的子集 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/bot.rs | A:supports、has_supported、to_markdown、starts_block | S:平台不支持围栏代码块与表格，出现即被判内容无效（40034011），必须降级为纯文本；频道仍需内邀开通自定义 Markdown，因此频道一律纯文本
+media.rs[IN7S]: F:处理 QQ 富媒体：本地取文件、类型判定、上传描述与正文里的文件标记剥离 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/upload.rs | A:kind_of_path、load、marker_paths、strip_markers、MediaUpload | S:两步发送（先取 file_info 再用 media.file_info 发消息），先发消息会因缺少上传信息失败；二进制直传有 5MB 上限，超出必须走分片
+mod.rs[IN6T]: F:作为 QQ 连接器模块根，声明接口、绑定、服务、配置、分发、文件、网关、历史、Markdown、富媒体、总结与上传模块 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/bot.rs | A:- | S:平台形态差异集中在服务主循环：默认被动回复、消息不能编辑因此没有流式预览
+summary.rs[IN7S]: F:定时把各群最近消息压成一条记忆：判定哪些记录值得总结、何时到期并拼总结提示词 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/history.rs | A:GroupSummarizer、summary_prompt、worth_summarizing、due_jobs | S:总结走宿主的隔离回合，既不占主会话也不参与单活动名额竞争；写记忆必须经 Agent 调用工具而不是连接器直接落盘，否则会写出宿主读不到的作用域
+upload.rs[IN7S]: F:准备富媒体分片上传：整文件 MD5、SHA-1 与前 10MB 摘要、分片切分与预上传请求体 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/media.rs | A:checksums、plan_parts、prepare_body、md5 | S:预上传要求三种摘要同时给出，缺一项会被拒；MD5 自带一份实现而不引依赖，与仓库已有的手写 SHA-1 同取舍
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/telegram/===
+api.rs[IN8L]: F:实现 Telegram Bot API 传输层：长轮询取更新、发消息、创建与编辑流式消息、下载文件、注册命令菜单 | R:code:rust/crates/omnicrawl-connectors/src/http.rs | A:TelegramApi、MenuCommand、normalize_menu_commands | S:同一条消息的编辑频率约每秒一次，必须限流，超频会被平台拒；HTTP 走注入的传输实现，用例不得真的出网
+bot.rs[IN8L]: F:实现 Telegram 轮询服务：更新分发、单活动任务、时间线显示、审批与提问桥、文件后台下载 | R:code:rust/crates/omnicrawl-connectors/src/telegram/timeline.rs,code:rust/crates/omnicrawl-connectors/src/agent.rs,code:rust/crates/omnicrawl-connectors/src/platform/mod.rs | A:TelegramBot、ActiveTask、PendingConfirm、PendingQuestion | S:同一时刻只允许一个活动任务，并发任务会让审批回复对不上是哪一条；正文段以工具调用为界封口，否则前后两段文本黏在同一条消息里；request_stop 与 close 都必须释放挂起的确认与提问，只置停止标志会让回合线程一直阻塞到审批超时
+config.rs[IN7S]: F:解析 Telegram 接入配置与工具确认超时，并校验必填项 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:load_telegram_config、validate_config、effective_confirm_timeout | S:Bot Token 与用户白名单都是必填，白名单缺失时任何 Telegram 用户都能操作 Agent；确认超时有默认与下限，设成 0 会让审批永远等不到回复
+dispatch.rs[IN7M]: F:解析 Telegram 更新并判定路由：标识与白名单、命令分类、思考与工作区命令的参数 | R:code:rust/crates/omnicrawl-connectors/src/telegram/config.rs | A:route_update、classify、command_name、parse_thinking_command、is_allowed | S:本模块只做判定不做调用，网络与回合留给调用方；QQ 连接器直接复用这份命令分类，改签名要同步那边
+files.rs[IN7M]: F:提取 Telegram 文件消息并按扩展名分类、生成安全的落盘名与工作区相对路径 | R:code:rust/crates/omnicrawl-config/src/core/context.rs | A:extract_telegram_file、classify_file_name、safe_download_name、path_suffix | S:远端文件名必须清洗并带时间戳兜底，直接使用会越出临时目录或覆盖同名文件；QQ 与飞书复用同一套分类与重名规则，三处不一致会让 Agent 在不同通道看到不同路径约定
+format.rs[IN7S]: F:实现 Telegram 文本分段、流式裁剪、中断与收尾计划 | R:code:rust/crates/omnicrawl-connectors/src/telegram/api.rs | A:split_message、truncate_for_stream、plan_abort、plan_finalize | S:长度按字符计且留出余量，按字节切会把多字节字符切坏；流式编辑有最小间隔，突破后平台会拒或丢编辑
+mod.rs[IN6T]: F:作为 Telegram 连接器模块根，声明接口、轮询服务、配置、分发、文件、格式化与时间线模块 | R:code:rust/crates/omnicrawl-connectors/src/telegram/bot.rs | A:- | S:-
+timeline.rs[IN8L]: F:装配 Telegram 时间线：正文、工具、思考、计划与子任务各自一条纯文本消息并带固定前缀 | R:code:rust/crates/omnicrawl-connectors/src/render.rs | A:TimelineMessage、TextMessage、ToolMessage、ReasoningMessage、PlanMessage、SubAgentMessage | S:与飞书同构，差别只在平台形态：Telegram 没有卡片与折叠面板，因此靠前缀区分类型；消息 id 是 i64 而飞书是 String，两者不能共用一份端口实现；摘要与正文生成规则与飞书、TUI 共用同一份实现
+
+===/<repository>/rust/crates/omnicrawl-controllers/===
+Cargo.toml[FV7T]: F:声明控制器 crate 的依赖：配置、核心、IPC 与会话 | R:code:rust/Cargo.toml | A:- | S:不依赖任何宿主 crate，需要 git、线程池或文件系统的能力一律经 trait 或参数注入
+README.md[SZ7S]: F:交代控制器域与 Python Mixin 的切分原则、逐模块对映表、宿主粘合层与已知差异 | R:code:rust/crates/omnicrawl-controllers/src/lib.rs | A:- | S:本 crate 只收判定、校验、文案与预算计算，副作用全部留给宿主，最典型的是 undo 的快照存储由宿主实现、crate 内不起 git 子进程
+
+===/<repository>/rust/crates/omnicrawl-controllers/data/===
+agent_tools.json[FZ8L]: F:以数据形式描述 Agent 的工具目录：名称、描述、参数 Schema 与分组标记 | R:code:rust/crates/omnicrawl-controllers/src/tool_catalog.rs | A:- | S:目录是注册规则的唯一数据来源，改工具描述必须同步这里而不是散落到代码；Schema 是发给模型的声明原文，改动会影响前缀缓存
+
+===/<repository>/rust/crates/omnicrawl-controllers/src/===
+advisor.rs[EG8S]: F:实现顾问的判定层：可用性、消息分支装配（剥掉在途顾问调用并保证 user 尾部）、工具清单与结果信封 | R:code:rust/crates/omnicrawl-config/src/features/advisor.rs | A:ADVISOR_TOOL_NAME、build_advisor_branch、strip_inflight_advisor_call、ensure_user_tail、advisor_blacklisted | S:顾问是旁路单轮补全，不产生转录、无工具、无审批，模型选择与协议调用留给宿主；消息里的在途顾问调用要先剥掉，否则顾问会看到自己的半成品输出；连续两次空响应要报错而不是静默重试
+approval.rs[EG8L]: F:实现审批的静态规则：shell 命令风险分流、git 结构化分级与高风险动作表、删除意图识别、审查结论解析与审查提示词 | R:code:rust/crates/omnicrawl-controllers/src/settings.rs | A:TOOL_REVIEW_SYSTEM_PROMPT、normalize_approval_mode、git_tier_action、denied_event_payload | S:规则原样对应 Python 的正则且逐条手写匹配器（本 crate 不引 regex，lookbehind 也不被支持），改匹配器必须复跑对照用例；审查提示词把用户意图摘要与提问回答都标成只作参考，防止被注入内容影响结论；高风险 git 动作表与提示词的分级必须同源
+building.rs[EG6T]: F:装载模式模板并组装 system prompt，决定顾问准则是否追加 | R:code:rust/crates/omnicrawl-controllers/src/advisor.rs | A:advisor_guidelines_block、normalize_mode_name、read_mode_prompt、system_prompt_with_mode | S:顾问准则只在顾问真正启用且未命中黑名单时追加，无条件追加会让模型去调一个不存在的工具；模式名要校验后再拼路径，否则可以越出模板目录
+compression.rs[EG8L]: F:实现工具输出压缩的纯逻辑：选取、参数摘要、压缩请求消息、超长输出采样、回包清洗与截断、净省计量 | R:code:rust/crates/omnicrawl-config/src/features/tool_output_compression.rs | A:should_compact、COMPACTABLE_TOOLS、compacted_display、saved_tokens_notice、arguments_summary | S:只有 bash、powershell、git、grep 参与压缩，扩大到其它工具会把结构化结果压成散文；回包清洗必须剥掉模型加的围栏与前言，否则这些包装会进上下文并占掉压缩带来的全部收益；模型回复压缩已不在压缩链上（非工具部分由结构化摘要承担），其包裹标记随之下线
+control.rs[EG7M]: F:实现退出与关闭的判定层：会话收尾决策、关闭或停用前的排空决策与关闭阶段顺序、子任务取消文案 | R:code:rust/crates/omnicrawl-controllers/src/settings.rs | A:session_closed_action、close_step、subagents_disable_step、AGENT_CLOSE_REASON | S:真正的资源关闭（MCP、Monitor、临时目录、运行时）与隔离区收尾仍属宿主，本模块只判定；未排空就关闭会让在途子任务无终态
+error.rs[EG6T]: F:定义控制器域的错误类型，按字符串保真搬运 Python 的 AgentError 文案 | R:code:rust/crates/omnicrawl-commands/src/lib.rs | A:AgentError | S:文案直接进 UI 与模型上下文，因此不做错误分类也不改写措辞
+json.rs[EG7S]: F:实现 Python json.dumps 的可用子集与 repr、数字文本，供工具结果信封、审查指令与参数摘要使用 | R:code:rust/crates/omnicrawl-connectors/src/json.rs | A:python_dumps、python_repr、python_number_text、python_dumps_compact_sorted | S:serde_json 的紧凑输出没有分隔空格、缩进风格也不同，直接用它会让信封与审查指令的字节形状与既有实现不一致；排序版本用于需要稳定键序的摘要与缓存身份
+lib.rs[EG6T]: F:作为控制器 crate 的模块根，声明共享、审批、压缩、上下文、子代理、回合等子模块 | R:code:rust/crates/omnicrawl-controllers/src/error.rs | A:- | S:边界是把 Python Mixin 里的判定与文案收进来、副作用留给宿主，需要 git 的地方走注入的存储端口
+memory.rs[EG7M]: F:解析三类作用域的记忆目录并实现会话级记忆清理，含路径穿越防护 | R:code:rust/crates/omnicrawl-session/src/memory.rs | A:project_memory_root、user_data_root、memory_root、user_memory_root、SESSION_MEMORY_DIRECTORY | S:作用域目录必须彼此隔离，session 级混进 user 目录会让跨会话事实被当成会话内记忆读出；清理只能删目标目录内的条目，路径校验缺失会删到工作区里
+output.rs[EG7S]: F:实现批次输出预算与落盘预览、模型可见结果改写、视觉旁路文案与观察消息 | R:code:rust/crates/omnicrawl-controllers/src/shared.rs | A:plan_batch_archive、rewrite_archived_results、format_archived_output_preview、vision_display_text、vision_failure_error | S:单工具阈值与批次预算是两级，只看单工具会让一批中等输出整体溢出；落盘预览必须带路径，否则模型拿到的是被截断且无法回读的文本
+settings.rs[EG7M]: F:实现审批模式与推理强度归一化、压缩阈值换算、工具开关校验与子代理资源参数校验 | R:code:rust/crates/omnicrawl-config/src/features/approval.rs | A:normalize_approval_mode、normalize_reasoning_effort、thinking_type_for、SUBAGENT_ADVANCED_SETTING_RULES | S:宿主侧替换配置字段、重建工具表与运行时、失败回滚的事务留在宿主，这里只收校验与换算；工具开关键表要与配置 crate 同源，两处各列一份会漏掉新增工具
+sha1.rs[EG6T]: F:实现 SHA-1 摘要与前 10 位摘要，只用于按哈希工具名反查真实工具名 | R:code:rust/crates/omnicrawl-controllers/src/shared.rs | A:sha1_hex、sha1_digest10 | S:自实现是为了不给这一处用途引入依赖，与仓库其它 crate 的手写哈希同取舍；摘要位数变化会让已发出的哈希名全部失效
+shared.rs[EG7M]: F:维护共享常量表与文案：工具超时与输出预算阈值、上下文超限与限流错误标记、继续类输入文本、哈希工具名反查 | R:code:rust/crates/omnicrawl-controllers/src/sha1.rs | A:DEFAULT_TOOL_TIMEOUT_SECONDS、TOOL_OUTPUT_INLINE_LIMIT_CHARS、CONTEXT_OVERFLOW_ERROR_MARKERS、CONTINUE_LAST_TASK_TEXTS | S:错误标记表决定这个失败算不算上下文超限，漏一种文案会让本该压缩恢复的回合直接报错给用户；继续类输入文本表与文本规则模块共用，两处各写一份会让短继续的识别与还原不一致
+store.rs[EG6T]: F:实现事件投影编排：落盘事件经值级脱敏、运行期投影必须改用未脱敏原文，并构造会话未启用时的等价事件 | R:code:rust/crates/omnicrawl-session/src/event.rs | A:ProjectionFeed、projection_feed、ephemeral_event、ephemeral_event_id | S:运行期投影若用脱敏后的 payload，同一会话的多轮对话与已发送前缀不再逐字一致，前缀缓存失效且模型会看到自己的推理被改写；这是这条规则存在的唯一理由
+tool_args.rs[EG8L]: F:实现工具参数层：工具名与参数名归一化、参数公开投影、紧凑 Schema、Schema 二次校验与结果信封 | R:code:rust/crates/omnicrawl-controllers/src/tool_catalog.rs | A:TOOL_NAME_ALIASES、ARGUMENT_NAME_ALIASES、public_tool_arguments、is_subagent_tool | S:落到会话与确认页的参数必须走公开投影，协议原文可能含明文密钥，直接落盘即泄露；别名表是兼容既有模型输出的唯一手段，删项会让旧写法被判未知工具
+tool_catalog.rs[EG7M]: F:重放工具注册规则：随 runner 缺席而省略、知识库与 Windows 整组注册、记忆组受开关控制、子代理角色枚举与禁用过滤 | R:code:rust/crates/omnicrawl-controllers/data/agent_tools.json | A:build_agent_tools、build_mcp_tools、windows_tool_specs、ToolCatalogOptions、ToolSpec | S:说明与 Schema 是数据、注册规则是逻辑，两者必须分开维护；工具整组注册或整组不注册，半边注册会让模型看到一个残缺的工具族
+tool_declarations.rs[EG8L]: F:把工具表的参数契约转成 Provider 的 functions 形状，按示例值推断类型并用非空约束兜底 | R:code:rust/crates/omnicrawl-controllers/src/tool_catalog.rs | A:declaration、tool_parameters_schema、infer_tool_property_schema | S:工具表里部分工具的参数契约写的是示例值而不是 JSON Schema，声明前必须按示例推断类型，否则发给 Provider 的声明不合法；MCP 暴露的 Schema 来自各家实现，要兼容 type 数组等差异；声明每轮随请求发送，形状改动会影响前缀缓存
+tool_impl.rs[EG7M]: F:实现工具实现的判定面：待办清单投影与输出信封、提问入参校验与回答信封、记忆工具作用域解析 | R:code:rust/crates/omnicrawl-controllers/src/tool_args.rs | A:project_todos、todos_output、MAX_TODO_ITEMS、TodoItem、TODO_COMPLETED_STATUSES | S:工具实现本体是 I/O 留在宿主；清单条数与字段长度都有上限，无上限会让一次调用填满上下文；完成状态接受多个同义写法是为兼容模型输出，收紧会让既有调用被判格式错误
+types.rs[EG6T]: F:定义控制器域的数据契约：工具调用、工具图片附件与工具结果 | R:code:rust/crates/omnicrawl-core/src/types.rs | A:ToolCall、ToolResult、ToolImageAttachment | S:只搬控制器真正读写的字段，ui_artifact 保持 JSON 透传，内核对它的结构一无所知
+undo.rs[EG8L]: F:实现 /undo 的安全性判定、副作用账本与快照事件：可回退工具集、快照路径防穿越、恢复预检 | R:code:rust/crates/omnicrawl-cli/src/undo.rs | A:SNAPSHOT_EVENT_TYPE、SnapshotStore、WorktreeSnapshot、SnapshotError、is_relative_to | S:git 子进程与会话存储由宿主实现，crate 内不起进程；快照路径必须做防穿越校验，否则回退会写到工作区之外；只读与记忆工具被豁免，纳入账本会让普通查询也生成快照
+vision_proxy.rs[EG7M]: F:实现视觉代理的判定面：候选模型引用选择与标签、失败汇总文案与输出文本截断 | R:code:rust/crates/omnicrawl-cli/src/vision_proxy.rs | A:VISION_MAX_OUTPUT_CHARS、model_ref_selection、model_ref_label、candidate_error | S:真正的模型调用在内核侧，本模块只放能脱离运行时验证的判定；候选错误要截断并带模型标签，否则多候选失败时用户看不出是哪一个出的问题
+workspace.rs[EG7S]: F:实现运行中工作区切换的校验与拒绝文案、内部目录保护与记忆与会话路径判别 | R:code:rust/crates/omnicrawl-controllers/src/memory.rs | A:resolve_switch_target、pending_worktrees_error、subagent_drain_error、is_memory_path、is_session_path | S:存在未应用的子代理 worktree 时必须拦下切换，直接切会让那些改动失去应用目标；内部目录（记忆与会话）受保护，切到那里会把 Agent 的状态目录当成项目
+
+===/<repository>/rust/crates/omnicrawl-controllers/src/context_compaction/===
+evidence.rs[EG8L]: F:实现按当前有效摘要引用恢复会话精确证据：只允许恢复最后一条压缩摘要授权的来源事件，artifact 正文由宿主读取端提供 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:RECALL_SESSION_EVIDENCE_TOOL_NAME、SessionEvidenceRecallService、DEFAULT_EVIDENCE_MAX_ITEMS | S:授权边界是本模块的全部意义：放宽成能读任意事件就等于给出绕过压缩取回全文的后门；读取失败只降级为元数据，不得让恢复工具整体失败
+ledger.rs[EG6T]: F:把测量事件序列化成带 Schema 版本的 Token 账本载荷 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/policy.rs | A:MEASUREMENT_SCHEMA_VERSION、UsageLedger | S:载荷带版本号，改字段不升版本会让旧账本被按新形状解析
+meter.rs[EG8L]: F:把进入模型的形状折算成 Token 并产出逐事件价格快照，图片先换成句柄再计价 | R:code:rust/crates/omnicrawl-cli/src/session/turn/conn.rs | A:image_handle_text、content_tokens、message_tokens、conversation_tokens、schema_tokens | S:图片必须按句柄计价：Base64 长度与原图体积成正比而与视觉 Token 无关，按字符折算会把一张 1MB 的图算成二十五万 Token，让压缩在真实占用很低时就触发；这份实现被压缩驱动与宿主显示共用，各写一份会让显示与实际请求体大小不一致
+mod.rs[EG6T]: F:作为上下文压缩模块根，声明策略、校验、投影、账本、证据、摘要与服务子模块 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/policy.rs | A:- | S:-
+policy.rs[EG8L]: F:承载压缩的数据模型与纯判定：上下文预算快照、回合批次选择、超限恢复批次、触发与紧急比例判定 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/meter.rs | A:TokenUsageSample、ContextBudgetSnapshot、SourceEvent、CompactionBatch、AutoCompactionDecision、MeasureInput | S:Token 估算不依赖第三方 tokenizer，换算法会让触发时机整体偏移；紧急比例与常规触发是两条独立条件，只判其一会让上下文在临界点直接超限而不是提前压缩
+projection.rs[EG7M]: F:把结构化摘要、最近原文与工具事件投影成模型历史，并渲染摘要 Markdown | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/policy.rs | A:assemble_summary_history、recent_message_count、render_summary_markdown、event_to_model_message | S:工具事件投影要按场景剔除已概况的原始事件再就地插入概括，否则同一批调用会在上下文里出现两次
+service.rs[EG8L]: F:编排完整回合后的测量、模型摘要、校验、投影与降级，只依赖注入的摘要压缩器、账本、校验器与投影端口 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/summary.rs,code:rust/crates/omnicrawl-controllers/src/context_compaction/validation.rs | A:ContextCompactionService、ContextMeasurementResult、ContextCompactionOutcome | S:Session 与记忆的读写留在宿主，本模块只编排；摘要校验失败必须降级而不是把不合格摘要写进历史，否则旧约束会永久丢失
+summary.rs[EG8L]: F:组装摘要提示词、按事件索引分块、解析模型 JSON 响应并累计用量，模型调用经端口注入 | R:code:rust/crates/omnicrawl-compaction/src/adapter.rs | A:SUMMARY_TOOL_CHOICE、MAX_INDEX_CHUNK_TOKENS、SummaryModelResponse、SummaryGenerationError | S:tool_choice 固定为 none，否则摘要器会尝试调工具；输出预留 Token 必须从上下文窗口里先扣掉，否则大窗口模型的摘要请求会被判超限；解析失败要有限次重试而不是无限重发
+validation.rs[EG8L]: F:校验结构化摘要的 Schema、来源、精确证据与长度预算，拒绝不可恢复、无来源与把未完成写成已完成的摘要 | R:code:rust/crates/omnicrawl-controllers/src/context_compaction/policy.rs | A:SummaryValidation、REFERENCED_LIST_FIELDS、FILE_CHANGE_TOOLS | S:三类拒绝理由对应三种真实损坏：旧约束丢失、引用不存在的事件、把未完成的工具链或该记未记的文件写成已完成；超长单事件要豁免拆分，否则合法摘要会被判超预算
+
+===/<repository>/rust/crates/omnicrawl-controllers/src/subagents/===
+batch.rs[EG7S]: F:实现子代理批次编排的状态面：取消令牌、登记与完成计数、未登记索引、完成等待、共享写者锁准入与取消错误判定 | R:code:rust/crates/omnicrawl-controllers/src/subagents/tasks.rs | A:ActiveBatch、requires_shared_writer_lock、is_cancellation_error、disabled_error | S:真正的线程池与模型在宿主，这里只是纯状态机；多个子任务共享工作区写时必须拿同一把写者锁，否则改动会互相覆盖
+coordinator.rs[EG8L]: F:实现子代理的判定与投影面：参数校验、只读与标准工具集收窄、保留角色名、结果与事件投影、失败诊断 | R:code:rust/crates/omnicrawl-controllers/src/subagents/definitions.rs | A:READ_ONLY_TOOL_NAMES、STANDARD_WRITE_TOOL_NAMES、RESERVED_ROLE_NAMES、is_reserved_role、validate_task_arguments | S:只读角色的工具白名单与黑名单要同时维护，只靠白名单会让新增的写工具默认放行；computer-use 是保留角色，不得进 subagent 的角色枚举，否则模型能绕过专用工具直接驱动桌面
+definitions.rs[EG8L]: F:解析 Markdown Agent 定义、按来源优先级发现定义、提供注册表查询与诊断 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:AgentDefinition、AgentDefinitionRegistry、parse_agent_definition、MAX_DEFINITION_FILE_BYTES | S:扫描顺序是离项目越近优先级越高且首次出现的名称获胜，顺序反过来会让内置定义顶掉项目自定义；frontmatter 只解析实际用到的 YAML 子集且语义对齐 safe_load，放宽解析会让同一份定义在两侧产生不同权限
+execution.rs[EG6T]: F:定义子代理执行的私有快照类型与 Fork 样板文本，冻结任务创建时的模型选择 | R:code:rust/crates/omnicrawl-controllers/src/subagents/orchestration.rs | A:SubAgentModelSnapshot、SubAgentExecutionContext、FORK_BOILERPLATE | S:冻结的模型配置只在进程内用于构造子任务运行时，绝不进入会话、SSE、artifact 与公开结果，泄露它等于把主模型的渠道信息暴露给子代理输出
+mod.rs[EG6T]: F:作为子代理模块根，声明定义解析、批量状态、协调判定、执行快照、编排投影、只读策略与恢复子模块 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:- | S:任务生命周期本体在 tasks 模块，模型运行时与 worktree 的 git 操作留在宿主
+orchestration.rs[EG7S]: F:实现子任务失败描述、Fork 上下文冻结、结果公开投影、后台通知注入与是否需要完整评审的判定 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:describe_run_failure、fork_task_message、RESULT_SUMMARY_CHARS、SUBAGENT_FAILURE_FALLBACK | S:结果摘要按字符截断，超限部分要给出 artifact 路径而不是直接丢弃；失败文案有明确的兜底串，空结果与不可解析必须各用各的文案，混用会让父 Agent 无法区分失败原因
+read_only.rs[EG8L]: F:实现只读子代理的命令白名单判定：可执行名归一化、命令链分段、curl 与浏览器 CLI 的写入判定、find 写操作识别 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:READ_ONLY_COMMAND_TOOL_NAMES、BASH_COMMANDS、POWERSHELL_COMMANDS、CURL_REMOTE_WRITE_FLAGS、FIND_WRITE_ACTIONS | S:只读角色靠这份逐 token 判定兜底，命令链分段要处理重定向、空片段与未闭合引号，漏一种就能构造出绕过的写法；curl 的远端写方法也要拦，否则只读仍能改远端数据
+recovery.rs[EG7M]: F:从父会话的 additive 事件重建跨进程子代理任务快照：终态按原文恢复，崩溃时未终结的标为失败 | R:code:rust/crates/omnicrawl-controllers/src/subagents/tasks.rs | A:rebuild_task_snapshots_from_session_events、LifecycleEvent | S:恢复语义刻意收窄到控制面可查询的安全快照；把 queued 或 running 原样恢复会让用户在列表里看到一个永远不会结束的任务
+tasks.rs[EG8L]: F:实现进程内后台子代理任务管理：提交与查询、取消令牌、TTL 保留期清理、一次性通知与结果边界截断 | R:code:rust/crates/omnicrawl-controllers/src/subagents/recovery.rs | A:SubAgentTaskManager、SubAgentTaskSnapshot、CancelToken、is_terminal、bound_result | S:本模块不持有模型、会话或工具对象，执行经端口注入，后台线程不得复制 Agent 循环；所有公开载荷只能来自上游已完成安全投影的元数据，prompt、推理与凭据不得写进任务快照
+verify.rs[EG7S]: F:定义 verify 子代理的固定检查工具：检查标识、命令描述与参数 Schema 解析 | R:code:rust/crates/omnicrawl-controllers/src/subagents/coordinator.rs | A:VERIFY_COMMAND_TOOL_NAME、verify_checks、parse_verify_arguments | S:刻意不接收任意 Shell 文本，也不把命令列表放进用户配置：模型只能选宿主维护的标识，宿主解析成固定 argv 并以非 shell 方式启动，否则 verify 会成为执行权限的旁路
+worktrees.rs[EG7S]: F:实现 worktree 的判定面：登记键与查找归一化、变更统计、丢弃保护判定、产物摘要渲染与分支名片段清洗 | R:code:rust/crates/omnicrawl-cli/src/worktree.rs | A:WorktreeSession、discard_guard、sanitize_branch_fragment、artifact_lines | S:worktree 的创建与应用由宿主执行，本模块只吃结构体输入；分支名片段要做非安全字符折叠与长度截断，否则会生成 git 拒绝的分支名；丢弃保护在存在未应用变更时必须拦下
+
+===/<repository>/rust/crates/omnicrawl-controllers/src/turn/===
+compaction.rs[EG7M]: F:产出压缩通知文案、压缩记忆写请求、压缩后的自动记忆召回查询与归档事件选取 | R:code:rust/crates/omnicrawl-session/src/memory.rs | A:format_compaction_notice、compaction_memory_requests、compaction_recall_query、archive_compacted_event_ids、RECALL_MAX_RESULTS | S:会话读写与模型调用留在宿主，本模块只产出该写什么、该召回什么与该归档哪些事件；召回上限与截断长度必须固定，否则压缩后自动召回会把新上下文再撑满
+context_messages.rs[EG6T]: F:装配项目规范上下文消息的固定外壳（来源标记与权限边界） | R:code:rust/crates/omnicrawl-host/src/prompt.rs | A:project_instructions_messages、PROJECT_INSTRUCTIONS_BOUNDARY | S:权限边界文本是外壳的一部分，去掉它等于让项目文件的内容拥有与系统提示词同级的权威；读 AGENTS.md 与遍历 Skill 是宿主 I/O，不在本模块
+continuation.rs[EG8L]: F:实现自动续跑的状态机判定面：续跑理由（仅推理、清单未完成）、次数上限、暂停与终态以及事件载荷 | R:code:rust/crates/omnicrawl-config/src/features/run_guard.rs | A:CONTINUE_PROMPT、REASON_REASONING_ONLY、REASON_TODO_INCOMPLETE、CONTINUE_EXHAUSTED_EVENT | S:模型只输出推理或清单未完成才续跑，其余情况续跑会放大重复输出；上限到达后要落耗尽事件而不是静默停止；真实模型调用与会话落盘留在宿主
+environment.rs[EG8L]: F:生成注入给模型的运行环境摘要：系统与终端线索、Agent 运行窗口探测与 Windows 进程链 | R:code:rust/crates/omnicrawl-config/src/core/context.rs | A:runtime_environment_context、detect_agent_window_hint、windows_terminal_label、windows_shell_label | S:只暴露低敏、稳定且影响工具选择的信息，不得枚举完整环境变量——那会把 API Key、令牌与代理配置塞进模型上下文；进程链探测要有条目上限
+mod.rs[EG6T]: F:作为回合模块根，声明接线面、文本规则、续跑判定、压缩判定、上下文消息、环境摘要与工具事件子模块 | R:code:rust/crates/omnicrawl-controllers/src/turn/turn_loop.rs | A:- | S:-
+prompt_context.rs[EG7M]: F:做系统提示词基线与上下文消息装配的文本与形状：版本标记、Skill 上下文边界、激活 Skill 渲染与工具能力消息 | R:code:rust/crates/omnicrawl-host/src/prompt.rs | A:AGENT_PROMPT_VERSION、build_system_prompt、format_active_skills_for_context、skill_context_message、tool_capabilities_message | S:AGENTS.md 读取、Skill 扫描与工作区探测是宿主 I/O；顺序契约由本模块与宿主共用，两侧各写一份会让上下文消息顺序漂移并破坏前缀缓存
+skill_command.rs[EG6T]: F:解析 /skill:<名> [任务] 手动技能命令并给加载与未命中的状态文案 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:SKILL_COMMAND_PREFIX、parse_skill_command、skill_not_found_message、manual_skill_reason | S:未命中时必须列出可用 Skill 名，否则用户无从得知该写什么；每轮开始要清空上一轮手动注入的技能，否则技能会粘住后续无关任务
+tool_events.rs[EG7M]: F:提取协议原文里的工具调用字段并构造 requested 与 result 两个落盘载荷 | R:code:rust/crates/omnicrawl-cli/src/tool_events.rs | A:PROTOCOL_ONLY_EVENT_FIELDS、strip_protocol_only_fields、raw_tool_call_event_fields、requested_event_payload、result_event_payload | S:arguments_json 可能含明文密钥，只留在内存投影绝不落盘；恢复投影优先用协议原文而不是公开参数投影，两者混用会让恢复后的历史与运行期不一致
+tool_prune.rs[EG7M]: F:实现工具结果的按需淘汰：筛选可淘汰的旧批次、生成决策问题与候选，并把裁决应用回上下文 | R:code:rust/crates/omnicrawl-host/src/tools/decision_prune.rs | A:prunable_tool、PruneCandidate、PRUNE_EXCLUDED_TOOLS、prune_question_id | S:最新一批永不参与淘汰，它还在被后续步骤使用；排除工具表里是上下文骨架的工具（如待办与提问），淘汰它们会让模型失去任务状态；候选正文都要截断，否则问决策模型本身就吃掉省下的 Token
+turn_loop.rs[EG8L]: F:把宿主的模型请求与工具批次接到回合循环，提供回调面、两个循环端口与守卫、收尾补发判定与失败分类 | R:code:rust/crates/omnicrawl-core/src/runner.rs,code:rust/crates/omnicrawl-ipc/src/bridge.rs | A:run_stream、TurnReport、StreamPorts、StreamOutcome、TurnFailure、HostEventCallbacks、model_supports_vision | S:回调缺省回落必须与 Python 同规则（如重试提示回落状态回调），各行其是会让宿主漏接事件；会话落盘、快照、压缩与续跑仍在宿主，本模块只接线
+turn_text.rs[EG6T]: F:实现回合文本规则：短继续请求识别并还原成上一轮任务、被取消回合的历史摘要、助手消息的推理字段 | R:code:rust/crates/omnicrawl-controllers/src/shared.rs | A:is_continue_last_task_request、resolve_continue_request、cancelled_turn_summary、assistant_message | S:短继续要还原成上一轮真实任务文本，直接把它当新任务会让续跑丢失上下文；取消摘要必须写明已执行的工具，否则下一轮会重复执行同样的命令
+
+===/<repository>/rust/crates/omnicrawl-core/===
+Cargo.toml[FV6T]: F:声明回合循环 crate 的目标与最小依赖（serde 与 serde_json） | R:code:rust/Cargo.toml | A:- | S:依赖面刻意极窄：本 crate 只承载纯状态转移，不得引入 HTTP、配置或 UI 依赖
+README.md[SZ6T]: F:交代回合循环的迁移范围、留在宿主的编排壳与状态转移清单 | R:code:rust/crates/omnicrawl-core/src/runner.rs | A:- | S:状态转移清单是这一层的行为契约，改判定前先核对表里的序号与触发条件
+
+===/<repository>/rust/crates/omnicrawl-core/src/===
+diagnostics.rs[EG7S]: F:提供进程级诊断出口：宿主装接收端，未装的进程回落到 stderr | R:code:rust/crates/omnicrawl-tui/src/diagnostics.rs | A:install、uninstall、report、info、warn、error | S:库代码不得直接写 stderr：全屏 TUI 下这些输出会残留在画布上盖住会话区；本模块不加任何前缀，文案由调用方写全
+lib.rs[EG6T]: F:作为回合循环 crate 的模块根，声明类型、执行器与诊断模块 | R:code:rust/crates/omnicrawl-core/src/runner.rs | A:- | S:与协议 crate 的边界是：协议负责把流事件归并成一条模型回复，本 crate 负责拿这条回复跑完整批工具循环，两者不共享类型
+runner.rs[EG7M]: F:执行模型循环：调模型、整批交工具、按三类预算与取消停止检查推进，直到模型不再请求工具 | R:code:rust/crates/omnicrawl-core/src/types.rs | A:AgentLoopRunner、LoopGuards、SystemClock | S:一次模型回复里的全部工具调用一次性交宿主，由宿主完成整批规范化与审批，逐条交会破坏整批观察的语义；时钟经注入，测试不得依赖真实时间
+types.rs[EG7S]: F:定义循环的数据契约：工具调用与结果、Agent 层模型回复、预算、观察、循环结果与错误 | R:code:rust/crates/omnicrawl-core/src/runner.rs | A:ToolCall、ToolResult、AgentModelReply、AgentLoopLimits、AgentLoopResult、LoopError | S:这是宿主编排与循环之间的唯一契约面，加字段要同步协议桥接；纯展示字段不在这里，展示由宿主投影
+
+===/<repository>/rust/crates/omnicrawl-decision/===
+Cargo.toml[FV7T]: F:声明决策服务 crate 的库与二进制目标及其依赖，出站请求复用宿主执行层 | R:code:rust/Cargo.toml | A:- | S:决策请求的线格式、审查判定与常驻进程控制都复用宿主执行层，不写第二套；阻塞式出站调用在异步处理函数里必须用 spawn_blocking 承接
+
+===/<repository>/rust/crates/omnicrawl-decision/src/===
+app.rs[IN7S]: F:装配决策服务的 HTTP 应用：路由、统一响应信封与框架级错误响应 | R:code:rust/crates/omnicrawl-api/src/app.rs | A:AppState、ApiError、data、build_router、build_app | S:本服务不做鉴权，因此配置只接受回环地址，「只有本机程序能调用」是唯一准入控制；信封形状与本地 API 一致，客户端才能复用解析
+config.rs[IN7T]: F:装载决策服务的运行期配置与默认决策渠道，含回环地址归一化 | R:code:rust/crates/omnicrawl-config/src/features/decision_model.rs | A:DecisionSettings、load_settings | S:没有可用的决策渠道就不该启动——没有渠道就无从决策；非回环地址要被归一或拒绝，否则等于把无鉴权的决策能力暴露到网络
+lib.rs[IN6T]: F:作为决策服务 crate 的模块根，声明配置、应用、路由、服务生命周期与上游转发模块 | R:code:rust/crates/omnicrawl-decision/src/routes.rs | A:- | S:本 crate 把宿主机内已有的决策能力暴露成本机 REST，不重新实现决策语义
+main.rs[IN7S]: F:实现决策服务的控制入口：serve 常驻、ensure 复用或拉起、stop 停止、status 打印状态并检测上游连通性 | R:code:rust/crates/omnicrawl-decision/src/server.rs | A:serve、ensure、stop、status | S:ensure 与 stop 按 PID 文件认定服务，不靠连接端口去猜——回环连接也可能被静默丢弃，探测会把调用方卡满超时；服务以脱离宿主的方式拉起，宿主退出不回收它
+routes.rs[IN8M]: F:实现决策端点：通用 decide、选优 choice、排序 rank、审查 review 与状态查询 | R:code:rust/crates/omnicrawl-decision/src/upstream.rs | A:decide、choice、rank、review、status、runtime_from_config | S:出站调用是阻塞式的，每个处理函数必须经 spawn_blocking 承接，否则会阻塞异步 worker；四个端点的请求体形状是与外部脚本的契约
+server.rs[IN8L]: F:管理决策服务的进程生命周期：常驻监听、按 PID 文件与服务日志认定就绪、复用已有实例、显式停止 | R:code:rust/crates/omnicrawl-decision/src/config.rs | A:ensure_running、service_ready、stop、EnsureOutcome、pid_path、log_path | S:就绪判定靠 PID 文件而不是连接探测，后者在服务未跑时会把设置面板与启动路径卡满超时；服务由宿主以脱离方式创建，本实例崩溃也不回收它
+upstream.rs[IN8M]: F:实现决策转发的四种语义：通用决策、选优、排序与审查，复用宿主的出站路径与解析逻辑 | R:code:rust/crates/omnicrawl-host/src/decision_wire.rs | A:decide、decide_choice、decide_rank、DecideOutcome、UpstreamError | S:请求形状、选项键规则、脱敏旁路与失败语义只有一份实现，REST 与宿主内部三处调用点必须完全一致；失败按调用方期待分流：通用决策透传上游错误，选优与排序要给出可判定的兜底
+
+===/<repository>/rust/crates/omnicrawl-entry/===
+Cargo.toml[FV6T]: F:声明统一入口 crate 的库与二进制 omnicrawl-host 目标 | R:code:rust/Cargo.toml | A:- | S:二进制名为 omnicrawl-host，避免与 stdio 内核 omnicrawl 混淆；启动器与宿主按同目录同名查找它
+README.md[SZ6T]: F:交代启动入口的模块对映、各子命令路由与启动编排的端口化差异 | R:code:rust/crates/omnicrawl-entry/src/main.rs | A:- | S:无宿主载荷的平台（armv7 等）连接器退回内核路径，那条路径只自持三个工具且会话不落盘，只能对话
+
+===/<repository>/rust/crates/omnicrawl-entry/src/===
+channel_setup.rs[IN7M]: F:实现终端行式渠道配置向导：逐项提问、组装渠道并复用配置域的写回落盘 | R:code:rust/crates/omnicrawl-config/src/models/channels.rs | A:run_channel_setup、ChannelSetupOutcome、default_base_url、channel_key | S:首次配置必须能在没有任何界面依赖时跑起来（出现在 splash 之前，可能只有 stdin 与 stdout），因此不做全屏表单；写回复用配置域实现，不另起一套落盘
+lib.rs[IN6T]: F:作为统一入口 crate 的模块根，说明与 Python entry 的路由对应关系 | R:code:rust/crates/omnicrawl-entry/src/main.rs | A:- | S:-
+main.rs[IN7M]: F:实现启动路由：--help 与 --version、kernel、api、decision、fetch、connector 子命令与默认 TUI 路径，继承标准输入输出并传播退出码 | R:code:rust/crates/omnicrawl-entry/src/startup.rs | A:run_child、run_tui | S:无交互终端时直接报错退出而不是静默回退，服务器场景应显式用 api；退出时先回收连接器子进程再返回退出码，否则会留下轮询进程
+startup.rs[IN7M]: F:编排启动准备：模板读取端口、首次配置与诊断、连接器规格与拉起、交互终端判定 | R:code:rust/crates/omnicrawl-config/src/core/bootstrap.rs | A:bootstrap、connector_specs、start_connectors、interactive_terminal、locate_templates_dir | S:模板既有磁盘目录也有编译期内嵌副本，缺副本会在打包后启动即崩；配置错误与凭据缺失用不同退出码（1 与 2），启动器与脚本按码分流
+
+===/<repository>/rust/crates/omnicrawl-extensions/===
+Cargo.toml[FV6T]: F:声明 Skill 子系统 crate 的目标与依赖 | R:code:rust/Cargo.toml | A:- | S:依赖面只有 serde_json：Skill 发现与检索是纯逻辑，不得引入宿主或网络依赖
+README.md[SZ6T]: F:交代 Skill 子系统的模块分工（发现、索引、匹配与渐进式披露）与边界 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:- | S:对照数据集由生成脚本产出，两侧靠 fixture 对齐而不是靠人读代码
+
+===/<repository>/rust/crates/omnicrawl-extensions/src/===
+bm25.rs[KG7S]: F:实现 BM25 排序与分词，供 Skill 检索与联网搜索的本地排序共用 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:rank、tokenize、order、Bm25Hit | S:参数取 k1 与 b 的常用默认值：词频饱和让重复词不再无限加分，长度归一让长文档不因词多占优，缺了归一会让写得长压过写得贴题；中文按二字切分，换切分方式会让同一份索引的排序结果整体变化
+lib.rs[XG6T]: F:作为 Skill 子系统 crate 的模块根，声明检索、路径与 Skill 模块 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:- | S:覆盖 Skill 全生命周期「发现、索引、匹配、注入」，不涉及插件
+path.rs[KG6T]: F:提供 Python 路径语义的可用子集：解析符号链接、展开用户目录、剥掉 Windows 扩展前缀并把正斜杠折回平台分隔符 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:resolve、expanduser、home | S:路径不存在时按非严格语义解析最近的已存在祖先再拼回剩余片段，直接返回错误会让新建目录的场景全部失败；Windows 短名与扩展前缀不处理会导致同一路径被当成两个不同来源
+skill.rs[XG8L]: F:实现 Skill 全生命周期：名称与描述校验、frontmatter 解析、SKILL.md 与根级 Markdown 扫描、符号链接去重、同名冲突诊断、按作用域与关键词的 BM25 索引检索 | R:code:rust/crates/omnicrawl-extensions/src/bm25.rs,code:rust/crates/omnicrawl-config/src/features/skills.rs | A:SkillManager、MAX_NAME_LENGTH、SKILL_SCOPES、SEARCH_SCOPES、SkillSearchHit | S:进程内同名冲突必须报诊断而不是静默取一个，否则用户改了项目级 Skill 却发现生效的是用户级；符号链接要去重，同一目录被链接两次会让一个 Skill 出现在多个作用域里；检索只有 BM25 一条链路，再补一套关键词打分会让同一查询出现两种名次；Skill 指令不注入 system prompt，靠工具按需读取正文
+
+===/<repository>/rust/crates/omnicrawl-fetch/===
+Cargo.toml[FV7T]: F:声明抓取接口 crate 的库与二进制目标及其依赖，抓取执行体复用宿主执行层 | R:code:rust/Cargo.toml | A:- | S:抓取执行体、robots 缓存与指纹传输都复用宿主执行层，不写第二套；否则接口与 fetcher 工具的抓取语义会分叉
+
+===/<repository>/rust/crates/omnicrawl-fetch/src/===
+app.rs[IN7T]: F:装配抓取接口的 HTTP 应用：路由、统一响应信封与框架级错误响应 | R:code:rust/crates/omnicrawl-decision/src/app.rs | A:AppState、ApiError、data、build_router、build_app | S:本服务不做鉴权，只接受回环地址；信封与决策接口一致，批量脚本才能复用解析
+config.rs[IN7T]: F:装载抓取接口的运行期配置与抓取执行体装配，含回环地址校验 | R:code:rust/crates/omnicrawl-config/src/features/fetch_api.rs | A:FetchSettings、load_settings | S:抓取执行体必须与 TUI 和本地 API 同一口径（同一条指纹传输、同一份 TLS 会话缓存判定），各写一份会让同一网址在不同入口拿到不同内容；只接受回环地址，否则等于向网络提供任意抓取能力
+lib.rs[IN6T]: F:作为抓取接口 crate 的模块根，说明其为本机其它程序提供无鉴权抓取通道的定位 | R:code:rust/crates/omnicrawl-fetch/src/routes.rs | A:- | S:抓取能力与 fetcher 工具同源，本 crate 只换入参形状，不重写抓取语义
+main.rs[IN7S]: F:实现抓取接口的控制入口：serve 常驻、ensure 复用或拉起、stop 停止、status 打印状态 | R:code:rust/crates/omnicrawl-fetch/src/server.rs | A:serve、ensure、stop、status | S:服务以脱离宿主的方式拉起，宿主退出不回收；就绪判定按 PID 文件与服务日志，不靠连接探测，否则会把启动路径卡满超时
+routes.rs[IN7S]: F:实现抓取端点：POST /v1/fetch 与 GET /v1/status，字段口径直接对映 fetcher 工具参数 | R:code:rust/crates/omnicrawl-host/src/tools/fetcher.rs | A:fetch、status | S:抓取是阻塞式网络调用（并行抓取用线程、JS 沙箱同线程），处理函数必须经 spawn_blocking 承接，否则会阻塞异步 worker；字段与工具参数同口径，两侧不一致会让同一请求在两处得到不同结果
+server.rs[IN8L]: F:管理抓取接口的进程生命周期：常驻监听、按 PID 文件与服务日志认定就绪、复用实例与显式停止 | R:code:rust/crates/omnicrawl-fetch/src/config.rs | A:ensure_running、service_ready、stop、EnsureOutcome、pid_path、log_path | S:就绪判定不靠连接探测：回环连接也可能被静默丢弃，探测会把启动路径卡满超时；服务由宿主以脱离方式创建，本实例崩溃也不回收它
+
+===/<repository>/rust/crates/omnicrawl-host/===
+Cargo.toml[FV7T]: F:声明宿主执行层 crate 的依赖：配置、控制器、核心、扩展、IPC、LLM、MCP 与协议 | R:code:rust/Cargo.toml | A:- | S:flate2 提为直接依赖是因为服务端可能无视我们不声明 accept-encoding 仍然回 gzip；插件已移除，本 crate 只提供 Skill
+README.md[SZ7M]: F:交代宿主执行层的模块划分：内核客户端、工具批次、工具执行体、无头回合运行器、提示词装配与进程控制 | R:code:rust/crates/omnicrawl-host/src/host.rs | A:- | S:TUI 与本地 API 共用这一层，界面状态留在 TUI、HTTP 留在 API crate，重复实现会让两条入口的工具行为分叉
+
+===/<repository>/rust/crates/omnicrawl-host/src/===
+approval.rs[EV6T]: F:实现审批模式的解析与展示（manual、auto、review） | R:code:rust/crates/omnicrawl-controllers/src/approval.rs | A:ApprovalMode | S:本模块只管模式本身，「某个调用该不该问人」交给控制器的判定，两处各写一套会让模式与判定不一致
+decision_pipe.rs[EV6S]: F:实现决策服务的进程内通道：优先复用常驻服务、不可用时降级直连 | R:code:rust/crates/omnicrawl-decision/src/server.rs | A:decision_channel | S:降级必须保持语义不变（同样的请求与解析），只在有可用服务时复用通道；把降级做成跳过决策会让审查形同虚设
+decision_wire.rs[EV8L]: F:定义决策请求的线格式与解析：把本地调用转成决策服务的请求体并解析四种返回形状 | R:code:rust/crates/omnicrawl-decision/src/upstream.rs | A:decision_request、parse_answers | S:线格式是与决策服务的唯一契约，REST 接口与宿主内部调用必须共用这一份，各写一份会让两条路径对同一模型给出不同结果
+embedding_client.rs[EV8L]: F:调用嵌入与重排接口，把文本换成向量或名次并处理分批与超时 | R:code:rust/crates/omnicrawl-config/src/features/embedding.rs | A:embed、rerank | S:候选多时要按批大小串行发送，一次性发送会被服务端拒；未配置或失败时检索退回关键词排序，不能把整次检索判为失败
+embedding_wire.rs[EV6M]: F:定义嵌入与重排接口的请求与响应线格式 | R:code:rust/crates/omnicrawl-host/src/embedding_client.rs | A:embedding_request、parse_embedding_response | S:向量维度要与配置声明一致，否则写进缓存的向量与其他条目不可比
+host.rs[EV9L]: F:实现工具批次的定调与派发：自持工具就地办、敏感工具逐个确认、提问工具等作答，再一次性并发执行并按模型顺序回观察 | R:code:rust/crates/omnicrawl-controllers/src/approval.rs | A:BatchContext、TODO_TOOL、ASK_USER_TOOL、PAUSE_WORK_TOOL、TOOL_UNAVAILABLE | S:批次是不可分割的边界：审批全部完成后才执行，且观察的顺序与数量都不能变（内核会校验），乱序或漏项会让模型的并行调用与结果错配；拒绝必须回 denied 错误码，内核据此补写拒绝事件
+kernel.rs[EV7M]: F:启动内核子进程并在其标准流上收发协议帧：独立读线程、主线程独占写、请求与响应配对、超时回收与重启 | R:code:rust/crates/omnicrawl-ipc/src/frame.rs | A:KernelClient | S:读取必须放在独立线程，主线程只取帧，否则内核输出阻塞会让界面卡死；写入由主线程独占，同一连接上谁在什么时候写了哪一帧必须是确定的；凭据以明文随协议帧交给内核，不经子进程环境注入
+lib.rs[EV6T]: F:作为宿主执行层 crate 的模块根，声明内核客户端、批次、回合、提示词、审查与工具模块 | R:code:rust/crates/omnicrawl-host/src/turn.rs | A:- | S:这一层是内核之外的那半个 Agent：起内核、收发帧、定调工具批次并执行工具
+process_control.rs[EV7L]: F:实现跨平台进程树控制与常驻服务拉起：Windows Job Object、Unix 进程组回收、分离式常驻进程与 PID 存活探测 | R:code:rust/crates/omnicrawl-workspace/src/process_control.rs | A:spawn_shared_service、pid_is_running | S:常驻服务必须脱离宿主生命周期（脱离 Job 或自成一组），否则宿主退出会把决策与抓取接口一起带走；PID 存活探测要跨平台实现，读 /proc 或调 kill 0 在 Windows 上不可用
+prompt.rs[EV8L]: F:实现启动期提示词装配：模板到 system prompt、AGENTS.md 合并、Skill 目录扫描、模式切换与上下文消息 | R:code:rust/crates/omnicrawl-controllers/src/turn/prompt_context.rs,code:rust/crates/omnicrawl-extensions/src/skill.rs | A:PromptOptions、PromptRuntime、locate_templates_dir、builtin_mode_prompt、active_skill_context_for | S:Skill 索引不进上下文而由 skill_search 工具按需检索，把所有 Skill 全文注进去会直接吃满预算；模板目录要按可执行文件祖先逐级找 rust/assets 并在缺失时回落内嵌副本，只靠磁盘目录会在打包后启动即崩
+prompt_cache.rs[EV6S]: F:组装稳定提示词前缀的身份指纹（七字段）供握手时声明缓存身份 | R:code:rust/crates/omnicrawl-controllers/src/turn/prompt_context.rs | A:build_prompt_cache_identity | S:指纹必须与另一侧实现逐字节对齐，任一字段顺序或取值变化都会让缓存身份整体变化、前缀缓存全部失效
+rerank_wire.rs[EV6S]: F:定义重排接口的请求与响应线格式 | R:code:rust/crates/omnicrawl-host/src/embedding_client.rs | A:rerank_request、parse_rerank_response | S:名次与候选的对应关系必须按标识而非顺序回填，服务端可能只返回部分候选
+review.rs[EV7L]: F:实现自动审查调用：组装审查请求、按决策渠道发送、解析审查结论并给失败文案，同时提供决策渠道装配 | R:code:rust/crates/omnicrawl-controllers/src/approval.rs | A:decision_channel_from_config、DecisionReviewOptions | S:审查请求与主对话完全隔离（不携带主对话上下文），否则主模型被注入时审查也会被带着走；结论解析失败必须按拒绝处理而不是放行
+turn.rs[EV8L]: F:实现无头回合运行器：握手声明工具、整批定调、并发执行、超时收口、取消与事件出口，并把审批与提问的决断抽成宿主输入 | R:code:rust/crates/omnicrawl-host/src/host.rs,code:rust/crates/omnicrawl-host/src/kernel.rs | A:TurnRunner、RunnerOptions、TurnOutcome、TurnControl、custody_notice | S:界面无关的三件事在这里定死（声明哪些工具、批次怎么定调、观察按什么顺序回填）；宿主只从外部拿两个输入：审批与提问的决断和事件出口；超时要收口并给出可判定的终态，悬空会让上层永远等一个不会来的结果
+
+===/<repository>/rust/crates/omnicrawl-host/src/sandbox/===
+gate.rs[XS7M]: F:实现沙盒闸门：按配置决定是否拦、以哪种档位运行，并把判定结果与 dry-run 提示回显给调用方 | R:code:rust/crates/omnicrawl-config/src/features/sandbox.rs | A:SandboxGate | S:模式与平台不匹配时要直接报错而不是退化成不隔离，静默降级会让用户以为已经隔离；dry-run 只判定与记录，绝不能真的拦下命令
+mod.rs[XS7L]: F:作为沙盒子系统模块根，声明策略闸门、运行期装配、网络审批、代理与平台实现子模块 | R:code:rust/crates/omnicrawl-config/src/features/sandbox.rs | A:- | S:平台实现分开编译：Windows 走容器身份，Linux 走内核规则，另一平台的代码不得参与装配
+net_approval.rs[XS7M]: F:实现网络目标的逐目标审批：判定新目标是否需要人工确认、记录决定与超时处理 | R:code:rust/crates/omnicrawl-host/src/sandbox/proxy.rs | A:NetApproval | S:回环永远放行，本地开发服务不该被审批拦住；超时按拒绝处理，否则命令会无限等待；每个新目标只问一次，重复询问会让长构建不可用
+proxy.rs[XS7L]: F:实现供沙盒内进程使用的回环 HTTP 代理并做域名层判定 | R:code:rust/crates/omnicrawl-host/src/sandbox/net_approval.rs | A:SandboxProxy | S:宿主自身的代理变量要先清掉再改指本机代理，否则宿主出网会绕回自己形成环路；域名判定只在客户端尊重 HTTP_PROXY 时生效，直接读系统代理设置的客户端能绕过
+runtime.rs[XS7L]: F:装配沙盒运行期：环境准备、可执行文件定位与外部程序的容器内启动 | R:code:rust/crates/omnicrawl-host/src/sandbox/mod.rs | A:SandboxRuntime | S:沙盒内的可执行文件按主程序同目录查找，找不到时必须给出明确错误而不是回落到宿主目录的版本
+windows.rs[XS8L]: F:实现 Windows 真隔离：容器身份、文件系统访问控制、Job Object 资源限额与降级 | R:code:rust/crates/omnicrawl-host/src/sandbox/gate.rs | A:WindowsSandbox | S:容器没有 internetClient，裸 socket 直接失败，出网只能经宿主回环代理；容器打不开空设备，因此 bash 与 git 在沙盒内改用进程内实现；PowerShell 优先用新版本并在加载异常时回退到系统自带版本
+
+===/<repository>/rust/crates/omnicrawl-host/src/sandbox/linux/===
+cgroup.rs[XS6M]: F:为沙盒进程设置资源限额（进程数、内存与 CPU 速率） | R:code:rust/crates/omnicrawl-host/src/sandbox/linux/policy.rs | A:apply_limits | S:限额写入失败要视为配置错误而不是静默跳过，否则用户以为限额生效
+launcher.rs[XS7L]: F:实现沙盒命令的启动器：在 exec 前施加文件与网络规则并透传退出码 | R:code:rust/crates/omnicrawl-host/src/sandbox/linux/policy.rs | A:intercept、launch | S:规则必须在 exec 前施加且不可撤回，施加后中途失败要把退出码如实上报而不是继续执行未隔离的命令
+mod.rs[XS6L]: F:作为 Linux 沙盒模块根，声明策略、启动器、运行时探测与 cgroup 子模块 | R:code:rust/crates/omnicrawl-host/src/sandbox/linux/policy.rs | A:intercept | S:launcher 分流必须最先执行：那是给一条命令施加规则后 exec 的通道，被其它参数解析截走就会失去隔离
+policy.rs[XS7L]: F:把沙盒配置折算成 Linux 侧的文件白名单与网络端口规则 | R:code:rust/crates/omnicrawl-config/src/features/sandbox.rs | A:SandboxPolicy | S:工作区与临时目录默认可写，其余路径一律按白名单；非在线档只放行回环代理端口，离线档连代理端口也拒，此时本地开发服务同样不可用
+runtimes.rs[XS6L]: F:探测沙盒内所需运行时的安装位置并生成可读白名单 | R:code:rust/crates/omnicrawl-host/src/sandbox/linux/policy.rs | A:discover_runtimes | S:目录规模过大时跳过并要求用户显式写进可读白名单，逐个授权几十万文件会让首次启动卡住
+
+===/<repository>/rust/crates/omnicrawl-host/src/tools/===
+advisor.rs[EG7M]: F:实现 advisor 工具的运行期：独立运行时引导、单轮无工具补全与结果信封，判定与消息构造复用控制器 | R:code:rust/crates/omnicrawl-controllers/src/advisor.rs | A:advisor、AdvisorOptions、ADVISOR_TOOL_NAME | S:顾问走独立运行时且不带工具，复用主对话的运行时会让顾问拿到与主模型相同的工具面；超时与全部错误文案由控制器给出，两侧各写一份会让用户看到两套提示
+arguments.rs[XV6S]: F:宽松读取工具参数：整数按区间夹紧、布尔与文本的缺失回落，并处理模型给出的字符串形态 | R:code:rust/crates/omnicrawl-controllers/src/tool_args.rs | A:limited_int、optional_text、optional_bool、text_list、raw_text | S:布尔值不得当整数读，模型给的布尔字面串会被误读成 0；解析失败回落默认值而不是报错，参数读取过严会让既有调用大批失败
+charset.rs[XV7M]: F:按响应头字符集、字节顺序标记与内容探测把响应字节还原成文本 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:decode_body | S:不能一律按 UTF-8 解：非 UTF-8 站点不会报错而是整篇变替换字符，状态码 200 的乱码比明确失败更难排查；判定顺序要与浏览器一致（头部声明、字节标记、探测）
+client_hints.rs[XV7M]: F:实现客户端提示协商：记住哪个来源声明了哪些提示，并在后续请求里按声明补头 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:record、hints_for、origin_of、platform_version | S:真实浏览器只在站点声明后才在后续请求带高熵提示头，没被要求就先发等于自报不是普通浏览器；平台版本属高熵提示，一律预发是最典型的自动化特征之一
+command.rs[XV8L]: F:实现 bash 与 powershell 工具：显式解释器启动、超时回收、取消令牌与输出采样 | R:code:rust/crates/omnicrawl-host/src/tools/sample.rs | A:Invocation、CommandOutcome、CancelToken、DEFAULT_COMMAND_TIMEOUT_SECONDS | S:命令必须通过明确的 Bash 或 PowerShell 可执行文件启动，不回退默认 Shell，回退会让同一条命令在不同机器上跑成不同解释器；Windows 上 Bash 优先 Git Bash；超时要回收整棵进程树，只杀父进程会留下子进程继续写文件
+config_tool.rs[XV8L]: F:实现 config_edit 工具：按动作读或写用户配置目录下的 TOML，读出时凭据值打码 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:config_edit | S:四个配置文件都走配置域的路径解析与原子写盘，与设置面板写的是同一批文件；读出时必须打码凭据，否则模型会把密钥抄进上下文
+cookies.rs[XV8L]: F:实现抓取用的进程内 cookie 罐：收 Set-Cookie、按域路径安全性与过期回带 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:CookieJar、apply_header、harvest、RequestContext | S:罐的生命周期就是进程，退出即失，抓取工具没有持久会话语义；没有公共后缀表时只按「必须是请求主机的后缀」校验域，放宽就等于允许第三方写跨站 cookie
+decision_choice.rs[XV8L]: F:实现提问托管：把 ask_user 的选项交给结构化决策模型，自动选置信度最高的那个 | R:code:rust/crates/omnicrawl-host/src/tools/decision_prune.rs | A:custody_options_from_config、chosen_option、ChoiceChannel、CustodyOptions | S:只对带选项的提问生效，自由问答仍交给用户——决策模型只能从候选项里选，写不出自由文本；默认关闭，且必须把用户本回合请求与顾问答复作为 state 一起给出，否则选择会脱离任务语境
+decision_prune.rs[XV7M]: F:实现工具结果按需淘汰：把刚变老的那一批按调用组提交决策模型裁决，读回被判丢弃的组下标 | R:code:rust/crates/omnicrawl-controllers/src/turn/tool_prune.rs | A:PruneChannel、PruneRequest、PruneOptions、evicted_call_ids_for、prune_options_from_config | S:默认关闭；送审的必须是刚变老的那一批，最新一批还在被使用；按组而非按条裁决，逐条裁决会拆散同一次调用链的因果关系
+decision_search.rs[XV8L]: F:实现检索重排：把记忆与知识库检索的候选交给决策模型按相关度排序 | R:code:rust/crates/omnicrawl-host/src/tools/decision_prune.rs | A:RerankChannel、RerankRequest、RerankOptions、RERANK_CANDIDATE_LIMIT | S:默认关闭；送审候选按命中的不同关键词种类选取而不是按次数，只数次数会让同一高频词把候选池挤满；未启用或失败时保持关键词顺序，不能让检索整体失败
+edit.rs[XV8L]: F:实现 Edit_file 工具：单文件事务内的读取、字面匹配与写回，含匹配计数规则与行尾恢复 | R:code:rust/crates/omnicrawl-session/src/locking.rs | A:edit_file、EDIT_CONTEXT_LINES | S:省略计数时要求恰好匹配一处，多处匹配必须报错而不是替换第一处；编辑内部统一 LF 写回时恢复原行尾；写前再校验版本指纹，否则会覆盖锁外进程刚做的修改
+error.rs[XV6S]: F:定义工具错误与结果信封：给模型看的文本、稳定错误码与可重试标记 | R:code:rust/crates/omnicrawl-core/src/types.rs | A:ToolError、text_success、text_failure、command_result、attach_notice | S:错误码是内核事件投影与审批分支的判据，改码会让拒绝与不可用区分不出来；可重试标记直接影响模型是否重发，把确定性错误标成可重试会引发重复副作用
+fetch_metadata.rs[XV7M]: F:按请求的实际目的推导 Sec-Fetch 系列头而不是写死导航取值 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:FetchMetadata、apply | S:写死取值的问题不是像不像而是说错话：站点普遍据此做策略判断，把跨站重定向描述成地址栏输入会导致服务端按错误策略响应
+fetcher.rs[XV8L]: F:实现网页抓取执行体：并行抓取、跟随重定向与 meta refresh、正文提取与脚本重建 | R:code:rust/crates/omnicrawl-host/src/tools/robots.rs,code:rust/crates/omnicrawl-host/src/tools/tls_transport.rs | A:DEFAULT_TIMEOUT_SECONDS、MAX_URLS、MAX_META_REDIRECTS、MAX_SCRIPT_REDIRECTS | S:只抓用户明确给出的 URL 且不绕验证码；内网与本机目标直连而不走系统代理，否则本地服务会被代理拦住；脚本重建有二次重定向上限，无上限会陷入跳转环
+finding.rs[XV8L]: F:实现 find 工具：按名称、glob 或正则查找文件与目录，参数面对齐 fd | R:code:rust/crates/omnicrawl-host/src/tools/search_common.rs | A:find_files | S:相对路径按工作区解析而绝对路径可指向工作区外（只读查找），把边界收到工作区内会让用户查不到依赖位置；枚举必须走忽略规则，否则在无忽略规则的项目里会扫出几十万条
+git.rs[XV8L]: F:实现 git 工具：模型参数逐项进 argv 直调不经 shell，并按动作分级做参数拦截 | R:code:rust/crates/omnicrawl-controllers/src/approval.rs | A:git_tool、GIT_OUTPUT_MAX_CHARS、GIT_COMMAND_TIMEOUT_SECONDS | S:必须拒绝 --git-dir、--work-tree 与 --no-verify 等逃逸参数，否则可以指向任意仓库或跳过钩子；config 只允许改本地配置；clone 与 init 的目标必须在工作区内；输出按头尾采样但完整内容要落盘可回读
+git_native.rs[XV8L]: F:实现沙盒内 git 的进程内版本：用库直接操作仓库而不 spawn git 可执行文件 | R:code:rust/crates/omnicrawl-host/src/tools/git.rs | A:run_native、scope_of、NATIVE_ACTIONS | S:存在的唯一理由是隔离环境里 git 可执行文件必然起不来（运行时初始化要打开空设备，容器对该设备一律拒绝）；只能在沙盒内启用，宿主侧仍走真实 git，两条路径的动作集必须一致，缺动作要明确报不支持而不是静默降级
+grep.rs[XV8L]: F:实现 grep 工具：按正则或精确子串搜索内容，参数面对齐 ripgrep | R:code:rust/crates/omnicrawl-host/src/tools/search_common.rs | A:grep | S:只读因此不设工作区边界，相对路径按工作区解析；行内容超长要截断，长行会把一条命中变成几千字符的输出
+hsts.rs[XV7M]: F:实现 HSTS：记录站点声明过的强制安全传输指令，并据此把后续明文访问升级为 https | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:parse_directive、record、is_protected、upgrade | S:不升级就会持续走明文，得到的是一段真实浏览器根本不会经历的交互（301 或降级页），正文与浏览器所见不同；含子域指令要一并记录
+http_cache.rs[XV8L]: F:实现 HTTP 缓存协商：存 ETag 与 Last-Modified，下次带条件头，304 时用缓存副本还原完整响应 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:key_for、apply_conditional、store、reuse | S:只做协商不用缓存跳过请求：跳请求会让抓取拿到一段浏览器不会看到的旧响应；304 还原时要用新响应的头覆盖旧缓存里的头，否则过期指令会被带下去
+image_gen.rs[XV8L]: F:实现图像生成与编辑工具：OpenAI 兼容通道与 Gemini 通道，落盘并回报路径 | R:code:rust/crates/omnicrawl-config/src/features/image_gen.rs | A:DEFAULT_OUTPUT_DIR、DEFAULT_MODEL、DEFAULT_TIMEOUT_SECONDS | S:响应优先取内联 base64，缺时才下载 URL，直接依赖 URL 会在链接过期后拿不到图；落盘目录固定在 Agent 临时目录内，写到工作区会污染项目
+knowledge.rs[XV8L]: F:实现知识库工具：Markdown 加 frontmatter 的读写、检索与索引自动维护 | R:code:rust/crates/omnicrawl-host/src/tools/memory.rs | A:DEFAULT_KNOWLEDGE_DIRNAME、INDEX_FILENAME、MAX_SEARCH_RESULTS | S:知识库位于用户主目录的 .OmniCrawl 下且与工作区无关；所有读写路径必须落在根目录内并拒绝上跳，否则可以写到工作区或系统目录；索引由工具自动维护，手工编辑会被下次重建覆盖
+listing.rs[XV7S]: F:实现 list 工具：非递归或递归列出目录，跳过受保护路径与 Agent 临时目录 | R:code:rust/crates/omnicrawl-host/src/tools/paths.rs | A:list_files、MAX_LIST_ENTRIES | S:只读因此不设工作区边界；必须有条目上限，递归列出大仓库会把上下文一次填满
+memory.rs[XV8L]: F:实现记忆工具：按作用域解析三处存储并转交会话存储层读写 | R:code:rust/crates/omnicrawl-session/src/memory.rs | A:memory_search、memory_read、memory_expand_related、MemoryOptions、default_home | S:作用域路由必须与提示词里的协议一致，路由错会让会话记忆读到用户级事实；未启用时要给明确文案而不是空结果
+mod.rs[XV6T]: F:作为工作区工具执行体模块根，声明文件、搜索、命令、后台任务、知识库、记忆、联网、视觉与桌面等工具模块 | R:code:rust/crates/omnicrawl-host/src/tools/registry.rs | A:- | S:每个工具一个模块，注册表统一决定哪些进表；工具执行体不得自己决定可见性
+monitor.rs[XV8L]: F:实现 monitor 工具：宿主自持的后台命令，输出进内存环形缓冲并按游标增量轮询 | R:code:rust/crates/omnicrawl-host/src/process_control.rs | A:MAX_ACTIVE_MONITORS、MAX_BUFFERED_EVENTS、CANCEL_REASON | S:后台进程由当前宿主持有，宿主关闭或所属回合取消时要回收整棵进程树，否则会留下孤儿进程；缓冲有上限并环形覆盖，无上限会让长跑任务吃满内存；不写持久化日志
+paths.rs[XV7M]: F:实现路径解析与保护：工作区根归一化、受保护路径拒绝、相对路径换算与用户目录展开 | R:code:rust/crates/omnicrawl-extensions/src/path.rs | A:WorkspacePaths、PROTECTED_NAMES、resolve_lenient、expand_user | S:所有写类工具都必须经这里解析，绕过去就能写到工作区外；受保护名字表包含凭据目录与会话目录，放开等于让模型改自己的记忆与会话；绝对路径默认允许指向工作区外是刻意的（只读工具需要），因此写类工具要另外收紧
+read.rs[XV8L]: F:实现 read 工具：行窗口读取、超长行截断、行号与续读提示，以及按定位读取 | R:code:rust/crates/omnicrawl-host/src/tools/paths.rs | A:read、read_text、READ_MAX_LINES、READ_MAX_LINE_LENGTH | S:输出必须有界并给行号与续读位置，无界读取会把单文件塞满上下文；超长行要截断并标注，否则一行能占满整个窗口
+read_image.rs[XV7M]: F:实现本机图片读取：路径校验、签名识别与视觉附件构造 | R:code:rust/crates/omnicrawl-host/src/tools/paths.rs | A:read_local_image、read_image、LocalImage | S:只读本机文件并拒绝 URL 与 data URI，放开就等于给出一条绕过抓取工具的联网通道；相对路径绑定工作区且不得越界；MIME 按文件签名判定而不是按扩展名
+referrer.rs[XV8L]: F:按 Referrer-Policy 计算 Referer 头：决定把发起方的多少信息交给目标 | R:code:rust/crates/omnicrawl-host/src/tools/web_transport.rs | A:referer_for、adopt、apply_header、policy_from_response | S:二级请求不带 Referer 是很突出的特征，但这件事的价值在语义正确而非像不像：策略还要随响应头更新，只在发起时算一次会让后续请求违反站点声明
+registry.rs[XV8L]: F:装配工具执行体注册表：按开关与运行环境挑选可用工具、挂上 MCP 与后台任务管理器，并提供执行分派与工具声明装配 | R:code:rust/crates/omnicrawl-controllers/src/tool_catalog.rs | A:ToolRegistry、RegistryOptions | S:MCP 与 Monitor 管理器必须与各自的查询面共享同一实例，各持一份会让状态显示与实际执行不一致；工具开关只影响注册不影响实现存在；注册表同时是工具声明与执行分派的唯一入口，绕过它直接调用执行体会让审批与输出预算被跳过
+robots.rs[XV7M]: F:实现 robots.txt 解析与判定：按 User-agent 分组匹配并给出明确禁止的路径 | R:code:rust/crates/omnicrawl-host/src/tools/robots_cache.rs | A:Robots、request_path | S:按 RFC 9309 取最具体的匹配组，找不到才用通配组；禁止路径一概不抓并在结果里说明命中的规则，绕过 robots 与「不绕验证码」是同一条底线
+robots_cache.rs[XV7S]: F:实现 robots.txt 的取回与进程内缓存，并在并发抓取同一站点时用锁包住取回 | R:code:rust/crates/omnicrawl-host/src/tools/robots.rs | A:ensure_allowed | S:按来源分键且只在进程内驻留，不为一次工具调用引入磁盘状态；并发抓同一站点必须只取一次，否则一次批量抓取会对同一站点发几十个 robots 请求
+sample.rs[XV7M]: F:实现命令输出采样：超长时保留首尾行并把完整输出落盘 | R:code:rust/crates/omnicrawl-host/src/tools/command.rs | A:COMMAND_OUTPUT_HEAD_CHARS、COMMAND_OUTPUT_TAIL_CHARS | S:按行对齐保留首尾且不切断多字节字符；必须给出落盘路径，否则模型拿到的是被截断且无法回读的输出
+search_common.rs[XV8L]: F:实现搜索类工具共用的遍历、glob 匹配与结果渲染：读忽略文件、保留隐藏文件、排除内部目录 | R:code:rust/crates/omnicrawl-workspace/src/slug.rs | A:SEARCH_EXCLUDED_DIRS、MAX_SEARCH_RESULTS、SEARCH_PARSE_LINE_CAP | S:非 git 目录也要读忽略文件，只读仓库根的规则会让临时目录里的搜索扫出依赖树；内部目录必须排除，否则会搜进 Agent 自己的临时与索引文件
+skills.rs[XV8L]: F:实现 skill_search 工具：按作用域与关键词检索 Skill 索引 | R:code:rust/crates/omnicrawl-extensions/src/skill.rs | A:skill_search、SEARCH_RESULT_LIMIT | S:Skill 目录不再整份注入上下文，改由模型按需检索，正文仍由 read 打开；结果要带上 Skill 文件路径，否则模型无从读取正文
+suggestion.rs[XV8L]: F:实现提问建议：先由主模型识别技能词，再用本地 BM25 检索 Skill 索引并拼进用户尾部 | R:code:rust/crates/omnicrawl-extensions/src/bm25.rs | A:SUGGESTION_LIMIT、SKILL_SUGGESTION_PREFIX、KEYWORDS_TIMEOUT_SECONDS | S:默认关闭，建议只是提示不该默认改变发出去的文本；关键词识别有超时，超时后必须放弃建议而不是阻塞提问；候选只取本机已索引的 Skill
+tls_transport.rs[XV8L]: F:实现 fetcher 与 web_search 的浏览器指纹传输：自研 TLS 与 HTTP2 栈、家族请求头与指纹选项 | R:code:rust/crates/omnicrawl-tls/src/lib.rs | A:IMPERSONATE_OPTIONS、DEFAULT_IMPERSONATE、normalize_impersonate、family_headers | S:这条传输刻意不用通用 HTTP 客户端：后者会暴露固定 TLS 指纹；家族请求头要与指纹选项同源，混搭会让同一次会话呈现两个浏览器的特征
+tts.rs[XV7M]: F:实现语音合成工具执行体：按服务商选三条云端通道并落盘音频 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:tts_backend、TtsOptions | S:三条通道按配置三选一，其余通道的参数被忽略；落盘目录固定在 Agent 临时目录内，写到工作区会污染项目
+web_search.rs[XV8L]: F:实现网页搜索工具：走页面型引擎与检索接口型引擎两条通路，支持综合搜索合并去重 | R:code:rust/crates/omnicrawl-host/src/tools/tls_transport.rs,code:rust/crates/omnicrawl-config/src/features/web_search.rs | A:SUPPORTED_ENGINES、MIXED_RESULTS_PER_CHANNEL、MAX_RESULTS_PER_ENGINE | S:走哪个引擎只看配置，工具参数里的引擎无效，Agent 不能按单次任务改通路；综合搜索只并入已配凭据的接口型渠道（匿名额度除外），垂直站点要用点名参数才加入；结果是线索，须用抓取核实来源
+web_transport.rs[XV8L]: F:实现联网工具共用的阻塞式 HTTP 传输：浏览器外壳请求头、系统代理检测、内网直连与重定向跟随 | R:code:rust/crates/omnicrawl-host/src/tools/cookies.rs,code:rust/crates/omnicrawl-host/src/tools/hsts.rs | A:WebError、DEFAULT_USER_AGENT、MAX_REDIRECTS、REDIRECT_STATUSES | S:内网与本机目标必须直连不走系统代理，否则本地服务不可达；重定向跟随有上限，无上限会被跳转环拖死；跳转要同步更新 cookie、Referer 策略与 HSTS 状态，漏一处就会在第二跳暴露不一致特征
+write.rs[XV7S]: F:实现 write_file 工具：覆盖与追加写 UTF-8 文本，自动创建父目录 | R:code:rust/crates/omnicrawl-host/src/tools/paths.rs | A:write_file | S:模式只接受覆盖与追加两种写法（含等价别名），未知模式要报错而不是默认覆盖；写前路径必须经保护校验，否则能覆盖凭据与会话文件
+
+===/<repository>/rust/crates/omnicrawl-host/src/tools/windows/===
+args.rs[XV7M]: F:实现桌面工具共用的参数读取与错误文案，含 Win32 错误码格式与动作白名单校验 | R:code:rust/crates/omnicrawl-host/src/tools/windows/mod.rs | A:last_error、ensure_allowed_keys、read_action、last_win32_error | S:参数名必须与工具 Schema 一致，多传的键要显式拒绝而不是忽略，否则模型会以为某个参数生效了；错误文案带 Win32 码才能查系统文档
+clipboard.rs[XV8L]: F:实现剪贴板工具：Unicode 文本读取、写入与清空，并供界面实现拖选即复制 | R:code:rust/crates/omnicrawl-host/src/tools/windows/mod.rs | A:windows_clipboard、read_clipboard_text、try_read_clipboard_text、try_read_clipboard_files | S:打开剪贴板可能被其他进程占用，必须带重试与超时，直接失败会让一次复制偶发报错；读文件列表与读文本是两种格式，混用会拿到空值
+control.rs[XV8L]: F:实现控件操作工具：通过 PowerShell 的 UI Automation 定位与操作控件，请求经环境变量传入 | R:code:rust/crates/omnicrawl-host/src/tools/windows/data/windows_uia.ps1 | A:windows_control | S:请求体要经 base64 与环境变量传递，直接拼进命令行会被引号与中文打断；脚本输出必须可解析，失败要回具体的自动化或系统原因
+ffi.rs[XV7M]: F:声明桌面工具用到的 Win32 函数与常量，不引入额外绑定 crate | R:code:rust/crates/omnicrawl-host/src/tools/windows/mod.rs | A:SW_RESTORE、SWP_NOSIZE、HWND_TOPMOST | S:只声明实际用到的符号，扩大面会带来跨版本 ABI 风险；句柄与常量类型必须与系统头文件一致，类型写错在 64 位上会静默截断
+input.rs[XV8L]: F:实现受约束的鼠标与键盘输入（SendInput），每次成功动作后附带一张当前画面截图 | R:code:rust/crates/omnicrawl-host/src/tools/windows/screenshot.rs | A:windows_input、release_on_exit | S:输入是破坏性操作，动作与坐标都要先校验范围再发送，越界坐标会点到别的窗口；每次成功动作后附截图是为了让模型核对效果而不必再单独调用；退出时必须释放按下的键与鼠标状态，否则会留下一个卡住的修饰键
+mod.rs[XV7S]: F:作为 Windows 桌面工具模块根，声明窗口、控件、输入、剪贴板与截图的执行体，并提供退出时释放 | R:code:rust/crates/omnicrawl-host/src/tools/windows/ffi.rs | A:windows_window、windows_input、release_on_exit、DesktopOutcome | S:非 Windows 平台只保留「仅支持 Windows」分支；退出时必须释放按下的键与鼠标状态，否则会留下一个卡住的修饰键
+screenshot.rs[XV8L]: F:实现截图：抓物理像素、按上限等比缩放、PNG 落盘并作为视觉附件交给模型 | R:code:rust/crates/omnicrawl-host/src/tools/windows/mod.rs | A:snapshot_vision_prompt、Snapshot、DEFAULT_MAX_DIMENSION | S:必须按上限缩放，否则高 DPI 全屏截图会超出视觉模型的安全内联大小；超过内联阈值时改为落盘并给路径；缩放要用高质量重采样，劣质插值会让文字变糊而模型读不出界面内容
+window.rs[XV7M]: F:实现窗口工具：枚举顶层窗口、读取窗口详情与前台激活 | R:code:rust/crates/omnicrawl-host/src/tools/windows/ffi.rs | A:windows_window、describe_window、format_window_handle | S:激活会换掉前台画面因此附带截图，列举与读取是只读的、不带图；窗口句柄要按可复制形式给出，否则模型无法在后续调用里沿用
+
+===/<repository>/rust/crates/omnicrawl-host/src/tools/windows/data/===
+windows_uia.ps1[XV8L]: F:作为控件自动化脚本：在 PowerShell 里用 UI Automation 定位控件并执行请求给出的动作 | R:code:rust/crates/omnicrawl-host/src/tools/windows/control.rs | A:- | S:必须显式把输出编码设为 UTF-8，否则中文控件名在按本地代码页读取时会被解码错；脚本内容要与调用方的请求字段一一对应，改字段要两处同步
+
+===/<repository>/rust/crates/omnicrawl-ipc/===
+Cargo.toml[FV6T]: F:声明宿主桥接 crate 的依赖：核心、协议与 serde | R:code:rust/Cargo.toml | A:- | S:纯逻辑无 I/O：读构建与写管道由宿主或内核负责，本 crate 不得引入传输依赖
+README.md[SZ6T]: F:交代桥接协议的分片范围、帧形状选择理由与无 I/O 的设计要点 | R:code:rust/crates/omnicrawl-ipc/src/frame.rs | A:- | S:帧用单一结构而不是枚举：三种形状共享固定字段，枚举要在反序列化后二次校验且错误更含糊；无法解析的行直接丢弃不回协议错误，因为拿不到 id 就无从响应
+
+===/<repository>/rust/crates/omnicrawl-ipc/src/===
+bridge.rs[EV8L]: F:定义宿主与内核之间的方法语义：宿主到内核的命令、内核到宿主的请求与通知、工具批次往返，以及各负载类型 | R:code:rust/crates/omnicrawl-ipc/src/frame.rs | A:ToolBatch、ToolBatchResult、KernelModelConfig、KernelCompactionConfig | S:方法名与负载字段是协议的一部分，改动即破坏性变更，必须同步协议文档与宿主实现；凭据以明文随帧传递，因此协议流不得落盘或进日志
+frame.rs[EV7M]: F:实现 NDJSON 帧层：一行一个 JSON-RPC 对象，含形状校验、id 保真、错误对象与错误码常量 | R:code:rust/crates/omnicrawl-ipc/src/version.rs | A:Frame、ErrorObject、JSONRPC_VERSION | S:帧内换行由 JSON 转义保证，序列化结果必然单行，宿主写回时自行补换行；无法解析的行由内核丢弃而不回协议错误——拿不到 id 就无法响应；形状校验集中在一处，散到各处会让同一种畸形帧在不同方法上表现不同
+lib.rs[EV6T]: F:作为桥接协议 crate 的模块根，声明帧、版本与桥接语义模块 | R:code:rust/crates/omnicrawl-ipc/src/frame.rs | A:- | S:内核与宿主是两个进程，只用一条 NDJSON 流通信，一行一个协议帧
+version.rs[EV6T]: F:定义协议版本常量与主版本协商 | R:code:rust/crates/omnicrawl-ipc/src/frame.rs | A:PROTOCOL_VERSION、SUPPORTED_MAJOR、negotiate_version | S:只协商主版本，次版本差异由双方按能力位各自处理；主版本不匹配必须让宿主明确失败而不是降级运行
+
+===/<repository>/rust/crates/omnicrawl-jsdom/===
+Cargo.toml[XV7T]: F:声明受控 JS 沙箱 crate 的依赖：纯 Rust 脚本引擎、DOM 解析、正则、PNG 编码与字体轮廓解析 | R:code:rust/Cargo.toml | A:- | S:引擎版本是必需的而不是求新：旧版解析不了现代打包产物里的合法语法，整份 bundle 会被判语法错误；它把工作区 MSRV 抬到 1.91；字体轮廓只解析字形而不引原生依赖
+
+===/<repository>/rust/crates/omnicrawl-jsdom/src/===
+browser_env.rs[XV7S]: F:给沙箱补上探测器会读的全局对象，并按传输层档案族生成一致的浏览器画像 | R:code:rust/crates/omnicrawl-jsdom/src/fingerprint.rs | A:install | S:用原生函数而不是脚本补丁：原生函数的字符串形态自带原生实现标记，用脚本包一层反而要自己维护描述符，漏一处就是可读的破绽；画像必须与传输层身份同族，否则一次比较即可识破
+canvas.rs[XV8L]: F:实现 Canvas 2D 软件光栅化：位图表面、路径、渐变与字体轮廓，使取像素与导出产出真实结果 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env/media.rs | A:Surface、Path、Gradient、FontFace | S:自写光栅化而不是返回恒定值：探测器不只看两次取值是否相同，还会绘制已知图形核对像素分布（渐变方向、文字覆盖区域、填充后透明度）；字体轮廓只解析字形不引原生依赖
+dom.rs[XV8L]: F:实现轻量 DOM 快照：元素树、属性、文本、内容读写与选择器查询 | R:code:rust/crates/omnicrawl-jsdom/src/engine.rs | A:Document、Node | S:只实现正文提取需要的子集，不做布局与样式级联——那些不影响正文却会把实现复杂度放大数倍；选择器只支持实际用到的形态，扩展前先确认页面真的需要
+engine.rs[XV8L]: F:实现沙箱运行器：把页面快照 DOM 交给脚本引擎执行、收集脚本、驱动微任务并把结果收回 | R:code:rust/crates/omnicrawl-jsdom/src/dom.rs,code:rust/crates/omnicrawl-jsdom/src/engine/sandbox.rs | A:LOOP_ITERATION_LIMIT、MAX_SCRIPT_BYTES、MAX_INLINE_SCRIPTS、MAX_DOM_NODES、ScriptRef | S:必须有迭代次数、脚本体积、脚本数量与节点数量四道上限，缺任何一道都能让恶意页面把进程拖死；沙箱不联网，取数必须经调用方注入的通道，未接入时退回拒绝式桩而不是静默成功
+fetch_api.rs[XV8L]: F:实现脚本内发起的网络请求：把 fetch 与 XMLHttpRequest 翻译成注入通道的请求并按浏览器形状返回结果 | R:code:rust/crates/omnicrawl-jsdom/src/engine.rs | A:HttpRequest、MAX_RESPONSE_BYTES、MAX_REQUESTS、MAX_TOTAL_BYTES | S:沙箱本身不持有网络能力，取数必须经调用方注入的通道，直连会绕过抓取工具的 robots 与安全边界；响应体、请求数与总字节数三道上限缺一不可，否则恶意页面能把内存与出网次数拉满
+fingerprint.rs[XV7S]: F:把传输层已在用的身份翻译成脚本侧可见的字段，并为每个档案族生成一致的画像 | R:code:rust/crates/omnicrawl-tls/src/profile.rs | A:Profile | S:只为一致性服务：用户代理、UA 数据与客户端提示头三者必须描述同一台机器，探测器一句比较就能识破；画像按档案族生成而不是按页面任意编造
+lib.rs[XV8T]: F:作为受控 JS 沙箱 crate 的模块根，声明 DOM、引擎、浏览器环境、画布、网络与页面状态模块 | R:code:rust/crates/omnicrawl-jsdom/src/engine.rs | A:- | S:目标范围只是把由脚本拼装的正文取回来，不做完整浏览器语义；页面正文需要再取数据时经调用方注入的通道完成
+page_state.rs[XV7T]: F:记录一次执行期间页面脚本产生的动作：cookie 写入与脚本发起的跳转 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env/location.rs | A:PageState | S:沙箱没有网络也没有导航，只能把动作记下来交给调用方：抓取工具据此把 cookie 落进真实的罐并按脚本给出的地址再发一次请求；不记录这层，挑战页的写 cookie 后重跳就取不回正文
+
+===/<repository>/rust/crates/omnicrawl-jsdom/src/browser_env/===
+codec.rs[XV6L]: F:实现沙箱内需要的编解码与地址解析原语：base64 编解码、URL 拆分与文本编码转换 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env.rs | A:atob、btoa、split_href | S:这些原语由真实站点的脚本高频调用，语义偏差会直接让页面逻辑走错分支而不是报错
+console.rs[XV6M]: F:实现沙箱内的 console 面与常用输出格式化 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env.rs | A:install_console | S:控制台输出要能被收集而不是直接写进程输出，否则页面脚本的日志会污染宿主的界面
+events.rs[XV7M]: F:实现沙箱内的事件目标与事件派发：监听注册、移除与触发 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env.rs | A:install_events | S:必须支持派发到已注册监听并允许阻止默认行为，否则依赖加载事件的页面脚本永远跑不到回调；监听表要能清理，长页面累积会持续涨内存
+location.rs[XV7L]: F:实现沙箱内的地址对象与导航动作记录：读写字段、解析 href、记录脚本发起的跳转 | R:code:rust/crates/omnicrawl-jsdom/src/page_state.rs | A:install_location、split_href | S:赋值跳转不能真的导航（沙箱没有网络也没有导航），只能记录成页面动作交给调用方；字段读回必须与写入一致，读写不一致是探测器最常比对的破绽之一
+media.rs[XV8L]: F:实现沙箱内的媒体与画布相关环境：画布上下文、像素数据与导出、字体度量与媒体查询 | R:code:rust/crates/omnicrawl-jsdom/src/canvas.rs | A:install_media | S:画布必须产出真实像素而不是恒定哈希：探测器会绘制已知图形再核对像素分布；导出编码必须是真实压缩流，常量字节一眼可辨
+navigator.rs[XV7L]: F:实现 navigator 全局对象：用户代理、UA 数据、语言、平台、硬件并发与存储估算等探测字段 | R:code:rust/crates/omnicrawl-jsdom/src/fingerprint.rs | A:install_navigator | S:所有字段必须来自同一份画像并与传输层身份一致，单独改一个字段就是可被三元比较识破的破绽；高熵字段不应无条件给出
+storage.rs[XV7L]: F:实现沙箱内的本地与会话存储：读写、删除、清空与键枚举 | R:code:rust/crates/omnicrawl-jsdom/src/browser_env.rs | A:install_storage | S:存储只在单次执行内有效，跨页面不共享；键枚举顺序要与插入顺序一致，乱序在部分站点会被当作异常特征
+
+===/<repository>/rust/crates/omnicrawl-jsdom/src/engine/===
+canvas.rs[XV7S]: F:实现画布元素的方法面：取上下文、读写宽高与导出数据地址 | R:code:rust/crates/omnicrawl-jsdom/src/canvas.rs | A:install_canvas | S:位图与指纹相关的真实实现留在浏览器环境模块，这里只做元素属性与上下文缓存的接线；上下文要缓存，每次取都新建会让脚本写入的像素丢失
+document.rs[XV7S]: F:装配沙箱内的 document 全局对象：文档级访问器与查询方法 | R:code:rust/crates/omnicrawl-jsdom/src/engine/document_ops.rs | A:install_document | S:这是把快照 DOM 挂成脚本对象的装配段，与脚本收集和求值无关，边界混在一起会让求值顺序难以核对
+document_ops.rs[XV7M]: F:实现 document 上的查询、创建与选择方法面 | R:code:rust/crates/omnicrawl-jsdom/src/engine/document.rs | A:install_document_ops | S:只做参数解包、调 DOM 与包装返回值；把业务判定塞进这一层会让同一判定散落在多个方法里
+element_ops.rs[XV7M]: F:实现元素上的查询、监听与类名操作方法面 | R:code:rust/crates/omnicrawl-jsdom/src/engine/element_proto.rs | A:install_element_ops | S:这一组只做参数解包、调 DOM 与包装返回值，不涉及脚本求值与上下文装配
+element_proto.rs[XV7M]: F:构建元素原型：把 DOM 元素的方法表一次性挂到原型上 | R:code:rust/crates/omnicrawl-jsdom/src/engine/element_ops.rs | A:install_element_proto | S:只有方法名到原生函数的登记，具体实现留在父模块；原型必须挂在共享原型而非每个实例上，逐实例挂载会让大页面的内存与初始化时间爆炸
+sandbox.rs[XV7S]: F:编排沙箱的一次执行：建上下文、装全局、跑脚本、驱动微任务 | R:code:rust/crates/omnicrawl-jsdom/src/engine.rs | A:run_sandbox | S:求值顺序是这一层的全部要点，读它应当能看清从头到尾做了什么；具体实现分散在父模块，改动时不要在这里加隐式步骤
+scripts.rs[XV7S]: F:从 HTML 里挑出可执行脚本并把外链解析成绝对地址 | R:code:rust/crates/omnicrawl-jsdom/src/engine.rs | A:collect_scripts | S:协议白名单与站点相对路径的拼法都在这里，宽放会执行不该执行的地址；站点相对路径解析错会让外链脚本全部取不到而正文重建静默失败
+
+===/<repository>/rust/crates/omnicrawl-llm/===
+Cargo.toml[FV6T]: F:声明 Provider 运行时 crate 的依赖：协议、版本、正则、序列化、哈希、TOML 与阻塞式 HTTP | R:code:rust/Cargo.toml | A:- | S:HTTP 只引入一个阻塞式客户端，不引第二个网络栈；TOML 用于读取脱敏规则的规则快照，与配置域共用同一份解析语义
+README.md[SZ7M]: F:交代 Provider 运行时的范围：请求构建、传输、流解析、用量归一化与回合装配，以及错误文案基准 | R:code:rust/crates/omnicrawl-llm/src/lib.rs | A:- | S:参数完整性判定是必须的：半截 JSON 不能当正常调用收尾，否则会被静默降级成空参数误执行；状态码阶梯文案是对外契约，改措辞会让既有失败分类失配
+
+===/<repository>/rust/crates/omnicrawl-llm/data/===
+gitleaks.toml[FZ8L]: F:作为脱敏用的规则快照：记录各类凭据的匹配规则与允许列表 | R:code:rust/crates/omnicrawl-llm/src/desensitization/gitleaks.rs | A:- | S:这是上游规则的快照而不是本仓库的原创配置，升级要与上游对照；规则过宽会把正常代码判成秘密，过窄会漏掉真实凭据
+
+===/<repository>/rust/crates/omnicrawl-llm/src/===
+adapter.rs[EG7M]: F:实现 Provider 运行时工厂：解析生效协议、组装端点与模型能力并返回运行时组合 | R:code:rust/crates/omnicrawl-llm/src/capabilities.rs | A:ProviderProfile、ModelDescriptor、RuntimeBundle、default_base_url、conservative_capabilities | S:生效协议的解析顺序是调用方指定优先于渠道默认再优先于 Provider 默认，顺序颠倒会让用户显式选择被忽略；能力缺省要保守，乐观默认会让下游发出不被支持的请求
+anthropic.rs[EG8L]: F:实现 Anthropic Messages Provider：选项净化、消息转换、请求构建与流事件映射、错误格式化 | R:code:rust/crates/omnicrawl-llm/src/request.rs | A:ANTHROPIC_VERSION、sanitize_anthropic_options、to_anthropic_messages、build_anthropic_request | S:选项净化必须剔除该家不认识的参数，透传会让请求整体被拒；该系统把系统提示词与工具面放在不同字段，转换错了不会报错但模型行为会明显变差
+capabilities.rs[EG6S]: F:定义模型能力位与分层合并规则 | R:code:rust/crates/omnicrawl-llm/src/adapter.rs | A:ModelCapabilities、merge_capabilities | S:未声明的布尔字段必须在合并时保持原值而不是被覆盖成假，否则上层显式开启的能力会被一个空层抹掉；对外读取要经解析后的视图，直接读原始字段会把未声明当成关闭
+desensitization.rs[EG8L]: F:作为脱敏模块根：定义子系统错误面、可逆占位符协议与序号注册表，原文只进内存 | R:code:rust/crates/omnicrawl-config/src/features/desensitization.rs | A:PLACEHOLDER_MARKER、FULLWIDTH_OPEN_BRACE、FULLWIDTH_CLOSE_BRACE、DesensitizationError、next_sequence_number | S:原文只进内存注册表：不落盘、不进日志、不进会话事件，可观测信息只到计数、规则标识与序号粒度；占位符的全角花括号与标记是还原的唯一依据，改动会让已发出的占位符无法还原
+errors.rs[EG9L]: F:定义运行时错误面：状态码阶梯文案、可重试判定、模型错误分类与异常视图 | R:code:rust/crates/omnicrawl-llm/src/runtime.rs | A:RuntimeError、ModelError、is_retryable_model_request_error、ExceptionView | S:状态码阶梯文案是对外契约，改措辞会让既有失败分类与用户提示失配；可重试判定直接决定是否重发，把确定性错误判成可重试会引发重复副作用，而漏判瞬时错误会让长回合无故中断
+gemini.rs[EG8L]: F:实现 Gemini Generate Content Provider：选项净化、内容转换、请求构建、流事件映射与错误文案 | R:code:rust/crates/omnicrawl-llm/src/request.rs | A:GeminiRequest、sanitize_gemini_options、to_gemini_contents、build_generate_content_request | S:该系统对角色的命名与前两家不同，角色映射错不会报错但会改变模型行为；选项净化要剔除不认识的参数，透传会让整个请求被拒
+json.rs[EG6T]: F:实现 JSON 取值助手：按属性或键取值、真值判定与字符串化，固定另一侧的取值习惯 | R:code:rust/crates/omnicrawl-llm/src/request.rs | A:attr、truthy、to_string | S:取值习惯固定在一处，散落到各 Provider 会让同一种畸形负载在不同协议下表现不同
+lib.rs[EG6T]: F:作为 Provider 运行时 crate 的模块根，声明协议适配、传输、流解析、用量、错误、脱敏与运行时装配模块 | R:code:rust/crates/omnicrawl-llm/src/runtime.rs | A:- | S:这一层把会话消息组装成请求体、把分片与流负载映射成统一事件、把用量归一化，并把一次回合串到完整回复
+openai_chat.rs[EG6S]: F:实现 Chat Completions 的分片级映射：分片到归一化流事件、工具调用增量按索引归并、参数完整性判定 | R:code:rust/crates/omnicrawl-llm/src/request.rs | A:ToolCallBuffer、first_choice、arguments_json_complete、emit_tool_call_deltas | S:参数完整性判定是必需的：半截 JSON 若被当作正常调用收尾，会被静默降级成空参数并真的执行；工具调用增量必须按索引归并而不是按到达顺序，并行调用时顺序会交错
+registry.rs[EG6T]: F:实现 Provider 与协议的解析、默认值与一致性校验 | R:code:rust/crates/omnicrawl-protocol/src/identity.rs | A:resolve_protocol、protocol_for_provider、validate_protocol_matches_provider | S:协议与 Provider 必须匹配，允许错配不会立刻报错但会在请求构造时产生难以诊断的失败；解析顺序是调用方指定优先于渠道默认再优先于 Provider 默认
+request.rs[EG7M]: F:构建 Chat Completions 请求：会话消息到请求体、工具声明、选项校验与缓存键下发 | R:code:rust/crates/omnicrawl-llm/src/responses.rs | A:RequestError、tool_specs_to_openai_functions、sanitize_provider_options、is_openai_gpt_model | S:provider_options 必须校验后透传，未校验的键会被上游拒甚至被静默忽略；缓存键只对支持的模型下发，给不支持的模型加会让请求整体失败
+responses.rs[EG8L]: F:构建 Responses 协议的请求：会话消息到输入项、工具声明、工具历史判定与拒收识别 | R:code:rust/crates/omnicrawl-llm/src/request.rs | A:messages_to_responses_input、tools_for_responses、has_tool_history_items、is_tool_history_rejection | S:该协议对历史里的工具项有额外约束，缺项或形状不对时服务端会整体拒收；拒收要与普通失败分开识别，否则会走错误的重试路径
+runtime.rs[EG8L]: F:实现内核自带运行时的回合：请求组装、传输、流解析、工具调用收尾与归并，含三种 Provider 的运行时 | R:code:rust/crates/omnicrawl-llm/src/transport.rs,code:rust/crates/omnicrawl-llm/src/sse.rs | A:ChatEndpoint、OpenAiChatRuntime、AnthropicRuntime、DiscardSink | S:流解析要在收到结束事件时把工具调用收尾成完整调用，缺这一步半截参数会被当成空参数；三种 Provider 共用同一套事件形状，各自直接产出私有形状会让上层分支爆炸
+runtime_manager.rs[EG7M]: F:实现模型运行时管理：不可变快照与回合边界热切换，含候选构造、持久化与原子替换 | R:code:rust/crates/omnicrawl-llm/src/runtime.rs | A:RuntimeSnapshot、ModelRuntimeManager、run_with_snapshot | S:切换顺序必须是先造候选、再持久化、最后原子替换，反过来会在失败时留下环境已变但配置未写的中间态；正在跑的回合必须继续用旧快照，中途换运行时会让同一回合的请求落到不同渠道
+sse.rs[EG6T]: F:实现 SSE 层：把负载文本解成原生 JSON 负载并逐步推进 | R:code:rust/crates/omnicrawl-llm/src/runtime.rs | A:decode_sse_data、payload_of_line、step_payload | S:只有带数据行的负载才是语义事件，注释与心跳行要跳过；解析失败要能区分还没到完整负载与真损坏，混为一谈会让流被误判中断
+stream_reader.rs[EG7M]: F:实现可放弃的模型流读取：把建连与迭代放到后台、事件经队列转发，消费方可中断 | R:code:rust/crates/omnicrawl-llm/src/stream_registry.rs | A:DEFAULT_POLL_SECONDS、interruptible_stream_events、interruptible_stream_events_with_opener | S:消费方每轮都要能及时感知取消，阻塞在读取上会让取消拖到整段流跑完；轮询间隔决定取消的响应延迟
+stream_registry.rs[EG7M]: F:实现当前回合的可取消模型流与外部资源注册表，按作用域持有与统一取消 | R:code:rust/crates/omnicrawl-llm/src/stream_reader.rs | A:StreamRegistry、CancelHandle、ScopeOwner、global | S:注册的资源必须在作用域结束时全部回收，漏一处会让已取消回合的连接继续占着；取消要幂等，重复取消不能被当成错误
+transport.rs[EG7S]: F:实现 HTTP 传输：发一次请求并交回可增量读取的响应体 | R:code:rust/crates/omnicrawl-llm/src/runtime.rs | A:HttpRequest、HttpResponse、build_agent、shared_agent | S:只负责发一次并交回响应体，重试、错误分类与取消由运行时决定，把重试塞进传输层会让上层的重试与统计全部失真；连接要复用共享客户端，每次新建会耗尽端口并丢掉连接复用
+usage.rs[EG7S]: F:把三家负载里的用量归一成统一结构 | R:code:rust/crates/omnicrawl-protocol/src/message.rs | A:usage_from_openai_payload、usage_from_gemini_payload、usage_from_anthropic_payload | S:三家字段名与缓存命中的表达方式都不同，各自直读会让统计与压缩阈值判定在某个 Provider 上整体偏移
+
+===/<repository>/rust/crates/omnicrawl-llm/src/desensitization/===
+engine.rs[EG8L]: F:实现脱敏匹配引擎：结构感知的键名规则为主、值类型规则层与熵兜底为辅，产出待脱敏区间并完成替换 | R:code:rust/crates/omnicrawl-llm/src/desensitization/rules.rs | A:DesensitizationEngine | S:三层顺序是设计的一部分：键名规则先定范围，值类型规则补无键名的敏感值，熵兜底只在前两层都没命中时才动，顺序颠倒会把结构化字段误判成裸串而截断语义；替换要保留值的类型与长度特征，否则下游按类型校验会失败
+gitleaks.rs[EG8L]: F:接入 gitleaks 规则：读取内置快照与自定义规则文件，编译成匹配器供引擎调用 | R:code:rust/crates/omnicrawl-llm/data/gitleaks.toml | A:GitleaksRules | S:内置快照是上游默认配置的离线副本，与另一侧实现共用同一份 TOML 解析语义；自定义规则路径来自配置，缺失或损坏时只跳过这一层而不是整体禁用脱敏
+live.rs[EG7M]: F:实现脱敏运行时装饰器：包住任意模型运行时，出站请求先屏蔽、入站事件逐条还原 | R:code:rust/crates/omnicrawl-llm/src/desensitization/middleware.rs | A:DesensitizationRuntime | S:装饰器必须对调用方完全透明，除占位符外请求与事件的形状不得变化；流式还原要配合尾部挂起缓冲，逐条直接还原会切断跨分片的占位符
+middleware.rs[EG8L]: F:编排出站屏蔽与入站还原：请求字段遍历、占位符分配、事件逐条处理与注册表生命周期 | R:code:rust/crates/omnicrawl-llm/src/desensitization/engine.rs | A:DesensitizationPlan、mask_request、restore_events | S:这一层只做与运行时无关的编排，接运行时是另一层的事；注册表按会话存续，跨会话复用会把上一段的原文还原到另一段对话里
+oneshot.rs[EG6S]: F:实现旁路调用的一次性文本屏蔽与还原，覆盖不经统一运行时的模型链路 | R:code:rust/crates/omnicrawl-llm/src/desensitization/middleware.rs | A:mask_text_oneshot、restore_text_oneshot | S:审查这类旁路调用同样会把待审内容发出去，漏掉这条链路等于在最敏感的路径上不脱敏；一次性调用不持有注册表，还原必须用同一次调用返回的映射
+plan_cache.rs[EG8L]: F:实现屏蔽计划缓存：对未变文本复用上一次的匹配计划，避免每轮全量重算 | R:code:rust/crates/omnicrawl-llm/src/desensitization/middleware.rs | A:PlanCache | S:缓存键必须包含规则集身份，规则变更后复用旧计划会让新规则不生效；历史每轮全量重发，没有这层缓存时同一段未变文本会被反复扫描
+rules.rs[EG8L]: F:实现值类型规则层：按形态识别无键名的敏感值类型（私钥块、连接串、网址、邮箱、车牌、银行卡、MAC 与 IP） | R:code:rust/crates/omnicrawl-llm/src/desensitization/engine.rs | A:ValueRules | S:结构感知层要求值带键名，本层专门补裸值；每种类型都可单独开关，关掉某一类会让该类型原样出网；匹配必须是手写匹配器而不是通用正则引擎，前视与后顾在目标语法里不可用
+stream.rs[EG8L]: F:实现流式响应还原：占位符感知的尾部挂起缓冲与结构化还原 | R:code:rust/crates/omnicrawl-llm/src/desensitization/live.rs | A:StreamRestorer | S:文本分片可能把占位符切成两半，尾部必须挂起等待直到能确定不是占位符前缀，否则会把半个占位符当普通文本发出去；结构化还原要按字段类型处理，字符串与结构化负载的替换路径不同
+words.rs[EG7M]: F:实现序号与单词组占位符标签的双射编解码 | R:code:rust/crates/omnicrawl-llm/src/desensitization.rs | A:encode_label、decode_label | S:纯数字序号信息量太低，模型搬运时偶发记错一位就会把还原落到另一个值上；编解码必须严格双射，碰撞会让两个不同的秘密互相还原成对方的原文
+
+===/<repository>/rust/crates/omnicrawl-mcp/===
+Cargo.toml[FV6T]: F:声明 MCP 子系统 crate 的库与二进制目标及其依赖 | R:code:rust/Cargo.toml | A:- | S:二进制与库同名不同路径，发布时按 bin 名提供 MCP Server 入口；依赖里不引异步运行时，stdio 与 HTTP 两条传输都是阻塞式加常驻读线程
+README.md[SZ7S]: F:交代 MCP 子系统的逐模块划分与与另一侧实现的对照关系 | R:code:rust/crates/omnicrawl-mcp/src/config.rs | A:- | S:目标是把整个 MCP 子系统的逻辑搬进内核，让宿主侧不再依赖外部实现提供的 MCP 能力；模块边界按职责而不是按文件大小切
+
+===/<repository>/rust/crates/omnicrawl-mcp/src/===
+audit.rs[EV7M]: F:把 MCP 工具调用写成工作区内的一行式 JSON 审计，含预览截断与时间源注入 | R:code:rust/crates/omnicrawl-mcp/src/security.rs | A:McpAuditLogger、AuditRecord、DEFAULT_MCP_AUDIT_LOG_PATH | S:审计写在工程区内而不是用户目录，用户才能随项目一起留存；写失败只记诊断，绝不能让审计把工具调用拖停；预览必须截断，审计文件不该成为第二个上下文
+bundled.rs[EV7S]: F:把随包技术文档打进二进制并以统一 URI 前缀暴露，提供清单与地址解析 | R:code:rust/crates/omnicrawl-mcp/src/server.rs | A:BUNDLED_DOC_URI_PREFIX、bundled_doc_names、bundled_doc_uri、BundledDocumentationError | S:文档必须编译进二进制：二进制可能被单独分发，按安装目录读盘会在那种情形下全部失效；URI 前缀是对外契约，改动会让模型手里的文档地址全部失效
+client.rs[EV8L]: F:实现多 Server 管理器：连接生命周期、并发能力发现、状态与诊断、工具调用与审计 | R:code:rust/crates/omnicrawl-mcp/src/registry.rs,code:rust/crates/omnicrawl-mcp/src/stdio.rs | A:McpClientManager、DiscoveredCapabilities、McpToolCallResult、MAX_DISCOVER_WORKERS | S:发现要并发但有上限，逐个串行会让启动随 Server 数量线性变慢，无上限会把线程数撑爆；单个 Server 失败必须降级成诊断而不是让整张能力表失效
+config.rs[EV8L]: F:从配置段与环境变量读取 MCP 配置，并校验 Server 名、传输方式、风险等级与超时 | R:code:rust/crates/omnicrawl-config/src/core/settings.rs | A:MCP_TRANSPORT_STDIO、MCP_TRANSPORT_STREAMABLE_HTTP、MCP_RISK_TRUSTED | S:环境变量只覆盖全局开关与通用阈值，Server 列表仍留在配置文件里：命令、参数与凭据不该散到环境变量；传输方式与风险等级都是闭集，未知取值必须拒绝而不是回落默认
+http.rs[EV7M]: F:实现 Streamable HTTP 传输：把每个请求 POST 到同一端点并区分 JSON 与事件流两种响应 | R:code:rust/crates/omnicrawl-mcp/src/jsonrpc.rs | A:StreamableHttpMcpConnection、MCP_STREAMABLE_HTTP_PROTOCOL_VERSION | S:要同时支持一次性 JSON 与流式响应两种形态，只实现一种会让部分 Server 完全不可用；协议版本要随请求头声明，缺失会让服务端回退到不兼容的行为
+ids.rs[EV6T]: F:生成会话与审计标识，用时间、进程与计数器拼出短十六进制串 | R:code:rust/crates/omnicrawl-mcp/src/audit.rs | A:random_hex、audit_id、session_id | S:不引随机数依赖但标识仍须在同一进程内不重复，计数器是必需的那一半；长度与另一侧实现一致，便于两侧日志对照
+jsonrpc.rs[EV8L]: F:实现协议纯函数：长度前缀分帧、请求响应拆包、事件流解析、能力列表分页与结果文本化 | R:code:rust/crates/omnicrawl-mcp/src/stdio.rs | A:MAX_FRAME_HEADER_BYTES、MAX_CONTENT_LENGTH、MAX_LIST_PAGES、McpClientError | S:帧头与帧体都要有上限，无上限读取会让一个畸形 Server 直接把内存吃满；能力列表必须分页拉全，只取第一页会让工具表在大型 Server 上缺项
+lib.rs[EV6T]: F:作为 MCP 子系统 crate 的模块根，声明配置、注册表、安全、审计、协议、传输、客户端与服务端模块 | R:code:rust/crates/omnicrawl-mcp/src/client.rs | A:- | S:按职责分层：配置决定连接什么，注册表描述能做什么，安全与审计约束怎么做，传输只管把帧送到
+registry.rs[EV7M]: F:维护本轮会话的能力注册表：工具、资源与提示的元数据、去重诊断与命名空间化 | R:code:rust/crates/omnicrawl-mcp/src/config.rs | A:McpToolMeta、McpResourceMeta、McpPromptMeta、McpDiagnostic | S:表按登记顺序保存：工具声明下发给模型的顺序跟着注册顺序走，顺序变化会让前缀缓存失效；能力名必须带 Server 命名空间，裸名在多 Server 下会互相覆盖
+security.rs[EV7M]: F:实现 MCP 安全面：审批归属判定、参数体积与轻量结构校验、审计文本脱敏 | R:code:rust/crates/omnicrawl-mcp/src/audit.rs | A:mcp_tool_requires_confirmation、validate_tool_arguments、redact_sensitive_values | S:审批归属决定哪个远程工具会停下来问人，判定写反等于把高风险调用放行；参数必须先做体积与结构校验再转给 Server，透传畸形参数会把错误推给远端且难以定位
+server.rs[EV8L]: F:实现本地 stdio MCP Server：对外提供工作区只读文档、内置技术文档与提示，处理请求读取 | R:code:rust/crates/omnicrawl-mcp/src/bundled.rs | A:LocalMcpServer、read_request、MAX_FILE_READ_CHARS | S:只读是硬边界：这里的资源访问不得写文件；文件读取要有字符上限，否则一次读请求就能把整个响应撑爆；内置文档走编译期打包，不依赖磁盘目录
+stdio.rs[EV8L]: F:实现 stdio 传输：长度前缀帧的写入、常驻读线程、错误输出排空与超时回收重启 | R:code:rust/crates/omnicrawl-mcp/src/jsonrpc.rs | A:StdioMcpConnection、MCP_PROTOCOL_VERSION | S:错误输出必须持续排空，否则子进程写满管道后会整体卡死；读线程要常驻，同步读会让调用方无法设置超时；超时后要回收并重启连接，留着一个半死的子进程会让后续调用全部失败
+
+===/<repository>/rust/crates/omnicrawl-mcp/src/bin/===
+omnicrawl_mcp_server.rs[EV6T]: F:作为本地 MCP Server 的二进制入口，按 stdio 暴露只读文档与提示 | R:code:rust/crates/omnicrawl-mcp/src/server.rs | A:- | S:入口只做装配与协议循环，业务能力在库内；标准输出只用于协议帧，任何日志都必须走错误输出
+
+===/<repository>/rust/crates/omnicrawl-onejev/===
+Cargo.toml[FV7T]: F:声明 OneJev 自部署 crate 的依赖：配置、宿主执行层、序列化与 HTTP 客户端 | R:code:rust/Cargo.toml | A:- | S:下载器与能不能跑起来解耦：取权重不依赖 GPU 或运行时环境，无显卡的机器也能先下好
+
+===/<repository>/rust/crates/omnicrawl-onejev/src/===
+download.rs[EV8L]: F:从发布仓库拉取某个尺寸的权重，并提供就绪判断与删除 | R:code:rust/crates/omnicrawl-onejev/src/sizes.rs | A:model_ready、download_model、delete_model、DownloadOutcome | S:就绪判断要按文件齐全而不是只看目录存在，半途中断的下载会被误判为就绪；删除要能清理残留，留下半个模型会让下次启动加载失败
+env.rs[EV8L]: F:创建自部署专用虚拟环境并按本机 GPU 选择依赖轮子安装 | R:code:rust/crates/omnicrawl-onejev/src/progress.rs | A:PythonLauncher、ensure_environment、environment_state、InstallOutcome | S:必须用专用虚拟环境而不是系统解释器：推理底座要求较新的 Python 与依赖，装进系统环境会污染用户机器；轮子要按本机 GPU 选，装错档位会在启动时才暴露为不可用
+lib.rs[XV6T]: F:作为 OneJev 自部署 crate 的模块根，声明尺寸清单、下载、环境、路径、进度与服务模块 | R:code:rust/crates/omnicrawl-onejev/src/sizes.rs | A:- | S:它是与云端渠道并列的第三种决策服务来源，走本机进程而非远端接口；装环境与下载都是分钟级动作，因此进度必须可观察
+paths.rs[XV6S]: F:解析自部署数据根目录与各子目录，支持环境变量覆盖 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:default_root、resolve_root、model_dir、RUNNER_DIR_ENV | S:默认根目录在用户目录下而不在工作区里，放进工作区会让几 GB 权重随项目一起被提交；环境变量覆盖只改根，子目录结构保持固定
+progress.rs[XV7M]: F:维护长任务进度快照：后台线程写、界面每帧读，含可读字节数格式化 | R:code:rust/crates/omnicrawl-onejev/src/env.rs | A:ProgressSnapshot、ProgressHandle、human_bytes | S:装环境、下权重与起服务都是分钟级动作，界面必须能回答现在在做什么、走到哪了；快照读写要无锁或短锁，每帧都抢锁会让界面卡顿
+server.rs[XV7L]: F:管理本地判定服务的进程生命周期：拉起、就绪判定、停止与切换尺寸 | R:code:rust/crates/omnicrawl-onejev/src/env.rs | A:ServerOutcome、LaunchSpec、DEFAULT_HEALTH_TIMEOUT_SECONDS、READY_POLL_MILLIS | S:一个尺寸一份进程，切尺寸等于停旧起新，切换期间决策请求会失败（审查通道按失败关闭、重排按失败放行），因此切换动作本身要考虑失败模式；就绪判定按轮询就绪标记而不是连端口探测
+sizes.rs[XV7T]: F:维护可自部署的尺寸清单：发布仓库、下载量、显存提示与模型名的唯一来源 | R:code:rust/crates/omnicrawl-onejev/src/download.rs | A:OneJevSize、ONEJEV_SIZES、find_size、size_labels | S:清单是尺寸信息唯一来源，界面与配置都不得再各留一份硬编码表，否则新增尺寸会漏改某一处；体积取仓库实际文件总量，估值偏差会让显存提示失真
+
+===/<repository>/rust/crates/omnicrawl-protocol/===
+Cargo.toml[FV6T]: F:声明协议内核 crate 的目标与依赖（serde 与 serde_json） | R:code:rust/Cargo.toml | A:- | S:全部为纯逻辑无 I/O，可在嵌入式目标上直接复用；不得引入传输或网络依赖
+
+===/<repository>/rust/crates/omnicrawl-protocol/src/===
+aggregate.rs[EG7S]: F:实现流事件归并：把增量事件拼成一次完整模型回复，含工具调用改名与参数拼接 | R:code:rust/crates/omnicrawl-protocol/src/codec.rs | A:aggregate_stream_events、aggregate_stream_events_ref | S:工具调用的参数是分段到达的，必须按调用标识拼接而不是按到达顺序覆盖；结束事件决定最终内容与停止原因，缺失时要给出可判定的兜底
+codec.rs[EG8L]: F:实现 OpenAI 风格历史与会话消息、工具声明之间的编解码，以及工具参数对象的解析与调用标识核对 | R:code:rust/crates/omnicrawl-protocol/src/message.rs | A:conversation_from_openai_messages、tools_from_conversation_messages、tool_spec_from_openai_item、parse_arguments_object | S:非字符串字段不再走字符串转换而一律回落默认值，实际请求里这些字段恒为字符串；参数解析不接受非有限数，非法输入退化为空对象；调用标识丢失时不能静默配错
+event.rs[EG7S]: F:定义 Provider 流的原始事件与一次回复的归并结果 | R:code:rust/crates/omnicrawl-protocol/src/aggregate.rs | A:TextDelta、ReasoningDelta、ToolCallStarted、ToolCallArgumentsDelta、UsageReported | S:流事件是增量语义，顺序与结束事件是归并的唯一依据；用量事件可能多次上报且需要累加而不是覆盖
+identity.rs[EG6S]: F:定义 Provider 与传输协议的闭集以及模型唯一身份 | R:code:rust/crates/omnicrawl-config/src/models/llm.rs | A:Provider、Protocol、ModelIdentity | S:Provider 与协议都是闭集，未知取值解析为空而不是透传，否则一个错拼的渠道名会一路走到请求构造；身份字符串是缓存与统计的键，拼接格式变化会让既有缓存全部失效
+lib.rs[EG6T]: F:作为协议内核 crate 的模块根，声明身份、消息、事件、归并、编解码与工具名模块 | R:code:rust/crates/omnicrawl-protocol/src/message.rs | A:- | S:与回合循环 crate 的边界是：本 crate 负责把 Provider 流事件归并成一条模型回复，循环负责拿这条回复跑工具批次
+message.rs[EG7M]: F:定义 Provider 无关的消息块、工具调用与结果、会话消息与生成选项、Token 用量 | R:code:rust/crates/omnicrawl-protocol/src/event.rs | A:MessageBlock、TextBlock、ImageBlock、ToolCallBlock、ToolResultBlock、ConversationMessage | S:这是两个实现之间的数据契约面，字段名与形状改动要同步对照数据集；工具调用与结果必须能按标识配对，靠顺序配对在并行调用下会错配
+tool_names.rs[EG6M]: F:把工具名收敛成上游合法的线上形态，并提供名字映射与还原 | R:code:rust/crates/omnicrawl-protocol/src/message.rs | A:conform_tool_names、sanitize_tool_name、ToolNameMap、MAX_TOOL_NAME_CHARS | S:网关要求函数名匹配受限字符集，MCP 暴露的名字天然带点号等非法字符，不收敛会被直接拒；收敛必须确定性且可还原，同一份工具表每次得到同一组线上名才能命中前缀缓存
+
+===/<repository>/rust/crates/omnicrawl-session/===
+Cargo.toml[FV7T]: F:声明会话存储 crate 的依赖：时间、内存映射、序列化与哈希，并按平台引入文件锁所需的系统库 | R:code:rust/Cargo.toml | A:- | S:跨进程写锁必须用 OS 级文件锁（Windows 字节区间锁、POSIX flock），应用层锁在多进程下无效；大转录用内存映射只读以免整份复制进堆
+README.md[SZ7M]: F:交代会话存储 crate 的模块划分、与另一侧实现的逐字兼容要求与对照工作流 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:- | S:两侧读写同一批会话文件，字节级比对才是兼容判据；fixture 是唯一事实来源，实现失配时先判断是实现回归还是契约要更新
+
+===/<repository>/rust/crates/omnicrawl-session/src/===
+artifact.rs[EV7L]: F:实现会话工具输出产物、脱敏与路径安全：超长输出落盘、上下文只留头尾预览与相对路径 | R:code:rust/crates/omnicrawl-session/src/redaction.rs | A:SessionArtifactStore、TOOL_RESULT_INLINE_OUTPUT_CHARS、normalize_relative_artifact_path、redact_sensitive_html | S:每一份落盘文本都要先过脱敏，公开消费者永远不该接触原始文本；读取路径必须归一化并拒绝上跳，否则可以读到会话目录之外
+consistency.rs[EV6L]: F:实现转录与索引的一致性诊断：从事件流重建索引条目并与现有条目逐项对照 | R:code:rust/crates/omnicrawl-session/src/index.rs | A:build_index_entry_from_events、compare_index_entry、ISSUE_PATH_MISMATCH | S:诊断码、严重级别与详情键序都是对外契约，改码会让既有诊断消费方失配；对照要逐字段给出差异而不是只报不一致，否则用户无从修复
+error.rs[EV6T]: F:定义会话存储错误类型，消息与另一侧实现逐字对齐 | R:code:rust/crates/omnicrawl-session/src/lib.rs | A:SessionStoreError | S:错误文案直接进界面，因此不做分类也不改写措辞
+event.rs[EV7S]: F:实现会话事件模型、校验与行编解码 | R:code:rust/crates/omnicrawl-session/src/records.rs | A:SessionEvent | S:事件是两个实现之间唯一的契约面：字段名、时间写法与错误文案都要一致；序列化输出就是转录里的一行，键序与转义差异会造成整文件比对失败
+history.rs[EV7L]: F:实现有状态投影：把事件流增量投影成模型协议消息，含工具批合并、压缩边界与中断补位 | R:code:rust/crates/omnicrawl-session/src/projection.rs | A:TurnHistoryProjector、collect_evicted_call_ids、evict_tool_calls、EVICTED_EVENT_TYPE | S:增量投影必须在收尾时取走本轮新增部分，全量重算会让前缀缓存失效；被淘汰的调用要同时从消息与上下文里移除，只删一侧会留下孤立结果
+index.rs[EV6S]: F:定义会话目录索引条目模型并做字段校验 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:SessionIndexEntry | S:索引是会话目录的目录页：转录损坏时靠它恢复，列表与恢复入口也读它，所以字段校验与文案必须完全一致；索引与转录不一致时要能诊断出来而不是静默取其一
+lib.rs[EV6S]: F:作为会话存储 crate 的模块根，声明事件与索引模型、命名与时间校验、存储、投影、记忆与产物模块 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:- | S:两个实现读写同一批会话文件，所有格式与文案必须逐字兼容，否则同一目录在两侧读出不同结果
+locking.rs[EV6M]: F:实现跨进程写锁与耐久写策略：Windows 字节区间锁、POSIX flock、锁文件与持有者提示 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:DEFAULT_LOCK_TIMEOUT_SECONDS、LOCK_FILE_NAME、DurableWritePolicy | S:多个进程会同时访问同一会话目录，应用层锁在多进程下无效，必须用 OS 级文件锁；锁要有超时与轮询间隔，无限等会让一次死锁挂住整个会话
+memory.rs[EV7M]: F:实现长期记忆的格式层：Markdown 记录格式、目录与路径归一化、索引条目字段校验 | R:code:rust/crates/omnicrawl-session/src/memory_store.rs | A:normalize_directory、normalize_relative_file_path、dedupe_directories、format_memory_markdown | S:目录名要做安全归一化并拒绝上跳，否则一条记忆可以写到记忆根之外；去重要保序，换序会让索引重建后顺序跳变
+memory_ranking.rs[EV6L]: F:实现记忆的分类、摘要与检索排序的纯逻辑，不碰磁盘 | R:code:rust/crates/omnicrawl-session/src/memory_store.rs | A:classify_storage_directory、make_summary、merge_memory_content、directory_match_score | S:本模块不得反向依赖存储层，否则分类策略无法脱离文件系统测试；目录匹配分决定同权重候选的顺序，改算法会让检索结果整体变化
+memory_store.rs[EV8L]: F:实现记忆存储：索引读写与原子替换、读取加深（时间戳与访问计数）、写入合并与旧格式迁移 | R:code:rust/crates/omnicrawl-session/src/memory_ranking.rs | A:MemoryStore、MemoryRecord、MemoryWriteRequest、MemorySearchResult、migrate_legacy_memory | S:索引原子替换要带 Windows 短暂占用重试，直接覆盖会写出半份索引；读取要刷新时间戳与访问计数，否则清理策略会把常用记忆当冷数据淘汰
+naming.rs[EV7M]: F:实现会话命名与路径校验：会话标识、事件类型、转录相对路径与标题折叠，并给出各事件类型集合 | R:code:rust/crates/omnicrawl-session/src/index.rs | A:SESSION_EVENT_VERSION、MESSAGE_EVENT_TYPES、MODEL_CONTEXT_EVENT_TYPES、EMPTY_SESSION_EVENT_TYPES | S:路径校验必须拒绝上跳与绝对路径，否则读写可以越出会话目录；事件类型集合决定哪些事件进入模型上下文，扩集会改变历史重建结果
+project.rs[EV8L]: F:实现项目列表存储：读写项目清单、扫描会话索引得到项目路径、创建与导入目录与只读聚合总览 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:ProjectStore、ProjectEntry、OverviewSessionEntry、PROJECTS_FILE_NAME | S:项目清单与会话数据分开维护，本模块不得改写会话；总览是只读聚合，从会话索引推导而不是复制语义，否则两处会不一致
+projection.rs[EV7L]: F:实现会话投影的纯函数部分：活动事件过滤、标题折叠、工具调用与结果转上下文、被回退与中断的补齐文案 | R:code:rust/crates/omnicrawl-session/src/history.rs | A:TOOL_CALL_CONTEXT_PREFIX、TURN_UNDONE_EVENT_TYPE、INTERRUPTED_TOOL_RESULT_TEXT | S:中断的工具结果必须显式写明状态未知，省略会让下一轮以为命令没执行；被回退的回合要过滤掉，否则历史里会残留已撤销的调用
+prompt_history.rs[EV6L]: F:实现用户提示历史的数据模型与行式存储：追加写入、容错读取与展示裁剪 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:PromptHistoryEntry、PromptHistoryStore、clean_prompt_display、MAX_PROMPT_HISTORY_DISPLAY_CHARS | S:写入走耐久追加并统一持锁，绕过锁会让多进程的追加互相截断；坏行不阻断其余记录，尾部半行降级为警告
+records.rs[EV7L]: F:实现会话转录与提示历史的解码、版本迁移与损坏诊断，诊断码固定 | R:code:rust/crates/omnicrawl-session/src/event.rs | A:DIAG_INVALID_JSON、DIAG_UNSUPPORTED_VERSION、DIAG_TRAILING_INCOMPLETE | S:未知版本、JSON 损坏与字段错误必须给结构化诊断而不是静默吞掉，吞掉会让一次损坏永久隐形；默认不改写文件，迁移只在显式入口发生
+redaction.rs[EV6L]: F:实现跨子系统共用的凭据脱敏：文本侧按固定顺序多轮替换，结构侧递归清理常见凭据字段 | R:code:rust/crates/omnicrawl-session/src/artifact.rs | A:redact_sensitive_text、redact_sensitive_values | S:替换顺序本身就是语义：先私钥块再赋值式，顺序颠倒会让私钥被当成普通长串只掩一行；结构侧清理按字段名而非内容，新增凭据字段名要同步进表
+store.rs[EV8L]: F:实现会话存储的磁盘读写：目录骨架、索引维护、转录追加与读取、整个会话生命周期的编排，以及撤销事务 | R:code:rust/crates/omnicrawl-session/src/index.rs,code:rust/crates/omnicrawl-session/src/locking.rs | A:SessionStore、CreatedSession、SessionListQuery、kernel_runtime_identity | S:追加必须经跨进程写锁与耐久写，多进程同时写同一会话会截断行；索引与转录要在同一事务边界内一致，否则崩溃后列表与内容对不上
+time.rs[EV6T]: F:实现时间戳的 ISO-8601 解析与格式化（UTC、微秒），以及按 JSON 值读取与当前时间 | R:code:rust/crates/omnicrawl-session/src/naming.rs | A:parse_datetime、format_datetime、datetime_to_millis、utc_now、truncate_to_micros | S:两侧读写同一批会话文件所以格式必须逐字兼容：小数位只在微秒非零时输出，且只认 3 位或 6 位小数；精度不截到微秒会让同一事件在两侧写出不同的时间文本
+turn_snapshot.rs[EV7L]: F:实现基于仓库自身 Git 状态的轮次快照与原子恢复，不创建额外对象库 | R:code:rust/crates/omnicrawl-cli/src/undo.rs | A:WorktreeSnapshotStore、WorktreeSnapshot、SnapshotError、GIT_COMMAND_TIMEOUT_SECONDS | S:只依赖用户仓库已有的状态，不建独立对象库，否则用户仓库会多出看不懂的对象；恢复要原子且可预检，半途失败会把工作区留在中间态
+undo.rs[EV6S]: F:构建最近一轮回退的稳定事件计划：判断这一轮是完整还是不完整 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:build_undo_plan、SessionUndoPlan、UNDO_KIND_COMPLETE、UNDO_KIND_INCOMPLETE | S:计划是不落盘的中间产物：调用方要先做文件系统副作用预检再执行；区分完整与不完整是必须的，把不完整的一轮当完整回退会留下孤儿工具结果
+
+===/<repository>/rust/crates/omnicrawl-tls/===
+Cargo.toml[FV6T]: F:声明自研 TLS crate 的依赖：密码学原语、证书类型、证书链校验与根证书 | R:code:rust/Cargo.toml | A:- | S:原语交给已审计且自带预生成汇编的库，不需要外部 C 工具链与 NASM；自研只覆盖线格式与握手编排
+
+===/<repository>/rust/crates/omnicrawl-tls/src/===
+client_hello.rs[XN8L]: F:构造 ClientHello：扩展顺序、填充值与密码套件顺序完全由档案决定，并支持填充 | R:code:rust/crates/omnicrawl-tls/src/profile.rs | A:GREASE_MARK、GREASE_VALUES、ExtensionSlot | S:这是唯一无法用现成库替代的部分：通用库把扩展顺序写死在代码里，而指纹的主要字段正是套件原始排列与扩展出现顺序；填充值必须与档案一致，随手生成即可被区分
+driver.rs[XN9L]: F:实现驱动层：把 TCP、TLS 握手与 HTTP/2 串成一条能真正发起请求的通路，并处理边界对齐 | R:code:rust/crates/omnicrawl-tls/src/h2conn.rs,code:rust/crates/omnicrawl-tls/src/session.rs | A:Connection、Response | S:前三层各自可测但组合会引入边界不对齐问题：握手末尾的多余字节必须交给下一层而不是丢弃，丢弃会让首个请求永远等不到响应；连接要能复用，每请求新建连接与真实浏览器行为不符
+h2conn.rs[XN9L]: F:实现 HTTP/2 连接层：把帧层与头部压缩串成可发起请求的状态机，管理流号与流状态迁移 | R:code:rust/crates/omnicrawl-tls/src/http2.rs,code:rust/crates/omnicrawl-tls/src/hpack.rs | A:ClientConnection、Feed | S:帧层只管字节到帧，顺序与流状态在本层；流号与状态迁移写错会让请求永远停在等待首部，而不是报错；服务端推送与窗口更新要能忽略而不破坏状态
+handshake.rs[XN8L]: F:实现密钥交换与握手消息解析：从收到服务端问候推进到算出握手密钥，支持两种椭圆曲线组 | R:code:rust/crates/omnicrawl-tls/src/keyschedule.rs | A:KeyExchange、X25519Exchange、ServerHello | S:只支持两种组是因为四个档案的首选都是第一种，但部分站点会选第二种，缺一个组会让这些站点直接握手失败；握手消息解析失败要如实上报而不是尽量继续
+hpack.rs[XN8L]: F:实现 HTTP/2 头部压缩：有状态的编码与解码、整数与字符串表示 | R:code:rust/crates/omnicrawl-tls/src/h2conn.rs | A:Header、decode_integer、encode_integer | S:这是有状态压缩：索引表在两端必须同步演进，任一侧漏一次表更新都会让后续所有头部解错；整数前缀位宽与字符串的哈夫曼标志一起编码，位宽写错不会立刻报错但会解出乱码
+http1.rs[XN7L]: F:实现 HTTP/1.1 最小客户端编解码：把请求写成字节、把响应拆成头与体 | R:code:rust/crates/omnicrawl-tls/src/driver.rs | A:Head、encode_request、parse_head | S:必须实现：协议协商由服务端决定，档案里同时列了两种协议，只支持其一会在部分站点上失败；头部解析要能区分还没读全与格式错误，混淆会让流被误判中断
+http2.rs[XN8L]: F:实现 HTTP/2 帧层：九字节帧头与各类型载荷的编解码，并拒绝畸形输入 | R:code:rust/crates/omnicrawl-tls/src/h2conn.rs | A:HEADER_LEN、DEFAULT_MAX_FRAME_SIZE、MAX_MAX_FRAME_SIZE | S:这一层只做字节到帧，顺序与状态在连接层；帧长上限必须遵守，超大帧对端会直接中断连接；畸形输入要显式拒绝而不是跳过，跳过会让后续帧流失去同步
+keyschedule.rs[XN8L]: F:实现新版协议的密钥调度：按转录哈希逐级派生握手与应用流量密钥，含标签展开 | R:code:rust/crates/omnicrawl-tls/src/record.rs | A:TrafficKeys、Transcript、expand_label | S:密钥由转录哈希派生而不是直接来自密钥交换，转录顺序错一个字节就会导出错误的密钥，症状是连接建立成功但解出垃圾；标签展开的签名结构必须逐字节正确
+lib.rs[XN7S]: F:作为自研 TLS 客户端的模块根，声明线格式编码、ClientHello 构造与解析、记录层、握手、密钥调度、校验、会话缓存与 HTTP 通路模块 | R:code:rust/crates/omnicrawl-tls/src/client_hello.rs | A:- | S:自研面刻意收敛在线格式与握手编排：密码学原语交给已审计的库，因为无法替代的正是扩展顺序与套件排列这类指纹字段
+parse.rs[XN7M]: F:解析 ClientHello 并做往返验证，用于自证编码层可被独立解码 | R:code:rust/crates/omnicrawl-tls/src/client_hello.rs | A:parse_client_hello、round_trips、ParseError | S:解析器存在的理由是自证：编码层必须能被独立解码回结构，否则扩展顺序错了也无人察觉；往返不一致要当错误而不是警告
+profile.rs[XN8L]: F:定义四个浏览器家族的 ClientHello 档案与对应的 HTTP/2 档位，按家族取规格 | R:code:rust/crates/omnicrawl-tls/src/client_hello.rs | A:spec_for、http2_profile_for、Http2Profile | S:档案里的数值来自真实抓包，任一处手改都会让整份指纹偏离该家族；传输层档案与脚本侧画像必须同族，两处不一致只需一次比较即被识破
+record.rs[XN8L]: F:实现 TLS 记录层：把握手消息切成记录，并在新协议版本下加解密记录 | R:code:rust/crates/omnicrawl-tls/src/keyschedule.rs | A:MAX_PLAINTEXT、MAX_CIPHERTEXT_12、TAG_LEN | S:内层明文的末字节用于区分内容类型，切割点算错会让解密后的内容被当成填充；记录长度上限必须遵守，超长记录对端会直接报错
+session.rs[XN9L]: F:实现客户端握手状态机：把记录层与密钥调度串成可真实推进的流程，状态迁移严格按规范顺序 | R:code:rust/crates/omnicrawl-tls/src/handshake.rs,code:rust/crates/omnicrawl-tls/src/verify.rs | A:ClientHandshake、signed_message | S:任何乱序都要报错而不是尽量继续，容忍乱序会把协议错误伪装成可用连接；每一步都要能被单独驱动，否则握手失败时无法定位到具体阶段
+session_cache.rs[XN7M]: F:实现会话票据缓存：让同一站点的后续连接走恢复而不是完整握手 | R:code:rust/crates/omnicrawl-tls/src/session.rs | A:Session、SessionCache、DEFAULT_CAPACITY | S:真实浏览器第二次访问会带票据或预共享密钥，每次都完整握手是明显特征；缓存条目要有上限与有效期，无上限会持续涨内存
+tls12.rs[XN8L]: F:实现 1.2 客户端侧：伪随机函数、密钥块、握手消息解析与带认证的记录层 | R:code:rust/crates/omnicrawl-tls/src/record.rs | A:TLS12_VERSION、FINISHED_LEN、MASTER_LEN | S:必须做这一层：仍有大量只支持 1.2 的站点，只实现新版本会让这些站点直接不可达；1.2 的密钥块切分顺序与新版本完全不同，套用新版本的逻辑会得到错误的密钥
+verify.rs[XN8L]: F:实现握手校验：完成消息的校验值、证书验证消息的签名与证书链的信任判定 | R:code:rust/crates/omnicrawl-tls/src/keyschedule.rs | A:finished_verify_data、verify_finished、certificate_verify_message | S:这三件事共用同一份转录状态，拆开各算一次容易在中间步骤错位；校验失败必须拒绝连接，跳过校验等于放弃中间人防护
+wire.rs[XN7M]: F:实现线格式编码原语：把数字与长度前缀写成协议要求的字节，只做编码不含密码学 | R:code:rust/crates/omnicrawl-tls/src/client_hello.rs | A:EncodeError、push_prefixed、push_prefixed_with | S:所有写入都返回错误，截断或越界的长度前缀会让对端直接断开而不给出可读原因；长度前缀的位宽写错不会报错但整条消息不可解析
+
+===/<repository>/rust/crates/omnicrawl-tls/src/hpack/===
+huffman.rs[XN8L]: F:实现头部压缩的哈夫曼编解码，码表取自规范原文 | R:code:rust/crates/omnicrawl-tls/src/hpack.rs | A:EOS、encoded_len、encode | S:码表是 257 项权威值，任何手抄改动都会让个别字节解错且极难发现；填充必须按规范用全一比特对齐，否则对端判解码错误
+
+===/<repository>/rust/crates/omnicrawl-trigger/===
+Cargo.toml[FV6T]: F:声明触发接口 crate 的库与二进制目标及其依赖：HTTP 框架、配置、会话与时间 | R:code:rust/Cargo.toml | A:- | S:注入头部的时间戳要带本机时区偏移，与会话侧共用同一份时间库，两处各算一次会在夏令时地区出现一小时偏差
+PROGRESS.md[SZ6T]: F:记录触发接口的实施进度与设计稿位置 | R:code:rust/crates/omnicrawl-trigger/src/lib.rs | A:- | S:设计稿放在被忽略的本地设计区，入库的只有这份进度说明，因此实现细节以代码为准
+
+===/<repository>/rust/crates/omnicrawl-trigger/src/===
+app.rs[IN7S]: F:装配触发接口的 HTTP 应用：路由、统一响应信封与错误响应 | R:code:rust/crates/omnicrawl-fetch/src/app.rs | A:AppState、ApiError、data、build_router | S:信封与另外两个本机接口一致，外部脚本才能复用解析；本服务同样不做鉴权，只绑回环
+config.rs[IN6T]: F:装载触发接口运行期配置：池容量、会话根、内核程序与独立会话目录 | R:code:rust/crates/omnicrawl-config/src/features/trigger_api.rs | A:TriggerSettings、load_settings、SESSION_DIRNAME | S:触发会话放在独立目录，与用户的对话历史分开：无人值守事件写进用户会话会污染历史；内核程序路径要显式解析，随宿主目录猜会在安装后找不到
+lib.rs[IN6T]: F:作为触发接口 crate 的模块根，声明配置、应用、路由、服务生命周期、池、记录、请求解析与投递模块 | R:code:rust/crates/omnicrawl-trigger/src/pool.rs | A:- | S:外部组件自己判定条件，命中后提交一条消息；接口只负责拉起独立回合，不做阈值与迟滞判断
+main.rs[IN7S]: F:实现触发接口的控制入口：serve 常驻、ensure 复用或拉起、stop 停止、status 打印状态 | R:code:rust/crates/omnicrawl-trigger/src/server.rs | A:serve、ensure、stop、status | S:服务以脱离宿主的方式拉起，宿主退出不回收；就绪判定按 PID 文件与就绪标记，不靠连接探测
+notify.rs[IN7M]: F:实现终态投递：把回合结论发到消息平台并组装投递文本 | R:code:rust/crates/omnicrawl-trigger/src/records.rs | A:deliver、compose_text | S:投递由服务在终态之后做而不是交给模型，模型没有发消息工具因此不存在忘了发；凭据复用既有的连接器配置，本模块不得另存一份
+pool.rs[IN8L]: F:实现槽位池与单个回合的生命周期：每个槽位一套独立的服务、内核子进程、工具表与会话，含无人值守提示词 | R:code:rust/crates/omnicrawl-api/src/service.rs | A:TriggerPool、PoolConfig、UNATTENDED_PROMPT | S:无人值守提示词必须写明没有人可回答提问与确认，否则工具会在等一个永远不来的答复；槽位隔离是必需的，共享会话会让互不相关的事件读到彼此的对话
+records.rs[IN8L]: F:维护触发记录与事件流：入队、运行与终态，含事件上限、幂等窗口与结果截断 | R:code:rust/crates/omnicrawl-trigger/src/routes.rs | A:MAX_EVENTS_PER_TRIGGER、IDEMPOTENCY_WINDOW_SECONDS、MAX_RESULT_CHARS | S:幂等窗口是重复提交的唯一防线，外部定时器重试时没有它会重复执行同一件事；窗口必须按 created_at 判定，保留期回收只看 finished_at，未结束记录的 finished_at 恒为 0 永不过期，只按幂等键查找会让去重永久生效；事件上限与结果截断缺一不可，长跑事件会把内存与响应体一起撑爆
+request.rs[IN8L]: F:解析并校验触发请求：字段类型、必填、长度与取值域，以及消息与数据的确定性注入格式 | R:code:rust/crates/omnicrawl-trigger/src/config.rs | A:MAX_MESSAGE_CHARS、MAX_DATA_CHARS、MAX_IDEMPOTENCY_KEY_CHARS | S:注入格式是设计的一部分：同一份事件重复提交必须得到完全相同的注入文本，否则去重与可复现都失效；校验只做系统边界该做的事，不在这里判断业务条件
+routes.rs[IN8L]: F:实现触发端点：创建、列表、详情、事件流、转录、取消与状态 | R:code:rust/crates/omnicrawl-trigger/src/records.rs | A:ListQuery、EventsQuery | S:事件流与本地 API 的运行事件同形，客户端可以复用同一套解析；转录与事件流要能区分，混在一起会让调用方重复渲染
+server.rs[IN7M]: F:管理常驻服务的进程生命周期：按记录复用、拉起、就绪等待与显式停止 | R:code:rust/crates/omnicrawl-trigger/src/config.rs | A:READY_POLL_MILLIS、DEFAULT_READY_TIMEOUT_SECONDS、PID_FILENAME | S:就绪超时必须有限，无人值守场景下无限等会让调用方永远挂住；PID 文件是复用判据，缺失时按未运行处理而不是猜测端口
+
+===/<repository>/rust/crates/omnicrawl-tts/===
+Cargo.toml[FV6T]: F:声明语音合成 crate 的库目标与依赖：序列化、base64、版本身份、HTTP 与自实现 WebSocket | R:code:rust/Cargo.toml | A:- | S:三家通道都只需 HTTP 加一个密钥（流式额外要 WebSocket），因此没有 feature 开关、没有原生依赖、没有模型下载
+README.md[SZ6T]: F:交代三条语音合成通道的接口与返回形态 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:- | S:三家的返回不同：一家带容器头、一家是 base64 包裹的裸采样、一家在二进制帧里，直接统一按一种解析会在另外两家上失败
+
+===/<repository>/rust/crates/omnicrawl-tts/src/===
+audio.rs[XV7M]: F:实现音频读写：采样波形的读写与缓冲区表示，不依赖第三方数值库 | R:code:rust/crates/omnicrawl-tts/src/codec.rs | A:read_wav、read_wav_bytes、write_wav | S:波形表示统一为声道优先，混用交错表示会把左右声道播放成噪声；写文件必须是完整的容器头，拼错的头部让播放器直接拒绝
+codec.rs[XV6S]: F:实现云服务返回音频的解码分派：区分带容器头与裸采样，并提供预览与截断辅助 | R:code:rust/crates/omnicrawl-tts/src/audio.rs | A:looks_like_wav、preview、truncate | S:判定要按字节签名而不是按配置猜，猜错会把容器头当采样播放成噪声；预览与截断只用于诊断输出，不得影响落盘的完整音频
+deepseek.rs[XV7M]: F:实现 DeepSeek 语音通道：整段请求与流式两条传输，含计费字符上限 | R:code:rust/crates/omnicrawl-tts/src/ws.rs | A:MAX_BILLED_CHARS、SAMPLE_RATE、DeepSeekTtsConfig | S:两条通路的输入输出口径不同：流式从二进制帧里拼采样、整段返回完整音频；计费按字符上限切块，超限会被服务端拒而不是截断
+gemini.rs[XV7M]: F:实现 Gemini 语音通道：走生成内容接口并解析 base64 包裹的裸采样 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:MAX_CHUNK_BYTES、SAMPLE_RATE、GeminiTtsConfig | S:返回是 base64 包裹的裸采样而不是带容器头的音频，按容器解析会失败；分块按字节而不是按字符，该家对请求体积敏感；采样率固定，写文件时不能沿用其它通道的值
+lib.rs[XV6T]: F:作为语音合成 crate 的模块根，声明合成入口、三条通道、音频 I/O、解码、路径、播放、结果、文本切块与 WebSocket 模块 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:- | S:通道由配置里的服务商选择，本 crate 不自行决定走哪家
+openai.rs[XV6S]: F:实现 OpenAI 兼容的语音接口通道：请求体只发服务端认识的键 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:MAX_CHUNK_CHARS、OpenAiTtsConfig | S:默认值不下发：语速等于默认值或指令为空时不要写进请求体，多余键会被某些网关直接拒；单次分块按字符计而不是按字节
+paths.rs[XV6T]: F:实现路径归一化的可用子集，与界面侧同名函数同语义 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:resolve_lenient | S:写音频与定位输出目录都依赖它，语义与界面侧不一致会让同一配置在两处解析到不同目录
+player.rs[XV6T]: F:实现生成音频的本地播放，尽力而为且失败不影响主流程 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:play_wav | S:播放失败只回错误不阻断合成：无音频设备的环境同样要能产出文件
+result.rs[XV6T]: F:定义合成结果类型：产物路径、时长与通道信息 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:TtsResult | S:结果类型独立成模块，使发布构建在不编本地推理时仍可引用同一契约
+synthesis.rs[XV6S]: F:实现合成入口：按服务商选路、长文本分块、波形拼接与一次性落盘 | R:code:rust/crates/omnicrawl-tts/src/text.rs | A:synthesize | S:三家都有单次请求长度上限，因此统一成切块、逐块请求、沿时间轴拼接、只写一次文件；逐块写文件会在中途失败时留下残片
+text.rs[XV6S]: F:实现长文本按句切块：按句末标点与换行切句，再贪心合并到上限，单句超限时硬切 | R:code:rust/crates/omnicrawl-tts/src/synthesis.rs | A:split_text、split_text_billed | S:必须按句切而不是按长度硬切，硬切会把词与语气截断，拼回来时听起来像换了口气；单句超限只能硬切，但要保证不切断多字节字符
+ws.rs[XV7L]: F:实现最小 WebSocket 客户端：握手、帧编解码与 TLS 连接 | R:code:rust/crates/omnicrawl-tts/src/deepseek.rs | A:WsClient、accept_for、is_timeout | S:只需要发文本帧收二进制帧，因此自实现而不引第三方协议栈；超时要能与普通读错误区分，混为一谈会让流式合成在慢网络下被误判失败
+
+===/<repository>/rust/crates/omnicrawl-tui/===
+Cargo.toml[FV6T]: F:声明终端工作台 crate 的二进制目标与依赖：宿主执行层、命令层、会话、配置、模型列表发现与图片解码 | R:code:rust/Cargo.toml | A:- | S:依赖宿主执行层是为了与本地接口共用同一套工具与内核客户端，界面单独实现一套会让两条入口的工具行为分叉；命令能力面的签名用到 Skill 与会话条目类型，因此这两份也要直接依赖
+README.md[SZ7L]: F:交代终端工作台的宿主角色、逐模块职责划分与协议对接方式 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:- | S:它是协议里既定的宿主角色之一：起内核进程、把通知渲染成界面、把用户输入与审批答案按帧回给内核；模块按变更理由拆分而不是按行数
+
+===/<repository>/rust/crates/omnicrawl-tui/src/app/===
+host_commands.rs[EU8L]: F:实现命令层钩子：内核链路、工具表与配置读写的宿主侧实现，供斜杠命令层调用 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:TuiHostAgent 实现 | S:这是命令层唯一能碰宿主的入口，命令层不必知道内核链路细节；与界面编排分开是因为变更理由不同，改命令语义不该动输入处理
+input.rs[EU8L]: F:实现终端输入编排：键盘、鼠标、拖选、滚动条、命令菜单与排队输入的按键派发 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:按键派发 | S:只做事件到状态与内核命令的翻译，业务语义留在各应用函数与命令层；全屏画布上任何直接写终端的输出都会残留并盖住会话区
+kernel.rs[EU7M]: F:实现内核通道：握手、帧泵与命令发送，是界面与内核进程之间的唯一出入口 | R:code:rust/crates/omnicrawl-host/src/kernel.rs | A:握手、帧泵 | S:所有内核交互都必须经这里，绕过去会让帧顺序与请求配对失去保证；帧泵要非阻塞，阻塞读会让界面在等待时完全失去响应
+kernel_flow.rs[EU8L]: F:实现内核帧与工具批次编排：帧分发、批次步骤推进、审查闸与截止时间 | R:code:rust/crates/omnicrawl-tui/src/app/kernel.rs | A:handle_frame | S:这一块决定一条内核帧变成什么界面动作，以及一批工具怎么发出去怎么收回来；与输入处理分开是因为改批次编排不该动键盘派发
+lifecycle.rs[EU7M]: F:实现生命周期与附件：装配期挂载、视口、退出收尾与剪贴板图片粘贴 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:退出收尾、图片粘贴 | S:退出必须恢复终端状态（原模式、光标与屏幕），漏一步会让用户回到一个乱掉的终端；进程退出、隔离会话收尾与图片粘贴不属于回合语义，放在这里避免污染回合代码
+mod.rs[EU9L]: F:实现接线层：在协议帧、用户按键、工具执行层与状态机之间翻译，把工具执行放独立线程并按模型顺序回填批次 | R:code:rust/crates/omnicrawl-tui/src/app/kernel_flow.rs,code:rust/crates/omnicrawl-tui/src/state.rs | A:App、uses_external_channel | S:工具执行必须在独立线程上（一个调用一个线程、同批并发），主线程只跑事件循环，否则一次慢命令会冻住整个界面；结果经通道回主线程再按模型顺序回填，顺序错会让并行调用与结果错配
+net_approval.rs[EU6T]: F:把沙盒代理线程等待的网络审批请求搬到界面上，并把回答送回去 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:网络审批面板接线 | S:不能复用工具审批面板：那个面板挂在一条工具批次上，而网络审批来自代理线程、没有批次可挂；回答必须送回代理线程的等待点，丢了会让命令一直挂着
+onejev.rs[EU8L]: F:实现本地自部署决策模型的运行环境、权重下载与服务，以及本地决策服务的自启动接线 | R:code:rust/crates/omnicrawl-onejev/src/server.rs,code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:OneJev 接线 | S:这些是外部进程与后台任务，与界面状态几乎不相交，进度只经通道回填；启动与切换尺寸都是分钟级动作，界面必须能在进行中继续响应
+settings.rs[EU7M]: F:实现设置与后台任务的接线：把界面事件翻成配置写盘、内核推送与后台任务启动 | R:code:rust/crates/omnicrawl-tui/src/app/settings_apply.rs | A:SettingsEvent 处理 | S:界面层不碰配置，落盘与内核推送都收在这一层；写盘失败必须回显为设置未完成，静默失败会让用户以为改了配置
+settings_apply.rs[EU8L]: F:实现设置应用：把面板的一次变更写进配置并让宿主侧生效，每个应用函数对应一页或一行 | R:code:rust/crates/omnicrawl-tui/src/app/settings_view.rs | A:apply 系列函数 | S:共同约定是写盘失败即设置未完成，并把失败回显到状态行；部分设置需要同时更新内核推送与后台任务，只写盘会让界面显示与实际运行不一致
+settings_pages.rs[EU8L]: F:实现设置面板的分页编排：向量模型、结构化决策与语音合成等独立页的装配与提交 | R:code:rust/crates/omnicrawl-tui/src/app/settings_apply.rs | A:分页装配 | S:与设置应用的分工是：这里负责一页的整体装配与提交，那里负责单次变更写盘；把两者混在一起会让一页里半数字段在一半失败时处于不一致状态
+settings_view.rs[EU8L]: F:实现设置面板的视图数据与事件派发：把配置读成一页的初值，把界面事件翻成变更 | R:code:rust/crates/omnicrawl-tui/src/app/settings.rs | A:视图初值与事件派发 | S:这里只负责读配置填面板与事件转变更，落盘在另一层；两面混在一处会让面板在写盘失败后显示已改的值
+support.rs[EU8L]: F:实现不依赖界面状态的自由函数：设置表单值与配置互转、工具开关行、回执文案与运行期装配 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:表单互转、开关行、回执文案 | S:这些函数刻意不碰界面状态，因此能脱离界面单测；它们是对外文案的唯一来源，散到各处会让同一状态在不同面板显示不同措辞
+ticks.rs[EU7M]: F:实现定时泵：活动动画、审查结果与监控结果的周期性收敛 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:定时泵 | S:每帧只做该到期的事，其余状态推进留给事件；把所有逻辑塞进定时泵会让界面在空闲时也持续重算
+turn_flow.rs[EU8L]: F:实现回合流转与命令派发：提交输入、发往内核、处理斜杠命令与随之而来的回执 | R:code:rust/crates/omnicrawl-tui/src/app/kernel_flow.rs,code:rust/crates/omnicrawl-tui/src/commands.rs | A:提交输入、命令派发 | S:与内核帧处理是相反方向：那里是内核进来怎么处理，这里是用户输入怎么出去；两条方向混在一个文件里会让顺序问题极难排查；模态页打开时不排空排队消息，排空循环每帧只派发一条，否则会把消息原样排回队尾并在 UI 线程空转
+workspace.rs[EU8L]: F:实现工作区切换与慢命令：装配候选子系统、排空子代理、提交新状态 | R:code:rust/crates/omnicrawl-controllers/src/workspace.rs | A:工作区切换 | S:事务性约定是候选子系统先在本地装配、通过后才提交，任一步失败都不动当前状态；切换前必须排空在途子代理，否则它们的改动失去应用目标
+
+===/<repository>/rust/crates/omnicrawl-tui/src/===
+args.rs[EU8L]: F:实现启动参数解析：内核路径、模型端点、会话根与审批模式，优先级为命令行高于配置再高于默认 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:Options、内核路径解析 | S:优先级顺序反过来会让用户显式参数被配置文件覆盖；内核路径要按宿主同目录与显式环境变量两路解析，随当前目录猜会在安装后找不到
+clipboard.rs[EU6S]: F:实现剪切板写入：把消息流里拖选出来的文本放进系统剪切板 | R:code:rust/crates/omnicrawl-host/src/tools/windows/clipboard.rs | A:写剪切板 | S:必须自实现：应用开了鼠标捕获，终端自带的选择被吃掉，不写回去用户就无法复制会话内容
+commands.rs[EU8L]: F:实现斜杠命令的宿主接线：命令层看到的能力面实现与候选表 | R:code:rust/crates/omnicrawl-commands/src/agent.rs | A:TuiHostAgent、候选表 | S:命令层不认宿主，能力全经接口注入；三条慢命令由界面在派发前拦下并异步下发内核，同步等会与内核互锁
+diagnostics.rs[EU6T]: F:把进程内的库诊断接到界面：写进会话流并落盘 | R:code:rust/crates/omnicrawl-core/src/diagnostics.rs | A:诊断接收端装配 | S:必须接管库诊断：全屏画布下库直接写错误输出会残留在光标处并盖住会话区，而且只有该区块内容变了才重画
+document_note.rs[EU6T]: F:实现粘贴文档的正文注脚：发送前把完整路径追加到提问正文末尾 | R:code:rust/crates/omnicrawl-tui/src/document_path.rs | A:文档注脚 | S:输入框占位符在提交时只展开成文件名，正文里因此需要补一行完整路径，否则模型拿到的文件名无法定位
+document_path.rs[EU7S]: F:实现粘贴文档的识别：判断粘贴内容是否为一个存在的文档文件路径并给分类 | R:code:rust/crates/omnicrawl-tui/src/image_path.rs | A:文档路径识别 | S:与图片识别的分工必须清晰：图片走视觉通路随回合当附件发出，文档只把路径写进正文由模型自己读；判错分类会让文档被当成图片塞进视觉通路
+image_archive.rs[EU7S]: F:实现粘贴图片的落盘：发送前把剪贴板位图存进工作区临时目录 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:图片归档 | S:图片本身只以 base64 随回合进内核，磁盘上原本没有副本，落一份是为了让模型之后还能按路径回看；落点必须在临时目录内，写到项目里会污染仓库
+image_path.rs[EU7S]: F:实现粘贴内容是图片路径的识别，判据收紧为整段内容去掉空白后正好是一个存在的图片文件 | R:code:rust/crates/omnicrawl-tui/src/document_path.rs | A:图片路径识别 | S:判据必须收紧：放宽到包含即可会把这句话里提到某个图片也当成图片粘贴，从而改变用户输入的语义
+lib.rs[EU6T]: F:作为终端工作台 crate 的模块根，声明参数、状态机、界面层、应用接线与辅助模块 | R:code:rust/crates/omnicrawl-tui/src/app/mod.rs | A:- | S:同时产出库与二进制：库部分供集成测试直接驱动，避免测试只能靠拉起完整终端
+main.rs[EU8L]: F:实现二进制入口：选内核、握手、进出全屏、事件循环与终端恢复 | R:code:rust/crates/omnicrawl-tui/src/lib.rs | A:入口与事件循环 | S:协议宿主、状态机与渲染都在库侧，这里只做三件事；进入全屏前必须校验终端可用性，无终端时给出明确提示而不是画出乱码；退出必须恢复终端状态
+monitor.rs[EU7M]: F:实现工作台的监控状态适配：只保存仅属于本界面的日志消费游标与切换暂停状态 | R:code:rust/crates/omnicrawl-host/src/tools/monitor.rs | A:监控游标 | S:后台任务的进程与缓冲区由宿主执行层持有，界面不得另存一份，否则两处状态会不同步；游标是界面独有的，因此留在这里
+paste.rs[EU8L]: F:实现粘贴识别：把一帧里积攒的一串按键判断成一次粘贴 | R:code:rust/crates/omnicrawl-tui/src/image_path.rs | A:粘贴识别 | S:终端支持括号粘贴时事件本身就是粘贴事件，但部分终端与管道场景不发该标记，只能靠按键节奏推断；判错会让逐字输入被当成一次粘贴吞掉换行
+state.rs[EU9L]: F:实现界面状态机：消息流记录、输入框、遥测与待决工具批次的接线，所有状态变化都在主线程 | R:code:rust/crates/omnicrawl-tui/src/state/records.rs | A:AppState、apply | S:所有状态变化都发生在主线程，事件来源只有内核帧与用户输入两处，引入第三处异步来源会让渲染与状态错位；待决批次必须按内核给出的顺序与数量回收
+subagent_window.rs[EU8L]: F:实现子代理独立窗口：把子代理的工具与回合事件转成可跟随的流水并在新终端窗口渲染 | R:code:rust/crates/omnicrawl-tui/src/state/subagent_flow.rs | A:子代理窗口 | S:用新终端窗口而不是画在主会话里，是因为子代理输出量与主会话节奏完全不同；窗口数据来自同一个事件源，另开一路采集会漏事件
+
+===/<repository>/rust/crates/omnicrawl-tui/src/state/===
+activity.rs[EU7M]: F:实现活动状态推进：当前正在做什么、耗时与阶段标记 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:活动推进 | S:活动状态决定界面上的等待提示，漏推进会让界面一直显示上一个动作
+batch_flow.rs[EU7M]: F:实现待决工具批次的状态推进：挂载、逐条回填与收口 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:批次挂载与回填 | S:批次回填必须按模型顺序，乱序会让并行调用与结果错配；收口时未回填的条目要显式标为未完成而不是丢弃
+composer_flow.rs[EU6S]: F:实现输入框流程：编辑、光标、软折行与占位符展开 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:输入框流程 | S:软折行与光标移动必须按显示列宽计算，按字符数算会让中日韩文本与表情的光标错位
+failure.rs[EU6T]: F:实现失败状态与错误记录：把失败分类成可重试与需要用户处理 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:失败分类 | S:分类错了会让可重试的瞬时错误被显示成需要用户干预，反之会让用户反复重试一个确定性失败
+records.rs[EU7M]: F:实现消息记录模型：正文段、工具卡、思考块与提示条的统一记录与索引 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:记录模型 | S:记录是渲染与回放的共同数据源，改形状要同时改两处；工具卡必须能按调用标识定位，否则流式更新找不到要更新的那一条
+replay.rs[EU7M]: F:实现回放：把会话事件还原成消息记录，供恢复会话与切换会话时重建界面 | R:code:rust/crates/omnicrawl-tui/src/state/records.rs | A:回放 | S:回放必须与实时路径产出同形状的记录，两条路径各写一套会让恢复后的界面与实时显示不一致
+subagent_flow.rs[EU7M]: F:实现子代理状态推进：受理提示、进度与终态在消息流里的落点 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:子代理状态 | S:主会话只留一行受理提示、详细进度在独立窗口，把进度树画进主会话会让长任务淹没用户输入
+tests.rs[EU8L]: F:覆盖状态机与回放的用例：事件应用、批次回填、回放一致性与光标行为 | R:code:rust/crates/omnicrawl-tui/src/state.rs | A:- | S:用例直接驱动状态机而不经终端，因此能在无终端环境下验证行为；回放一致性是这组用例的主要防线
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/===
+composer.rs[EU7L]: F:实现输入区：任务清单、排队预览、瞬时提示、命令菜单与输入本体共用一个方框 | R:code:rust/crates/omnicrawl-tui/src/ui/queue.rs | A:输入区渲染 | S:这些元素必须共用同一个方框，各自画框会让输入区随状态变化跳动；宽度按显示列宽计算而不是字节数
+conversation.rs[EU9L]: F:实现消息流渲染：把记录渲染成显示行并按滚动位置取出可见窗口 | R:code:rust/crates/omnicrawl-tui/src/state/records.rs | A:消息流渲染 | S:必须只渲染可见窗口，全量渲染会让长会话每次重绘都卡住；行高与折行按显示列宽计算，按字符数算会让中日韩文本错行
+hud.rs[EU7M]: F:渲染底部单行 HUD：遥测、工作区路径与提示 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/status/hud.rs | A:底部 HUD | S:内容由对映层拼好后本模块只负责画，把格式化塞进渲染会让同一数值在两处算出不同文本；单行不能折行，超宽要截断而不是把布局顶乱
+image_preview.rs[EU7L]: F:实现工具卡里的图片预览：把视觉附件解码成半块字形缩略图 | R:code:rust/crates/omnicrawl-tui/src/ui/conversation.rs | A:图片预览 | S:只用半块字形通路而不查终端图形协议，因此在任何终端（含受限终端）上都能出图；解码失败要退化成一行说明而不是报错
+mod.rs[EU6M]: F:作为渲染层模块根，声明消息流、输入区、任务清单、待决面板、HUD、图片预览、排队与启动画面模块 | R:code:rust/crates/omnicrawl-tui/src/ui/conversation.rs | A:- | S:消息区在渲染前先按真实列宽软折行，滚动窗口因此按显示行精确计算
+panels.rs[EU7M]: F:实现任务清单条与待决面板（提问与审批） | R:code:rust/crates/omnicrawl-tui/src/state/batch_flow.rs | A:清单条与待决面板 | S:运行状态行不在本模块而在会话流末尾渲染，把它提到面板里会让状态与消息顺序脱节；待决面板必须能显示完整问题与选项，截断后用户无法作答
+queue.rs[EU7M]: F:实现排队预览条：生成期间排队的消息、撤回热区与展开收起提示 | R:code:rust/crates/omnicrawl-tui/src/ui/composer.rs | A:排队预览 | S:撤回热区要与实际按键命中一致，画了热区但点不动会让用户以为撤回失效；超出可见上限必须给展开提示，截断后用户不知道还有排队消息
+splash.rs[EU7L]: F:渲染启动画面：品牌标志、日志框与滚动条 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/welcome_logo.rs | A:启动画面 | S:启动画面在终端可用性校验之后、会话建立之前显示，任何一步失败都要能退出而不是卡住；日志框内容来自真实启动诊断，只放静态文案会在出错时毫无信息
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/fullscreen/input/===
+menu.rs[EU8L]: F:实现斜杠命令菜单的实时筛选与渲染 | R:code:rust/crates/omnicrawl-commands/src/slash/registry.rs | A:命令菜单 | S:筛选必须与可执行命令同源，菜单里出现但实际不认的命令会让用户反复试错；候选要按类别分组，混在一起会让 Skill 看起来像内置命令
+mod.rs[EU6T]: F:作为输入区模块根，声明命令菜单与会话菜单模块 | R:code:rust/crates/omnicrawl-tui/src/ui/composer.rs | A:- | S:-
+sessions_menu.rs[EU7S]: F:实现会话命令的输入框上方可选菜单 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/input/menu.rs | A:会话菜单 | S:会话列表来自会话存储而不是界面缓存，缓存一份会让新建或删除的会话在菜单里滞后
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/fullscreen/===
+mod.rs[EU6T]: F:作为全屏工作台模块根，声明终端、渲染、状态、输入与主题层 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/mod.rs | A:- | S:分层对应原设计，各层职责固定，跨层直接调用会让重绘时机难以把握
+random.rs[EU6T]: F:提供入场特效用的伪随机源 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/logo_anim.rs | A:随机源 | S:只是视觉随机，不用于任何安全用途；必须可注入种子，否则特效动画无法确定性测试
+text.rs[EU7M]: F:实现分段样式文本与按字符的样式视图，对映富文本的最小面 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/terminal/theme.rs | A:StyledText | S:按字符的样式视图必须与显示宽度解耦，把宽字符当成两格会让后续样式错位
+tool_labels.rs[EU7M]: F:提供工具调用的界面显示标签 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/widgets.rs | A:工具标签 | S:工具卡标题直接显示工具原名，与模型路由和设置面板一致；另起一套中文别名会让用户对不上设置里的开关
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/===
+difflib.rs[EU7M]: F:实现序列匹配的等价子集，用于变更统计与差异展示 | R:code:rust/crates/omnicrawl-connectors/src/render.rs | A:序列匹配 | S:参数必须与原实现的默认值一致（不忽略垃圾、不做自动垃圾判定），否则同一份差异会算出不同的变更行数
+highlight.rs[EU8L]: F:实现代码块逐 token 高亮，对齐原实现的主题配色 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/markdown.rs | A:代码高亮 | S:主题令牌必须与配色表同源，硬编码颜色会让终端主题切换后出现不协调的色块；未知语言要退化成纯文本而不是报错
+latex.rs[EU8L]: F:实现数学公式到终端可读 Unicode 文本的转换 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/latex_box.rs | A:公式渲染 | S:不能丢弃解析失败的公式内容，退化成原样文本让用户至少看到原文；宽字符与上下标的列宽要按显示宽度算
+latex_box.rs[EU8L]: F:实现二维公式排版：把分式与根式排成字符网格上的上下结构 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/latex.rs | A:二维排版 | S:一维转换只把分式压成斜杠形式，读起来丢失了上下结构；按网格补空格才能对齐，中文字符与符号显示宽度不同，混排时要按显示列宽补齐
+logo_anim.rs[EU7L]: F:实现启动空会话页欢迎 Logo 的解密扫描入场动画 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/welcome_logo.rs | A:入场动画 | S:乱码替换必须按列原位替换，按字符替换会破坏块字对齐；动画只是视觉层，任何一帧失败都不能影响会话可用性
+markdown.rs[EU8L]: F:实现 Markdown 到样式文本的渲染：标题、强调、列表、表格与代码块 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/highlight.rs | A:Markdown 渲染 | S:必须容错：模型输出常常是半截 Markdown，严格解析会把整段变成纯文本；表格与代码块的宽度要按显示列宽算，否则溢出后折行错位
+mod.rs[EU6T]: F:作为渲染层模块根，声明文本、Markdown、代码高亮、公式、Logo、差异与缩略常量模块 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/markdown.rs | A:- | S:-
+tool_diff.rs[EU7L]: F:实现文件变更工具卡的差异渲染：带旁注行号的增删行展示 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/difflib.rs | A:差异渲染 | S:必须显示旁注行号，去掉后面板无法定位到具体行；超长差异要截断并给出可展开的提示，全量展示会让一张工具卡占满整个屏幕
+welcome_logo.rs[EU6M]: F:提供空会话页的块字品牌 Logo 字形与常量 | R:code:assets/ASCII.txt | A:- | S:行首缩进是字形升部定位，去掉后各字母列对齐会错位；这里只提供静态字形，逐帧动画在另一个模块
+widgets.rs[EU6T]: F:提供工具卡正文的缩略常量 | R:code:rust/crates/omnicrawl-tui/src/ui/conversation.rs | A:缩略常量 | S:只留真正被装配层使用的部分，未使用的常量会被误认为仍需维护
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/fullscreen/status/===
+hud.rs[EU6M]: F:实现 HUD 的纯格式化函数：吃数值与字符串、吐分段样式文本 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/text.rs | A:HUD 格式化 | S:纯函数不依赖界面状态，因此能单测；格式变化会同时影响顶部与底部两行，改一处要一起核对
+indicators.rs[EU7M]: F:实现顶部 HUD 遥测与输入框上方的排队消息预览 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/status/hud.rs | A:遥测与排队预览 | S:遥测数值要能容忍缺失，缺一项就整行不显示会让用户在启动瞬间看到空 HUD；排队预览与输入区共用同一个方框，独立画框会让输入区跳动
+mod.rs[EU6T]: F:作为状态层模块根，声明 HUD 格式化与指示器模块 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/status/hud.rs | A:- | S:-
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/fullscreen/terminal/===
+console_heal.rs[EU7M]: F:实现控制台模式自愈：周期检查并恢复终端输入模式 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/terminal/mod.rs | A:控制台自愈 | S:需要看门狗周期修复：Windows 下外部程序会重置控制台模式，一次设置不够；恢复只做必要项，粗暴重设会清掉用户原本的终端外观
+mod.rs[EU6T]: F:作为终端协议与外观层模块根，声明自愈、主题与定时器精度模块 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/terminal/theme.rs | A:- | S:-
+theme.rs[EU7M]: F:定义终端原生透明主题令牌：文本、强调、状态色与背景 | R:code:rust/crates/omnicrawl-tui/src/ui/fullscreen/text.rs | A:主题令牌 | S:令牌有两套消费方（样式文本与终端控件），两处各自硬编码颜色会让主题切换后出现不协调色块；背景必须透明，写死背景色会破坏终端原生外观；样式串由 parse_color 统一解析，只为某个色值再包一层函数不会被渲染路径调用
+timer_resolution.rs[EU6T]: F:在 Windows 上把系统计时器粒度抬到 1ms | R:code:rust/crates/omnicrawl-tui/src/main.rs | A:定时器精度 | S:事件循环的等待最终落到系统计时器，粒度粗会让输入延迟明显；只影响本进程，退出时不必恢复系统全局设置
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/settings/===
+form.rs[EU8L]: F:实现表单类设置页：一页若干字段（开关、候选、正整数、模型）与保存快捷键 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:表单页 | S:保存前必须校验所有字段，逐字段落盘会在中途失败时留下一页里一半生效一半没生效；正整数与区间字段要有边界提示，只报错误码用户不知道该填什么
+hit.rs[EU6T]: F:实现设置面板的鼠标命中：渲染时把可点区域与动作记进状态，事件时按落点反查 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/render.rs | A:命中表 | S:命中表必须与渲染同一帧生成，分开算会让落点与画面错位，尤其在滚动与折行之后
+mod.rs[EU7M]: F:作为设置面板模块根，声明状态机、表单、渲染、命中与渠道模型选择模块 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:- | S:全屏两区（左侧一级项、右侧二级面板）是布局约定，改成单列会让深层选项失去层次
+picker.rs[EU7M]: F:实现渠道与模型的两段式选择，供工具输出压缩页与顾问设置页共用 | R:code:rust/crates/omnicrawl-config/src/models/llm_multi.rs | A:模型选择器 | S:两段式是必需的：渠道选错时后一段的模型列表完全不同，单列平铺会让用户选到另一家的模型名；选择结果要能回写成配置里的取值形态，否则保存后读回解析不了
+render.rs[EU9L]: F:实现设置面板渲染：全屏两区、焦点边框、候选下拉与状态行 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/hit.rs | A:设置面板渲染 | S:渲染时必须同步登记命中区域，否则点击落在画面上但不响应；状态行要显示保存结果，静默保存会让用户反复按快捷键
+state.rs[EU8L]: F:实现设置面板状态机：左侧一级项、右侧二级面板、焦点与键盘语义 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/pages.rs | A:设置状态机 | S:焦点与键盘语义要按面板类型分派，开关与文本输入用同一套键位会让空格既切开关又打空格；进入深层页必须能返回，退不出去等于把用户困在设置里；页面初值经 with_* 构造器注入，某个开关没有对应构造器说明该页的初值还没接线
+
+===/<repository>/rust/crates/omnicrawl-tui/src/ui/settings/state/===
+apply_sync.rs[EU8L]: F:实现设置应用后的回写同步：把落盘结果同步回面板状态与运行期 | R:code:rust/crates/omnicrawl-tui/src/app/settings_apply.rs | A:回写同步 | S:落盘与面板状态必须同步，只更新一侧会让面板显示的值与磁盘不一致；回写失败要保留面板旧值并提示，不能假装成功
+decision.rs[EU8L]: F:实现结构化决策页的状态与字段：渠道、请求方式、密钥与各方式独有字段 | R:code:rust/crates/omnicrawl-config/src/features/decision_model.rs | A:决策页状态 | S:四种请求方式的字段集不同，切换方式时必须隐藏并清空不适用的字段，否则会把上一方式的键写进配置；密钥字段要支持留空表示沿用已有值
+decision_page.rs[EU8L]: F:实现结构化决策页的装配与提交流程 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/decision.rs | A:决策页装配 | S:提交前要整体校验，逐字段提交会在一个字段失败后留下部分生效的配置；决策渠道与对话模型是两套命名空间，混用会让用户填了对话模型名却判定为不可用
+dropdown.rs[EU7M]: F:实现设置面板的下拉候选：展开、筛选、选中与取消 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:下拉候选 | S:展开时的键位要吞掉输入，边展开边过滤文本会让用户以为自己改的是面板值；取消必须恢复原值而不是置空
+embedding.rs[EU7M]: F:实现向量模型页的状态与字段：嵌入渠道、重排渠道与维度批大小 | R:code:rust/crates/omnicrawl-config/src/features/embedding.rs | A:向量模型页 | S:嵌入与重排是两组独立渠道，界面合并成一列会让用户只配到其中一组；未配置时检索退回关键词排序，界面要说明这是预期行为
+form_bridge.rs[EU7M]: F:实现表单字段与配置项的双向桥接：类型转换、默认值与校验文案 | R:code:rust/crates/omnicrawl-tui/src/app/support.rs | A:表单桥接 | S:双向转换必须可往返，只做单向会让用户打开再保存就把未显示的字段写成默认值；类型转换失败要给字段名与期望形态
+keys.rs[EU7M]: F:实现设置面板的键位表与按页面类型的分派 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:键位表 | S:键位必须按页面类型分派，全局一套键位会让文本输入的字符被当成快捷键；退出与保存的键位不能与输入冲突
+knowledge.rs[EU6S]: F:实现知识库页的状态与开关字段 | R:code:rust/crates/omnicrawl-config/src/features/knowledge.rs | A:知识库页 | S:知识库工具整组进表或整组不进表，界面不能提供单个工具开关，否则用户会以为关了一个就只关一个
+knowledge_page.rs[EU6T]: F:实现知识库页的装配与提交 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/knowledge.rs | A:知识库页装配 | S:默认开启，界面要明确显示当前值而不是留空让用户猜
+mcp.rs[EU7M]: F:实现 MCP 页的状态与字段：全局开关、服务列表、传输方式与风险等级 | R:code:rust/crates/omnicrawl-mcp/src/config.rs | A:MCP 页 | S:服务列表的命令与参数是本机绝对路径，界面编辑不得把它们写进可提交的项目文件；传输方式与风险等级是闭集，输入自由文本会写出无法解析的配置
+memory.rs[EU7M]: F:实现记忆页的状态与字段：开关、遗忘时间与向量检索开关 | R:code:rust/crates/omnicrawl-config/src/features/memory.rs | A:记忆页 | S:遗忘时间只有固定档位，界面允许任意天数会在落盘时被归一化成别的值，用户以为设置没生效
+memory_page.rs[EU6T]: F:实现记忆页的装配与提交 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/memory.rs | A:记忆页装配 | S:提交要走通用功能开关与记忆配置两条链路，混用会让同一个键出现两个来源
+model.rs[EU8L]: F:实现模型页状态：渠道列表、活动模型、能力位与模型发现 | R:code:rust/crates/omnicrawl-config/src/models/channels.rs | A:模型页状态 | S:模型发现要发真实网络请求，界面必须能在发现失败时回显原因而不是留空；能力位是显式声明，界面不能把未声明的能力显示成已开启
+navigation.rs[EU6M]: F:实现设置面板的导航：一级项与二级面板之间的移动 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:导航 | S:一级与二级是两层焦点，回到一级时必须保留二级的滚动位置，否则用户在长页里返回会丢位置
+pages.rs[EU7M]: F:实现工具开关页、联网搜索页与 MCP 页的行表、草稿与状态 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/tools.rs | A:页表 | S:草稿与已存值必须分开：编辑中不应立刻影响运行期，只有保存才落盘；离开页面时未保存的草稿要明确丢弃或提示
+pointer.rs[EU6S]: F:实现指针命中：一帧的命中区登记、悬停与点击分发 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/hit.rs | A:指针分发 | S:命中区必须在渲染同一帧登记，跨帧复用会让落点与画面错位
+sessions.rs[EU6T]: F:实现会话管理页的键盘处理 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/sessions_page.rs | A:会话页键位 | S:删除类动作必须二次确认，一键删除会话是不可恢复的破坏操作
+sessions_page.rs[EU6S]: F:实现会话管理页：列出会话并在二次确认后删除 | R:code:rust/crates/omnicrawl-session/src/store.rs | A:会话管理页 | S:当前会话不可删，删掉自己会让界面指向一个不存在的会话；列表来自会话存储而不是界面缓存；二次确认是唯一防线，确认态必须能被明确的放弃动作清掉，否则面板会卡在待确认
+sessions_page_tests.rs[EU6S]: F:覆盖会话管理页状态机：删除必须连按两次、当前会话不可删、移动即取消待确认 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/sessions_page.rs | A:- | S:移动光标必须取消待确认，否则确认状态会跟着光标漂到另一条会话上
+shared.rs[EU6T]: F:提供设置面板跨页复用的取值助手 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/view.rs | A:取值助手 | S:跨页复用同一份取值逻辑，各页各写一遍会让同一配置项在不同页显示不同值
+suggestion.rs[EU6S]: F:实现提问建议页：开关与可浏览描述详情的 Skill 列表 | R:code:rust/crates/omnicrawl-config/src/features/suggestion.rs | A:建议页 | S:开关默认关闭，界面要明确显示当前值；Skill 列表来自本机索引，列空时要说明是未安装而不是故障
+tests.rs[EU7L]: F:覆盖设置面板状态机的用例：键位语义、行与页推进以及表单桥的字段口径 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:- | S:键位语义与字段口径是这组用例的主要防线，改一处就要同步核对
+tools.rs[EU7S]: F:实现工具开关页与子任务页：开关、审批模式与高级参数 | R:code:rust/crates/omnicrawl-config/src/features/tools.rs | A:工具与子任务页 | S:工具开关批量写回要先全校验再一次性写盘，逐项写会在中途失败时留下半数工具被关掉；子任务高级参数有区间约束，界面允许任意值会在落盘时被拒
+tts.rs[EU6S]: F:实现语音合成页的键盘处理与行激活 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state/tts_page.rs | A:TTS 页键位 | S:服务商切换时会改变可用字段集，键位处理要跟着当前服务商走，否则会把不适用的字段当成可编辑
+tts_page.rs[EU6L]: F:实现语音合成页：行表、草稿与保存载荷 | R:code:rust/crates/omnicrawl-config/src/features/tts_cloud.rs | A:TTS 页 | S:三家服务商的字段各在自己的段里，切换服务商不得丢掉另一家的配置；凭据只认段里的明文密钥
+view.rs[EU6L]: F:提供只读视图：渲染层要读的行、状态文本与表单快照 | R:code:rust/crates/omnicrawl-tui/src/ui/settings/state.rs | A:只读视图 | S:渲染层只能读这份视图，直接读状态机会让渲染与状态机的内部结构绑死；面板归属判断由渲染层的 pane 匹配直接完成，另立同名 is_*_pane 谓词会变成没人调的第二份判据
+vision.rs[EU6S]: F:实现视觉设置页：代理开关、故障转移列表与原生视觉三态 | R:code:rust/crates/omnicrawl-config/src/models/vision.rs | A:视觉页 | S:原生视觉是三态（未配置、开、关），界面不能只给一个开关，否则会丢掉未配置这一层
+web_search.rs[EU6T]: F:实现联网搜索页：默认引擎与各接口型引擎凭据的独立设置页 | R:code:rust/crates/omnicrawl-config/src/features/web_search.rs | A:联网搜索页 | S:走哪个引擎只看这里的设置，工具参数里的引擎无效；清空某渠道的凭据就是让它退出综合搜索，界面要说明这一效果
+
+===/<repository>/rust/crates/omnicrawl-update/===
+Cargo.toml[FV6T]: F:声明版本检测 crate 的目标与依赖 | R:code:rust/Cargo.toml | A:- | S:只做检测与比较，不做安装，安装动作由启动器按用户环境决定
+README.md[SZ6T]: F:交代版本检测的语义：查询包最新版本并与本地版本比较 | R:code:rust/crates/omnicrawl-update/src/lib.rs | A:- | S:检测失败必须静默降级为不提示，网络问题不该影响产品可用性
+
+===/<repository>/rust/crates/omnicrawl-update/src/===
+lib.rs[XV6M]: F:实现新版本检测：查询包最新版本、与本地版本比较并给出是否需要升级 | R:code:rust/crates/omnicrawl-update/Cargo.toml | A:check_latest、is_newer | S:版本比较要按语义化版本处理预发布顺序，纯字符串比较会让预发布版被判成比正式版新；网络失败一律当作没有更新，不能把错误抛给启动路径
+
+===/<repository>/rust/crates/omnicrawl-version/===
+Cargo.toml[FV6T]: F:声明版本身份 crate 的目标与构建期依赖 | R:code:rust/Cargo.toml | A:- | S:版本号在构建期从产品清单注入，不在本 crate 手写第二份
+build.rs[XV6T]: F:在构建期把产品版本注入编译期常量 | R:code:packages/cli/package.json | A:- | S:产品版本只有一处事实来源，在本文件再写一个版本号会让内核与安装包版本长期漂移；注入失败要直接让构建失败而不是回落一个假版本
+
+===/<repository>/rust/crates/omnicrawl-version/src/===
+lib.rs[XV6T]: F:提供产品版本常量与统一的出站 User-Agent | R:code:rust/crates/omnicrawl-version/build.rs | A:PRODUCT_VERSION、USER_AGENT | S:主模型、审查、顾问与决策模型的出站请求都用同一个身份，各处各写一份会让网关看到同一台机器报出多个客户端
+
+===/<repository>/rust/crates/omnicrawl-workspace/===
+Cargo.toml[FV6T]: F:声明工作区层 crate 的目标与依赖 | R:code:rust/Cargo.toml | A:- | S:路径段安全校验与隔离区都在这里，其它 crate 不得各自实现一套路径校验
+README.md[SZ7S]: F:交代工作区层的范围：路径段安全校验与主 Agent 隔离工作区 | R:code:rust/crates/omnicrawl-workspace/src/agent_isolation.rs | A:- | S:隔离区的门禁与退出收尾是本层的关键行为，绕过它们会让改动停在一个不会应用的分支上
+
+===/<repository>/rust/crates/omnicrawl-workspace/src/===
+agent_isolation.rs[XV8L]: F:实现主 Agent 隔离工作区：创建与复用、应用改动、门禁、退出收尾与启动清扫 | R:code:rust/crates/omnicrawl-config/src/features/agent_workspace.rs | A:create_isolation、apply、sweep_stale | S:门禁是防止改动丢失的关键，任一放宽都会让用户以为改了代码而实际停在分支上；退出时的应用与清理必须与隔离语义一致；残留靠启动清扫，元数据里的自动清理标记是识别依据
+connector_singleton.rs[XV7M]: F:实现连接器子进程的跨进程单例互斥：锁文件路径、持有者标识解析与陈旧锁接管 | R:code:rust/crates/omnicrawl-connectors/src/autostart.rs | A:ConnectorLock | S:锁必须覆盖连接器子进程的整个运行期，只在启动瞬间持锁挡不住并存的宿主，同一平台会出现多个长连接；持有者已死时要能接管，否则一次崩溃会让该平台永久不可用
+lib.rs[XV6T]: F:作为工作区层 crate 的模块根，声明路径、名称校验、隔离区、临时目录、进程控制与连接器单例模块 | R:code:rust/crates/omnicrawl-workspace/src/agent_isolation.rs | A:- | S:-
+paths.rs[XV6T]: F:实现路径语义的可用子集：解析符号链接、展开用户目录与家目录 | R:code:rust/crates/omnicrawl-extensions/src/path.rs | A:resolve、expanduser、home | S:路径不存在时按非严格语义解析最近已存在祖先，直接报错会让新建目录场景全部失败
+process_control.rs[XV6M]: F:实现跨平台进程树控制：关闭即杀作业对象、进程组回收与进程组查询 | R:code:rust/crates/omnicrawl-host/src/process_control.rs | A:kill_tree、process_group_of | S:只杀父进程会留下继续写文件的子进程，必须整组回收；作业对象要在创建进程时就绑定，事后绑定可能漏掉已派生的子进程
+slug.rs[XV6T]: F:实现名称到安全路径段的校验：允许的字符集、长度与保留名 | R:code:rust/crates/omnicrawl-workspace/src/paths.rs | A:validate_slug | S:必须失败关闭：放行上跳、盘符与保留名会让一个名称就能写到目录之外；隔离区实例标识与分支名共用这一份校验
+temp.rs[XV7L]: F:实现 Agent 临时目录：分类子目录、按间隔清理、后台清理线程与启动补清理 | R:code:rust/crates/omnicrawl-config/src/core/runtime.rs | A:TempWorkspace、cleanup | S:清理只动临时目录内的条目，越界会删用户文件；启动时补清理是必需的，进程被强杀时后台线程来不及清理
+
+===/<repository>/rust/docs/===
+protocol-v1.md[SZ8L]: F:定义宿主桥接协议 v1：传输形态、方法清单、事件与命令映射、错误码与版本协商规则 | R:code:rust/crates/omnicrawl-ipc/src/bridge.rs | A:- | S:方法名与负载字段是协议的一部分，改动即破坏性变更，实现与本文件必须同步；只协商主版本，次版本差异靠能力位；无法解析的帧直接丢弃，因为拿不到标识就无从响应
+python-free-build.md[SZ7T]: F:记录从构建工具链构建整个 Rust 工作区所需的环境前置，以及那些不在依赖清单里、只能由环境提供的约束 | R:code:rust/Cargo.toml | A:- | S:纯 Rust 化的关键前提是图文传输与指纹栈都不再依赖原生 C 工具链；交叉编译与发布产物的目标选择在本文件里有明确边界，改构建矩阵前先核对这里
+
+===/<repository>/rust/scripts/===
+size_guard.py[XQ6M]: F:按「剥离 #[cfg(test)] 后的生产行数」检查源码规模，纯文本、不触发编译，越过红线又不在名单里即失败 | R:code:rust/scripts/size_guard_allowlist.txt,code:.github/workflows/ci.yml | A:python rust/scripts/size_guard.py、--report | S:必须先剥掉字符串、原始字符串与注释再数花括号，否则正则与 JSON 字面量里的括号会把函数长度算错；集成测试按总行数另设上限，不能与生产口径共用一把尺子，否则测试厚的文件会被误判成代码债；--report 只报告不失败，供排期时看全量
+size_guard_allowlist.txt[TQ5T]: F:登记生产行已超一千的存量文件作规模门禁基线，只允许减不允许增 | R:code:rust/scripts/size_guard.py | A:- | S:拆到红线以下必须删掉对应行，残留条目会被门禁报成 stale，否则名单会掩盖回归；新增超标只能靠拆文件解决，往名单里加等于放弃这条红线
+
+===/<repository>/rust/crates/omnicrawl-connectors/src/platform/===
+mod.rs[RN6M]: F:收纳三平台连接器语义必须永远相同的运行态部件：停止与思考显示开关、带停止检查的睡眠、confirm 与 ask_user 共用的等待槽 | R:code:rust/crates/omnicrawl-connectors/src/qqbot/bot.rs,code:rust/crates/omnicrawl-connectors/src/feishu/bot.rs,code:rust/crates/omnicrawl-connectors/src/telegram/bot.rs | A:BotSwitches、PendingSlot | S:PendingSlot::release 不能只 notify_all——等待谓词是 value.is_none()，被唤醒后会立刻重新阻塞，必须同时置 released 位；release 也绝不能写入 value，否则飞书 is_answered 会把停止误判成已答复。mark_stopped 只置标志、不释放槽位，释放要平台自己调，因为槽位字段在各平台手里
