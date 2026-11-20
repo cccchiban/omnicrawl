@@ -132,10 +132,22 @@ impl Read for ScriptHandle {
     }
 }
 
+/// 用户配置文件的互斥锁：多个用例都会读写 `~/.OmniCrawl/config.toml`，并行跑会互相
+/// 覆盖或删掉对方写进去的内容（无配置时 Drop 会删文件）。凡是要碰这份文件的用例都在
+/// 这把锁内进行。
+static USER_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+fn user_config_path() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    PathBuf::from(home).join(".OmniCrawl").join("config.toml")
+}
+
 /// 设置面板要求能读到 `[llm]`（`api_key`/`base_url`/`model`），否则面板打不开。
 ///
 /// CI 的 runner 没有用户配置，本机却有；测试自己准备一份最小配置，两种环境才跑出同一件事。
-/// 改动落在真实配置路径上，因此整段用互斥锁串行，并在 Drop 里恢复现场。
+/// 改动落在真实配置路径上，因此整段在 [`USER_CONFIG_LOCK`] 内串行，并在 Drop 里恢复现场。
 struct LlmConfigGuard {
     path: PathBuf,
     previous: Option<String>,
@@ -144,22 +156,18 @@ struct LlmConfigGuard {
 
 impl LlmConfigGuard {
     fn install() -> Self {
-        static LOCK: Mutex<()> = Mutex::new(());
-        let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_default();
-        let path = PathBuf::from(home).join(".OmniCrawl").join("config.toml");
+        let lock = USER_CONFIG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let path = user_config_path();
         let previous = std::fs::read_to_string(&path).ok();
-        if previous.is_none() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(
-                &path,
-                "[llm]\napi_key = \"test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
-            );
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        let _ = std::fs::write(
+            &path,
+            "[llm]\napi_key = \"test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
+        );
         Self {
             path,
             previous,
@@ -170,8 +178,13 @@ impl LlmConfigGuard {
 
 impl Drop for LlmConfigGuard {
     fn drop(&mut self) {
-        if self.previous.is_none() {
-            let _ = std::fs::remove_file(&self.path);
+        match &self.previous {
+            Some(content) => {
+                let _ = std::fs::write(&self.path, content);
+            }
+            None => {
+                let _ = std::fs::remove_file(&self.path);
+            }
         }
     }
 }
@@ -1456,16 +1469,22 @@ fn workspace_switch_reports_invalid_target_instead_of_talking_to_the_model() {
 struct ConfigFileGuard {
     path: PathBuf,
     content: Option<String>,
+    /// 与 [`LlmConfigGuard`] 共用同一把锁：两者都改这份文件，必须互斥。
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl ConfigFileGuard {
     fn take() -> Self {
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_default();
-        let path = PathBuf::from(home).join(".OmniCrawl").join("config.toml");
+        let lock = USER_CONFIG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let path = user_config_path();
         let content = std::fs::read_to_string(&path).ok();
-        Self { path, content }
+        Self {
+            path,
+            content,
+            _lock: lock,
+        }
     }
 }
 
