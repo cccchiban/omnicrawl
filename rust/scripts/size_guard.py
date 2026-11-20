@@ -147,6 +147,11 @@ def load_allowlist():
 
 
 def main():
+    # Windows runner 的 stdout 默认是 cp1252，打印中文会直接 UnicodeEncodeError；
+    # 这里显式转 UTF-8，让门禁在两种 OS 上都能把报告打全。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", action="store_true", help="只报告，不因超标失败")
     args = parser.parse_args()

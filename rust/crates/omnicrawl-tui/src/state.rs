@@ -32,6 +32,7 @@ use omnicrawl_ipc::bridge::TurnImageAttachment;
 mod activity;
 mod batch_flow;
 mod composer;
+mod composer_edit;
 mod composer_flow;
 mod failure;
 mod records;

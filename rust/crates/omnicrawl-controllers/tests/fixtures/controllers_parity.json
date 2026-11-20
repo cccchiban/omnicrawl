@@ -7577,7 +7577,7 @@
           },
           {
             "name": "image_gen",
-            "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片，走 OpenAI 兼容 Image API 或 Gemini 出图。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置（Gemini 通道只认 n 与 path，尺寸由设置里的画面比例与分辨率档位决定）。",
+            "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片，走五条通道之一（OpenAI 兼容 Image API、Gemini generateContent、xAI Grok、DALL·E 3、Midjourney 代理）。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑（dall-e-3 与 mj 通道不支持参考图）。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置（Gemini 通道只认 n 与 path，尺寸由设置里的画面比例与分辨率档位决定；Grok 用画面比例与分辨率档；MJ 的尺寸等参数写在提示词里，如 --ar 16:9）。",
             "argument_schema": "{\"prompt\": \"图像描述\", \"image\": \"编辑时传入的本地图片路径\", \"n\": 1, \"size\": \"auto\", \"quality\": \"auto\", \"output_format\": \"png\", \"path\": \"可选保存路径\"}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,
@@ -8486,7 +8486,7 @@
           },
           {
             "name": "image_gen",
-            "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片，走 OpenAI 兼容 Image API 或 Gemini 出图。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置（Gemini 通道只认 n 与 path，尺寸由设置里的画面比例与分辨率档位决定）。",
+            "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片，走五条通道之一（OpenAI 兼容 Image API、Gemini generateContent、xAI Grok、DALL·E 3、Midjourney 代理）。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑（dall-e-3 与 mj 通道不支持参考图）。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置（Gemini 通道只认 n 与 path，尺寸由设置里的画面比例与分辨率档位决定；Grok 用画面比例与分辨率档；MJ 的尺寸等参数写在提示词里，如 --ar 16:9）。",
             "argument_schema": "{\"prompt\": \"图像描述\", \"image\": \"编辑时传入的本地图片路径\", \"n\": 1, \"size\": \"auto\", \"quality\": \"auto\", \"output_format\": \"png\", \"path\": \"可选保存路径\"}",
             "requires_confirmation": true,
             "model_output_is_bounded": false,

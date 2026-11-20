@@ -905,7 +905,10 @@ mod tests {
             limited_int(&args_with(0), "timeout_seconds", 360, 1, i64::MAX),
             1
         );
-        assert_eq!(deadline_after(i64::MAX), None);
+        // `i64::MAX` 超过 `Instant` 能表示的范围时应当装不下（`None`），但不同平台的
+        // 时钟原点不同（Windows 能表示得比 Linux 更远），因此只断言「不 panic 且不会
+        // 给出一个比 1 秒更早的时刻」，不钉死具体是哪个分支。
+        assert!(deadline_after(i64::MAX).is_none_or(|deadline| deadline > Instant::now()));
         assert!(deadline_after(1).is_some());
     }
 
