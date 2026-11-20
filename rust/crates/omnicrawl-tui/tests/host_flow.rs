@@ -132,6 +132,50 @@ impl Read for ScriptHandle {
     }
 }
 
+/// 设置面板要求能读到 `[llm]`（`api_key`/`base_url`/`model`），否则面板打不开。
+///
+/// CI 的 runner 没有用户配置，本机却有；测试自己准备一份最小配置，两种环境才跑出同一件事。
+/// 改动落在真实配置路径上，因此整段用互斥锁串行，并在 Drop 里恢复现场。
+struct LlmConfigGuard {
+    path: PathBuf,
+    previous: Option<String>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl LlmConfigGuard {
+    fn install() -> Self {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let path = PathBuf::from(home).join(".OmniCrawl").join("config.toml");
+        let previous = std::fs::read_to_string(&path).ok();
+        if previous.is_none() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(
+                &path,
+                "[llm]\napi_key = \"test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
+            );
+        }
+        Self {
+            path,
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for LlmConfigGuard {
+    fn drop(&mut self) {
+        if self.previous.is_none() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 struct Harness {
     app: App,
     recorder: Recorder,
@@ -3241,23 +3285,30 @@ fn right_click_over_the_composer_pastes_the_clipboard() {
 /// 这里验证两点：进页只发一条 `session.list`；列表在响应帧到达后才回填。
 #[test]
 fn opening_the_sessions_pane_requests_the_list_without_blocking() {
+    // 面板要读配置才能打开；CI 上没有用户配置，测试自己补一份（Drop 时恢复）。
+    let config = LlmConfigGuard::install();
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
 
-    // 用 `/settings` 打开面板，再走到左栏的「会话管理」（`ROW_ORDER` 的倒数第二项）。
-    // 进页的那一次按键会触发列表读取。
+    // 用 `/settings` 打开面板，再按 Down 走到左栏的「会话管理」，出现列表请求即停。
+    // 不写死按键次数：左栏行序与「打开时默认选中的行」都取决于运行环境。
     type_text(&mut harness, "/settings");
     harness.press(KeyCode::Enter);
-    for _ in 0..ROW_ORDER.iter().position(|key| *key == "sessions").unwrap() {
+    let list_requests = |harness: &Harness| -> Vec<Frame> {
+        harness
+            .frames()
+            .into_iter()
+            .filter(|frame| frame.method() == Some("session.list"))
+            .collect()
+    };
+    for _ in 0..ROW_ORDER.len() + 2 {
+        if !list_requests(&harness).is_empty() {
+            break;
+        }
         harness.press(KeyCode::Down);
     }
-    harness.press(KeyCode::Enter);
 
-    let requests: Vec<Frame> = harness
-        .frames()
-        .into_iter()
-        .filter(|frame| frame.method() == Some("session.list"))
-        .collect();
+    let requests = list_requests(&harness);
     assert_eq!(requests.len(), 1, "进页只应发出一条列表请求");
 
     // 列表还没回填时继续按键不应重复请求。
@@ -3288,4 +3339,6 @@ fn opening_the_sessions_pane_requests_the_list_without_blocking() {
     );
     let settings = harness.app.settings.as_ref().expect("面板仍开着");
     assert_eq!(settings.session_rows()[0].title, "旧会话");
+    // 配置在用例结束时恢复（Drop），这里显式收尾说明它的生命周期覆盖整个用例。
+    drop(config);
 }

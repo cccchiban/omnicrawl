@@ -57,8 +57,11 @@ fn bundled_documents_match_python_package() {
         assert_eq!(embedded[index], name, "内置文档顺序不一致");
         let uri = bundled_doc_uri(name).expect("URI 应当合法");
         let text = read_bundled_doc(&uri).expect("文档应当可读");
+        // `.gitattributes` 规定 `*.md` 以 LF 入库，基线哈希也按 LF 计算；但 `include_str!`
+        // 取的是检出到磁盘的字节，Windows 上可能是 CRLF，比哈希前先归一化才能跨平台一致。
+        let normalized = text.replace("\r\n", "\n");
         assert_eq!(
-            common::sha256_hex(text.as_bytes()),
+            common::sha256_hex(normalized.as_bytes()),
             hashes[name].as_str().unwrap_or_default(),
             "文档 {name} 的内容与安装包不一致"
         );
