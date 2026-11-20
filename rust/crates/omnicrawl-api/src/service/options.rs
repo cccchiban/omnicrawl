@@ -224,6 +224,10 @@ pub(super) fn options_from_process_profile(
     // 永远拿不到 `Some`，配置段写了也没人读（会话恢复默认关闭，改的是密钥调度）。
     options.registry_options.fetcher.tls_session_cache =
         omnicrawl_host::tools::tls_session_cache_from_config(env);
+    // 抓取引擎同理：`[fetcher] engine` 为 `local`（缺省）时行为与改造前完全一致，
+    // 换成远程引擎后 `fetcher` 改由第三方抓取接口取正文。
+    options.registry_options.fetcher.remote =
+        omnicrawl_host::tools::remote_fetch_options_from_config(env);
     options.monitors = Some(monitors);
     // 审查运行期：与 TUI 同源（`approval.review_model` 为空时回落主模型，凭据与基地址
     // 沿用主渠道，脱敏旁路按 `[desensitization]` 配置构造）。

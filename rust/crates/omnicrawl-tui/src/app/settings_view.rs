@@ -177,6 +177,7 @@ impl App {
         .with_subagents(subagent_rows(&subagent_config))
         .with_mcp(self.mcp_settings_values(&environment))
         .with_web_search(web_search_row(&environment))
+        .with_fetcher(fetcher_row(&environment))
         .with_vision(
             vision.enabled,
             vision.models.iter().map(vision_ref_from_config).collect(),
@@ -303,11 +304,13 @@ impl App {
     ///
     /// 只在刚进入该页时读一次：每次方向键都读会让内核往返淹没按键反馈。
     /// `Enter` 进页与鼠标点页都经过这里，因此以「当前 pane 是会话页且列表还没载入」判定。
+    /// 判定用 `sessions_loaded` 而不是「列表非空」：一个会话都没有时列表永远为空，
+    /// 只看空列表会让每次按键都重新压一条内核请求。
     pub(super) fn load_sessions_if_needed(&mut self) {
         let Some(settings) = self.settings.as_ref() else {
             return;
         };
-        if !settings.is_sessions_pane() || !settings.session_rows().is_empty() {
+        if !settings.is_sessions_pane() || self.sessions_loaded {
             return;
         }
         self.reload_session_rows();
@@ -512,28 +515,64 @@ impl App {
     /// 设置面板「会话管理」页：从内核读会话列表并回填。
     ///
     /// 列表读取失败只落到该页的状态行，不弹全局提示——面板还开着，状态行就在眼前。
+    ///
+    /// 读取是**异步**的：索引动辄上千条会话，内核还要逐条判定空占位，同步往返会把
+    /// 按键到重绘的链子一起卡住。这里只把请求发出去，响应帧由 [`App::apply_sessions_response`]
+    /// 回填。
     pub(super) fn reload_session_rows(&mut self) {
-        // 先取列表与当前 id 再借面板：`command_session_list` 要可变借用 `self`，
-        // 不能与 `settings` 的借用重叠。
-        let loaded = self.command_session_list(false, 100);
+        if self.sessions_request.is_some() {
+            // 已经有一条在途：重复按 `R` 或来回切页不该再压一条请求。
+            return;
+        }
+        let params = SessionListParams {
+            archived: false,
+            limit: session_limit(SESSION_ROWS_LIMIT),
+        };
+        let id = self.send(Command::SessionList(params));
+        self.sessions_request = Some(id);
+    }
+
+    /// 会话列表响应帧 → 面板。
+    ///
+    /// `command_session_list` 的同步收尾（对齐当前会话 id、必要时换会话级记忆目录）也在这里补上：
+    /// 列表里带着内核当前的会话 id，异步路径同样需要它。
+    pub(super) fn apply_sessions_response(&mut self, frame: &Frame) {
+        // 无论成败都算「已载入过一次」：失败已经把原因写进状态行，重复读取既不会更快
+        // 也不会更准，只会在每次按键时再压一条内核往返。
+        self.sessions_loaded = true;
+        if let Some(error) = frame.error.as_ref() {
+            let message = format!("会话列表读取失败：{}", error.message);
+            if let Some(settings) = self.settings.as_mut() {
+                settings.set_sessions_status(&message);
+            }
+            return;
+        }
+        let result = frame.result.clone().unwrap_or(Value::Null);
+        let previous = self.session_id.clone();
+        if let Some(current) = result.get("current_session_id").and_then(Value::as_str) {
+            self.session_id = current.to_string();
+        }
+        if self.session_id != previous {
+            self.retarget_session_memory();
+        }
         let current = self.session_id.clone();
-        let Some(settings) = self.settings.as_mut() else {
+        let Ok(entries) = session_entries(&result) else {
+            if let Some(settings) = self.settings.as_mut() {
+                settings.set_sessions_status("会话列表读取失败：内核返回的列表无法解析。");
+            }
             return;
         };
-        match loaded {
-            Ok(entries) => {
-                let rows: Vec<SessionRow> = entries
-                    .into_iter()
-                    .map(|entry| SessionRow {
-                        is_current: entry.session_id == current,
-                        title: entry.title,
-                        message_count: entry.message_count as usize,
-                        session_id: entry.session_id,
-                    })
-                    .collect();
-                settings.set_sessions(rows);
-            }
-            Err(message) => settings.set_sessions_status(&format!("会话列表读取失败：{message}")),
+        let rows: Vec<SessionRow> = entries
+            .into_iter()
+            .map(|entry| SessionRow {
+                is_current: entry.session_id == current,
+                title: entry.title,
+                message_count: entry.message_count as usize,
+                session_id: entry.session_id,
+            })
+            .collect();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.set_sessions(rows);
         }
     }
 

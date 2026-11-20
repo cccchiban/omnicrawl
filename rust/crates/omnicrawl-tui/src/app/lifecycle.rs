@@ -231,8 +231,40 @@ impl App {
     /// 透传过来），因此 `Ctrl+V` 的按下事件永远到不了这里——挂在按下上的图片粘贴是死代码。
     /// 抬起也照旧携带 Control，用它当触发点对 conhost 同样成立（那里按下与抬起都会到达）。
     pub(super) fn handle_ctrl_v_release(&mut self) {
-        // 文档先试：资源管理器里复制文件时剪贴板只有 `CF_HDROP`，位图那条读不到东西，
-        // 两者不会互相抢按键。
+        // 文本粘贴由终端自己送来（`Event::Paste` 或按键流识别），所以这里不碰文本：
+        // 补一次文本粘贴会让同一条内容粘两遍。
+        self.paste_attachments_from_clipboard();
+    }
+
+    /// 从剪贴板粘一次内容到插入点；返回是否真的插入了东西。
+    ///
+    /// 顺序固定为「文档 → 图片 → 文本」：资源管理器里复制文件时剪贴板里只有 `CF_HDROP`，
+    /// 位图与文本都读不到，三者不会互相抢；而一段文本若整段就是文档/图片路径，
+    /// 也归前两步处理，最终仍以块的形式落在输入框里。
+    ///
+    /// 用在右键快速粘贴上：那里终端不会自己送 `Event::Paste`，文本也得由这里补。
+    pub(super) fn paste_from_clipboard(&mut self) -> bool {
+        if self.paste_clipboard_documents() {
+            return true;
+        }
+        if self.paste_clipboard_image() {
+            return true;
+        }
+        let Some(text) = crate::clipboard::read_text() else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        if self.paste_document_path(&text) || self.paste_image_path(&text) {
+            return true;
+        }
+        self.state.composer.insert_paste(&text);
+        true
+    }
+
+    /// `Ctrl+V` 的附件通路：文档与位图。文本交给终端自己的粘贴，不在这里补。
+    fn paste_attachments_from_clipboard(&mut self) {
         if self.paste_clipboard_documents() {
             return;
         }

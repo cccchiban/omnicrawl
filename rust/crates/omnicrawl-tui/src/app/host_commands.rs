@@ -282,7 +282,7 @@ impl App {
     /// 会话 id 变了之后跟上工具表：会话级记忆目录按 id 解析，重建后指向新会话。
     ///
     /// 重建失败不影响会话切换本身（切换已在内核侧完成），只把原因如实报出来。
-    fn retarget_session_memory(&mut self) {
+    pub(super) fn retarget_session_memory(&mut self) {
         if let Err(error) = self.rebuild_registry() {
             self.state
                 .notice(format!("会话级记忆未切换：{error}"));

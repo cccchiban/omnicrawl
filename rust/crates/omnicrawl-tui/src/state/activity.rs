@@ -82,7 +82,10 @@ impl AppState {
         // ---- 思考段平滑显现 ---------------------------------------------------------
 
         /// 推进一帧思考段显现；返回 `true` 表示还没铺完（事件循环据此继续按帧重画）。
-        pub fn tick_reasoning_reveal(&mut self) -> bool {
+        ///
+        /// 步长按 `now` 与上次推进的间隔折算（见 [`ReasoningReveal::advance`]）：帧率高低
+        /// 不影响铺开速度，一次卡顿也不会让思考停住再整段补上。
+        pub fn tick_reasoning_reveal(&mut self, now: Instant) -> bool {
             // 记录被清空/回滚后游标可能指向已经不存在的记录：那种情况下直接退出显现态，
             // 否则「还没铺完」会永远为真，事件循环就按活动帧率空转。
             let stale = self
@@ -98,7 +101,7 @@ impl AppState {
                 let reveal = self.reasoning_reveal.borrow();
                 (reveal.index, reveal.revealed)
             };
-            let more = self.reasoning_reveal.get_mut().advance();
+            let more = self.reasoning_reveal.get_mut().advance(now);
             let after = {
                 let reveal = self.reasoning_reveal.borrow();
                 (reveal.index, reveal.revealed)
@@ -112,7 +115,19 @@ impl AppState {
             more
         }
 
-        /// 略过逐帧显现、立刻铺完全部思考（收口、展开/收起、回放与回合结束时用）。
+        /// 把还没铺完的思考当场补到最新（回合收口、回滚后目标长度变短时用）。
+        ///
+        /// 与 `settle` 的区别是**继续跟踪**：收口之后仍有增量（例如工具批次后接着生成）
+        /// 时，新内容照常按显现节奏铺开，不会再被一次性甩到屏幕上。
+        pub fn catch_up_reasoning_reveal(&mut self) {
+            self.reasoning_reveal.get_mut().catch_up();
+            let index = self.reasoning_reveal.borrow().index;
+            if let Some(index) = index {
+                self.touch_record(index);
+            }
+        }
+
+        /// 略过逐帧显现、立刻铺完全部思考（展开/收起、回放、显示开关变化时用）。
         ///
         /// 只关掉「逐帧揭示」，**保留**当前下标：这段思考如果还在流式到达，后续增量仍会认成
         /// 同一条，按全文追加。清掉下标会让下一片被当成首片、从头重铺（展开/折叠后整段重放）。
@@ -248,9 +263,10 @@ impl AppState {
         pub(super) fn start_reasoning_reveal(&mut self, index: usize, appended: usize) {
             let reveal = self.reasoning_reveal.get_mut();
             if reveal.index != Some(index) {
-                reveal.start(index);
+                reveal.start(index, appended);
+            } else {
+                reveal.extend(index, appended);
             }
-            reveal.extend(index, appended);
             self.touch_record(index);
         }
 

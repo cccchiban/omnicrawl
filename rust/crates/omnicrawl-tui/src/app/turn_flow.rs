@@ -194,7 +194,8 @@ impl App {
             .into_iter()
             .map(|image| omnicrawl_ipc::bridge::TurnImageAttachment {
                 media_type: image.media_type,
-                data_base64: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                data_base64: base64::engine::general_purpose::STANDARD
+                    .encode(image.bytes.as_slice()),
                 detail: String::new(),
             })
             .collect::<Vec<_>>();

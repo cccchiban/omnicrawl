@@ -2,6 +2,8 @@
 //!
 //! 由 `state.rs` 按职责拆出，语义未变。
 
+use std::sync::Arc;
+
 use super::*;
 
 /// 输入框可见窗口里的一行：文本 + 它在全文里的**字符区间** `[start, end)`。
@@ -58,6 +60,52 @@ pub struct Composer {
     /// 只在滚轮滚动输入框时变成 `Some`：一旦编辑文本、移动光标或替换全文就回到跟随光标，
     /// 否则光标会在看不见的地方打字（插入点跑到窗口之外，用户以为按键丢了）。
     pub(super) scroll: Option<usize>,
+    /// 撤回栈：每次「一组编辑」之前压入当时的全文与三类块表。
+    pub(super) undo: VecDeque<ComposerSnapshot>,
+    /// 复原栈：撤回时把撤回前的状态压进来，复原时再交换回去。
+    pub(super) redo: VecDeque<ComposerSnapshot>,
+    /// 当前连续编辑的合并口径：同一段打字或退格只压一次快照。
+    pub(super) run: EditRun,
+}
+
+/// 连续编辑的合并口径（`Ctrl+Z` 的粒度）。
+///
+/// 逐字符都压快照的话，「撤回」就退一个字母，敲一句话得按几十次；这里把**一段连续输入**
+/// 或**一次连续删除**合成一组，撤回一次退掉整组。换一处改、粘贴、清空都自成一组的边界
+/// （[`Composer::begin_single_edit`]）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum EditRun {
+    #[default]
+    None,
+    Types,
+    Deletes,
+}
+
+/// 撤回栈最多保留的组数：更早的既按不回来，也没有保留价值（与历史条数同一套想法）。
+pub(super) const COMPOSER_UNDO_LIMIT: usize = 100;
+
+/// 把快照压进栈顶，超出上限时从最早的一端丢掉。
+pub(super) fn push_bounded(stack: &mut VecDeque<ComposerSnapshot>, snapshot: ComposerSnapshot) {
+    stack.push_back(snapshot);
+    if stack.len() > COMPOSER_UNDO_LIMIT {
+        stack.pop_front();
+    }
+}
+
+/// 输入框的一个可撤回快照：全文、插入点与三类块表（粘贴折叠、图片、文档）。
+///
+/// 序号也一起存：撤回后接着粘贴的块编号要接在撤回前的位置上，否则会出现
+/// 「`[ #1 Image ]` 有两块、文本里却各指一份」的错位。
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ComposerSnapshot {
+    text: String,
+    cursor: usize,
+    pastes: Vec<(String, String)>,
+    images: Vec<(String, PendingImage)>,
+    documents: Vec<(String, PendingDocument)>,
+    paste_sequence: usize,
+    image_sequence: usize,
+    document_sequence: usize,
 }
 
 /// 终端粘贴常带 CRLF/CR，先统一成 LF（对映 Python `_normalize_pasted_text`）。
@@ -87,7 +135,8 @@ fn paste_placeholder(sequence: usize, lines: usize) -> String {
 pub struct PendingImage {
     pub placeholder: String,
     pub media_type: String,
-    pub bytes: Vec<u8>,
+    /// 位图字节。撤回栈每存一次快照就引用同一份字节，不复制（一张图可能几 MB）。
+    pub bytes: Arc<Vec<u8>>,
     /// 发送前要不要把字节复制一份到工作区临时目录。
     ///
     /// 只有 `Ctrl+V` 的剪贴板位图需要（磁盘上原本没有这份图，模型事后想再读就没有了）；
@@ -130,6 +179,7 @@ impl Composer {
     }
 
     pub fn clear(&mut self) {
+        self.begin_single_edit();
         self.text.clear();
         self.cursor = 0;
         self.pastes.clear();
@@ -141,9 +191,114 @@ impl Composer {
 
     /// 用给定文本替换全文，并把光标放到末尾（撤回排队消息、菜单补全时用）。
     pub fn set_text(&mut self, text: &str) {
+        self.begin_single_edit();
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
         self.prune_pastes();
+        self.exit_browse_mode();
+        self.refresh_menu();
+    }
+
+    /// 撤回上一步编辑；没有可撤回的内容时返回 `false`。
+    ///
+    /// 撤回的是**文本与三类块表（粘贴折叠 / 图片 / 文档）的同一份快照**：只退文本会让
+    /// 图片块回到输入框却没有附件，提交时那条 `[ #1 Image ]` 就成了空占位。
+    pub fn undo(&mut self) -> bool {
+        loop {
+            let Some(previous) = self.undo.pop_back() else {
+                return false;
+            };
+            let current = self.snapshot();
+            if previous == current {
+                // 空操作（例如在空输入框上再清一次）占下的那一层直接跳过：
+                // 撤回它屏幕上什么都不会变，按一次却白费一步。
+                continue;
+            }
+            push_bounded(&mut self.redo, current);
+            self.restore(previous);
+            self.run = EditRun::None;
+            return true;
+        }
+    }
+
+    /// 复原刚撤回的那一步；没有可复原的内容时返回 `false`。
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo.pop_back() else {
+            return false;
+        };
+        let current = self.snapshot();
+        if current != next {
+            push_bounded(&mut self.undo, current);
+        }
+        self.restore(next);
+        self.run = EditRun::None;
+        true
+    }
+
+    /// 一段连续打字之前压一次撤回点：同一段连打只压第一次，撤回一次退掉整段。
+    fn begin_typing(&mut self) {
+        if self.run == EditRun::Types {
+            return;
+        }
+        self.run = EditRun::Types;
+        self.push_undo();
+    }
+
+    /// 一次连续删除（退格/删除）之前压一次撤回点；与打字段互不相通。
+    fn begin_deleting(&mut self) {
+        if self.run == EditRun::Deletes {
+            return;
+        }
+        self.run = EditRun::Deletes;
+        self.push_undo();
+    }
+
+    /// 一次独立改动（粘贴、清空、替换全文、撤回排队消息）自成一组的边界。
+    fn begin_single_edit(&mut self) {
+        self.run = EditRun::None;
+        self.push_undo();
+    }
+
+    /// 这段编辑已结束（移动光标、点选之后的下一次改动重新压撤回点）。
+    fn end_run(&mut self) {
+        self.run = EditRun::None;
+    }
+
+    /// 当前状态压进撤回栈；与栈顶相同则不重复压（清空空输入这类空操作不该占一步）。
+    ///
+    /// 压新撤回点即作废复原栈：改了东西之后，先前撤回掉的那条分支已经不存在了。
+    fn push_undo(&mut self) {
+        let snapshot = self.snapshot();
+        self.redo.clear();
+        if self.undo.back() == Some(&snapshot) {
+            return;
+        }
+        push_bounded(&mut self.undo, snapshot);
+    }
+
+    fn snapshot(&self) -> ComposerSnapshot {
+        ComposerSnapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            pastes: self.pastes.clone(),
+            images: self.images.clone(),
+            documents: self.documents.clone(),
+            paste_sequence: self.paste_sequence,
+            image_sequence: self.image_sequence,
+            document_sequence: self.document_sequence,
+        }
+    }
+
+    /// 把快照装回输入框：窗口回到跟随光标，菜单按新文本重筛。
+    fn restore(&mut self, snapshot: ComposerSnapshot) {
+        self.text = snapshot.text;
+        self.cursor = snapshot.cursor;
+        self.pastes = snapshot.pastes;
+        self.images = snapshot.images;
+        self.documents = snapshot.documents;
+        self.paste_sequence = snapshot.paste_sequence;
+        self.image_sequence = snapshot.image_sequence;
+        self.document_sequence = snapshot.document_sequence;
         self.exit_browse_mode();
         self.refresh_menu();
     }
@@ -217,6 +372,9 @@ impl Composer {
     /// 否则以 `/` 开头的历史条目会弹出候选菜单，接下来的上下键被菜单抢走、
     /// 连续浏览被打断（对映 Python `_replace_history_text` + `_hide_command_menu`）。
     fn replace_history_text(&mut self, text: &str) {
+        // 翻历史也是一次可撤回的改动：否则浏览到某条之后按下一次编辑，
+        // 撤回点还停在浏览之前，Ctrl+Z 会把刚看到的那一整条一起抹掉。
+        self.begin_single_edit();
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
         self.follow_caret();
@@ -244,6 +402,11 @@ impl Composer {
         self.pastes.clear();
         self.exit_browse_mode();
         self.refresh_menu();
+        // 提交是撤回栈的硬边界：内容已经发出去了，撤回它只会把同一句话连同附件再摆回输入框，
+        // 一按回车就重发一遍。
+        self.undo.clear();
+        self.redo.clear();
+        self.run = EditRun::None;
         text
     }
 
@@ -254,14 +417,15 @@ impl Composer {
     pub fn insert_paste(&mut self, text: &str) {
         let normalized = normalize_paste(text);
         let lines = paste_line_count(&normalized);
+        self.begin_single_edit();
         if lines <= PASTE_COMPACT_LINE_THRESHOLD {
-            self.insert(&normalized);
+            self.insert_raw(&normalized);
             return;
         }
         self.paste_sequence += 1;
         let placeholder = paste_placeholder(self.paste_sequence, lines);
         self.pastes.push((placeholder.clone(), normalized));
-        self.insert(&placeholder);
+        self.insert_raw(&placeholder);
     }
 
     /// 图片粘贴入口：在光标处插入 `[ #n Image ]` 占位符，附件按序号存起来等提交。
@@ -281,6 +445,7 @@ impl Composer {
     }
 
     fn push_image(&mut self, media_type: &str, bytes: Vec<u8>, archive: bool) {
+        self.begin_single_edit();
         self.image_sequence += 1;
         let placeholder = image_placeholder(self.image_sequence);
         self.images.push((
@@ -288,11 +453,11 @@ impl Composer {
             PendingImage {
                 placeholder: placeholder.clone(),
                 media_type: media_type.to_string(),
-                bytes,
+                bytes: Arc::new(bytes),
                 archive,
             },
         ));
-        self.insert(&placeholder);
+        self.insert_raw(&placeholder);
     }
 
     /// 取走待发图片（按粘贴顺序），并清掉图片块状态。
@@ -307,6 +472,7 @@ impl Composer {
     /// 与图片块同一套语义（整块删除、左右移动不停在块中间）；不同之处是不读文件字节：
     /// 文档只能由模型按路径读，附件里不带内容。
     pub fn insert_document(&mut self, path: &str) {
+        self.begin_single_edit();
         self.document_sequence += 1;
         let extension = crate::document_path::PendingDocument::extension_of(path);
         let placeholder = document_placeholder(self.document_sequence, &extension);
@@ -317,7 +483,7 @@ impl Composer {
                 path: path.to_string(),
             },
         ));
-        self.insert(&placeholder);
+        self.insert_raw(&placeholder);
     }
 
     /// 取走待发文档（按粘贴顺序），并清掉文档块状态。
@@ -483,6 +649,12 @@ impl Composer {
     }
 
     pub fn insert(&mut self, text: &str) {
+        self.begin_typing();
+        self.insert_raw(text);
+    }
+
+    /// 插入文本但不压撤回点：粘贴与块插入已各自开好一组。
+    fn insert_raw(&mut self, text: &str) {
         self.exit_browse_mode();
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let mut chars: Vec<char> = self.text.chars().collect();
@@ -496,16 +668,21 @@ impl Composer {
     }
 
     pub fn newline(&mut self) {
-        self.insert("\n");
+        // 换行自成一组的边界：敲完一句按回车，前面那一整句与后面那一行要能分开撤回。
+        self.begin_single_edit();
+        self.insert_raw("\n");
     }
 
     pub fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
         }
+        self.begin_deleting();
         self.exit_browse_mode();
         // 光标左侧落在粘贴折叠块里：整块删掉，而不是逐字符删。
         if self.remove_placeholder(self.cursor - 1) {
+            // 一整块一次就删完了：下一段删除是新的撤回点，否则连删两块只能整段退回来。
+            self.end_run();
             return;
         }
         let mut chars: Vec<char> = self.text.chars().collect();
@@ -522,9 +699,11 @@ impl Composer {
         if self.cursor >= chars.len() {
             return;
         }
+        self.begin_deleting();
         self.exit_browse_mode();
         // 光标右侧落在粘贴折叠块里：整块删掉（含块首与块内）。
         if self.remove_placeholder(self.cursor) {
+            self.end_run();
             return;
         }
         chars.remove(self.cursor);
@@ -537,6 +716,7 @@ impl Composer {
     pub fn move_left(&mut self) {
         self.clear_mouse_selection();
         self.follow_caret();
+        self.end_run();
         if self.cursor == 0 {
             return;
         }
@@ -556,6 +736,7 @@ impl Composer {
     pub fn move_right(&mut self) {
         self.clear_mouse_selection();
         self.follow_caret();
+        self.end_run();
         let length = self.text.chars().count();
         if self.cursor >= length {
             return;
@@ -569,6 +750,7 @@ impl Composer {
     pub fn move_home(&mut self) {
         self.clear_mouse_selection();
         self.follow_caret();
+        self.end_run();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[..at]
@@ -581,6 +763,7 @@ impl Composer {
     pub fn move_end(&mut self) {
         self.clear_mouse_selection();
         self.follow_caret();
+        self.end_run();
         let chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         self.cursor = chars[at..]
@@ -609,6 +792,8 @@ impl Composer {
         self.selection = Some((index, index));
         self.cursor = index;
         self.follow_caret();
+        // 点到别处再打字是一段新的编辑：不结束当前组的话，撤回会把两处改动一起退掉。
+        self.end_run();
     }
 
     /// 拖动中：把选区的另一端（也是插入点，供粗光标与窗口跟随）挪到新位置。

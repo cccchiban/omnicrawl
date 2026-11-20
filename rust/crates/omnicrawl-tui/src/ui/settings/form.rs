@@ -418,6 +418,33 @@ const WEB_SEARCH_FIELDS: [FieldSpec; 13] = [
     FieldSpec::secret("Keenable API Key"),
 ];
 
+/// 抓取引擎的候选：本地直连、六家带抓取接口的服务，以及负载均衡。
+///
+/// 候选文案把「本地」与「负载均衡」讲清楚：这两个不是服务名，用户不该以为要填凭据。
+const FETCHER_ENGINE_OPTIONS: [(&str, &str); 8] = [
+    ("local（本地直连）", "local"),
+    ("tavily", "tavily"),
+    ("exa", "exa"),
+    ("firecrawl", "firecrawl"),
+    ("anysearch", "anysearch"),
+    ("tinyfish", "tinyfish"),
+    ("deepseek", "deepseek"),
+    ("balanced（多引擎负载均衡）", "balanced"),
+];
+
+/// 抓取页的字段；顺序与 `app.rs` 读值时的下标一一对应。
+///
+/// 凭据不在这里：抓取接口与联网搜索打的是同一批服务，Key 仍填在「联网搜索」页，
+/// 本页只决定「用谁」，避免同一把 Key 在两页各存一份而不一致。
+const FETCHER_FIELDS: [FieldSpec; 2] = [
+    FieldSpec::enumerated("抓取引擎", &FETCHER_ENGINE_OPTIONS),
+    FieldSpec::toggled(
+        "接口失败时回落本地",
+        "关闭（接口失败即报错）",
+        "开启（改走本地直连）",
+    ),
+];
+
 /// 沙盒隔离模式候选（取值与 `[sandbox] mode` 一一对应）。
 const SANDBOX_MODE_OPTIONS: [(&str, &str); 3] = [
     ("dry-run（只判定不隔离）", "off"),
@@ -469,6 +496,8 @@ pub enum FormKind {
     ImageGen,
     /// 联网搜索：引擎 + Tavily/Exa/Firecrawl/AnySearch/TinyFish/DeepSeek/Grok/Keenable 凭据。
     WebSearch,
+    /// 抓取引擎：本地直连 / 第三方抓取接口 / 多引擎负载均衡 + 失败回落。
+    Fetcher,
     /// Computer Use：总开关 + 时间预算 + 截图上限 + 桌面模型。
     ComputerUse,
     /// 沙盒：开关/模式 + 文件系统 + 网络策略 + 资源限额。
@@ -476,7 +505,7 @@ pub enum FormKind {
 }
 
 /// 全部表单页，下标与 [`FormKind::index`] 一致。
-pub const FORM_KINDS: [FormKind; 9] = [
+pub const FORM_KINDS: [FormKind; 10] = [
     FormKind::Advisor,
     FormKind::ToolOutputCompression,
     FormKind::Desensitization,
@@ -484,6 +513,7 @@ pub const FORM_KINDS: [FormKind; 9] = [
     FormKind::AgentWorkspace,
     FormKind::ImageGen,
     FormKind::WebSearch,
+    FormKind::Fetcher,
     FormKind::ComputerUse,
     FormKind::Sandbox,
 ];
@@ -498,8 +528,9 @@ impl FormKind {
             Self::AgentWorkspace => 4,
             Self::ImageGen => 5,
             Self::WebSearch => 6,
-            Self::ComputerUse => 7,
-            Self::Sandbox => 8,
+            Self::Fetcher => 7,
+            Self::ComputerUse => 8,
+            Self::Sandbox => 9,
         }
     }
 
@@ -512,6 +543,7 @@ impl FormKind {
             Self::AgentWorkspace => &AGENT_WORKSPACE_FIELDS,
             Self::ImageGen => &IMAGE_GEN_FIELDS,
             Self::WebSearch => &WEB_SEARCH_FIELDS,
+            Self::Fetcher => &FETCHER_FIELDS,
             Self::ComputerUse => &COMPUTER_USE_FIELDS,
             Self::Sandbox => &SANDBOX_FIELDS,
         }

@@ -8,7 +8,7 @@
 # 其中只有 6 个是真正的「多功能综合文件」，其余多为单一职责或数据表。
 #
 # 行的格式：<相对 rust/ 的路径>  <登记时的生产行数>
-crates/omnicrawl-host/src/tools/web_search.rs  2052
+crates/omnicrawl-host/src/tools/web_search.rs  1935
 crates/omnicrawl-tui/src/ui/conversation.rs  1921
 crates/omnicrawl-workspace/src/agent_isolation.rs  1871
 crates/omnicrawl-connectors/src/feishu/bot.rs  1620

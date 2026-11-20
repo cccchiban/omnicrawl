@@ -137,6 +137,10 @@ mod tools;
 
 mod web_search;
 
+mod fetcher;
+
+pub use fetcher::FetcherRow;
+
 mod vision;
 
 mod model;
@@ -208,6 +212,7 @@ impl Pane {
             "sandbox" => Self::Form(FormKind::Sandbox),
             "tools" => Self::Tools,
             "web_search" => Self::Form(FormKind::WebSearch),
+            "fetcher" => Self::Form(FormKind::Fetcher),
             "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
@@ -563,6 +568,8 @@ pub struct SettingsValues {
     pub approval_mode: String,
     /// 联网搜索页的初值（默认引擎与各凭据是否已配置）。
     pub web_search: WebSearchRow,
+    /// 抓取页的初值（`[fetcher] engine` 与失败回落开关）。
+    pub fetcher: FetcherRow,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
     /// MCP 设置页的初始值（全局策略 + Server 列表）。
@@ -618,6 +625,7 @@ impl SettingsValues {
             tools,
             approval_mode: APPROVAL_MODE_REVIEW.to_string(),
             web_search: WebSearchRow::default(),
+            fetcher: FetcherRow::default(),
             subagents: Vec::new(),
             mcp: McpSettingsValues::default(),
             vision_enabled: false,
@@ -767,6 +775,12 @@ impl SettingsValues {
     }
 
     /// 联网搜索页的初值（默认引擎与各凭据是否已配置）。
+    pub fn with_fetcher(mut self, row: FetcherRow) -> Self {
+        self.fetcher = row;
+        self
+    }
+
+    /// 覆盖联网搜索页的初值。
     pub fn with_web_search(mut self, row: WebSearchRow) -> Self {
         self.web_search = row;
         self
@@ -1134,6 +1148,9 @@ impl SettingsState {
         // 联网搜索页的草稿由配置投影起步（引擎 + 凭据掩码），与其他表单页同一条初始化路径。
         if let Some(form) = forms.get_mut(FormKind::WebSearch.index()) {
             form.set_values(web_search::web_search_form_values(&values.web_search));
+        }
+        if let Some(form) = forms.get_mut(FormKind::Fetcher.index()) {
+            form.set_values(fetcher::fetcher_form_values(&values.fetcher));
         }
         Self {
             selected: 0,

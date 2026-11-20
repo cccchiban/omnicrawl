@@ -131,8 +131,41 @@ impl App {
                     self.finish_selection();
                 }
             }
+            // 右键落在输入区方框上：把剪贴板内容贴到插入点（文档 / 图片 / 文本同一套先后）。
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.paste_at_composer(mouse.column, mouse.row)
+            }
             _ => {}
         }
+    }
+
+    /// 右键点输入区方框：把剪贴板内容贴到插入点（用户要求的快速粘贴）。
+    ///
+    /// 与 `Ctrl+V` 同一条通路、同一套优先级：先认资源管理器复制的文件（`CF_HDROP`），
+    /// 再认位图，最后才当文本粘。落在方框之外（会话流、HUD）时什么都不做——
+    /// 那儿的右键交给终端自己。
+    ///
+    /// 落点在正文上时先把插入点挪过去再粘：右键一处就贴一处，不必先左键定位再右键。
+    pub(super) fn paste_at_composer(&mut self, column: u16, row: u16) {
+        // 内核已退出时输入框不再收内容（与按键路径同一道守卫），粘进来也发不出去。
+        if self.kernel_lost || self.settings.is_some() {
+            return;
+        }
+        let box_area = ui::layout(self.viewport, &self.state).composer_box;
+        if !box_area.contains(Position::new(column, row)) {
+            return;
+        }
+        if self.state.composer.selection().is_some() {
+            self.state.composer.clear_selection();
+        }
+        if let Some(index) = self.composer_index(column, row) {
+            self.state.composer.begin_selection(index);
+        }
+        if !self.paste_from_clipboard() {
+            self.state
+                .show_notice_line("剪贴板里没有可粘贴的内容。", Instant::now());
+        }
+        self.state.touch_composer();
     }
 
     /// 屏幕坐标 → 会话流的（显示行下标, 行内显示列）；不在会话文本区时返回 `None`。
@@ -205,6 +238,49 @@ impl App {
             usize::from(column.saturating_sub(area.x)),
         );
         self.state.composer.extend_selection(index);
+    }
+
+    /// 撤回输入框的上一步；没有可撤回的内容时给一行提示，别让人以为按键失灵。
+    pub(super) fn undo_composer(&mut self) {
+        if !self.state.composer.undo() {
+            self.state
+                .show_notice_line("没有可撤回的输入编辑。", Instant::now());
+        }
+        self.state.touch_composer();
+    }
+
+    /// 复原刚撤回的那一步。
+    pub(super) fn redo_composer(&mut self) {
+        if !self.state.composer.redo() {
+            self.state
+                .show_notice_line("没有可复原的输入编辑。", Instant::now());
+        }
+        self.state.touch_composer();
+    }
+
+    /// 撤回 / 复原键：`Ctrl+Z` 退一步，`Ctrl+Y` 或 `Ctrl+Shift+Z` 进一步。
+    ///
+    /// 大小写都收：Windows 上 `KeyCode` 由 `ToUnicodeEx` 反推，大写锁打开时 `z` 会被折成 `'Z'`，
+    /// 只认小写的话 `Ctrl+Z` 会在大写锁下失灵。`Ctrl+Shift+Z` 与 `Ctrl+Y` 同义（编辑器惯例）。
+    pub(super) fn handle_undo_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        if !ctrl {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('z' | 'Z') => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.redo_composer();
+                } else {
+                    self.undo_composer();
+                }
+                true
+            }
+            KeyCode::Char('y' | 'Y') => {
+                self.redo_composer();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// 松左键：输入框里有选区就写剪切板（与会话区拖选同一套：复制完清掉高亮）。
@@ -667,6 +743,10 @@ impl App {
             return;
         }
 
+        if self.handle_undo_key(key, ctrl) {
+            return;
+        }
+
         match key.code {
             // 生成期间按 Enter 排队（FIFO），空闲时直接提交：与 Python
             // `_submit_composer_text` 的分叉一致。
@@ -883,6 +963,9 @@ impl App {
     }
 
     pub(super) fn edit_composer(&mut self, key: KeyEvent, ctrl: bool) {
+        if self.handle_undo_key(key, ctrl) {
+            return;
+        }
         match key.code {
             KeyCode::Char(character) if !ctrl => self.state.composer.insert(&character.to_string()),
             KeyCode::Backspace => self.state.composer.backspace(),

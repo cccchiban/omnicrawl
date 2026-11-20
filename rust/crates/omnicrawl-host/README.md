@@ -12,7 +12,7 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对；凭据以明文随协议帧交给内核（`KernelModelConfig.api_key`），不需要子进程环境注入 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish/DeepSeek/Grok/Keenable 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`、Keenable 无凭据改打 `/v1/search/public` 并附 `X-Keenable-Title`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效；综合搜索默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享池，参与综合搜索需配 Key），GitHub/arXiv/Hugging Face 属垂直站点，需用 `sources` 参数点名才加入）、`fetcher`、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`skills`（`skill_search`：按作用域与关键词检索 Skill 索引）、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`tls_transport`（浏览器指纹传输：`omnicrawl-tls` 自研 TLS/HTTP2/HTTP1.1，`fetcher` 与 `web_search` 共用）、`web_search`（抓页面与 Tavily/Exa/Firecrawl/AnySearch/TinyFish/DeepSeek/Grok/Keenable 两条通路，AnySearch 无凭据走匿名额度、TinyFish 走 `GET` + `X-API-Key`、Keenable 无凭据改打 `/v1/search/public` 并附 `X-Keenable-Title`；GitHub 在配了 `github_token` 时改走 REST 检索接口，未配时仍抓公开搜索页；走哪个引擎只看 `[web_search] engine`，工具参数里的 `engine` 不生效；综合搜索默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享池，参与综合搜索需配 Key），GitHub/arXiv/Hugging Face 属垂直站点，需用 `sources` 参数点名才加入）、`fetcher`（网页抓取：本地直连或经 `fetch_engines` 交给第三方抓取接口，见下）、`fetch_engines`（六家抓取接口的请求与回包适配 + 负载均衡轮转 + 失败回落）、`sample`、`tts`（本地 Kokoro-82M 推理，宿主固定开启 `omnicrawl-tts/onnx`）、`advisor`、`config_tool`（读写主配置 `config.toml`）、`windows/*`（非 Windows 只保留「仅支持 Windows」分支；`windows::clipboard::write_clipboard_text` 额外供 TUI 的「鼠标拖选即复制」复用）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断；`spawn_shared_service` 拉起**独立于宿主生命周期**的常驻进程（脱离宿主 Job / 自成一组），`pid_is_running` 供跨实例的「服务还活着吗」判定 |
@@ -101,49 +101,71 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 
 ## 检索重排（决策模型排序可选、默认关闭；BM25 固定启用）
 
-`tools/decision_search.rs` 把 `memory_search`、`kb_search`、`skill_search` 与 `web_search` 的候选
-交给结构化决策模型按相关度排序。四个开关各自独立（`decision_models.toml` 的 `[features]` 里的
-`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`），装配入口
+`tools/decision_search.rs` 把 `memory_search`、`kb_search`、`skill_search` 的候选交给结构化决策
+模型按相关度排序。三个开关各自独立（`decision_models.toml` 的 `[features]` 里的
+`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank`），装配入口
 `rerank_options_from_config(env, switch_key)` 由 TUI 与本地 API 共用
-（`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank`、`MemoryOptions.rerank` 与
-`WebSearchOptions.rerank`）。
-
-联网搜索有**两级固定结构**：BM25 定基序，决策模型（开关开启时）在它上面重排。BM25 的算法在
-`omnicrawl-extensions` 的 `bm25` 模块（与 Skill 检索共用一份），固定启用、不在 `[features]` 里。
-决策模型排序由 `web_search_rerank` 开关控制，但它**拿到的就是 BM25 的排序结果**（取前
-`RERANK_CHANNEL_POOL` 条送审），只负责在已相关的候选里再分高下，而不是从零判断。
-
-- 开关关闭：只用 BM25。开关开启但决策服务不可用（无渠道、缺凭据、超时、响应不可解析）：同样
-  落回 BM25，`diagnostics` 记一条警告，搜索不会失败。
-- BM25 与该路候选一个词元都不相交时没有可依据的名次，基序退化为引擎原顺序；关着开关时干脆
-  不介入，保留引擎原顺序、条数交回 `max_results`。
-- 走 BM25 或决策模型时按 `RERANK_KEEP_PER_CHANNEL` 每路保留 5 条；不介入时条数由调用方的
-  `max_results` 决定。
-- 没有第三级兜底：原先的「关键词覆盖度」一级已移除，BM25 的 `None` 就是「这一路不排序」。
+（`RegistryOptions.knowledge_rerank`、`RegistryOptions.skill_rerank` 与 `MemoryOptions.rerank`）。
 
 - 开启后本地检索先取更宽的候选池（`RERANK_CANDIDATE_LIMIT`，最多 20 条），再向决策服务提一个
   `choice` 问题（候选项键 `c0`、`c1`…），按 `answers.<id>.probabilities` 降序排列；**返回条数仍按
   调用方的 `max_results`**，不做固定截断。
-- **联网搜索按渠道排序**：每一路（一个渠道的结果）单独处理——先本地 BM25 定基序，开关开启时再
-  把该路前 `RERANK_CHANNEL_POOL` 条交给决策模型重排，**每路留前 5 条**（`RERANK_KEEP_PER_CHANNEL`）。
-  `engine=mixed` 时每路各自处理、各自 ≤5 条，合并后总量随渠道数增长（N 路 × 5 条），没有固定
-  总量上限；只有调用方显式给了 `max_results` 才收窄总数。没有分组的中间层，也**没有 25 条上限**
-  （旧的分组机制 `RERANK_GROUPS` / `RERANK_GROUP_SIZE` / `RERANK_POOL_LIMIT` / `RERANK_OUTPUT_LIMIT`
-  已删除）。单引擎调用就是「唯一一路」，因此排序后同样只回 5 条。
-- **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享的公共池，混进综合搜索会持续摊薄它，因此参与综合搜索需配 Key）；
-  GitHub / arXiv / Hugging Face 是垂直站点，用 `sources` 参数点名才加进来，单独选它们作引擎时不受影响。
-- **条数**：`engine=mixed` 每路取 `MIXED_RESULTS_PER_CHANNEL`（10）条候选，排序后每路保留前 5 条；
-  总量随渠道数增长、不限，显式 `max_results` 才收窄。单引擎与接口型引擎按 `max_results` 截断，
-  上限 `MAX_RESULTS_PER_ENGINE`（50）。
-- **失败一律 fail-open**：没有命中词、决策模型开关没开、没有可用决策渠道、缺凭据、网络失败、
-  响应不可解析都退回 BM25 的结果（与审查通道的 fail-closed 相反，是本功能刻意选的：检索少几条
-  比检索直接失败代价小）。
 - 出网内容沿用审查通道的 `[desensitization]` 旁路（`review::masking_from_config`）；脱敏构造失败
   按「重排不可用」处理，绝不外发原文。
-- `RerankClient` 是注入点：测试用桩（`memory.rs` / `web_search.rs` 的 `StubRerank`）替换真实 HTTP
-  调用，回环用例在 `decision_search.rs` 内部自带。
+- `RerankClient` 是注入点：测试用桩替换真实 HTTP 调用，回环用例在 `decision_search.rs` 内部自带。
 
-六个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索排序、提问托管、
+## 抓取引擎（`tools/fetch_engines.rs`）
+
+`fetcher` 默认本地直连（`[fetcher] engine = "local"`），网络受限或站点对直连不友好时可以改走第三方抓取接口：
+
+| 引擎 | 端点 | 鉴权 | 正文 |
+| --- | --- | --- | --- |
+| tavily | `POST /extract` | `Authorization: Bearer` | `results[].raw_content` |
+| exa | `POST /contents` | `x-api-key` | `results[].text` |
+| firecrawl | `POST /v2/scrape` | `Authorization: Bearer` | `data.markdown` |
+| anysearch | `POST /v1/extract` | `Authorization: Bearer`（可匿名） | `data.content` |
+| tinyfish | `POST https://api.fetch.tinyfish.ai` | `X-API-Key` | `results[].text` |
+| deepseek | `POST /v1/tools/fetch` | `Authorization: Bearer` | `content` |
+
+- **凭据复用 `[web_search]` 段**：两边打的是同一批服务，Key 不填两遍，抓取页也不单独存凭据。
+- **`balanced` 在多家之间轮转**：额度各家分别计费，摊开之后单一渠道消耗慢得多。有凭据的引擎才参与，
+  AnySearch 无 Key 也参与（匿名额度）。轮转游标是进程内原子计数，不落盘。
+- **两处「回包里也有失败」必须照做**：Tavily 单网址失败进 `failed_results`、TinyFish 进 `errors[]`，
+  HTTP 状态都还是 200。只看状态码会把失败当成功，正文变成空串。
+- **失败回落**：`fallback_local`（默认开）为真时，接口失败改走本地直连并记一条诊断；
+  关掉它等于要求「要么用接口要么失败」，接口的原因原样交给模型。
+- 接口回的是清洗过的正文，因此不再走本地 HTML 提取与 JS 重建，只按 `max_chars` 收口。
+- 抓取接口与本地直连共用同一条指纹传输、同一套代理判定，切引擎不会让出网特征突变。
+
+## 联网搜索重排序（`tools/web_rank.rs`）
+
+联网搜索**不走上面那条 choice 排名**：它的名次是**三路加权**的结果。
+
+| 一路 | 归一化 | 权重 |
+| --- | --- | --- |
+| 搜索原始排序（引擎自己的名次） | 第 1 名 1.0，最后一名 0.0，线性递减 | 0.25 |
+| 决策模型综合置信度 | 是否相关 × 相关程度 × 是否符合提问目的 | 0.60 |
+| 时间远近（发布时间） | 距今越近越高，按 180 天半衰期指数衰减 | 0.15 |
+
+- **决策模型对一个网站只发一个请求、整路并发**：单次只判一个站点与三个小问题（`relevant` /
+  `degree` / `purpose`），比把整路候选塞进一个请求快得多，也不会因为候选多而超时。三个问题各有
+  逐项置信度时取期望（`Σ 概率 × 档位`），只有胜出项时取该档位；三级相乘，不相关的结果拿不到分。
+- **时间这一路只看发布时间**：`WebSearchResult.published` 由各引擎的响应解析成 Unix 秒（GitHub 用
+  `pushed_at`/`updated_at`，接口型引擎认 `published_date`/`published_at`/`date` 等）。引擎没给日期的
+  候选拿已有时段的均值参与：既不埋到最后，也不凭空加成；整路都没有日期时这一路彻底缺席，名次
+  退回原始排序 + 决策模型两路。未来时间按「刚发布」处理，不给额外加分。
+- 某个站点判定失败时按**已判定站点的均值**参与（既不埋到最后，也不凭空加分）；全部失败或决策
+  服务不可用就整路退回搜索原始排序加权时间，`diagnostics` 记一条警告，搜索不会失败。
+- `web_search_rerank` 开关只管决策这一路：关掉时名次由搜索原始排序与时间共同决定。
+- 排序后每路保留 `RERANK_KEEP_PER_CHANNEL`（5）条。`engine=mixed` 时每路各自重排、各自 ≤5 条，
+  合并后总量随渠道数增长（N 路 × 5 条），没有固定总量上限；只有调用方显式给了 `max_results`
+  才收窄总数。单引擎调用就是「唯一一路」，因此同样只回 5 条。
+- **参与渠道**：`engine=mixed` 默认只跑 DuckDuckGo 与已配凭据的接口型渠道（AnySearch 无凭据也参与；Keenable 匿名额度是出口 IP 共享的公共池，混进综合搜索会持续摊薄它，因此参与综合搜索需配 Key）；
+  GitHub / arXiv / Hugging Face 是垂直站点，用 `sources` 参数点名才加进来，单独选它们作引擎时不受影响。
+- 候选不比保留数多时不排序（没有可筛选的余地），条数交回 `max_results`。
+- 出网内容同样走 `[desensitization]` 旁路；脱敏构造失败按「判定不可用」处理，绝不外发原文。
+
+五个调用点（`review.rs` 的工具调用审查、本模块的检索重排、联网搜索重排序、提问托管、
 工具调用淘汰）共用 `decision_wire`
 这一层线格式：按渠道的 `mode` 把同一份 `state` + `questions` 组装成请求（`jev` 与
 `onejev` 都走 `POST {base_url}/v1/systemone`；`cloudflare_workers_ai` 同样发原生

@@ -26,7 +26,7 @@ pub use state::{
     ChannelDropdown, ChannelField, ChannelFormView, ChannelRow, DecisionDropdown,
     DecisionField, DecisionFormView, DecisionLocalChange, DecisionLocalRow, DecisionLocalValues,
     DecisionRow, DecisionSwitchRow, Dropdown, DropdownField, EmbeddingChannelKind,
-    EmbeddingField, EmbeddingFormView, EmbeddingRow, Focus, McpChange, McpEditorRowView,
+    EmbeddingField, EmbeddingFormView, EmbeddingRow, FetcherRow, Focus, McpChange, McpEditorRowView,
     McpRowView, McpServerDraft, McpServerRow,
     McpSettingsValues, KnowledgeRow, MemoryRow, ModelParamRow, OptionValue, Pane, SessionRow,
     SettingsChange,
@@ -46,7 +46,7 @@ pub use state::{
 /// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
 /// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
 /// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
-pub const ROW_ORDER: [&str; 21] = [
+pub const ROW_ORDER: [&str; 22] = [
     "model_management",
     "decision_models",
     "embedding_models",
@@ -55,6 +55,7 @@ pub const ROW_ORDER: [&str; 21] = [
     "tool_output_compression",
     "tools",
     "web_search",
+    "fetcher",
     "mcp",
     "vision",
     "image_gen",
@@ -81,6 +82,7 @@ pub fn row_label(key: &str) -> String {
         "tool_output_compression" => "工具输出压缩",
         "tools" => "工具设置",
         "web_search" => "联网搜索",
+        "fetcher" => "抓取引擎",
         "mcp" => "MCP 设置",
         "vision" => "视觉",
         "image_gen" => "图像生成",

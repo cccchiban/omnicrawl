@@ -31,7 +31,7 @@ pub fn archive_pasted_images(workspace_root: &Path, images: &[PendingImage]) -> 
     for image in pending {
         // 剪贴板位图读出来就是 PNG（`clipboard::read_image_png`），无需再按 media_type 推扩展名。
         let path = directory.join(format!("pasted_{}_{}.png", timestamp(), unique_suffix()));
-        if std::fs::write(&path, &image.bytes).is_ok() {
+        if std::fs::write(&path, image.bytes.as_slice()).is_ok() {
             lines.push(format!(
                 "{} → {}",
                 image.placeholder,
@@ -95,7 +95,7 @@ mod tests {
         PendingImage {
             placeholder: placeholder.to_string(),
             media_type: "image/png".to_string(),
-            bytes: PNG.to_vec(),
+            bytes: std::sync::Arc::new(PNG.to_vec()),
             archive,
         }
     }

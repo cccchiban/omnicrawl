@@ -24,6 +24,7 @@ use omnicrawl_tui::args::{ApprovalMode, Options};
 use omnicrawl_tui::host::{Waiting, DENIED};
 use omnicrawl_tui::kernel::KernelClient;
 use omnicrawl_tui::state::Record;
+use omnicrawl_tui::ui::settings::ROW_ORDER;
 
 /// 一个最小 PNG：签名对了就够 `read_image` 认格式。
 const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 0];
@@ -3168,4 +3169,123 @@ fn a_turn_failing_mid_batch_does_not_freeze_the_mouse() {
         before + 1,
         "回合已经失败，残留的工具批次不该再把鼠标锁在「等审批」上"
     );
+}
+
+/// 输入框的撤回 / 复原键：`Ctrl+Z` 退掉这一段编辑，`Ctrl+Y` 再按回来。
+#[test]
+fn ctrl_z_and_ctrl_y_undo_and_redo_composer_edits() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+
+    for ch in "撤回这段".chars() {
+        harness.press(KeyCode::Char(ch));
+    }
+    assert_eq!(harness.app.state.composer.text(), "撤回这段");
+
+    harness.app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "",
+        "一段连续输入合成一组，撤回一次退掉整段"
+    );
+
+    harness.app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "撤回这段",
+        "复原把刚撤回的那段再按回来"
+    );
+}
+
+/// 鼠标右键点输入框就把剪贴板内容贴到插入点；落在输入框之外不动输入框。
+#[test]
+fn right_click_over_the_composer_pastes_the_clipboard() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Auto);
+    harness.app.handshake().expect("握手应当成功");
+    harness.app.set_viewport(Rect::new(0, 0, 100, 30));
+
+    // 写不进剪贴板（无桌面会话）时这条通路读不到文本，断言随之跳过。
+    let Ok(()) = omnicrawl_tui::clipboard::copy_text("右键粘进来的内容") else {
+        return;
+    };
+    let area = harness.app.composer_text_rect();
+    harness.app.handle_event(mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        area.x + 1,
+        area.y,
+    ));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "右键粘进来的内容",
+        "右键把剪贴板文本贴到插入点"
+    );
+
+    // 清干净再试一次：右键落在会话区不该动输入框。
+    harness.app.state.composer.clear();
+    harness
+        .app
+        .handle_event(mouse(MouseEventKind::Down(MouseButton::Right), 1, 0));
+    assert_eq!(harness.app.state.composer.text(), "");
+}
+
+/// 设置面板进入「会话管理」页：列表读取必须是**发出即返回**的异步请求。
+///
+/// 索引动辄上千条会话、内核还要逐条判定空占位，同步往返会把按键到重绘整条链路卡住。
+/// 这里验证两点：进页只发一条 `session.list`；列表在响应帧到达后才回填。
+#[test]
+fn opening_the_sessions_pane_requests_the_list_without_blocking() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    // 用 `/settings` 打开面板，再走到左栏的「会话管理」（`ROW_ORDER` 的倒数第二项）。
+    // 进页的那一次按键会触发列表读取。
+    type_text(&mut harness, "/settings");
+    harness.press(KeyCode::Enter);
+    for _ in 0..ROW_ORDER.iter().position(|key| *key == "sessions").unwrap() {
+        harness.press(KeyCode::Down);
+    }
+    harness.press(KeyCode::Enter);
+
+    let requests: Vec<Frame> = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("session.list"))
+        .collect();
+    assert_eq!(requests.len(), 1, "进页只应发出一条列表请求");
+
+    // 列表还没回填时继续按键不应重复请求。
+    harness.press(KeyCode::Down);
+    harness.press(KeyCode::Up);
+    let again = harness
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.method() == Some("session.list"))
+        .count();
+    assert_eq!(again, 1, "列表未回填时不该被按键重复触发");
+
+    // 响应到达后回填：标题与条数进入该页。
+    let id = requests[0].id().cloned().expect("请求帧带 id");
+    let id = serde_json::to_string(&id).expect("id 可序列化");
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"sessions\":[{}],\"current_session_id\":\"{SESSION_ID}\"}}}}
+",
+        session_entry_json()
+    ));
+    harness.expect_ready(
+        |app| {
+            app.settings
+                .as_ref()
+                .is_some_and(|settings| settings.session_rows().len() == 1)
+        },
+        "会话列表的响应应当回填成一行",
+    );
+    let settings = harness.app.settings.as_ref().expect("面板仍开着");
+    assert_eq!(settings.session_rows()[0].title, "旧会话");
 }

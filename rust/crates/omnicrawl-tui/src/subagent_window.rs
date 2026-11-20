@@ -567,7 +567,7 @@ pub fn run_window(stream: PathBuf, keep_open: bool) -> Result<(), String> {
 
         let now = Instant::now();
         state.tick_activity();
-        let _ = state.tick_reasoning_reveal();
+        let _ = state.tick_reasoning_reveal(now);
         let _ = state.tick_image_previews();
         state.refresh_hud();
         state.tick_notice_line(now);

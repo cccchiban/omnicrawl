@@ -86,7 +86,7 @@ mod tests {
         assert_eq!(state.records[2], Record::Assistant("回答结束".to_string()));
     }
 
-    /// 思考段逐帧铺开：大突发不会在同一帧里整段蹦出，但几帧内一定能铺完。
+    /// 思考段按时间铺开：大突发不会在同一帧里整段蹦出，但几帧内一定能铺完。
     #[test]
     fn reasoning_reveal_spreads_a_burst_across_frames() {
         let mut state = state();
@@ -108,18 +108,34 @@ mod tests {
         let total = burst.chars().count();
         assert_eq!(
             state.reasoning_visible_chars(1, total),
-            0,
-            "首帧一个字符都不该先显示出来"
+            total,
+            "首片到达就该整片可见：慢流不必等显现器追上来"
+        );
+
+        // 再来一大批：这一段才需要摊开。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "续".repeat(600),
+            }),
+            now,
+        );
+        let total = 900;
+        assert!(
+            state.reasoning_visible_chars(1, total) < total,
+            "同一段里的后续突发不该立刻整段可见"
         );
         assert!(state.is_reasoning_revealing());
 
-        // 逐帧推进：每次只铺开一部分，绝不会一帧到齐。
+        // 逐帧推进：每帧只铺开一部分，绝不会一帧到齐。
         let mut frames = 0;
-        while state.tick_reasoning_reveal() {
+        let mut at = now;
+        while state.tick_reasoning_reveal(at) {
             frames += 1;
+            // 模拟 20ms 一帧。
+            at += Duration::from_millis(20);
             let visible = state.reasoning_visible_chars(1, total);
             assert!(visible < total, "还有剩就该「没铺完」，第 {frames} 帧");
-            assert!(frames < 200, "铺开过程不该无限长");
+            assert!(frames < 400, "铺开过程不该无限长");
         }
         assert_eq!(
             state.reasoning_visible_chars(1, total),
@@ -129,10 +145,13 @@ mod tests {
         assert!(!state.is_reasoning_revealing());
 
         // 记录本身始终是完整思考：截断只发生在渲染层。
-        assert_eq!(state.records[1], Record::Reasoning(burst));
+        assert_eq!(
+            state.records[1],
+            Record::Reasoning("想".repeat(300) + &"续".repeat(600))
+        );
     }
 
-    /// 慢流（积压小于每帧最小步长）立刻显示，不额外滞后于模型。
+    /// 慢流与到达节奏一致：每一片到达就立刻可见，不额外滞后于模型。
     #[test]
     fn reasoning_reveal_keeps_up_with_a_slow_stream() {
         let mut state = state();
@@ -147,12 +166,27 @@ mod tests {
             &HostEvent::ReasoningDelta(TextPayload { text: "想".into() }),
             now,
         );
-        assert_eq!(state.reasoning_visible_chars(1, 1), 0, "首片先不显示");
-        state.tick_reasoning_reveal();
         assert_eq!(
             state.reasoning_visible_chars(1, 1),
             1,
-            "一帧之内就该跟上单字符增量"
+            "首片到达立刻显示，不必等一帧"
+        );
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "一下".into(),
+            }),
+            now,
+        );
+        assert_eq!(
+            state.reasoning_visible_chars(1, 3),
+            1,
+            "后续分片按显现节奏补上，不抢在到达当刻全部甩出"
+        );
+        state.tick_reasoning_reveal(now + Duration::from_millis(50));
+        assert_eq!(
+            state.reasoning_visible_chars(1, 3),
+            3,
+            "50ms 内就该跟上这十几个字符级的增量"
         );
     }
 
@@ -177,7 +211,7 @@ mod tests {
             now,
         );
         // 铺一部分但还没铺完，此时用户点了折叠。
-        state.tick_reasoning_reveal();
+        state.tick_reasoning_reveal(now);
         state.toggle_reasoning_expanded(1);
         assert_eq!(
             state.reasoning_visible_chars(1, 60),
@@ -199,7 +233,7 @@ mod tests {
             "后续增量应整段可见，不得从头重铺"
         );
         assert!(
-            !state.tick_reasoning_reveal(),
+            !state.tick_reasoning_reveal(now),
             "已经停止揭示的段不该再驱动帧循环"
         );
         assert_eq!(
@@ -241,9 +275,72 @@ mod tests {
         );
     }
 
-    /// 收口路径（回合结束/失败/回放）当场补全，不留半句在屏幕上。
+    /// 收口路径：回合结束时把还没铺的部分补完，但**不退回**「整段一次性塌下来」的老行为。
+    ///
+    /// 回归的是「一口气输出」：以前 `turn.finished` 直接 `settle()`，最后一大段思考会在
+    /// 收口那一瞬整块出现。现在是先把 backlog 补到最新，收口后到达的增量仍按节奏铺开。
     #[test]
-    fn reasoning_reveal_settles_on_turn_end_and_replay() {
+    fn reasoning_reveal_catches_up_on_turn_end_and_keeps_streaming_after() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn(
+            "t1".to_string(),
+            "问一句".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "想".repeat(200),
+            }),
+            now,
+        );
+        // 首片立即可见。
+        assert_eq!(state.reasoning_visible_chars(1, 200), 200);
+
+        // 又一波突发：先只显示一部分，回合收口后补完。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "再".repeat(200),
+            }),
+            now,
+        );
+        assert!(
+            state.reasoning_visible_chars(1, 400) < 400,
+            "突发不该在到达当刻整段可见（否则这条用例是空的）"
+        );
+        state.apply(
+            &HostEvent::TurnFinished(TurnFinishedPayload {
+                turn_id: "t1".to_string(),
+                final_text: "答复".to_string(),
+                reasoning: String::new(),
+                model_turns: 1,
+                tool_calls: 0,
+                paused: false,
+                post_compaction_context_tokens: None,
+            }),
+            now,
+        );
+        assert_eq!(
+            state.reasoning_visible_chars(1, 400),
+            400,
+            "收口要把没铺完的补到最新，不留半句在屏幕上"
+        );
+
+        // 回放历史属于「已发生的事实」，直接全文显示。
+        state.apply(
+            &HostEvent::ReasoningDelta(TextPayload {
+                text: "又".repeat(100),
+            }),
+            now,
+        );
+        state.replay_history(&[]);
+        assert!(!state.is_reasoning_revealing());
+    }
+
+    /// 展开/收起与收口不同：那是用户主动查看，必须当场给全文并停止逐帧揭示。
+    #[test]
+    fn settling_is_reserved_for_user_actions_and_replay() {
         let mut state = state();
         let now = Instant::now();
         state.begin_turn(
@@ -260,41 +357,6 @@ mod tests {
         );
         state.settle_reasoning_reveal();
         assert_eq!(state.reasoning_visible_chars(1, 200), 200);
-        assert!(!state.is_reasoning_revealing());
-
-        // 又一段流式思考后回合结束：同样立刻铺完。
-        state.apply(
-            &HostEvent::ReasoningDelta(TextPayload {
-                text: "再".repeat(200),
-            }),
-            now,
-        );
-        state.apply(
-            &HostEvent::TurnFinished(TurnFinishedPayload {
-                turn_id: "t1".to_string(),
-                final_text: "答复".to_string(),
-                reasoning: String::new(),
-                model_turns: 1,
-                tool_calls: 0,
-                paused: false,
-                post_compaction_context_tokens: None,
-            }),
-            now,
-        );
-        assert!(
-            !state.is_reasoning_revealing(),
-            "回合结束后不该还有内容在慢慢铺"
-        );
-        assert_eq!(state.reasoning_visible_chars(1, 400), 400);
-
-        // 回放历史属于「已发生的事实」，直接全文显示。
-        state.apply(
-            &HostEvent::ReasoningDelta(TextPayload {
-                text: "又".repeat(100),
-            }),
-            now,
-        );
-        state.replay_history(&[]);
         assert!(!state.is_reasoning_revealing());
     }
 
@@ -2959,6 +3021,119 @@ mod streaming_tests {
         assert!(
             state.conversation_cache().borrow().rebuilds > rebuilds,
             "运行中卡片的耗时应当被重新算过"
+        );
+    }
+}
+
+/// 输入框的撤回 / 复原（`Ctrl+Z` / `Ctrl+Y`）：文本与三类块表同一份快照。
+#[cfg(test)]
+mod undo_tests {
+    use super::*;
+
+    fn png() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G', 1, 2, 3]
+    }
+
+    #[test]
+    fn a_run_of_typing_is_taken_back_in_one_step() {
+        let mut composer = Composer::default();
+        for ch in "你好世界".chars() {
+            composer.insert(&ch.to_string());
+        }
+        assert_eq!(composer.text(), "你好世界");
+        assert!(composer.undo());
+        assert_eq!(composer.text(), "", "一段连打合成一组，撤回一次退掉整段");
+        assert!(!composer.undo(), "没有更多可撤回的内容");
+    }
+
+    #[test]
+    fn redo_puts_the_run_back() {
+        let mut composer = Composer::default();
+        composer.insert("abc");
+        composer.undo();
+        assert!(composer.redo());
+        assert_eq!(composer.text(), "abc");
+        assert!(!composer.redo(), "复原栈见底后不再有动作");
+    }
+
+    #[test]
+    fn a_new_edit_drops_the_redo_branch() {
+        let mut composer = Composer::default();
+        composer.insert("abc");
+        composer.undo();
+        composer.insert("xyz");
+        assert!(!composer.redo(), "改了东西之后先前那条分支已经不存在");
+        assert_eq!(composer.text(), "xyz");
+    }
+
+    #[test]
+    fn deletion_is_its_own_group_and_paste_is_another() {
+        let mut composer = Composer::default();
+        composer.insert("正文");
+        composer.insert_paste("第一行\n第二行\n第三行\n第四行\n第五行\n第六行");
+        assert_eq!(composer.text(), "正文[粘贴 #1 +6 行]");
+        composer.backspace();
+        assert_eq!(composer.text(), "正文", "退格整块删掉粘贴块");
+        assert_eq!(composer.image_count(), 0);
+
+        // 撤回一次回到块还在的状态。
+        assert!(composer.undo());
+        assert_eq!(composer.text(), "正文[粘贴 #1 +6 行]");
+        // 再撤一次退掉粘贴本身。
+        assert!(composer.undo());
+        assert_eq!(composer.text(), "正文");
+    }
+
+    #[test]
+    fn undo_brings_back_the_image_attachment_not_just_the_placeholder() {
+        let mut composer = Composer::default();
+        composer.insert_image("image/png", png());
+        assert_eq!(composer.image_count(), 1);
+        composer.backspace();
+        assert_eq!(composer.image_count(), 0, "占位符没了附件也丢");
+        assert!(composer.undo());
+        assert_eq!(composer.text(), "[ #1 Image ]");
+        assert_eq!(
+            composer.image_count(),
+            1,
+            "撤回要连同附件一起回来，否则占位符是空的"
+        );
+        assert_eq!(composer.take_images().len(), 1);
+    }
+
+    #[test]
+    fn undo_brings_back_documents_and_keeps_numbering_consistent() {
+        let mut composer = Composer::default();
+        composer.insert_document("C:/a/报告.pdf");
+        composer.backspace();
+        assert_eq!(composer.document_count(), 0);
+        assert!(composer.undo());
+        assert_eq!(composer.document_count(), 1);
+        // 接着粘贴下一份：序号接在撤回前的位置上，不会出现两块同号。
+        composer.insert_document("C:/a/名单.docx");
+        assert_eq!(composer.text(), "[ #1 .pdf ][ #2 .docx ]");
+    }
+
+    #[test]
+    fn clearing_an_empty_composer_does_not_use_up_an_undo_step() {
+        let mut composer = Composer::default();
+        composer.insert("abc");
+        composer.clear();
+        assert_eq!(composer.text(), "");
+        composer.clear();
+        // 空清空是空操作：栈顶不变，撤回一步就回到 "abc"。
+        assert!(composer.undo());
+        assert_eq!(composer.text(), "abc");
+    }
+
+    #[test]
+    fn submitting_clears_the_undo_history() {
+        let mut composer = Composer::default();
+        composer.insert("发出去的话");
+        assert_eq!(composer.take(), "发出去的话");
+        assert!(
+            !composer.undo(),
+            "内容已经发出去了，撤回它只会在回车时重发一遍"
         );
     }
 }

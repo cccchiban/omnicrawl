@@ -75,7 +75,7 @@ mod tests {
         std::fs::write(&file, PNG).expect("写测试图片");
         let image = read_pasted_image_path(&file.to_string_lossy(), &root).expect("应识别为图片");
         assert_eq!(image.media_type, "image/png");
-        assert_eq!(image.bytes, PNG);
+        assert_eq!(image.bytes.as_slice(), PNG);
     }
 
     #[test]

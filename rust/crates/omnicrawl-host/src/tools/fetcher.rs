@@ -27,6 +27,7 @@ use scraper::{ElementRef, Html, Node, Selector};
 use serde_json::{Map, Value};
 
 use super::cookies::{CookieJar, SharedJar};
+use super::fetch_engines::RemoteFetchOptions;
 use super::error::{ToolError, ToolOutcome};
 use super::web_search::{clamp_float, clamp_int, strip_tags, truncate};
 use super::web_transport::{
@@ -72,6 +73,8 @@ pub struct FetcherOptions {
     /// 由配置 `[tls_resumption] enabled` 控制。会话恢复改的是密钥调度，因此默认关闭；
     /// 开启后失败会回退完整握手，不会让本该成功的抓取失败。
     pub tls_session_cache: Option<Arc<omnicrawl_tls::session_cache::SessionCache>>,
+    /// 抓取引擎运行期（`[fetcher] engine`）：`local` 时保持原有直连抓取，其余走远程接口。
+    pub remote: RemoteFetchOptions,
 }
 
 impl Default for FetcherOptions {
@@ -86,6 +89,7 @@ impl Default for FetcherOptions {
             proxy: None,
             cookie_jar: Some(Arc::new(CookieJar::new())),
             tls_session_cache: None,
+            remote: RemoteFetchOptions::default(),
         }
     }
 }
@@ -262,6 +266,9 @@ fn fetch_parallel(options: &FetcherOptions, urls: &[String], plan: &FetchPlan) -
 }
 
 fn fetch_one(options: &FetcherOptions, url: &str, plan: &FetchPlan) -> FetchEntry {
+    if let Some(entry) = fetch_remote_entry(options, url, plan) {
+        return entry;
+    }
     match fetch_one_inner(options, url, plan) {
         Ok(entry) => entry,
         Err(FetchError::Fatal(message)) => FetchEntry::failed(url, message),
@@ -269,6 +276,26 @@ fn fetch_one(options: &FetcherOptions, url: &str, plan: &FetchPlan) -> FetchEntr
             FetchEntry::failed(url, friendly_error(kind, &message))
         }
     }
+}
+
+/// 走远程抓取接口；`None` 表示这次该交给本地抓取（未启用、或失败后回落）。
+fn fetch_remote_entry(options: &FetcherOptions, url: &str, plan: &FetchPlan) -> Option<FetchEntry> {
+    let outcome = super::fetch_engines::remote_entry(
+        options.transport.as_ref(),
+        &options.remote,
+        &super::fetch_engines::RemotePlan {
+            url,
+            insecure: plan.insecure,
+            impersonate: plan.impersonate.as_str(),
+            timeout: plan.timeout,
+            max_chars: plan.max_chars,
+            proxy: options.proxy.clone(),
+        },
+    )?;
+    Some(match outcome {
+        Ok(entry) => FetchEntry::done(url, 200, url.to_string(), entry.title, entry.content),
+        Err(error) => FetchEntry::failed(url, error.0),
+    })
 }
 
 fn fetch_one_inner(
@@ -1212,5 +1239,234 @@ g()
             "标题 & 副标题"
         );
         assert_eq!(extract_title("<html></html>"), "");
+    }
+
+    /// 记录型传输：按脚本回一个响应，并记下发出了什么。
+    ///
+    /// 远程接口与目标站点会拿到不同的响应：否则「远程失败后回落本地」的用例无法
+    /// 区分「本地真的跑过了」与「两条路都拿到同一份 401」。
+    struct RecordingTransport {
+        api_response: crate::tools::web_transport::WebResponse,
+        page_response: crate::tools::web_transport::WebResponse,
+        seen: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl RecordingTransport {
+        fn new(status: u16, body: &str) -> Arc<Self> {
+            let response = || crate::tools::web_transport::WebResponse {
+                status,
+                final_url: String::new(),
+                body: body.as_bytes().to_vec(),
+                headers: Vec::new(),
+            };
+            Arc::new(Self {
+                api_response: response(),
+                page_response: response(),
+                seen: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        /// 远程接口回一份、目标站点回另一份。
+        fn split(api: (u16, &str), page: (u16, &str)) -> Arc<Self> {
+            Arc::new(Self {
+                api_response: crate::tools::web_transport::WebResponse {
+                    status: api.0,
+                    final_url: String::new(),
+                    body: api.1.as_bytes().to_vec(),
+                    headers: Vec::new(),
+                },
+                page_response: crate::tools::web_transport::WebResponse {
+                    status: page.0,
+                    final_url: String::new(),
+                    body: page.1.as_bytes().to_vec(),
+                    headers: Vec::new(),
+                },
+                seen: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn urls(&self) -> Vec<String> {
+            self.seen
+                .lock()
+                .expect("锁")
+                .iter()
+                .map(|(url, _)| url.clone())
+                .collect()
+        }
+    }
+
+    impl crate::tools::web_transport::WebTransport for RecordingTransport {
+        fn send(
+            &self,
+            request: &crate::tools::web_transport::WebRequest,
+        ) -> Result<crate::tools::web_transport::WebResponse, crate::tools::web_transport::WebError>
+        {
+            self.seen
+                .lock()
+                .expect("锁")
+                .push((request.url.clone(), request.body.clone()));
+            let response = if request.url.starts_with("https://api.") {
+                self.api_response.clone()
+            } else {
+                self.page_response.clone()
+            };
+            Ok(response)
+        }
+
+        fn navigation_headers(
+            &self,
+            user_agent: &str,
+            _impersonate: Option<&str>,
+        ) -> Vec<(String, String)> {
+            vec![("User-Agent".to_string(), user_agent.to_string())]
+        }
+    }
+
+    fn remote_options(engine: &str, key: &str, fallback: bool) -> RemoteFetchOptions {
+        RemoteFetchOptions {
+            engine: engine.to_string(),
+            api_keys: vec![(engine.to_string(), key.to_string())],
+            fallback_local: fallback,
+        }
+    }
+
+    /// 远程成功时，正文与标题都来自接口，且不再走本地 HTML 提取。
+    #[test]
+    fn a_successful_remote_fetch_returns_the_api_payload() {
+        let transport = RecordingTransport::new(
+            200,
+            &json!({
+                "results": [{"url": "https://example.com/a", "raw_content": "接口给的正文"}],
+                "failed_results": [],
+            })
+            .to_string(),
+        );
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("tavily", "tvly-key", true),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        assert!(entry.error.is_none(), "{:?}", entry.error);
+        assert_eq!(entry.content, "接口给的正文");
+        assert_eq!(entry.status, 200);
+        // 只打了接口，没有去连目标站点。
+        assert_eq!(transport.urls(), vec![crate::tools::fetch_engines::TAVILY_ENDPOINT]);
+    }
+
+    /// 远程失败且允许回落：改走本地直连，最终仍能拿到正文。
+    #[test]
+    fn a_remote_failure_falls_back_to_local_fetching() {
+        let page = "<html><head><title>本地页</title></head><body><main><p>本地抓到的正文</p></main></body></html>";
+        let transport = RecordingTransport::split((401, r#"{"error":"Invalid API key"}"#), (200, page));
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("tavily", "bad-key", true),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let urls = transport.urls();
+        assert_eq!(urls[0], crate::tools::fetch_engines::TAVILY_ENDPOINT, "先试接口");
+        assert!(
+            urls.iter().any(|url| url == "https://example.com/a"),
+            "失败后应回落本地：{urls:?}"
+        );
+        assert!(entry.error.is_none(), "回落后不该报错：{:?}", entry.error);
+        assert!(entry.content.contains("本地抓到的正文"), "{}", entry.content);
+        assert_eq!(entry.title, "本地页");
+    }
+
+    /// 关掉回落：远程失败就是失败，不再连目标站点。
+    #[test]
+    fn without_fallback_a_remote_failure_is_reported_as_is() {
+        let transport = RecordingTransport::new(401, r#"{"error":"Invalid API key"}"#);
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("tavily", "bad-key", false),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let error = entry.error.expect("应当报错");
+        assert!(error.contains("HTTP 401"), "{error}");
+        assert!(
+            !transport.urls().iter().any(|url| url == "https://example.com/a"),
+            "不该回落本地：{:?}",
+            transport.urls()
+        );
+    }
+
+    /// 缺凭据时不发请求：直接给出该去填哪个字段（回落开启时最终仍走本地）。
+    #[test]
+    fn a_missing_key_points_at_the_config_field() {
+        let transport = RecordingTransport::new(401, "{}");
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("exa", "", false),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let error = entry.error.expect("应当报错");
+        assert!(error.contains("exa_api_key"), "{error}");
+        assert!(transport.urls().is_empty(), "缺凭据不该发请求");
+    }
+
+    /// AnySearch 有匿名额度：空 Key 也能走远程。
+    #[test]
+    fn anysearch_runs_without_a_key() {
+        let transport = RecordingTransport::new(
+            200,
+            &json!({"code": 0, "data": {"title": "标题", "content": "匿名正文"}}).to_string(),
+        );
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("anysearch", "", false),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        assert!(entry.error.is_none(), "{:?}", entry.error);
+        assert_eq!(entry.content, "匿名正文");
+    }
+
+    /// `local` 与空串都不走远程：配置缺省时行为与改造前完全一致。
+    #[test]
+    fn local_and_empty_engines_never_use_the_remote_path() {
+        assert!(!RemoteFetchOptions::default().uses_remote());
+        assert!(!remote_options("local", "tvly-key", true).uses_remote());
+        assert!(remote_options("tavily", "tvly-key", true).uses_remote());
+    }
+
+    /// 负载均衡只挑有凭据的引擎，AnySearch 无凭据也算可用。
+    #[test]
+    fn balanced_candidates_skip_engines_without_keys() {
+        let options = RemoteFetchOptions {
+            engine: "balanced".to_string(),
+            api_keys: vec![
+                ("tavily".to_string(), "tvly-key".to_string()),
+                ("exa".to_string(), String::new()),
+            ],
+            fallback_local: true,
+        };
+        let candidates = options.balanced_candidates();
+        assert!(candidates.contains(&"tavily".to_string()), "{candidates:?}");
+        assert!(candidates.contains(&"anysearch".to_string()), "{candidates:?}");
+        assert!(!candidates.contains(&"exa".to_string()), "{candidates:?}");
+    }
+
+    /// 全部凭据都空时负载均衡仍有候选：AnySearch 的匿名额度让它永远可用。
+    #[test]
+    fn balanced_still_has_a_candidate_when_every_key_is_empty() {
+        let options = RemoteFetchOptions {
+            engine: "balanced".to_string(),
+            api_keys: Vec::new(),
+            fallback_local: false,
+        };
+        let candidates = options.balanced_candidates();
+        assert!(candidates.contains(&"anysearch".to_string()), "{candidates:?}");
+        assert!(!candidates.contains(&"tavily".to_string()), "缺凭据的引擎不该参与");
     }
 }

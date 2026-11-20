@@ -40,8 +40,10 @@ pub fn tool_parameters_schema(argument_schema: &str) -> Value {
         .ok()
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
+    // 无参 Schema（`{"type":"object","additionalProperties":false}`）没有 `properties`，
+    // 却是真 Schema；漏判会把 `type`/`additionalProperties` 当参数名推断出来。
     let is_real_schema = raw.get("type").and_then(Value::as_str) == Some("object")
-        && raw.get("properties").map(Value::is_object).unwrap_or(false);
+        && raw.get("properties").map(Value::is_object).unwrap_or(true);
     if is_real_schema {
         let mut schema = raw;
         apply_defaults(&mut schema);
@@ -339,6 +341,24 @@ mod tests {
             r#"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}"#,
         );
         assert_eq!(schema["required"][0], "command");
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema.get("minProperties").is_none());
+    }
+
+    #[test]
+    fn parameterless_schema_is_not_read_as_an_example() {
+        // `aoci_rules` 这类无参工具只声明 `{"type":"object","additionalProperties":false}`：
+        // 少了 `properties` 也不能当成示例值对象，否则 `type`/`additionalProperties`
+        // 会被推断成两个字符串参数，模型照着传就撞 `invalid_arguments`。
+        let schema = tool_parameters_schema(r#"{"type":"object","additionalProperties":false}"#);
+        assert_eq!(schema["type"], "object");
+        assert!(
+            schema["properties"]
+                .as_object()
+                .expect("properties 是对象")
+                .is_empty(),
+            "无参 Schema 不该长出属性：{schema}"
+        );
         assert_eq!(schema["additionalProperties"], false);
         assert!(schema.get("minProperties").is_none());
     }

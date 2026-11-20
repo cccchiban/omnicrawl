@@ -387,6 +387,47 @@ impl App {
         ))
     }
 
+    /// 抓取引擎（`[fetcher]` 段）：换掉 `fetcher` 的运行期并重建工具表。
+    ///
+    /// 与联网搜索同理，执行体读的是工具表里那一份克隆，只改选项不重建会让正在跑的表
+    /// 仍握着启动时的引擎。重建失败时磁盘与运行期一起回滚。
+    pub(super) fn apply_fetcher_form(&mut self, values: &[FieldValue]) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let mut configuration =
+            omnicrawl_config::features::fetcher::load_fetcher_configuration(&environment, None)
+                .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let previous = configuration.clone();
+        configuration.engine = field_text_or(values, 0, "local");
+        configuration.fallback_local = values.get(1).map(FieldValue::flag).unwrap_or(true);
+        let path =
+            omnicrawl_config::features::fetcher::save_fetcher_configuration(
+                &environment,
+                &configuration,
+                None,
+            )
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let previous_options = self.registry_options.fetcher.remote.clone();
+        self.registry_options.fetcher.remote =
+            omnicrawl_host::tools::remote_fetch_options_from_config(&environment);
+        if let Err(error) = self.rebuild_registry() {
+            if let Err(rollback) = omnicrawl_config::features::fetcher::save_fetcher_configuration(
+                &environment,
+                &previous,
+                None,
+            ) {
+                self.state
+                    .notice(format!("抓取引擎设置回滚写盘失败：{rollback}"));
+            }
+            self.registry_options.fetcher.remote = previous_options;
+            return Err(error);
+        }
+        Ok(format!(
+            "抓取引擎已设为 {}，已保存到 {}（本会话即刻生效）。",
+            configuration.engine,
+            path.display()
+        ))
+    }
+
     /// 写回工具调用审查模式（`[approval] mode`），并同步本会话的审批模式。
     pub(super) fn apply_tool_approval(&mut self, mode: &str) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
@@ -523,6 +564,7 @@ impl App {
             FormKind::AgentWorkspace => self.apply_agent_workspace_form(values),
             FormKind::ImageGen => self.apply_image_gen_form(values),
             FormKind::WebSearch => self.apply_web_search_form(values),
+            FormKind::Fetcher => self.apply_fetcher_form(values),
             FormKind::ComputerUse => self.apply_computer_use_form(values),
             FormKind::Sandbox => self.apply_sandbox_form(values),
         }

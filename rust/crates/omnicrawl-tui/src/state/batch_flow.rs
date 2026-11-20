@@ -309,11 +309,13 @@ impl AppState {
                 }
                 // 思考段逐帧显现：只按本次增量的字符数推进目标，不对整段重数。
                 if reasoning {
+                    let length = text.chars().count();
                     let reveal = self.reasoning_reveal.get_mut();
                     if reveal.index != Some(index) {
-                        reveal.start(index);
+                        reveal.start(index, length);
+                    } else {
+                        reveal.extend(index, length);
                     }
-                    reveal.extend(index, text.chars().count());
                 }
                 // 正文逐片追加：只重算这一条记录（分块增量缓存的关键路径）。
                 self.touch_record(index);
@@ -327,9 +329,7 @@ impl AppState {
                 if reasoning {
                     let index = self.records.len() - 1;
                     let length = text.chars().count();
-                    let reveal = self.reasoning_reveal.get_mut();
-                    reveal.start(index);
-                    reveal.extend(index, length);
+                    self.reasoning_reveal.get_mut().start(index, length);
                 }
                 self.touch_appended();
             }

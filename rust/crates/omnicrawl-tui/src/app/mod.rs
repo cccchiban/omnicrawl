@@ -107,8 +107,7 @@ use omnicrawl_config::features::decision_model::{
     save_local_deployment, DecisionChannelConfig, DecisionModelConfiguration, DecisionSwitches,
     LocalDeploymentConfig, SwitchPage, DECISION_MODE_ONEJEV, DECISION_SWITCHES,
     DECISION_SWITCH_KB_SEARCH, DECISION_SWITCH_MEMORY_SEARCH, DECISION_SWITCH_SKILL_SEARCH,
-    DECISION_SWITCH_WEB_SEARCH, DEFAULT_DECISION_RETRY_COUNT, DEFAULT_LOCAL_DECISION_BASE_URL,
-    DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
+    DEFAULT_DECISION_RETRY_COUNT, DEFAULT_LOCAL_DECISION_BASE_URL, DEFAULT_LOCAL_DECISION_CHANNEL_KEY,
 };
 use omnicrawl_config::features::embedding::{
     load_embedding_model_configuration, save_embedding_model_configuration, EmbeddingChannelConfig,
@@ -170,7 +169,8 @@ use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
     nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
-    DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FieldValue, FormKind,
+    DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FetcherRow, FieldValue,
+    FormKind,
     McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
     SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow,
     ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange,
@@ -597,6 +597,16 @@ pub struct App {
     prune_results: Receiver<PruneTaskResult>,
     /// 仍在后台跑的裁决数：>0 时主循环按活动帧率轮询，结果一到就应答内核。
     prune_in_flight: usize,
+    /// 在途的会话列表请求：会话管理页的读取不能同步等内核。
+    ///
+    /// 索引有上千条会话，内核侧还要逐条判定空占位会话，往返是几十到上百毫秒；
+    /// 在按键路径上同步等，整屏重绘与后续按键都会被一起拖住。
+    sessions_request: Option<Id>,
+    /// 会话管理页的列表是否已载入过。
+    ///
+    /// 不能只看「列表是否为空」：一个会话都没有时列表永远为空，只凭它判定会让每次按键
+    /// 都重新压一条内核请求。
+    sessions_loaded: bool,
     /// 建议的请求通道：识别是一次模型请求，不能占着 UI 线程等。
     suggest_sender: Sender<SuggestTaskResult>,
     suggest_results: Receiver<SuggestTaskResult>,
@@ -865,10 +875,12 @@ impl App {
             tts: tts_options(workspace),
             // TLS 会话恢复：`[tls_resumption] enabled` 为真时才建缓存，之后 `fetcher`
             // 对同一站点的第二次连接会尝试恢复。默认关闭（改的是密钥调度）。
+            // 抓取引擎同样来自配置：`[fetcher] engine` 为 `local` 时与改造前完全一致。
             fetcher: FetcherOptions {
                 tls_session_cache: omnicrawl_host::tools::tls_session_cache_from_config(
                     &environment,
                 ),
+                remote: omnicrawl_host::tools::remote_fetch_options_from_config(&environment),
                 ..FetcherOptions::default()
             },
             // 只受 `[computer_use] enabled` 约束：普通子代理关掉不影响桌面操作。
@@ -1029,6 +1041,8 @@ impl App {
             prune_sender,
             prune_results,
             prune_in_flight: 0,
+            sessions_request: None,
+            sessions_loaded: false,
             suggest_sender,
             suggest_results,
             suggest_in_flight: 0,
@@ -1052,6 +1066,8 @@ const SUBAGENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 会话类命令的超时：本地会话目录的读写，但 `/resume` 要按转录重建历史。
 const SESSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// 设置面板「会话管理」页一次读多少条：与内核 `list_sessions` 的收敛上限一致。
+const SESSION_ROWS_LIMIT: usize = 100;
 /// 会话回放只取尾部窗口：显示区本身只有 2000 行，整份事件流没有意义。
 const SESSION_EVENTS_TAIL_LIMIT: u32 = 2000;
 

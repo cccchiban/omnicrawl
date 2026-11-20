@@ -258,11 +258,10 @@ impl App {
                 environment,
                 DECISION_SWITCH_SKILL_SEARCH,
             ));
-        // 联网搜索的排序运行期嵌在搜索选项里，只换这一项：引擎与凭据保持当前值。
+        // 联网搜索的重排序运行期嵌在搜索选项里，只换这一项：引擎与凭据保持当前值。
         self.registry_options.web_search.rerank =
-            Arc::new(omnicrawl_host::tools::rerank_options_from_config(
+            Arc::new(omnicrawl_host::tools::web_rank::web_rank_options_from_config(
                 environment,
-                DECISION_SWITCH_WEB_SEARCH,
             ));
         self.rebuild_registry()
     }

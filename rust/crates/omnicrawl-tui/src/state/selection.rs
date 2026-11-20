@@ -60,15 +60,24 @@ pub struct ReasoningReveal {
     /// `index` 必须保留——后续增量到达时要靠它认出「还是同一条记录」；若连 index 一起清掉，
     /// 下一片会走「首片到达」分支把 `revealed` 归零，整段思考就会从头重新铺一遍。
     pub(super) tracking: bool,
+    /// 上一次推进的时刻：按经过时间折算这一帧该补多少字符。
+    ///
+    /// `None` 表示还没有推进过（刚开新段），下一帧按剩下的积压取一个起步量。
+    pub(super) since: Option<Instant>,
 }
 
 impl ReasoningReveal {
-    /// 某条思考记录开始流式显现（首片到达）：从 0 起铺开。
-    pub(crate) fn start(&mut self, index: usize) {
+    /// 某条思考记录开始流式显现（首片到达）：**立刻显示这一片**，之后才逐帧追赶。
+    ///
+    /// 首片直接整段可见，是为了「慢流与到达节奏一致」：模型逐字吐的时候，用户看到的就该是
+    /// 逐字出现，而不是先空一段、再由显现器补上来。真正需要摊平的是**突发**——那一部分由
+    /// [`Self::advance`] 按时间追赶。
+    pub(crate) fn start(&mut self, index: usize, first: usize) {
         self.index = Some(index);
-        self.revealed = 0;
-        self.target = 0;
+        self.revealed = first;
+        self.target = first;
         self.tracking = true;
+        self.since = None;
     }
 
     /// 该记录又长了：按本次增量推进目标长度，不对整段重数。
@@ -77,6 +86,11 @@ impl ReasoningReveal {
             return;
         }
         self.target += appended;
+        // 刚结束空闲（上一帧已判定没有可铺内容）：从这一刻重新计时，否则 `since` 一直是
+        // 很久以前，恢复瞬间就会把积压一口气补完。
+        if self.since.is_none() && self.revealed < self.target {
+            self.since = Some(Instant::now());
+        }
     }
 
     /// 退出逐帧揭示：这条记录此后一律全文显示。
@@ -88,6 +102,7 @@ impl ReasoningReveal {
             Some(_) => {
                 self.tracking = false;
                 self.revealed = self.target;
+                self.since = None;
             }
             None => *self = Self::default(),
         }
@@ -98,14 +113,35 @@ impl ReasoningReveal {
         *self = Self::default();
     }
 
-    /// 推进一帧；返回是否还有没铺完的内容（事件循环据此决定要不要继续按帧重画）。
-    pub(super) fn advance(&mut self) -> bool {
+    /// 把「还没铺的部分」一次性补完，但仍保持逐帧揭示态。
+    ///
+    /// 用在回合收口这类「内容已经定了、只是还没铺到屏幕上」的时机：此前这里是 `settle()`，
+    /// 那会让最后一整段思考在瞬间出现——正是「一口气输出」的来源。补完但继续跟踪，
+    /// 后续增量仍按显现节奏铺开。
+    pub(super) fn catch_up(&mut self) {
+        if self.index.is_none() {
+            *self = Self::default();
+            return;
+        }
+        self.revealed = self.target;
+        self.since = None;
+    }
+
+    /// 按经过时间推进一帧；`now` 由事件循环给，返回是否还有没铺完的内容。
+    pub(super) fn advance(&mut self, now: Instant) -> bool {
         if !self.tracking || self.index.is_none() || self.revealed >= self.target {
+            self.since = None;
             return false;
         }
-        let backlog = self.target - self.revealed;
-        let step = (backlog / REASONING_REVEAL_CATCHUP_DIVISOR)
-            .clamp(REASONING_REVEAL_MIN_CHARS, REASONING_REVEAL_MAX_CHARS);
+        // 一帧的步长按「距上次推进过了多久」折算：帧率高低不影响铺开速度。
+        let elapsed = match self.since {
+            Some(since) => now.saturating_duration_since(since).as_secs_f64(),
+            // 首次推进：给一个短起步，避免这一帧白等。
+            None => 1.0 / 60.0,
+        };
+        self.since = Some(now);
+        let budget = (elapsed * REASONING_REVEAL_CHARS_PER_SECOND) as usize;
+        let step = budget.clamp(1, REASONING_REVEAL_MAX_CHARS);
         self.revealed = (self.revealed + step).min(self.target);
         self.revealed < self.target
     }

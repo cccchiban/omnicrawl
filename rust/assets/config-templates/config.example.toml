@@ -92,6 +92,22 @@ grok_model = ""
 # Keenable API Key（可选）：留空走匿名通道（按 IP 限速），填了走付费通道（速率更高）。
 keenable_api_key = ""
 
+# 抓取引擎（fetcher 工具）：默认本地直连，与改造前完全一致。
+# local        本地直连目标站点：不依赖任何凭据，仍是默认值；
+# tavily / exa / firecrawl / anysearch / tinyfish / deepseek
+#              把抓取交给该服务的抓取接口，适合直连取不到正文的站点（网络受限、反爬较严、
+#              需要渲染）。凭据复用上面 [web_search] 段里同一把 API Key，不必填两遍；
+#              接口回的是清洗过的正文，因此不再走本地 HTML 提取与 JS 重建。
+# balanced     在有凭据的引擎之间轮转：额度是各家分别计费，摊开之后单一渠道的消耗慢得多。
+#              anysearch 没有 Key 也能参与（走匿名额度）。
+# 走哪个引擎只看这里的设置：工具调用不能按单次任务改抓取通路。
+# 抓取接口一律先过目标站点的 robots.txt 判定，与本地直连同一套边界（含不绕验证码）。
+[fetcher]
+engine = "local"
+# 接口失败时是否回落本地直连。默认开启：抓取按次计费，一次额度耗尽不该让整次抓取失败；
+# 关掉它等于要求「要么用接口要么失败」，接口报错会原样交给模型。
+fallback_local = true
+
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
 # 模型原生视觉在设置页「视觉」按当前模型/渠道开关（models.toml 或 [llm.profiles.<id>] 的 native_vision）。

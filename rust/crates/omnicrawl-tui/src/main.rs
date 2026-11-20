@@ -294,7 +294,7 @@ fn event_loop(
         );
         write_title(&title, &mut last_title);
         // 思考段逐帧铺开：一次突发的多片增量不会在同一帧里整段蹦出。
-        app.state.tick_reasoning_reveal();
+        app.state.tick_reasoning_reveal(Instant::now());
         // 工具卡图片预览：后台解码完的缩略图在这里接进状态（新图会让会话区重算那一张卡）。
         app.state.tick_image_previews();
         // 三块刷新（用户要求）：会话 / 输入框 / 底部。三块自上次绘制以来都没变时

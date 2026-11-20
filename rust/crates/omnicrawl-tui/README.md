@@ -255,8 +255,10 @@ cargo run -p omnicrawl-tui -- --model deepseek-v4-flash --session-root ../.agent
 | `--tool-timeout <秒>` | `600` | 单批工具执行的最长等待（上限 3600）：超时把未完成的调用写成超时观察、回合继续推进，后台结果被丢弃 |
 
 按键：`Enter` 提交、`Ctrl+J` 换行、`Esc` 取消当前回合（空闲时清空输入）、`↑`/`↓`/`PageUp`/`PageDown`
-滚动消息区、`Ctrl+L` 清屏、`Ctrl+C` 清空输入、`Ctrl+Q` 退出；审批面板用 `Y`/`N`，
+滚动消息区、`Ctrl+L` 清屏、`Ctrl+C` 清空输入、`Ctrl+Q` 退出、`Ctrl+Z` 撤回输入编辑、
+`Ctrl+Y`（或 `Ctrl+Shift+Z`）复原；审批面板用 `Y`/`N`，
 提问面板用 `↑`/`↓` 选项 + `Enter` 确认（没有选项时在输入框写答案）。
+鼠标右键点输入框即把剪贴板内容贴到插入点。
 
 ## 界面层对映移植（进行中）
 
@@ -441,6 +443,22 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字段名的网关会把整段思考丢掉
 （现象就是「有时没有流式思考」）。现在四种都认，同一帧里按优先级只取一个，不重复。
 
+**思考段的铺开节奏**（`ReasoningReveal`，`state/selection.rs`）：到达是**按片**的，但网络会把
+多片叠在同一帧里投递，逐片立刻整段重绘就会「一次蹦出好几行」。这里只记「已显现到第几个
+字符」，渲染层按它截断，本帧推进一点，内容于是连续铺开。三条口径：
+
+- **首片立刻整片可见**（`start(index, first)`）。以前首片把 `revealed` 归零，于是永远先空一帧
+  再由显现器追上来——慢流（模型逐字吐）时看上去就是「卡一下才出字」，用户报的「思考未流式
+  显示、而是一口气输出」正出在这里。
+- **按经过时间推进**（`advance(now)`，`REASONING_REVEAL_CHARS_PER_SECOND = 200`）。以前每帧
+  固定步长，帧率一抖（工具卡重排、图片解码、大批工具结果都会拖长某些帧）思考就停住不动、
+  随后一次性补上；现在帧多帧少都是同一速度，单帧仍以 `REASONING_REVEAL_MAX_CHARS` 封顶，
+  避免长时间卡顿后整屏跳变。
+- **回合收口用 `catch_up` 而不是 `settle`**。`settle` 会一次性把 backlog 置为全文，最后一整段
+  思考因此在收口那一瞬整块出现——这是「一口气输出」的第二个来源。`catch_up` 只把已到达的
+  部分补到最新并保持跟踪，收口后仍有增量（工具批次之后接着生成）时照常按节奏铺开。
+  真正该当场给全文并停止揭示的是**用户动作**：展开/收起、回放历史、切换思考显示/折叠开关。
+
 **流式工具调用**：模型还在写参数时，`turn.tool_call_started` 就把卡片立起来，
 `turn.tool_call_arguments` 的分片逐段补进标题与正文（`write_file` / `Edit_file` 的内容预览
 跟着长，**不是**等整段参数到齐再一次性画出来）；批次执行时宿主的 `tool.started` 用同一
@@ -562,6 +580,23 @@ assistant 消息。决策模型可用时由它裁决淘汰，不可用时自动�
 （`refresh_menu` / 四个 `move_*` / 点选拖选都调 `follow_caret`），否则插入点停在窗口外、用户
 敲的字看不见。内容装得下时 `scroll_rows` 返回 `false`，滚轮照旧滚消息区；落点不在正文区
 （边框、会话区）也一样。
+
+**输入框可撤回 / 复原**（`Ctrl+Z` / `Ctrl+Y`，`Ctrl+Shift+Z` 同 `Ctrl+Y`）：`Composer` 里的
+`undo` / `redo` 两个栈存的是**全文 + 光标 + 三类块表（粘贴折叠 / 图片 / 文档）+ 三个块序号**的
+同一份快照——只退文本会让 `[ #1 Image ]` 回到输入框却没有附件，提交时就是个空占位；序号一起回退
+则保证撤回后接着粘贴的块编号不与文本里的旧块撞号。快照粒度按「组」：一段连续字符输入压一次、
+一次连续退格/删除压一次、粘贴与换行各自成组（`Composer::begin_typing` / `begin_deleting` /
+`begin_single_edit`），移动光标或点选即结束当前组，所以撤回一次退掉的是一整段而不是一个字母。
+空操作（在空输入框上再清一次）不占一步，撤回会跳过它；`take()`（提交）清空两个栈——撤回一条
+已经发出去的消息只会在下次回车时重发一遍。图片字节用 `Arc` 共享，快照克隆不复制位图。
+按键放在 `handle_key` 的文本输入判定之前、`edit_composer`（提问面板的自由输入）里也接上，
+大小写都收（Windows 上大写锁会让 `z` 折成 `'Z'`）。没有可撤回/可复原内容时在提示行说明。
+
+**鼠标右键点输入框即粘贴**：落点在输入区方框（`ui::layout().composer_box`）内时走
+`App::paste_from_clipboard`——顺序固定「文档 → 图片 → 文本」：`CF_HDROP`（资源管理器复制的文件）
+折成 `[ #n .ext ]`，位图折成 `[ #n Image ]`（仍受原生视觉开关约束），其余才当文本按
+`Composer::insert_paste` 折叠。`Ctrl+V` 仍只走附件那两步，文本交给终端自己的粘贴通路，
+不会因为右键通路而粘两遍。剪贴板里没有可用内容时提示行说明一句。
 
 **终端光标跟着插入点走**（`main::settle_terminal_cursor`）：粗块是自绘的，终端光标全程隐藏，
 但输入法的候选窗与前摄文本跟的是**终端光标的位置**——不挪它就停在最后一处写屏位置（通常是
@@ -690,11 +725,12 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
 | 模型管理 | 已实现 | 渠道列表 + 单条渠道表单 + 「模型与参数」分区，合并了原「模型」「模型渠道」「上下文」「推理强度」四个一级项。**渠道列表**：两行行式（`› [x] 渠道名 [默认]` + `Provider / 协议  模型 ID  Base URL`），`↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；**渠道表单**（渠道名称 / 请求方式 / 请求协议 / Base URL / **API Key** / 模型 ID / User-Agent（可选） / 启用）：`↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时以明文随帧下发。**模型 ID 自动检测的凭据**：只取该行的明文密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径）。**模型 ID 候选列表**：检测出的候选内联展开在表单下方，超出可用行数时按选中项开窗口滚动（`window_bounds`），前后各留一行「... 前面 N 个 / ... 后面 N 个」省略提示，`↑↓` 能访问并被看见每一个候选。**「模型与参数」分区**（渠道列表之后，`↑↓` 与渠道行连成一条行序）：当前模型渠道 / 上下文长度 / 上下文阈值 / 推理强度，四项都选中即保存——首行写 `llm.active_model` 并把整条渠道推给内核（本会话即刻生效），后三行分别写 `llm.context_window_tokens`、`context_compaction.trigger_context_*` 与 `llm.reasoning_effort`。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空——留空时启动闸门会拦下并提示补问） |
-| 会话管理 | 已实现 | 列出当前工作区最近会话（标题 + 条数），`↑↓` 选、`D` **连按两次**确认删除、`R` 刷新、`Esc` 返回。删除走内核 `session.delete`（转录 + 关联 artifact + 索引条目一并移除），**不可逆**；当前会话标 `（当前）` 且拒绝删除，界面先给出原因而不是按了没反应。列表在进入该页时按需读取一次（`session.list`），删除成功后就地摘行并回执，失败原因写在状态行 |
+| 会话管理 | 已实现 | 列出当前工作区最近会话（标题 + 条数），`↑↓` 选、`D` **连按两次**确认删除、`R` 刷新、`Esc` 返回。删除走内核 `session.delete`（转录 + 关联 artifact + 索引条目一并移除），**不可逆**；当前会话标 `（当前）` 且拒绝删除，界面先给出原因而不是按了没反应。列表在进入该页时按需读取一次（`session.list`），删除成功后就地摘行并回执，失败原因写在状态行。**列表读取是异步的**：请求发出即返回，响应帧按 id 回填（索引动辄上千条会话，内核还要逐条判定空占位会话，同步往返会把按键到重绘整条链路卡住）；在途时不重复下发，已载入过一次后按键也不再重复读取 |
 | 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
 | 工具设置 | 已实现 | 首行「工具调用审查」按 `←`/`→` 在 `人工确认`/`自动审查`/`完全自动批准` 三档间循环（写回 `[approval] mode`，并对本会话立即生效）；其余行逐工具启用/关闭（只画工具英文名与 `已启用`/`已关闭`，不带括号说明），写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调） |
 | 联网搜索 | 已实现 | 左栏独立一级项（不再挂在工具设置页里）：`搜索引擎`（duckduckgo / github / arxiv / huggingface / tavily / exa / firecrawl / anysearch / tinyfish / deepseek / grok / keenable / mixed 候选）+ `Tavily API Key` + `Exa API Key` + `Firecrawl API Key` + `AnySearch API Key` + `TinyFish API Key` + `GitHub Token` + `DeepSeek 接口地址` / `DeepSeek API Key` + `Grok 接口地址` / `Grok API Key` / `Grok 模型` + `Keenable API Key`，`Ctrl+S` 写回 `[web_search]` 段并立刻换掉宿主侧搜索运行期，保存后留在本页；凭据只渲染掩码（未配显示 `（未配置）`），**保持掩码＝不改动**，选中凭据行按 `Del` 清空后 `Ctrl+S` 即删除磁盘上的该把凭据（`mixed` 随之不再请求这个渠道），刚录入的明文在保存回填时立即换回掩码 |
-| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL 或 Account ID / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://api.typesafe.ai` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，四项：`jev`（官方 TypeSafe System One 接口，`POST {base_url}/v1/systemone`）、`onejev`（同一形状的本机自部署，回环地址走管道）、`chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）与 `cloudflare_workers_ai`（Cloudflare Workers AI 上的决策模型：请求形状与 `jev` 一致——`model` + `state` + `questions` 进、顶层 `answers` 出——但**不显示 Base URL**：地址由官方前缀 + 表单里的 `Account ID` 拼成原生 Run 端点 `{account_id}/ai/run`，调用时追加模型 ID，写盘即折算，用户无从填错；模型名形如 `@cf/cloudflare/clef-flash`，**不要**改用 OpenAI 兼容的 `/ai/v1/chat/completions`，那条路径只服务文本生成模型）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前十项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank` / `web_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索 / 联网搜索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；**联网搜索按渠道排序**：每一路渠道结果单独处理（先本地 BM25 定基序，再把这 10 条交给决策模型重排），定序后每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄（见 `omnicrawl-host/src/tools/web_search.rs`），开关变更重建工具表；联网搜索的 BM25 排序**不是开关**：它固定启用（本地按 k1=1.2 / b=0.75 算分，中文按二字片段切分，每路留 5 条），不需要模型渠道；该路候选一个查询词都没命中时，BM25 没有可依据的名次，基序退化为引擎原顺序；开关关着时只用 BM25，开关开着但决策服务不可用时同样落回 BM25，搜索不会失败（见 `omnicrawl-host/src/tools/web_search.rs` 的 `channel_ranking` 与 `omnicrawl-extensions` 的 `bm25` 模块）；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；「提问建议」页（`[suggestion] skills`，默认关）上方一个建议开关、下方一个 Skills 列表：开关选中即写盘并重建建议运行期；列表列出本机已索引的 Skill（名称 + 作用域），`↑↓` 选、`Enter` 打开描述详情（一次显示四行，`↑↓`/滚轮翻看，`Esc` 回列表）。建议本身是你每发一条新提问时，宿主先由主模型识别「技能词」（`suggestion_keywords_system.md`，思考强度固定 low，最多 6 词），再用本地 BM25 检索 Skill 索引（名称 + 描述 + 正文），命中的前三个拼成「建议使用skills：…」注入提问尾部；关键词识别不可用时退化为整句检索，失败一律 fail-open（见 `omnicrawl-host/src/tools/suggestion.rs`） |
+| 抓取引擎 | 已实现（Rust 专有） | 左栏独立一级项「抓取引擎」：`抓取引擎` 候选（`local（本地直连）` / `tavily` / `exa` / `firecrawl` / `anysearch` / `tinyfish` / `deepseek` / `balanced（多引擎负载均衡）`）+ `接口失败时回落本地` 开关，`Ctrl+S` 写回 `[fetcher]` 段并立刻换掉宿主侧 `fetcher` 运行期（保存后留在本页）。本页不存凭据：抓取接口与联网搜索打的是同一批服务，API Key 仍填在「联网搜索」页，避免同一把 Key 在两页各存一份；`balanced` 只轮转有凭据的引擎，`anysearch` 无 Key 也参与（匿名额度）；回落默认开启——抓取按次计费，一次额度耗尽不该让整次抓取失败 |
+| 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL 或 Account ID / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://api.typesafe.ai` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，四项：`jev`（官方 TypeSafe System One 接口，`POST {base_url}/v1/systemone`）、`onejev`（同一形状的本机自部署，回环地址走管道）、`chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）与 `cloudflare_workers_ai`（Cloudflare Workers AI 上的决策模型：请求形状与 `jev` 一致——`model` + `state` + `questions` 进、顶层 `answers` 出——但**不显示 Base URL**：地址由官方前缀 + 表单里的 `Account ID` 拼成原生 Run 端点 `{account_id}/ai/run`，调用时追加模型 ID，写盘即折算，用户无从填错；模型名形如 `@cf/cloudflare/clef-flash`，**不要**改用 OpenAI 兼容的 `/ai/v1/chat/completions`，那条路径只服务文本生成模型）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前十项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；`web_search_rerank`（联网搜索使用决策模型重排序）开启后每一路渠道结果单独重排序：名次由两路加权得出——搜索原始排序与决策模型的综合置信度（是否相关 → 相关程度 → 是否符合提问目的，三级相乘），判定一个网站一个请求并发发出，每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄；某个站点判定失败按已判定站点的均值参与，全部失败或决策服务不可用时回退到「搜索原始排序加权」，搜索不会失败（见 `omnicrawl-host/src/tools/web_rank.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；「提问建议」页（`[suggestion] skills`，默认关）上方一个建议开关、下方一个 Skills 列表：开关选中即写盘并重建建议运行期；列表列出本机已索引的 Skill（名称 + 作用域），`↑↓` 选、`Enter` 打开描述详情（一次显示四行，`↑↓`/滚轮翻看，`Esc` 回列表）。建议本身是你每发一条新提问时，宿主先由主模型识别「技能词」（`suggestion_keywords_system.md`，思考强度固定 low，最多 6 词），再用本地 BM25 检索 Skill 索引（名称 + 描述 + 正文），命中的前三个拼成「建议使用skills：…」注入提问尾部；关键词识别不可用时退化为整句检索，失败一律 fail-open（见 `omnicrawl-host/src/tools/suggestion.rs`） |
 | 向量模型 | 已实现（Rust 专有） | 顶部两个开关 `启用嵌入模型`（写 `config.toml` 的 `[memory_embedding] enabled`）与 `启用重排序模型`（写 `[memory_rerank] enabled`），`Enter`/空格/`→` 翻转后立刻写盘并重建召回与重排运行期。开关下方分两段：`嵌入模型` 与 `重排序模型`，各是一组两行行式渠道（`› [x] 渠道名 [默认]` + `模型 ID  Base URL`）与单条渠道表单（渠道名称 / Base URL / **API Key** / 模型 ID / 向量维度 / 超时秒数 / 启用；重排渠道不显示「向量维度」）。嵌入渠道走 `POST {base_url}/embeddings` 做第一阶段粗筛召回，重排渠道走 `POST {base_url}/rerank` 做第二阶段精排，各自写 `embedding_models.toml` 的 `[channels.*]` 与 `[rerank_channels.*]`。键位与决策渠道页一致：列表 `↑↓` 选、`Enter`/`→` 编辑渠道、`N` 新建（落在游标所在那一段）、`D` 删除，表单 `↑↓`/`Tab` 换字段、`Enter` 编辑、`Ctrl+S` 保存、`Esc` 丢弃；凭据只渲染掩码且**留空＝不改动** |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
 

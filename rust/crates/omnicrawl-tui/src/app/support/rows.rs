@@ -22,6 +22,17 @@ pub(crate) fn web_search_row(environment: &ConfigEnvironment) -> WebSearchRow {
     }
 }
 
+/// 抓取页的初始投影：`[fetcher] engine` 与失败回落开关。
+pub(crate) fn fetcher_row(environment: &ConfigEnvironment) -> FetcherRow {
+    let configuration =
+        omnicrawl_config::features::fetcher::load_fetcher_configuration(environment, None)
+            .unwrap_or_default();
+    FetcherRow {
+        engine: configuration.engine,
+        fallback_local: configuration.fallback_local,
+    }
+}
+
 /// 子任务设置页的行：总开关 + 六个高级参数（对映 Python 的 `_SubagentsPane.sections`）。
 pub(crate) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
     let mut rows = vec![SubagentRow {

@@ -16,6 +16,8 @@ pub mod desensitization;
 pub mod embedding;
 // 网页抓取接口（`[fetch_api]`）：无鉴权的回环抓取通道（Rust 侧新增，Python 无对映）。
 pub mod fetch_api;
+// 抓取引擎（`[fetcher]`）：本地直连或第三方抓取接口（Rust 侧新增，Python 无对映）。
+pub mod fetcher;
 pub mod image_gen;
 // 知识库开关（`[knowledge] enabled`）：工具组整组进出（Rust 侧新增，Python 无对映）。
 pub mod knowledge;

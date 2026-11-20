@@ -122,6 +122,15 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 空白归一、空串按「没填」回落默认值、非法引擎报错并列出全部候选、逐引擎的凭据解析、
 写回只动本段且非法取值不落盘。
 
+**`features/fetcher`（Rust 专有）**：抓取引擎段（`[fetcher]`），`engine` 取 `local`（默认，
+本地直连）或 `tavily` / `exa` / `firecrawl` / `anysearch` / `tinyfish` / `deepseek`（交给该服务的抓取
+接口）或 `balanced`（在有凭据的引擎之间轮转，摊开各家额度），清单由 `FETCH_ENGINES` 唯一提供；
+`fallback_local`（默认 `true`）决定接口失败时是否改走本地直连。凭据不在这里：抓取接口与联网搜索打的
+是同一批服务，宿主装配时从 `[web_search]` 段取同一把 Key，本段只管「用谁」。引擎只由本段决定：工具
+调用不能按单次任务改抓取通路。不进 parity 数据集，自带 `tests/fetcher_config.rs`：缺段默认值
+（`local` + 回落开启）、引擎名大小写与空白归一、未知引擎报错并列出全部候选、显式关掉回落能读回、
+写回只动本段（其它段与搜索凭据原样保留）、段形状错误直接报错。
+
 **`features/decision_model`（Rust 专有）**：结构化决策模型配置（独立 `decision_models.toml`），
 面向「不生成文本、只对有类型的提问给出校准答案」的第二类服务。四种请求方式（`mode`）：
 
@@ -157,11 +166,12 @@ agent 不能按单次任务改搜索通路。与前几段分开是刻意的：`[
 测试都读它；新增开关只需往表里加一项）。当前七项：
 `tool_call_review`（工具调用审查使用决策模型）、`memory_search_rerank`（记忆搜索使用决策模型
 排序）、`kb_search_rerank`（知识库检索使用决策模型排序）、`skill_search_rerank`（Skill 检索使用
-决策模型排序）、`web_search_rerank`（联网搜索使用决策模型排序）、`ask_user_custody`（提问由
+决策模型排序）、`web_search_rerank`（联网搜索使用决策模型重排序）、`ask_user_custody`（提问由
 决策模型自动作答）与 `tool_call_prune`（旧一轮工具调用按需淘汰），均默认关闭；读写走
 `load_decision_switches` / `save_decision_switch`——前者读不出来时
-按默认值回落，后者保留同段其他键与 `channels` 段。联网搜索的 BM25 排序不在这张表里：
-它固定启用，不需要配置。
+按默认值回落，后者保留同段其他键与 `channels` 段。联网搜索的重排序是三路加权（搜索原始
+排序、决策模型综合置信度、发布时间的时间远近），决策这一路由本开关控制，关掉即只剩原始
+排序加权时间。
 
 提问建议（`[suggestion] skills`）已从这张表迁出，落在 `config.toml` 的 `[suggestion]` 段：
 它由主模型识别技能词 + 本地 BM25 检索本机 Skill 索引完成，不再经过决策模型，因此也不该

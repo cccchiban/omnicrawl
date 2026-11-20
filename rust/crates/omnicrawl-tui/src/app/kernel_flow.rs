@@ -92,7 +92,11 @@ impl App {
             // 响应帧：宿主命令（`turn.undo`、`session.compact`）与 `session.settings`
             // 的结果要回填界面，其余（如 `turn.submit` 的确认）由通知驱动。
             None => {
-                if let Some(command) = self.pending_commands.remove(&id) {
+                if self.sessions_request.as_ref() == Some(&id) {
+                    // 会话管理页的列表：响应要回填面板，不能当无关帧丢掉。
+                    self.sessions_request = None;
+                    self.apply_sessions_response(&frame);
+                } else if let Some(command) = self.pending_commands.remove(&id) {
                     self.finish_kernel_command(command, &frame);
                 } else if self.pending_turn_submit.as_ref() == Some(&id) {
                     // `turn.submit` 的确认帧：成功不带错误，失败带回合终止原因。

@@ -661,7 +661,7 @@ pub const DECISION_SWITCHES: [DecisionSwitchSpec; 7] = [
     },
     DecisionSwitchSpec {
         key: DECISION_SWITCH_WEB_SEARCH,
-        label: "联网搜索使用决策模型排序",
+        label: "联网搜索使用决策模型重排序",
         default: false,
         page: SwitchPage::Decision,
     },

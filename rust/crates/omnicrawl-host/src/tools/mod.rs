@@ -23,6 +23,8 @@ pub mod decision_search;
 pub mod edit;
 pub mod error;
 pub mod fetch_metadata;
+// 第三方抓取接口的适配（`[fetcher] engine`）：与本地抓取同一套传输，只换取正文的那一段。
+pub mod fetch_engines;
 pub mod fetcher;
 pub mod finding;
 pub mod git;
@@ -49,6 +51,7 @@ pub mod skills;
 pub mod suggestion;
 pub mod tls_transport;
 pub mod tts;
+pub mod web_rank;
 pub mod web_search;
 pub mod web_transport;
 pub mod windows;
@@ -64,6 +67,7 @@ pub use decision_prune::{
 };
 pub use decision_search::{rerank_options_from_config, RerankClient, RerankOptions};
 pub use error::{ToolError, ToolOutcome};
+pub use fetch_engines::{remote_fetch_options_from_config, RemoteFetchOptions};
 pub use fetcher::{fetch_batch, tls_session_cache_from_config, FetchBatch, FetcherOptions};
 pub use image_gen::{image_gen_options_from_config, ImageGenOptions};
 pub use knowledge::KnowledgeBase;
