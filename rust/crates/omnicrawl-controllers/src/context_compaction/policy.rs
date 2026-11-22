@@ -498,8 +498,23 @@ impl DefaultContextBudgetManager {
             .into_iter()
             .filter(|event| is_model_context_event(&event.event_type))
             .collect();
+        let mut pending_calls = BTreeSet::new();
+        for event in &recoverable {
+            let call_id = event.payload.get("tool_call_id").and_then(Value::as_str);
+            match (event.event_type.as_str(), call_id) {
+                ("tool_call_requested", Some(id)) => {
+                    pending_calls.insert(id.to_string());
+                }
+                ("tool_result" | "tool_call_denied", Some(id)) => {
+                    pending_calls.remove(id);
+                }
+                _ => {}
+            }
+        }
         match recoverable.last() {
-            Some(last) if last.event_type == "user_message" => Some(CompactionBatch {
+            Some(last)
+                if pending_calls.is_empty()
+                    && matches!(last.event_type.as_str(), "user_message" | "tool_result" | "tool_call_denied") => Some(CompactionBatch {
                 events: recoverable,
                 recent_events: Vec::new(),
                 previous_summary,
@@ -1256,6 +1271,21 @@ mod eviction_tests {
             !ids.contains(&"c1") && !ids.contains(&"r1"),
             "恢复批次同样剔除：{ids:?}"
         );
+    }
+
+    #[test]
+    fn recovery_batch_waits_for_all_parallel_tool_results() {
+        let mut events = vec![
+            event("u1", "user_message", serde_json::json!({"content": "问"})),
+            event("c1", "tool_call_requested", serde_json::json!({"tool_call_id": "one"})),
+            event("c2", "tool_call_requested", serde_json::json!({"tool_call_id": "two"})),
+            bash_call("r1", "one", true),
+        ];
+        assert!(DefaultContextBudgetManager.select_recovery_batch(&events).is_none());
+        events.push(bash_call("r2", "two", true));
+        let batch = DefaultContextBudgetManager.select_recovery_batch(&events).unwrap();
+        assert_eq!(batch.events.len(), 5);
+        assert_eq!(batch.events.last().unwrap().event_id, "r2");
     }
 
     /// 确定性兜底产出与模型摘要同形的结构，并覆盖校验关心的三类事实。

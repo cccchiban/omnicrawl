@@ -87,6 +87,11 @@ pub fn tool_specs_to_openai_functions(tools: &[ToolSpec]) -> Vec<Value> {
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
+                    // OpenAI 规范里 `strict` 缺省为 false，但网关常把「没写」当成「按 strict
+                    // 编译」：MCP 暴露的联合 Schema（`cad_export` 的 `anyOf` 分支只写
+                    // `required`）会在编译期被判 Unsatisfiable 并整份请求 400。显式写死
+                    // false，语义不变而口径明确。
+                    "strict": false,
                     "parameters": parameters,
                 }
             })
@@ -127,6 +132,13 @@ pub fn to_openai_messages(system_prompt: &str, messages: &[ConversationMessage])
 
     let mut seen_dynamic_tools: BTreeSet<String> = BTreeSet::new();
     for message in messages {
+        if let Some(items) = message.blocks.iter().find_map(|block| match block {
+            MessageBlock::ResponsesCompaction(items) => Some(items),
+            _ => None,
+        }) {
+            result.push(json!({"role": "assistant", "content": "", "responses_compaction": items}));
+            continue;
+        }
         match message.role {
             Role::Tool => {
                 for block in &message.blocks {

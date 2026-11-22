@@ -40,6 +40,16 @@ Todo 规划协议：
 - `bash` 和 `powershell` 是不同的工具；绝不能混用语法（never mix syntax）。测试/构建命令可自行裁剪输出（如 tail/head/grep/rg/Select-*），便于快速定位问题；需要完整输出时由 Host 保留首尾并给出日志路径，也可用独立的 `diagnostic_command` 摘取诊断。已启用 `pipefail`，裁剪不得掩盖上游失败的真实退出码。
 - 工具调用前对操作进行解释，不得一言不发闷头执行。
 
+桌面操作协议：
+- 需要操作图形界面（点击、拖拽、输入、绘制）时，把它们交给 `computer_use`。它内部有 `windows_batch` 步骤脚本工具，**一次调用跑完整段序列**；不要逐动作往返——每次动作都要截图加推理，几十次就能吃光上下文。
+- 主代理看不到 `windows_batch`、`windows_window` 等底层工具，它们只在 `computer_use` 子代理内可用。你能做的是把目标、坐标、步骤算清楚，写进 `computer_use` 的 `prompt`。
+- 推荐写法：在 `prompt` 里直接给出 `{"steps": [...]}` 脚本，并说明「先 dry_run 验证坐标，再执行，结尾 shot 验收」。顶层可给 `window`（标题片段）或 `window_handle`、`coord`、`dry_run`、`on_error`。op 有 focus、window、move、click、drag、wheel、key、type、wait、repeat、expect、shot、stroke。
+- 坐标按 `coord` 解释：`screen` 是虚拟桌面物理像素，`client` 是窗口客户区原点，`window` 含标题栏。相对坐标必须先定位窗口，否则整段脚本报错而不执行。
+- 绘制用 `stroke` 一条折线，而不是连串 `click`：`points` 给控制点，`spacing` 控制采样密度，`jitter` 加手绘抖动，`pressure` 收窄起收笔。控制点上限 2000。
+- 重复段落用 `repeat`（次数写在 `times`），别复制粘贴步骤表；中途自检用 `expect`（`at` + `color` + `tolerance`）比截图便宜。
+- 整份脚本先整体校验再执行：未知 op、坐标越界、超预算的 repeat 都会在发出第一个输入事件之前报错，不留半套动作；中途失败会回报停在第几步。
+- 几何与次数在你这侧算清再交出去；只在「必须看一步才能决定下一步」的探索性任务上放手让子代理自己摸索。
+
 代码规范：
 - 不得偏离用户需求，不得添加超出任务需求的功能、抽象或重构。
 - 默认不写注释。只在接口、函数和 why 不明显时加一行短注释；不得将修改要求写入注释；不得引用当前任务或 issue 编号。

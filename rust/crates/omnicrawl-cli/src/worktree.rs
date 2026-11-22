@@ -20,6 +20,9 @@ use serde_json::{json, Value};
 
 /// 托管根目录名（与 `workspace/agent_isolation.py` 的 `DEFAULT_WORKTREES_ROOT` 同址）。
 pub const WORKTREES_DIR: &str = "agent-worktrees";
+mod local;
+#[cfg(test)]
+mod local_tests;
 /// diff 文本上限。
 pub const MAX_DIFF_CHARS: usize = 200_000;
 /// 变更文件列表上限。
@@ -34,6 +37,7 @@ pub struct WorktreeSession {
     pub worktree_path: PathBuf,
     pub branch_name: String,
     pub base_ref: String,
+    pub local: bool,
 }
 
 /// worktree 创建、查询或清理失败时的稳定错误。
@@ -121,9 +125,7 @@ pub fn create_session(
 ) -> Result<WorktreeSession, WorktreeError> {
     let root = workspace_root.to_path_buf();
     if !is_git_repository(&root) {
-        return Err(WorktreeError::new(
-            "当前工作区不是 git 仓库，无法启用 isolation=worktree。",
-        ));
+        return local::create(&root, task_id, worktree_parent);
     }
     let repo_root = resolve_repo_root(&root)?;
     // 脏主树禁止创建：避免后续 apply 时与用户未提交改动互相覆盖。
@@ -182,6 +184,7 @@ pub fn create_session(
         worktree_path,
         branch_name,
         base_ref: resolved_base,
+        local: false,
     };
     write_metadata(&session, &parent_dir)?;
     Ok(session)
@@ -193,6 +196,7 @@ fn write_metadata(session: &WorktreeSession, worktrees_root: &Path) -> Result<()
         "instance_id": session.instance_id,
         "task_id": session.task_id,
         "mode": "subagent",
+        "isolation": if session.local { "local" } else { "worktree" },
         "repo_root": session.repo_root.to_string_lossy(),
         "main_workspace": session.repo_root.to_string_lossy(),
         "worktree_path": session.worktree_path.to_string_lossy(),
@@ -201,7 +205,7 @@ fn write_metadata(session: &WorktreeSession, worktrees_root: &Path) -> Result<()
         "created_at": now_seconds(),
         // SubAgent 成果必须由父 Agent 审查后才 apply，清扫/退出不自动写回。
         "apply_on_exit": false,
-        "cleanup_on_exit": "auto",
+        "cleanup_on_exit": if session.local { "keep" } else { "auto" },
     });
     let path = metadata_path(worktrees_root, &session.worktree_path);
     let text = serde_json::to_string_pretty(&payload)
@@ -227,6 +231,7 @@ fn now_seconds() -> f64 {
 
 /// 收集 worktree 相对基线的变更摘要（含未跟踪文件；有变更则先提交到隔离分支）。
 pub fn collect_artifacts(session: &WorktreeSession) -> Result<WorktreeArtifacts, WorktreeError> {
+    if session.local { return local::artifacts(session); }
     if !session.worktree_path.exists() {
         return Err(WorktreeError::new(format!(
             "worktree 目录不存在：{}",
@@ -283,6 +288,10 @@ pub fn summarize_changes(
     if !session.worktree_path.exists() {
         return Ok(None);
     }
+    if session.local {
+        let artifacts = local::artifacts(session)?;
+        return Ok(Some(WorktreeChanges { uncommitted: artifacts.changed_files.len(), new_commits: 0 }));
+    }
     let cwd = session.worktree_path.clone();
     let (_, status) = run_git(&["status", "--porcelain"], &cwd, true)?;
     let base = if session.base_ref.trim().is_empty() {
@@ -298,6 +307,7 @@ pub fn summarize_changes(
 
 /// 把隔离分支的变更应用到主工作区；主工作区必须干净。
 pub fn apply_to_main(session: &WorktreeSession, strategy: &str) -> Result<String, WorktreeError> {
+    if session.local { return local::apply(session, strategy); }
     if !matches!(strategy, "checkout" | "merge") {
         return Err(WorktreeError::new(format!(
             "不支持的 apply strategy：{strategy}"
@@ -341,6 +351,7 @@ pub fn cleanup_session(
     session: &WorktreeSession,
     remove_branch: bool,
 ) -> Result<(), WorktreeError> {
+    if session.local { return local::cleanup(session); }
     // 先尝试 git worktree remove；失败时回退到目录删除。
     if session.repo_root.exists() {
         let path_text = session.worktree_path.to_string_lossy().to_string();
@@ -414,8 +425,19 @@ fn read_metadata(path: &Path) -> Option<WorktreeSession> {
         return None;
     }
     let worktree_path = PathBuf::from(payload.get("worktree_path")?.as_str()?);
+    // 元数据是磁盘上的普通 JSON，可能被手改或写坏；回写与清理都会直接对它动手，
+    // 因此这里要求隔离目录就是元数据所在目录下的同名条目，否则整条记录不认。
+    // 条目路径可能是规范化过的（`\\?\` 前缀），两边都规范化后再比。
+    let root = std::fs::canonicalize(path.parent()?).ok()?;
+    let leaf = path.file_stem()?;
+    if std::fs::canonicalize(worktree_path.parent()?).ok()? != root
+        || worktree_path.file_name()? != leaf
+    {
+        return None;
+    }
     let branch_name = payload.get("branch_name")?.as_str()?.to_string();
-    if branch_name.is_empty() {
+    let local = payload.get("isolation").and_then(Value::as_str) == Some("local");
+    if branch_name.is_empty() && !local {
         return None;
     }
     let task_id = payload
@@ -433,6 +455,7 @@ fn read_metadata(path: &Path) -> Option<WorktreeSession> {
         repo_root: PathBuf::from(payload.get("repo_root")?.as_str()?),
         worktree_path: worktree_path.clone(),
         branch_name,
+        local,
         base_ref: payload
             .get("base_ref")
             .and_then(Value::as_str)
@@ -446,6 +469,7 @@ pub fn session_value(session: &WorktreeSession) -> Value {
     json!({
         "task_id": session.task_id,
         "branch": session.branch_name,
+        "isolation": if session.local { "local" } else { "worktree" },
         "worktree_path": session.worktree_path.to_string_lossy(),
         "base_ref": session.base_ref,
         "repo_root": session.repo_root.to_string_lossy(),
@@ -561,18 +585,48 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_git_workspace() {
+    fn creates_local_isolation_for_non_git_workspace() {
         let root =
             std::env::temp_dir().join(format!("omnicrawl-worktree-plain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("建目录");
-        let error = create_session(&root, "task-000000000004", "HEAD", None)
-            .expect_err("非 git 仓库应拒绝");
-        assert!(
-            error.message().contains("不是 git 仓库"),
-            "{}",
-            error.message()
-        );
+        let parent = external_host("plain");
+        std::fs::write(root.join("a.txt"), "one").unwrap();
+        let session = create_session(&root, "task-000000000004", "HEAD", Some(&parent)).unwrap();
+        assert!(session.local);
+        assert_eq!(std::fs::read_to_string(session.worktree_path.join("a.txt")).unwrap(), "one");
+        assert!(!session.worktree_path.join(".git").exists());
+        assert_eq!(list_sessions(Some(&parent)), vec![session.clone()]);
+        cleanup_session(&session, true).unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 元数据是磁盘上的普通 JSON：被改过的条目不能带着它去递归删除别处。
+    #[test]
+    fn tampered_metadata_is_not_listed() {
+        let root =
+            std::env::temp_dir().join(format!("omnicrawl-worktree-tamper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("workspace")).expect("建目录");
+        let parent = external_host("tamper");
+        std::fs::write(root.join("workspace/a.txt"), "one").unwrap();
+        let session =
+            create_session(&root.join("workspace"), "task-000000000005", "HEAD", Some(&parent))
+                .unwrap();
+        assert_eq!(list_sessions(Some(&parent)).len(), 1);
+
+        let entry = parent.join(format!("sw-{}.json", session.instance_id));
+        let mut payload: Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        // 指向隔离根之外的目录：清理时会 `remove_dir_all`，必须被挡住。
+        payload["worktree_path"] = Value::String(root.join("workspace").to_string_lossy().into());
+        std::fs::write(&entry, serde_json::to_string(&payload).unwrap()).unwrap();
+        assert!(list_sessions(Some(&parent)).is_empty(), "改过的条目不该被认");
+
+        cleanup_session(&session, true).unwrap();
+        assert!(root.join("workspace/a.txt").exists(), "主工作区文件不能被删除");
+        let _ = std::fs::remove_dir_all(parent);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -26,6 +26,9 @@ use omnicrawl_tui::kernel::KernelClient;
 use omnicrawl_tui::state::Record;
 use omnicrawl_tui::ui::settings::ROW_ORDER;
 
+#[path = "host_flow/session_cancel.rs"]
+mod session_cancel;
+
 /// 一个最小 PNG：签名对了就够 `read_image` 认格式。
 const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 0];
 
@@ -1947,6 +1950,7 @@ fn new_session_clears_the_telemetry_hud() {
             .any(|frame| frame.method() == Some("session.new")),
         "应当下发 session.new"
     );
+    harness.expect_ready(|app| app.current_session_id() == "20260102-000000-abcdef", "等待新会话回执");
     let after = harness.app.state.hud_text.plain();
     assert!(
         after.contains("↑0") && after.contains("↓0") && after.contains("†0"),
@@ -2039,6 +2043,7 @@ fn a_new_session_drops_the_previous_title() {
     );
     type_text(&mut harness, "/new");
     harness.press(KeyCode::Enter);
+    harness.expect_ready(|app| app.current_session_id() == "20260101-000001-abcdef", "等待新会话标题更新");
 
     assert_eq!(
         harness.app.current_session_title(),
@@ -2398,7 +2403,7 @@ fn handshake_falls_back_to_the_template_without_an_explicit_prompt() {
     let identity = &model["prompt_cache_identity"];
     assert_eq!(
         identity["agent_prompt_version"],
-        json!("2026-06-22.top-level-tools-v1")
+        json!("2026-11-22.desktop-batch-v1")
     );
     assert!(
         identity["system_prompt_hash"]
@@ -3360,4 +3365,40 @@ fn opening_the_sessions_pane_requests_the_list_without_blocking() {
     assert_eq!(settings.session_rows()[0].title, "旧会话");
     // 配置在用例结束时恢复（Drop），这里显式收尾说明它的生命周期覆盖整个用例。
     drop(config);
+}
+
+#[test]
+fn new_session_waits_asynchronously_and_preserves_the_old_session_on_error() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手");
+    let previous = harness.app.current_session_id();
+    harness.app.state.notice("旧会话仍然可见".to_string());
+    type_text(&mut harness, "/new");
+    let started = Instant::now();
+    harness.press(KeyCode::Enter);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(harness.app.current_session_id(), previous);
+    let request = harness.frames().into_iter().find(|frame| frame.method() == Some("session.new")).expect("新建请求");
+    let response = Frame::error_response(request.id().unwrap().clone(), omnicrawl_ipc::ErrorObject::new(-32603, "存储不可写"));
+    harness.send(&format!("{}\n", response.to_line()));
+    harness.expect_ready(|app| app.state.records.iter().any(|record| matches!(record, Record::Notice(text) if text.contains("存储不可写"))), "等待拒绝回执");
+    assert_eq!(harness.app.current_session_id(), previous);
+    assert!(notices(&harness).iter().any(|text| text.contains("旧会话仍然可见")));
+}
+
+#[test]
+fn new_session_defers_followup_input_until_its_delayed_response() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().unwrap();
+    disable_suggestions(&mut harness);
+    type_text(&mut harness, "/new");
+    harness.press(KeyCode::Enter);
+    let request = harness.frames().into_iter().find(|frame| frame.method() == Some("session.new")).unwrap();
+    type_text(&mut harness, "新会话任务");
+    harness.press(KeyCode::Enter);
+    assert!(!harness.frames().iter().any(|frame| frame.method() == Some("turn.submit")));
+    harness.send(&format!("{}\n", Frame::response(request.id().unwrap().clone(), json!({"session_id": "20260102-000000-abcdef"})).to_line()));
+    harness.expect_ready(|app| app.state.turn.is_running(), "新会话回执后提交排队消息");
+    assert_eq!(harness.app.current_session_id(), "20260102-000000-abcdef");
+    assert_eq!(harness.frames().iter().filter(|frame| frame.method() == Some("turn.submit")).count(), 1);
 }

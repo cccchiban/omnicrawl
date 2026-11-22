@@ -268,8 +268,8 @@ impl App {
         self.state.telemetry.context_window = Some(tokens.max(0) as u64);
         let threshold = context_compaction_trigger_tokens(tokens, percent);
         Ok(format!(
-            "上下文长度已设为 {}K，已保存到 {}；压缩阈值已同步为 {percent}%（{threshold} Token）。",
-            tokens / 1000,
+            "上下文长度已设为 {}，已保存到 {}；压缩阈值已同步为 {percent}%（{threshold} Token）。",
+            crate::ui::settings::context_window_label(tokens),
             path.display()
         ))
     }
@@ -370,14 +370,18 @@ impl App {
         // 的话正在跑的表还握着启动时的引擎与凭据——现象是「设置里选了 tavily，搜索仍报
         // 来源：duckduckgo」，直到重启。重建失败时磁盘与运行期一起回滚（同 `apply_advisor_form`）。
         let previous_options = self.registry_options.web_search.clone();
+        let previous_fetch = self.registry_options.fetcher.remote.clone();
         self.registry_options.web_search =
             omnicrawl_host::tools::web_search_options_from_config(&environment);
+        self.registry_options.fetcher.remote =
+            omnicrawl_host::tools::remote_fetch_options_from_config(&environment);
         if let Err(error) = self.rebuild_registry() {
             if let Err(rollback) = save_web_search_configuration(&environment, &previous, None) {
                 self.state
                     .notice(format!("联网搜索设置回滚写盘失败：{rollback}"));
             }
             self.registry_options.web_search = previous_options;
+            self.registry_options.fetcher.remote = previous_fetch;
             return Err(error);
         }
         Ok(format!(
@@ -1005,6 +1009,27 @@ impl App {
                 Ok(format!(
                     "子任务功能已{}，已保存到 {}（本会话即刻生效）。",
                     if *enabled { "开启" } else { "关闭" },
+                    path.display()
+                ))
+            }
+            SubagentChange::Switch { key, enabled } => {
+                let label = SUBAGENT_SWITCH_LABELS
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, label)| *label)
+                    .ok_or_else(|| format!("设置未完成：未知的子任务能力开关 {key}。"))?;
+                let path = save_subagent_switch(&environment, key, *enabled, None)
+                    .map_err(|error| format!("设置未完成：{}", error.message()))?;
+                // 后台运行开关决定 `subagent` 是否受理 background：工具声明随它变，
+                // 与总开关同一条重建路径，否则界面改完要等下次启动才生效。
+                self.registry_options.subagent_roles = subagent_roles();
+                self.rebuild_registry()?;
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.refresh_tools(tool_switch_rows(&self.registry));
+                }
+                Ok(format!(
+                    "{label}已{}，已保存到 {}（本会话即刻生效）。",
+                    if *enabled { "允许" } else { "禁止" },
                     path.display()
                 ))
             }

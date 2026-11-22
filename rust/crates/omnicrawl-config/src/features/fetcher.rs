@@ -19,7 +19,7 @@ use crate::value::python_str;
 ///
 /// `balanced` 不是某一家，而是在多个可用远程引擎之间轮转：额度是各家分别计费的，
 /// 平摊之后单一渠道的消耗慢得多。轮转状态在进程内，不落盘。
-pub const FETCH_ENGINES: [&str; 8] = [
+pub const FETCH_ENGINES: [&str; 9] = [
     "local",
     "tavily",
     "exa",
@@ -27,6 +27,7 @@ pub const FETCH_ENGINES: [&str; 8] = [
     "anysearch",
     "tinyfish",
     "deepseek",
+    "keenable",
     "balanced",
 ];
 
@@ -39,13 +40,14 @@ pub const BALANCED_FETCH_ENGINE: &str = "balanced";
 /// 能提供抓取接口的引擎（`local` 与 `balanced` 除外）。
 ///
 /// 顺序即负载均衡的轮转顺序，与设置页的候选顺序一致。
-pub const REMOTE_FETCH_ENGINES: [&str; 6] = [
+pub const REMOTE_FETCH_ENGINES: [&str; 7] = [
     "tavily",
     "exa",
     "firecrawl",
     "anysearch",
     "tinyfish",
     "deepseek",
+    "keenable",
 ];
 
 /// 抓取引擎选择。

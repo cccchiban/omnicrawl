@@ -173,6 +173,7 @@ struct JobDone {
 pub struct TurnRunner {
     kernel: KernelClient,
     registry: Arc<ToolRegistry>,
+    registry_options: RegistryOptions,
     options: RunnerOptions,
     next_turn: u64,
     /// 审查载荷要的两条会话事实（最近用户消息 + 最近一次 ask_user 问答）。
@@ -197,6 +198,7 @@ impl TurnRunner {
         Ok(Self {
             kernel,
             registry: Arc::new(registry),
+            registry_options: registry_options.clone(),
             options,
             next_turn: 1,
             review_context: ReviewContext::default(),
@@ -225,6 +227,7 @@ impl TurnRunner {
         )
         .map_err(|error| format!("工具表构建失败：{}", error.message))?;
         self.registry = Arc::new(registry);
+        self.registry_options = options;
         Ok(())
     }
 
@@ -319,19 +322,20 @@ impl TurnRunner {
         &self,
         model: &KernelModelConfig,
     ) -> std::collections::BTreeMap<String, String> {
-        let (project_instructions, skills) = match self.options.prompt.as_ref() {
+        let (project_instructions, skills, active_skills) = match self.options.prompt.as_ref() {
             Some(prompt) => (
                 prompt.project_instructions().unwrap_or_default(),
                 prompt.skill_metas(),
+                prompt.resident_skill_matches(),
             ),
-            None => (String::new(), Vec::new()),
+            None => (String::new(), Vec::new(), Vec::new()),
         };
         build_prompt_cache_identity(
             &model.system_prompt,
             &self.options.workspace_root,
             &project_instructions,
             &skills,
-            &[],
+            &active_skills,
             &model.tools,
         )
         .to_identity_map()
@@ -513,7 +517,7 @@ impl TurnRunner {
         let (name, rest) = parse_skill_command(text)?;
         let prompt = self.options.prompt.as_ref()?;
         let name = name.trim().to_string();
-        let Some(context) = prompt.active_skill_context(&name) else {
+        let Some(_) = prompt.load_skill(&name) else {
             let available: Vec<String> = prompt
                 .skill_metas()
                 .iter()
@@ -523,7 +527,7 @@ impl TurnRunner {
         };
         let has_tools = !self.registry.declarations().is_empty();
         let messages = prompt
-            .active_skill_messages(has_tools, &context)
+            .active_skill_messages_for(has_tools, &name)
             .ok()
             .map(Some)
             .unwrap_or(None);
@@ -799,6 +803,34 @@ impl TurnRunner {
 
     /// 跑完一整批工具：先把整批定调（自持工具就地办、敏感工具逐个问），再并发执行，最后回观察。
     fn run_batch(
+        &mut self,
+        batch: ToolBatch,
+        interactor: &mut dyn Interactor,
+        control: &TurnControl,
+        on_event: &mut dyn FnMut(HostEvent),
+    ) -> Vec<AgentLoopObservation> {
+        let original = Arc::clone(&self.registry);
+        if let Some(root) = batch.workspace_root.as_deref().filter(|root| !root.trim().is_empty()) {
+            match ToolRegistry::new(root, &self.registry_options, self.options.command_timeout_seconds) {
+                Ok(registry) => self.registry = Arc::new(registry),
+                Err(error) => return batch.calls.iter().map(|call| {
+                    let message = format!("隔离工具表构建失败：{}", error.message);
+                    AgentLoopObservation {
+                        tool_call: call.clone(),
+                        result: ToolResult { ok: false, output: message.clone(), full_output: String::new(),
+                            error_code: Some("execution_failed".to_string()), retryable: false },
+                        message: json!({"role": "tool", "tool_call_id": call.id, "content": message}),
+                        followup_messages: Vec::new(),
+                    }
+                }).collect(),
+            }
+        }
+        let result = self.run_batch_in_workspace(batch, interactor, control, on_event);
+        self.registry = original;
+        result
+    }
+
+    fn run_batch_in_workspace(
         &mut self,
         batch: ToolBatch,
         interactor: &mut dyn Interactor,

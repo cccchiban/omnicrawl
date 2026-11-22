@@ -19,6 +19,29 @@ pub(super) struct TurnUsage {
     pub(super) context_overflow: bool,
 }
 
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    #[test]
+    fn invalidating_compaction_baseline_preserves_billed_usage() {
+        let mut usage = TurnUsage {
+            input_tokens: 1000,
+            output_tokens: 100,
+            cached_input_tokens: 500,
+            last_request_input_tokens: 800,
+            last_request_messages: vec![json!({"role": "user", "content": "old"})],
+            context_overflow: true,
+        };
+        let billed = usage.snapshot();
+        usage.invalidate_compaction_baseline();
+        assert_eq!(usage.snapshot(), billed);
+        assert_eq!(usage.last_request_input_tokens, 0);
+        assert!(usage.last_request_messages.is_empty());
+        assert!(!usage.context_overflow);
+    }
+}
+
 impl TurnUsage {
     pub(super) fn snapshot(&self) -> TokenUsageSample {
         TokenUsageSample::new(
@@ -29,13 +52,17 @@ impl TurnUsage {
         .unwrap_or_default()
     }
 
+    pub(super) fn invalidate_compaction_baseline(&mut self) {
+        self.last_request_input_tokens = 0;
+        self.last_request_messages.clear();
+        self.context_overflow = false;
+    }
+
     pub(super) fn reset(&mut self) {
         self.input_tokens = 0;
         self.output_tokens = 0;
         self.cached_input_tokens = 0;
-        self.last_request_input_tokens = 0;
-        self.last_request_messages.clear();
-        self.context_overflow = false;
+        self.invalidate_compaction_baseline();
     }
 }
 
@@ -74,6 +101,7 @@ impl ReplySource for RemoteModelPort {
 /// 有界重试空响应与可重试错误；文案与重试节奏保持与 Python 一致。
 pub(super) struct KernelModelPort {
     pub(super) conn: Rc<RefCell<Conn>>,
+    pub(super) turn_id: String,
     pub(super) config: KernelModelConfig,
     pub(super) usage: Rc<RefCell<TurnUsage>>,
     /// 本批 assistant 原文：工具批次落 `tool_call_requested` 时取协议字段。
@@ -207,6 +235,7 @@ impl TurnRequestParts {
 
 impl ReplySource for KernelModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        self.compact_before_request(messages)?;
         // 工具调用 id 的线上体检：同一次请求里 assistant `tool_calls` 的 id 必须互不重复、
         // `tool` 结果必须与之逐一双向配对。网关会把「同一请求重复提交相同的 call_id」直接判成
         // HTTP 400（`type: invalid_tool_state`），整段会话就此断掉。修复只做在**发出去的副本**上：
@@ -381,6 +410,61 @@ impl ReplySource for KernelModelPort {
 }
 
 impl KernelModelPort {
+    fn compact_before_request(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
+        let (usage, provider_tokens) = {
+            let usage = self.usage.borrow();
+            if usage.last_request_messages.is_empty() {
+                return Ok(());
+            }
+            (usage.snapshot(), usage.last_request_input_tokens)
+        };
+        let api_key = read_api_key(&self.config)?;
+        let Some(mut session) = self.conn.borrow_mut().session.take() else {
+            return Ok(());
+        };
+        let outcome = crate::compaction::compact_before_request(
+            &session,
+            &self.config,
+            &api_key,
+            messages,
+            usage,
+            provider_tokens,
+            super::turn::compaction_progress(&self.conn),
+        );
+        match outcome {
+            Ok(report) => {
+                if let Some(history) = report.history.filter(|_| report.compacted) {
+                    let post_tokens = super::turn::post_compaction_context_tokens(&self.conn, &history);
+                    session.history = history.clone();
+                    messages.clear();
+                    messages.extend(self.config.context_messages.iter().cloned());
+                    messages.extend(history);
+                    self.usage.borrow_mut().invalidate_compaction_baseline();
+                    self.conn.borrow_mut().notify(HostEvent::ContextCompaction(
+                        ContextCompactionPayload {
+                            post_turn_context_tokens: report.measurement_payload["post_turn_context_tokens"]
+                                .as_i64()
+                                .unwrap_or(0),
+                            trigger_context_tokens: session.config.trigger_context_tokens,
+                            turn_id: self.turn_id.clone(),
+                            post_compaction_context_tokens: post_tokens,
+                        },
+                    ));
+                    for message in report.notices {
+                        self.conn.borrow_mut().notify(HostEvent::Notice(MessagePayload { message }));
+                    }
+                }
+            }
+            Err(detail) => {
+                self.conn.borrow_mut().notify(HostEvent::Notice(MessagePayload {
+                    message: format!("自动上下文压缩失败：{detail}"),
+                }));
+            }
+        }
+        self.conn.borrow_mut().session = Some(session);
+        Ok(())
+    }
+
     /// 取本回合的模型运行时：命中本连接的缓存则直接复用，缺失或配置变了才重建。
     ///
     /// 凭据只从环境读；端点与协议缺省时用内核工厂的默认值。

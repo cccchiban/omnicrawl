@@ -65,6 +65,8 @@ pub const CAPTUREBLT: u32 = 0x4000_0000;
 pub const HALFTONE: c_int = 4;
 pub const BI_RGB: u32 = 0;
 pub const DIB_RGB_COLORS: u32 = 0;
+/// `GetPixel` 失败时的返回值（`0xFFFFFFFF`）。
+pub const CLR_INVALID: u32 = 0xFFFF_FFFF;
 
 pub const SM_XVIRTUALSCREEN: c_int = 76;
 pub const SM_YVIRTUALSCREEN: c_int = 77;
@@ -78,6 +80,13 @@ pub struct Rect {
     pub top: i32,
     pub right: i32,
     pub bottom: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
 }
 
 #[repr(C)]
@@ -159,6 +168,7 @@ unsafe extern "system" {
     pub fn IsIconic(hwnd: Hwnd) -> Bool;
     pub fn IsZoomed(hwnd: Hwnd) -> Bool;
     pub fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> Bool;
+    pub fn ClientToScreen(hwnd: Hwnd, point: *mut Point) -> Bool;
     pub fn GetWindowTextLengthW(hwnd: Hwnd) -> c_int;
     pub fn GetWindowTextW(hwnd: Hwnd, buffer: *mut u16, max_count: c_int) -> c_int;
     pub fn GetClassNameW(hwnd: Hwnd, buffer: *mut u16, max_count: c_int) -> c_int;
@@ -187,6 +197,7 @@ unsafe extern "system" {
     pub fn GetSystemMetrics(index: c_int) -> c_int;
     pub fn GetDC(hwnd: Hwnd) -> Hdc;
     pub fn ReleaseDC(hwnd: Hwnd, hdc: Hdc) -> c_int;
+    pub fn GetPixel(hdc: Hdc, x: c_int, y: c_int) -> u32;
 }
 
 #[link(name = "kernel32")]

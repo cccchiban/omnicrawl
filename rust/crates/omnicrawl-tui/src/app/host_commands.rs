@@ -224,7 +224,7 @@ impl App {
     // 往返期间到达的其他帧先进 `deferred_frames`，因此不会丢通知。
 
     /// 当前会话 id（握手与各会话命令的回执里同步过来）。
-    pub(crate) fn current_session_id(&self) -> String {
+    pub fn current_session_id(&self) -> String {
         self.session_id.clone()
     }
 
@@ -279,14 +279,12 @@ impl App {
         self.state.open_sessions_menu(items);
     }
 
-    /// 会话 id 变了之后跟上工具表：会话级记忆目录按 id 解析，重建后指向新会话。
+    /// 会话 id 变了之后只更新工具表里的会话级记忆绑定。
     ///
-    /// 重建失败不影响会话切换本身（切换已在内核侧完成），只把原因如实报出来。
+    /// 保留旧任务的会话绑定，不重建 MCP 与执行环境。
     pub(super) fn retarget_session_memory(&mut self) {
-        if let Err(error) = self.rebuild_registry() {
-            self.state
-                .notice(format!("会话级记忆未切换：{error}"));
-        }
+        self.sync_session_memory();
+        self.registry = Arc::new(self.registry.for_session(self.registry_options.memory.session_id.clone()));
     }
 
     /// 会话列表（`/sessions` / `/archives`）：顺带把当前会话 id 对齐到内核。
@@ -363,6 +361,10 @@ impl App {
     /// 新开会话（`/new`）：返回旧会话 id 之外的新会话 id。
     pub(crate) fn command_session_new(&mut self) -> Result<String, String> {
         let result = self.session_request(Command::SessionNew)?;
+        self.apply_new_session(&result)
+    }
+
+    pub(super) fn apply_new_session(&mut self, result: &Value) -> Result<String, String> {
         let Some(session_id) = result.get("session_id").and_then(Value::as_str) else {
             return Err("内核没有返回新会话 id。".to_string());
         };

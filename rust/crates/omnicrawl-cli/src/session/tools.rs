@@ -511,7 +511,8 @@ impl RemoteTools {
 }
 
 mod background;
-mod subagent_tools;
+pub(super) mod subagent_tools;
+mod task_execution;
 
 pub(crate) use background::BackgroundModelPort;
 pub(crate) use background::BackgroundTools;
@@ -522,5 +523,6 @@ pub(crate) use subagent_tools::run_computer_use;
 pub(crate) use subagent_tools::run_subagent_tool;
 pub(crate) use subagent_tools::run_task_in_isolation;
 pub(crate) use subagent_tools::subagent_failure_code;
-pub(crate) use subagent_tools::subagent_query_value;
+pub(crate) use subagent_tools::{subagent_query_value, subagent_query_on_conn};
+pub(crate) use task_execution::execute_tasks;
 

@@ -51,12 +51,17 @@ impl App {
 
     pub(super) fn handle_frame(&mut self, frame: Frame) {
         if frame.is_notification() {
+            if self.pending_turn_submit.is_some() && !self.state.turn.is_running()
+                && frame.method() != Some(omnicrawl_ipc::method::SUBAGENT_EVENT) {
+                return;
+            }
             match HostEvent::from_frame(&frame) {
                 Ok(event) => {
                     // 回合落地后按 FIFO 排空排队消息（对映 Python `_finish` 里的排空调用）。
                     let finished = matches!(event, HostEvent::TurnFinished(_));
                     self.state.apply(&event, Instant::now());
                     if finished {
+                        self.pending_turn_submit = None;
                         // `/skill:` 的上下文消息只覆盖本轮：落地后换回常规装配。
                         self.restore_skill_context();
                         if let HostEvent::TurnFinished(payload) = &event {
@@ -97,13 +102,19 @@ impl App {
                     self.sessions_request = None;
                     self.apply_sessions_response(&frame);
                 } else if let Some(command) = self.pending_commands.remove(&id) {
+                    let is_new_session = matches!(&command, KernelCommand::New { .. });
                     self.finish_kernel_command(command, &frame);
+                    if is_new_session {
+                        self.drain_pending_inputs();
+                    }
                 } else if self.pending_turn_submit.as_ref() == Some(&id) {
                     // `turn.submit` 的确认帧：成功不带错误，失败带回合终止原因。
                     self.pending_turn_submit = None;
                     if let Some(error) = frame.error.as_ref() {
                         self.fail_submitted_turn(&error.message);
                     }
+                    self.restore_skill_context();
+                    self.drain_pending_inputs();
                 } else if self.prompt_request.as_ref() == Some(&id) {
                     self.prompt_request = None;
                     if let Some(error) = frame.error.as_ref() {
@@ -251,6 +262,11 @@ impl App {
                 return;
             }
         };
+        let quiet = host::is_subagent_turn(&batch.turn_id);
+        if !quiet && self.registry.cancel_token().is_cancelled() {
+            let _ = self.kernel.respond_error(&id, error_code::TURN_CANCELLED, "回合已取消。");
+            return;
+        }
         // 子任务的工具批次带着隔离根：本批改用「根在该目录」的临时工具表，
         // 路径保护与命令工作目录因此都落在隔离区里；没有根的批次照旧用共享表。
         self.batch_registry = match batch.workspace_root.as_deref() {
@@ -261,14 +277,17 @@ impl App {
                     self.options.command_timeout_seconds,
                 ) {
                     Ok(registry) => Some(Arc::new(registry)),
-                    Err(_) => None,
+                    Err(error) => {
+                        let _ = self.kernel.respond_error(&id, error_code::INTERNAL_ERROR,
+                            &format!("隔离工具表构建失败：{}", error.message));
+                        return;
+                    }
                 }
             }
             _ => None,
         };
         // 子代理回合的调用不算主代理的动作：照旧执行，但不往主会话挂卡片，否则子代理的
         // 过程会混进主代理的消息区（它们由子代理独立窗口渲染）。
-        let quiet = host::is_subagent_turn(&batch.turn_id);
         let step = if quiet {
             self.state.start_subagent_batch(id.clone(), batch.calls)
         } else {
@@ -386,6 +405,7 @@ impl App {
         let context = self.review_context.clone();
         let registry = Arc::clone(self.batch());
         let sender = self.completion_sender.clone();
+        let Some(batch_id) = self.state.batch_request_id() else { return; };
         let workspace_root = self.workspace.to_string_lossy().to_string();
         thread::spawn(move || {
             let verdict = match review.as_ref() {
@@ -433,6 +453,7 @@ impl App {
                         Err(_) => (host::panicked_result(&call.name), None),
                     };
                     let _ = sender.send(ToolCompletion {
+                        batch_id,
                         index,
                         call,
                         result,
@@ -443,6 +464,7 @@ impl App {
                     // 审查拒绝也属「未批准」：MCP 调用落一条拒绝审计。
                     host::record_mcp_denial(&registry, &call.name, &call.arguments, &reason);
                     let _ = sender.send(ToolCompletion {
+                        batch_id,
                         index,
                         call,
                         result: host::denied_with_reason(&reason),
@@ -460,6 +482,7 @@ impl App {
     pub(super) fn spawn_tool_job(&self, index: usize, call: ToolCall) {
         let registry = Arc::clone(self.batch());
         let sender = self.completion_sender.clone();
+        let Some(batch_id) = self.state.batch_request_id() else { return; };
         thread::spawn(move || {
             let tool_name = call.name.clone();
             let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -481,6 +504,7 @@ impl App {
                 Err(_) => (host::panicked_result(&tool_name), None),
             };
             let _ = sender.send(ToolCompletion {
+                batch_id,
                 index,
                 call,
                 result,

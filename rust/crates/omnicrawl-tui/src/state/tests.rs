@@ -190,6 +190,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reasoning_reveal_keeps_fast_stream_backlog_bounded() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".into(), "问".into(), Vec::new(), Vec::new());
+        let mut total = 0;
+        for frame in 0..50 {
+            let at = now + Duration::from_millis(frame * 20);
+            state.apply(
+                &HostEvent::ReasoningDelta(TextPayload { text: "想".repeat(1000) }),
+                at,
+            );
+            total += 1000;
+            state.tick_reasoning_reveal(at);
+        }
+        let visible = state.reasoning_visible_chars(1, total);
+        assert!(total - visible <= 12_000, "高速流积压过大：{visible}/{total}");
+        assert!(visible < total, "仍须保留突发内容的平滑显现");
+        for frame in 50..100 {
+            state.tick_reasoning_reveal(now + Duration::from_millis(frame * 20));
+        }
+        assert_eq!(state.reasoning_visible_chars(1, total), total);
+        assert!(!state.is_reasoning_revealing());
+    }
+
+    #[test]
+    fn reasoning_reveal_budget_depends_on_time_not_tick_count() {
+        let mut state = state();
+        let now = Instant::now();
+        state.begin_turn("t1".into(), "问".into(), Vec::new(), Vec::new());
+        state.apply(&HostEvent::ReasoningDelta(TextPayload { text: "首".into() }), now);
+        state.apply(&HostEvent::ReasoningDelta(TextPayload { text: "续".repeat(1000) }), now);
+        let at = now + Duration::from_millis(20);
+        state.tick_reasoning_reveal(at);
+        let visible = state.reasoning_visible_chars(1, 1001);
+        for _ in 0..100 {
+            state.tick_reasoning_reveal(at);
+        }
+        assert_eq!(state.reasoning_visible_chars(1, 1001), visible);
+    }
+
     /// 折叠/展开正在流式输出的思考段：不能把已铺开的内容清掉重铺。
     ///
     /// 回归的是「点击折叠（或展开）后，后续增量被当成首片、整段思考从头再流一遍」：

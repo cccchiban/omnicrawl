@@ -281,6 +281,10 @@ impl Kernel {
 
     /// 提交一个回合：返回起始到 `turn.finished` 之间的所有帧。
     fn submit_turn(&mut self, user_text: &str) -> Vec<Value> {
+        self.submit_turn_with_output(user_text, None)
+    }
+
+    fn submit_turn_with_output(&mut self, user_text: &str, output: Option<&str>) -> Vec<Value> {
         self.next_id += 1;
         let request_id = self.next_id;
         self.send(json!({
@@ -295,6 +299,25 @@ impl Kernel {
         loop {
             let frame = self.next_frame();
             let method = frame["method"].as_str().unwrap_or_default().to_string();
+            if method == "tool.batch" {
+                let output = output.expect("本用例必须配置工具结果");
+                let observations = frame["params"]["calls"]
+                    .as_array()
+                    .expect("工具调用数组")
+                    .iter()
+                    .map(|call| json!({
+                        "tool_call": call,
+                        "result": {"ok": true, "output": output},
+                        "message": {
+                            "role": "tool", "tool_call_id": call["id"], "content": output,
+                        },
+                    }))
+                    .collect::<Vec<_>>();
+                self.send(json!({
+                    "jsonrpc": "2.0", "id": frame["id"],
+                    "result": {"observations": observations},
+                }));
+            }
             finished |= method == "turn.finished";
             let is_response = method.is_empty() && frame["id"].as_i64() == Some(request_id);
             collected.push(frame);
@@ -683,6 +706,85 @@ data: [DONE]
 
 "
     )
+}
+
+#[test]
+fn kernel_compacts_before_request_when_tool_output_reaches_threshold() {
+    tool_chain_compaction(false, 0);
+}
+
+#[test]
+fn kernel_compacts_before_request_using_provider_tokens() {
+    tool_chain_compaction(false, 3000);
+}
+
+#[test]
+fn kernel_recovers_from_context_overflow_after_tool_results() {
+    tool_chain_compaction(true, 0);
+}
+
+fn tool_chain_compaction(overflow: bool, provider_tokens: i64) {
+    let mut stream = tool_call_stream("read", "{}");
+    if provider_tokens > 0 {
+        let usage = json!({"choices": [], "usage": {"prompt_tokens": provider_tokens, "completion_tokens": 10}});
+        stream = stream.replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
+    }
+    let mut script = vec![Reply::Raw(stream)];
+    if overflow {
+        script.push(Reply::UpstreamError(json!({
+            "error": {"message": "maximum context length exceeded"},
+        }).to_string()));
+    }
+    script.extend([Reply::Summary, Reply::Text(make_stream("继续完成任务"))]);
+    let server = StubServer::spawn(script);
+    let root = temp_root("tool-chain");
+    let store = SessionStore::open(&root);
+    store.ensure().unwrap();
+    let session_id = store.start_session("/workspace", "工具链", utc_now()).unwrap().session_id;
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({
+        "protocol_version": "1.0", "client": {"name": "e2e"},
+        "model": {
+            "model": "e2e-model", "base_url": server.addr, "api_key": TEST_KEY,
+            "system_prompt": "你是助手。", "context_messages": [{"role": "user", "content": "项目规范"}],
+            "tools": [{"type": "function", "function": {
+                "name": "read", "description": "读文件", "parameters": {"type": "object"},
+            }}],
+            "request_timeout_seconds": 10,
+        },
+        "session": {
+            "root": root.to_string_lossy().replace('\\', "/"), "session_id": session_id,
+            "compaction": {
+                "native_gpt": false,
+                "trigger_context_tokens": if overflow {1000000} else {2000},
+                "target_summary_tokens": 0, "preserve_exact_evidence": false,
+            },
+        },
+    }));
+    let output = if provider_tokens > 0 {"内容".to_string()} else {"内容".repeat(4000)};
+    let frames = kernel.submit_turn_with_output("读取文件并完成任务", Some(&output));
+    assert_eq!(finished_text(&frames), "继续完成任务");
+    let bodies = server.bodies();
+    let summary_index = if overflow {2} else {1};
+    assert_eq!(bodies.len(), summary_index + 2, "不能重复使用压缩前的 Token 基线");
+    assert_eq!(bodies[summary_index]["tool_choice"], "none", "工具结果后应先压缩再继续");
+    let summary_messages = bodies[summary_index]["messages"].as_array().unwrap();
+    assert!(summary_messages.iter().any(|message| message["role"] == "tool"), "摘要必须看到新工具结果");
+    let resumed = bodies[summary_index + 1]["messages"].as_array().unwrap();
+    assert!(resumed.iter().any(|message| message["content"].as_str().is_some_and(|text| text.starts_with("会话压缩摘要"))));
+    assert_eq!(resumed.iter().filter(|message| message["content"] == "项目规范").count(), 1);
+    assert!(!resumed.iter().any(|message| message["role"] == "tool"), "旧工具原文由摘要替换");
+    let events = transcript(&root, &session_id);
+    let boundary = events.iter().position(|event| event["type"] == "compact_summary").unwrap();
+    let final_reply = events.iter().position(|event| event["type"] == "assistant_message").unwrap();
+    assert!(boundary < final_reply, "不能等整轮结束才压缩");
+    assert_eq!(events.iter().any(|event| event["type"] == "context_overflow_recovery"), overflow);
+    if !overflow {
+        assert!(frames.iter().any(|frame| frame["method"] == "turn.context_compaction"));
+        assert!(!frames.iter().any(|frame| frame["method"] == "model.request.error"));
+    }
+    drop(kernel);
+    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]

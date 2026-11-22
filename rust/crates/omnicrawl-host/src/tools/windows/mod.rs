@@ -11,6 +11,12 @@
 #[cfg(windows)]
 mod args;
 #[cfg(windows)]
+mod batch;
+#[cfg(windows)]
+mod batch_plan;
+#[cfg(windows)]
+mod batch_run;
+#[cfg(windows)]
 pub mod clipboard;
 #[cfg(windows)]
 mod control;
@@ -43,6 +49,8 @@ pub struct DesktopOutcome {
 }
 
 #[cfg(windows)]
+pub use batch::windows_batch;
+#[cfg(windows)]
 pub use clipboard::windows_clipboard;
 #[cfg(windows)]
 pub use control::windows_control;
@@ -62,6 +70,14 @@ pub fn windows_window(
 
 #[cfg(not(windows))]
 pub fn windows_input(
+    _paths: &WorkspacePaths,
+    _arguments: &Map<String, Value>,
+) -> DesktopOutcomeResult {
+    Err(windows_only_error())
+}
+
+#[cfg(not(windows))]
+pub fn windows_batch(
     _paths: &WorkspacePaths,
     _arguments: &Map<String, Value>,
 ) -> DesktopOutcomeResult {

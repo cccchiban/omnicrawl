@@ -3,7 +3,8 @@
     "default_timeout_seconds",
     "model_request_concurrency",
     "verify_command_timeout_seconds",
-    "task_retention_minutes"
+    "task_retention_minutes",
+    "result_summary_chars"
   ],
   "advanced": [
     {
@@ -97,6 +98,24 @@
       "error": "配置项 subagents.task_retention_minutes 必须在 1 到 10080 之间，当前值：10081。"
     },
     {
+      "label": "结果摘要下限",
+      "name": "result_summary_chars",
+      "value": 100,
+      "ok": true,
+      "kind": "int",
+      "result": 100,
+      "error": null
+    },
+    {
+      "label": "结果摘要越界",
+      "name": "result_summary_chars",
+      "value": 50,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.result_summary_chars 必须在 100 到 50000 之间，当前值：50。"
+    },
+    {
       "label": "未知配置项",
       "name": "unknown_setting",
       "value": 1,
@@ -117,7 +136,7 @@
         "max_depth": 1,
         "default_timeout_seconds": 3600.0,
         "model_request_concurrency": 2,
-        "allow_background": false,
+        "allow_background": true,
         "allow_fork": false,
         "allow_shared_workspace_writes": false,
         "allow_worktree": true,
@@ -203,7 +222,7 @@
         "max_depth": 1,
         "default_timeout_seconds": 3600.0,
         "model_request_concurrency": 2,
-        "allow_background": false,
+        "allow_background": true,
         "allow_fork": false,
         "allow_shared_workspace_writes": false,
         "allow_worktree": true,
@@ -236,7 +255,7 @@
         "max_depth": 1,
         "default_timeout_seconds": 3600.0,
         "model_request_concurrency": 2,
-        "allow_background": false,
+        "allow_background": true,
         "allow_fork": false,
         "allow_shared_workspace_writes": false,
         "allow_worktree": true,
@@ -261,7 +280,7 @@
         "max_depth": 1,
         "default_timeout_seconds": 3600.0,
         "model_request_concurrency": 2,
-        "allow_background": false,
+        "allow_background": true,
         "allow_fork": false,
         "allow_shared_workspace_writes": false,
         "allow_worktree": true,

@@ -4,7 +4,7 @@ use super::*;
 
 
 
-use super::tools::{emit_batch_finished, next_subagent_batch_id, run_task_in_isolation, subagent_failure_code};
+use super::tools::{execute_tasks, next_subagent_batch_id, subagent_failure_code};
 use super::turn::{Conn};
 
 /// `subagent.run`：派生单个子 Agent 并等它跑完，回子 Agent 的**原始输出文本**。
@@ -54,8 +54,7 @@ pub(super) fn respond_subagent_run(conn: &Rc<RefCell<Conn>>, id: Id, params: &Su
 
 /// 派生单个子 Agent 并等它结束：返回（子 Agent 收尾文本，公开结果）。
 ///
-/// 子回合在本线程里就地跑，工具批次直接借连接发给宿主，因此调用方会一直阻塞到
-/// 子任务结束——宿主侧不能同步等待本方法的响应，必须保持事件循环可响应。
+/// 宿主入口始终等待完整报告，等待期间继续转发子任务工具与控制面查询。
 pub(super) fn run_subagent_request(
     conn: &Rc<RefCell<Conn>>,
     agent_type: &str,
@@ -89,38 +88,32 @@ pub(super) fn run_subagent_request(
     let batch_id = next_subagent_batch_id();
     // 复用 `subagent_run` 工具的入参形状：校验、工具白名单与错误文案因此完全同源。
     let arguments: Map<String, Value> = json!({
-        "task": {
+        "tasks": [{
             "subagent_type": agent_type,
             "description": description,
             "prompt": prompt,
-        },
+        }],
     })
     .as_object()
     .cloned()
     .unwrap_or_default();
-    let task = runtime.prepare(&arguments, &parent_tools, &batch_id)?;
+    let tasks = runtime.prepare(&arguments, &parent_tools, &batch_id)?;
+    // 宿主入口始终等完整报告：定义里的 `background: true` 不能把它变成后台批次。
+    let tasks: Vec<PreparedTask> = tasks
+        .into_iter()
+        .map(|mut task| {
+            task.background = false;
+            task
+        })
+        .collect();
 
-    let runtime = Arc::new(runtime);
-    let cancel = CancelToken::new();
-    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let result = run_task_in_isolation(
-        &runtime,
-        &model_config,
-        &task,
-        &fork_messages,
-        conn,
-        &cancel,
-        &workspace,
-        // 宿主入口要完整报告：截断摘要会把评审 JSON 打碎。
-        true,
-        // 评审过程同样进子代理窗口。
-        true,
-    );
+    let result = execute_tasks(runtime, model_config, tasks, fork_messages, conn, true, "")?;
     // 结果投影复用协调器的同一条路径：失败描述、全文优先与脱敏在这里一次做对。
-    let (ok, summary) = batch_summary(&batch_id, vec![result.clone()]);
-    emit_batch_finished(conn, &batch_id);
+    let results = result["results"].as_array().cloned().unwrap_or_default();
+    let (ok, summary) = batch_summary(&batch_id, results.clone());
     let encoded = json_result_text(&summary);
     let output = require_completed_result(ok, &encoded)
         .map_err(|error| (subagent_failure_code(&summary), error.message().to_string()))?;
-    Ok((output, result))
+    let task = results.first().cloned().unwrap_or(Value::Null);
+    Ok((output, task))
 }

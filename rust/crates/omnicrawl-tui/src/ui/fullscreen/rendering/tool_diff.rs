@@ -20,7 +20,7 @@ use crate::ui::fullscreen::terminal::theme::{
 };
 use crate::ui::fullscreen::text::StyledText;
 use crate::ui::fullscreen::tool_labels::{
-    format_duration, format_tool_status, tool_display, ToolStatus,
+    canonical_tool_name, format_duration, format_tool_status, tool_display, ToolStatus,
 };
 
 pub const ASK_USER_TOOL_NAME: &str = "ask_user";
@@ -185,9 +185,17 @@ pub fn tool_title_context(tool_name: &str, arguments: &Value, _result_text: &str
         return context;
     }
     if operation == "subagent_run" {
-        // 一次调用只带一个 task：标题直接显示角色与目标，多个子代理就是多张并列的卡。
+        // 一批可以带多个任务：标题显示条数，单个任务才展开角色与目标。
+        let tasks: Vec<&Value> = arguments
+            .get("tasks")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().collect())
+            .unwrap_or_default();
+        if tasks.len() > 1 {
+            return format!("{} 个任务", tasks.len());
+        }
         let mut context = String::new();
-        if let Some(task) = arguments.get("task") {
+        if let Some(task) = tasks.first().copied() {
             let agent_type = arg_text(task, "subagent_type").trim().to_string();
             if !agent_type.is_empty() {
                 context.push_str(&agent_type);
@@ -301,6 +309,7 @@ fn append_stats(rendered: &mut StyledText, stats_label: &str) {
 
 /// 返回工具的末级操作名，兼容带命名空间的工具名。
 pub fn tool_operation(tool_name: &str) -> &str {
+    let tool_name = canonical_tool_name(tool_name);
     tool_name.rsplit('.').next().unwrap_or(tool_name)
 }
 
@@ -404,7 +413,7 @@ pub fn ask_user_tool_title(status: &str, duration_seconds: f64) -> Option<Styled
 }
 
 pub fn is_file_change_tool(tool_name: &str) -> bool {
-    FILE_CHANGE_TOOLS.contains(&tool_name)
+    FILE_CHANGE_TOOLS.contains(&canonical_tool_name(tool_name))
 }
 
 /// 生成折叠/展开标题行。
@@ -526,6 +535,7 @@ pub fn describe_file_change(
     arguments: &Value,
     start_line: usize,
 ) -> FileChangeView {
+    let tool_name = canonical_tool_name(tool_name);
     let raw_path = arg_text(arguments, "path").trim().to_string();
     let path = if raw_path.is_empty() {
         "(unknown path)".to_string()
@@ -666,6 +676,7 @@ pub fn file_change_body(
     result_text: &str,
     include_result: bool,
 ) -> StyledText {
+    let tool_name = canonical_tool_name(tool_name);
     let start_line = if tool_name == "Edit_file" {
         edit_start_line(result_text, &arg_text(arguments, "new_text"))
     } else {
@@ -951,10 +962,21 @@ mod tests {
         assert_eq!(
             tool_title_context(
                 "subagent_run",
-                &json!({"task": {"subagent_type": "explore", "description": "调查并行执行"}}),
+                &json!({"tasks": [{"subagent_type": "explore", "description": "调查并行执行"}]}),
                 ""
             ),
             "explore  调查并行执行"
+        );
+        assert_eq!(
+            tool_title_context(
+                "subagent_run",
+                &json!({"tasks": [
+                    {"subagent_type": "explore", "description": "调查并行执行"},
+                    {"subagent_type": "plan", "description": "拆解改动"},
+                ]}),
+                ""
+            ),
+            "2 个任务"
         );
         assert_eq!(
             tool_title_context("subagent_list", &json!({}), ""),

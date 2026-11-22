@@ -268,6 +268,7 @@ pub fn kernel_compaction_settings(
         None => config.trigger_context_tokens,
     };
     KernelCompactionConfig {
+        native_gpt: Some(config.native_gpt),
         recent_turns: Some(config.recent_turns),
         // 0 = 无摘要预算上限：必须原样传给内核，否则会被默认的 2000 顶掉。
         target_summary_tokens: Some(config.target_summary_tokens),
@@ -290,6 +291,7 @@ mod tests {
     #[test]
     fn kernel_compaction_settings_carry_the_whole_section() {
         let config = ContextCompactionConfig {
+            native_gpt: false,
             trigger_context_percent: Some(20),
             trigger_context_tokens: 999_999,
             next_user_reserve_tokens: 4096,
@@ -308,6 +310,7 @@ mod tests {
             Some(204_800),
             "有百分比时按窗口换算，忽略可能过期的固定阈值"
         );
+        assert_eq!(settings.native_gpt, Some(false));
         assert_eq!(settings.context_window_tokens, Some(1_024_000));
         assert_eq!(settings.recent_turns, Some(6));
         assert_eq!(

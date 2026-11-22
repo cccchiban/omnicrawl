@@ -4562,6 +4562,7 @@ dependencies = [
  "omnicrawl-session",
  "omnicrawl-version",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

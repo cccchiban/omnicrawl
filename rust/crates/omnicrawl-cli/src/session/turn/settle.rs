@@ -207,8 +207,7 @@ pub(crate) fn recover_context_overflow(
 ) -> Option<Vec<Value>> {
     let mut session = conn.borrow_mut().session.take()?;
     let api_key = read_api_key(model_config).unwrap_or_default();
-    let snapshot = conn.borrow().usage.borrow().last_request_messages.clone();
-    let last_request_messages = evicted_prefix(conn, &snapshot);
+    let last_request_messages = evicted_prefix(conn, previous_history);
     let projection = match recover_after_overflow(
         &session,
         model_config,
@@ -238,7 +237,10 @@ pub(crate) fn recover_context_overflow(
         }
     };
     match projection.as_ref() {
-        Some(history) => session.history = history.clone(),
+        Some(history) => {
+            session.history = history.clone();
+            conn.borrow().usage.borrow_mut().invalidate_compaction_baseline();
+        }
         None => {
             if let Err(detail) = session.reload_history() {
                 eprintln!("[kernel] 重建运行期历史失败：{detail}");
@@ -408,6 +410,9 @@ pub(crate) fn run_session_tail(
         compaction_progress(conn),
     ) {
         Ok(report) => {
+            if report.compacted {
+                conn.borrow().usage.borrow_mut().invalidate_compaction_baseline();
+            }
             if !report.compacted && !report.diagnostic.is_empty() {
                 eprintln!(
                     "[kernel] 模型摘要未通过校验，已跳过本回合压缩：{}",

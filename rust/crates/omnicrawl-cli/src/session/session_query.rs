@@ -53,6 +53,12 @@ pub(super) fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
             Some(session) => session,
             None => return,
         };
+        drop(connection);
+        if let Err(detail) = session.prepare_model_history(&model) {
+            conn.borrow_mut().session = Some(session);
+            conn.borrow_mut().respond_error(id, ErrorObject::new(error_code::INTERNAL_ERROR, detail));
+            return;
+        }
         let outcome = compact_now(
             &session,
             &model,
@@ -61,6 +67,9 @@ pub(super) fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
             compaction_progress(conn),
         );
         if let Ok(report) = outcome.as_ref() {
+            if report.compacted {
+                conn.borrow().usage.borrow_mut().invalidate_compaction_baseline();
+            }
             match report.history.clone() {
                 Some(history) => session.history = history,
                 None => {
@@ -71,7 +80,7 @@ pub(super) fn respond_compact(conn: &Rc<RefCell<Conn>>, id: Id) {
                 }
             }
         }
-        connection.session = Some(session);
+        conn.borrow_mut().session = Some(session);
         outcome
     };
 

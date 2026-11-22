@@ -280,6 +280,14 @@ fn fetch_one(options: &FetcherOptions, url: &str, plan: &FetchPlan) -> FetchEntr
 
 /// 走远程抓取接口；`None` 表示这次该交给本地抓取（未启用、或失败后回落）。
 fn fetch_remote_entry(options: &FetcherOptions, url: &str, plan: &FetchPlan) -> Option<FetchEntry> {
+    if !options.remote.uses_remote() || plan.max_html || super::fetch_engines::raw_resource(url) {
+        return None;
+    }
+    if let Err(error) = super::robots_cache::ensure_allowed(
+        options.transport.as_ref(), url, &options.user_agent,
+    ) {
+        return Some(FetchEntry::failed(url, error.message));
+    }
     let outcome = super::fetch_engines::remote_entry(
         options.transport.as_ref(),
         &options.remote,
@@ -343,8 +351,14 @@ fn fetch_one_inner(
             .map_err(|error| FetchError::Transport(error.kind, error.message))?;
         status = response.status;
         html_text = response.text();
-        final_url = response.final_url;
+        final_url = response.final_url.clone();
 
+        let media_type = response.header("content-type").unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        if status < 400 && !plan.max_html && (super::fetch_engines::raw_resource(url)
+            || (media_type.starts_with("text/") && media_type != "text/html")
+            || matches!(media_type.as_str(), "application/json" | "application/xml")) {
+            return Ok(FetchEntry::done(url, status, final_url, String::new(), truncate(&html_text, plan.max_chars)));
+        }
         // 页面脚本这一趟同时管两件事：把「写 cookie + 跳转」的挑战页走完，以及为
         // 外壳型页面重建正文。错误状态码只有在脚本确实喊了跳转时才值得跑一次脚本。
         let static_text = if plan.max_html {
@@ -1305,7 +1319,14 @@ g()
                 .lock()
                 .expect("锁")
                 .push((request.url.clone(), request.body.clone()));
-            let response = if request.url.starts_with("https://api.") {
+            let response = if request.url.ends_with("/robots.txt") {
+                crate::tools::web_transport::WebResponse {
+                    status: 200,
+                    final_url: request.url.clone(),
+                    body: b"User-agent: *\nAllow: /\nDisallow: /blocked\n".to_vec(),
+                    headers: Vec::new(),
+                }
+            } else if request.url.starts_with("https://api.") {
                 self.api_response.clone()
             } else {
                 self.page_response.clone()
@@ -1330,6 +1351,80 @@ g()
         }
     }
 
+    #[test]
+    fn anysearch_raw_resources_are_fetched_without_extraction() {
+        for (index, path) in ["/robots.txt", "/sitemap.xml", "/guide.md?lang=zh", "/data.json"].iter().enumerate() {
+            let url = format!("https://raw-{index}.example{path}");
+            let transport = RecordingTransport::split(
+                (422, r#"{"code":-1,"message":"Unable to extract content from the URL."}"#),
+                (200, "# 文档\n\n<model>gpt</model>\n"),
+            );
+            let options = FetcherOptions {
+                transport: transport.clone(),
+                proxy: Some(String::new()),
+                remote: remote_options("anysearch", "", false),
+                ..FetcherOptions::default()
+            };
+            let entry = fetch_one(&options, &url, &test_plan());
+            assert!(entry.error.is_none(), "{path}: {:?}", entry.error);
+            assert!(!transport.urls().iter().any(|target| target.contains("api.anysearch.com")));
+            if !path.ends_with("robots.txt") {
+                assert_eq!(entry.content, "# 文档\n\n<model>gpt</model>\n");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_resource_routing_still_obeys_robots() {
+        let transport = RecordingTransport::new(200, "不应读取");
+        let options = FetcherOptions {
+            transport: transport.clone(), proxy: Some(String::new()),
+            remote: remote_options("anysearch", "", true), ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://raw-denied.example/blocked/guide.md", &test_plan());
+        assert!(entry.error.expect("robots 应拒绝").contains("Disallow: /blocked"));
+        assert_eq!(transport.urls(), vec!["https://raw-denied.example/robots.txt"]);
+    }
+
+    #[test]
+    fn anysearch_422_falls_back_only_when_enabled() {
+        for fallback in [false, true] {
+            let transport = RecordingTransport::split(
+                (422, r#"{"code":-1,"message":"Unable to extract content from the URL."}"#),
+                (200, "<html><body><main>直连正文</main></body></html>"),
+            );
+            let options = FetcherOptions {
+                transport: transport.clone(), proxy: Some(String::new()),
+                remote: remote_options("anysearch", "", fallback), ..FetcherOptions::default()
+            };
+            let url = format!("https://anysearch-422-{fallback}.example/page");
+            let entry = fetch_one(&options, &url, &test_plan());
+            assert_eq!(entry.error.is_none(), fallback);
+            assert_eq!(transport.urls().contains(&url), fallback);
+            if fallback { assert!(entry.content.contains("直连正文")); }
+        }
+    }
+
+    #[test]
+    fn anysearch_raw_html_requests_keep_the_original_markup() {
+        let html = "<html><body><main>原始正文</main></body></html>";
+        let transport = RecordingTransport::split(
+            (200, r#"{"code":0,"data":{"content":"清洗后正文"}}"#), (200, html),
+        );
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("anysearch", "", false),
+            ..FetcherOptions::default()
+        };
+        let mut plan = test_plan();
+        plan.max_html = true;
+        let entry = fetch_one(&options, "https://raw-html.example/page", &plan);
+        assert!(entry.error.is_none(), "{:?}", entry.error);
+        assert_eq!(entry.content, html);
+        assert!(!transport.urls().iter().any(|target| target.contains("api.anysearch.com")));
+    }
+
     /// 远程成功时，正文与标题都来自接口，且不再走本地 HTML 提取。
     #[test]
     fn a_successful_remote_fetch_returns_the_api_payload() {
@@ -1347,12 +1442,12 @@ g()
             remote: remote_options("tavily", "tvly-key", true),
             ..FetcherOptions::default()
         };
-        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let url = "https://remote-success.example/a";
+        let entry = fetch_one(&options, url, &test_plan());
         assert!(entry.error.is_none(), "{:?}", entry.error);
         assert_eq!(entry.content, "接口给的正文");
         assert_eq!(entry.status, 200);
-        // 只打了接口，没有去连目标站点。
-        assert_eq!(transport.urls(), vec![crate::tools::fetch_engines::TAVILY_ENDPOINT]);
+        assert_eq!(transport.urls(), vec!["https://remote-success.example/robots.txt", crate::tools::fetch_engines::TAVILY_ENDPOINT]);
     }
 
     /// 远程失败且允许回落：改走本地直连，最终仍能拿到正文。
@@ -1366,11 +1461,13 @@ g()
             remote: remote_options("tavily", "bad-key", true),
             ..FetcherOptions::default()
         };
-        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let url = "https://remote-fallback.example/a";
+        let entry = fetch_one(&options, url, &test_plan());
         let urls = transport.urls();
-        assert_eq!(urls[0], crate::tools::fetch_engines::TAVILY_ENDPOINT, "先试接口");
+        assert_eq!(urls[0], "https://remote-fallback.example/robots.txt");
+        assert_eq!(urls[1], crate::tools::fetch_engines::TAVILY_ENDPOINT);
         assert!(
-            urls.iter().any(|url| url == "https://example.com/a"),
+            urls.iter().any(|target| target == url),
             "失败后应回落本地：{urls:?}"
         );
         assert!(entry.error.is_none(), "回落后不该报错：{:?}", entry.error);
@@ -1398,7 +1495,7 @@ g()
         );
     }
 
-    /// 缺凭据时不发请求：直接给出该去填哪个字段（回落开启时最终仍走本地）。
+    /// 缺凭据时不调用远程接口，仍先检查 robots。
     #[test]
     fn a_missing_key_points_at_the_config_field() {
         let transport = RecordingTransport::new(401, "{}");
@@ -1408,10 +1505,10 @@ g()
             remote: remote_options("exa", "", false),
             ..FetcherOptions::default()
         };
-        let entry = fetch_one(&options, "https://example.com/a", &test_plan());
+        let entry = fetch_one(&options, "https://remote-no-key.example/a", &test_plan());
         let error = entry.error.expect("应当报错");
         assert!(error.contains("exa_api_key"), "{error}");
-        assert!(transport.urls().is_empty(), "缺凭据不该发请求");
+        assert_eq!(transport.urls(), vec!["https://remote-no-key.example/robots.txt"]);
     }
 
     /// AnySearch 有匿名额度：空 Key 也能走远程。
@@ -1430,6 +1527,42 @@ g()
         let entry = fetch_one(&options, "https://example.com/a", &test_plan());
         assert!(entry.error.is_none(), "{:?}", entry.error);
         assert_eq!(entry.content, "匿名正文");
+    }
+
+    #[test]
+    fn keenable_public_fetch_checks_robots_before_the_api() {
+        let transport = RecordingTransport::new(200, r#"{"title":"页面标题","content":"公开正文"}"#);
+        let options = FetcherOptions {
+            transport: transport.clone(),
+            proxy: Some(String::new()),
+            remote: remote_options("keenable", "", false),
+            ..FetcherOptions::default()
+        };
+        let entry = fetch_one(&options, "https://keenable-success.example/a", &test_plan());
+        assert!(entry.error.is_none(), "{:?}", entry.error);
+        assert_eq!(entry.title, "页面标题");
+        assert_eq!(entry.content, "公开正文");
+        let urls = transport.urls();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://keenable-success.example/robots.txt");
+        assert!(urls[1].starts_with(crate::tools::fetch_engines::KEENABLE_PUBLIC_ENDPOINT));
+    }
+
+    #[test]
+    fn remote_robots_denial_never_calls_the_api_or_falls_back() {
+        for fallback in [false, true] {
+            let host = if fallback { "remote-deny-fallback.example" } else { "remote-deny.example" };
+            let transport = RecordingTransport::new(200, r#"{"content":"不应读取"}"#);
+            let options = FetcherOptions {
+                transport: transport.clone(),
+                proxy: Some(String::new()),
+                remote: remote_options("keenable", "", fallback),
+                ..FetcherOptions::default()
+            };
+            let entry = fetch_one(&options, &format!("https://{host}/blocked/page"), &test_plan());
+            assert!(entry.error.expect("应被 robots 拒绝").contains("Disallow: /blocked"));
+            assert_eq!(transport.urls(), vec![format!("https://{host}/robots.txt")]);
+        }
     }
 
     /// `local` 与空串都不走远程：配置缺省时行为与改造前完全一致。

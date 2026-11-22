@@ -17,12 +17,13 @@ const KNOWLEDGE_RUNNERS: [&str; 5] = ["kb_search", "kb_read", "kb_write", "kb_ap
 
 /// Windows 桌面工具：只由专职 Computer Use 子代理的子回合声明（`windows_tools` 为真时），
 /// 主代理的工具表里没有它们。
-const WINDOWS_RUNNERS: [&str; 5] = [
+const WINDOWS_RUNNERS: [&str; 6] = [
     "windows_window",
     "windows_control",
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
+    "windows_batch",
 ];
 
 /// 一条工具声明：模型侧看到的名字、说明与参数契约（不含执行函数）。
@@ -320,7 +321,7 @@ fn subagent_schema(template: &str, subagent_types: &[String]) -> Result<String, 
 
     let mut schema: Value = serde_json::from_str(template)
         .map_err(|error| AgentError::new(format!("SubAgent 参数 Schema 解析失败：{error}")))?;
-    match schema.pointer_mut("/properties/task/properties/subagent_type") {
+    match schema.pointer_mut("/properties/tasks/items/properties/subagent_type") {
         Some(Value::Object(field)) => {
             field.clear();
             field.insert("type".to_string(), Value::from("string"));

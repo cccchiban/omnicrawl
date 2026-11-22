@@ -51,6 +51,9 @@ impl App {
             SettingsChange::DecisionSwitch { key, enabled } => {
                 self.apply_decision_switch(key, *enabled)?
             }
+            SettingsChange::ResidentSkill { name } => {
+                self.apply_resident_skill(name.as_deref())?
+            }
             SettingsChange::SuggestionSwitch { enabled } => {
                 self.apply_suggestion_switch(*enabled)?
             }
@@ -60,6 +63,12 @@ impl App {
                 self.apply_tool_switch(name, *enabled)?
             }
             SettingsChange::ContextWindow { tokens } => self.apply_context_window(*tokens)?,
+            SettingsChange::NativeCompaction { enabled } => {
+                omnicrawl_config::features::context_compaction::save_native_gpt(
+                    &ConfigEnvironment::from_process(), *enabled, None,
+                ).map_err(|error| format!("设置未完成：{}", error.message()))?;
+                if *enabled { "GPT 原生压缩已开启。" } else { "已切换为摘要压缩。" }.to_string()
+            }
             SettingsChange::CompactionPercent { percent } => {
                 self.apply_compaction_percent(*percent)?
             }
@@ -139,6 +148,10 @@ impl App {
     /// 功能开关属于宿主/配置面，没有帧可发（`params` 为空时直接返回）。
     pub(super) fn push_session_settings(&mut self, change: &SettingsChange) {
         let compaction = match change {
+            SettingsChange::NativeCompaction { enabled } => Some(KernelCompactionConfig {
+                native_gpt: Some(*enabled),
+                ..KernelCompactionConfig::default()
+            }),
             SettingsChange::ContextWindow { .. } | SettingsChange::CompactionPercent { .. } => {
                 let percent = self
                     .settings
@@ -174,6 +187,10 @@ impl App {
                     ..SessionModelSettings::default()
                 })
             }
+            SettingsChange::ResidentSkill { .. } => Some(SessionModelSettings {
+                context_messages: self.prompt.context_messages(!self.registry.declarations().is_empty()).ok(),
+                ..SessionModelSettings::default()
+            }),
             SettingsChange::ToolSwitch { .. } => Some(SessionModelSettings {
                 tools: Some(self.registry.declarations()),
                 ..SessionModelSettings::default()

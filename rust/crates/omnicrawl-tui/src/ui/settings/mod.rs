@@ -15,6 +15,7 @@ pub mod picker;
 pub mod render;
 pub mod state;
 
+use omnicrawl_config::features::subagents::SubAgentConfig;
 use omnicrawl_config::models::llm::normalize_reasoning_effort;
 
 pub use form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
@@ -77,7 +78,7 @@ pub fn row_label(key: &str) -> String {
         "model_management" => "模型管理",
         "decision_models" => "结构化决策模型",
         "embedding_models" => "向量模型",
-        "suggestion" => "提问建议",
+        "suggestion" => "skills管理",
         "advisor" => "顾问设置",
         "tool_output_compression" => "工具输出压缩",
         "tools" => "工具设置",
@@ -113,7 +114,7 @@ pub struct SubagentAdvancedSpec {
 }
 
 /// 子任务设置页的高级参数表。
-pub const SUBAGENT_ADVANCED_SPECS: [SubagentAdvancedSpec; 4] = [
+pub const SUBAGENT_ADVANCED_SPECS: [SubagentAdvancedSpec; 5] = [
     SubagentAdvancedSpec {
         key: "default_timeout_seconds",
         label: "子任务超时（秒）",
@@ -138,7 +139,36 @@ pub const SUBAGENT_ADVANCED_SPECS: [SubagentAdvancedSpec; 4] = [
         options: &[15, 30, 60, 120, 360, 1440, 10080],
         is_float: false,
     },
+    SubagentAdvancedSpec {
+        key: "result_summary_chars",
+        label: "结果摘要上限（字符）",
+        options: &[500, 1000, 2000, 4000, 6000, 10000, 20000, 50000],
+        is_float: false,
+    },
 ];
+
+/// 子任务能力开关的标签表（键顺序与配置域的开关表一致）。
+pub const SUBAGENT_SWITCH_LABELS: [(&str, &str); 6] = [
+    ("allow_background", "允许后台运行"),
+    ("allow_standard_agent", "允许标准子代理"),
+    ("allow_fork", "允许 Fork 只读任务"),
+    ("allow_worktree", "允许隔离工作区"),
+    ("allow_shared_workspace_writes", "允许写入共享工作区"),
+    ("enable_verify_agent", "启用验证代理"),
+];
+
+/// 能力开关的一行取值：开关名 → 当前是否开启。
+pub fn subagent_switch_value(config: &SubAgentConfig, key: &str) -> bool {
+    match key {
+        "allow_background" => config.allow_background,
+        "allow_standard_agent" => config.allow_standard_agent,
+        "allow_fork" => config.allow_fork,
+        "allow_worktree" => config.allow_worktree,
+        "allow_shared_workspace_writes" => config.allow_shared_workspace_writes,
+        "enable_verify_agent" => config.enable_verify_agent,
+        _ => false,
+    }
+}
 
 /// 按档位表折算当前值并移动 `direction` 档（对映 Python 的档位循环：
 /// 值不在候选里时先取最接近的一档，再移动）。
@@ -161,8 +191,11 @@ pub fn cycle_subagent_option(options: &[i64], current: i64, direction: isize) ->
     options[((index as isize + direction).rem_euclid(count)) as usize]
 }
 
-/// 上下文长度候选（单位 K Token）。
-pub const CONTEXT_WINDOW_OPTIONS_K: [i64; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+/// 精确 Token 档位；272K 是 GPT 输入预算，400K 与 1050K 是总窗口。
+pub const CONTEXT_WINDOW_OPTIONS_TOKENS: [i64; 16] = [
+    32_000, 64_000, 128_000, 131_072, 200_000, 256_000, 272_000, 400_000,
+    500_000, 512_000, 1_000_000, 1_024_000, 1_047_576, 1_050_000, 2_000_000, 2_048_000,
+];
 
 /// 上下文压缩阈值候选（百分比，5 为一个单位）。
 pub const CONTEXT_COMPACTION_PERCENT_OPTIONS: [i64; 19] = [
@@ -171,12 +204,11 @@ pub const CONTEXT_COMPACTION_PERCENT_OPTIONS: [i64; 19] = [
 
 /// 把任意上下文窗口折算到候选档位，取最接近的一档（单位 Token）。
 pub fn nearest_context_window_tokens(window_tokens: i64) -> i64 {
-    CONTEXT_WINDOW_OPTIONS_K
+    CONTEXT_WINDOW_OPTIONS_TOKENS
         .iter()
         .copied()
-        .min_by_key(|option| (option * 1000 - window_tokens).abs())
-        .unwrap_or(128)
-        * 1000
+        .min_by_key(|option| option.abs_diff(window_tokens))
+        .unwrap_or(128_000)
 }
 
 /// 把任意百分比折算到候选档位（对映 `_context_compaction_percent`）。
@@ -231,10 +263,19 @@ pub fn reasoning_label(effort: &str) -> String {
 
 /// 上下文长度的候选（文案 + Token）。
 pub fn context_window_options() -> Vec<(String, i64)> {
-    CONTEXT_WINDOW_OPTIONS_K
+    CONTEXT_WINDOW_OPTIONS_TOKENS
         .iter()
-        .map(|k| (format!("{k}K"), k * 1000))
+        .map(|tokens| (context_window_label(*tokens), *tokens))
         .collect()
+}
+
+pub fn context_window_label(tokens: i64) -> String {
+    if tokens % 1000 == 0 {
+        format!("{}K", tokens / 1000)
+    } else {
+        let fraction = format!("{:03}", tokens % 1000);
+        format!("{}.{}K", tokens / 1000, fraction.trim_end_matches('0'))
+    }
 }
 
 /// 上下文压缩阈值的候选（文案 + 百分比）。
@@ -260,7 +301,10 @@ mod tests {
     fn nearest_options_snap_to_candidates() {
         assert_eq!(nearest_context_window_tokens(128_000), 128_000);
         assert_eq!(nearest_context_window_tokens(1), 32_000);
-        assert_eq!(nearest_context_window_tokens(300_000), 256_000);
+        assert_eq!(nearest_context_window_tokens(300_000), 272_000);
+        for tokens in CONTEXT_WINDOW_OPTIONS_TOKENS {
+            assert_eq!(nearest_context_window_tokens(tokens), tokens);
+        }
         assert_eq!(nearest_compaction_percent(80), 80);
         assert_eq!(nearest_compaction_percent(83), 85);
         assert_eq!(nearest_compaction_percent(0), 5);
@@ -301,11 +345,21 @@ mod tests {
     }
 
     #[test]
-    fn field_options_match_python_candidates() {
+    fn field_options_preserve_exact_token_counts() {
         let window = context_window_options();
-        assert_eq!(window.len(), CONTEXT_WINDOW_OPTIONS_K.len());
-        assert_eq!(window[0], ("32K".to_string(), 32_000));
-        assert_eq!(window[6], ("2048K".to_string(), 2_048_000));
+        assert_eq!(window.len(), CONTEXT_WINDOW_OPTIONS_TOKENS.len());
+        assert_eq!(window.first(), Some(&("32K".to_string(), 32_000)));
+        assert_eq!(window.last(), Some(&("2048K".to_string(), 2_048_000)));
+        assert!(window.windows(2).all(|pair| pair[0].1 < pair[1].1));
+        for (label, tokens) in [
+            ("131.072K", 131_072), ("200K", 200_000), ("272K", 272_000),
+            ("400K", 400_000), ("500K", 500_000), ("1000K", 1_000_000),
+            ("1047.576K", 1_047_576), ("1050K", 1_050_000), ("2000K", 2_000_000),
+        ] {
+            assert!(window.contains(&(label.to_string(), tokens)), "缺少 {label}");
+        }
+        assert_eq!(context_window_label(131_072), "131.072K");
+        assert_eq!(context_window_label(1_047_576), "1047.576K");
 
         let percent = context_compaction_options();
         assert_eq!(percent.len(), 19);

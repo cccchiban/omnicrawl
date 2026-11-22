@@ -4,13 +4,14 @@
 version = 1
 
 # SubAgent 全局边界：默认关闭；开启后三种角色的能力开关默认放开（verify / standard / worktree）。
+# 下列布尔边界与数值参数都能在 TUI 设置面板「子任务设置」页里改，改动即时生效。
 [subagents]
 enabled = false
 max_depth = 1
 default_timeout_seconds = 3600
 model_request_concurrency = 2
-# 保留以兼容既有配置；子代理已改为回合内同步串行执行，本项不再生效。
-allow_background = false
+# 允许 background=true 的任务在后台运行；未指定时仍以前台执行。
+allow_background = true
 # 仅开放已脱敏父公开上下文的 read_only/verify Fork；默认关闭。
 allow_fork = false
 allow_shared_workspace_writes = false

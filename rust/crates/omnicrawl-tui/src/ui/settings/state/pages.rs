@@ -372,12 +372,13 @@ pub(super) struct SubagentsState {
     pub(crate) status: String,
 }
 
-/// 提问建议页的界面状态：一个开关 + 下方 Skill 列表（回车看详情）。
+/// Skills 管理页的建议开关、常驻选择与描述列表。
 #[derive(Debug, Clone)]
 pub(super) struct SuggestionState {
     pub(crate) enabled: bool,
     pub(crate) skills: Vec<SuggestionSkillRow>,
-    /// 列表中选中的 Skill（开关行固定在最上方，不在这个下标里）。
+    pub(crate) resident_skill: Option<String>,
+    /// 当前页选中行，包括顶部设置行。
     pub(crate) selected: usize,
     /// 已打开的详情：`(选中的 Skill 下标, 详情内容的滚动起点)`。
     pub(crate) detail: Option<(usize, usize)>,

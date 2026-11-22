@@ -89,7 +89,7 @@ fn mask_block(block: &MessageBlock, role: &Role, ctx: &mut MaskContext<'_>) -> M
             })
         }
         // 图片块不参与文本匹配。
-        MessageBlock::Image(_) => block.clone(),
+        MessageBlock::Image(_) | MessageBlock::ResponsesCompaction(_) => block.clone(),
     }
 }
 
@@ -120,7 +120,7 @@ pub fn collect_request_texts(
                     texts.push(json_text(&Value::Object(call.arguments.clone())))
                 }
                 MessageBlock::ToolResult(result) => texts.push(result.content.clone()),
-                MessageBlock::Image(_) => {}
+                MessageBlock::Image(_) | MessageBlock::ResponsesCompaction(_) => {}
             }
         }
         for spec in &message.tools {
@@ -143,7 +143,7 @@ pub fn iter_message_texts(message: &ConversationMessage) -> Vec<String> {
             MessageBlock::ToolCall(call) => {
                 texts.push(json_text(&Value::Object(call.arguments.clone())))
             }
-            MessageBlock::Image(_) => {}
+            MessageBlock::Image(_) | MessageBlock::ResponsesCompaction(_) => {}
         }
     }
     texts
@@ -454,6 +454,9 @@ pub fn message_digest(message: &ConversationMessage) -> Vec<u8> {
                 digest_text(&mut digest, b"k", if result.ok { "1" } else { "0" });
                 digest_text(&mut digest, b"v", &result.content);
             }
+            MessageBlock::ResponsesCompaction(items) => {
+                digest_text(&mut digest, b"x", &json_text(&Value::Array(items.clone())));
+            }
             MessageBlock::Image(image) => {
                 digest_text(&mut digest, b"i", &image.media_type);
                 // detail 是枚举：缓存键只要求稳定区分，取它的调试表示即可。
@@ -477,7 +480,7 @@ fn masked_chars(message: &ConversationMessage) -> usize {
                     .chars()
                     .count()
             }
-            MessageBlock::Image(_) => {}
+            MessageBlock::Image(_) | MessageBlock::ResponsesCompaction(_) => {}
         }
     }
     total
@@ -506,7 +509,7 @@ fn message_texts(message: &ConversationMessage) -> Vec<String> {
             MessageBlock::ToolCall(call) => {
                 texts.push(json_text(&Value::Object(call.arguments.clone())))
             }
-            MessageBlock::Image(_) => {}
+            MessageBlock::Image(_) | MessageBlock::ResponsesCompaction(_) => {}
         }
     }
     texts

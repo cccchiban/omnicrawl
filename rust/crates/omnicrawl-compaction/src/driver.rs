@@ -30,6 +30,7 @@ use omnicrawl_session::{
 /// 压缩策略与阈值：对应 Python 的 `config.context_compaction` 加模型上下文窗口。
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {
+    pub native_gpt: bool,
     pub recent_turns: i64,
     pub target_summary_tokens: i64,
     pub next_user_reserve_tokens: i64,
@@ -45,6 +46,7 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
+            native_gpt: true,
             recent_turns: 3,
             target_summary_tokens: 2000,
             next_user_reserve_tokens: 4000,
@@ -543,6 +545,15 @@ impl CompactionDriver {
         session_id: &str,
         previous_history: &[Value],
     ) -> Result<AfterTurnReport, String> {
+        self.compact_incomplete_turn(session_id, previous_history, "context_overflow_recovery")
+    }
+
+    pub fn compact_incomplete_turn(
+        &self,
+        session_id: &str,
+        previous_history: &[Value],
+        reason: &str,
+    ) -> Result<AfterTurnReport, String> {
         let events = self
             .store
             .read_active_events(session_id)
@@ -564,7 +575,11 @@ impl CompactionDriver {
             };
             self.append_event(
                 session_id,
-                "context_overflow_recovery_failed",
+                if reason == "context_overflow_recovery" {
+                    "context_overflow_recovery_failed"
+                } else {
+                    "context_compaction_failed"
+                },
                 &json!({"reason": diagnostic}),
             )?;
             return Ok(AfterTurnReport {
@@ -578,6 +593,7 @@ impl CompactionDriver {
         };
 
         let mut payload = compact_payload.as_object().cloned().unwrap_or_default();
+        payload.insert("decision_reason".to_string(), Value::from(reason));
         let archive_id = match self.archive_events(session_id, &payload, &events)? {
             Some((archive_id, _count)) => {
                 payload.insert("archive_id".to_string(), Value::from(archive_id.clone()));
@@ -595,10 +611,10 @@ impl CompactionDriver {
         let recall_text = self.remember_recall(&payload, session_id);
         self.append_event(
             session_id,
-            "context_overflow_recovery",
+            reason,
             &json!({
                 "mode": "model_summary",
-                "decision_reason": "context_overflow_recovery",
+                "decision_reason": reason,
                 "single_large_turn": single_large_turn,
                 "archive_id": archive_id,
             }),

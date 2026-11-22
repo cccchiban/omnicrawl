@@ -1,4 +1,4 @@
-//! 提问建议页：上方一个开关，下方 Skill 列表（选中回车看描述详情）。
+//! Skills 管理页：建议开关、常驻选择与 Skill 描述列表。
 //!
 //! 开关选中即写盘；Skill 列表只是给用户看「本机装了哪些 Skill、各自能做什么」，
 //! 详情把描述按面板宽度折行铺开，一次显示 [`SUGGESTION_DETAIL_ROWS`] 行，其余靠 ↑↓/滚轮翻。
@@ -7,6 +7,8 @@ use super::*;
 
 /// 开关行在整页行序里的下标（Skill 行从它之后开始）。
 const SWITCH_ROW: usize = 0;
+pub(super) const RESIDENT_SKILL_ROW: usize = 1;
+pub(super) const SKILL_ROWS_START: usize = 2;
 
 impl SettingsState {
     /// `↑`/`↓` 选行；开关行上 `←`/`→`/`Enter`/空格 切换；Skill 行上 `Enter` 看详情；`Esc` 返回。
@@ -27,9 +29,19 @@ impl SettingsState {
                 self.toggle_suggestion()
             }
             KeyCode::Char(' ') if self.suggestion_on_switch() => self.toggle_suggestion(),
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.suggestion.selected == RESIDENT_SKILL_ROW =>
+            {
+                self.open_dropdown();
+                None
+            }
             KeyCode::Enter => {
                 if self.suggestion_on_switch() {
                     return self.toggle_suggestion();
+                }
+                if self.suggestion.selected == RESIDENT_SKILL_ROW {
+                    self.open_dropdown();
+                    return None;
                 }
                 self.open_suggestion_detail();
                 None
@@ -67,9 +79,9 @@ impl SettingsState {
         self.suggestion.selected == SWITCH_ROW
     }
 
-    /// 整页的行数：开关行 + Skill 列表。
+    /// 整页行数：建议开关、常驻选择与 Skill 列表。
     pub fn suggestion_row_count(&self) -> usize {
-        SWITCH_ROW + 1 + self.suggestion.skills.len()
+        SKILL_ROWS_START + self.suggestion.skills.len()
     }
 
     /// 翻转开关：产出的是**目标状态**而不是「翻转」，宿主拿到就能直接写盘。
@@ -81,7 +93,7 @@ impl SettingsState {
 
     /// 打开选中 Skill 的详情（滚动位置归零）。
     pub(super) fn open_suggestion_detail(&mut self) {
-        let Some(index) = self.suggestion.selected.checked_sub(SWITCH_ROW + 1) else {
+        let Some(index) = self.suggestion.selected.checked_sub(SKILL_ROWS_START) else {
             return;
         };
         if index >= self.suggestion.skills.len() {

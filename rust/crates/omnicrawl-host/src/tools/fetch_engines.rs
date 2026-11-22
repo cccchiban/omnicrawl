@@ -1,6 +1,6 @@
 //! 第三方抓取接口的适配：把「取一个网址的正文」交给各家接口，再把回包收敛成同一种结果。
 //!
-//! 六家的请求与回包形状各不相同（请求字段、鉴权头、正文所在字段、失败怎么表达），
+//! 七家的请求与回包形状各不相同（请求字段、鉴权头、正文所在字段、失败怎么表达），
 //! 差异全部收在这一个文件里；`fetcher` 只关心「拿到正文 / 没拿到」。
 //!
 //! | 引擎 | 端点 | 鉴权 | 正文 |
@@ -11,6 +11,7 @@
 //! | AnySearch | `POST /v1/extract` | `Authorization: Bearer`（可匿名） | `data.content` |
 //! | TinyFish | `POST https://api.fetch.tinyfish.ai` | `X-API-Key` | `results[].text` |
 //! | DeepSeek | `POST /v1/tools/fetch` | `Authorization: Bearer` | `content` |
+//! | Keenable | `GET /v1/fetch` 或 `/v1/fetch/public` | `X-API-Key` 或 `X-Keenable-Title` | `content` |
 //!
 //! 两处「回包里也有失败」的行为必须照做：Tavily 单网址失败进 `failed_results`、TinyFish
 //! 进 `errors[]`，两者 HTTP 状态都还是 200。只看状态码会把失败当成功，正文变成空串。
@@ -38,6 +39,8 @@ pub const ANYSEARCH_ENDPOINT: &str = "https://api.anysearch.com/v1/extract";
 pub const TINYFISH_ENDPOINT: &str = "https://api.fetch.tinyfish.ai";
 /// DeepSeek 抓取接口。
 pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/v1/tools/fetch";
+pub const KEENABLE_ENDPOINT: &str = "https://api.keenable.ai/v1/fetch";
+pub const KEENABLE_PUBLIC_ENDPOINT: &str = "https://api.keenable.ai/v1/fetch/public";
 
 /// 回包里能取到的正文上限（字符）：接口自己的上限可能更高，但模型的上下文不该被一节撑满。
 ///
@@ -71,15 +74,27 @@ pub struct RemoteRequest<'a> {
     pub timeout: Duration,
 }
 
+pub(super) fn raw_resource(url: &str) -> bool {
+    let path = super::robots::request_path(url);
+    let path = path.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+    [".txt", ".md", ".markdown", ".xml", ".json", ".jsonl", ".csv"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
+}
+
 /// 按引擎分派一次远程抓取。
 pub fn fetch_remote(request: &RemoteRequest<'_>) -> Result<RemotePage, RemoteError> {
-    let prepared = prepare(request);
-    let mut web = WebRequest::post_json(
-        prepared.endpoint,
-        prepared.headers,
-        &prepared.payload.to_string(),
-        request.timeout,
-    );
+    let mut web = if request.engine == "keenable" {
+        prepare_keenable(request)
+    } else {
+        let prepared = prepare(request);
+        WebRequest::post_json(
+            prepared.endpoint,
+            prepared.headers,
+            &prepared.payload.to_string(),
+            request.timeout,
+        )
+    };
     web.proxy = request.proxy.clone();
     web.insecure = request.insecure;
     web.impersonate = request.impersonate.clone();
@@ -88,6 +103,9 @@ pub fn fetch_remote(request: &RemoteRequest<'_>) -> Result<RemotePage, RemoteErr
         .send(&web)
         .map_err(|error| RemoteError(format!("{} 接口请求失败：{}", label(request.engine), error.message)))?;
     let body = response.text();
+    if request.engine == "anysearch" && response.status == 422 {
+        return Err(RemoteError("AnySearch 无法提取该网址的正文（HTTP 422），不代表服务不可用。".to_string()));
+    }
     if response.status >= 400 {
         return Err(RemoteError(format!(
             "{} 接口返回 HTTP {}：{}",
@@ -97,6 +115,30 @@ pub fn fetch_remote(request: &RemoteRequest<'_>) -> Result<RemotePage, RemoteErr
         )));
     }
     parse_page(request.engine, request.url, &body)
+}
+
+fn prepare_keenable(request: &RemoteRequest<'_>) -> WebRequest {
+    let (endpoint, header) = if request.api_key.is_empty() {
+        (KEENABLE_PUBLIC_ENDPOINT, ("X-Keenable-Title", "OmniCrawl"))
+    } else {
+        (KEENABLE_ENDPOINT, ("X-API-Key", request.api_key))
+    };
+    let mut encoded = String::new();
+    for byte in request.url.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    let mut web = WebRequest::new(
+        format!("{endpoint}?url={encoded}&max_chars={MAX_BODY_CHARS}&live=true"),
+        vec![(header.0.to_string(), header.1.to_string())],
+        request.timeout,
+    );
+    web.max_redirects = 0;
+    web
 }
 
 /// 一个引擎的请求三件套：地址、请求头与 JSON 请求体。
@@ -168,6 +210,7 @@ fn endpoint_of(engine: &str) -> &'static str {
         "anysearch" => ANYSEARCH_ENDPOINT,
         "tinyfish" => TINYFISH_ENDPOINT,
         "deepseek" => DEEPSEEK_ENDPOINT,
+        "keenable" => KEENABLE_ENDPOINT,
         _ => TAVILY_ENDPOINT,
     }
 }
@@ -180,6 +223,7 @@ pub fn label(engine: &str) -> &'static str {
         "anysearch" => "AnySearch",
         "tinyfish" => "TinyFish",
         "deepseek" => "DeepSeek",
+        "keenable" => "Keenable",
         _ => "Tavily",
     }
 }
@@ -192,16 +236,17 @@ pub fn key_field(engine: &str) -> &'static str {
         "anysearch" => "anysearch_api_key",
         "tinyfish" => "tinyfish_api_key",
         "deepseek" => "deepseek_api_key",
+        "keenable" => "keenable_api_key",
         _ => "tavily_api_key",
     }
 }
 
-/// 这个引擎的 Key 能不能留空（只有 AnySearch 有匿名额度）。
+/// AnySearch 与 Keenable 支持无 Key 调用。
 pub fn key_optional(engine: &str) -> bool {
-    engine == "anysearch"
+    matches!(engine, "anysearch" | "keenable")
 }
 
-/// 解析回包：六家的正文位置与失败表达都不同。
+/// 解析回包：各家的正文位置与失败表达不同。
 fn parse_page(engine: &str, url: &str, body: &str) -> Result<RemotePage, RemoteError> {
     let parsed: Value = serde_json::from_str(body).map_err(|_| {
         RemoteError(format!(
@@ -216,6 +261,7 @@ fn parse_page(engine: &str, url: &str, body: &str) -> Result<RemotePage, RemoteE
         "firecrawl" => parse_firecrawl(&parsed),
         "anysearch" => parse_anysearch(&parsed),
         "tinyfish" => parse_tinyfish(url, &parsed),
+        "keenable" => parse_keenable(&parsed),
         _ => parse_deepseek(&parsed),
     }
 }
@@ -394,6 +440,22 @@ fn parse_deepseek(parsed: &Value) -> Result<RemotePage, RemoteError> {
     })
 }
 
+fn parse_keenable(parsed: &Value) -> Result<RemotePage, RemoteError> {
+    let content = parsed.get("content").and_then(Value::as_str).unwrap_or("");
+    if !text_of(parsed.get("error")).is_empty() || content.trim().is_empty() {
+        let reason = if parsed.get("error").is_some() {
+            detail_of(&parsed.to_string())
+        } else {
+            "回包里没有正文".to_string()
+        };
+        return Err(RemoteError(format!("Keenable 未能取出内容：{reason}")));
+    }
+    Ok(RemotePage {
+        title: text_of(parsed.get("title")),
+        content: take(content, MAX_BODY_CHARS),
+    })
+}
+
 /// 报错里带出的回包片段：给出可定位的线索，又不把整份回包塞进上下文。
 fn detail_of(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
@@ -493,13 +555,13 @@ impl RemoteFetchOptions {
             .unwrap_or("")
     }
 
-    /// `balanced` 时可轮转的引擎：有凭据的引擎，AnySearch 无凭据也能匿名参与。
+    /// `balanced` 时仅 AnySearch 匿名参与；Keenable 的共享公共池留给显式选择。
     ///
     /// 顺序按 [`REMOTE_FETCH_ENGINES`] 固定，轮转结果因此可复现。
     pub fn balanced_candidates(&self) -> Vec<String> {
         omnicrawl_config::features::fetcher::REMOTE_FETCH_ENGINES
             .iter()
-            .filter(|engine| !self.api_key_for(engine).is_empty() || key_optional(engine))
+            .filter(|engine| !self.api_key_for(engine).is_empty() || **engine == "anysearch")
             .map(|engine| (*engine).to_string())
             .collect()
     }
@@ -573,7 +635,7 @@ pub fn remote_entry(
         Err(error) => {
             if options.fallback_local {
                 diagnostics::warn(format!(
-                    "[host] 远程抓取不可用，改用本地直连：{}：{}",
+                    "[host] 远程正文提取失败，改用本地直连：{}：{}",
                     plan.url, error.0
                 ));
                 None
@@ -763,6 +825,7 @@ mod tests {
             ("anysearch", json!({"code": 0, "data": {"title": "任意标题", "content": "任意正文"}}), "任意标题"),
             ("tinyfish", json!({"results": [{"url": "https://example.com/article", "text": "小鱼正文"}], "errors": []}), ""),
             ("deepseek", json!({"title": "深寻标题", "content": "深寻正文"}), "深寻标题"),
+            ("keenable", json!({"url": "https://example.com/article", "title": "Keenable 标题", "content": "Keenable 正文", "truncated": false}), "Keenable 标题"),
         ];
         for (engine, payload, expected_title) in cases {
             let transport = StubTransport::new(200, &payload.to_string());
@@ -770,6 +833,14 @@ mod tests {
             assert!(page.content.contains("正文"), "{engine} 的正文：{}", page.content);
             assert_eq!(page.title, expected_title, "{engine} 的标题");
         }
+    }
+
+    #[test]
+    fn anysearch_422_is_a_url_extraction_failure() {
+        let transport = StubTransport::new(422, r#"{"code":-1,"message":"Unable to extract content from the URL."}"#);
+        let error = fetch_remote(&request("anysearch", &transport)).expect_err("应当报告单网址失败");
+        assert!(error.0.contains("无法提取该网址"), "{}", error.0);
+        assert!(error.0.contains("HTTP 422"), "{}", error.0);
     }
 
     #[test]
@@ -799,6 +870,58 @@ mod tests {
         );
         assert!(key_optional("anysearch"));
         assert!(!key_optional("tavily"));
+    }
+
+    #[test]
+    fn keenable_get_encodes_the_url_and_selects_authentication() {
+        for key in ["test-key", ""] {
+            let transport = StubTransport::new(200, r#"{"content":"正文"}"#);
+            let mut input = request("keenable", &transport);
+            input.api_key = key;
+            input.url = "https://example.com/中文?a=1&b=x+y#part";
+            fetch_remote(&input).expect("应当解析出正文");
+            let sent = transport.sent();
+            let sent = sent.first().expect("应当发送一次请求");
+            let endpoint = if key.is_empty() { KEENABLE_PUBLIC_ENDPOINT } else { KEENABLE_ENDPOINT };
+            assert_eq!(sent.method, "GET");
+            assert_eq!(sent.url, format!("{endpoint}?url=https%3A%2F%2Fexample.com%2F%E4%B8%AD%E6%96%87%3Fa%3D1%26b%3Dx%2By%23part&max_chars=200000&live=true"));
+            assert!(sent.body.is_empty());
+            assert_eq!(sent.max_redirects, 0);
+            let expected = if key.is_empty() {
+                ("X-Keenable-Title".to_string(), "OmniCrawl".to_string())
+            } else {
+                ("X-API-Key".to_string(), key.to_string())
+            };
+            assert_eq!(sent.headers, vec![expected]);
+            assert_eq!(sent.proxy, Some(String::new()));
+            assert_eq!(sent.impersonate.as_deref(), Some("chrome"));
+            assert_eq!(sent.timeout, Duration::from_secs(5));
+        }
+        assert!(key_optional("keenable"));
+        assert_eq!(key_field("keenable"), "keenable_api_key");
+    }
+
+    #[test]
+    fn keenable_rejects_errors_empty_and_invalid_content() {
+        for (status, payload, expected) in [
+            (403, json!({"error": "Upstream forbidden"}), "HTTP 403"),
+            (200, json!({"error": "Upstream forbidden", "content": "unexpected"}), "Upstream forbidden"),
+            (200, json!({"content": "  "}), "没有正文"),
+            (200, json!({"content": {"text": "not markdown"}}), "没有正文"),
+        ] {
+            let transport = StubTransport::new(status, &payload.to_string());
+            let error = fetch_remote(&request("keenable", &transport)).expect_err("应当拒绝失败回包");
+            assert!(error.0.contains("Keenable"), "{}", error.0);
+            assert!(error.0.contains(expected), "{}", error.0);
+        }
+    }
+
+    #[test]
+    fn keenable_joins_balancing_only_with_a_key() {
+        let mut options = RemoteFetchOptions::default();
+        assert_eq!(options.balanced_candidates(), vec!["anysearch".to_string()]);
+        options.api_keys.push(("keenable".to_string(), "test-key".to_string()));
+        assert_eq!(options.balanced_candidates(), vec!["anysearch".to_string(), "keenable".to_string()]);
     }
 
     /// 轮转要真的均摊：连续四次调用应覆盖全部两家候选。

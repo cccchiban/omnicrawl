@@ -97,6 +97,22 @@ impl KernelSession {
         Ok(())
     }
 
+    pub(crate) fn prepare_model_history(&mut self, model: &KernelModelConfig) -> Result<(), String> {
+        self.ensure_history()?;
+        let native = self.history.iter().find(|message| message.get("responses_compaction").is_some());
+        let Some(native) = native else { return Ok(()); };
+        if crate::native_compaction::enabled(self, model)
+            && native.get("responses_compaction_model").and_then(Value::as_str) == Some(model.model.as_str())
+            && native.get("responses_compaction_base_url").and_then(Value::as_str) == Some(model.base_url.as_str()) {
+            return Ok(());
+        }
+        self.append("compact_summary", json!({
+            "content": "已从完整转录恢复上下文。",
+            "restore_native_history": true,
+        }))?;
+        self.reload_history()
+    }
+
     /// 运行期历史是否已被换出（为空并不代表没历史——那要看转录）。
     pub fn history_released(&self) -> bool {
         self.history_released
@@ -151,7 +167,8 @@ impl KernelSession {
             .map_err(|error| error.message().to_string())?;
         self.session_id = created.session_id;
         let _ = self.store.discard_empty_session(&previous);
-        self.reload_history()?;
+        self.history = Vec::new();
+        self.history_released = false;
         Ok(self.session_id.clone())
     }
 
@@ -252,6 +269,10 @@ pub fn overlay_compaction_config(
     settings: &KernelCompactionConfig,
 ) -> Vec<&'static str> {
     let mut applied = Vec::new();
+    if let Some(value) = settings.native_gpt {
+        config.native_gpt = value;
+        applied.push("compaction.native_gpt");
+    }
     if let Some(value) = settings.recent_turns {
         config.recent_turns = value;
         applied.push("compaction.recent_turns");
@@ -312,12 +333,18 @@ fn build_driver(
         Err(omnicrawl_core::LoopError::ReplySource(message)) => return Err(message),
         Err(other) => return Err(format!("{other:?}")),
     };
+    let mut prefix = last_request_messages.to_vec();
+    omnicrawl_protocol::normalize_call_ids(&mut prefix);
+    omnicrawl_protocol::repair_tool_pairing(&mut prefix);
+    let tools = model.tools.iter().filter_map(omnicrawl_protocol::tool_spec_from_openai_item).collect::<Vec<_>>();
+    let (_, names) = omnicrawl_protocol::conform_tool_names(&tools);
+    names.restore_wire_names(&mut prefix);
     let adapter = SummaryModelAdapter::new(SummaryAdapterSettings {
         runtime,
         model: model.model.clone(),
         provider: String::new(),
         system_prompt: model.system_prompt.clone(),
-        prefix: last_request_messages.to_vec(),
+        prefix,
         tools: model.tools.clone(),
         options: crate::session::parse_options(model)
             .map_err(|error| error.message().to_string())?,
@@ -370,6 +397,9 @@ pub fn compact_after_turn(
     task_hint: &str,
     on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
+    if crate::native_compaction::enabled(session, model) {
+        return crate::native_compaction::after_turn(session, model, api_key, history_messages, usage, last_request_input_tokens, on_start);
+    }
     let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     let boundary = TurnBoundary {
         session_id: &session.session_id,
@@ -395,8 +425,52 @@ pub fn compact_now(
     last_request_messages: &[Value],
     on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
+    if crate::native_compaction::enabled(session, model) {
+        return crate::native_compaction::compact(session, model, api_key, &session.history, on_start);
+    }
     let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     driver.manual_compact(&session.session_id)
+}
+
+pub(crate) fn compact_before_request(
+    session: &KernelSession,
+    model: &KernelModelConfig,
+    api_key: &str,
+    messages: &[Value],
+    usage: TokenUsageSample,
+    provider_input_tokens: i64,
+    on_start: Option<Rc<dyn Fn()>>,
+) -> Result<AfterTurnReport, String> {
+    let history = messages.strip_prefix(model.context_messages.as_slice()).unwrap_or(messages);
+    let config = &session.config;
+    let measurement = ContextCompactionService::new().measure_after_complete_turn(
+        omnicrawl_controllers::context_compaction::MeasureInput {
+            system_prompt: model.system_prompt.clone(),
+            context_messages: model.context_messages.clone(),
+            history_messages: history.to_vec(),
+            tool_schemas: model.tools.clone(),
+            recent_turns: config.recent_turns,
+            target_summary_tokens: config.target_summary_tokens,
+            next_user_reserve_tokens: 0,
+            trigger_context_tokens: config.trigger_context_tokens,
+            context_window_tokens: config.context_window_tokens,
+            usage, provider_input_tokens,
+            emergency_context_ratio: config.emergency_context_ratio,
+            nodes: Vec::new(),
+        },
+    ).map_err(|error| error.message().to_string())?;
+    if !measurement.snapshot.trigger_reached && !measurement.snapshot.emergency_ratio_reached {
+        return Ok(AfterTurnReport::default());
+    }
+    session.append("context_compaction_measurement", measurement.event_payload.clone())?;
+    let mut report = if crate::native_compaction::enabled(session, model) {
+        crate::native_compaction::compact(session, model, api_key, history, on_start)?
+    } else {
+        let driver = build_driver(session, model, api_key, messages, on_start)?;
+        driver.compact_incomplete_turn(&session.session_id, history, "context_threshold_compaction")?
+    };
+    report.measurement_payload = measurement.event_payload;
+    Ok(report)
 }
 
 /// 上下文超限后的恢复：压缩当前未完成回合，返回可继续的历史投影。
@@ -408,6 +482,18 @@ pub fn recover_after_overflow(
     previous_history: &[Value],
     on_start: Option<Rc<dyn Fn()>>,
 ) -> Result<AfterTurnReport, String> {
+    if crate::native_compaction::enabled(session, model) {
+        let mut report = crate::native_compaction::compact(session, model, api_key, previous_history, on_start)?;
+        if report.compacted {
+            let prompt = omnicrawl_controllers::shared::CONTEXT_OVERFLOW_RECOVERY_PROMPT;
+            session.append("context_overflow_recovery", json!({"mode": "openai_native"}))?;
+            session.append("user_message", json!({"content": prompt}))?;
+            if let Some(history) = report.history.as_mut() {
+                history.push(json!({"role": "user", "content": prompt}));
+            }
+        }
+        return Ok(report);
+    }
     let driver = build_driver(session, model, api_key, last_request_messages, on_start)?;
     driver.recover_after_overflow(&session.session_id, previous_history)
 }
@@ -478,6 +564,7 @@ mod tests {
     #[test]
     fn host_compaction_settings_reach_the_driver_verbatim() {
         let config = compaction_config(Some(&KernelCompactionConfig {
+            native_gpt: Some(false),
             recent_turns: Some(6),
             target_summary_tokens: Some(0),
             next_user_reserve_tokens: Some(4096),
@@ -489,6 +576,7 @@ mod tests {
             archive_compacted_events: Some(true),
             auto_memory_recall: Some(true),
         }));
+        assert!(!config.native_gpt);
         assert_eq!(config.recent_turns, 6);
         assert_eq!(
             config.target_summary_tokens, 0,

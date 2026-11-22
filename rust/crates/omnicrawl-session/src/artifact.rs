@@ -43,7 +43,23 @@ impl SessionArtifactStore {
         } else {
             raw.clone()
         };
-        let safe = redact_sensitive_values(&prepared);
+        let mut safe = redact_sensitive_values(&prepared);
+        if event_type == "compact_summary" {
+            if let Some(items) = prepared.get("responses_compaction").and_then(Value::as_array) {
+                let items: Vec<Value> = items.iter().map(|item| {
+                    if item.get("type").and_then(Value::as_str) == Some("compaction") {
+                        let mut safe_item = redact_sensitive_values(item);
+                        if let Some(encrypted) = item.get("encrypted_content") {
+                            safe_item["encrypted_content"] = encrypted.clone();
+                        }
+                        safe_item
+                    } else {
+                        redact_sensitive_values(item)
+                    }
+                }).collect();
+                safe["responses_compaction"] = Value::Array(items);
+            }
+        }
         if event_type == "tool_result" {
             return self.prepare_tool_result_payload(session_id, &safe);
         }
@@ -642,4 +658,23 @@ fn take_chars(text: &str, count: usize) -> String {
 fn take_last_chars(text: &str, count: usize) -> String {
     let total = char_len(text);
     text.chars().skip(total.saturating_sub(count)).collect()
+}
+
+#[cfg(test)]
+mod native_compaction_tests {
+    use super::*;
+
+    #[test]
+    fn native_items_are_not_truncated_and_ciphertext_is_not_redacted() {
+        let store = SessionArtifactStore::new("unused", "unused/artifacts");
+        let mut items = (0..120).map(|index| serde_json::json!({
+            "role": "user", "content": [{"type": "input_text", "text": index.to_string()}],
+        })).collect::<Vec<_>>();
+        let encrypted = "opaque-password=keep-exactly";
+        items.push(serde_json::json!({"type": "compaction", "id": "cmp_test", "encrypted_content": encrypted}));
+        let payload = serde_json::json!({"responses_compaction": items});
+        let prepared = store.prepare_event_payload("20260101-000000-abcdef", "compact_summary", Some(&payload)).unwrap();
+        assert_eq!(prepared["responses_compaction"].as_array().unwrap().len(), 121);
+        assert_eq!(prepared["responses_compaction"][120]["encrypted_content"], encrypted);
+    }
 }

@@ -114,6 +114,9 @@ impl ToolBatchHost for BackgroundTools {
         calls: &[ToolCall],
         _first_step: usize,
     ) -> Result<Vec<AgentLoopObservation>, LoopError> {
+        if self.conn.borrow().child_cancel.as_ref().is_some_and(CancelToken::is_set) {
+            return Err(LoopError::Cancelled("子任务已取消。".to_string()));
+        }
         // 开始事件先发：宿主据此把工具卡挂进子代理会话面板。
         if self.stream {
             for call in calls {
@@ -192,6 +195,7 @@ pub(crate) struct BackgroundModelPort {
 
 impl ReplySource for BackgroundModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        if self.cancel.is_set() { return Err(LoopError::Cancelled("子任务已取消。".to_string())); }
         self.model_turns += 1;
         if self.runtime.is_none() {
             self.runtime = Some(build_model_runtime(&self.config)?);

@@ -35,6 +35,13 @@
 | 输入框 | 待决面板 + 输入区整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体 / 方框上边框的运行状态） | 键盘与鼠标输入、清单与队列变化、状态行 spinner |
 | 底部 | 单行 HUD（遥测 + 工作区） | 遥测刷新（文本真的变了才置脏） |
 
+`/new` 由宿主异步发送，等待期间持续处理内核帧；后续输入排队到新建回执之后。
+只有成功回执才切换会话、清空视图和遥测，失败保留旧会话；管道断开会立即识别为内核退出。
+取消后等待旧回合终态，再推进 `/new` 和排队输入；期间忽略旧回合增量。帧泵每次最多处理 64 帧，给输入和绘制让路。
+切换只更新工具表的会话记忆绑定，不重建 MCP 能力与执行资源；旧工具结果按批次 ID 隔离，不会回填新会话。
+「模型管理 → 模型与参数 → GPT 原生压缩」默认开启，关闭后切回摘要压缩；配置键为
+`[context_compaction] native_gpt`，通过 `session.settings` 热更新。
+
 遥测随会话走：`/new`（以及 `/archive` 归档后自动新开）换到的是一份空会话，`AppState::reset_telemetry`
 把 ↑/↓/† 与速率清零并重建底栏——沿用上一份会话的用量就是底栏在报旧账。`context_window`
 （上下文占用条的分母）按配置口径算，与哪份会话无关，因此保留；`Ctrl+L` 只清视图不动会话，
@@ -450,10 +457,10 @@ OpenRouter 走 `reasoning_details` 数组；早先只认第一个，用其它字
 - **首片立刻整片可见**（`start(index, first)`）。以前首片把 `revealed` 归零，于是永远先空一帧
   再由显现器追上来——慢流（模型逐字吐）时看上去就是「卡一下才出字」，用户报的「思考未流式
   显示、而是一口气输出」正出在这里。
-- **按经过时间推进**（`advance(now)`，`REASONING_REVEAL_CHARS_PER_SECOND = 200`）。以前每帧
-  固定步长，帧率一抖（工具卡重排、图片解码、大批工具结果都会拖长某些帧）思考就停住不动、
-  随后一次性补上；现在帧多帧少都是同一速度，单帧仍以 `REASONING_REVEAL_MAX_CHARS` 封顶，
-  避免长时间卡顿后整屏跳变。
+- **按经过时间与积压推进**（`advance(now)`）。最低速率为每秒 200 字符；积压增大时按
+  `REASONING_REVEAL_CATCHUP = 100ms` 的追赶窗口加速，不再受固定单帧字符上限限制，避免
+  高速模型已经输出大量思考而画面仍缓慢打字。没有经过时间就不额外推进，不足一字符的时间
+  保留到下一帧，正常流仍平滑显现。
 - **回合收口用 `catch_up` 而不是 `settle`**。`settle` 会一次性把 backlog 置为全文，最后一整段
   思考因此在收口那一瞬整块出现——这是「一口气输出」的第二个来源。`catch_up` 只把已到达的
   部分补到最新并保持跟踪，收口后仍有增量（工具批次之后接着生成）时照常按节奏铺开。
@@ -733,6 +740,13 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 结构化决策模型 | 已实现（Rust 专有） | 决策渠道列表 + 单条决策渠道表单（渠道名称 / 请求方式 / Base URL 或 Account ID / **API Key** / 模型 ID / 失败重试次数 / 启用），键位与「模型渠道」页一致：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 `Ctrl+S` 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 「请求方式」展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃。保存走 `save_decision_model_configuration` 写 `decision_models.toml`（默认一条 Jev 渠道：`https://api.typesafe.ai` + `jev-latest`），密钥同样只渲染掩码且**留空＝不改动**。「请求方式」候选与配置域 `DECISION_MODES` 同源，四项：`jev`（官方 TypeSafe System One 接口，`POST {base_url}/v1/systemone`）、`onejev`（同一形状的本机自部署，回环地址走管道）、`chat_completions`（OpenAI 兼容，`POST {base_url}/chat/completions`，`base_url` 按 OpenAI 兼容口径填到 `/v1`，`state` + `questions` 作为 user 消息发出并从返回内容里解析 `answers`）与 `cloudflare_workers_ai`（Cloudflare Workers AI 上的决策模型：请求形状与 `jev` 一致——`model` + `state` + `questions` 进、顶层 `answers` 出——但**不显示 Base URL**：地址由官方前缀 + 表单里的 `Account ID` 拼成原生 Run 端点 `{account_id}/ai/run`，调用时追加模型 ID，写盘即折算，用户无从填错；模型名形如 `@cf/cloudflare/clef-flash`，**不要**改用 OpenAI 兼容的 `/ai/v1/chat/completions`，那条路径只服务文本生成模型）。**本页只提供配置与接入点**：决策渠道不推给内核（`initialize` 没有对映字段），接入方按 `decide_url()` / `resolve_api_key()` / `active_channel()` 取用；请求的构造与发送留给后续功能。**下方「功能开关」分区**（渠道列表之后）：`↑↓` 选行、`←`/`→`/`Enter`/空格 就地切换（选中即保存，写 `[features]` 段，不写 `Ctrl+S`）；当前十项，均默认关闭：`tool_call_review`（工具调用审查使用决策模型）开启后 `approval.mode = review` 的审查请求改走决策模型（见 `omnicrawl-host/src/review.rs` 的 `ReviewChannel`），开关变更即时重建审查运行期；`memory_search_rerank` / `kb_search_rerank` / `skill_search_rerank`（记忆搜索 / 知识库检索 / Skill 检索使用决策模型排序）开启后检索先取更宽候选池（最多 20 条），由决策模型按置信度排序，条数仍按各工具的上限（Skill 检索固定十条），决策服务不可用时回退本地排序（见 `omnicrawl-host/src/tools/decision_search.rs`；Skill 检索只在带关键词时送审，按作用域列出全部不送）；`web_search_rerank`（联网搜索使用决策模型重排序）开启后每一路渠道结果单独重排序：名次由两路加权得出——搜索原始排序与决策模型的综合置信度（是否相关 → 相关程度 → 是否符合提问目的，三级相乘），判定一个网站一个请求并发发出，每路保留前 5 条；`engine=mixed` 时总量随渠道数增长（N 路 × 5 条），无固定总量上限，只有显式 `max_results` 才收窄；某个站点判定失败按已判定站点的均值参与，全部失败或决策服务不可用时回退到「搜索原始排序加权」，搜索不会失败（见 `omnicrawl-host/src/tools/web_rank.rs`），开关变更重建工具表；`ask_user_custody`（提问由决策模型自动作答）开启后 `ask_user` 带选项的提问不再弹面板，而是把提问正文、你本回合的请求与本回合已有的顾问答复交给决策模型选一项，选中即作答并在会话流里留一条可见提示；候选项末尾固定带一项「我有自己的想法...」，需要你自己填写答案时决策模型会选它，提问退回面板由你选或输入自己的回答；没有选项的提问照旧交给你，决策服务不可用时回退人工提问（见 `omnicrawl-host/src/tools/decision_choice.rs`），开关变更即时重建托管运行期；`tool_call_prune`（旧一轮工具调用按需淘汰）开启后「刚变老」的那批调用交决策模型裁决，判为无用的整组移出上下文，最新一批永远保留，裁决不可用时全部保留原文（见 `omnicrawl-host/src/tools/decision_prune.rs`），开关变更重建淘汰运行期并把新的能力声明下发给内核；「提问建议」页（`[suggestion] skills`，默认关）上方一个建议开关、下方一个 Skills 列表：开关选中即写盘并重建建议运行期；列表列出本机已索引的 Skill（名称 + 作用域），`↑↓` 选、`Enter` 打开描述详情（一次显示四行，`↑↓`/滚轮翻看，`Esc` 回列表）。建议本身是你每发一条新提问时，宿主先由主模型识别「技能词」（`suggestion_keywords_system.md`，思考强度固定 low，最多 6 词），再用本地 BM25 检索 Skill 索引（名称 + 描述 + 正文），命中的前三个拼成「建议使用skills：…」注入提问尾部；关键词识别不可用时退化为整句检索，失败一律 fail-open（见 `omnicrawl-host/src/tools/suggestion.rs`） |
 | 向量模型 | 已实现（Rust 专有） | 顶部两个开关 `启用嵌入模型`（写 `config.toml` 的 `[memory_embedding] enabled`）与 `启用重排序模型`（写 `[memory_rerank] enabled`），`Enter`/空格/`→` 翻转后立刻写盘并重建召回与重排运行期。开关下方分两段：`嵌入模型` 与 `重排序模型`，各是一组两行行式渠道（`› [x] 渠道名 [默认]` + `模型 ID  Base URL`）与单条渠道表单（渠道名称 / Base URL / **API Key** / 模型 ID / 向量维度 / 超时秒数 / 启用；重排渠道不显示「向量维度」）。嵌入渠道走 `POST {base_url}/embeddings` 做第一阶段粗筛召回，重排渠道走 `POST {base_url}/rerank` 做第二阶段精排，各自写 `embedding_models.toml` 的 `[channels.*]` 与 `[rerank_channels.*]`。键位与决策渠道页一致：列表 `↑↓` 选、`Enter`/`→` 编辑渠道、`N` 新建（落在游标所在那一段）、`D` 删除，表单 `↑↓`/`Tab` 换字段、`Enter` 编辑、`Ctrl+S` 保存、`Esc` 丢弃；凭据只渲染掩码且**留空＝不改动** |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
+
+**子任务设置页**分三段：`子任务功能`（总开关，写 `subagents.enabled` 并重建工具表）、
+`能力边界`（六项布尔边界逐行就地切换）、`高级参数`（五项有界数值按档位换档）。
+能力边界覆盖 `allow_background`（允许后台运行）、`allow_standard_agent`、`allow_fork`、
+`allow_worktree`、`allow_shared_workspace_writes` 与 `enable_verify_agent`；高级参数是
+子任务超时、模型请求并发数、验证检查超时、任务保留时间与结果摘要上限。
+所有键都写 `subagents.toml`，改动即时生效（内核每次调用现读该文件；工具表随开关重建）。
 
 TTS 页的行按服务商变：前四行（开关 / 服务商 / 自动播放 / 自动朗读回复）固定，
 后面是当前服务商的接口字段——`接口地址` / `模型` / `音色` / `语气指令` / `API Key`，

@@ -414,15 +414,18 @@ impl SubAgentTaskManager {
                     .entry(spec.batch_id.clone())
                     .or_default()
                     .push(spec.task_id.clone());
-                state.queue.push_back(spec.task_id.clone());
                 queued_ids.push(spec.task_id.clone());
             }
         }
-        // worker 已被唤醒，但 `queued` 必须先于 `running` 发布。
+        // 先发布 queued，再入执行队列，防止 running 事件抢先。
         for task_id in &queued_ids {
             self.publish(task_id, "queued");
         }
-        self.inner.signal.notify_all();
+        {
+            let mut state = self.inner.lock();
+            state.queue.extend(queued_ids);
+            self.inner.signal.notify_all();
+        }
         Ok(json!({
             "batch_id": specs[0].batch_id,
             "task_ids": specs.iter().map(|spec| spec.task_id.clone()).collect::<Vec<_>>(),
@@ -492,6 +495,7 @@ impl SubAgentTaskManager {
                     state.tasks.get(id).is_some_and(|task| {
                         task.owner_id == owner_id
                             && session_id.is_none_or(|value| task.session_id == value)
+                            && batch_id.is_none_or(|value| task.spec.batch_id == value)
                     })
                 })
                 .collect();
@@ -779,12 +783,14 @@ impl SubAgentTaskManager {
                 return;
             }
             task.status = status.to_string();
+            task.runner = Arc::new(|_, _| Map::new());
             task.result = bound_result(result.as_ref());
             task.error = bound_error(error.as_ref());
             task.updated_at = now_seconds();
             state.take_idle_callbacks()
         };
         self.publish(task_id, status);
+        if let Some(task) = self.inner.lock().tasks.get_mut(task_id) { task.observer = None; }
         for callback in callbacks {
             callback();
         }
@@ -798,6 +804,7 @@ impl Drop for SubAgentTaskManager {
             let mut state = self.inner.lock();
             state.shutdown = true;
             state.closed = true;
+            for task in state.tasks.values() { task.cancel.set(); }
             self.inner.signal.notify_all();
         }
         let handle = self
@@ -813,7 +820,7 @@ impl Drop for SubAgentTaskManager {
 
 fn maintenance_loop(inner: Arc<Inner>) {
     loop {
-        let (to_start, wait_for) = {
+        let to_start = {
             let mut state = inner.lock();
             if state.shutdown {
                 return;
@@ -838,7 +845,7 @@ fn maintenance_loop(inner: Arc<Inner>) {
                 state.running = running + 1;
                 to_start.push(task_id);
             }
-            (to_start, state.wait_seconds(inner.retention_seconds, now))
+            to_start
         };
         for task_id in &to_start {
             publish_via_inner(&inner, task_id, "running");
@@ -848,7 +855,8 @@ fn maintenance_loop(inner: Arc<Inner>) {
         if guard.shutdown {
             return;
         }
-        let timeout = wait_for.unwrap_or(3600.0).clamp(0.0, 3600.0);
+        let timeout = guard.wait_seconds(inner.retention_seconds, now_seconds())
+            .unwrap_or(3600.0).clamp(0.0, 3600.0);
         let _ = inner
             .signal
             .wait_timeout(guard, Duration::from_secs_f64(timeout));
@@ -969,12 +977,14 @@ fn finish_via_inner(
             return;
         }
         task.status = status.to_string();
+        task.runner = Arc::new(|_, _| Map::new());
         task.result = bound_result(result.as_ref());
         task.error = bound_error(error.as_ref());
         task.updated_at = now_seconds();
         state.take_idle_callbacks()
     };
     publish_via_inner(inner, task_id, status);
+    if let Some(task) = inner.lock().tasks.get_mut(task_id) { task.observer = None; }
     for callback in callbacks {
         callback();
     }

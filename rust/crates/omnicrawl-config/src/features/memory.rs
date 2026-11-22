@@ -9,11 +9,11 @@ use crate::core::runtime::{get_section, load_config_data, save_config_data, Conf
 use crate::error::ConfigError;
 use crate::toml::Value;
 
-/// 可选遗忘时间（天）：一天、十天、一月、一年。
+/// 可选遗忘时间（天）：一天、十天、一月、一年、两年、三年。
 ///
-/// 写死成一个封闭集合而不是任意整数：界面上是四选一，配置里出现别的值只可能是手改错了，
+/// 写死成一个封闭集合而不是任意整数：界面上是有限档位，配置里出现别的值只可能是手改错了，
 /// 这时回落默认值而不是报错——一个数字不该让整个记忆功能起不来。
-pub const FORGET_AFTER_DAYS_CHOICES: [i64; 4] = [1, 10, 30, 365];
+pub const FORGET_AFTER_DAYS_CHOICES: [i64; 6] = [1, 10, 30, 365, 730, 1095];
 
 /// 默认遗忘时间：一年。
 ///
@@ -27,6 +27,8 @@ pub fn forget_after_label(days: i64) -> String {
         10 => "十天".to_string(),
         30 => "一月".to_string(),
         365 => "一年".to_string(),
+        730 => "两年".to_string(),
+        1095 => "三年".to_string(),
         other => format!("{other} 天"),
     }
 }
@@ -124,18 +126,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_four_choices_are_labelled() {
+    fn every_choice_is_labelled() {
         assert_eq!(forget_after_label(1), "一天");
         assert_eq!(forget_after_label(10), "十天");
         assert_eq!(forget_after_label(30), "一月");
         assert_eq!(forget_after_label(365), "一年");
+        assert_eq!(forget_after_label(730), "两年");
+        assert_eq!(forget_after_label(1095), "三年");
     }
 
     #[test]
     fn stray_values_snap_to_the_nearest_choice() {
         assert_eq!(normalize_forget_after_days(7), 10);
         assert_eq!(normalize_forget_after_days(2), 1);
-        assert_eq!(normalize_forget_after_days(200), 365);
+        assert_eq!(normalize_forget_after_days(500), 365);
         assert_eq!(normalize_forget_after_days(45), 30);
     }
 

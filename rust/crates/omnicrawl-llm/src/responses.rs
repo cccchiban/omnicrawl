@@ -9,8 +9,8 @@
 
 use omnicrawl_protocol::{
     parse_arguments_object, tools_from_conversation_messages, ConversationMessage, MessageBlock,
-    ModelStreamEvent, ReasoningDelta, Role, TextDelta, ToolCallCompleted, ToolCallStarted,
-    ToolSpec, UsageReported,
+    ModelStreamEvent, ReasoningDelta, Role, TextDelta, ToolCallArgumentsDelta, ToolCallCompleted,
+    ToolCallStarted, ToolSpec, UsageReported,
 };
 use serde_json::{json, Map, Value};
 
@@ -26,6 +26,14 @@ use crate::usage::usage_from_openai_payload;
 pub fn messages_to_responses_input(messages: &[ConversationMessage]) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
     for message in messages {
+        let compacted = message.blocks.iter().find_map(|block| match block {
+            MessageBlock::ResponsesCompaction(items) => Some(items),
+            _ => None,
+        });
+        if let Some(compacted) = compacted {
+            items.extend(compacted.iter().cloned());
+            continue;
+        }
         // system 消息携带的动态声明已合并进请求级 tools，不再作为输入 item 下发。
         if message.role == Role::System && !message.tools.is_empty() {
             continue;
@@ -131,6 +139,8 @@ pub fn tools_for_responses(input: &ChatRequestInput<'_>) -> Vec<Value> {
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
+                // 与 Chat 侧同口径：显式声明非 strict，别让网关拿「缺省」当「按 strict 编译」。
+                "strict": false,
                 "parameters": parameters,
             })
         })
@@ -309,9 +319,7 @@ fn arguments_text_complete(raw: &str) -> bool {
 
 /// Responses 流事件的状态机（Python `_stream_turn_events` 的循环体与收尾）。
 ///
-/// 每个事件负载按 `type` 分流：文本 / 推理增量直接外发；工具调用只累进缓冲，
-/// 直到 `arguments.done`、`output_item.done` 或 `response.completed` 才产出完成事件——
-/// 参数分片不对外发增量（与 Chat Completions 的路径不同）。
+/// 文本、推理与工具参数增量直接外发；工具调用仍缓冲到完成事件或流收尾再校验。
 #[derive(Debug, Default)]
 pub struct ResponsesStreamState {
     /// 插入序即冲刷顺序，用 Vec 而不是映射（工具调用数量很小）。
@@ -381,7 +389,7 @@ impl ResponsesStreamState {
                     .unwrap_or_default()
                     .to_string();
                 let call_id = self.canonical_call_id(&item_id, &provider_call_id);
-                if call_id.is_empty() {
+                if call_id.is_empty() || self.emitted_call_ids.contains(&call_id) {
                     return;
                 }
                 let Some(text) = delta else {
@@ -403,14 +411,22 @@ impl ResponsesStreamState {
                     if buffer.name.is_empty() && !name_from_event.is_empty() {
                         buffer.name = name_from_event;
                     }
-                    if !buffer.name.is_empty() && !started {
-                        self.started_call_ids.insert(call_id.clone());
-                        events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
-                            call_id: call_id.clone(),
-                            name: buffer.name.clone(),
-                        }));
-                    }
                     buffer.arguments.push_str(text);
+                    if !buffer.name.is_empty() {
+                        if !started {
+                            self.started_call_ids.insert(call_id.clone());
+                            events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
+                                call_id: call_id.clone(),
+                                name: buffer.name.clone(),
+                            }));
+                        }
+                        let visible = if started { text } else { &buffer.arguments };
+                        if !visible.is_empty() {
+                            events.push(ModelStreamEvent::ToolCallArgumentsDelta(
+                                ToolCallArgumentsDelta::new(&call_id, visible),
+                            ));
+                        }
+                    }
                 }
             }
             // 标准事件在该事件顶层携带 name + 最终 arguments，且没有 item 字段。
@@ -586,8 +602,25 @@ impl ResponsesStreamState {
         let item_id = item_id.to_string();
         let provider_call_id = provider_call_id.to_string();
         if !item_id.is_empty() && !provider_call_id.is_empty() && item_id != provider_call_id {
+            let raw_provider_call_id = provider_call_id.clone();
+            let provider_call_id = self.call_id_aliases
+                .get(&provider_call_id)
+                .or_else(|| self.call_id_aliases.get(&item_id))
+                .cloned()
+                .unwrap_or_else(|| {
+                    if self.started_call_ids.contains(&item_id) {
+                        item_id.clone()
+                    } else {
+                        provider_call_id.clone()
+                    }
+                });
             self.call_id_aliases
                 .insert(item_id.clone(), provider_call_id.clone());
+            self.call_id_aliases
+                .insert(raw_provider_call_id, provider_call_id.clone());
+            if item_id == provider_call_id {
+                return provider_call_id;
+            }
             if let Some(index) = self.call_buffers.iter().position(|(id, _)| *id == item_id) {
                 let (_, existing) = self.call_buffers.remove(index);
                 match self
@@ -635,19 +668,16 @@ impl ResponsesStreamState {
         if item.get("type").and_then(Value::as_str) != Some("function_call") {
             return;
         }
-        let call_id = item
-            .get("id")
-            .or_else(|| item.get("call_id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        let provider_call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default();
+        let call_id = self.canonical_call_id(item_id, provider_call_id);
         let name = item
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim()
             .to_string();
-        if call_id.is_empty() || name.is_empty() {
+        if call_id.is_empty() || name.is_empty() || self.emitted_call_ids.contains(&call_id) {
             return;
         }
         if !self.call_buffers.iter().any(|(id, _)| *id == call_id) {
@@ -664,15 +694,21 @@ impl ResponsesStreamState {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            if !arguments.is_empty() && buffer.arguments.is_empty() {
+            let initial_arguments = !arguments.is_empty() && buffer.arguments.is_empty();
+            if initial_arguments {
                 buffer.arguments = arguments;
             }
             if !started {
                 self.started_call_ids.insert(call_id.clone());
                 events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
-                    call_id,
+                    call_id: call_id.clone(),
                     name: buffer.name.clone(),
                 }));
+            }
+            if (!started || initial_arguments) && !buffer.arguments.is_empty() {
+                events.push(ModelStreamEvent::ToolCallArgumentsDelta(
+                    ToolCallArgumentsDelta::new(&call_id, &buffer.arguments),
+                ));
             }
         }
     }
@@ -682,13 +718,9 @@ impl ResponsesStreamState {
         if item.get("type").and_then(Value::as_str) != Some("function_call") {
             return;
         }
-        let raw_call_id = item
-            .get("call_id")
-            .or_else(|| item.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let call_id = self.canonical_call_id(&raw_call_id, "");
+        let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        let provider_call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default();
+        let call_id = self.canonical_call_id(item_id, provider_call_id);
         let name = item
             .get("name")
             .and_then(Value::as_str)

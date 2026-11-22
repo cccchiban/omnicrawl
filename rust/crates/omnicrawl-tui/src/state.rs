@@ -64,20 +64,9 @@ pub const COMPOSER_MAX_LINES: usize = 5;
 /// 输入框上方那行瞬时提示（拖选复制等）的存活时长。
 pub const NOTICE_LINE_LINGER: Duration = Duration::from_secs(3);
 
-/// 思考段平滑显现：每秒铺开多少个字符。
-///
-/// 按**经过时间**而不是按帧数折算：帧率由事件循环的等待预算决定，工具卡重排、图片解码、
-/// 大批工具结果都会让某些帧变长；按帧步进时一次卡顿就会让思考停住不动，随后一次性补上，
-/// 观感正是「卡着、然后一口气出来」。按时间算则帧多帧少都是同一个速度。
-///
-/// 取值对齐「读起来顺」的节奏：一屏 5 行、约 120 字符，铺满约 0.6 秒。
 const REASONING_REVEAL_CHARS_PER_SECOND: f64 = 200.0;
-
-/// 思考段平滑显现：一帧最多补多少字符。
-///
-/// 一帧只补这么多，是为了不让「一次到达几千字符」在屏幕上整屏跳变；正常帧率下这个上限
-/// 远高于按时间折算的量，只有长时间卡顿后的一次补帧才会摸到它。
-const REASONING_REVEAL_MAX_CHARS: usize = 96;
+// 积压越大显现越快，避免高速模型被固定打字速度拖住。
+const REASONING_REVEAL_CATCHUP: Duration = Duration::from_millis(100);
 
 /// 生成期间 FIFO 排队预览的可见条数上限。
 ///

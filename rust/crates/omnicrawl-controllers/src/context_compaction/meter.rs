@@ -97,6 +97,9 @@ pub fn content_tokens(content: &Value, price: TextPricer<'_>) -> i64 {
 
 /// 一条模型可见消息的计价：角色、投影后的内容与工具字段。
 pub fn message_tokens(message: &Value, price: TextPricer<'_>) -> i64 {
+    if message.get("responses_compaction").is_some() {
+        return message.get("responses_compaction_tokens").and_then(Value::as_i64).unwrap_or(0).max(0);
+    }
     let mut total = MESSAGE_OVERHEAD;
     total += price(
         message
@@ -357,6 +360,13 @@ mod tests {
         let text = image_handle_text("image/jpeg", 8);
         assert!(text.contains("image/jpeg"));
         assert!(text.contains("6B"));
+    }
+
+    #[test]
+    fn native_compaction_uses_reported_tokens_instead_of_ciphertext_length() {
+        let message = json!({"responses_compaction": [{"type": "compaction", "encrypted_content": "opaque"}],
+            "responses_compaction_tokens": 321});
+        assert_eq!(message_tokens(&message, &price), 321);
     }
 
     #[test]

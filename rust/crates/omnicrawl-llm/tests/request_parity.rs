@@ -214,3 +214,13 @@ fn float_notation_stays_semantically_equal() {
         );
     }
 }
+
+#[test]
+fn native_compaction_survives_internal_message_round_trips() {
+    let items = json!([{"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"}]);
+    let raw = vec![json!({"role": "assistant", "content": "", "responses_compaction": items})];
+    let messages = omnicrawl_protocol::conversation_from_openai_messages(&raw);
+    let round_trip = to_openai_messages("", &messages);
+    let converted = omnicrawl_protocol::conversation_from_openai_messages(&round_trip);
+    assert_eq!(omnicrawl_llm::responses::messages_to_responses_input(&converted), items.as_array().unwrap().clone());
+}

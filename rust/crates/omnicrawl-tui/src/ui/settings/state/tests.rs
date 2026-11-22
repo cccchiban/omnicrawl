@@ -161,6 +161,15 @@ fn page_state() -> SettingsState {
     )
 }
 
+/// 记忆页的初始值：开关与遗忘时间都按给定值回填（进入页面后不必先手动换档）。
+fn memory_page_state(forget_after_days: i64) -> SettingsState {
+    SettingsState::new(
+        SettingsValues::new(128_000, 80, tool_rows())
+            .with_choices("medium", true)
+            .with_memory_forget_after(forget_after_days),
+    )
+}
+
 /// 模型管理页的初始值：两个渠道，当前模型是第一条。
 fn model_state(current: &str) -> SettingsState {
     SettingsState::new(
@@ -384,6 +393,31 @@ fn model_param_context_rows_apply_and_report() {
 }
 
 #[test]
+fn model_param_context_preserves_exact_model_windows() {
+    for tokens in [131_072, 200_000, 272_000, 400_000, 500_000, 1_000_000, 1_047_576, 1_050_000, 2_000_000] {
+        let mut state = model_state("gpt-main");
+        goto(&mut state, "model_management");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..3 {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Enter);
+        let index = context_window_options().iter().position(|(_, value)| *value == tokens)
+            .expect("应有精确档位");
+        while state.dropdown().expect("候选已展开").selected != index {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.handle_key(KeyCode::Enter), Some(SettingsEvent::Apply(SettingsChange::ContextWindow { tokens })));
+        state.apply_succeeded(&SettingsChange::ContextWindow { tokens }, "已保存".to_string());
+        assert_eq!(state.context_window_tokens(), tokens);
+        assert_eq!(state.model_param_rows()[1].1, super::super::context_window_label(tokens));
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.dropdown().expect("重新展开").selected, index);
+        assert_eq!(state.handle_key(KeyCode::Enter), None);
+    }
+}
+
+#[test]
 fn model_param_reasoning_row_applies() {
     let mut state = model_state("gpt-main");
     goto(&mut state, "model_management");
@@ -597,6 +631,96 @@ fn approval_cycle_matches_python_approval_options() {
         "不认得的值回落默认档"
     );
     assert_eq!(nearest_approval_mode("always"), "auto", "别名照常折算");
+}
+
+#[test]
+fn memory_forget_row_steps_past_one_year_with_arrow_keys() {
+    let mut state = memory_page_state(365);
+    state.select_key("memory");
+    state.handle_key(KeyCode::Down); // 落到「记忆遗忘时间」
+
+    // 一年之后还有更长的档位：`→` 不再被卡在最后一项。
+    state.handle_key(KeyCode::Right);
+    assert_eq!(
+        state.memory_row_value(MemoryRow::ForgetAfter),
+        "两年",
+        "向右换档要能越过一年"
+    );
+    state.handle_key(KeyCode::Right);
+    assert_eq!(state.memory_row_value(MemoryRow::ForgetAfter), "三年");
+
+    // `←` 在配置行上是减档，不是返回：焦点仍留在右栏。
+    state.handle_key(KeyCode::Left);
+    assert_eq!(state.focus(), Focus::Pane, "`←` 在配置行上不减档也不返回");
+    assert_eq!(state.memory_row_value(MemoryRow::ForgetAfter), "两年");
+}
+
+#[test]
+fn memory_operation_rows_still_leave_the_page_on_left() {
+    let mut state = page_state();
+    state.select_key("memory");
+    for _ in 0..2 {
+        state.handle_key(KeyCode::Down); // 走到「消除所有记忆」
+    }
+    assert_eq!(state.memory_row_value(MemoryRow::ClearAll), "不可撤销");
+
+    // 操作行没有可减的档位，`←` 保持原先的返回语义。
+    state.handle_key(KeyCode::Left);
+    assert_eq!(state.focus(), Focus::List, "操作行上 `←` 仍返回列表");
+}
+
+/// 待确认的清空不能被 `←` 带出页面：回来之后一次按键就能清空全部记忆。
+#[test]
+fn memory_left_key_disarms_a_pending_clear() {
+    let mut state = page_state();
+    state.select_key("memory");
+    for _ in 0..2 {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Char('d'));
+    assert_eq!(state.memory_row_value(MemoryRow::ClearAll), "再按 Enter 确认");
+
+    state.handle_key(KeyCode::Left);
+    assert_eq!(
+        state.memory_row_value(MemoryRow::ClearAll),
+        "不可撤销",
+        "`←` 要先把待确认清掉"
+    );
+
+    // 再按一次 `D` 只是重新进入确认，不能直接发出清空。
+    assert_eq!(state.handle_key(KeyCode::Char('d')), None);
+}
+
+/// 方向键改到开关后要立刻落盘，否则界面显示的状态与配置脱节。
+#[test]
+fn memory_toggle_row_emits_its_change_from_arrow_keys() {
+    let mut state = page_state();
+    state.select_key("memory");
+    assert_eq!(state.memory_row_value(MemoryRow::Enabled), "已开启");
+
+    assert_eq!(
+        state.handle_key(KeyCode::Left),
+        Some(SettingsEvent::Apply(SettingsChange::Feature {
+            key: "memory".to_string(),
+            enabled: false,
+        }))
+    );
+    assert_eq!(state.memory_row_value(MemoryRow::Enabled), "已关闭");
+}
+
+#[test]
+fn memory_forget_row_emits_the_chosen_days() {
+    let mut state = memory_page_state(365);
+    state.select_key("memory");
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Right);
+
+    assert_eq!(
+        state.handle_key(KeyCode::Enter),
+        Some(SettingsEvent::Apply(SettingsChange::MemoryForgetAfter {
+            days: 730,
+        }))
+    );
 }
 
 #[test]
@@ -1667,6 +1791,32 @@ fn web_search_page_offers_every_engine_but_not_retired_ones() {
 }
 
 #[test]
+fn fetcher_page_offers_and_saves_keenable() {
+    let mut state = state();
+    goto(&mut state, "fetcher");
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.pane(), Pane::Form(FormKind::Fetcher));
+    state.handle_key(KeyCode::Enter);
+    let options = state.dropdown_options();
+    let engines: Vec<&str> = options.iter().map(|(_, value)| match value {
+        OptionValue::Text(engine) => engine.as_str(),
+        _ => panic!("引擎必须为文本"),
+    }).collect();
+    assert_eq!(engines, omnicrawl_config::features::fetcher::FETCH_ENGINES.to_vec());
+    let index = engines.iter().position(|engine| *engine == "keenable").expect("Keenable 候选");
+    for _ in 0..index {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.form_rows()[0].value, "keenable");
+    let Some(SettingsEvent::Apply(SettingsChange::Form { kind, values })) = state.handle_ctrl_key(KeyCode::Char('s')) else {
+        panic!("Ctrl+S 应保存抓取引擎");
+    };
+    assert_eq!(kind, FormKind::Fetcher);
+    assert_eq!(values, vec![FieldValue::Text("keenable".to_string()), FieldValue::Flag(true)]);
+}
+
+#[test]
 fn web_search_page_stays_put_after_save() {
     let mut state = web_search_state();
     goto(&mut state, "web_search");
@@ -1758,7 +1908,7 @@ fn web_search_page_typing_a_new_key_reaches_the_draft() {
     assert_eq!(values[1], FieldValue::Text("tvly-new".to_string()));
 }
 
-/// 子任务设置页的初始行：总开关关闭 + 两个高级参数。
+/// 子任务设置页的初始行：总开关关闭 + 一个能力开关 + 一个高级参数。
 fn subagents_state() -> SettingsState {
     SettingsState::new(
         SettingsValues::new(128_000, 80, tool_rows()).with_subagents(vec![
@@ -1769,6 +1919,14 @@ fn subagents_state() -> SettingsState {
                 toggle: true,
                 active: false,
                 section: "子任务功能",
+            },
+            SubagentRow {
+                key: "allow_background".to_string(),
+                label: "允许后台运行".to_string(),
+                value: "已允许".to_string(),
+                toggle: true,
+                active: true,
+                section: "能力边界",
             },
             SubagentRow {
                 key: "model_request_concurrency".to_string(),
@@ -1788,7 +1946,7 @@ fn subagents_page_toggles_and_cycles_options() {
     goto(&mut state, "subagents");
     assert_eq!(state.pane(), Pane::Subagents);
     state.handle_key(KeyCode::Enter);
-    assert_eq!(state.subagent_rows().len(), 2);
+    assert_eq!(state.subagent_rows().len(), 3);
 
     // 总开关：两个方向都是切换，产出的是目标状态而不是「翻转」。
     assert_eq!(
@@ -1799,6 +1957,7 @@ fn subagents_page_toggles_and_cycles_options() {
     );
 
     // 高级参数：`→` 进一档（2 → 3）、`←` 退一档（2 → 1）。
+    state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Down);
     assert_eq!(
         state.handle_key(KeyCode::Right),
@@ -1829,6 +1988,38 @@ fn subagents_page_toggles_and_cycles_options() {
     assert_eq!(state.status(), "子任务功能已开启。");
 }
 
+/// 能力开关走 `Switch` 而不是总开关：两者写的是不同的键。
+#[test]
+fn a_capability_row_toggles_through_switch() {
+    let mut state = subagents_state();
+    goto(&mut state, "subagents");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down); // 落到「允许后台运行」
+
+    assert_eq!(
+        state.handle_key(KeyCode::Enter),
+        Some(SettingsEvent::Apply(SettingsChange::Subagent(
+            SubagentChange::Switch {
+                key: "allow_background".to_string(),
+                enabled: false,
+            }
+        ))),
+        "能力开关不能走总开关那条路"
+    );
+
+    state.apply_succeeded(
+        &SettingsChange::Subagent(SubagentChange::Switch {
+            key: "allow_background".to_string(),
+            enabled: false,
+        }),
+        "允许后台运行已禁止。".to_string(),
+    );
+    let row = &state.subagent_rows()[1];
+    assert!(!row.active, "回填后开关状态跟着翻");
+    assert_eq!(row.value, "已禁止");
+    assert_eq!(state.status(), "允许后台运行已禁止。");
+}
+
 fn suggestion_skill(name: &str, description: &str) -> SuggestionSkillRow {
     SuggestionSkillRow {
         name: name.to_string(),
@@ -1857,7 +2048,7 @@ fn the_suggestion_switch_toggles_from_its_own_row() {
     goto(&mut state, "suggestion");
     assert_eq!(state.pane(), Pane::Suggestion);
     state.handle_key(KeyCode::Enter);
-    assert_eq!(state.suggestion_row_count(), 3, "开关行 + 两个 Skill");
+    assert_eq!(state.suggestion_row_count(), 4, "开关行 + 常驻行 + 两个 Skill");
     assert_eq!(
         state.handle_key(KeyCode::Enter),
         Some(SettingsEvent::Apply(SettingsChange::SuggestionSwitch {
@@ -1865,6 +2056,7 @@ fn the_suggestion_switch_toggles_from_its_own_row() {
         }))
     );
     // Skill 行上按左右键不该改开关。
+    state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Down);
     assert!(state.handle_key(KeyCode::Right).is_none());
 
@@ -1882,6 +2074,7 @@ fn a_skill_row_opens_its_description() {
     let mut state = suggestion_state();
     goto(&mut state, "suggestion");
     state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Down);
     assert!(
         state.handle_key(KeyCode::Enter).is_none(),
@@ -1903,6 +2096,7 @@ fn the_detail_scroll_stops_at_the_last_line() {
     let mut state = suggestion_state();
     goto(&mut state, "suggestion");
     state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Down);
     state.handle_key(KeyCode::Enter);
     // 渲染层在画的时候回报总行数；这里直接模拟一次 7 行。
@@ -2804,4 +2998,72 @@ fn scroll_wheel_moves_the_open_candidate_list() {
     state.scroll(-1);
     let after = state.dropdown().map(|dropdown| dropdown.selected);
     assert_ne!(before, after, "滚轮应当移动候选项");
+}
+
+#[test]
+fn native_compaction_setting_defaults_on_and_can_be_switched_off() {
+    let mut state = model_state("gpt-main");
+    goto(&mut state, "model_management");
+    state.handle_key(KeyCode::Enter);
+    while !state.model_param_rows().iter().any(|(row, _, selected)| *row == ModelParamRow::NativeCompaction && *selected) {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.dropdown().unwrap().selected, 0);
+    state.handle_key(KeyCode::Down);
+    let change = SettingsChange::NativeCompaction { enabled: false };
+    assert_eq!(state.handle_key(KeyCode::Enter), Some(SettingsEvent::Apply(change.clone())));
+    state.apply_succeeded(&change, "已切换为摘要压缩。".to_string());
+    assert!(state.model_param_rows().iter().any(|(row, value, _)| *row == ModelParamRow::NativeCompaction && value == "关闭"));
+}
+
+#[test]
+fn resident_skill_selector_is_single_choice_and_can_clear() {
+    let mut state = suggestion_state();
+    goto(&mut state, "suggestion");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
+    assert_eq!(state.resident_skill_name(), None);
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.dropdown().unwrap().field, DropdownField::ResidentSkill);
+    assert_eq!(state.dropdown_options().len(), 3);
+    state.handle_key(KeyCode::Down);
+    let first = SettingsChange::ResidentSkill { name: Some("kimi-docx".to_string()) };
+    assert_eq!(state.handle_key(KeyCode::Enter), Some(SettingsEvent::Apply(first.clone())));
+    assert_eq!(state.resident_skill_name(), None);
+    state.apply_succeeded(&first, "已保存".to_string());
+    assert_eq!(state.resident_skill_name(), Some("kimi-docx"));
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.dropdown().unwrap().selected, 1);
+    state.handle_key(KeyCode::Down);
+    let second = SettingsChange::ResidentSkill { name: Some("kimi-pdf".to_string()) };
+    assert_eq!(state.handle_key(KeyCode::Enter), Some(SettingsEvent::Apply(second.clone())));
+    state.apply_failed("写入失败".to_string());
+    assert_eq!(state.resident_skill_name(), Some("kimi-docx"));
+    state.apply_succeeded(&second, "已保存".to_string());
+    assert_eq!(state.resident_skill_name(), Some("kimi-pdf"));
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Up);
+    state.handle_key(KeyCode::Esc);
+    assert_eq!(state.resident_skill_name(), Some("kimi-pdf"));
+    state.handle_key(KeyCode::Enter);
+    let clear = SettingsChange::ResidentSkill { name: None };
+    assert_eq!(state.click(HitAction::Option(0)), Some(SettingsEvent::Apply(clear.clone())));
+    state.apply_succeeded(&clear, "已清除".to_string());
+    assert_eq!(state.resident_skill_name(), None);
+}
+
+#[test]
+fn resident_skill_selector_supports_empty_installation_and_stale_selection() {
+    let mut state = SettingsState::new(SettingsValues::new(128_000, 80, vec![])
+        .with_resident_skill(Some("missing".to_string())));
+    goto(&mut state, "suggestion");
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Down);
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.dropdown_options().len(), 1);
+    assert_eq!(state.handle_key(KeyCode::Enter), Some(SettingsEvent::Apply(
+        SettingsChange::ResidentSkill { name: None }
+    )));
+    assert_eq!(super::super::row_label("suggestion"), "skills管理");
 }

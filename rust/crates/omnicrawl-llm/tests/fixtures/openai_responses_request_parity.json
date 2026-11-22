@@ -795,6 +795,7 @@
           "type": "function",
           "name": "write_file",
           "description": "写文件",
+          "strict": false,
           "parameters": {
             "type": "object",
             "properties": {
@@ -808,6 +809,7 @@
           "type": "function",
           "name": "no_args",
           "description": "",
+          "strict": false,
           "parameters": {
             "type": "object",
             "properties": {}
@@ -870,6 +872,7 @@
           "type": "function",
           "name": "write_file",
           "description": "写文件",
+          "strict": false,
           "parameters": {
             "type": "object",
             "properties": {
@@ -883,6 +886,7 @@
           "type": "function",
           "name": "dynamic",
           "description": "动态声明",
+          "strict": false,
           "parameters": {
             "type": "object"
           }
@@ -950,6 +954,7 @@
           "type": "function",
           "name": "dynamic",
           "description": "动态声明",
+          "strict": false,
           "parameters": {
             "type": "object"
           }
@@ -958,6 +963,7 @@
           "type": "function",
           "name": "write_file",
           "description": "写文件",
+          "strict": false,
           "parameters": {
             "type": "object",
             "properties": {
@@ -1304,6 +1310,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1384,6 +1391,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1464,6 +1472,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1544,6 +1553,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1631,6 +1641,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1718,6 +1729,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1802,6 +1814,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1882,6 +1895,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -1963,6 +1977,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2044,6 +2059,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2124,6 +2140,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2206,6 +2223,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2283,6 +2301,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2415,6 +2434,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {
@@ -2496,6 +2516,7 @@
             "type": "function",
             "name": "write_file",
             "description": "写文件",
+            "strict": false,
             "parameters": {
               "type": "object",
               "properties": {

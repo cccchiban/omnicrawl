@@ -79,7 +79,7 @@ use omnicrawl_controllers::context_compaction::SourceEvent;
 use omnicrawl_controllers::subagents::batch::batch_summary;
 use omnicrawl_controllers::subagents::coordinator::{
     failure_payload, json_result_text, task_event_payload,
-    terminal_event_payload, top_level_error,
+    top_level_error,
 };
 use omnicrawl_controllers::subagents::coordinator::{query_request, QueryRequest};
 use omnicrawl_controllers::subagents::coordinator::{
@@ -117,6 +117,7 @@ mod turn;
 mod session_query;
 mod subagent_run;
 mod protocol;
+mod subagent_dispatch;
 
 #[cfg(test)]
 mod runtime_selection_tests {

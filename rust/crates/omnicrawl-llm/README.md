@@ -41,8 +41,9 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   `flatten_tool_history_to_text` 与 `has_tool_history_items` / `is_tool_history_rejection`
   （网关不支持工具历史时的 400 降级判定）。
 - Responses 流事件映射（`ResponsesStreamState`）：按 `type` 分流事件负载——文本 / 推理增量直接外发，
-  工具调用只累进缓冲（**参数分片不发增量**，与 Chat Completions 不同），在 `arguments.done`、
-  `output_item.done` 或 `response.completed` 时产出完成事件；`item_id` 与 `call_id` 的别名统一、
+  工具参数逐片外发 `ToolCallArgumentsDelta`，在 `arguments.done`、`output_item.done` 或
+  `response.completed` 时产出完成事件；`output_item.added` 优先采用 Provider 的 `call_id`，
+  `item_id` 与后到的 `call_id` 统一映射到已开始的调用身份，避免卡片与聚合结果重复；
   `output_item.added` 里的函数名捕获、`arguments.done` 顶层 name/arguments 的回退分支、
   「已发出的调用不重复产出」，以及流结束时的截断判定（缺 `response.completed` 且没有完整输出 → 报错）
   与缓冲冲刷（名称 / 参数不完整也报错，空参数视为完整）。

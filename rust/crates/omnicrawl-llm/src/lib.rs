@@ -15,13 +15,13 @@ mod json;
 mod openai_chat;
 mod registry;
 mod request;
-mod responses;
+pub mod responses;
 mod runtime;
 mod runtime_manager;
 mod sse;
 pub mod stream_reader;
 mod stream_registry;
-mod transport;
+pub mod transport;
 mod usage;
 
 pub use adapter::{

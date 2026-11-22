@@ -9,7 +9,9 @@ use crate::core::runtime::{
     save_config_data, ConfigEnvironment,
 };
 use crate::error::ConfigError;
-use crate::features::subagents::{validate_subagent_advanced_setting, AdvancedValue};
+use crate::features::subagents::{
+    validate_subagent_advanced_setting, validate_subagent_switch_setting, AdvancedValue,
+};
 use crate::models::llm_multi::is_multi_model_section;
 use crate::models::model_store::{load_model_store, save_model_store, ModelStore};
 use crate::toml::{Table, Value};
@@ -245,6 +247,22 @@ pub fn save_subagent_setting(
     let mut data = load_config_data(env, Some(&target))?;
     let mut section = get_section(&data, "subagents")?;
     section.insert(name.to_string(), advanced_value(normalized));
+    data.insert("subagents".to_string(), Value::Table(section));
+    save_config_data(env, &data, Some(&target))
+}
+
+/// 保留 `subagents` 其他配置，只更新一个能力开关（布尔边界）。
+pub fn save_subagent_switch(
+    env: &ConfigEnvironment,
+    name: &str,
+    enabled: bool,
+    subagents_path: Option<&Path>,
+) -> Result<PathBuf, ConfigError> {
+    validate_subagent_switch_setting(name, &Value::Boolean(enabled))?;
+    let target = resolve_subagents_write_path(env, subagents_path)?;
+    let mut data = load_config_data(env, Some(&target))?;
+    let mut section = get_section(&data, "subagents")?;
+    section.insert(name.to_string(), Value::Boolean(enabled));
     data.insert("subagents".to_string(), Value::Table(section));
     save_config_data(env, &data, Some(&target))
 }

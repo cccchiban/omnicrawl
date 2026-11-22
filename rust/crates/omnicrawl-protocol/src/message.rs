@@ -120,6 +120,7 @@ pub enum MessageBlock {
     Image(ImageBlock),
     ToolCall(ToolCallBlock),
     ToolResult(ToolResultBlock),
+    ResponsesCompaction(Vec<Value>),
 }
 
 /// 消息角色。闭集之外的取值原样透传：OpenAI Chat 分支会把 role 直接写进请求体。

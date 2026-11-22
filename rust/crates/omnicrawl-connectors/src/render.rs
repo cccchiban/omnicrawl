@@ -418,7 +418,16 @@ pub fn tool_summary(tool_name: &str, arguments: &Value, result_text: &str) -> St
             return format!("{name} {context} {detail}").trim_end().to_string();
         }
         "subagent_run" => {
-            let task = args.get("task");
+            let tasks: Vec<&Value> = args
+                .get("tasks")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().collect())
+                .unwrap_or_default();
+            // 多任务只报条数：一条摘要行放不下每项的说明，逐项列出会挤掉更有用的信息。
+            if tasks.len() > 1 {
+                return format!("{name} · {} 个任务", tasks.len());
+            }
+            let task = tasks.first().copied();
             let agent_type = task
                 .and_then(|task| task.get("subagent_type"))
                 .and_then(Value::as_str)

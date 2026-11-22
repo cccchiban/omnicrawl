@@ -57,8 +57,10 @@ pub fn is_reserved_role(name: &str) -> bool {
     RESERVED_ROLE_NAMES.contains(&normalized.as_str())
 }
 
-/// `subagent_run` 允许的顶层字段：只剩任务本身。
-pub const RUN_FIELDS: [&str; 1] = ["task"];
+/// `subagent_run` 允许的任务与运行方式。
+pub const RUN_FIELDS: [&str; 2] = ["tasks", "background"];
+/// 一次派发的任务数上限。
+pub const MAX_TASKS_PER_BATCH: usize = 8;
 /// `subagent_list` 允许的字段。
 pub const LIST_FIELDS: [&str; 2] = ["task_id", "batch_id"];
 /// `subagent_cancel` 允许的字段。
@@ -162,11 +164,7 @@ pub fn unsupported_definition_reason(
 ) -> String {
     let mut unsupported: Vec<String> = Vec::new();
     match definition.permission_mode.as_str() {
-        "delegated-read-only" => {
-            if definition.background {
-                unsupported.push("read_only profile 的 background 必须为 false".to_string());
-            }
-        }
+        "delegated-read-only" => {}
         "explicit-command-allowlist" => {
             if !config.enable_verify_agent {
                 unsupported.push(
@@ -194,6 +192,9 @@ subagents.allow_shared_workspace_writes=true；推荐改用 isolation=worktree"
         unsupported.push(format!("isolation 不受支持：{}", definition.isolation));
     } else if definition.isolation == "worktree" && !config.allow_worktree {
         unsupported.push("isolation=worktree 需要 subagents.allow_worktree=true".to_string());
+    }
+    if definition.background && !config.allow_background {
+        unsupported.push("background 需要 subagents.allow_background=true".to_string());
     }
     if !definition.skills.is_empty() {
         unsupported.push("当前阶段尚不注入 skills".to_string());
@@ -308,6 +309,7 @@ fn filter_profile_tools(
 /// `_validate_arguments`：返回 `None` 表示通过，否则是稳定的 `(code, message)`。
 ///
 /// 只校验 `subagent_run` 一类的任务参数：改由工具名分发后，这里不再需要动作判定。
+/// `tasks` 是任务数组：一批里的每个任务各自成子回合，权限与定义校验逐项进行。
 pub fn validate_task_arguments(
     arguments: &Value,
     config: &SubAgentConfig,
@@ -334,16 +336,66 @@ pub fn validate_task_arguments(
             ),
         ));
     }
-    let Some(task_value) = object.get("task") else {
+    if let Some(background) = object.get("background") {
+        if !background.is_boolean() {
+            return Some(("AGENT_DEFINITION_INVALID".to_string(), "background 必须是布尔值。".to_string()));
+        }
+        if background.as_bool() == Some(true) && !config.allow_background {
+            return Some(("SUBAGENT_PERMISSION_DENIED".to_string(),
+                "后台 SubAgent 已关闭，请设置 subagents.allow_background=true。".to_string()));
+        }
+    }
+    let Some(tasks_value) = object.get("tasks") else {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "subagent_run 需要 task。".to_string(),
+            "subagent_run 需要 tasks。".to_string(),
         ));
     };
+    let Some(tasks) = tasks_value.as_array() else {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "tasks 必须是数组。".to_string(),
+        ));
+    };
+    if tasks.is_empty() {
+        return Some((
+            "AGENT_DEFINITION_INVALID".to_string(),
+            "tasks 至少要有一个任务。".to_string(),
+        ));
+    }
+    if tasks.len() > MAX_TASKS_PER_BATCH {
+        return Some((
+            "SUBAGENT_PERMISSION_DENIED".to_string(),
+            format!(
+                "一次最多派发 {MAX_TASKS_PER_BATCH} 个任务，收到 {} 个。",
+                tasks.len()
+            ),
+        ));
+    }
+    for (index, task) in tasks.iter().enumerate() {
+        let prefix = if tasks.len() > 1 {
+            format!("tasks[{index}]")
+        } else {
+            "task".to_string()
+        };
+        if let Some(error) = validate_task_entry(task, &prefix, config, registry) {
+            return Some(error);
+        }
+    }
+    None
+}
+
+/// 单个任务的字段与定义校验；`prefix` 只用来把报错指到具体那一项。
+fn validate_task_entry(
+    task_value: &Value,
+    prefix: &str,
+    config: &SubAgentConfig,
+    registry: &AgentDefinitionRegistry,
+) -> Option<(String, String)> {
     let Some(task) = task_value.as_object() else {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "task 必须是对象。".to_string(),
+            format!("{prefix} 必须是对象。"),
         ));
     };
     let mut unknown_task_fields: Vec<String> = task
@@ -374,13 +426,13 @@ pub fn validate_task_arguments(
     {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "task.description 必须是非空字符串。".to_string(),
+            format!("{prefix}.description 必须是非空字符串。"),
         ));
     }
     if prompt.map(|text| text.trim().is_empty()).unwrap_or(true) {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "task.prompt 必须是非空字符串。".to_string(),
+            format!("{prefix}.prompt 必须是非空字符串。"),
         ));
     }
     if agent_type
@@ -389,7 +441,7 @@ pub fn validate_task_arguments(
     {
         return Some((
             "AGENT_DEFINITION_INVALID".to_string(),
-            "task.subagent_type 必须是非空字符串。".to_string(),
+            format!("{prefix}.subagent_type 必须是非空字符串。"),
         ));
     }
     let normalized = agent_type.unwrap_or_default().trim().to_lowercase();

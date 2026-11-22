@@ -13,6 +13,9 @@ impl SettingsState {
                 .model_management
                 .param_selected()
                 .map(DropdownField::ModelParam),
+            Pane::Suggestion if self.suggestion.selected == suggestion::RESIDENT_SKILL_ROW => {
+                Some(DropdownField::ResidentSkill)
+            }
             Pane::Form(_) => match self.focused_form_field()?.1.kind {
                 FieldKind::Enum(_) | FieldKind::ModelChannel | FieldKind::ModelId => {
                     Some(DropdownField::Form(self.form()?.focused()))
@@ -49,11 +52,17 @@ impl SettingsState {
             DropdownField::ModelParam(ModelParamRow::Compaction) => {
                 OptionValue::Int(self.model_management.percent)
             }
+            DropdownField::ModelParam(ModelParamRow::NativeCompaction) => {
+                OptionValue::Int(i64::from(self.model_management.native_gpt))
+            }
             DropdownField::ModelParam(ModelParamRow::Reasoning) => {
                 OptionValue::Text(self.model_management.reasoning.clone())
             }
             // 视觉页的候选没有「当前值」：游标停在第一项。
             DropdownField::VisionAdd => OptionValue::Text(String::new()),
+            DropdownField::ResidentSkill => {
+                OptionValue::Text(self.suggestion.resident_skill.clone().unwrap_or_default())
+            }
             // 表单页的模型项与文本项都按字段值定位游标。
             DropdownField::Form(index) => {
                 let Some(form) = self.form() else {
@@ -96,6 +105,13 @@ impl SettingsState {
     pub(super) fn options_for(&self, field: DropdownField) -> Vec<(String, OptionValue)> {
         match field {
             DropdownField::ModelParam(row) => self.model_param_options(row),
+            DropdownField::ResidentSkill => {
+                let mut options = vec![("无".to_string(), OptionValue::Text(String::new()))];
+                options.extend(self.suggestion.skills.iter().map(|skill| {
+                    (skill.name.clone(), OptionValue::Text(skill.name.clone()))
+                }));
+                options
+            }
             // 视觉页的候选是渠道列表，与「A 添加」的语义一致。
             DropdownField::VisionAdd => self.channel_options(),
             DropdownField::Form(index) => match self.form().and_then(|form| form.field(index)) {
@@ -162,6 +178,10 @@ impl SettingsState {
                 .into_iter()
                 .map(|(label, value)| (label, OptionValue::Int(value)))
                 .collect(),
+            ModelParamRow::NativeCompaction => vec![
+                ("开启".to_string(), OptionValue::Int(1)),
+                ("关闭".to_string(), OptionValue::Int(0)),
+            ],
             ModelParamRow::Reasoning => REASONING_OPTIONS
                 .iter()
                 .map(|(option, label)| {
@@ -188,6 +208,13 @@ impl SettingsState {
         let options = self.options_for(dropdown.field);
         let (_, value) = options.get(dropdown.selected)?.clone();
         match (dropdown.field, value) {
+            (DropdownField::ResidentSkill, OptionValue::Text(value)) => {
+                let name = if value.is_empty() { None } else { Some(value) };
+                if name == self.suggestion.resident_skill {
+                    return None;
+                }
+                Some(SettingsEvent::Apply(SettingsChange::ResidentSkill { name }))
+            }
             // 模型管理页的参数行：选中即保存。
             (DropdownField::ModelParam(ModelParamRow::Channel), OptionValue::Model(key)) => {
                 if key == self.model_management.model_key {
@@ -210,6 +237,11 @@ impl SettingsState {
                 Some(SettingsEvent::Apply(SettingsChange::CompactionPercent {
                     percent,
                 }))
+            }
+            (DropdownField::ModelParam(ModelParamRow::NativeCompaction), OptionValue::Int(value)) => {
+                let enabled = value == 1;
+                if enabled == self.model_management.native_gpt { return None; }
+                Some(SettingsEvent::Apply(SettingsChange::NativeCompaction { enabled }))
             }
             (DropdownField::ModelParam(ModelParamRow::Reasoning), OptionValue::Text(effort)) => {
                 if effort == self.model_management.reasoning {

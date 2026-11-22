@@ -189,6 +189,64 @@ pub fn format_window_handle(handle: isize) -> String {
     format!("0x{:016X}", handle as usize)
 }
 
+/// 按标题片段找可见窗口（大小写不敏感）：批处理脚本用它把「窗口名」换成句柄。
+pub fn find_windows_by_title(needle: &str) -> Result<Vec<Value>, ToolError> {
+    let needle = needle.trim().to_lowercase();
+    let matches: Vec<Value> = enumerate_windows()?
+        .into_iter()
+        .filter(|item| {
+            if !item["is_visible"].as_bool().unwrap_or(false) {
+                return false;
+            }
+            let title = item["title"].as_str().unwrap_or_default().to_lowercase();
+            !title.is_empty() && title.contains(&needle)
+        })
+        .collect();
+    Ok(matches)
+}
+
+/// 把窗口带到前台：批处理开始时的 `focus` 与显式句柄定位共用这一条路径。
+pub fn focus_window(handle: isize) -> Result<(), ToolError> {
+    activate_window(handle)
+}
+
+/// 一个窗口的两套原点：整窗（含边框与标题栏）与客户区。
+///
+/// 批处理脚本写窗口相对坐标时必须说清用哪套原点，否则同一组坐标在有无标题栏的窗口上
+/// 会差出几十像素。两套都按物理像素给出左上角。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowOrigins {
+    pub window_left: i64,
+    pub window_top: i64,
+    pub client_left: i64,
+    pub client_top: i64,
+}
+
+pub fn window_origins(handle: isize) -> Result<WindowOrigins, ToolError> {
+    let hwnd = handle as ffi::Hwnd;
+    if unsafe { ffi::IsWindow(hwnd) } == 0 {
+        return Err(ToolError::new(format!(
+            "无效或已关闭的 window_handle：{}。",
+            format_window_handle(handle)
+        )));
+    }
+    let mut rect = ffi::Rect::default();
+    if unsafe { ffi::GetWindowRect(hwnd, &mut rect) } == 0 {
+        return Err(last_error("读取窗口位置失败"));
+    }
+    // 客户区原点：从窗口坐标 (0,0) 起算的客户区左上角，ClientToScreen 会一并算掉标题栏。
+    let mut origin = ffi::Point::default();
+    if unsafe { ffi::ClientToScreen(hwnd, &mut origin) } == 0 {
+        return Err(last_error("换算客户区原点失败"));
+    }
+    Ok(WindowOrigins {
+        window_left: rect.left as i64,
+        window_top: rect.top as i64,
+        client_left: origin.x as i64,
+        client_top: origin.y as i64,
+    })
+}
+
 fn activate_window(handle: isize) -> Result<(), ToolError> {
     let hwnd = handle as ffi::Hwnd;
     if unsafe { ffi::IsWindow(hwnd) } == 0 {

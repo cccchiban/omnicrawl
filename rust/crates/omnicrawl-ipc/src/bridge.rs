@@ -459,6 +459,8 @@ pub struct KernelSessionConfig {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct KernelCompactionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_gpt: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recent_turns: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_summary_tokens: Option<i64>,

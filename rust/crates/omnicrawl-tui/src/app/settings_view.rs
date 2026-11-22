@@ -121,11 +121,13 @@ impl App {
             percent,
             tool_switch_rows(&self.registry),
         )
+        .with_native_gpt(compaction.native_gpt)
         .with_model(&model_key)
         .with_channels(channel_rows, &default_channel_key, channel_template)
         .with_decision_models(decision_rows, &default_decision_key, decision_template)
         .with_decision_switches(decision_switches)
         .with_suggestion(suggestion_config.enabled(), suggestion_skills)
+        .with_resident_skill(self.prompt.resident_skill_name().map(str::to_string))
         .with_embedding_models(
             embedding_rows,
             &default_embedding_key,

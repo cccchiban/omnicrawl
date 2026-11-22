@@ -10,10 +10,14 @@
 
 use serde_json::Value;
 
+use omnicrawl_controllers::tool_args::normalize_tool_name;
+use omnicrawl_tui::ui::conversation::collapsed_body;
 use omnicrawl_tui::ui::fullscreen::rendering::tool_diff::{
-    plain_tool_title, tool_disclosure_body, tool_disclosure_title,
+    describe_file_change, is_file_change_tool, plain_tool_title, tool_disclosure_body,
+    tool_disclosure_title, tool_operation,
 };
 use omnicrawl_tui::ui::fullscreen::text::StyledText;
+use omnicrawl_tui::ui::fullscreen::tool_labels::{canonical_tool_name, tool_display};
 
 const FIXTURE: &str = include_str!("fixtures/tool_diff_parity.json");
 
@@ -109,6 +113,74 @@ fn tool_disclosure_body_matches_python() {
             "正文样式段不一致（tool={tool}）"
         );
     }
+}
+
+#[test]
+fn edit_aliases_match_canonical_tool_rendering() {
+    let args = serde_json::json!({
+        "path": "src/main.rs",
+        "old_text": "old\nkeep\nend",
+        "new_text": "new\nkeep\nend"
+    });
+    let result = "已修改 src/main.rs，替换 1 处。\n首个替换位置上下文（第 40-44 行，前后各 2 行）：\n40: before\n41: context\n42: new\n43: keep\n44: end";
+    let canonical_body = tool_disclosure_body("Edit_file", &args, result);
+    let plain = canonical_body.plain();
+    assert!(plain.contains("  42 │ - old\n"));
+    assert!(plain.contains("  42 │ + new\n"));
+    assert!(plain.ends_with("结果：替换 1 处"));
+    assert!(!plain.contains("首个替换位置上下文"));
+    assert_eq!(canonical_tool_name("Edit_file"), "Edit_file");
+
+    for alias in [
+        "edit_file",
+        "EDIT_FILE",
+        "EditFile",
+        "edit-file",
+        " edit_file ",
+    ] {
+        assert_eq!(normalize_tool_name(alias, &["Edit_file"]), "Edit_file");
+        assert_eq!(canonical_tool_name(alias), "Edit_file");
+        assert_eq!(tool_display(alias), tool_display("Edit_file"));
+        assert_eq!(tool_operation(alias), "Edit_file");
+        assert!(is_file_change_tool(alias));
+        let change = describe_file_change(alias, &args, 42);
+        assert_eq!(change.stats_label, "+1 -1");
+        assert!(change.body.plain().contains("  42 │ + new\n"));
+
+        for (status, output) in [("调用中", ""), ("成功", result)] {
+            let title = tool_disclosure_title(alias, &args, status, 0.5, false, output);
+            let expected_title =
+                tool_disclosure_title("Edit_file", &args, status, 0.5, false, output);
+            assert_eq!(title.plain(), expected_title.plain());
+            assert_eq!(runs_of(&title), runs_of(&expected_title));
+            assert!(title.plain().starts_with("● Edit_file src/main.rs · +1 -1"));
+
+            let body = tool_disclosure_body(alias, &args, output);
+            let expected_body = tool_disclosure_body("Edit_file", &args, output);
+            assert_eq!(body.plain(), expected_body.plain());
+            assert_eq!(runs_of(&body), runs_of(&expected_body));
+            let (head, hidden, tail) = collapsed_body(alias, &body);
+            assert_eq!(hidden, 0);
+            assert!(tail.is_empty());
+            assert_eq!(head.len(), body.split_lines().len());
+        }
+    }
+}
+
+#[test]
+fn edit_name_normalization_preserves_other_tools_and_mcp_names() {
+    for name in [
+        "write_file",
+        "custom_tool",
+        "edit_files",
+        "filesystem.edit_file",
+    ] {
+        assert_eq!(canonical_tool_name(name), name);
+        assert_eq!(tool_display(name).name, name);
+    }
+    assert!(!is_file_change_tool("filesystem.edit_file"));
+    assert_eq!(tool_operation("filesystem.edit_file"), "edit_file");
+    assert_eq!(tool_display("filesystem.edit_file").icon, "⌁");
 }
 
 #[test]

@@ -25,11 +25,12 @@ pub const COMPUTER_USE_TOOL_NAME: &str = "computer_use";
 /// 专职子代理的角色名（定义文件 `assets/templates/subagents/computer-use.md`）。
 pub const COMPUTER_USE_ROLE: &str = "computer-use";
 /// 子代理允许使用的工具：桌面四件套加看图与只读排错。
-const CHILD_TOOLS: [&str; 7] = [
+const CHILD_TOOLS: [&str; 8] = [
     "windows_window",
     "windows_screenshot",
     "windows_input",
     "windows_control",
+    "windows_batch",
     "read_image",
     "list",
     "read",
@@ -444,6 +445,7 @@ mod tests {
             "windows_screenshot",
             "windows_input",
             "windows_control",
+            "windows_batch",
             "read_image",
             "list",
             "read",
@@ -478,6 +480,7 @@ mod tests {
             "windows_screenshot",
             "windows_input",
             "windows_control",
+            "windows_batch",
             "read_image",
             "list",
             "read",

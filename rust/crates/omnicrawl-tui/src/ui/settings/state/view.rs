@@ -47,6 +47,10 @@ impl SettingsState {
         &self.suggestion.skills
     }
 
+    pub fn resident_skill_name(&self) -> Option<&str> {
+        self.suggestion.resident_skill.as_deref()
+    }
+
     pub fn suggestion_selected(&self) -> usize {
         self.suggestion.selected
     }

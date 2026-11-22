@@ -408,26 +408,34 @@ pub fn public_tool_arguments(tool_name: &str, arguments: &Map<String, Value>) ->
             public.insert(key.to_string(), Value::from(truncate_chars(&text, 200)));
         }
     }
-    if let Some(task) = arguments.get("task").and_then(Value::as_object) {
-        let raw_description = task.get("description").map(python_text).unwrap_or_default();
-        let description =
-            omnicrawl_session::redaction::redact_sensitive_text(raw_description.trim());
-        if !description.is_empty() {
-            public.insert(
-                "description".to_string(),
-                Value::from(truncate_chars(&description, 120)),
-            );
-        }
-        let raw_agent_type = task
-            .get("subagent_type")
-            .map(python_text)
-            .unwrap_or_default();
-        let agent_type = omnicrawl_session::redaction::redact_sensitive_text(raw_agent_type.trim());
-        if !agent_type.is_empty() {
-            public.insert(
-                "agent_type".to_string(),
-                Value::from(truncate_chars(&agent_type, 120)),
-            );
+    if let Some(background) = arguments.get("background").and_then(Value::as_bool) {
+        public.insert("background".to_string(), Value::Bool(background));
+    }
+    if let Some(tasks) = arguments.get("tasks").and_then(Value::as_array) {
+        public.insert("task_count".to_string(), Value::from(tasks.len()));
+        // 单任务才展开角色与目标：多任务的每一项都会挤占同一行摘要。
+        if let Some(task) = tasks.first().and_then(Value::as_object) {
+            let raw_description = task.get("description").map(python_text).unwrap_or_default();
+            let description =
+                omnicrawl_session::redaction::redact_sensitive_text(raw_description.trim());
+            if !description.is_empty() {
+                public.insert(
+                    "description".to_string(),
+                    Value::from(truncate_chars(&description, 120)),
+                );
+            }
+            let raw_agent_type = task
+                .get("subagent_type")
+                .map(python_text)
+                .unwrap_or_default();
+            let agent_type =
+                omnicrawl_session::redaction::redact_sensitive_text(raw_agent_type.trim());
+            if !agent_type.is_empty() {
+                public.insert(
+                    "agent_type".to_string(),
+                    Value::from(truncate_chars(&agent_type, 120)),
+                );
+            }
         }
     }
     Value::Object(public)

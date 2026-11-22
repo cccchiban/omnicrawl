@@ -112,13 +112,14 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。
 ```json
 {"session": {"root": "/path/to/.agent_sessions", "session_id": "20260919-011424-abcdef",
              "memory_root": "/path/to/.omnicrawl",
-             "compaction": {"trigger_context_tokens": 120000, "target_summary_tokens": 2000,
+             "compaction": {"native_gpt": true, "trigger_context_tokens": 120000, "target_summary_tokens": 2000,
                             "context_window_tokens": 128000, "preserve_exact_evidence": true,
                             "archive_compacted_events": true, "auto_memory_recall": true}}}
 ```
 
 - `root` 必填，目录布局与 Python 侧 `.agent_sessions` 一致（`sessions/`、`archive/compacted/` 等）。
 - `session_id` 空则由内核新建一条会话。
+- `compaction.native_gpt` 为可选布尔值，默认 true：GPT 的 Responses 渠道使用原生压缩，false 使用摘要；初始化与 `session.settings` 都接受该字段。
 - `memory_root` 是会话级记忆的用户数据根；空则不做记忆回写与自动召回。
 - `compaction` 缺字段一律用内核默认值；阈值取自「回合结束后实际上下文」的估算与供应商回报的较大值。
   **宿主应把用户的 `[context_compaction]` 整段下发**（内核不读配置文件，缺字段就是默认值：摘要预算
@@ -414,13 +415,14 @@ Markdown 定义；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`，两侧取同一份
 四层发现结果。
 
-`subagent_run` 的执行方式：一次调用只提交**一个** `task`，在回合内阻塞到该任务结束。
-需要多个子代理时，在同一条助手消息里并行发起多次 `subagent_run` 调用——每次调用各自成批
-（`batch_id` 不同、各开一个窗口），父回合在全部调用收口后才继续。一次调用塞多个任务的
-`tasks` 数组、`max_concurrency` 与 `fail_fast` 都已移除：它们原先只在一个批次内部串行排队，
-既没有并行语义，也让「一个子代理一个任务」的边界变模糊。子任务与主回合同在一条线程，工具批次
-直接由内核转发宿主，`turn_id` 用子任务号。查询与取消走独立工具 `subagent_list` / `subagent_cancel`：
-任务表只用于查询与工作区切换前的拦阻。
+`subagent_run` 的执行方式：一次调用提交 `tasks` 数组（1–8 项），数组里的每个任务各跑一个
+子回合，共用同一个 `batch_id`；`background=false`（默认）在回合内阻塞到整批落定，`background=true`
+立即返回 `batch_id`/`task_ids`，结果由 `subagent_list` 取回。批次收尾事件
+（`subagent.batch.finished`）在整批最后一个任务落定时才发一次，宿主的子代理窗口据此关窗。
+并发由 `subagents.model_request_concurrency` 限制，超出部分在批次内排队。同一条助手消息里发起
+多次 `subagent_run` 仍然成立：它们各自成批（`batch_id` 不同、各开一个窗口）。
+子任务与主回合同在一条线程，工具批次直接由内核转发宿主，`turn_id` 用子任务号。查询与取消走
+独立工具 `subagent_list` / `subagent_cancel`：任务表只用于查询与工作区切换前的拦阻。
 
 `isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），
 并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent_list` 的

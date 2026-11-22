@@ -9,6 +9,7 @@ mod compression;
 mod computer_use;
 mod connector;
 mod output_budget;
+mod native_compaction;
 mod session;
 mod settings;
 mod subagent;

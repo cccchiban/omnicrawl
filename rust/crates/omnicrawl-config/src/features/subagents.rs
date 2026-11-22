@@ -13,12 +13,40 @@ use crate::core::runtime::{
 use crate::error::ConfigError;
 
 /// 设置面板允许调整的 SubAgent 资源参数（顺序与 Python 的规则表一致）。
-pub const SUBAGENT_ADVANCED_SETTING_KEYS: [&str; 4] = [
+pub const SUBAGENT_ADVANCED_SETTING_KEYS: [&str; 5] = [
     "default_timeout_seconds",
     "model_request_concurrency",
     "verify_command_timeout_seconds",
     "task_retention_minutes",
+    "result_summary_chars",
 ];
+
+/// 设置面板允许调整的 SubAgent 能力开关（`subagents.toml` 的布尔边界）。
+///
+/// 这些键默认都是「放开」或「关闭」的硬边界，只能整项切换，没有中间档位。
+pub const SUBAGENT_SWITCH_SETTING_KEYS: [&str; 6] = [
+    "allow_background",
+    "allow_fork",
+    "allow_shared_workspace_writes",
+    "allow_worktree",
+    "allow_standard_agent",
+    "enable_verify_agent",
+];
+
+/// 校验一个能力开关的取值：只接受布尔，键必须在 [`SUBAGENT_SWITCH_SETTING_KEYS`] 里。
+pub fn validate_subagent_switch_setting(name: &str, value: &Value) -> Result<bool, ConfigError> {
+    if !SUBAGENT_SWITCH_SETTING_KEYS.contains(&name) {
+        return Err(ConfigError::new(format!(
+            "设置面板不支持配置项 subagents.{name}。"
+        )));
+    }
+    match value {
+        Value::Boolean(flag) => Ok(*flag),
+        _ => Err(ConfigError::new(format!(
+            "配置项 subagents.{name} 必须是布尔值。"
+        ))),
+    }
+}
 
 /// 设置面板校验结果：整型项与数字项分开保留。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,7 +82,7 @@ impl Default for SubAgentConfig {
             max_depth: 1,
             default_timeout_seconds: 3600.0,
             model_request_concurrency: 2,
-            allow_background: false,
+            allow_background: true,
             allow_fork: false,
             allow_shared_workspace_writes: false,
             allow_worktree: true,
@@ -114,6 +142,7 @@ fn advanced_rule(name: &str) -> Result<(&'static str, f64, f64), ConfigError> {
         "model_request_concurrency" => ("int", 1.0, 4.0),
         "verify_command_timeout_seconds" => ("int", 1.0, 360.0),
         "task_retention_minutes" => ("int", 1.0, 10_080.0),
+        "result_summary_chars" => ("int", 100.0, 50_000.0),
         _ => {
             return Err(ConfigError::new(format!(
                 "设置面板不支持配置项 subagents.{name}。"
@@ -143,7 +172,7 @@ pub fn load_subagent_config(
             3600.0,
         )?,
         model_request_concurrency: int_field(&section, "model_request_concurrency", 2, 1, 4)?,
-        allow_background: bool_field(&section, "allow_background", false)?,
+        allow_background: bool_field(&section, "allow_background", true)?,
         allow_fork: bool_field(&section, "allow_fork", false)?,
         allow_shared_workspace_writes: bool_field(
             &section,

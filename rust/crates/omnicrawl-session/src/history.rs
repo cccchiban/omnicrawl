@@ -414,6 +414,19 @@ impl TurnHistoryProjector {
     /// 压缩摘要边界：历史被替换为「摘要 + 保留窗口」。
     fn feed_compact_summary(&mut self, event: &SessionEvent) {
         self.flush_tool_group();
+        if let Some(Value::Array(items)) = event.payload.get("responses_compaction") {
+            let recent = remaining_event_ids(&event.payload).map(|wanted| self.entries.iter()
+                .filter(|(anchor, _)| wanted.contains(anchor.as_str())).cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            self.entries = vec![(event.event_id.clone(), json!({
+                "role": "assistant", "content": "", "responses_compaction": items,
+                "responses_compaction_model": event.payload.get("responses_compaction_model"),
+                "responses_compaction_base_url": event.payload.get("responses_compaction_base_url"),
+                "responses_compaction_tokens": event.payload.get("responses_compaction_tokens"),
+            }))];
+            self.entries.extend(recent);
+            return;
+        }
         let summary_message = event_to_model_message(event);
         let recent: Vec<ProjectedEntry> = match remaining_event_ids(&event.payload) {
             Some(wanted) => self
@@ -498,6 +511,13 @@ pub fn project_session_history(events: &[SessionEvent]) -> Vec<ProjectedEntry> {
     for index in (0..events.len()).rev() {
         if events[index].event_type != "compact_summary" {
             continue;
+        }
+        if events[index].payload.get("restore_native_history").and_then(Value::as_bool) == Some(true) {
+            let restored: Vec<SessionEvent> = events.iter().filter(|event| {
+                event.event_type != "compact_summary" || (event.payload.get("responses_compaction").is_none()
+                    && event.payload.get("restore_native_history").and_then(Value::as_bool) != Some(true))
+            }).cloned().collect();
+            return project_session_history(&restored);
         }
         if let Some(ids) = remaining_event_ids(&events[index].payload) {
             boundary_index = Some(index);
@@ -1024,5 +1044,27 @@ mod tool_call_summary_tests {
             vec!["e1", "e2"],
             "锚点随幸存条目保留：{entries:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_compaction_tests {
+    use super::*;
+
+    #[test]
+    fn replay_preserves_native_items_and_subsequent_messages() {
+        let items = json!([{"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque-bytes"}]);
+        let events = vec![
+            projection_only_event("user_message", json!({"content": "旧消息"}).as_object().unwrap()).unwrap(),
+            projection_only_event("compact_summary", json!({
+                "responses_compaction": items, "remaining_event_ids": [],
+                "content": "OpenAI 原生上下文压缩",
+            }).as_object().unwrap()).unwrap(),
+            projection_only_event("user_message", json!({"content": "继续"}).as_object().unwrap()).unwrap(),
+        ];
+        let history = project_session_history(&events);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].1["responses_compaction"], items);
+        assert_eq!(history[1].1["content"], "继续");
     }
 }

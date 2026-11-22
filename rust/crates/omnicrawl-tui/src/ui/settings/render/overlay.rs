@@ -75,10 +75,11 @@ pub(super) fn render_dropdown_overlay(frame: &mut Frame, area: Rect, state: &Set
     Paragraph::new(lines).render(inner, frame.buffer_mut());
 }
 
-/// 提问建议页：上方一个开关，下方本机 Skill 列表（回车看描述详情）。
+/// Skills 管理页：建议开关、常驻选择与本机 Skill 描述列表。
 ///
 /// ```text
 /// › 建议 Skill：开启
+///   常驻 Skill：无
 ///
 ///   Skills
 ///      agent-browser-cli            user
@@ -107,6 +108,7 @@ pub(super) fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsS
     } else {
         "关闭"
     };
+    state.record_hit(row_hit(list_area, 0), HitAction::PaneRow(0));
     lines.push(Line::styled(
         fit(
             &format!(
@@ -122,19 +124,32 @@ pub(super) fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsS
             menu_text_style()
         },
     ));
+    if list_area.height > 1 {
+        state.record_hit(row_hit(list_area, 1), HitAction::PaneRow(1));
+    }
+    lines.push(Line::styled(
+        fit(&format!("{} 常驻 Skill：{}",
+            if selected == 1 { "›" } else { " " },
+            state.resident_skill_name().unwrap_or("无")), width),
+        if selected == 1 && focused {
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            menu_text_style()
+        },
+    ));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         fit("  Skills", width),
         theme::rich_style(theme::TEXT_MUTED).add_modifier(Modifier::BOLD),
     ));
     let body_height = list_height.saturating_sub(lines.len());
-    let selected_skill = selected.saturating_sub(1);
+    let selected_skill = selected.saturating_sub(2);
     let offset = window_offset(selected_skill, skills.len(), body_height);
     for (index, row) in skills.iter().enumerate().skip(offset).take(body_height) {
-        let current = index + 1 == selected;
+        let current = index + 2 == selected;
         state.record_hit(
             row_hit(list_area, lines.len()),
-            HitAction::PaneRow(index + 1),
+            HitAction::PaneRow(index + 2),
         );
         lines.push(Line::styled(
             fit(
@@ -155,7 +170,7 @@ pub(super) fn render_suggestion(frame: &mut Frame, area: Rect, state: &SettingsS
     }
     if skills.is_empty() && body_height > 0 {
         lines.push(Line::styled(
-            fit("    （未发现 Skill）", width),
+            fit("    未发现 Skill", width),
             theme::rich_style(theme::TEXT_MUTED),
         ));
     }

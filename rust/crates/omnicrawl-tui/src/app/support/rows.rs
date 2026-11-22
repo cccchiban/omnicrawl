@@ -33,7 +33,7 @@ pub(crate) fn fetcher_row(environment: &ConfigEnvironment) -> FetcherRow {
     }
 }
 
-/// 子任务设置页的行：总开关 + 六个高级参数（对映 Python 的 `_SubagentsPane.sections`）。
+/// 子任务设置页的行：总开关 + 能力开关 + 高级参数。
 pub(crate) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
     let mut rows = vec![SubagentRow {
         key: "enabled".to_string(),
@@ -48,7 +48,18 @@ pub(crate) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
         active: config.enabled,
         section: "子任务功能",
     }];
-    let current: [(&str, i64); 4] = [
+    for (key, label) in SUBAGENT_SWITCH_LABELS {
+        let active = subagent_switch_value(config, key);
+        rows.push(SubagentRow {
+            key: key.to_string(),
+            label: label.to_string(),
+            value: if active { "已允许" } else { "已禁止" }.to_string(),
+            toggle: true,
+            active,
+            section: "能力边界",
+        });
+    }
+    let current: [(&str, i64); 5] = [
         (
             "default_timeout_seconds",
             config.default_timeout_seconds as i64,
@@ -62,6 +73,7 @@ pub(crate) fn subagent_rows(config: &SubAgentConfig) -> Vec<SubagentRow> {
             config.verify_command_timeout_seconds,
         ),
         ("task_retention_minutes", config.task_retention_minutes),
+        ("result_summary_chars", config.result_summary_chars),
     ];
     for (key, value) in current {
         let Some(spec) = SUBAGENT_ADVANCED_SPECS.iter().find(|spec| spec.key == key) else {
@@ -295,4 +307,55 @@ pub(crate) fn subagent_roles() -> Vec<(String, String)> {
         .iter()
         .map(|item| (item.name.clone(), item.description.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 页面上必须能看到配置里每一个可调项：漏一个就是「配置能改但界面改不到」。
+    #[test]
+    fn every_setting_key_reaches_a_row() {
+        let config = SubAgentConfig::default();
+        let rows = subagent_rows(&config);
+        let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
+
+        assert_eq!(keys[0], "enabled", "总开关在最上面");
+        for key in omnicrawl_config::features::subagents::SUBAGENT_SWITCH_SETTING_KEYS {
+            assert!(keys.contains(&key), "缺少能力开关 {key}：{keys:?}");
+        }
+        for spec in SUBAGENT_ADVANCED_SPECS {
+            assert!(keys.contains(&spec.key), "缺少高级参数 {}：{keys:?}", spec.key);
+        }
+        assert_eq!(
+            keys.len(),
+            1 + omnicrawl_config::features::subagents::SUBAGENT_SWITCH_SETTING_KEYS.len()
+                + SUBAGENT_ADVANCED_SPECS.len(),
+            "没有多余或重复的行：{keys:?}"
+        );
+    }
+
+    /// 布尔行的显示值跟着配置走，且都标记成可就地切换。
+    #[test]
+    fn capability_rows_show_their_allowed_state() {
+        let config = SubAgentConfig {
+            allow_background: false,
+            allow_fork: true,
+            ..SubAgentConfig::default()
+        };
+        let rows = subagent_rows(&config);
+        let find = |key: &str| rows.iter().find(|row| row.key == key).expect(key);
+
+        let background = find("allow_background");
+        assert!(background.toggle, "能力开关是可就地切换的布尔行");
+        assert!(!background.active);
+        assert_eq!(background.value, "已禁止");
+
+        let fork = find("allow_fork");
+        assert!(fork.active);
+        assert_eq!(fork.value, "已允许");
+
+        assert_eq!(find("result_summary_chars").value, "6000");
+        assert!(!find("result_summary_chars").toggle, "数字行不是布尔行");
+    }
 }

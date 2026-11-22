@@ -241,6 +241,22 @@ impl App {
         ))
     }
 
+    pub(super) fn apply_resident_skill(&mut self, name: Option<&str>) -> Result<String, String> {
+        if self.state.turn.is_running() || self.pending_turn_submit.is_some() {
+            return Err("请在当前回合结束后修改常驻 Skill。".to_string());
+        }
+        if let Some(name) = name {
+            self.prompt.active_skill_messages_for(!self.registry.declarations().is_empty(), name)?;
+        } else {
+            self.prompt.context_messages(!self.registry.declarations().is_empty())?;
+        }
+        omnicrawl_config::features::skills::save_resident_skill(
+            &ConfigEnvironment::from_process(), None, name,
+        ).map_err(|error| format!("设置未完成：{}", error.message()))?;
+        self.prompt.set_resident_skill(name)?;
+        Ok(format!("常驻 Skill：{}。", name.unwrap_or("无")))
+    }
+
     /// 重建四处决策模型重排运行期（记忆搜索、知识库检索、Skill 检索与联网搜索各一份）。
     pub(super) fn rebuild_rerank(&mut self, environment: &ConfigEnvironment) -> Result<(), String> {
         self.registry_options.memory.rerank =

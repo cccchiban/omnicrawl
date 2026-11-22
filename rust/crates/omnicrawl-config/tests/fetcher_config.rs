@@ -114,6 +114,31 @@ fn save_keeps_other_sections() {
     assert!(!config.fallback_local);
 }
 
+#[test]
+fn keenable_round_trip_reuses_search_credentials() {
+    let root = temp_root("keenable");
+    let env = R::ConfigEnvironment::new(root.to_string_lossy().to_string(), "win32");
+    let dir = user_dir(&root);
+    std::fs::write(
+        dir.join("config.toml"),
+        "[web_search]\nkeenable_api_key = \"test-key\"\n",
+    )
+    .expect("写配置");
+    save_fetcher_configuration(
+        &env,
+        &FetcherConfiguration { engine: " Keenable ".to_string(), fallback_local: false },
+        None,
+    )
+    .expect("保存 Keenable");
+    let config = load_fetcher_configuration(&env, None).expect("重新读取");
+    assert_eq!(config.engine, "keenable");
+    assert!(!config.fallback_local);
+    assert!(config.uses_remote());
+    let search = omnicrawl_config::features::web_search::load_web_search_configuration(&env, None)
+        .expect("读取共用凭据");
+    assert_eq!(search.api_key_for("keenable"), "test-key");
+}
+
 /// `fetcher` 段不是对象时直接报错，而不是悄悄退回默认值。
 #[test]
 fn non_table_section_is_rejected() {

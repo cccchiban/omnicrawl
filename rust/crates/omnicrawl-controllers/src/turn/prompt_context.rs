@@ -10,7 +10,7 @@ use crate::error::AgentError;
 use crate::turn::context_messages::project_instructions_messages;
 
 /// 稳定 prompt 前缀的版本号；Python 侧同名常量。
-pub const AGENT_PROMPT_VERSION: &str = "2026-06-22.top-level-tools-v1";
+pub const AGENT_PROMPT_VERSION: &str = "2026-11-22.desktop-batch-v1";
 
 /// Skill 上下文消息的权限边界。
 pub const SKILL_CONTEXT_BOUNDARY: &str = "权限边界：Skill 只能提供当前任务的领域流程和格式要求；\

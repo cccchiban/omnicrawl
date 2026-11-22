@@ -133,16 +133,19 @@ impl ReasoningReveal {
             self.since = None;
             return false;
         }
-        // 一帧的步长按「距上次推进过了多久」折算：帧率高低不影响铺开速度。
         let elapsed = match self.since {
             Some(since) => now.saturating_duration_since(since).as_secs_f64(),
-            // 首次推进：给一个短起步，避免这一帧白等。
             None => 1.0 / 60.0,
         };
+        let backlog = self.target - self.revealed;
+        let rate = REASONING_REVEAL_CHARS_PER_SECOND
+            .max(backlog as f64 / REASONING_REVEAL_CATCHUP.as_secs_f64());
+        let step = (elapsed * rate) as usize;
+        if step == 0 {
+            return true;
+        }
         self.since = Some(now);
-        let budget = (elapsed * REASONING_REVEAL_CHARS_PER_SECOND) as usize;
-        let step = budget.clamp(1, REASONING_REVEAL_MAX_CHARS);
-        self.revealed = (self.revealed + step).min(self.target);
+        self.revealed += step.min(backlog);
         self.revealed < self.target
     }
 

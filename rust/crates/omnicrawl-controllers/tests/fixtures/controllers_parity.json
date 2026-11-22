@@ -6636,26 +6636,54 @@
         }
       },
       {
-        "label": "subagent_run 任务投影",
+        "label": "subagent_run 单任务投影",
         "tool_name": "subagent_run",
         "arguments": {
-          "task": {
-            "description": "  检索一下  ",
-            "subagent_type": "explore"
-          }
+          "tasks": [
+            {
+              "description": "  检索一下  ",
+              "subagent_type": "explore"
+            }
+          ]
         },
         "expected": {
+          "task_count": 1,
           "description": "检索一下",
           "agent_type": "explore"
         }
       },
       {
-        "label": "subagent_run 非法子项只留定位键",
+        "label": "subagent_run 多任务只报条数",
         "tool_name": "subagent_run",
         "arguments": {
-          "task": "not-an-object"
+          "tasks": [
+            {
+              "description": "检索一下",
+              "subagent_type": "explore"
+            },
+            {
+              "description": "拆解改动",
+              "subagent_type": "plan"
+            }
+          ]
         },
-        "expected": {}
+        "expected": {
+          "task_count": 2,
+          "description": "检索一下",
+          "agent_type": "explore"
+        }
+      },
+      {
+        "label": "subagent_run 任务项非对象只留定位键",
+        "tool_name": "subagent_run",
+        "arguments": {
+          "tasks": [
+            "not-an-object"
+          ]
+        },
+        "expected": {
+          "task_count": 1
+        }
       },
       {
         "label": "subagent_cancel 只暴露定位键",
@@ -7738,15 +7766,15 @@
           },
           {
             "name": "subagent_run",
-            "description": "是什么：把一个任务交给受限 profile 的子代理，同步执行并返回结果。怎么做：需要独立探索、规划、实现或验证时使用；简单问题、单步任务不用。怎样做：一次调用只提交一个 task，需要并行就在同一条消息里并发多次调用；subagent_type 决定角色与权限，只读角色不能写文件；成功返回 batch_id/status/results，失败含 error.code/message。建议：description 写目标，prompt 写完整任务；写类角色优先用 worktree 隔离，改动经 subagent_apply_worktree 写回。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"task\"], \"additionalProperties\": false}",
+            "description": "是什么：把一个或多个任务交给受限角色的子代理，前台等待或后台运行。怎么做：需要独立探索、规划、实现或验证时使用；多个互不依赖的任务一次派发，各跑各的子回合。怎样做：tasks 数组每项一个任务，最多 8 项，一次调用同批执行；background=false 默认等全部落定返回各任务结果，true 立即返回 batch_id/task_ids，主代理可继续工作，通过 subagent_list 查询结果；后台受 allow_background 控制。建议：prompt 写完整任务；写入型任务优先隔离，无 Git 时使用本地副本，审查后用 subagent_apply_worktree 回写。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}, \"description\": \"要派发的任务；每项各自成子回合，共用同一个批次号。\"}, \"background\": {\"type\": \"boolean\", \"description\": \"false 等待全部落定；true 后台运行并立即返回任务编号，默认 false。\"}}, \"required\": [\"tasks\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
           },
           {
             "name": "subagent_list",
-            "description": "是什么：列出子代理任务、待领取通知与残留隔离工作树。怎么做：查看任务状态、取单个任务详情、确认是否有未清理的 worktree 时使用。怎样做：无必填参数；给 task_id 只返回该任务详情，给 batch_id 只返回该批次任务；返回 tasks、notifications 与 worktrees，通知读取后即清空。建议：开工前与收尾前各查一次，避免遗留 worktree。",
+            "description": "是什么：列出当前会话所有子代理任务、通知与残留隔离目录，包含前台、后台及已完成、失败、取消的任务。怎么做：查看任务与结果，确认待审查的隔离改动。怎样做：无参数返回全部保留期内任务；task_id 查询详情，batch_id 筛选批次；通知读取后清空。建议：已结束任务也可查询，worktrees 同时包含 Git 工作树与本地副本。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该任务的详情。\"}, \"batch_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该批次的任务。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -7762,7 +7790,7 @@
           },
           {
             "name": "subagent_apply_worktree",
-            "description": "是什么：把子代理隔离工作树的改动写回主工作区。怎么做：子代理用 isolation=worktree 产出改动、父代理审查通过后使用；只读角色的任务不需要。怎样做：task_id 或 branch 至少给一个；主工作区必须干净否则拒绝；strategy=checkout（默认，直接检出文件、不产生合并提交）或 merge（产生 --no-ff 合并提交）；cleanup=true 应用后清理工作树与分支。建议：先看 subagent_get 的结果再决定应用或丢弃。",
+            "description": "是什么：审查后把子代理隔离改动写回主工作区。怎么做：任务完成且审查通过后使用。怎样做：task_id 或 branch 至少一个；Git 主树必须干净；无 Git 的本地副本用 task_id 定位并逐文件核对基线，冲突则拒绝；strategy 默认 checkout，merge 仅支持 Git；cleanup=true 回写后清理。建议：先用 subagent_list 查看结果与隔离路径。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"任务编号，取自 subagent_run 或 subagent_list 的返回。\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200, \"description\": \"隔离工作树的分支名。\"}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"], \"description\": \"checkout=直接检出文件（默认）；merge=产生合并提交。\"}, \"cleanup\": {\"type\": \"boolean\", \"description\": \"应用成功后清理工作树与分支，默认 false。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -8129,15 +8157,15 @@
           },
           {
             "name": "subagent_run",
-            "description": "是什么：把一个任务交给受限 profile 的子代理，同步执行并返回结果。怎么做：需要独立探索、规划、实现或验证时使用；简单问题、单步任务不用。怎样做：一次调用只提交一个 task，需要并行就在同一条消息里并发多次调用；subagent_type 决定角色与权限，只读角色不能写文件；成功返回 batch_id/status/results，失败含 error.code/message。建议：description 写目标，prompt 写完整任务；写类角色优先用 worktree 隔离，改动经 subagent_apply_worktree 写回。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"task\"], \"additionalProperties\": false}",
+            "description": "是什么：把一个或多个任务交给受限角色的子代理，前台等待或后台运行。怎么做：需要独立探索、规划、实现或验证时使用；多个互不依赖的任务一次派发，各跑各的子回合。怎样做：tasks 数组每项一个任务，最多 8 项，一次调用同批执行；background=false 默认等全部落定返回各任务结果，true 立即返回 batch_id/task_ids，主代理可继续工作，通过 subagent_list 查询结果；后台受 allow_background 控制。建议：prompt 写完整任务；写入型任务优先隔离，无 Git 时使用本地副本，审查后用 subagent_apply_worktree 回写。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}, \"description\": \"要派发的任务；每项各自成子回合，共用同一个批次号。\"}, \"background\": {\"type\": \"boolean\", \"description\": \"false 等待全部落定；true 后台运行并立即返回任务编号，默认 false。\"}}, \"required\": [\"tasks\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
           },
           {
             "name": "subagent_list",
-            "description": "是什么：列出子代理任务、待领取通知与残留隔离工作树。怎么做：查看任务状态、取单个任务详情、确认是否有未清理的 worktree 时使用。怎样做：无必填参数；给 task_id 只返回该任务详情，给 batch_id 只返回该批次任务；返回 tasks、notifications 与 worktrees，通知读取后即清空。建议：开工前与收尾前各查一次，避免遗留 worktree。",
+            "description": "是什么：列出当前会话所有子代理任务、通知与残留隔离目录，包含前台、后台及已完成、失败、取消的任务。怎么做：查看任务与结果，确认待审查的隔离改动。怎样做：无参数返回全部保留期内任务；task_id 查询详情，batch_id 筛选批次；通知读取后清空。建议：已结束任务也可查询，worktrees 同时包含 Git 工作树与本地副本。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该任务的详情。\"}, \"batch_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该批次的任务。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -8153,7 +8181,7 @@
           },
           {
             "name": "subagent_apply_worktree",
-            "description": "是什么：把子代理隔离工作树的改动写回主工作区。怎么做：子代理用 isolation=worktree 产出改动、父代理审查通过后使用；只读角色的任务不需要。怎样做：task_id 或 branch 至少给一个；主工作区必须干净否则拒绝；strategy=checkout（默认，直接检出文件、不产生合并提交）或 merge（产生 --no-ff 合并提交）；cleanup=true 应用后清理工作树与分支。建议：先看 subagent_get 的结果再决定应用或丢弃。",
+            "description": "是什么：审查后把子代理隔离改动写回主工作区。怎么做：任务完成且审查通过后使用。怎样做：task_id 或 branch 至少一个；Git 主树必须干净；无 Git 的本地副本用 task_id 定位并逐文件核对基线，冲突则拒绝；strategy 默认 checkout，merge 仅支持 Git；cleanup=true 回写后清理。建议：先用 subagent_list 查看结果与隔离路径。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"任务编号，取自 subagent_run 或 subagent_list 的返回。\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200, \"description\": \"隔离工作树的分支名。\"}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"], \"description\": \"checkout=直接检出文件（默认）；merge=产生合并提交。\"}, \"cleanup\": {\"type\": \"boolean\", \"description\": \"应用成功后清理工作树与分支，默认 false。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -8631,15 +8659,15 @@
           },
           {
             "name": "subagent_run",
-            "description": "是什么：把一个任务交给受限 profile 的子代理，同步执行并返回结果。怎么做：需要独立探索、规划、实现或验证时使用；简单问题、单步任务不用。怎样做：一次调用只提交一个 task，需要并行就在同一条消息里并发多次调用；subagent_type 决定角色与权限，只读角色不能写文件；成功返回 batch_id/status/results，失败含 error.code/message。建议：description 写目标，prompt 写完整任务；写类角色优先用 worktree 隔离，改动经 subagent_apply_worktree 写回。",
-            "argument_schema": "{\"type\": \"object\", \"properties\": {\"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"task\"], \"additionalProperties\": false}",
+            "description": "是什么：把一个或多个任务交给受限角色的子代理，前台等待或后台运行。怎么做：需要独立探索、规划、实现或验证时使用；多个互不依赖的任务一次派发，各跑各的子回合。怎样做：tasks 数组每项一个任务，最多 8 项，一次调用同批执行；background=false 默认等全部落定返回各任务结果，true 立即返回 batch_id/task_ids，主代理可继续工作，通过 subagent_list 查询结果；后台受 allow_background 控制。建议：prompt 写完整任务；写入型任务优先隔离，无 Git 时使用本地副本，审查后用 subagent_apply_worktree 回写。",
+            "argument_schema": "{\"type\": \"object\", \"properties\": {\"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}, \"description\": \"要派发的任务；每项各自成子回合，共用同一个批次号。\"}, \"background\": {\"type\": \"boolean\", \"description\": \"false 等待全部落定；true 后台运行并立即返回任务编号，默认 false。\"}}, \"required\": [\"tasks\"], \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
             "run_in_subprocess": true
           },
           {
             "name": "subagent_list",
-            "description": "是什么：列出子代理任务、待领取通知与残留隔离工作树。怎么做：查看任务状态、取单个任务详情、确认是否有未清理的 worktree 时使用。怎样做：无必填参数；给 task_id 只返回该任务详情，给 batch_id 只返回该批次任务；返回 tasks、notifications 与 worktrees，通知读取后即清空。建议：开工前与收尾前各查一次，避免遗留 worktree。",
+            "description": "是什么：列出当前会话所有子代理任务、通知与残留隔离目录，包含前台、后台及已完成、失败、取消的任务。怎么做：查看任务与结果，确认待审查的隔离改动。怎样做：无参数返回全部保留期内任务；task_id 查询详情，batch_id 筛选批次；通知读取后清空。建议：已结束任务也可查询，worktrees 同时包含 Git 工作树与本地副本。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该任务的详情。\"}, \"batch_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该批次的任务。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -8655,7 +8683,7 @@
           },
           {
             "name": "subagent_apply_worktree",
-            "description": "是什么：把子代理隔离工作树的改动写回主工作区。怎么做：子代理用 isolation=worktree 产出改动、父代理审查通过后使用；只读角色的任务不需要。怎样做：task_id 或 branch 至少给一个；主工作区必须干净否则拒绝；strategy=checkout（默认，直接检出文件、不产生合并提交）或 merge（产生 --no-ff 合并提交）；cleanup=true 应用后清理工作树与分支。建议：先看 subagent_get 的结果再决定应用或丢弃。",
+            "description": "是什么：审查后把子代理隔离改动写回主工作区。怎么做：任务完成且审查通过后使用。怎样做：task_id 或 branch 至少一个；Git 主树必须干净；无 Git 的本地副本用 task_id 定位并逐文件核对基线，冲突则拒绝；strategy 默认 checkout，merge 仅支持 Git；cleanup=true 回写后清理。建议：先用 subagent_list 查看结果与隔离路径。",
             "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"任务编号，取自 subagent_run 或 subagent_list 的返回。\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200, \"description\": \"隔离工作树的分支名。\"}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"], \"description\": \"checkout=直接检出文件（默认）；merge=产生合并提交。\"}, \"cleanup\": {\"type\": \"boolean\", \"description\": \"应用成功后清理工作树与分支，默认 false。\"}}, \"additionalProperties\": false}",
             "requires_confirmation": false,
             "model_output_is_bounded": false,
@@ -22131,7 +22159,7 @@
           ]
         },
         {
-          "label": "超限恢复无回合",
+          "label": "超限恢复以未完成的并行工具链结尾",
           "kind": "recovery",
           "source_events": [
             {
@@ -22178,16 +22206,6 @@
                 "arguments": {
                   "command": "ls"
                 }
-              }
-            },
-            {
-              "event_id": "e6",
-              "type": "tool_result",
-              "payload": {
-                "tool": "bash",
-                "tool_call_id": "c2",
-                "ok": false,
-                "output": "boom"
               }
             }
           ],

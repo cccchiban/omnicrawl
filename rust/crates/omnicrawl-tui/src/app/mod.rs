@@ -29,7 +29,8 @@ use omnicrawl_config::core::runtime::{resolve_config_path, user_config_dir, Conf
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, load_thinking_collapsed,
     save_context_compaction_trigger_percent, save_context_window_tokens, save_feature_enabled,
-    save_mcp_config, save_subagent_setting, McpConfigData, McpPolicyData, McpServerData,
+    save_mcp_config, save_subagent_setting, save_subagent_switch, McpConfigData, McpPolicyData,
+    McpServerData,
 };
 use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::features::advisor::{
@@ -168,13 +169,14 @@ use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
 use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
-    nearest_compaction_percent, reasoning_label, split_token, ChannelRow, DecisionLocalChange,
+    nearest_compaction_percent, reasoning_label, split_token, subagent_switch_value, ChannelRow,
+    DecisionLocalChange,
     DecisionLocalValues, DecisionRow, DecisionSwitchRow, EmbeddingRow, FetcherRow, FieldValue,
     FormKind,
     McpChange, McpServerDraft, McpServerRow, McpSettingsValues, SessionRow, SettingsChange,
     SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, SuggestionSkillRow,
     ToolSwitchRow, TtsChange, TtsChannelDraft, TtsChannelValues, TtsDraft, TtsValues, VisionChange,
-    VisionModelRef, WebSearchRow, MASKED_SECRET, SUBAGENT_ADVANCED_SPECS,
+    VisionModelRef, WebSearchRow, MASKED_SECRET, SUBAGENT_ADVANCED_SPECS, SUBAGENT_SWITCH_LABELS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 
@@ -258,6 +260,7 @@ fn prepare_workspace(
 
 /// 一次工具执行的完成通知。
 struct ToolCompletion {
+    batch_id: Id,
     index: usize,
     call: ToolCall,
     result: ToolResult,
@@ -1110,6 +1113,7 @@ fn session_summary(result: &Value) -> Result<SessionSummary, String> {
 /// `/review` 期间工具批次还要回到宿主执行（同步等待会死锁）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KernelCommand {
+    New { previous: String },
     /// `/undo`：整轮回退由内核执行（会改会话与工作区）。
     Undo,
     /// `/compact`：压缩要调用摘要模型，不能让界面等。
@@ -1131,6 +1135,7 @@ impl KernelCommand {
     /// 已解析的命令 → 宿主命令；不需要内核往返的返回 `None`，照旧交命令层。
     fn from_parsed(parsed: &ParsedCommand) -> Option<Self> {
         match parsed.command.name.as_str() {
+            "new" => Some(Self::New { previous: String::new() }),
             "undo" => Some(Self::Undo),
             "compact" => Some(Self::Compact),
             "review" => Some(Self::Review {
@@ -1143,6 +1148,7 @@ impl KernelCommand {
     /// 这条命令要下发的协议方法；内部后继命令（[`Self::ReviewInject`]）没有入口。
     fn to_command(&self, text: &str) -> Result<Option<Command>, String> {
         Ok(match self {
+            Self::New { .. } => Some(Command::SessionNew),
             Self::Undo => Some(Command::TurnUndo),
             Self::Compact => {
                 if !text.trim().trim_start_matches("/compact").trim().is_empty() {
@@ -1166,6 +1172,7 @@ impl KernelCommand {
 
     fn label(&self) -> &'static str {
         match self {
+            Self::New { .. } => "新建会话",
             Self::Undo => "撤销",
             Self::Compact => "压缩",
             Self::Review { .. } => "评审",
@@ -1176,6 +1183,7 @@ impl KernelCommand {
     /// 执行期间的运行状态文案（对映命令层 `working_status`）。
     fn working_status(&self) -> &'static str {
         match self {
+            Self::New { .. } => "正在新建会话…",
             Self::Undo => "正在撤销上一轮…",
             Self::Compact => "上下文压缩中…",
             Self::Review { .. } => "正在评审",
@@ -1187,6 +1195,8 @@ impl KernelCommand {
     /// 成功回执 → 界面消息。
     fn success_message(&self, result: &Value) -> String {
         match self {
+            Self::New { previous } if previous.is_empty() => "已新开会话。".to_string(),
+            Self::New { previous } => format!("已新开会话，旧会话：{previous}"),
             Self::Undo => undo_message(result),
             Self::Compact => compact_message(result),
             Self::Review { .. } => format_review_report(result_text(result, "output").as_str()),

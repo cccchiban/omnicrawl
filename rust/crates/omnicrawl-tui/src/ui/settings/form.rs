@@ -418,18 +418,17 @@ const WEB_SEARCH_FIELDS: [FieldSpec; 13] = [
     FieldSpec::secret("Keenable API Key"),
 ];
 
-/// 抓取引擎的候选：本地直连、六家带抓取接口的服务，以及负载均衡。
-///
-/// 候选文案把「本地」与「负载均衡」讲清楚：这两个不是服务名，用户不该以为要填凭据。
-const FETCHER_ENGINE_OPTIONS: [(&str, &str); 8] = [
-    ("local（本地直连）", "local"),
+/// 抓取引擎的候选：本地直连、七家带抓取接口的服务，以及负载均衡。
+const FETCHER_ENGINE_OPTIONS: [(&str, &str); 9] = [
+    ("本地直连", "local"),
     ("tavily", "tavily"),
     ("exa", "exa"),
     ("firecrawl", "firecrawl"),
     ("anysearch", "anysearch"),
     ("tinyfish", "tinyfish"),
     ("deepseek", "deepseek"),
-    ("balanced（多引擎负载均衡）", "balanced"),
+    ("keenable", "keenable"),
+    ("负载均衡", "balanced"),
 ];
 
 /// 抓取页的字段；顺序与 `app.rs` 读值时的下标一一对应。

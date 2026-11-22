@@ -94,12 +94,13 @@ keenable_api_key = ""
 
 # 抓取引擎（fetcher 工具）：默认本地直连，与改造前完全一致。
 # local        本地直连目标站点：不依赖任何凭据，仍是默认值；
-# tavily / exa / firecrawl / anysearch / tinyfish / deepseek
+# tavily / exa / firecrawl / anysearch / tinyfish / deepseek / keenable
 #              把抓取交给该服务的抓取接口，适合直连取不到正文的站点（网络受限、反爬较严、
 #              需要渲染）。凭据复用上面 [web_search] 段里同一把 API Key，不必填两遍；
 #              接口回的是清洗过的正文，因此不再走本地 HTML 提取与 JS 重建。
 # balanced     在有凭据的引擎之间轮转：额度是各家分别计费，摊开之后单一渠道的消耗慢得多。
-#              anysearch 没有 Key 也能参与（走匿名额度）。
+#              anysearch 没有 Key 也能参与；keenable 仅配 Key 后参与，避免消耗共享匿名池。
+# keenable 单独选择时可不填 Key，走 public 通道；live=true 读取当前页。
 # 走哪个引擎只看这里的设置：工具调用不能按单次任务改抓取通路。
 # 抓取接口一律先过目标站点的 robots.txt 判定，与本地直连同一套边界（含不绕验证码）。
 [fetcher]
@@ -303,6 +304,8 @@ enabled = false
 # 与内置作用域一起参与发现，扫描顺序排在最后；同名 Skill 由先扫描到的作用域胜出。
 # [skills]
 # extra_paths = ["./my-skills", "~/.omnicrawl/shared-skills"]
+# 常驻 Skill 默认无，只能设置一个名称；也可在设置的 skills管理 中选择。
+# resident_skill = "python-code-review"
 
 # 内置工具开关：默认除 powershell 关闭外，其余全部启用。
 # 只在需要禁用某个工具时取消注释并设为 false。
@@ -350,6 +353,9 @@ screenshot_max_dimension = 1024
 thinking_effort = "low"
 
 [context_compaction]
+# GPT 系列的 Responses 渠道默认调用 /responses/compact；false 使用摘要压缩。
+# 非 Responses 渠道或启用消息脱敏时使用摘要压缩。
+native_gpt = true
 # 上下文压缩是 Agent 的基础能力。触发阈值（Token）也可在运行设置面板按当前
 # 模型上下文窗口的百分比设置（5% 步进）：trigger_context_tokens = 上下文窗口 × 百分比。
 # 设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。

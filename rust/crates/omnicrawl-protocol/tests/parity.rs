@@ -17,6 +17,7 @@ const FIXTURE: &str = include_str!("fixtures/protocol_parity.json");
 
 fn project_block(block: &MessageBlock) -> Value {
     match block {
+        MessageBlock::ResponsesCompaction(items) => json!({"kind": "responses_compaction", "items": items}),
         MessageBlock::Text(text) => json!({"kind": "text", "text": text.text}),
         MessageBlock::Image(image) => json!({
             "kind": "image",

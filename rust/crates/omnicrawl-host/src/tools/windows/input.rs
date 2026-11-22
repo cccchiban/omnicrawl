@@ -472,6 +472,108 @@ pub fn release_on_exit() {
     }
 }
 
+/// 一步原子输入：批处理脚本按顺序把它们摊平成一次 `SendInput`。
+///
+/// 与 `windows_input` 共用同一份按键状态（`PRESSED_BUTTON`）与同一套坐标归一化，
+/// 因此脚本里的「按下 → 移动 → 抬起」不会与工具调用互相打架。
+pub enum Step {
+    Move { x: i64, y: i64 },
+    Down { button: String },
+    Up { button: String },
+    Wheel { delta: i64 },
+    Key { keys: Vec<String>, presses: i64 },
+    Text { text: String },
+}
+
+/// 校验一个键名（脚本解析阶段用）：不支持的键名不该等到发事件才发现。
+pub fn validate_key(key: &str) -> Result<String, ToolError> {
+    normalise_virtual_key(Some(&Value::String(key.to_string())))
+}
+
+/// 校验一个鼠标键名。
+pub fn validate_button(button: &str) -> Result<String, ToolError> {
+    let normalised = button.trim().to_lowercase();
+    buttonflags(&normalised)?;
+    Ok(normalised)
+}
+
+/// 校验一处绝对坐标落在虚拟桌面内。
+pub fn validate_position(x: i64, y: i64) -> Result<(), ToolError> {
+    normalised_position(x, y).map(|_| ())
+}
+
+/// 把一串步骤合成尽量少的 `SendInput` 批次后发出。
+///
+/// 合并的理由是绘制：折线重采样出来动辄上千个点，一次一个事件往返系统调用
+/// 会让笔迹抖成锯齿。`SendInput` 本身就是按数组进来的，合并只是把数组拼长，
+/// 不加任何「批量语义」——目标窗口收到的仍然是逐个按下/移动/抬起。
+pub fn run_steps(steps: &[Step]) -> Result<(), ToolError> {
+    let mut inputs: Vec<ffi::Input> = Vec::new();
+    let mut pressed: Option<u8> = None;
+    for step in steps {
+        match step {
+            Step::Move { x, y } => {
+                inputs.push(absolute_mouse_input(*x, *y, ffi::MOUSEEVENTF_MOVE)?);
+            }
+            Step::Down { button } => {
+                let (down, _) = buttonflags(button)?;
+                inputs.push(mouse_wheel(down, button_data(button)));
+                pressed = Some(pressed_code(button)?);
+            }
+            Step::Up { button } => {
+                let (_, up) = buttonflags(button)?;
+                inputs.push(mouse_wheel(up, button_data(button)));
+                pressed = None;
+            }
+            Step::Wheel { delta } => {
+                inputs.push(mouse_input(0, 0, ffi::MOUSEEVENTF_WHEEL, *delta as u32));
+            }
+            Step::Key { keys, presses } => {
+                let codes: Vec<u32> = keys
+                    .iter()
+                    .map(|key| virtual_key_code(key).unwrap_or(0))
+                    .collect();
+                if codes.len() == 1 {
+                    for _ in 0..*presses {
+                        inputs.push(keyboard_input(codes[0] as u16, 0, 0));
+                        inputs.push(keyboard_input(codes[0] as u16, 0, ffi::KEYEVENTF_KEYUP));
+                    }
+                } else {
+                    for code in &codes {
+                        inputs.push(keyboard_input(*code as u16, 0, 0));
+                    }
+                    for code in codes.iter().rev() {
+                        inputs.push(keyboard_input(*code as u16, 0, ffi::KEYEVENTF_KEYUP));
+                    }
+                }
+            }
+            Step::Text { text } => {
+                for unit in text.encode_utf16() {
+                    inputs.push(keyboard_input(0, unit, ffi::KEYEVENTF_UNICODE));
+                    inputs.push(keyboard_input(
+                        0,
+                        unit,
+                        ffi::KEYEVENTF_UNICODE | ffi::KEYEVENTF_KEYUP,
+                    ));
+                }
+            }
+        }
+    }
+    let sent = send_inputs(&inputs);
+    // 记录批次末尾的按下状态：进程退出与下一次 press 靠它决定要不要松开。
+    // 即使 `send_inputs` 只提交了一部分，事件也已经落进系统，必须照实记下来，
+    // 否则鼠标会卡在按下状态。
+    match pressed {
+        Some(code) => PRESSED_BUTTON.store(code, Ordering::SeqCst),
+        None => {
+            if steps.iter().any(|step| matches!(step, Step::Up { .. })) {
+                PRESSED_BUTTON.store(NO_BUTTON, Ordering::SeqCst);
+            }
+        }
+    }
+    sent
+}
+
 fn mouse_wheel(flags: u32, mouse_data: u32) -> ffi::Input {
     mouse_input(0, 0, flags, mouse_data)
 }

@@ -30,6 +30,7 @@ pub struct PreparedTask {
     pub definition: AgentDefinition,
     pub tool_names: Vec<String>,
     pub context: String,
+    pub background: bool,
 }
 
 impl PreparedTask {
@@ -56,6 +57,7 @@ pub struct SubAgentExecution {
 }
 
 /// 装入内核对 SubAgent 的运行期视图。
+#[derive(Clone)]
 pub struct SubAgentRuntime {
     pub config: SubAgentConfig,
     pub registry: AgentDefinitionRegistry,
@@ -91,67 +93,79 @@ impl SubAgentRuntime {
             .collect()
     }
 
-    /// 校验并准备单个任务；失败时返回 `(code, message)` 形式的顶层错误。
+    /// 校验并准备一批任务；失败时返回 `(code, message)` 形式的顶层错误。
     ///
-    /// 一次调用只承载一个任务：要并行就并发多次调用，由宿主的多线程批次天然并行，
-    /// 不再靠一次调用塞多个任务。
+    /// 一次调用可携带多个任务，它们各自成子回合、共用同一个批次号；并发上限由任务
+    /// 管理器的 worker 数决定。
     pub fn prepare(
         &self,
         arguments: &Map<String, Value>,
         parent_tools: &[String],
         batch_id: &str,
-    ) -> Result<PreparedTask, (String, String)> {
+    ) -> Result<Vec<PreparedTask>, (String, String)> {
         let value = Value::Object(arguments.clone());
         if let Some(error) = validate_task_arguments(&value, &self.config, &self.registry) {
             return Err(error);
         }
-        let task = arguments
-            .get("task")
-            .and_then(Value::as_object)
-            .expect("校验已保证 task 是对象");
-        let description = task
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let prompt = task
-            .get("prompt")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let agent_type = task
-            .get("subagent_type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
-        let context = task
-            .get("context")
-            .and_then(Value::as_str)
-            .unwrap_or("fresh")
-            .to_string();
-        let Some(definition) = self.registry.get(&agent_type) else {
-            return Err((
-                "AGENT_TYPE_NOT_FOUND".to_string(),
-                format!("未找到 Agent 定义：{agent_type}。"),
-            ));
-        };
-        let verify_tools = vec![
-            omnicrawl_controllers::subagents::verify::VERIFY_COMMAND_TOOL_NAME.to_string(),
-        ];
-        let selection = select_profile_tools(definition, parent_tools, &verify_tools);
-        Ok(PreparedTask {
-            batch_id: batch_id.to_string(),
-            task_id: "task-000000000001".to_string(),
-            description,
-            prompt,
-            agent_type,
-            definition: definition.clone(),
-            tool_names: selection.names,
-            context,
-        })
+        let entries = arguments
+            .get("tasks")
+            .and_then(Value::as_array)
+            .expect("校验已保证 tasks 是非空数组");
+        let mut tasks = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let task = entry.as_object().expect("校验已保证任务项是对象");
+            let description = task
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let prompt = task
+                .get("prompt")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let agent_type = task
+                .get("subagent_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            let context = task
+                .get("context")
+                .and_then(Value::as_str)
+                .unwrap_or("fresh")
+                .to_string();
+            let Some(definition) = self.registry.get(&agent_type) else {
+                return Err((
+                    "AGENT_TYPE_NOT_FOUND".to_string(),
+                    format!("未找到 Agent 定义：{agent_type}。"),
+                ));
+            };
+            let verify_tools = vec![
+                omnicrawl_controllers::subagents::verify::VERIFY_COMMAND_TOOL_NAME.to_string(),
+            ];
+            let selection = select_profile_tools(definition, parent_tools, &verify_tools);
+            tasks.push(PreparedTask {
+                batch_id: batch_id.to_string(),
+                // 任务号固定 `task-` + 12 位小写十六进制：这个长度与字符集是
+                // `is_subagent_task_id` 的硬判据。批次散列取前 10 位，末两位留给同批序号，
+                // 一批多任务因此各自唯一，又都与同一个批次号对应。
+                task_id: format!("task-{}{:02x}", batch_suffix(&batch_id), index),
+                description,
+                prompt,
+                agent_type,
+                definition: definition.clone(),
+                tool_names: selection.names,
+                context,
+                background: arguments
+                    .get("background")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(definition.background),
+            });
+        }
+        Ok(tasks)
     }
 
     /// 子任务的初始消息：fresh 只有任务指令（系统提示走模型配置），fork 在父快照后追加指令。
@@ -243,4 +257,10 @@ impl SubAgentRuntime {
             "SubAgent 功能未启用。请在配置中显式设置 subagents.enabled=true。",
         ))
     }
+}
+
+/// 批次散列里用于拼任务号的前 10 位（末两位留给同批序号）。
+fn batch_suffix(batch_id: &str) -> String {
+    let suffix = batch_id.strip_prefix("batch-").unwrap_or(batch_id);
+    suffix.chars().take(10).collect()
 }

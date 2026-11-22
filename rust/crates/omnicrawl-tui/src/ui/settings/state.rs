@@ -235,17 +235,19 @@ pub enum ModelParamRow {
     Window,
     /// 上下文压缩阈值（百分比）。
     Compaction,
+    NativeCompaction,
     /// 推理强度档位。
     Reasoning,
 }
 
 impl ModelParamRow {
     /// 分区里的行序。
-    pub const ORDER: [ModelParamRow; 4] = [
+    pub const ORDER: [ModelParamRow; 5] = [
         ModelParamRow::Channel,
         ModelParamRow::Window,
         ModelParamRow::Compaction,
         ModelParamRow::Reasoning,
+        ModelParamRow::NativeCompaction,
     ];
 
     pub fn label(self) -> &'static str {
@@ -253,6 +255,7 @@ impl ModelParamRow {
             Self::Channel => "当前模型渠道",
             Self::Window => "上下文长度",
             Self::Compaction => "上下文阈值",
+            Self::NativeCompaction => "GPT 原生压缩",
             Self::Reasoning => "推理强度",
         }
     }
@@ -280,9 +283,9 @@ pub struct SubagentRow {
     pub label: String,
     /// 显示文本：开关是「已开启/已关闭」，高级参数是档位数字。
     pub value: String,
-    /// 总开关行就地切换；其余行按档位循环。
+    /// 就地翻转的布尔行（总开关与各能力开关）。
     pub toggle: bool,
-    /// 总开关行当前是否开启（其余行忽略）。
+    /// 该布尔行当前是否开启（数字行忽略）。
     pub active: bool,
     /// 所属分区标题（渲染层在同一分区的第一行前画出来）。
     pub section: &'static str,
@@ -303,6 +306,8 @@ pub struct SuggestionSkillRow {
 pub enum SubagentChange {
     /// 子任务功能总开关。
     Enabled(bool),
+    /// 某个能力开关（`subagents.toml` 的布尔边界）。
+    Switch { key: String, enabled: bool },
     /// 某个高级参数的档位（整数；配置侧按该键的类型写成整数或浮点）。
     Advanced { key: String, value: i64 },
 }
@@ -525,6 +530,7 @@ impl ChannelField {
 pub struct SettingsValues {
     pub context_window_tokens: i64,
     pub compaction_percent: i64,
+    pub native_gpt: bool,
     /// 当前模型渠道 key（取值来自 channel 列表的 key）。
     pub model_key: String,
     /// 推理强度档位（归一化后），显示在模型管理页的参数分区里。
@@ -558,6 +564,7 @@ pub struct SettingsValues {
     pub suggestion_enabled: bool,
     /// 提问建议页下方列表里的 Skill（本机已索引的那些）。
     pub suggestion_skills: Vec<SuggestionSkillRow>,
+    pub resident_skill: Option<String>,
     pub memory_enabled: bool,
     /// 知识库开关（`[knowledge] enabled`）。
     pub knowledge_enabled: bool,
@@ -585,6 +592,11 @@ pub struct SettingsValues {
 }
 
 impl SettingsValues {
+    pub fn with_native_gpt(mut self, enabled: bool) -> Self {
+        self.native_gpt = enabled;
+        self
+    }
+
     /// 上下文长度与压缩比例都折算到候选档位后再进界面。
     ///
     /// 推理档位取与 Python 侧一致的缺省值（`none`、记忆关闭），由
@@ -597,6 +609,7 @@ impl SettingsValues {
         Self {
             context_window_tokens: nearest_context_window_tokens(context_window_tokens),
             compaction_percent: nearest_compaction_percent(compaction_percent),
+            native_gpt: true,
             model_key: String::new(),
             reasoning_effort: "none".to_string(),
             channels: Vec::new(),
@@ -617,6 +630,7 @@ impl SettingsValues {
             decision_local: DecisionLocalValues::default(),
             suggestion_enabled: false,
             suggestion_skills: Vec::new(),
+            resident_skill: None,
             memory_enabled: false,
             knowledge_enabled:
                 omnicrawl_config::features::knowledge::DEFAULT_KNOWLEDGE_ENABLED,
@@ -688,6 +702,11 @@ impl SettingsValues {
     pub fn with_suggestion(mut self, enabled: bool, skills: Vec<SuggestionSkillRow>) -> Self {
         self.suggestion_enabled = enabled;
         self.suggestion_skills = skills;
+        self
+    }
+
+    pub fn with_resident_skill(mut self, name: Option<String>) -> Self {
+        self.resident_skill = name;
         self
     }
 
@@ -834,6 +853,7 @@ pub enum DropdownField {
     Form(usize),
     /// 视觉页的「A 添加视觉模型」候选（渠道列表）。
     VisionAdd,
+    ResidentSkill,
 }
 
 /// 候选的取值：上下文页是整数，推理强度是文本，模型页是渠道标识。
@@ -863,6 +883,7 @@ pub enum SettingsChange {
     ContextWindow { tokens: i64 },
     /// 压缩阈值百分比；按当前上下文长度换算 Token。
     CompactionPercent { percent: i64 },
+    NativeCompaction { enabled: bool },
     /// 单个内置工具开关。
     ToolSwitch { name: String, enabled: bool },
     /// 工具调用审查模式（`manual` / `review` / `auto`）。
@@ -904,6 +925,7 @@ pub enum SettingsChange {
     DecisionSwitch { key: String, enabled: bool },
     /// 提问建议页的开关（写回 `config.toml` 的 `[suggestion] skills`）。
     SuggestionSwitch { enabled: bool },
+    ResidentSkill { name: Option<String> },
     /// 决策模型页的自部署分区：写尺寸/设备、准备环境、下载/删除尺寸、切渠道、启停服务。
     DecisionLocal(DecisionLocalChange),
     /// 保存一页表单：字段值按该页字段表的顺序给出。
@@ -952,7 +974,7 @@ const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Serv
 const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
 const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
 const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
-const SUGGESTION_HINT: &str = "↑↓ 选择  Enter 切换或看详情  Esc 返回";
+const SUGGESTION_HINT: &str = "↑↓ 选择  Enter 修改或看详情  Esc 返回";
 const SUGGESTION_DETAIL_HINT: &str = "↑↓/滚轮 滚动  Esc 返回列表";
 /// 提问建议页详情区一次显示的描述行数。
 pub const SUGGESTION_DETAIL_ROWS: usize = 4;
@@ -973,7 +995,7 @@ const EMBEDDING_LIST_HINT: &str = "↑↓ 选择  Enter/→ 编辑渠道或切�
 const EMBEDDING_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  Ctrl+S 保存  Esc 返回列表";
 /// 会话管理页：删除要按两次（先确认再执行），当前会话拒绝删除。
 const SESSIONS_HINT: &str = "↑↓ 选择  D 删除（连按两次确认）  R 刷新  Esc 返回";
-const MEMORY_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
+const MEMORY_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  D 清空  O 打开目录  Esc 返回";
 const KNOWLEDGE_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  D 清除  O 打开目录  Esc 返回";
 /// 沙盒页：列表字段用逗号分隔；保存后当场重建工具表。
 const SANDBOX_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回（列表用逗号分隔；保存后本会话即刻生效）";
@@ -1085,6 +1107,7 @@ struct ModelManagementState {
     model_key: String,
     window_tokens: i64,
     percent: i64,
+    native_gpt: bool,
     reasoning: String,
     status: String,
 }
@@ -1185,6 +1208,7 @@ impl SettingsState {
             suggestion: SuggestionState {
                 enabled: values.suggestion_enabled,
                 skills: values.suggestion_skills,
+                resident_skill: values.resident_skill,
                 selected: 0,
                 detail: None,
                 status: String::new(),
@@ -1206,6 +1230,7 @@ impl SettingsState {
                 model_key: values.model_key,
                 window_tokens: values.context_window_tokens,
                 percent: values.compaction_percent,
+                native_gpt: values.native_gpt,
                 reasoning: values.reasoning_effort,
                 status: String::new(),
             },

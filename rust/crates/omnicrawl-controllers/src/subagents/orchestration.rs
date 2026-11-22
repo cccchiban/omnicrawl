@@ -57,16 +57,18 @@ pub fn fork_task_message(description: &str, prompt: &str) -> Value {
     })
 }
 
-/// `_tool_subagent` 的 `wants_review` 判定。
+/// `_tool_subagent` 的 `wants_review` 判定：一批里只要有一个评审角色就保留全文。
 pub fn wants_review(arguments: &Value) -> bool {
-    let Some(task) = arguments.get("task") else {
+    let Some(tasks) = arguments.get("tasks").and_then(Value::as_array) else {
         return false;
     };
-    task.is_object()
-        && task
-            .get("subagent_type")
-            .map(|value| truthy_text(Some(value)).trim().to_lowercase() == "review")
-            .unwrap_or(false)
+    tasks.iter().any(|task| {
+        task.is_object()
+            && task
+                .get("subagent_type")
+                .map(|value| truthy_text(Some(value)).trim().to_lowercase() == "review")
+                .unwrap_or(false)
+    })
 }
 
 /// `run_subagent_task` 的结果投影：返回子任务全文，失败时给出安全错误。

@@ -319,6 +319,7 @@ pub(super) fn dropdown_overlay_y(
         }
         // 视觉页：头部两行之后是列表，`A` 的候选贴在列表上方。
         (Pane::Vision, DropdownField::VisionAdd) => Some(area.y + 3),
+        (Pane::Suggestion, DropdownField::ResidentSkill) => Some(area.y + 2),
         // 表单页一行一个字段：字段表可能滚动，先减掉窗口起点。
         (Pane::Form(_), DropdownField::Form(index)) => {
             let offset = form_window_offset(state, area);

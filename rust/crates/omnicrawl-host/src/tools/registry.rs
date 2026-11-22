@@ -40,7 +40,7 @@ use super::{edit, finding, git, grep, listing, read, read_image, skills, write};
 use crate::sandbox::gate::IsolationGate;
 
 /// 本宿主已实现执行体的工具。
-pub const IMPLEMENTED_TOOLS: [&str; 35] = [
+pub const IMPLEMENTED_TOOLS: [&str; 36] = [
     "read",
     "read_image",
     "write_file",
@@ -73,6 +73,7 @@ pub const IMPLEMENTED_TOOLS: [&str; 35] = [
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
+    "windows_batch",
     "advisor",
     "config_edit",
     "computer_use",
@@ -138,12 +139,13 @@ pub const SUBAGENT_RUNNERS: [&str; 5] = [
 /// Windows 桌面工具：**不再进主代理工具表**，只供专职 Computer Use 子代理在自己的子回合里
 /// 调用（白名单见 `omnicrawl-cli/src/computer_use.rs`）。桌面模拟操作由专职子代理全权负责，
 /// 主代理只持有 `computer_use(prompt)` 这一个入口。
-pub const WINDOWS_RUNNERS: [&str; 5] = [
+pub const WINDOWS_RUNNERS: [&str; 6] = [
     "windows_window",
     "windows_control",
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
+    "windows_batch",
 ];
 
 /// 一次执行的产物：工具结果 + 随结果注入的视觉附件（含分析提示词）。
@@ -274,11 +276,12 @@ impl Default for RegistryOptions {
     }
 }
 
+#[derive(Clone)]
 pub struct ToolRegistry {
     paths: WorkspacePaths,
-    commands: CommandRunner,
+    commands: Arc<CommandRunner>,
     monitors: MonitorManager,
-    knowledge: KnowledgeBase,
+    knowledge: Arc<KnowledgeBase>,
     knowledge_rerank: Arc<RerankOptions>,
     skill_rerank: Arc<RerankOptions>,
     search_embedding: Arc<crate::embedding_client::EmbeddingOptions>,
@@ -534,9 +537,9 @@ impl ToolRegistry {
         };
         Ok(Self {
             paths,
-            commands,
+            commands: Arc::new(commands),
             monitors,
-            knowledge,
+            knowledge: Arc::new(knowledge),
             knowledge_rerank: options.knowledge_rerank.clone(),
             skill_rerank: options.skill_rerank.clone(),
             search_embedding: options.search_embedding.clone(),
@@ -556,6 +559,14 @@ impl ToolRegistry {
             specs,
             cancel: options.cancel.clone().unwrap_or_default(),
         })
+    }
+
+    /// 只替换会话记忆绑定，旧任务继续使用自己的快照。
+    pub fn for_session(&self, session_id: Option<String>) -> Self {
+        let mut registry = self.clone();
+        registry.memory.session_enabled = session_id.is_some();
+        registry.memory.session_id = session_id;
+        registry
     }
 
     pub fn paths(&self) -> &WorkspacePaths {
@@ -718,12 +729,17 @@ impl ToolRegistry {
         }
         if matches!(
             name.as_str(),
-            "windows_screenshot" | "windows_input" | "windows_control" | "windows_window"
+            "windows_screenshot"
+                | "windows_input"
+                | "windows_control"
+                | "windows_window"
+                | "windows_batch"
         ) {
             let outcome = match name.as_str() {
                 "windows_screenshot" => windows::windows_screenshot(&self.paths, &arguments),
                 "windows_input" => windows::windows_input(&self.paths, &arguments),
                 "windows_control" => windows::windows_control(&self.paths, &arguments),
+                "windows_batch" => windows::windows_batch(&self.paths, &arguments),
                 _ => windows::windows_window(&self.paths, &arguments),
             };
             // 操作类工具自带确认截图：点明它来自刚才的动作，别让模型以为还要再截一次。
@@ -1117,6 +1133,7 @@ mod tests {
             "windows_input",
             "windows_clipboard",
             "windows_screenshot",
+            "windows_batch",
         ] {
             assert!(!names.contains(hidden), "{hidden} 不该出现：{names:?}");
         }
@@ -1202,6 +1219,20 @@ mode = \"review\"
             !config_text.contains("context_window_tokens"),
             "写 models.toml 不得污染 config.toml：{config_text}"
         );
+    }
+
+    #[test]
+    fn session_snapshot_preserves_resources_and_the_old_memory_binding() {
+        let (registry, _root) = registry("session-snapshot");
+        let old_id = registry.memory.session_id.clone();
+        let next = registry.for_session(Some("20260102-000000-abcdef".to_string()));
+        assert_eq!(registry.memory.session_id, old_id);
+        assert_eq!(next.memory.session_id.as_deref(), Some("20260102-000000-abcdef"));
+        assert!(next.memory.session_enabled);
+        assert!(Arc::ptr_eq(&registry.commands, &next.commands));
+        assert!(Arc::ptr_eq(&registry.knowledge, &next.knowledge));
+        assert!(Arc::ptr_eq(&registry.sandbox, &next.sandbox));
+        assert_eq!(registry.declarations(), next.declarations());
     }
 
     #[test]
@@ -1759,6 +1790,44 @@ mode = \"review\"
             "提示词要拦掉多余的补截：{}",
             execution.vision_prompt
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `windows_batch` 也必须真的走注册表执行体，而不只是进 `specs`。
+    ///
+    /// 用 `dry_run` 验证：整段脚本被解析并走完，但不产生任何输入事件，因此这条用例
+    /// 可以在无人值守的测试机上跑。
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_parses_and_walks_a_script_through_the_registry() {
+        let root = std::env::temp_dir().join("omnicrawl-tui-registry-windows-batch");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        let options = RegistryOptions {
+            windows_tools: true,
+            ..RegistryOptions::default()
+        };
+        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
+
+        let execution = registry
+            .execute_with_vision(&call(
+                "windows_batch",
+                json!({
+                    "dry_run": true,
+                    "steps": [
+                        {"op": "click", "at": [10, 20]},
+                        {"op": "repeat", "times": 2, "steps": [{"op": "wait", "ms": 1}]}
+                    ]
+                }),
+            ))
+            .expect("windows_batch 应当被本宿主处理");
+        assert!(execution.result.ok, "{}", execution.result.output);
+        assert!(
+            execution.result.output.contains("\"completed\": 3"),
+            "预演应当走完全部步骤：{}",
+            execution.result.output
+        );
+        assert!(execution.images.is_empty(), "预演不该产生截图");
         let _ = std::fs::remove_dir_all(&root);
     }
 

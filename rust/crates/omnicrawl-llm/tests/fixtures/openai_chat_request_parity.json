@@ -215,6 +215,7 @@
               "function": {
                 "name": "read_file",
                 "description": "读取文件内容",
+                "strict": false,
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -317,6 +318,7 @@
               "function": {
                 "name": "read_file",
                 "description": "读取文件内容",
+                "strict": false,
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -795,6 +797,7 @@
                   "function": {
                     "name": "read_file",
                     "description": "读取文件内容",
+                    "strict": false,
                     "parameters": {
                       "type": "object",
                       "properties": {
@@ -818,6 +821,7 @@
                   "function": {
                     "name": "list_dir",
                     "description": "列出目录",
+                    "strict": false,
                     "parameters": {
                       "type": "object",
                       "properties": {}
@@ -913,6 +917,7 @@
                   "function": {
                     "name": "list_dir",
                     "description": "列出目录",
+                    "strict": false,
                     "parameters": {
                       "type": "object",
                       "properties": {}
@@ -984,6 +989,7 @@
                   "function": {
                     "name": "list_dir",
                     "description": "列出目录",
+                    "strict": false,
                     "parameters": {
                       "type": "object",
                       "properties": {}
@@ -1186,6 +1192,7 @@
               "function": {
                 "name": "read_file",
                 "description": "读取文件内容",
+                "strict": false,
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -1204,6 +1211,7 @@
               "function": {
                 "name": "list_dir",
                 "description": "列出目录",
+                "strict": false,
                 "parameters": {
                   "type": "object",
                   "properties": {}

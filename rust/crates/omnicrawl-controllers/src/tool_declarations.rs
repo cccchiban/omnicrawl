@@ -21,6 +21,7 @@ pub fn declaration(spec: &ToolSpec) -> Value {
     normalize_type_unions(&mut inferred);
     drop_nullable_branches(&mut inferred);
     ensure_array_items(&mut inferred);
+    prune_unsatisfiable_required(&mut inferred);
     let compacted = serde_json::to_string(&inferred)
         .map(|text| compact_tool_schema(&text))
         .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
@@ -295,6 +296,93 @@ fn is_null_schema(value: &Value) -> bool {
     }
 }
 
+/// 空 Schema（任意值）：联合分支摘完约束后剩下的就是它。
+fn is_empty_schema(value: &Value) -> bool {
+    matches!(value, Value::Object(map) if map.is_empty())
+}
+
+/// 让每个 `required` 都落在同层 `properties` 上。
+///
+/// OpenAI 系的严格 Schema 编译（中转网关常默认对所有 tools 生效）只在同层
+/// `properties` 里找 `required` 的名字，找不到就判 `Unsatisfiable schema` 并让整份请求
+/// 400：`cad_export` 把互斥分支写成顶层 `anyOf: [{required: [...]}, ...]`，分支自带
+/// `required` 却没有 `properties`，原样发出去必被拒。
+///
+/// 收敛口径是**只摘不补**——往 `properties` 里补东西会凭空造出参数，往上提分支的
+/// `required` 会把「满足其一」变成「全都要」：
+///
+/// - 本层 `properties` 里没有的 `required` 名摘掉：这个名字在本层取不到值，要求它等于
+///   要求一个填不出来的参数；
+/// - 分支（`anyOf`/`oneOf`/`allOf`）自带的 `required` 整条摘掉：分支没有自己的
+///   `properties`，它约束的是父层字段的组合，摘掉只丢「分支内互斥/联合」这一层信息，
+///   父层的单字段约束与 `enum` 全部保留。
+///
+/// 校验不受影响：宿主与内核按工具目录的**完整** Schema 做 `validate_tool_arguments`
+/// 二次校验，声明只决定模型看到什么。
+fn prune_unsatisfiable_required(node: &mut Value) {
+    let Value::Object(object) = node else {
+        if let Value::Array(items) = node {
+            for item in items {
+                prune_unsatisfiable_required(item);
+            }
+        }
+        return;
+    };
+
+    for key in ["items", "additionalProperties", "not"] {
+        if let Some(child) = object.get_mut(key) {
+            prune_unsatisfiable_required(child);
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(branches)) = object.get_mut(key) {
+            for branch in branches.iter_mut() {
+                // 先递归：分支自己的 `properties` 里也可能有不可满足的 required。
+                prune_unsatisfiable_required(branch);
+                if let Value::Object(branch_map) = branch {
+                    branch_map.remove("required");
+                }
+            }
+            // 只靠 `required` 表达的分支（`cad_export` 的两个分支就是这样）摘完就空了：
+            // 空 Schema 分支不约束任何东西，留着只会让联合看起来像有分支语义。空分支
+            // 全摘掉后联合本身也一起摘。
+            branches.retain(|branch| !is_empty_schema(branch));
+            if branches.is_empty() {
+                object.remove(key);
+            }
+        }
+    }
+    if let Some(Value::Object(properties)) = object.get_mut("properties") {
+        for schema in properties.values_mut() {
+            prune_unsatisfiable_required(schema);
+        }
+    }
+
+    let Some(Value::Array(names)) = object.get("required") else {
+        return;
+    };
+    let declared: Vec<String> = match object.get("properties") {
+        Some(Value::Object(properties)) => properties.keys().cloned().collect(),
+        _ => Vec::new(),
+    };
+    let mut required: Vec<String> = names
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| declared.iter().any(|key| key == name))
+        .map(str::to_string)
+        .collect();
+    required.dedup();
+
+    if required.is_empty() {
+        object.remove("required");
+    } else {
+        object.insert(
+            "required".to_string(),
+            Value::Array(required.into_iter().map(Value::from).collect()),
+        );
+    }
+}
+
 /// 按示例值推断属性类型。
 pub fn infer_tool_property_schema(example: &Value) -> Value {
     match example {
@@ -374,6 +462,30 @@ mod tests {
         }
     }
 
+    /// 严格 Schema 编译的硬约束：每个 `required` 名都必须在同层 `properties` 里。
+    fn all_required_satisfiable(node: &Value) -> bool {
+        match node {
+            Value::Object(map) => {
+                if let Some(Value::Array(names)) = map.get("required") {
+                    let declared: Vec<&String> = match map.get("properties") {
+                        Some(Value::Object(properties)) => properties.keys().collect(),
+                        _ => Vec::new(),
+                    };
+                    if names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|name| !declared.iter().any(|key| key.as_str() == name))
+                    {
+                        return false;
+                    }
+                }
+                map.values().all(all_required_satisfiable)
+            }
+            Value::Array(items) => items.iter().all(all_required_satisfiable),
+            _ => true,
+        }
+    }
+
     #[test]
     fn declaration_flattens_type_arrays() {
         // MCP（Pydantic）暴露的可空字段是 `["integer", "null"]`，多类型字段更长；
@@ -409,6 +521,66 @@ mod tests {
         assert!(parameters["properties"]["packet"]["anyOf"][1]
             .get("items")
             .is_some());
+    }
+
+    #[test]
+    fn declaration_drops_unsatisfiable_required_in_union_branches() {
+        // cad-mcp 的 `cad_export` 用顶层 anyOf 表达两组互斥参数，分支只写 required、
+        // 没有 properties。网关按 strict 编译时判 Unsatisfiable（required 属性不可满足），
+        // 整份请求 400；声明里必须让每个 required 都落在同层 properties 上。
+        let declared = declaration(&spec(
+            "cad_export",
+            r#"{"type":"object","properties":{"requestId":{"type":"string"},"source":{"type":"string"},"destinations":{"type":"array","items":{"type":"string"}},"action":{"type":"string"},"operationId":{"type":"string"},"epoch":{"type":"string"}},"anyOf":[{"required":["requestId","source","destinations"]},{"required":["action","operationId","epoch"]}]}"#,
+        ));
+        let parameters = &declared["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        // 分支只剩 required，摘完就是空 Schema：联合不能留在声明里。
+        assert!(
+            parameters.get("anyOf").is_none(),
+            "空分支的 anyOf 必须摘掉：{parameters}"
+        );
+        // 属性契约本身一个都不能少。
+        for key in [
+            "requestId",
+            "source",
+            "destinations",
+            "action",
+            "operationId",
+            "epoch",
+        ] {
+            assert!(
+                parameters["properties"].get(key).is_some(),
+                "属性 {key} 丢了：{parameters}"
+            );
+        }
+        assert!(
+            all_required_satisfiable(parameters),
+            "required 必须落在同层 properties 上：{parameters}"
+        );
+    }
+
+    #[test]
+    fn declaration_keeps_required_that_has_a_property() {
+        // 真必填不能被误删：bash 的 command 就是先声明 properties 再要求必填。
+        let declared = declaration(&spec(
+            "bash",
+            r#"{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"}},"required":["command"]}"#,
+        ));
+        let parameters = &declared["function"]["parameters"];
+        assert_eq!(parameters["required"], json!(["command"]));
+        assert!(all_required_satisfiable(parameters));
+    }
+
+    #[test]
+    fn declaration_drops_required_naming_an_undeclared_field() {
+        // required 指向一个谁都不认识的字段：本层取不到值，只能摘掉。
+        let declared = declaration(&spec(
+            "ghost_required",
+            r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path","ghost"]}"#,
+        ));
+        let parameters = &declared["function"]["parameters"];
+        assert_eq!(parameters["required"], json!(["path"]));
+        assert!(all_required_satisfiable(parameters));
     }
 
     #[test]

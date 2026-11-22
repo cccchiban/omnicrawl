@@ -70,7 +70,8 @@ fn expected_schema(expected: &Value, subagent_types: &[String]) -> String {
     roles.dedup();
     let roles: Vec<Value> = roles.iter().map(|role| Value::from(role.clone())).collect();
     let mut schema: Value = serde_json::from_str(template).expect("schema");
-    if let Some(Value::Object(field)) = schema.pointer_mut("/properties/task/properties/subagent_type")
+    if let Some(Value::Object(field)) =
+        schema.pointer_mut("/properties/tasks/items/properties/subagent_type")
     {
         field.insert("enum".to_string(), Value::Array(roles));
     }

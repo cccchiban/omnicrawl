@@ -4,12 +4,13 @@
 
 use omnicrawl_controllers::tool_catalog::{build_agent_tools, windows_tool_specs, ToolCatalogOptions};
 
-const WINDOWS_TOOLS: [&str; 5] = [
+const WINDOWS_TOOLS: [&str; 6] = [
     "windows_window",
     "windows_control",
     "windows_input",
     "windows_clipboard",
     "windows_screenshot",
+    "windows_batch",
 ];
 
 fn names(options: &ToolCatalogOptions<'_>) -> Vec<String> {
@@ -31,6 +32,7 @@ fn the_main_agent_does_not_declare_windows_tools() {
         "windows_input",
         "windows_clipboard",
         "windows_screenshot",
+        "windows_batch",
     ]
     .to_vec();
     let options = ToolCatalogOptions {
@@ -58,6 +60,7 @@ fn the_dedicated_subagent_declares_windows_tools() {
         "windows_input",
         "windows_clipboard",
         "windows_screenshot",
+        "windows_batch",
     ]
     .to_vec();
     let options = ToolCatalogOptions {

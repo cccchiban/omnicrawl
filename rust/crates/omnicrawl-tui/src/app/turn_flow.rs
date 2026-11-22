@@ -20,6 +20,11 @@ impl App {
         // `/sessions` 特殊处理（对映 Python `_handle_command`）：不把列表追加进对话区，
         // 而是在输入框上方弹可导航的会话菜单。放在这里而不是命令派发层，是为了让它
         // 在生成中（立即命令分支）与空闲时走同一条路径。
+        if (self.pending_turn_submit.is_some() && !self.state.turn.is_running())
+            || self.pending_commands.values().any(|command| matches!(command, KernelCommand::New { .. })) {
+            self.state.queue_pending(text, submission.images, submission.documents);
+            return;
+        }
         if text.trim() == "/sessions" {
             self.open_sessions_menu();
             return;
@@ -267,6 +272,10 @@ impl App {
     /// `text` 是原始输入（命令层按它解析参数），`parsed` 只用来判断调度方式：
     /// 需要内核往返的命令在这里分叉到 [`Self::start_kernel_command`]。
     pub(super) fn dispatch_command(&mut self, text: String, parsed: ParsedCommand) {
+        if parsed.command.name == "new" && !parsed.args.trim().is_empty() {
+            self.state.notice("参数错误：/new。".to_string());
+            return;
+        }
         if let Some(kind) = KernelCommand::from_parsed(&parsed) {
             self.start_kernel_command(text, kind);
             return;
@@ -333,10 +342,9 @@ impl App {
         self.state.composer.history_record(text);
         let name = name.trim().to_string();
         let task = match self.prompt.load_skill(&name) {
-            Some(skill) => {
-                let context = omnicrawl_host::prompt::active_skill_context_for(&skill);
+            Some(_) => {
                 let has_tools = !self.registry.declarations().is_empty();
-                match self.prompt.active_skill_messages(has_tools, &context) {
+                match self.prompt.active_skill_messages_for(has_tools, &name) {
                     Ok(messages) => {
                         self.pending_skill_context = Some(messages);
                         self.state.notice(skill_loaded_status(&name));
@@ -424,7 +432,8 @@ impl App {
     pub(super) fn start_kernel_command(&mut self, text: String, kind: KernelCommand) {
         // 状态变更类命令在回合进行中等回合结束（与排队语义一致）。
         // 斜杠命令不接受图片（`dispatch_submission` 已拦下并提示），排队项里不带图。
-        if self.state.turn.is_running() {
+        if self.state.turn.is_running() || self.pending_turn_submit.is_some() || self.suggest_in_flight > 0
+            || (matches!(&kind, KernelCommand::New { .. }) && !self.pending_commands.is_empty()) {
             self.state.queue_pending(text, Vec::new(), Vec::new());
             return;
         }
@@ -463,7 +472,16 @@ impl App {
         }
         self.state
             .set_status(Some(kind.working_status().to_string()));
-        let id = self.send(command);
+        let kind = match kind {
+            KernelCommand::New { .. } => KernelCommand::New { previous: self.session_id.clone() },
+            other => other,
+        };
+        let id = self.kernel.next_id();
+        if let Err(error) = self.kernel.send_frame(&command.to_frame(id.clone())) {
+            self.state.set_status(None);
+            self.state.notice(format!("发送内核命令失败：{error}"));
+            return;
+        }
         self.pending_commands.insert(id, kind);
     }
 
@@ -481,7 +499,8 @@ impl App {
     /// 取回建议结果并再次调用本函数，排空照旧按 FIFO 推进。
     pub(super) fn drain_pending_inputs(&mut self) {
         loop {
-            if self.settings.is_some() || self.state.turn.is_running() {
+            if self.settings.is_some() || self.state.turn.is_running() || self.pending_turn_submit.is_some() || self.suggest_in_flight > 0
+                || self.pending_commands.values().any(|command| matches!(command, KernelCommand::New { .. })) {
                 return;
             }
             let queued = self.state.pending_len();
@@ -520,6 +539,13 @@ impl App {
                 self.state.notice(format!("{label}失败：{}", error.message));
             }
             (None, Some(result)) => {
+                if matches!(&command, KernelCommand::New { .. }) {
+                    match self.apply_new_session(result) {
+                        Ok(_) => self.state.notice(command.success_message(result)),
+                        Err(error) => self.state.notice(error),
+                    }
+                    return;
+                }
                 // `/undo` 的回执带重建后的历史：该提示要等回放完成后才进消息流，
                 // 否则回放的清空会把刚追加的提示一并抹掉。
                 if let Some(history) = command.replay_history(result) {

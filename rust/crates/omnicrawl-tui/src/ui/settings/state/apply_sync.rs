@@ -112,6 +112,10 @@ impl SettingsState {
                 self.model_management.window_tokens = *tokens;
                 self.model_management.status = message;
             }
+            SettingsChange::NativeCompaction { enabled } => {
+                self.model_management.native_gpt = *enabled;
+                self.model_management.status = message;
+            }
             SettingsChange::CompactionPercent { percent } => {
                 self.model_management.percent = *percent;
                 self.model_management.status = message;
@@ -146,6 +150,14 @@ impl SettingsState {
                             row.value = if *enabled { "已开启" } else { "已关闭" }.to_string();
                         }
                     }
+                    SubagentChange::Switch { key, enabled } => {
+                        if let Some(row) =
+                            self.subagents.rows.iter_mut().find(|row| &row.key == key)
+                        {
+                            row.active = *enabled;
+                            row.value = if *enabled { "已允许" } else { "已禁止" }.to_string();
+                        }
+                    }
                     SubagentChange::Advanced { key, value } => {
                         if let Some(row) =
                             self.subagents.rows.iter_mut().find(|row| &row.key == key)
@@ -155,6 +167,10 @@ impl SettingsState {
                     }
                 }
                 self.subagents.status = message;
+            }
+            SettingsChange::ResidentSkill { name } => {
+                self.suggestion.resident_skill = name.clone();
+                self.suggestion.status = message;
             }
             SettingsChange::SuggestionSwitch { enabled } => {
                 self.suggestion.enabled = *enabled;
@@ -324,12 +340,14 @@ impl SettingsState {
             SettingsChange::Model { .. }
             | SettingsChange::ContextWindow { .. }
             | SettingsChange::CompactionPercent { .. }
+            | SettingsChange::NativeCompaction { .. }
             | SettingsChange::Reasoning { .. } => self.model_management.status.push_str(note),
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
             SettingsChange::ToolApproval { .. } => self.tools.status.push_str(note),
             SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
-            SettingsChange::SuggestionSwitch { .. } => self.suggestion.status.push_str(note),
+            SettingsChange::SuggestionSwitch { .. }
+            | SettingsChange::ResidentSkill { .. } => self.suggestion.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
             SettingsChange::Feature { key, .. } => {
                 if key == "memory" {
@@ -397,10 +415,13 @@ impl SettingsState {
                         }
                     }
                     ModelParamRow::Window => {
-                        format!("{}K", self.model_management.window_tokens / 1000)
+                        super::super::context_window_label(self.model_management.window_tokens)
                     }
                     ModelParamRow::Compaction => {
                         format!("{}%", self.model_management.percent)
+                    }
+                    ModelParamRow::NativeCompaction => {
+                        if self.model_management.native_gpt { "开启" } else { "关闭" }.to_string()
                     }
                     ModelParamRow::Reasoning => reasoning_label(&self.model_management.reasoning),
                 };

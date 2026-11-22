@@ -148,10 +148,21 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
         .unwrap_or_default();
     // 有会话就从转录恢复的运行期历史接着走；没有会话维持「一回合一条 user 消息」的旧行为。
     // 历史可能因闲置被换出：这里按需重放同一条转录路径，语义与刚从磁盘打开一致。
-    if let Some(session) = conn.borrow_mut().session.as_mut() {
-        if let Err(detail) = session.ensure_history() {
-            eprintln!("[kernel] 重放会话历史失败：{detail}");
+    let prepared = {
+        let mut connection = conn.borrow_mut();
+        match connection.session.as_mut() {
+            Some(session) => match model_config.as_ref() {
+                Some(model) => session.prepare_model_history(model),
+                None => session.ensure_history().map(|_| ()),
+            },
+            None => Ok(()),
         }
+    };
+    if let Err(detail) = prepared {
+        conn.borrow_mut().respond_error(request_id, ErrorObject::new(
+            error_code::INTERNAL_ERROR, format!("重放会话历史失败：{detail}"),
+        ));
+        return;
     }
     let mut messages = conn
         .borrow()
@@ -181,6 +192,7 @@ pub(crate) fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSub
     let mut model: Box<dyn ReplySource> = match model_config.clone() {
         Some(config) => Box::new(KernelModelPort {
             conn: Rc::clone(conn),
+            turn_id: turn_id.clone(),
             config,
             usage: Rc::clone(&usage),
             active_assistant: Rc::clone(&active_assistant),
@@ -452,12 +464,20 @@ pub(crate) fn turn_error(error: &LoopError) -> ErrorObject {
 /// [`Conn::handle_inbound`] 正常应答（重复 `turn.submit` 仍会收到 `-32002`）。
 pub(crate) fn drain_inbound_during_turn(conn: &Rc<RefCell<Conn>>) -> bool {
     loop {
-        let frame = match conn.borrow().inbound.try_recv() {
+        let inbound = conn.borrow().inbound.try_recv();
+        let frame = match inbound {
             Ok(Inbound::Frame(frame)) => frame,
+            Ok(Inbound::Child(child)) => {
+                conn.borrow_mut().accept_child(*child);
+                continue;
+            }
             Ok(Inbound::Closed) => return true,
             Err(mpsc::TryRecvError::Empty) => break,
             Err(mpsc::TryRecvError::Disconnected) => return true,
         };
+        if conn.borrow_mut().route_child_response(&frame) {
+            continue;
+        }
         let failure = conn.borrow_mut().handle_inbound(&frame);
         if matches!(
             failure,
@@ -470,6 +490,7 @@ pub(crate) fn drain_inbound_during_turn(conn: &Rc<RefCell<Conn>>) -> bool {
             return true;
         }
     }
+    conn.borrow_mut().start_child_request();
     let connection = conn.borrow();
     connection.cancel.load(Ordering::SeqCst) || connection.exit_requested
 }

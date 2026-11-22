@@ -104,7 +104,7 @@ impl MemoryState {
         self.selected = next as usize;
     }
 
-    /// 在遗忘时间的四个候选里换档：`delta` 为 ±1。
+    /// 在遗忘时间的候选档位里换档：`delta` 为 ±1。
     pub fn cycle_forget_after(&mut self, delta: isize) -> i64 {
         let choices = omnicrawl_config::features::memory::FORGET_AFTER_DAYS_CHOICES;
         let current = choices
@@ -174,15 +174,18 @@ mod tests {
     }
 
     #[test]
-    fn forget_after_cycles_through_the_four_choices() {
+    fn forget_after_cycles_through_every_choice() {
         let mut state = MemoryState::default();
         state.sync(true, 1);
         assert_eq!(state.cycle_forget_after(1), 10);
         assert_eq!(state.cycle_forget_after(1), 30);
         assert_eq!(state.cycle_forget_after(1), 365);
+        // 一年之后还有更长的档位：这是「只能选一年」被修掉的地方。
+        assert_eq!(state.cycle_forget_after(1), 730);
+        assert_eq!(state.cycle_forget_after(1), 1095);
         // 到头就停住，不回绕。
-        assert_eq!(state.cycle_forget_after(1), 365);
-        assert_eq!(state.cycle_forget_after(-1), 30);
+        assert_eq!(state.cycle_forget_after(1), 1095);
+        assert_eq!(state.cycle_forget_after(-1), 730);
     }
 
     #[test]

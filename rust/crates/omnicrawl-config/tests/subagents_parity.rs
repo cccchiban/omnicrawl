@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::subagents::{
-    load_subagent_config, validate_subagent_advanced_setting, AdvancedValue, SubAgentConfig,
-    SUBAGENT_ADVANCED_SETTING_KEYS,
+    load_subagent_config, validate_subagent_advanced_setting, validate_subagent_switch_setting,
+    AdvancedValue, SubAgentConfig, SUBAGENT_ADVANCED_SETTING_KEYS, SUBAGENT_SWITCH_SETTING_KEYS,
 };
 use serde_json::{json, Value};
 
@@ -131,4 +131,31 @@ fn load_config_matches_python() {
         }
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 能力开关只认布尔，且键必须在面板开放的六项之内。
+#[test]
+fn switch_setting_accepts_only_open_booleans() {
+    for key in SUBAGENT_SWITCH_SETTING_KEYS {
+        assert_eq!(
+            validate_subagent_switch_setting(key, &toml::Value::Boolean(true)),
+            Ok(true),
+            "{key} 应接受布尔"
+        );
+        assert_eq!(
+            validate_subagent_switch_setting(key, &toml::Value::Boolean(false)),
+            Ok(false)
+        );
+    }
+
+    let error = validate_subagent_switch_setting("allow_background", &toml::Value::Integer(1))
+        .expect_err("整数不是布尔");
+    assert_eq!(error.message(), "配置项 subagents.allow_background 必须是布尔值。");
+
+    let error = validate_subagent_switch_setting("max_depth", &toml::Value::Boolean(true))
+        .expect_err("max_depth 不是能力开关");
+    assert_eq!(
+        error.message(),
+        "设置面板不支持配置项 subagents.max_depth。"
+    );
 }

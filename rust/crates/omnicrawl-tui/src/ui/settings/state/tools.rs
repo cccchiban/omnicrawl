@@ -57,12 +57,21 @@ impl SettingsState {
             ((self.subagents.selected as isize + delta).rem_euclid(count)) as usize;
     }
 
-    /// 改选中行：总开关就地翻转，高级参数按档位表循环；写盘由宿主负责。
+    /// 改选中行：布尔行就地翻转，高级参数按档位表循环；写盘由宿主负责。
     pub(super) fn activate_subagent(&mut self, direction: isize) -> Option<SettingsEvent> {
         let row = self.subagents.rows.get(self.subagents.selected)?;
         if row.toggle {
+            let enabled = !row.active;
+            // 总开关走功能开关（它决定 `subagent` 是否进工具表），其余是能力边界。
             return Some(SettingsEvent::Apply(SettingsChange::Subagent(
-                SubagentChange::Enabled(!row.active),
+                if row.key == "enabled" {
+                    SubagentChange::Enabled(enabled)
+                } else {
+                    SubagentChange::Switch {
+                        key: row.key.clone(),
+                        enabled,
+                    }
+                },
             )));
         }
         let spec = SUBAGENT_ADVANCED_SPECS

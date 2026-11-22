@@ -4,6 +4,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "session_cancel_tests.rs"]
+mod session_cancel_tests;
+
 impl App {
 
 
@@ -25,14 +29,13 @@ impl App {
         // 先算好再进 `KernelModelConfig` 字面量，避免同一份内容算两遍（模板可能很大）。
         let system_prompt = self.prompt.system_prompt();
         let tool_declarations = self.registry.declarations();
-        // 活动 Skill 取决于用户本轮输入，握手时还没有，因此传空列表；
-        // 此时 `active_skill_context_hash` 就是空数组的哈希，与 Python 无命中时同值。
+        // 常驻 Skill 正文也属于稳定前缀身份。
         let prompt_cache_identity = build_prompt_cache_identity(
             &system_prompt,
             self.workspace.as_path(),
             &self.prompt.project_instructions().unwrap_or_default(),
             &self.prompt.skill_metas(),
-            &[],
+            &self.prompt.resident_skill_matches(),
             &tool_declarations,
         );
         let model = KernelModelConfig {
@@ -200,10 +203,10 @@ impl App {
     /// 收干内核帧与工具执行结果；内核退出时收尾退出。
     pub fn drain_frames(&mut self) {
         // 先消化同步往返期间让路的帧，再读内核通道：两边都按到达顺序处理。
-        while let Some(frame) = self.deferred_frames.pop_front() {
-            self.handle_frame(frame);
-        }
-        while let Some(frame) = self.kernel.try_recv() {
+        for _ in 0..64 {
+            let Some(frame) = self.deferred_frames.pop_front().or_else(|| self.kernel.try_recv()) else {
+                break;
+            };
             self.handle_frame(frame);
         }
         self.drain_completions();
@@ -332,6 +335,9 @@ impl App {
             finished.push(completion);
         }
         for completion in finished {
+            if self.state.batch_request_id().as_ref() != Some(&completion.batch_id) {
+                continue;
+            }
             let now = Instant::now();
             self.state
                 .finish_tool_run(&completion.call, &completion.result, now);

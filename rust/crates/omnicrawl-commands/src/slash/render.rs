@@ -340,18 +340,24 @@ pub fn format_dangerous_tool_detail(tool_name: &str, arguments: &Map<String, Val
     }
 
     if is_subagent_tool(tool_name) {
-        if let Some(task) = arguments.get("task").and_then(Value::as_object) {
-            let mut detail = String::new();
-            if let Some(agent_type) = task.get("subagent_type").and_then(Value::as_str) {
-                detail.push_str(agent_type.trim());
+        if let Some(tasks) = arguments.get("tasks").and_then(Value::as_array) {
+            // 多任务只报条数：逐项拼进一行会把每条都挤成看不懂的前缀。
+            if tasks.len() > 1 {
+                return format!("{} 个任务", tasks.len());
             }
-            if let Some(description) = task.get("description").and_then(Value::as_str) {
-                if !detail.is_empty() {
-                    detail.push('：');
+            if let Some(task) = tasks.first().and_then(Value::as_object) {
+                let mut detail = String::new();
+                if let Some(agent_type) = task.get("subagent_type").and_then(Value::as_str) {
+                    detail.push_str(agent_type.trim());
                 }
-                detail.push_str(description.trim());
+                if let Some(description) = task.get("description").and_then(Value::as_str) {
+                    if !detail.is_empty() {
+                        detail.push('：');
+                    }
+                    detail.push_str(description.trim());
+                }
+                return truncate_for_display(&detail, 240);
             }
-            return truncate_for_display(&detail, 240);
         }
         for key in ["task_id", "batch_id", "branch"] {
             if let Some(value) = arguments.get(key) {

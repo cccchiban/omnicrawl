@@ -13,6 +13,7 @@ use super::turn::{Conn, run_turn};
 /// 也会让枚举尺寸被最大的变体拖大。
 pub(super) enum Inbound {
     Frame(Box<Frame>),
+    Child(Box<super::subagent_dispatch::ChildFrame>),
     Closed,
 }
 
@@ -125,6 +126,7 @@ pub(super) fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             conn.borrow().exit_requested
         }
         Command::TurnCancel(TurnCancelParams { .. }) => {
+            conn.borrow_mut().cancel_children();
             conn.borrow_mut().respond(id, json!({}));
             false
         }
@@ -307,25 +309,10 @@ pub(super) fn spawn_reader(sender: Sender<Inbound>) {
 /// 在 stdio 上跑完一个会话，直到 EOF、`shutdown` 或读取失败。
 pub fn run_stdio() -> Result<(), String> {
     let (sender, receiver) = mpsc::channel::<Inbound>();
-    spawn_reader(sender);
-
-    let conn = Rc::new(RefCell::new(Conn {
-        inbound: receiver,
-        out: Box::new(std::io::stdout()),
-        cancel: Arc::new(AtomicBool::new(false)),
-        handshaken: false,
-        exit_requested: false,
-        model: None,
-        session: None,
-        tool_call_prune: false,
-        usage: Rc::new(RefCell::new(TurnUsage::default())),
-        evict_marks: Rc::new(RefCell::new(Vec::new())),
-        tool_compaction_saved: 0,
-        tool_compaction_batches: 0,
-        tasks: None,
-        runtime_cache: None,
-        next_id: 0,
-    }));
+    spawn_reader(sender.clone());
+    let conn = Rc::new(RefCell::new(Conn::new(
+        sender, receiver, Box::new(std::io::stdout()),
+    )));
 
     eprintln!(
         "[kernel] omnicrawl {} 就绪（协议 v1，等待 initialize）。",
@@ -334,9 +321,14 @@ pub fn run_stdio() -> Result<(), String> {
 
     loop {
         // 借用必须在本条语句内结束：dispatch 里还要可变借用同一条连接。
+        conn.borrow_mut().start_child_request();
         let inbound = conn.borrow().inbound.recv();
         match inbound {
+            Ok(Inbound::Child(child)) => conn.borrow_mut().accept_child(*child),
             Ok(Inbound::Frame(frame)) => {
+                if conn.borrow_mut().route_child_response(&frame) {
+                    continue;
+                }
                 if dispatch(&conn, *frame) {
                     break;
                 }
@@ -345,5 +337,6 @@ pub fn run_stdio() -> Result<(), String> {
             Err(_) => break,
         }
     }
+    conn.borrow_mut().cancel_children();
     Ok(())
 }

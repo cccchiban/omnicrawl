@@ -44,6 +44,9 @@ pub fn conversation_from_openai_messages(messages: &[Value]) -> Vec<Conversation
         }
 
         let mut blocks: Vec<MessageBlock> = Vec::new();
+        if let Some(Value::Array(items)) = message.get("responses_compaction") {
+            blocks.push(MessageBlock::ResponsesCompaction(items.clone()));
+        }
         match message.get("content") {
             Some(Value::String(content)) if !content.is_empty() => {
                 blocks.push(MessageBlock::Text(TextBlock::new(content.clone())));

@@ -1,7 +1,8 @@
 //! 工具调用的用户界面显示标签（对映 `omnicrawl/ui/tool_labels.py`）。
 //!
-//! 工具卡标题直接显示工具原名（英文，与模型路由/工具配置面板一致），本模块只
-//! 把内部名称映射为图标等装饰信息。
+//! 工具卡标题显示正式工具名，与模型路由和工具配置面板一致。
+
+use omnicrawl_controllers::tool_args::normalize_identifier;
 
 /// 工具在终端标题中的显示信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,11 +69,20 @@ fn lookup(table: &'static [(&'static str, &'static str)], key: &str) -> Option<&
         .map(|(_, icon)| *icon)
 }
 
+/// 统一内置编辑工具的展示名，其他工具与 MCP 名称保持原样。
+pub fn canonical_tool_name(tool_name: &str) -> &str {
+    if tool_name == "Edit_file" || normalize_identifier(tool_name) == "editfile" {
+        "Edit_file"
+    } else {
+        tool_name
+    }
+}
+
 /// 将内部工具名转换为显示名和图标。
 ///
-/// 显示名固定为工具原名；MCP 工具保留完整命名空间原名（`server.operation`）。
+/// 显示名使用正式工具名；MCP 工具保留完整命名空间原名（`server.operation`）。
 pub fn tool_display(tool_name: &str) -> ToolDisplay {
-    let name = tool_name;
+    let name = canonical_tool_name(tool_name);
     if let Some(icon) = lookup(TOOL_DISPLAY_ICONS, name) {
         return ToolDisplay {
             name: name.to_string(),

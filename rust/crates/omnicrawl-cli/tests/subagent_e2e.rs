@@ -20,6 +20,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+#[path = "subagent_e2e/modes.rs"]
+mod modes;
+
 const WAIT: Duration = Duration::from_secs(20);
 const TEST_KEY: &str = "test-key";
 const TOOL_OUTPUT: &str = "文件内容：42";
@@ -258,12 +261,14 @@ impl Host {
     /// `agents` / `config` 由 `prepare_root` 建在 `~/.OmniCrawl` 下，配置路径不再有
     /// 环境变量覆盖，这里只按 workspace 推出隔离 home。
     fn start(workspace: &PathBuf, _agents: &PathBuf, _config: &PathBuf) -> Self {
-        let home = workspace
-            .parent()
-            .map(|parent| parent.join("home"))
-            .unwrap_or_else(|| workspace.join("home"));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_omnicrawl"))
-            .current_dir(workspace)
+        Self::start_with_path(workspace, None)
+    }
+
+    fn start_with_path(workspace: &PathBuf, path: Option<&str>) -> Self {
+        let home = workspace.parent().unwrap().join("home");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_omnicrawl"));
+        if let Some(path) = path { command.env("PATH", path); }
+        let mut child = command.current_dir(workspace)
             .env("OPENAI_API_KEY", TEST_KEY)
             .env("USERPROFILE", &home)
             .env("HOME", &home)
@@ -541,11 +546,11 @@ fn handshake(host: &mut Host, server: &StubServer, tools: Value, retry: Option<i
 #[test]
 fn kernel_runs_subagent_with_host_tool_batch() {
     let tool_arguments = json!({
-        "task": {
+        "tasks": [{
             "description": "看代码",
             "prompt": "读一下 a.py",
             "subagent_type": "review",
-        },
+        }],
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -768,22 +773,21 @@ fn host_entry_subagent_run_derives_the_task() {
 
 #[test]
 fn two_subagent_calls_in_one_batch_run_concurrently() {
-    // 并行靠「同一条消息里多次调用」而不是「一次调用塞多个任务」：
-    // 两个调用在同一批里，各自的窗口与任务号互不相同。
+    // 同一个助手消息里的两次调用各自成批：两个批次号、两个窗口，互不影响。
     let first = json!({
-        "task": {
+        "tasks": [{
             "description": "第一个",
             "prompt": "读一下 a.py",
             "subagent_type": "review",
-        },
+        }],
     })
     .to_string();
     let second = json!({
-        "task": {
+        "tasks": [{
             "description": "第二个",
             "prompt": "读一下 b.py",
             "subagent_type": "review",
-        },
+        }],
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -855,11 +859,11 @@ enabled = true
 #[test]
 fn worktree_isolation_creates_and_reports_isolated_workspace() {
     let tool_arguments = json!({
-        "task": {
+        "tasks": [{
             "description": "写点东西",
             "prompt": "在隔离区里读一下 a.txt",
             "subagent_type": "writer",
-        },
+        }],
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -1019,6 +1023,122 @@ allow_standard_agent = true
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 一次调用派发多个任务：同一次 `subagent_run` 里的每个任务各跑一个子回合，
+/// 共用同一个批次号，且批次收尾事件恰好在全部任务落定后才发一次。
+///
+/// 判据：
+/// 1. 只开一个批次（一个窗口），`batch.created` 带 `task_count=2`；
+/// 2. 两个任务各发一次 `task.started` 与 `task.completed`，任务号互不相同；
+/// 3. 父回合拿到的工具观察里两个任务的摘要都在；
+/// 4. `batch.finished` 恰好一次，且在两个 `task.completed` 之后。
+#[test]
+fn one_call_dispatches_multiple_tasks() {
+    let tool_arguments = json!({
+        "tasks": [
+            {
+                "description": "第一个",
+                "prompt": "读一下 a.py",
+                "subagent_type": "review",
+            },
+            {
+                "description": "第二个",
+                "prompt": "读一下 b.py",
+                "subagent_type": "review",
+            },
+        ],
+    })
+    .to_string();
+    let server = StubServer::spawn(vec![
+        ok_stream(tool_call_stream("subagent_run", &tool_arguments)),
+        Reply::AlwaysText(CHILD_TEXT.to_string()),
+    ]);
+    let (root, workspace, agents, config) = prepare_root("multi", "[subagents]
+enabled = true
+");
+
+    let mut host = Host::start(&workspace, &agents, &config);
+    handshake(
+        &mut host,
+        &server,
+        json!([
+            {"type": "function", "function": {"name": "read"}},
+            {"type": "function", "function": {"name": "subagent_run"}}
+        ]),
+        None,
+    );
+
+    let finished = host.run_turn("同时看两个文件");
+    host.shutdown();
+
+    assert_eq!(finished.len(), 1, "应恰好收到一次 turn.finished");
+
+    let created = host.notifications("subagent.event", Some("subagent.batch.created"));
+    assert_eq!(created.len(), 1, "一次调用只开一个批次");
+    assert_eq!(
+        created[0]["params"]["payload"]["task_count"], 2,
+        "批次创建事件要报任务条数：{}",
+        created[0]
+    );
+
+    let started = host.notifications("subagent.event", Some("subagent.task.started"));
+    let completed = host.notifications("subagent.event", Some("subagent.task.completed"));
+    assert_eq!(started.len(), 2, "两个任务各发一次开始事件");
+    assert_eq!(completed.len(), 2, "两个任务各发一次完成事件");
+    let task_ids: Vec<&str> = started
+        .iter()
+        .filter_map(|frame| frame["params"]["payload"]["task_id"].as_str())
+        .collect();
+    assert_ne!(task_ids[0], task_ids[1], "两个任务必须各有自己的任务号");
+
+    // 收尾事件恰好一次，且排在两次完成之后（早发会让窗口在剩下的任务还在跑时关掉）。
+    let events = host.notifications("subagent.event", None);
+    let finished_at = events
+        .iter()
+        .position(|frame| {
+            frame["params"]["name"].as_str() == Some("subagent.batch.finished")
+        })
+        .expect("应有批次收尾事件");
+    let last_completed_at = events
+        .iter()
+        .rposition(|frame| {
+            frame["params"]["name"].as_str() == Some("subagent.task.completed")
+        })
+        .expect("应有任务完成事件");
+    assert!(
+        finished_at > last_completed_at,
+        "批次收尾必须在最后一个任务落定之后"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|frame| frame["params"]["name"].as_str() == Some("subagent.batch.finished"))
+            .count(),
+        1,
+        "批次收尾事件只该发一次"
+    );
+
+    // 父回合的工具观察是整批摘要：两个任务的描述都在里面。
+    let requests = server.requests.lock().expect("请求锁").clone();
+    let parent = &requests[requests.len() - 1];
+    let observation = parent["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|message| message["role"] == "tool"))
+        .and_then(|message| message["content"].as_str())
+        .expect("父回合应有工具观察");
+    for expected in ["第一个", "第二个"] {
+        assert!(
+            observation.contains(expected),
+            "父回合观察应含 {expected}：{observation}"
+        );
+    }
+    assert!(
+        observation.matches("\"status\": \"completed\"").count() >= 2,
+        "两个任务都该在观察里报 completed：{observation}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `computer_use` 的端到端验收：主回合调用它 → 内核跑专职子代理 → 折回主回合。
 ///
 /// 判据：
@@ -1165,11 +1285,11 @@ fn computer_use_runs_dedicated_subagent_without_subagents_switch() {
 #[test]
 fn transient_subagent_model_error_is_retried() {
     let tool_arguments = json!({
-        "task": {
+        "tasks": [{
             "description": "看代码",
             "prompt": "读一下 a.py",
             "subagent_type": "review",
-        },
+        }],
     })
     .to_string();
     let server = StubServer::spawn(vec![
@@ -1247,11 +1367,11 @@ fn transient_subagent_model_error_is_retried() {
 #[test]
 fn subagent_model_error_stops_at_retry_limit() {
     let tool_arguments = json!({
-        "task": {
+        "tasks": [{
             "description": "看代码",
             "prompt": "读一下 a.py",
             "subagent_type": "review",
-        },
+        }],
     })
     .to_string();
     let failure = || {

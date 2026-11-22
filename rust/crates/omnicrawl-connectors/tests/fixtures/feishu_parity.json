@@ -442,10 +442,12 @@
       {
         "name": "subagent_run",
         "arguments": {
-          "task": {
-            "subagent_type": "explore",
-            "description": "看代码"
-          }
+          "tasks": [
+            {
+              "subagent_type": "explore",
+              "description": "看代码"
+            }
+          ]
         },
         "result": "",
         "expected": "subagent_run · explore · 看代码"
@@ -603,10 +605,12 @@
       {
         "name": "subagent_run",
         "arguments": {
-          "task": {
-            "subagent_type": "explore",
-            "description": "看代码"
-          }
+          "tasks": [
+            {
+              "subagent_type": "explore",
+              "description": "看代码"
+            }
+          ]
         },
         "result": "",
         "expected": ""

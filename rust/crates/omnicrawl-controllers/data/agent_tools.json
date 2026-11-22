@@ -260,7 +260,7 @@
       },
       {
         "name": "computer_use",
-        "description": "是什么：把一个桌面操作目标交给专职 Computer Use 子代理，由它看截图、点鼠标、敲键盘直到完成。怎么做：需要操作 GUI 窗口（点击按钮、填表单、拖拽、切换菜单）时使用；纯命令行或文件操作不用；只给自然语言目标，不给坐标或动作序列。怎样做：成功返回 JSON（status=completed|blocked|timeout|cancelled|failed，summary，obstacle，screenshots 路径列表，usage）；status=blocked 表示子代理需要你决策，按其 obstacle 补充信息后再调用；超时不代表失败，已完成的操作仍有效。建议：prompt 写清目标与完成判据；桌面同一时刻只能有一个任务，连续调用会排队；可以在 timeout_seconds 收窄本次时间预算；破坏性动作会被子代理先回报确认。",
+        "description": "是什么：把一个桌面操作目标交给专职 Computer Use 子代理，由它看截图、点鼠标、敲键盘直到完成。怎么做：需要操作 GUI 窗口（点击按钮、填表单、拖拽、切换菜单）时使用；纯命令行或文件操作不用。怎样做：prompt 里可以直接给出 `windows_batch` 步骤脚本（steps 数组，op 有 focus、window、click、drag、stroke、key、type、wait、repeat、expect、shot），子代理会照它批量执行；也可以只写自然语言目标，让子代理自己读控件树再操作。坐标与重复次数由你算清再给，比让子代理摸索省一个数量级的回合。成功返回 JSON（status=completed|blocked|timeout|cancelled|failed，summary，obstacle，screenshots 路径列表，usage）；status=blocked 表示子代理需要你决策，按其 obstacle 补充信息后再调用；超时不代表失败，已完成的操作仍有效。建议：prompt 写清目标与完成判据；桌面同一时刻只能有一个任务，连续调用会排队；可以在 timeout_seconds 收窄本次时间预算；破坏性动作会被子代理先回报确认。",
         "argument_schema": "{\"type\": \"object\", \"properties\": {\"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"timeout_seconds\": {\"type\": \"number\", \"exclusiveMinimum\": 0, \"maximum\": 3600}}, \"required\": [\"prompt\"], \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": true,
@@ -309,6 +309,15 @@
         "name": "windows_screenshot",
         "description": "是什么：用 Windows GDI 截取整个桌面、桌面内的一块区域、屏幕区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只想了解窗口结构或控件状态时不用——先取 windows_control 的 tree/state；windows_input 已带回画面，windows_control 只有传 screenshot=true 才带画面。怎样做：target=desktop 也接受 x/y/width/height 裁剪——只给 x/y 就从该点裁到桌面右下角，不传则整屏；target=region 要求 x/y/width/height 全部给出。成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；同一画面不要重复截；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
         "argument_schema": "{\"target\":\"desktop|region|window\",\"window_handle\":\"0x...\",\"x\":0,\"y\":0,\"width\":1280,\"height\":720,\"max_dimension\":2048}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      },
+      {
+        "name": "windows_batch",
+        "description": "是什么：一次调用按顺序执行一整段桌面操作脚本（点击、拖拽、描边、按键、等待、像素校验），适用于固定软件页面上的大量重复动作，例如在画图程序里连续绘制、在白板上批量添改、在表格软件里刷同一组点击。怎么做：需要重复执行同类界面动作时使用；只需一两次操作时直接用 windows_input；能用 UI Automation 定位控件时优先用 windows_control。怎样做：steps 是步骤对象数组，按顺序执行；op 取 click|drag|stroke|move|wheel|key|type|wait|expect|shot|focus|window|repeat；坐标写 [x,y] 或 {\"x\":10,\"y\":20}，相对哪个原点由 coord 决定（screen 虚拟桌面、client 客户区、window 整窗），顶层 coord 作用于全部步骤；顶层 window 或 window_handle 指定目标，脚本里不必重复写；stroke 用 points 折线 + spacing 控制采样密度，一次完成整笔绘制；repeat 用 times 指定次数，steps 写重复体；expect 采样一个像素颜色做自检，on_error 取 abort|continue；dry_run=true 只走流程、移动鼠标不做输入，用于先核对坐标。成功返回 JSON：action、dry_run、step_count、completed、stopped_at、notes（首尾流水）、samples（像素采样实况）、shot_labels；非预演时附带操作后的确认截图（path、window、source_bounds、image）；type 不回显文本；失败返回文本错误并指出停在第几步。建议：整段脚本先校验后执行，写错一步不会留下半套动作；绘制类任务先 dry_run 看走位再实跑；流程很长时用 repeat 收敛，不要堆几百个 click；脚本层面的异常（窗口不在、坐标越界）会立即停下并回报进度。",
+        "argument_schema": "{\"type\":\"object\",\"properties\":{\"steps\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"click\",\"drag\",\"expect\",\"focus\",\"key\",\"move\",\"repeat\",\"shot\",\"stroke\",\"type\",\"wait\",\"wheel\",\"window\"]},\"at\":{},\"from\":{},\"to\":{},\"points\":{\"type\":\"array\",\"items\":{\"type\":\"array\"}},\"coord\":{\"type\":\"string\",\"enum\":[\"screen\",\"client\",\"window\"]},\"button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\",\"back\",\"forward\"]},\"clicks\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":3},\"delta\":{\"type\":\"integer\",\"minimum\":-12000,\"maximum\":12000},\"keys\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"presses\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10},\"text\":{\"type\":\"string\"},\"ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":60000},\"spacing\":{\"type\":\"number\",\"minimum\":0.5,\"maximum\":200},\"step_delay_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":50},\"jitter\":{\"type\":\"number\",\"minimum\":0,\"maximum\":20},\"pressure\":{\"type\":\"array\",\"items\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1}},\"color\":{\"type\":\"string\"},\"tolerance\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":255},\"on_error\":{\"type\":\"string\",\"enum\":[\"abort\",\"continue\"]},\"window\":{\"type\":\"string\"},\"window_handle\":{},\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"object\"}},\"as\":{\"type\":\"string\"},\"times\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}},\"required\":[\"op\"]}},\"window\":{\"type\":\"string\"},\"window_handle\":{},\"coord\":{\"type\":\"string\",\"enum\":[\"screen\",\"client\",\"window\"]},\"dry_run\":{\"type\":\"boolean\"},\"on_error\":{\"type\":\"string\",\"enum\":[\"abort\",\"continue\"]}},\"required\":[\"steps\"],\"additionalProperties\":false}",
         "requires_confirmation": true,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -365,8 +374,8 @@
     "subagent": [
       {
         "name": "subagent_run",
-        "description": "是什么：把一个任务交给受限 profile 的子代理，同步执行并返回结果。怎么做：需要独立探索、规划、实现或验证时使用；简单问题、单步任务不用。怎样做：一次调用只提交一个 task，需要并行就在同一条消息里并发多次调用；subagent_type 决定角色与权限，只读角色不能写文件；成功返回 batch_id/status/results，失败含 error.code/message。建议：description 写目标，prompt 写完整任务；写类角色优先用 worktree 隔离，改动经 subagent_apply_worktree 写回。",
-        "argument_schema": "{\"type\": \"object\", \"properties\": {\"task\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"required\": [\"task\"], \"additionalProperties\": false}",
+        "description": "是什么：把一个或多个任务交给受限角色的子代理，前台等待或后台运行。怎么做：需要独立探索、规划、实现或验证时使用；多个互不依赖的任务一次派发，各跑各的子回合。怎样做：tasks 数组每项一个任务，最多 8 项，一次调用同批执行；background=false 默认等全部落定返回各任务结果，true 立即返回 batch_id/task_ids，主代理可继续工作，通过 subagent_list 查询结果；后台受 allow_background 控制。建议：prompt 写完整任务；写入型任务优先隔离，无 Git 时使用本地副本，审查后用 subagent_apply_worktree 回写。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}, \"description\": \"要派发的任务；每项各自成子回合，共用同一个批次号。\"}, \"background\": {\"type\": \"boolean\", \"description\": \"false 等待全部落定；true 后台运行并立即返回任务编号，默认 false。\"}}, \"required\": [\"tasks\"], \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,
         "run_in_subprocess": true,
@@ -374,7 +383,7 @@
       },
       {
         "name": "subagent_list",
-        "description": "是什么：列出子代理任务、待领取通知与残留隔离工作树。怎么做：查看任务状态、取单个任务详情、确认是否有未清理的 worktree 时使用。怎样做：无必填参数；给 task_id 只返回该任务详情，给 batch_id 只返回该批次任务；返回 tasks、notifications 与 worktrees，通知读取后即清空。建议：开工前与收尾前各查一次，避免遗留 worktree。",
+        "description": "是什么：列出当前会话所有子代理任务、通知与残留隔离目录，包含前台、后台及已完成、失败、取消的任务。怎么做：查看任务与结果，确认待审查的隔离改动。怎样做：无参数返回全部保留期内任务；task_id 查询详情，batch_id 筛选批次；通知读取后清空。建议：已结束任务也可查询，worktrees 同时包含 Git 工作树与本地副本。",
         "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该任务的详情。\"}, \"batch_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"只返回该批次的任务。\"}}, \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,
@@ -392,7 +401,7 @@
       },
       {
         "name": "subagent_apply_worktree",
-        "description": "是什么：把子代理隔离工作树的改动写回主工作区。怎么做：子代理用 isolation=worktree 产出改动、父代理审查通过后使用；只读角色的任务不需要。怎样做：task_id 或 branch 至少给一个；主工作区必须干净否则拒绝；strategy=checkout（默认，直接检出文件、不产生合并提交）或 merge（产生 --no-ff 合并提交）；cleanup=true 应用后清理工作树与分支。建议：先看 subagent_get 的结果再决定应用或丢弃。",
+        "description": "是什么：审查后把子代理隔离改动写回主工作区。怎么做：任务完成且审查通过后使用。怎样做：task_id 或 branch 至少一个；Git 主树必须干净；无 Git 的本地副本用 task_id 定位并逐文件核对基线，冲突则拒绝；strategy 默认 checkout，merge 仅支持 Git；cleanup=true 回写后清理。建议：先用 subagent_list 查看结果与隔离路径。",
         "argument_schema": "{\"type\": \"object\", \"properties\": {\"task_id\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"任务编号，取自 subagent_run 或 subagent_list 的返回。\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200, \"description\": \"隔离工作树的分支名。\"}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"], \"description\": \"checkout=直接检出文件（默认）；merge=产生合并提交。\"}, \"cleanup\": {\"type\": \"boolean\", \"description\": \"应用成功后清理工作树与分支，默认 false。\"}}, \"additionalProperties\": false}",
         "requires_confirmation": false,
         "model_output_is_bounded": false,

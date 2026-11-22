@@ -79,6 +79,7 @@ pub struct PromptRuntime {
     skill_manager: Option<SkillManager>,
     templates_dir: Option<PathBuf>,
     extra_skill_paths: Vec<String>,
+    resident_skill: Option<String>,
     /// 无人值守入口追加的额外约束（触发接口的「没有人在终端前」等）。
     ///
     /// 放在装配结果之后而不是模板里：模板对所有入口共用，而这条约束只对无人值守入口成立。
@@ -105,6 +106,7 @@ impl PromptRuntime {
         let advisor_block =
             advisor_guidelines_block(options.advisor_active, options.advisor_blacklisted)
                 .to_string();
+        let skills_config = load_skills_config(env, None).unwrap_or_default();
         let mut runtime = Self {
             template,
             advisor_block,
@@ -115,10 +117,8 @@ impl PromptRuntime {
             workspace_detection_summary: options.workspace_detection_summary,
             skill_manager: None,
             templates_dir,
-            // 额外路径来自 `[skills].extra_paths`；读不到配置时按空处理（不阻断启动）。
-            extra_skill_paths: load_skills_config(env, None)
-                .map(|config| config.extra_paths)
-                .unwrap_or_default(),
+            extra_skill_paths: skills_config.extra_paths,
+            resident_skill: skills_config.resident_skill,
             system_prompt_append: Mutex::new(String::new()),
             env: env.clone(),
         };
@@ -141,9 +141,7 @@ impl PromptRuntime {
 
     /// 已发现的 Skill 索引条目。
     ///
-    /// prompt cache 身份的 `skill_index_hash` 直接用这份列表，因此它必须与
-    /// [`Self::context_messages`] 拼进 Skill 索引段的来源是**同一份**
-    /// （同一个 `SkillManager::list_all()`），否则身份哈希会与实际发给模型的前缀脱节。
+    /// 供设置页、命令列表与 prompt cache 的 Skill 索引身份共用。
     pub fn skill_metas(&self) -> Vec<SkillMeta> {
         self.skill_manager
             .as_ref()
@@ -153,10 +151,19 @@ impl PromptRuntime {
 
     /// 发现阶段的诊断（路径不存在、同名冲突、名称不合法等）。
     pub fn skill_diagnostics(&self) -> Vec<omnicrawl_extensions::skill::SkillDiagnostic> {
-        self.skill_manager
+        let mut diagnostics = self.skill_manager
             .as_ref()
             .map(|manager| manager.diagnostics())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(name) = self.resident_skill_name() {
+            if self.load_skill(name).is_none() {
+                diagnostics.push(omnicrawl_extensions::skill::SkillDiagnostic::warning(
+                    format!("未找到常驻 Skill：{name}，已跳过正文注入。"),
+                    "skills.resident_skill",
+                ));
+            }
+        }
+        diagnostics
     }
 
     /// 按名称取回完整 Skill（只读查索引，不重扫）。
@@ -184,6 +191,46 @@ impl PromptRuntime {
     pub fn active_skill_context(&self, name: &str) -> Option<String> {
         let skill = self.load_skill(name)?;
         Some(active_skill_context_for(&skill))
+    }
+
+    pub fn resident_skill_name(&self) -> Option<&str> {
+        self.resident_skill.as_deref()
+    }
+
+    pub fn resident_skill_matches(&self) -> Vec<omnicrawl_extensions::skill::SkillMatchResult> {
+        self.resident_skill_name().and_then(|name| self.load_skill(name))
+            .map(|skill| vec![omnicrawl_extensions::skill::SkillMatchResult {
+                skill, score: 1.0, reason: "常驻 Skill".to_string(),
+            }])
+            .unwrap_or_default()
+    }
+
+    pub fn set_resident_skill(&mut self, name: Option<&str>) -> Result<(), String> {
+        let name = name.map(str::trim).filter(|name| !name.is_empty());
+        if let Some(name) = name {
+            if self.load_skill(name).is_none() {
+                return Err(format!("未找到 Skill：{name}。"));
+            }
+        }
+        self.resident_skill = name.map(str::to_string);
+        Ok(())
+    }
+
+    pub fn active_skill_messages_for(
+        &self,
+        has_tools: bool,
+        name: &str,
+    ) -> Result<Vec<Value>, String> {
+        let name = name.trim();
+        let manual = self.load_skill(name).ok_or_else(|| format!("未找到 Skill：{name}。"))?;
+        let resident = self.resident_skill_name()
+            .filter(|resident| *resident != name)
+            .and_then(|resident| self.load_skill(resident));
+        let context = match resident.as_ref() {
+            Some(resident) => active_skill_context_for_all(&[resident, &manual]),
+            None => active_skill_context_for(&manual),
+        };
+        self.build_context_messages_with(has_tools, Some(&context))
     }
 
     /// 当前活动模式（未启用时为空串，与 Python 的 `active_mode` 同义）。
@@ -264,7 +311,9 @@ impl PromptRuntime {
     ///
     /// `has_tools` 由调用方按当前工具表给出（工具开关会改这张表）。
     pub fn context_messages(&self, has_tools: bool) -> Result<Vec<Value>, String> {
-        self.build_context_messages_with(has_tools, None)
+        let resident = self.resident_skill_name()
+            .and_then(|name| self.active_skill_context(name));
+        self.build_context_messages_with(has_tools, resident.as_deref())
     }
 
     /// 本轮命中活动 Skill 时的上下文消息（`/skill:<名>` 手动调用用）。
@@ -276,8 +325,7 @@ impl PromptRuntime {
         self.build_context_messages_with(has_tools, Some(active_skill_context))
     }
 
-    /// 上下文消息装配的统一实现：`active_skill_context` 非空时以活动 Skill 正文
-    /// 取代 Skill 索引段（与 Python 的 `build_context_messages` 同一分支）。
+    /// 上下文消息装配的统一实现：注入常驻或本轮活动 Skill 正文。
     ///
     /// Skill 索引**不再**注入上下文：目录整份进提示词会随 Skill 数量线性膨胀，且长索引
     /// 里靠后的条目容易被模型忽略；改由 `skill_search` 工具按作用域与关键词按需检索。
@@ -335,13 +383,23 @@ impl PromptRuntime {
 
 /// 把一条已加载的 Skill 转成活动技能正文块（`/skill:<名>` 命中时注入）。
 pub fn active_skill_context_for(skill: &Skill) -> String {
-    format_active_skills_for_context(&[ActiveSkill {
-        name: &skill.meta.name,
-        scope: &skill.meta.scope,
-        description: &skill.meta.description,
-        location: &skill.meta.source_path.to_string_lossy(),
-        body: &skill.body,
-    }])
+    active_skill_context_for_all(&[skill])
+}
+
+fn active_skill_context_for_all(skills: &[&Skill]) -> String {
+    let locations: Vec<String> = skills.iter()
+        .map(|skill| skill.meta.source_path.to_string_lossy().into_owned())
+        .collect();
+    let inputs: Vec<ActiveSkill<'_>> = skills.iter().zip(&locations)
+        .map(|(skill, location)| ActiveSkill {
+            name: &skill.meta.name,
+            scope: &skill.meta.scope,
+            description: &skill.meta.description,
+            location,
+            body: &skill.body,
+        })
+        .collect();
+    format_active_skills_for_context(&inputs)
 }
 
 /// 模板目录：可执行文件祖先里的 `rust/assets/templates`（仓库检出）
@@ -547,5 +605,71 @@ mod tests {
         let error = runtime.activate_mode("Plan Mode").expect_err("非法模式名");
         assert_eq!(error, "模式名称只能使用小写字母、数字和单连字符。");
         assert_eq!(runtime.active_mode(), "");
+    }
+
+    fn resident_runtime() -> (PromptRuntime, PathBuf) {
+        let root = std::env::temp_dir().join(format!("oc-resident-prompt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let env = ConfigEnvironment::new(&root, "test");
+        omnicrawl_config::features::skills::save_resident_skill(&env, None, None).unwrap();
+        let workspace = root.join("workspace");
+        let mut runtime = PromptRuntime::load(&env, PromptOptions::new(&workspace)).unwrap();
+        for (name, body) in [("oc-resident-alpha", "ALPHA_INSTRUCTION"), ("oc-resident-beta", "BETA_INSTRUCTION")] {
+            let directory = workspace.join(".omnicrawl/skills").join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("SKILL.md"), format!(
+                "---\nname: {name}\ndescription: Resident skill regression test\n---\n{body}\n"
+            )).unwrap();
+        }
+        runtime.discover_skills();
+        (runtime, root)
+    }
+
+    fn skill_text(messages: Vec<Value>) -> String {
+        messages.iter().filter_map(|message| message["content"].as_str())
+            .filter(|content| content.starts_with("<active_skill_instructions"))
+            .collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn resident_skill_remains_in_baseline_and_deduplicates_manual_calls() {
+        let (mut runtime, root) = resident_runtime();
+        assert_eq!(runtime.resident_skill_name(), None);
+        assert!(skill_text(runtime.context_messages(true).unwrap()).is_empty());
+        runtime.set_resident_skill(Some("oc-resident-alpha")).unwrap();
+        for _ in 0..2 {
+            let text = skill_text(runtime.context_messages(true).unwrap());
+            assert_eq!(text.matches("ALPHA_INSTRUCTION").count(), 1);
+            assert!(!text.contains("BETA_INSTRUCTION"));
+            assert!(text.contains("<authority_boundary>"));
+        }
+        let same = skill_text(runtime.active_skill_messages_for(true, "oc-resident-alpha").unwrap());
+        assert_eq!(same.matches("ALPHA_INSTRUCTION").count(), 1);
+        let other = skill_text(runtime.active_skill_messages_for(true, "oc-resident-beta").unwrap());
+        assert_eq!(other.matches("ALPHA_INSTRUCTION").count(), 1);
+        assert_eq!(other.matches("BETA_INSTRUCTION").count(), 1);
+        runtime.activate_mode("programming").unwrap();
+        let baseline = skill_text(runtime.context_messages(true).unwrap());
+        assert!(baseline.contains("ALPHA_INSTRUCTION"));
+        assert!(!baseline.contains("BETA_INSTRUCTION"));
+        assert_eq!(runtime.resident_skill_matches().len(), 1);
+        assert!(runtime.set_resident_skill(Some("oc-missing-resident")).is_err());
+        assert_eq!(runtime.resident_skill_name(), Some("oc-resident-alpha"));
+        runtime.set_resident_skill(None).unwrap();
+        assert!(skill_text(runtime.context_messages(true).unwrap()).is_empty());
+        assert!(runtime.resident_skill_matches().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_resident_skill_is_reported_without_blocking_context() {
+        let root = std::env::temp_dir().join(format!("oc-missing-resident-{}", std::process::id()));
+        let env = ConfigEnvironment::new(&root, "test");
+        omnicrawl_config::features::skills::save_resident_skill(&env, None, Some("oc-missing-resident")).unwrap();
+        let runtime = PromptRuntime::load(&env, PromptOptions::new(root.join("workspace"))).unwrap();
+        assert_eq!(runtime.resident_skill_name(), Some("oc-missing-resident"));
+        assert!(runtime.context_messages(true).is_ok());
+        assert!(runtime.skill_diagnostics().iter().any(|item| item.path == "skills.resident_skill"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

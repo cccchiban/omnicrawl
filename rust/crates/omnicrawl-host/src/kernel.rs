@@ -157,7 +157,14 @@ impl KernelClient {
     /// 注意它把「超时」与「连接断开」折叠成同一个 `None`：要区分二者就再看
     /// [`KernelClient::is_closed`]。
     pub fn recv_timeout(&mut self, timeout: Duration) -> Option<Frame> {
-        self.frames.recv_timeout(timeout).ok()
+        match self.frames.recv_timeout(timeout) {
+            Ok(frame) => Some(frame),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => {
+                self.closed = true;
+                None
+            }
+        }
     }
 
     /// 等到一个帧，或等到连接断开。
@@ -353,5 +360,20 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         panic!("等待内核帧超时");
+    }
+}
+
+#[cfg(test)]
+mod disconnect_tests {
+    use super::*;
+
+    #[test]
+    fn timed_receive_marks_a_disconnected_kernel_closed() {
+        let mut client = KernelClient::from_streams(
+            Box::new(BufReader::new(std::io::Cursor::new(Vec::<u8>::new()))),
+            Box::new(std::io::sink()),
+        );
+        assert!(client.recv_timeout(Duration::from_secs(1)).is_none());
+        assert!(client.is_closed());
     }
 }

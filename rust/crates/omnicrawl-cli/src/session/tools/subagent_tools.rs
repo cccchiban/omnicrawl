@@ -296,6 +296,17 @@ pub(crate) fn run_subagent_tool(
             return run_subagent_query(tool_name, conn, arguments)
         }
         "subagent_apply_worktree" | "subagent_discard_worktree" => {
+            let key = arguments.get("task_id").or_else(|| arguments.get("branch"))
+                .and_then(Value::as_str).unwrap_or_default();
+            if let Some(session) = crate::worktree::find_session(key, None) {
+                let active = conn.borrow().tasks.as_ref().and_then(|manager|
+                    manager.get(&session.task_id, SUBAGENT_OWNER_ID, None))
+                    .is_some_and(|task| task["status"].as_str().is_some_and(|status|
+                        !omnicrawl_controllers::subagents::tasks::is_terminal(status)));
+                if active {
+                    return (false, json_result_text(&top_level_error("SUBAGENT_PERMISSION_DENIED", "子任务仍在执行，不能应用或丢弃隔离目录。")));
+                }
+            }
             return run_worktree_control(tool_name, arguments)
         }
         _ => {}
@@ -320,43 +331,29 @@ pub(crate) fn run_subagent_tool(
     };
     let parent_tools = SubAgentRuntime::parent_tool_names(&model_config);
     let batch_id = next_subagent_batch_id();
-    let task = match runtime.prepare(arguments, &parent_tools, &batch_id) {
-        Ok(task) => task,
+    let tasks = match runtime.prepare(arguments, &parent_tools, &batch_id) {
+        Ok(tasks) => tasks,
         Err((code, message)) => {
             return (false, json_result_text(&top_level_error(&code, &message)))
         }
     };
 
-    emit_subagent_event(
-        conn,
-        "subagent.batch.created",
-        json!({
-            "batch_id": batch_id,
-            "status": "queued",
-            "task_count": 1,
-            "origin_call_id": call_id,
-        }),
-    );
-    let result = run_task_in_isolation(
-        &runtime,
-        &model_config,
-        &task,
-        &fork_messages,
-        conn,
-        &CancelToken::new(),
-        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        false,
-        true,
-    );
-    let (ok, summary) = batch_summary(&batch_id, vec![result]);
-    emit_batch_finished(conn, &batch_id);
-    (ok, json_result_text(&summary))
+    match execute_tasks(runtime, model_config, tasks, fork_messages, conn, false, call_id) {
+        // 后台批次立刻交回任务编号（`task_ids`），前台批次交回整批摘要；两者形状不同，
+        // 因此按形状区分而不重复推算运行方式。
+        Ok(result) if result.get("task_ids").is_some() => (true, json_result_text(&result)),
+        Ok(result) => (
+            result["status"].as_str() == Some("completed"),
+            json_result_text(&result),
+        ),
+        Err((code, message)) => (false, json_result_text(&top_level_error(&code, &message))),
+    }
 }
 
 /// 内核侧的 SubAgent 所有者标识（协议一条连接只服务一个宿主）。
 pub(crate) const SUBAGENT_OWNER_ID: &str = "kernel";
 
-/// `subagent_list` / `subagent_cancel`：查询与取消后台任务。
+/// `subagent_list` / `subagent_cancel`：查询全部任务与取消活动任务。
 pub(crate) fn run_subagent_query(
     tool_name: &str,
     conn: &Rc<RefCell<Conn>>,
@@ -369,58 +366,32 @@ pub(crate) fn run_subagent_query(
         }
     };
     let borrowed = conn.borrow();
-    let Some(manager) = borrowed.tasks.as_ref() else {
-        return (
-            false,
-            json_result_text(&top_level_error(
-                "SUBAGENT_NOT_FOUND",
-                "当前还没有后台 SubAgent 任务。",
-            )),
-        );
-    };
-    let session_id = borrowed
-        .session
-        .as_ref()
-        .map(|session| session.session_id.clone())
+    let manager = borrowed.tasks.as_ref();
+    let session_id = borrowed.session.as_ref()
+        .map(|session| session.session_id.as_str()).unwrap_or_default();
+    let batch_id = arguments.get("batch_id").and_then(Value::as_str).unwrap_or_default().trim();
+    let worktrees: Vec<Value> = crate::worktree::list_sessions(None).iter()
+        .map(crate::worktree::session_value).collect();
+    let mut tasks = manager.map(|manager| manager.list(SUBAGENT_OWNER_ID, Some(session_id)))
         .unwrap_or_default();
+    tasks.retain(|task| batch_id.is_empty() || task["batch_id"].as_str() == Some(batch_id));
     match request {
         QueryRequest::List => {
-            let tasks = manager.list(SUBAGENT_OWNER_ID, Some(&session_id));
-            let notifications = manager.drain_notifications(SUBAGENT_OWNER_ID, Some(&session_id));
-            // 残留 worktree 与后台任务管理器是否启用无关：切工作区前必须能看到它们。
-            let worktrees: Vec<Value> = crate::worktree::list_sessions(None)
-                .iter()
-                .map(crate::worktree::session_value)
-                .collect();
-            (
-                true,
-                json_result_text(&json!({
-                    "tasks": tasks,
-                    "notifications": notifications,
-                    "worktrees": worktrees,
-                })),
-            )
+            let notifications = manager.map(|manager| manager.drain_notifications(SUBAGENT_OWNER_ID, Some(session_id)))
+                .unwrap_or_default();
+            (true, json_result_text(&json!({"tasks": tasks, "notifications": notifications, "worktrees": worktrees})))
         }
-        QueryRequest::Get { task_id } => {
-            match manager.get(&task_id, SUBAGENT_OWNER_ID, Some(&session_id)) {
-                Some(task) => (true, json_result_text(&json!({"task": task}))),
-                None => (
-                    false,
-                    json_result_text(&top_level_error(
-                        "SUBAGENT_NOT_FOUND",
-                        "未找到当前 Agent 的任务。",
-                    )),
-                ),
-            }
-        }
+        QueryRequest::Get { task_id } => match tasks.into_iter().find(|task| task["task_id"].as_str() == Some(task_id.as_str())) {
+            Some(task) => (true, json_result_text(&json!({"task": task, "worktrees": worktrees}))),
+            None => (false, json_result_text(&top_level_error("SUBAGENT_NOT_FOUND", "未找到当前 Agent 的任务。"))),
+        },
         QueryRequest::Cancel { task_id, batch_id } => {
-            let value = manager.cancel(
-                SUBAGENT_OWNER_ID,
-                Some(&session_id),
+            let value = manager.map(|manager| manager.cancel(
+                SUBAGENT_OWNER_ID, Some(session_id),
                 (!task_id.is_empty()).then_some(task_id.as_str()),
                 (!batch_id.is_empty()).then_some(batch_id.as_str()),
-            );
-            (true, json_result_text(&value))
+            )).unwrap_or_else(|| json!({"ok": false, "code": "SUBAGENT_NOT_FOUND", "message": "未找到任务或批次。"}));
+            (value["ok"].as_bool().unwrap_or(false), json_result_text(&value))
         }
     }
 }
@@ -446,22 +417,15 @@ pub(crate) fn run_task_in_isolation(
     stream_conversation: bool,
 ) -> Value {
     let view = task.view();
-    emit_subagent_event(
-        conn,
-        "subagent.task.started",
-        task_event_payload(&view, "started"),
-    );
+    if cancel.is_set() {
+        return omnicrawl_controllers::subagents::coordinator::cancelled_payload(&view, "子任务已取消。");
+    }
     let session = if task.definition.isolation == "worktree" {
         match crate::worktree::create_session(workspace, &task.task_id, "HEAD", None) {
             Ok(session) => Some(session),
             Err(error) => {
                 let result =
                     failure_payload(&view, "SUBAGENT_WORKTREE_ERROR", error.message(), None);
-                emit_subagent_event(
-                    conn,
-                    &terminal_event_name(&result),
-                    terminal_event_payload(&view, &result),
-                );
                 return result;
             }
         }
@@ -470,7 +434,8 @@ pub(crate) fn run_task_in_isolation(
     };
     let root = session
         .as_ref()
-        .map(|session| session.worktree_path.to_string_lossy().to_string());
+        .map(|session| session.worktree_path.to_string_lossy().to_string())
+        .unwrap_or_else(|| workspace.to_string_lossy().to_string());
     let result = match run_background_task(
         runtime,
         model_config,
@@ -478,7 +443,7 @@ pub(crate) fn run_task_in_isolation(
         fork_messages,
         conn,
         cancel,
-        root.as_deref(),
+        Some(&root),
         stream_conversation,
     ) {
         Ok(execution) => {
@@ -490,6 +455,8 @@ pub(crate) fn run_task_in_isolation(
             }
             result
         }
+        Err((code, message)) if code == "SUBAGENT_CANCELLED" =>
+            omnicrawl_controllers::subagents::coordinator::cancelled_payload(&view, &message),
         Err((code, message)) => failure_payload(&view, &code, &message, None),
     };
     let result = match session.as_ref().map(crate::worktree::collect_artifacts) {
@@ -500,20 +467,7 @@ pub(crate) fn run_task_in_isolation(
         ),
         None => result,
     };
-    emit_subagent_event(
-        conn,
-        &terminal_event_name(&result),
-        terminal_event_payload(&view, &result),
-    );
     result
-}
-
-pub(crate) fn terminal_event_name(result: &Value) -> String {
-    let status = result
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("failed");
-    format!("subagent.task.{status}")
 }
 
 /// 把 worktree 产物摘要挂到子任务结果的 `artifacts` 上（与 Python 的 `[worktree]` 标记同义）。
@@ -688,14 +642,15 @@ pub(crate) fn next_subagent_batch_id() -> String {
     format!("batch-{:012x}", mixed & 0xffff_ffff_ffff)
 }
 
-/// `subagent.query`：后台任务的查询与取消，返回结构化 JSON（不再走工具结果信封）。
-///
-/// 没有任务管理器时回 `unavailable: true`，让宿主区分「功能未启用」（503）与
-/// 「任务不存在」（404）；动作非法按协议错误回。
+/// `subagent.query`：当前会话任务的查询与取消，无任务时列表为空。
 pub(crate) fn subagent_query_value(
     conn: &Rc<RefCell<Conn>>,
     params: &SubagentQueryParams,
 ) -> Result<Value, String> {
+    subagent_query_on_conn(&conn.borrow(), params)
+}
+
+pub(crate) fn subagent_query_on_conn(conn: &Conn, params: &SubagentQueryParams) -> Result<Value, String> {
     let action = params.action.trim().to_lowercase();
     // worktree 清单放在任务表检查之前：托管根里的残留 worktree 与后台任务管理器是否启用无关，
     // 切换工作区前必须能看到它们（对映 Python `list_subagent_worktrees` 的拦阻项）。
@@ -719,10 +674,10 @@ pub(crate) fn subagent_query_value(
             params.action
         ));
     }
-    let borrowed = conn.borrow();
+    let borrowed = conn;
     let Some(manager) = borrowed.tasks.as_ref() else {
         return Ok(json!({
-            "unavailable": true,
+            "unavailable": false,
             "action": action,
             "tasks": [],
             "task": Value::Null,

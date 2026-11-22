@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::core::runtime::{get_section, load_config_data, ConfigEnvironment};
+use crate::core::runtime::{get_section, load_config_data, save_config_data, ConfigEnvironment};
 use crate::error::ConfigError;
 use crate::toml::{Table, Value};
 
@@ -15,6 +15,7 @@ const RETIRED_FIELDS: [&str; 1] = ["minimum_turns_between_model_compactions"];
 /// 表示显式使用固定 Token 阈值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextCompactionConfig {
+    pub native_gpt: bool,
     pub trigger_context_percent: Option<i64>,
     pub trigger_context_tokens: i64,
     pub next_user_reserve_tokens: i64,
@@ -33,6 +34,7 @@ pub struct ContextCompactionConfig {
 impl Default for ContextCompactionConfig {
     fn default() -> Self {
         Self {
+            native_gpt: true,
             trigger_context_percent: Some(80),
             trigger_context_tokens: 100_000,
             next_user_reserve_tokens: 10_240,
@@ -80,6 +82,16 @@ impl ContextCompactionConfig {
     }
 }
 
+pub fn save_native_gpt(
+    env: &ConfigEnvironment, enabled: bool, config_path: Option<&Path>,
+) -> Result<std::path::PathBuf, ConfigError> {
+    let mut data = load_config_data(env, config_path)?;
+    let mut section = get_section(&data, "context_compaction")?;
+    section.insert("native_gpt".to_string(), Value::Boolean(enabled));
+    data.insert("context_compaction".to_string(), Value::Table(section));
+    save_config_data(env, &data, config_path)
+}
+
 /// 从 `config.toml` 读取并严格校验 `context_compaction` 段。
 pub fn load_context_compaction_config(
     env: &ConfigEnvironment,
@@ -90,6 +102,7 @@ pub fn load_context_compaction_config(
     let defaults = ContextCompactionConfig::default();
 
     let config = ContextCompactionConfig {
+        native_gpt: bool_field(&section, "native_gpt", defaults.native_gpt)?,
         trigger_context_percent: optional_positive_int(
             &section,
             "trigger_context_percent",
@@ -172,6 +185,7 @@ pub fn load_context_compaction_config(
 
 fn config_field_names() -> Vec<&'static str> {
     vec![
+        "native_gpt",
         "trigger_context_percent",
         "trigger_context_tokens",
         "next_user_reserve_tokens",
@@ -282,5 +296,21 @@ fn bool_field(section: &Table, name: &str, default: bool) -> Result<bool, Config
         Some(_) => Err(ConfigError::new(format!(
             "context_compaction.{name} 必须是布尔值。"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn native_gpt_is_enabled_by_default_and_accepts_an_explicit_opt_out() {
+        assert!(ContextCompactionConfig::default().native_gpt);
+        let mut section = Table::new();
+        section.insert("native_gpt".to_string(), Value::Boolean(false));
+        reject_unknown_fields(&section, &config_field_names()).unwrap();
+        assert!(!bool_field(&section, "native_gpt", true).unwrap());
+        section.insert("native_gpt".to_string(), Value::String("false".to_string()));
+        assert!(bool_field(&section, "native_gpt", true).is_err());
     }
 }

@@ -212,7 +212,7 @@ fn model_param_dropdown_overlay_lists_candidates_and_highlights_current() {
     let buffer = draw(&state, WIDTH, HEIGHT);
     let screen = text(&buffer);
     assert!(screen.contains("32K"), "候选项要列出来：{screen}");
-    assert!(screen.contains("2048K"));
+    assert!(screen.contains("131.072K"));
 
     // 高亮项（当前值 128K）用琥珀底色。
     let highlighted = buffer
@@ -220,6 +220,12 @@ fn model_param_dropdown_overlay_lists_candidates_and_highlights_current() {
         .iter()
         .any(|cell| cell.style().bg == Some(Color::Yellow));
     assert!(highlighted, "展开的候选列表要有高亮项");
+    state.handle_key(KeyCode::Up);
+    state.handle_key(KeyCode::Up);
+    state.handle_key(KeyCode::Up);
+    let screen = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(screen.contains("2048K"), "末档应能滚动到：{screen}");
+    assert!(screen.contains("1047.576K"), "精确百万档应可见：{screen}");
 }
 
 #[test]
@@ -1070,6 +1076,10 @@ fn dropdown_option_click_confirms_the_choice() {
     state.handle_key(KeyCode::Enter); // 展开候选
     let options = state.dropdown_options();
     assert!(!options.is_empty(), "上下文长度行应当有候选");
+    let index = options.iter().position(|(label, _)| label == "272K").expect("272K 候选");
+    while state.dropdown().expect("候选已展开").selected != index {
+        state.handle_key(KeyCode::Down);
+    }
     draw(&state, WIDTH, HEIGHT);
 
     // 浮层画在面板之上：同一个落点应当先命中候选行。
@@ -1077,14 +1087,14 @@ fn dropdown_option_click_confirms_the_choice() {
         40u16,
         (0..HEIGHT as usize)
             .map(|row| row as u16)
-            .find(|row| state.hit_at(40, *row) == Some(HitAction::Option(3)))
-            .expect("浮层第 4 项应当可点"),
+            .find(|row| state.hit_at(40, *row) == Some(HitAction::Option(index)))
+            .expect("272K 候选应当可点"),
     );
     let action = state.hit_at(column, row).expect("浮层候选可点");
     let event = state.click(action).expect("选候选并确认");
     match event {
         SettingsEvent::Apply(SettingsChange::ContextWindow { tokens }) => {
-            assert_eq!(tokens, 256_000, "第 4 项应当是 256K")
+            assert_eq!(tokens, 272_000, "应保留所选精确 Token 数")
         }
         other => panic!("应当产出上下文长度变更：{other:?}"),
     }
@@ -1322,4 +1332,40 @@ fn sandbox_page_renders_its_fields() {
             "沙盒页缺少字段「{label}」：\n{right}"
         );
     }
+}
+
+
+#[test]
+fn skills_management_renders_resident_selector_and_mouse_options() {
+    let mut state = SettingsState::new(SettingsValues::new(128_000, 80, vec![])
+        .with_suggestion(false, vec![omnicrawl_tui::ui::settings::SuggestionSkillRow {
+            name: "sample-skill".to_string(),
+            scope: "user".to_string(),
+            description: "Sample description".to_string(),
+        }]));
+    state.select_key("suggestion");
+    let buffer = draw(&state, WIDTH, HEIGHT);
+    let screen = text(&buffer);
+    assert!(screen.contains("skills管理"));
+    assert!(screen.contains("常驻 Skill：无"));
+    assert!(screen.contains("sample-skill"));
+    let mut resident_hit = None;
+    for y in 0..HEIGHT {
+        for x in LEFT_COLUMN_WIDTH..WIDTH {
+            if state.hit_at(x, y) == Some(HitAction::PaneRow(1)) {
+                resident_hit = Some((x, y));
+                break;
+            }
+        }
+    }
+    let (x, y) = resident_hit.expect("常驻行的鼠标命中区");
+    state.click(state.hit_at(x, y).unwrap());
+    state.click(HitAction::PaneRow(1));
+    assert_eq!(state.dropdown().unwrap().field, DropdownField::ResidentSkill);
+    let buffer = draw(&state, WIDTH, HEIGHT);
+    assert!(text(&buffer).contains("sample-skill"));
+    assert_eq!(state.click(HitAction::Option(1)), Some(SettingsEvent::Apply(
+        SettingsChange::ResidentSkill { name: Some("sample-skill".to_string()) }
+    )));
+    assert_eq!(state.resident_skill_name(), None);
 }

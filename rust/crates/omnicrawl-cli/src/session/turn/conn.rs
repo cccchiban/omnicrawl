@@ -26,6 +26,10 @@ pub(crate) fn post_compaction_context_tokens(conn: &Rc<RefCell<Conn>>, history: 
 /// 内核侧的对话连接：帧的收发、请求应答配对与回合状态。
 pub(crate) struct Conn {
     pub(crate) inbound: Receiver<Inbound>,
+    pub(crate) sender: Sender<Inbound>,
+    pub(crate) children: super::super::subagent_dispatch::ChildDispatch,
+    pub(crate) request_active: bool,
+    pub(crate) child_cancel: Option<CancelToken>,
     pub(crate) out: Box<dyn Write>,
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) handshaken: bool,
@@ -66,6 +70,28 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    pub(crate) fn new(sender: Sender<Inbound>, inbound: Receiver<Inbound>, out: Box<dyn Write>) -> Self {
+        Self {
+            sender, inbound, out,
+            children: Default::default(),
+            request_active: false,
+            child_cancel: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            handshaken: false,
+            exit_requested: false,
+            next_id: 0,
+            model: None,
+            session: None,
+            tool_call_prune: false,
+            usage: Rc::new(RefCell::new(TurnUsage::default())),
+            evict_marks: Rc::new(RefCell::new(Vec::new())),
+            tool_compaction_saved: 0,
+            tool_compaction_batches: 0,
+            tasks: None,
+            runtime_cache: None,
+        }
+    }
+
     pub(crate) fn send(&mut self, frame: &Frame) -> Result<(), String> {
         let mut line = frame.to_line();
         line.push('\n');
@@ -201,17 +227,28 @@ impl Conn {
 
     /// 发请求并等它的响应；等待期间照常处理入站帧。
     pub(crate) fn request(&mut self, method_name: &str, params: Value) -> Result<Value, PortFailure> {
+        if self.child_cancel.as_ref().is_some_and(CancelToken::is_set) {
+            return Err(PortFailure::Cancelled("子任务已取消。".to_string()));
+        }
+        self.wait_for_child_batch()?;
+        self.request_active = true;
         self.next_id += 1;
         let id = Id::Number(self.next_id);
-        self.send(&Frame::request(id.clone(), method_name, params))
-            .map_err(PortFailure::Io)?;
-        self.await_response(&id)
+        let result = self.send(&Frame::request(id.clone(), method_name, params))
+            .map_err(PortFailure::Io)
+            .and_then(|()| self.await_response(&id));
+        self.request_active = false;
+        result
     }
 
     pub(crate) fn await_response(&mut self, id: &Id) -> Result<Value, PortFailure> {
         loop {
             let frame = match self.inbound.recv() {
                 Ok(Inbound::Frame(frame)) => *frame,
+                Ok(Inbound::Child(child)) => {
+                    self.accept_child(*child);
+                    continue;
+                }
                 Ok(Inbound::Closed) | Err(_) => return Err(PortFailure::Disconnected),
             };
             let is_response = frame.method().is_none() && frame.id().is_some();
@@ -238,6 +275,7 @@ impl Conn {
         match (id, method_name.as_str()) {
             (Some(id), method::TURN_CANCEL) => {
                 self.cancel.store(true, Ordering::SeqCst);
+                self.cancel_children();
                 self.respond(id, json!({}));
                 Some(PortFailure::Cancelled("回合已取消。".to_string()))
             }
@@ -260,6 +298,7 @@ impl Conn {
             (Some(id), method::SHUTDOWN) => {
                 self.cancel.store(true, Ordering::SeqCst);
                 self.exit_requested = true;
+                self.cancel_children();
                 // 回合进行中也能收到 shutdown：先收尾会话再回包，保证 `session_closed`
                 // 落在宿主的 before / after 钩子之间。
                 self.close_session();
@@ -307,6 +346,17 @@ impl Conn {
                         Err(error) => self.respond_error(id, error),
                     },
                     Err(error) => self.respond_error(id, error),
+                }
+                None
+            }
+            (Some(id), method::SUBAGENT_QUERY) => {
+                let result = serde_json::from_value::<SubagentQueryParams>(
+                    frame.params.clone().unwrap_or_else(|| json!({})),
+                ).map_err(|error| error.to_string())
+                    .and_then(|params| super::super::tools::subagent_query_on_conn(self, &params));
+                match result {
+                    Ok(value) => self.respond(id, value),
+                    Err(message) => self.respond_error(id, ErrorObject::new(error_code::INVALID_PARAMS, message)),
                 }
                 None
             }
@@ -406,7 +456,7 @@ impl TurnSink for ProtocolSink {
     }
 
     fn cancelled(&self) -> bool {
-        self.conn.borrow().cancel.load(Ordering::SeqCst)
+        drain_inbound_during_turn(&self.conn)
     }
 }
 
