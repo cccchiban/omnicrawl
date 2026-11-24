@@ -874,24 +874,7 @@ impl App {
         match self.state.waiting() {
             Some(Waiting::Approval(panel)) => {
                 let selected = panel.selected;
-                match key.code {
-                    KeyCode::Up | KeyCode::Down => {
-                        let delta = if key.code == KeyCode::Up { -1 } else { 1 };
-                        self.state.select_approval(delta);
-                    }
-                    // 两个批准键与三行选项一一对应：回车按当前高亮行执行（默认落在「确认执行」上），
-                    // `Y` 只批准这一次，`A` 连本会话的同类工具一起批准。
-                    KeyCode::Char('y') | KeyCode::Char('Y') => self.approve_pending(false),
-                    KeyCode::Char('a') | KeyCode::Char('A') => self.approve_pending(true),
-                    KeyCode::Enter => match selected {
-                        host::APPROVAL_EXECUTE => self.approve_pending(false),
-                        host::APPROVAL_EXECUTE_ALWAYS => self.approve_pending(true),
-                        _ => self.reject_pending(),
-                    },
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.reject_pending(),
-                    _ => {}
-                }
-                true
+                self.handle_approval_key(selected, key)
             }
             Some(Waiting::Question(panel)) => {
                 let is_select = panel.is_select();
@@ -970,35 +953,6 @@ impl App {
             KeyCode::Home => self.state.composer.move_home(),
             KeyCode::End => self.state.composer.move_end(),
             _ => {}
-        }
-    }
-
-    /// 批准待决调用：`remember` 为真时同时把该工具记进本会话的「不再过问」名单。
-    pub(super) fn approve_pending(&mut self, remember: bool) {
-        let Some(batch_id) = self.state.batch_request_id() else {
-            return;
-        };
-        if let Some(step) = self.state.decide_approval(true, remember) {
-            self.handle_batch_step(batch_id, step);
-        }
-    }
-
-    /// 拒绝待决调用。拒绝的若是 MCP Tool，先落审计再推进批次（与 Python 的
-    /// `record_denied_tool_call` 同一时点、同一文案）。
-    pub(super) fn reject_pending(&mut self) {
-        let Some(batch_id) = self.state.batch_request_id() else {
-            return;
-        };
-        if let Some(call) = self.state.pending_approval_call() {
-            host::record_mcp_denial(
-                &self.registry,
-                &call.name,
-                &call.arguments,
-                &omnicrawl_controllers::approval::user_cancelled_reason(&call.name),
-            );
-        }
-        if let Some(step) = self.state.decide_approval(false, false) {
-            self.handle_batch_step(batch_id, step);
         }
     }
 }

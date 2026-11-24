@@ -196,6 +196,7 @@ const PAGE_STEP: isize = 10;
 /// 鼠标滚轮一格滚动的行数（Textual 的滚轮一步也是按行推进，这里取同一观感）。
 const WHEEL_STEP: isize = 3;
 
+mod approval_keys;
 mod host_commands;
 mod input;
 mod kernel_flow;
