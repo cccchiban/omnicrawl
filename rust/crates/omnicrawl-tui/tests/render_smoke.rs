@@ -262,7 +262,13 @@ fn approval_panel_and_question_panel_take_over_bottom_area() {
     let text = screen(&state, 100, 20).join("\n");
     assert!(text.contains("工具审批"), "缺少审批面板：{text}");
     assert!(text.contains("bash"), "审批面板应显示工具名：{text}");
-    assert!(text.contains("[Y] 批准"), "缺少批准提示：{text}");
+    assert!(text.contains("确认执行"), "缺少确认执行选项：{text}");
+    assert!(
+        text.contains("确认执行，并且不再过问"),
+        "缺少不再过问选项：{text}"
+    );
+    assert!(text.contains("▸ 确认执行"), "默认应选中确认执行：{text}");
+    assert!(text.contains("取消"), "缺少取消选项：{text}");
 
     let mut state = AppState::new(
         "omnicrawl".to_string(),

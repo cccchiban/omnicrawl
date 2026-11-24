@@ -507,6 +507,87 @@ fn manual_mode_runs_file_and_search_tools_without_approval() {
     );
 }
 
+/// 「确认执行，并且不再过问」：本批剩余的同名调用与后续批次都不再弹面板。
+#[test]
+fn remember_choice_skips_the_same_tool_for_the_rest_of_the_session() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(&tool_batch(
+        14,
+        "{\"turn_id\":\"t1\",\"step\":1,\"calls\":[\
+         {\"name\":\"bash\",\"arguments\":{\"command\":\"echo 第一个\"},\"id\":\"c1\",\"function_name\":\"bash\"},\
+         {\"name\":\"bash\",\"arguments\":{\"command\":\"echo 第二个\"},\"id\":\"c2\",\"function_name\":\"bash\"}]}",
+    ));
+    harness.expect_ready(|app| app.state.waiting().is_some(), "应停在审批面板");
+    // 面板默认落在「确认执行」，再按一次下键才是「并且不再过问」。
+    harness.press(KeyCode::Down);
+    harness.press(KeyCode::Enter);
+
+    let response = harness.expect_response(14);
+    let observations = &response.result.expect("响应应带 result")["observations"];
+    assert_eq!(
+        observations.as_array().map(Vec::len),
+        Some(2),
+        "同名调用应一并放行：{observations}"
+    );
+    assert!(
+        harness.app.state.skip_approval_tools().contains("bash"),
+        "应当记下本会话不再过问 bash"
+    );
+
+    // 后续批次：bash 不再弹面板，直接执行。
+    harness.send(&tool_batch(
+        15,
+        "{\"turn_id\":\"t1\",\"step\":2,\"calls\":[{\"name\":\"bash\",\"arguments\":{\"command\":\"echo 第三个\"},\"id\":\"c3\",\"function_name\":\"bash\"}]}",
+    ));
+    harness.expect_response(15);
+    assert!(
+        harness.app.state.waiting().is_none(),
+        "同一会话里 bash 不该再弹面板：{:?}",
+        harness.app.state.waiting()
+    );
+
+    // 换一种 shell 工具照旧要问。
+    harness.send(&tool_batch(
+        16,
+        "{\"turn_id\":\"t1\",\"step\":3,\"calls\":[{\"name\":\"powershell\",\"arguments\":{\"command\":\"Get-ChildItem\"},\"id\":\"c4\",\"function_name\":\"powershell\"}]}",
+    ));
+    harness.expect_ready(
+        |app| matches!(app.state.waiting(), Some(Waiting::Approval(panel)) if panel.tool == "powershell"),
+        "powershell 仍应要求确认",
+    );
+    harness.press(KeyCode::Char('n'));
+    harness.expect_response(16);
+}
+
+/// 快捷键 `A` 与 `Y` 的分工：`Y` 只批准这一次，`A` 授权到本会话结束。
+#[test]
+fn approve_keys_differ_on_remembering_the_tool() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(&tool_batch(
+        17,
+        "{\"turn_id\":\"t1\",\"step\":1,\"calls\":[{\"name\":\"bash\",\"arguments\":{\"command\":\"echo 一次性\"},\"id\":\"c1\",\"function_name\":\"bash\"}]}",
+    ));
+    harness.expect_ready(|app| app.state.waiting().is_some(), "应停在审批面板");
+    harness.press(KeyCode::Char('y'));
+    harness.expect_response(17);
+    assert!(
+        harness.app.state.skip_approval_tools().is_empty(),
+        "Y 不该记下任何工具：{:?}",
+        harness.app.state.skip_approval_tools()
+    );
+
+    harness.send(&tool_batch(
+        18,
+        "{\"turn_id\":\"t1\",\"step\":2,\"calls\":[{\"name\":\"bash\",\"arguments\":{\"command\":\"echo 仍然要问\"},\"id\":\"c2\",\"function_name\":\"bash\"}]}",
+    ));
+    harness.expect_ready(|app| app.state.waiting().is_some(), "Y 之后同类工具仍要确认");
+    harness.press(KeyCode::Char('a'));
+    harness.expect_response(18);
+    assert!(harness.app.state.skip_approval_tools().contains("bash"));
+}
+
 #[test]
 fn denial_reports_denied_and_kernel_close_keeps_the_scene_for_a_keypress() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);

@@ -11,7 +11,7 @@ use ratatui::Frame;
 
 use super::fullscreen::terminal::theme;
 use super::{fit, wrap_display};
-use crate::host::Waiting;
+use crate::host::{self, Waiting};
 use crate::state::AppState;
 
 /// 状态行轮换的 Braille 帧，与终端 UI 既有实现一致。
@@ -50,7 +50,8 @@ fn tool_panel_height(state: &AppState, width: u16) -> u16 {
             let body = wrap_display(&panel.summary, width.saturating_sub(4).max(1) as usize)
                 .len()
                 .min(2);
-            (body + 4) as u16
+            // 工具名 + 摘要 + 三行选项 + 上下边框。
+            (body + 6) as u16
         }
         Some(Waiting::Question(panel)) => {
             let body = wrap_display(&panel.prompt, width.saturating_sub(4).max(1) as usize)
@@ -151,13 +152,26 @@ fn render_tool_panel(frame: &mut Frame, area: Rect, state: &AppState, width: u16
                     Span::styled(panel.tool.clone(), Style::new().fg(Color::Yellow)),
                 ]),
                 Line::raw(fit(&panel.summary, inner)),
-                Line::styled(
-                    "[Y] 批准    [N] 拒绝",
-                    Style::new()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                ),
             ];
+            // 三行选项：选中行前加 `▸`，批准项绿色、取消项红色。
+            for (index, option) in host::APPROVAL_OPTIONS.iter().enumerate() {
+                let selected = index == panel.selected;
+                let color = if index == host::APPROVAL_CANCEL {
+                    Color::Red
+                } else {
+                    Color::Green
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if selected { "▸ " } else { "  " },
+                        Style::new().fg(if selected { color } else { Color::DarkGray }),
+                    ),
+                    Span::styled(
+                        fit(option, inner.saturating_sub(2)),
+                        Style::new().fg(if selected { color } else { Color::Gray }),
+                    ),
+                ]));
+            }
             lines.truncate(area.height.saturating_sub(2) as usize);
             frame.render_widget(
                 Paragraph::new(lines).block(

@@ -1161,6 +1161,8 @@ fn context<'a>(
         todos,
         paused,
         tools,
+        // 内核侧的无人值守/连接器回合没有「不再过问」的界面：豁免集合只由 TUI 持有。
+        skip_approval: None,
     }
 }
 

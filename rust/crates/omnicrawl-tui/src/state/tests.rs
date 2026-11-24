@@ -1023,13 +1023,45 @@ mod tests {
     }
 
     #[test]
+    fn remember_no_more_asks_skips_same_tool_for_the_session() {
+        let mut state = state();
+        // 同一批里两个 bash：批准第一个时选了「不再过问」，第二个不该再弹面板。
+        let step = state.start_batch(Id::Number(31), vec![call("c1", "bash"), call("c2", "bash")]);
+        assert_eq!(step, host::BatchStep::Awaiting);
+        match state.decide_approval(true, true).expect("批准后应有下一步") {
+            host::BatchStep::Execute(jobs) => {
+                assert_eq!(jobs.len(), 2, "本批剩余的同名调用应一并放行：{jobs:?}")
+            }
+            other => panic!("批准后应派发执行，实际：{other:?}"),
+        }
+        assert!(state.skip_approval_tools().contains("bash"));
+        state.cancel_batch();
+
+        // 后续批次同样不再询问；换一个 shell 工具照旧要问。
+        let step = state.start_batch(Id::Number(32), vec![call("c3", "bash")]);
+        assert!(
+            matches!(step, host::BatchStep::Execute(_)),
+            "同一会话里 bash 不该再弹面板：{step:?}"
+        );
+        state.cancel_batch();
+        let step = state.start_batch(Id::Number(33), vec![call("c4", "powershell")]);
+        assert_eq!(step, host::BatchStep::Awaiting, "其他工具仍要人工确认");
+        state.cancel_batch();
+
+        // 换会话即作废：授权只对说出口的那个会话有效。
+        state.clear_skip_approval();
+        let step = state.start_batch(Id::Number(34), vec![call("c5", "bash")]);
+        assert_eq!(step, host::BatchStep::Awaiting, "换会话后 bash 重新要确认");
+    }
+
+    #[test]
     fn batch_waiting_for_approval_can_be_decided_through_state() {
         let mut state = state();
         let step = state.start_batch(Id::Number(9), vec![call("c1", "bash")]);
         assert_eq!(step, host::BatchStep::Awaiting, "manual 模式应停在审批");
         assert!(matches!(state.waiting(), Some(Waiting::Approval(_))));
 
-        let jobs = match state.decide_approval(true).expect("批准后应有下一步") {
+        let jobs = match state.decide_approval(true, false).expect("批准后应有下一步") {
             host::BatchStep::Execute(jobs) => jobs,
             other => panic!("批准后应派发执行，实际：{other:?}"),
         };

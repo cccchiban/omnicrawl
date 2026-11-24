@@ -46,7 +46,15 @@ pub struct BatchContext<'a> {
     pub paused: &'a mut bool,
     /// 工具事实：审批判定（尤其是 `review` 模式的删除意图识别）要用；没有时按空串处理。
     pub tools: Option<&'a dyn ToolFacts>,
+    /// 本会话已被用户「不再过问」的工具名：这些工具的调用跳过人工确认，直接执行。
+    ///
+    /// 只免除人工确认这一档；`Review` 归属（审查模型）不受影响——审查模型的门从未经过
+    /// 用户，用户也就无权替它放行。
+    pub skip_approval: Option<&'a SkipApprovalSet>,
 }
+
+/// 会话内「不再过问」的工具名集合，键是注册表里的工具名原样。
+pub type SkipApprovalSet = std::collections::HashSet<String>;
 
 /// 一次推进的结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +142,36 @@ impl QuestionPanel {
 pub struct ApprovalPanel {
     pub tool: String,
     pub summary: String,
+    /// 当前选中行（[`APPROVAL_OPTIONS`] 的下标）。
+    pub selected: usize,
+}
+
+/// 审批面板的三行选项，顺序即上下键的移动方向。
+///
+/// 「不再过问」只多给一层会话级授权：同类工具在本会话内不再询问，其他工具照旧。
+pub const APPROVAL_OPTIONS: [&str; 3] = ["确认执行", "确认执行，并且不再过问", "取消"];
+
+/// 选项下标：确认执行。
+pub const APPROVAL_EXECUTE: usize = 0;
+/// 选项下标：确认执行，并且不再过问。
+pub const APPROVAL_EXECUTE_ALWAYS: usize = 1;
+/// 选项下标：取消。
+pub const APPROVAL_CANCEL: usize = 2;
+
+impl ApprovalPanel {
+    pub fn new(tool: String, summary: String) -> Self {
+        Self {
+            tool,
+            summary,
+            selected: APPROVAL_EXECUTE,
+        }
+    }
+
+    /// 上下键移动选择，循环。
+    pub fn select(&mut self, delta: isize) {
+        let count = APPROVAL_OPTIONS.len() as isize;
+        self.selected = ((self.selected as isize + delta).rem_euclid(count)) as usize;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +246,13 @@ impl PendingBatch {
         }
     }
 
+    /// 上下键移动待决审批的选择；没有待决审批时无操作。
+    pub fn select_approval(&mut self, delta: isize) {
+        if let Some(Waiting::Approval(panel)) = self.waiting.as_mut() {
+            panel.select(delta);
+        }
+    }
+
     /// 推进到下一个等待点、执行点或整批结束。
     pub fn advance(&mut self, ctx: &mut BatchContext<'_>) -> BatchStep {
         while let Some(call) = self.calls.get(self.cursor).cloned() {
@@ -230,10 +275,10 @@ impl PendingBatch {
                     return BatchStep::Awaiting;
                 }
                 _ if needs_confirmation(ctx, &call) => {
-                    self.waiting = Some(Waiting::Approval(ApprovalPanel {
-                        tool: call.name.clone(),
-                        summary: summarize_arguments(&call.arguments),
-                    }));
+                    self.waiting = Some(Waiting::Approval(ApprovalPanel::new(
+                        call.name.clone(),
+                        summarize_arguments(&call.arguments),
+                    )));
                     return BatchStep::Awaiting;
                 }
                 _ => self.cursor += 1,
@@ -409,8 +454,20 @@ pub fn approval_decision(ctx: &BatchContext<'_>, call: &ToolCall) -> ApprovalDec
 }
 
 /// 是否需要人工确认：只有 `Confirm` 才停等用户（`review` 不弹面板）。
+///
+/// 本会话已被用户「不再过问」的同名工具直接放行——用户已经在同类调用上表过态，
+/// 再问一遍就是重复打扰。
 pub fn needs_confirmation(ctx: &BatchContext<'_>, call: &ToolCall) -> bool {
+    if is_skipped(ctx, &call.name) {
+        return false;
+    }
     matches!(approval_decision(ctx, call), ApprovalDecision::Confirm)
+}
+
+/// 该工具是否在本会话的「不再过问」名单里。
+pub fn is_skipped(ctx: &BatchContext<'_>, tool: &str) -> bool {
+    ctx.skip_approval
+        .is_some_and(|skipped| skipped.contains(tool))
 }
 
 pub fn is_self_hosted(tool: &str) -> bool {
@@ -622,7 +679,47 @@ mod tests {
             todos,
             paused,
             tools: None,
+            skip_approval: None,
         }
+    }
+
+    #[test]
+    fn skipped_tools_never_wait_for_confirmation() {
+        let mut todos = Vec::new();
+        let mut paused = false;
+        let mut skipped = SkipApprovalSet::new();
+        skipped.insert("bash".to_string());
+        // manual 模式下 shell 命令本来要弹面板；进了「不再过问」名单就直接执行。
+        let mut ctx = BatchContext {
+            approval: ApprovalMode::Manual,
+            todos: &mut todos,
+            paused: &mut paused,
+            tools: None,
+            skip_approval: Some(&skipped),
+        };
+        let shell = call("bash", json!({"command": "pytest -q"}));
+        assert!(!needs_confirmation(&ctx, &shell));
+        let mut batch = PendingBatch::new(Id::Number(40), vec![shell.clone()]);
+        assert_eq!(batch.advance(&mut ctx), BatchStep::Execute(vec![(0, shell)]));
+
+        // 名单只覆盖同名工具：别的 shell 工具照旧要确认。
+        let other = call("powershell", json!({"command": "Get-ChildItem"}));
+        assert!(needs_confirmation(&ctx, &other));
+
+        // 免除的只是人工确认这一档：`review` 模式下需审查的调用仍然归属审查模型。
+        let risky = call("bash", json!({"command": "rm -rf /tmp/out"}));
+        let review_ctx = BatchContext {
+            approval: ApprovalMode::Review,
+            todos: &mut todos,
+            paused: &mut paused,
+            tools: None,
+            skip_approval: Some(&skipped),
+        };
+        assert_eq!(
+            approval_decision(&review_ctx, &risky),
+            ApprovalDecision::Review,
+            "跳过确认不等于绕过审查模型"
+        );
     }
 
     #[test]

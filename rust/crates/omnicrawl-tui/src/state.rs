@@ -170,6 +170,12 @@ pub struct AppState {
     batch: Option<host::PendingBatch>,
     /// 当前批次是否属于子代理回合：为真时不在主会话挂工具卡（只回填结果）。
     batch_quiet: bool,
+    /// 本会话已「不再过问」的工具名：用户对同名工具的人工确认一次性授权到会话结束。
+    ///
+    /// 只覆盖人工确认这一档（见 `host::needs_confirmation`）；回合之间不清，换会话
+    /// （`/new`、`/archive`、`/resume`、会话列表切换）时随之作废——授权是用户对
+    /// 「这个会话里这类工具」说的，不是对某一次调用说的。
+    skip_approval: host::SkipApprovalSet,
     /// 底部单行 HUD 的整行文本（渲染只读；由 [`AppState::refresh_hud`] 按最新遥测重建）。
     pub hud_text: StyledText,
     /// 底栏工作区名是否被鼠标悬停（悬停时那段染成淡黄色，点击打开仓库文件夹）。
@@ -273,6 +279,7 @@ impl AppState {
             subagent_window_exe: None,
             batch: None,
             batch_quiet: false,
+            skip_approval: host::SkipApprovalSet::new(),
             hud_text: StyledText::new(),
             hud_workspace_hover: false,
             hud_workspace_area: std::cell::Cell::new(None),

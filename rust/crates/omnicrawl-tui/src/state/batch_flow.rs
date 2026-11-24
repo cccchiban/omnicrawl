@@ -64,6 +64,14 @@ impl AppState {
             self.touch_composer();
         }
 
+        /// 上下键移动待决审批的选择：三行选项（确认执行 / 不再过问 / 取消）。
+        pub fn select_approval(&mut self, delta: isize) {
+            if let Some(batch) = self.batch.as_mut() {
+                batch.select_approval(delta);
+            }
+            self.touch_composer();
+        }
+
         /// 回答待决提问；返回下一步（派发执行或整批结束）。
         pub fn answer_question(&mut self, answer: String) -> Option<host::BatchStep> {
             let mut batch = self.batch.take()?;
@@ -79,7 +87,20 @@ impl AppState {
         }
 
         /// 审批待决工具调用；返回下一步（派发执行或整批结束）。
-        pub fn decide_approval(&mut self, approved: bool) -> Option<host::BatchStep> {
+        ///
+        /// `remember` 为真时把当前工具记进本会话的「不再过问」名单：本批剩余的同名调用
+        /// 与后续批次都不再弹面板。名单先记再推进，因为 `decide` 会一口气推进到下一个
+        /// 等待点——里面可能已经排着同名调用。
+        pub fn decide_approval(
+            &mut self,
+            approved: bool,
+            remember: bool,
+        ) -> Option<host::BatchStep> {
+            if approved && remember {
+                if let Some(call) = self.pending_approval_call() {
+                    self.skip_approval.insert(call.name);
+                }
+            }
             let mut batch = self.batch.take()?;
             let step = {
                 let mut ctx = self.context();
@@ -89,6 +110,18 @@ impl AppState {
             self.batch = Some(batch);
             self.touch_composer();
             Some(step)
+        }
+
+        /// 本会话已「不再过问」的工具名（供界面提示与测试断言）。
+        pub fn skip_approval_tools(&self) -> &host::SkipApprovalSet {
+            &self.skip_approval
+        }
+
+        /// 换会话：把「不再过问」的授权一并作废。
+        ///
+        /// 授权说的是「这个会话里这类工具」，换一份会话就是另一件事。
+        pub fn clear_skip_approval(&mut self) {
+            self.skip_approval.clear();
         }
 
         /// 执行层回填一个调用的结果；返回是否整批就绪。
@@ -283,6 +316,7 @@ impl AppState {
                 paused: &mut self.paused,
                 // TUI 侧没有宿主工具事实表可给：删除意图识别按无事实处理。
                 tools: None,
+                skip_approval: Some(&self.skip_approval),
             }
         }
 

@@ -281,8 +281,10 @@ impl App {
 
     /// 会话 id 变了之后只更新工具表里的会话级记忆绑定。
     ///
-    /// 保留旧任务的会话绑定，不重建 MCP 与执行环境。
+    /// 保留旧任务的会话绑定，不重建 MCP 与执行环境。「不再过问」的工具名单属于上一个
+    /// 会话，换会话即作废（授权只对说出口的那个会话有效）。
     pub(super) fn retarget_session_memory(&mut self) {
+        self.state.clear_skip_approval();
         self.sync_session_memory();
         self.registry = Arc::new(self.registry.for_session(self.registry_options.memory.session_id.clone()));
     }
