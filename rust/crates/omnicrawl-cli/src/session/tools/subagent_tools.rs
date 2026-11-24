@@ -128,6 +128,7 @@ pub(crate) fn run_computer_use_loop(
         stream: true,
         runtime: None,
         model_turns: 0,
+        overflow_relieved: false,
     };
     let mut tools = BackgroundTools {
         conn: Rc::clone(&conn),

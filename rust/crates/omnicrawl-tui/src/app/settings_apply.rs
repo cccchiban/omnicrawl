@@ -240,7 +240,8 @@ impl App {
             .map(|settings| settings.compaction_percent())
             .unwrap_or(80);
         let environment = ConfigEnvironment::from_process();
-        let llm = load_llm_config(&environment)
+        // 上下文窗口与凭据无关：缺 Key 时也要能保存，否则面板虽然打开了，改窗口仍会卡住。
+        let llm = load_llm_config_allow_missing_api_key(&environment)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         let previous = effective_context_window(self.options.context_window_tokens, &llm);
         let path = save_context_window_tokens(

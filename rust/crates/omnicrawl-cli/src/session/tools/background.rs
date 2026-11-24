@@ -26,6 +26,7 @@ pub(crate) fn run_background_task(
         stream: stream_conversation,
         runtime: None,
         model_turns: 0,
+        overflow_relieved: false,
     };
     let mut tools = BackgroundTools {
         conn: Rc::clone(conn),
@@ -191,6 +192,8 @@ pub(crate) struct BackgroundModelPort {
     pub(super) runtime: Option<Box<dyn ModelRuntime>>,
     /// 已经发出的模型请求数：预算超限与取消路径也要如实上报，因此在这里自己数。
     pub model_turns: usize,
+    /// 是否已经因上下文超限降载过一次：只降载一次，避免把任务上下文也裁干净。
+    pub(super) overflow_relieved: bool,
 }
 
 impl ReplySource for BackgroundModelPort {
@@ -208,6 +211,13 @@ impl ReplySource for BackgroundModelPort {
         let mut attempt = 0;
         // 重试前的 call_id 轮换开关：只有网关明确判过「重复提交相同 call_id」才打开。
         let mut rotate_ids = false;
+        // 请求前的预算检查：达到声明窗口的触发比例就先裁掉最旧的工具批次。
+        //
+        // 子代理没有会话转录，压缩只能就地做；窗口取 `child_context_window` 折算过的值，
+        // 因此子模型窗口更小时这里会跟着收紧。窗口未声明（<= 0）时跳过。
+        if let Some(notice) = self.trim_before_request(messages) {
+            self.notify_retry(notice);
+        }
 
         loop {
             // 轮换只发生在重试路径：网关的重复提交判定按 id 认，原样再发等于再犯一次。
@@ -296,7 +306,7 @@ impl ReplySource for BackgroundModelPort {
                     }
                     attempt += 1;
                     // 与主代理同一条策略：任何非取消的请求失败都先退避重试；上下文超限例外，
-                    // 它要走压缩恢复路径，不能在这里耗重试次数。
+                    // 它要先降载再重发——原样重发只会被同一个上限再拒一次。
                     let overflow = error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE);
                     let retryable = !overflow;
                     // 与主回合同口径：中继账号池/工具定义类拒绝换连接重试，退避拉长。
@@ -304,6 +314,20 @@ impl ReplySource for BackgroundModelPort {
                         omnicrawl_llm::is_relay_account_or_tool_definition_error(&error.message);
                     if relay_rejected {
                         self.runtime = None;
+                    }
+                    // 上游把话说死了：先就地裁掉一半可裁部分，腾出空间再重发一次。
+                    //
+                    // 子代理没有会话转录可归档，也没有摘要模型可用，因此这里的降载是
+                    // 「丢掉最旧的观察」——比直接失败好，也比让子代理带着半截任务重来好。
+                    // 只降载一次：第二次仍超限说明窗口声明本身偏大，继续裁只会把任务
+                    // 上下文也删干净，那时如实报错比装作还能跑更有用。
+                    if overflow && !self.overflow_relieved {
+                        if let Some(notice) = self.relieve_after_overflow(messages) {
+                            self.overflow_relieved = true;
+                            attempt = 0;
+                            self.notify_retry(notice);
+                            continue;
+                        }
                     }
                     if retryable && attempt < limit {
                         // 已经推进子代理窗口的半截流要先撤销，否则重试会叠在旧文本上。
@@ -341,6 +365,63 @@ impl ReplySource for BackgroundModelPort {
 }
 
 impl BackgroundModelPort {
+    /// 请求前的预算检查：达到窗口触发比例就裁掉最旧的工具批次。
+    ///
+    /// 返回一句可直接外发的提示（真的裁了才会有），没裁返回 `None`。
+    fn trim_before_request(&self, messages: &mut Vec<Value>) -> Option<String> {
+        let trigger = child_budget::trigger_tokens(
+            self.config.context_window_tokens,
+            child_budget::DEFAULT_TRIGGER_PERCENT,
+        );
+        if trigger <= 0 {
+            return None;
+        }
+        let outcome = child_budget::trim_to_budget(
+            messages,
+            &self.config.system_prompt,
+            &self.config.context_messages,
+            &self.config.tools,
+            trigger,
+            child_budget::DEFAULT_KEEP_RECENT_TURNS,
+        );
+        if !outcome.trimmed() {
+            return None;
+        }
+        let before = messages.len();
+        *messages = outcome.messages;
+        Some(format!(
+            "子代理上下文已达窗口的 {}%，已裁掉最旧的 {} 条观察（{} → {} 条）",
+            child_budget::DEFAULT_TRIGGER_PERCENT as i64,
+            outcome.dropped,
+            before,
+            messages.len()
+        ))
+    }
+
+    /// 上游回报上下文超限后的降载：裁掉一半可裁部分，返回提示。
+    ///
+    /// 已经无内容可裁时返回 `None`，由调用方按原样失败——此时再裁只剩任务指令，
+    /// 继续下去等于让子代理空手重来。
+    fn relieve_after_overflow(&self, messages: &mut Vec<Value>) -> Option<String> {
+        let outcome = child_budget::reduce_after_overflow(
+            messages,
+            &self.config.system_prompt,
+            &self.config.context_messages,
+            &self.config.tools,
+        );
+        if !outcome.trimmed() {
+            return None;
+        }
+        let before = messages.len();
+        *messages = outcome.messages;
+        Some(format!(
+            "上游回报上下文超限，已裁掉 {} 条最旧观察后重发（{} → {} 条）",
+            outcome.dropped,
+            before,
+            messages.len()
+        ))
+    }
+
     /// `model.request.error`：一次子代理模型请求以错误终结时的通知。
     pub(crate) fn notify_model_error(&self, message: &str) {
         self.conn

@@ -114,6 +114,9 @@ impl ModelStore {
     }
 
     /// 先按 key、再按别名解析；别名撞车时报错而不是随便挑一个。
+    ///
+    /// 精确匹配全部落空后，再按折叠后的名字比对 key、别名与 model_id，
+    /// 让 `deepseek-v4.1` / `deepseek-v-4-1` / `DeepSeek_V4_1` 指向同一个条目。
     pub fn resolve_alias(&self, token: &str) -> Result<Option<&CustomModelRecord>, ConfigError> {
         let needle = token.trim();
         if needle.is_empty() {
@@ -137,8 +140,47 @@ impl ModelStore {
                 keys.join(", ")
             )));
         }
+        self.resolve_folded(needle)
+    }
+
+    /// 折叠比对：小写并去掉全部非字母数字字符，忽略分隔符与大小写差异。
+    fn resolve_folded(&self, needle: &str) -> Result<Option<&CustomModelRecord>, ConfigError> {
+        let target = fold_model_name(needle);
+        if target.is_empty() {
+            return Ok(None);
+        }
+        let matches: Vec<&CustomModelRecord> = self
+            .models
+            .iter()
+            .filter(|item| {
+                fold_model_name(&item.key) == target
+                    || fold_model_name(&item.model_id) == target
+                    || item
+                        .aliases
+                        .iter()
+                        .any(|alias| fold_model_name(alias) == target)
+            })
+            .collect();
+        if matches.len() == 1 {
+            return Ok(Some(matches[0]));
+        }
+        if matches.len() > 1 {
+            let keys: Vec<&str> = matches.iter().map(|item| item.key.as_str()).collect();
+            return Err(ConfigError::new(format!(
+                "{needle} 模糊匹配到多个模型：{}",
+                keys.join(", ")
+            )));
+        }
         Ok(None)
     }
+}
+
+/// 折叠模型名用于模糊比对：小写后丢弃全部非字母数字字符。
+pub fn fold_model_name(name: &str) -> String {
+    name.chars()
+        .filter(|item| item.is_ascii_alphanumeric())
+        .map(|item| item.to_ascii_lowercase())
+        .collect()
 }
 
 /// 读取模型目录；文件不存在时返回只有版本号的空目录。
@@ -552,4 +594,101 @@ pub fn provider_from_protocol(protocol: &str) -> Result<Provider, ConfigError> {
     Err(ConfigError::new(format!(
         "无法从 protocol 推断 provider：{protocol}"
     )))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(key: &str, model_id: &str, aliases: &[&str]) -> CustomModelRecord {
+        CustomModelRecord {
+            key: key.to_string(),
+            display_name: key.to_string(),
+            profile: "p".to_string(),
+            model_id: model_id.to_string(),
+            protocol: Protocol::OpenaiChatCompletions,
+            enabled: true,
+            aliases: aliases.iter().map(|item| item.to_string()).collect(),
+            description: String::new(),
+            tags: Vec::new(),
+            context_window_tokens: 0,
+            max_output_tokens: 0,
+            temperature: None,
+            native_vision: None,
+            capabilities: ModelCapabilities::default(),
+            provider_options: Table::new(),
+            sort_order: 0,
+        }
+    }
+
+    fn store(models: Vec<CustomModelRecord>) -> ModelStore {
+        ModelStore {
+            version: 1,
+            models,
+            path: None,
+        }
+    }
+
+    fn resolved(store: &ModelStore, token: &str) -> Option<String> {
+        store
+            .resolve_alias(token)
+            .expect("不应报错")
+            .map(|item| item.key.clone())
+    }
+
+    #[test]
+    fn folded_names_ignore_separators_and_case() {
+        let catalog = store(vec![record("ds41", "deepseek-v4.1", &[])]);
+        for token in [
+            "deepseek-v4.1",
+            "deepseek-v-4-1",
+            "DeepSeek_V4_1",
+            "deepseekv41",
+            "  DEEPSEEK.V4.1  ",
+        ] {
+            assert_eq!(
+                resolved(&catalog, token).as_deref(),
+                Some("ds41"),
+                "token {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn folded_match_covers_key_and_aliases() {
+        let catalog = store(vec![record("my-key.v1", "m", &["alt.name"])]);
+        assert_eq!(resolved(&catalog, "mykeyv1").as_deref(), Some("my-key.v1"));
+        assert_eq!(resolved(&catalog, "alt-name").as_deref(), Some("my-key.v1"));
+        assert_eq!(resolved(&catalog, "ALT_NAME").as_deref(), Some("my-key.v1"));
+    }
+
+    #[test]
+    fn exact_match_wins_over_folded() {
+        let catalog = store(vec![
+            record("target", "m1", &[]),
+            record("t-ar-get", "m2", &[]),
+        ]);
+        assert_eq!(resolved(&catalog, "target").as_deref(), Some("target"));
+        assert_eq!(resolved(&catalog, "t-ar-get").as_deref(), Some("t-ar-get"));
+        // 两者折叠后都是 target，精确落空时应报歧义而不是随便挑。
+        let error = catalog.resolve_alias("TARGET").expect_err("应报歧义");
+        assert_eq!(
+            error.message(),
+            "TARGET 模糊匹配到多个模型：target, t-ar-get"
+        );
+    }
+
+    #[test]
+    fn folded_miss_returns_none() {
+        let catalog = store(vec![record("ds41", "deepseek-v4.1", &[])]);
+        assert_eq!(resolved(&catalog, "deepseek-v4-1-flash"), None);
+        assert_eq!(resolved(&catalog, "---"), None);
+        assert_eq!(resolved(&catalog, "   "), None);
+    }
+
+    #[test]
+    fn fold_model_name_drops_non_alphanumerics() {
+        assert_eq!(fold_model_name("DeepSeek-V4.1"), "deepseekv41");
+        assert_eq!(fold_model_name("a/b:c@d"), "abcd");
+        assert_eq!(fold_model_name("---"), "");
+    }
 }

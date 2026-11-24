@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::runtime::{get_section, load_config_data, save_config_data, ConfigEnvironment};
 use crate::error::ConfigError;
-use crate::models::llm_multi::{is_multi_model_section, load_multi_model_llm_config};
+use crate::models::llm_multi::{is_multi_model_section, load_multi_model_llm_config_with};
 use crate::toml::{Table, Value};
 
 pub const DEFAULT_THINKING_TYPE: &str = "disabled";
@@ -146,7 +146,16 @@ impl LlmConfig {
     }
 
     /// Python `LLMConfig.__post_init__`：就地归一化并校验。
-    pub fn normalize(mut self) -> Result<Self, ConfigError> {
+    pub fn normalize(self) -> Result<Self, ConfigError> {
+        self.normalize_with(true)
+    }
+
+    /// 归一化与校验；`require_api_key` 为假时只放宽「凭据必须存在」这一条。
+    ///
+    /// 设置面板本来就用于补写 API Key：若那里也要求凭据齐全，用户会陷入
+    /// 「没有 Key 打不开设置、打不开设置就配不了 Key」的死锁。其余字段（模型 id、
+    /// 窗口、推理档位等）仍然照常校验，避免把真正损坏的配置当成可用视图。
+    pub(crate) fn normalize_with(mut self, require_api_key: bool) -> Result<Self, ConfigError> {
         self.api_key = self.api_key.trim().to_string();
         self.base_url = self.base_url.trim().to_string();
         self.model = self.model.trim().to_string();
@@ -167,14 +176,16 @@ impl LlmConfig {
             ));
         }
         if self.model_source == "legacy" {
-            require_non_empty("api_key", &self.api_key)?;
+            if require_api_key {
+                require_non_empty("api_key", &self.api_key)?;
+            }
             require_non_empty("base_url", &self.base_url)?;
             require_non_empty("model", &self.model)?;
         } else {
             if self.model.trim().is_empty() {
                 return Err(ConfigError::new("缺少当前模型 model_id。"));
             }
-            if self.api_key.trim().is_empty() {
+            if require_api_key && self.api_key.trim().is_empty() {
                 return Err(ConfigError::new(
                     "缺少 API Key，请在 Profile 中配置 api_key。",
                 ));
@@ -248,13 +259,35 @@ pub fn normalize_reasoning_effort(value: &str) -> Result<&'static str, ConfigErr
 
 /// 从本地配置文件创建当前 LLM 运行视图。
 pub fn load_llm_config(env: &ConfigEnvironment) -> Result<LlmConfig, ConfigError> {
+    load_llm_config_with(env, true)
+}
+
+/// 从本地配置文件读取模型视图，但允许当前 Profile 的 `api_key` 为空。
+///
+/// 只给「读配置用于展示/回填」的入口使用（设置面板）：那里正是补写 Key 的地方，
+/// 不能因为缺凭据就整页拒绝打开。运行期仍走 [`load_llm_config`] 的严格版本。
+pub fn load_llm_config_allow_missing_api_key(
+    env: &ConfigEnvironment,
+) -> Result<LlmConfig, ConfigError> {
+    load_llm_config_with(env, false)
+}
+
+fn load_llm_config_with(
+    env: &ConfigEnvironment,
+    require_api_key: bool,
+) -> Result<LlmConfig, ConfigError> {
     let data = load_config_data(env, None)?;
     let section = get_section(&data, "llm")?;
     if is_multi_model_section(&section) {
-        return load_multi_model_llm_config(env, &section);
+        return load_multi_model_llm_config_with(env, &section, require_api_key);
     }
+    let api_key = if require_api_key {
+        read_required_config_text(&section, "api_key")?
+    } else {
+        read_optional_config_text(&section, "api_key", "")?
+    };
     LlmConfig {
-        api_key: read_required_config_text(&section, "api_key")?,
+        api_key,
         base_url: read_required_config_text(&section, "base_url")?,
         model: read_required_config_text(&section, "model")?,
         thinking_type: read_optional_config_text(&section, "thinking_type", DEFAULT_THINKING_TYPE)?,
@@ -270,7 +303,7 @@ pub fn load_llm_config(env: &ConfigEnvironment) -> Result<LlmConfig, ConfigError
         protocol: "openai_chat_completions".to_string(),
         ..LlmConfig::with_environment(env)
     }
-    .normalize()
+    .normalize_with(require_api_key)
 }
 
 /// 把推理强度写回配置文件，并同步 `thinking_type`。

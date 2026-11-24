@@ -19,6 +19,14 @@ use omnicrawl_ipc::bridge::KernelModelConfig;
 use omnicrawl_session::redaction::redact_sensitive_text;
 use serde_json::{json, Map, Value};
 
+/// 子回合实际使用的上下文窗口：该角色声明了窗口就用它，否则沿用父会话。
+pub fn child_context_window(config: &SubAgentConfig, agent_type: &str, parent_window: i64) -> i64 {
+    match config.context_window_overrides.get(agent_type).copied() {
+        Some(window) if window > 0 => window,
+        _ => parent_window,
+    }
+}
+
 /// 一个已通过校验、权限已收窄的子任务。
 #[derive(Debug, Clone)]
 pub struct PreparedTask {
@@ -212,6 +220,13 @@ impl SubAgentRuntime {
                 config.model = selection.clone();
             }
         }
+        // 窗口覆盖与模型覆盖各自独立：换模型不一定换窗口（同一模型可配不同上限），
+        // 只声明窗口时子代理仍用父模型、但按声明的窗口折算压缩阈值。
+        config.context_window_tokens = child_context_window(
+            &self.config,
+            &task.agent_type,
+            model_config.context_window_tokens,
+        );
         config
     }
 
@@ -263,4 +278,60 @@ impl SubAgentRuntime {
 fn batch_suffix(batch_id: &str) -> String {
     let suffix = batch_id.strip_prefix("batch-").unwrap_or(batch_id);
     suffix.chars().take(10).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(window: Option<i64>) -> SubAgentConfig {
+        let mut config = SubAgentConfig::default();
+        if let Some(value) = window {
+            config
+                .context_window_overrides
+                .insert("explore".to_string(), value);
+        }
+        config
+    }
+
+    /// 父会话 1M、子代理声明 32K：必须按 32K 走。
+    ///
+    /// 留父会话的大值会让压缩阈值落在 800K，而子模型远早于该点就撞上游硬上限——
+    /// 这条正是「子代理换小窗口模型后请求直接失败」的成因。
+    #[test]
+    fn declared_window_replaces_parent() {
+        assert_eq!(
+            child_context_window(&config_with(Some(32_000)), "explore", 1_024_000),
+            32_000
+        );
+        assert_eq!(
+            child_context_window(&config_with(Some(1_000_000)), "explore", 128_000),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn absent_role_inherits_parent() {
+        assert_eq!(
+            child_context_window(&config_with(None), "explore", 1_024_000),
+            1_024_000
+        );
+        assert_eq!(
+            child_context_window(&config_with(Some(32_000)), "plan", 1_024_000),
+            1_024_000
+        );
+    }
+
+    /// 解析层已拒绝非正数，运行时仍要守住：0 或负数不能把子代理的窗口抹成 0。
+    #[test]
+    fn non_positive_never_wins() {
+        assert_eq!(
+            child_context_window(&config_with(Some(0)), "explore", 1_024_000),
+            1_024_000
+        );
+        assert_eq!(
+            child_context_window(&config_with(Some(-1)), "explore", 1_024_000),
+            1_024_000
+        );
+    }
 }

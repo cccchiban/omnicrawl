@@ -159,6 +159,19 @@ struct LlmConfigGuard {
 
 impl LlmConfigGuard {
     fn install() -> Self {
+        Self::install_with(
+            "[llm]\napi_key = \"test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
+        )
+    }
+
+    /// 只给先写一份「没有 api_key」的模型配置：设置面板本身就是补 Key 的地方。
+    fn install_without_api_key() -> Self {
+        Self::install_with(
+            "[llm]\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
+        )
+    }
+
+    fn install_with(contents: &str) -> Self {
         let lock = USER_CONFIG_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -167,10 +180,7 @@ impl LlmConfigGuard {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(
-            &path,
-            "[llm]\napi_key = \"test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"stub-model\"\n",
-        );
+        let _ = std::fs::write(&path, contents);
         Self {
             path,
             previous,
@@ -1428,6 +1438,30 @@ fn slash_prefix_opens_menu_and_tab_completes() {
             .all(|frame| frame.method() != Some("turn.submit")),
         "斜杠命令不应变成一轮对话"
     );
+}
+
+/// 缺 API Key 时设置面板仍须打开：用户正是在这里补写凭据。
+#[test]
+fn settings_panel_opens_without_api_key() {
+    let config = LlmConfigGuard::install_without_api_key();
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    type_text(&mut harness, "/settings");
+    harness.press(KeyCode::Enter);
+
+    assert!(
+        harness.app.settings.is_some(),
+        "没有 API Key 时设置面板也应打开，否则用户无处补写凭据"
+    );
+    assert!(
+        notices(&harness)
+            .iter()
+            .all(|text| !text.contains("设置面板打不开")),
+        "不应提示面板打不开：{:?}",
+        notices(&harness)
+    );
+    drop(config);
 }
 
 #[test]

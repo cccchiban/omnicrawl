@@ -25,14 +25,22 @@ result_summary_chars = 6000
 # 单独设置每个子代理使用的模型；key 必须与 Agent 定义名一致（如 explore/plan/verify）。
 # model 支持：models.toml key/alias、profile/model_id 或裸 model_id；
 # 缺省或写 inherit 表示沿用父模型（与任务级 model=inherit 语义一致）。
+#
+# context_window_tokens 声明该子模型的上下文窗口，缺省沿用父会话的窗口。
+# 子代理换用窗口更小的模型时必须写这一项：压缩阈值由窗口折算，留父会话的大值
+# 会让触发点落在子模型的硬上限之后，请求会直接撞上游报错而不是先压缩。
 [subagents.models.explore]
 # model = "default-chat"
+# context_window_tokens = 128000
 
 [subagents.models.plan]
 # model = "default-chat"
+# context_window_tokens = 128000
 
 [subagents.models.verify]
 # model = "default-chat"
+# context_window_tokens = 128000
 
 [subagents.models.general-purpose]
 # model = "default-chat"
+# context_window_tokens = 128000

@@ -88,8 +88,8 @@ use omnicrawl_config::models::channels::{
     ChannelConfig, ChannelConfiguration,
 };
 use omnicrawl_config::models::llm::{
-    load_llm_config, normalize_reasoning_effort, save_active_model_ref, save_reasoning_effort,
-    ActiveModelRef, LlmConfig,
+    load_llm_config, load_llm_config_allow_missing_api_key, normalize_reasoning_effort,
+    save_active_model_ref, save_reasoning_effort, ActiveModelRef, LlmConfig,
 };
 use omnicrawl_config::models::llm_multi::apply_model_selection;
 use omnicrawl_config::models::model_store::load_model_store;

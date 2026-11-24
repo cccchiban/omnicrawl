@@ -249,6 +249,15 @@ pub fn load_multi_model_llm_config(
     env: &ConfigEnvironment,
     llm_section: &Table,
 ) -> Result<LlmConfig, ConfigError> {
+    load_multi_model_llm_config_with(env, llm_section, true)
+}
+
+/// 同上，但允许当前 Profile 没有 `api_key`（设置面板回填用）。
+pub(crate) fn load_multi_model_llm_config_with(
+    env: &ConfigEnvironment,
+    llm_section: &Table,
+    require_api_key: bool,
+) -> Result<LlmConfig, ConfigError> {
     let defaults = loose_section(llm_section, "defaults");
     let profiles_raw = loose_section(llm_section, "profiles");
     if profiles_raw.is_empty() {
@@ -333,7 +342,7 @@ pub fn load_multi_model_llm_config(
         provider_options: state.provider_options,
         ..LlmConfig::with_environment(env)
     }
-    .normalize()
+    .normalize_with(require_api_key)
 }
 
 /// 解析 `llm.profiles` 为 Profile 表（跳过禁用项与缺 Provider 项）。

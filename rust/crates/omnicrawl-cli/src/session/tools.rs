@@ -511,6 +511,7 @@ impl RemoteTools {
 }
 
 mod background;
+mod child_budget;
 pub(super) mod subagent_tools;
 mod task_execution;
 

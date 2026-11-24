@@ -46,7 +46,9 @@ impl App {
     /// 记忆开关取运行期现值（`registry_options.memory_enabled`）。
     pub(super) fn settings_values(&self) -> Result<SettingsValues, String> {
         let environment = ConfigEnvironment::from_process();
-        let llm = load_llm_config(&environment)
+        // 面板本来就是补写凭据的地方：缺 API Key 时也要能打开，否则用户会陷入
+        // 「没 Key 打不开设置、打不开设置就配不了 Key」的死锁。其余非法配置仍然报错。
+        let llm = load_llm_config_allow_missing_api_key(&environment)
             .map_err(|error| format!("读取模型配置失败：{}", error.message()))?;
         let context_window_tokens =
             effective_context_window(self.options.context_window_tokens, &llm);

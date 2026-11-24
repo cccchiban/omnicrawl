@@ -73,6 +73,11 @@ pub struct SubAgentConfig {
     pub result_summary_chars: i64,
     /// 按子代理角色名单独指定模型；空字符串或 `inherit` 表示不覆盖。
     pub model_overrides: BTreeMap<String, String>,
+    /// 按子代理角色名单独声明该子模型的上下文窗口；缺项表示沿用父会话的窗口。
+    ///
+    /// 子代理换用窗口更小的模型时，父会话的窗口既不适用、也不能替它兜底：
+    /// 压缩阈值按窗口折算，留大值会让触发点落在子模型的硬上限之后。
+    pub context_window_overrides: BTreeMap<String, i64>,
 }
 
 impl Default for SubAgentConfig {
@@ -92,6 +97,7 @@ impl Default for SubAgentConfig {
             task_retention_minutes: 60,
             result_summary_chars: 6000,
             model_overrides: BTreeMap::new(),
+            context_window_overrides: BTreeMap::new(),
         }
     }
 }
@@ -192,6 +198,7 @@ pub fn load_subagent_config(
         task_retention_minutes: int_field(&section, "task_retention_minutes", 60, 1, 10_080)?,
         result_summary_chars: int_field(&section, "result_summary_chars", 6000, 100, 50_000)?,
         model_overrides: parse_model_overrides(&section)?,
+        context_window_overrides: parse_context_window_overrides(&section)?,
     };
 
     Ok(config)
@@ -229,6 +236,52 @@ fn parse_model_overrides(section: &toml::Table) -> Result<BTreeMap<String, Strin
             continue;
         }
         overrides.insert(role, model);
+    }
+    Ok(overrides)
+}
+
+/// 读取每个角色可选的 `context_window_tokens`。
+///
+/// 只声明窗口、不声明 `model` 是合法用法（子代理沿用父模型但按更保守的上限走），
+/// 因此这一项独立解析，不跟着 `model_overrides` 走。
+fn parse_context_window_overrides(
+    section: &toml::Table,
+) -> Result<BTreeMap<String, i64>, ConfigError> {
+    let Some(raw_models) = section.get("models") else {
+        return Ok(BTreeMap::new());
+    };
+    if raw_models.is_str() && raw_models.as_str().unwrap_or_default().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(entries) = raw_models.as_table() else {
+        return Err(ConfigError::new("配置项 subagents.models 必须是对象。"));
+    };
+    let mut overrides = BTreeMap::new();
+    for (role_name, raw_entry) in entries {
+        let role = role_name.trim().to_lowercase();
+        if role.is_empty() {
+            continue;
+        }
+        // 条目类型错误已由 parse_model_overrides 报出，这里跳过而不是重复报同一个错。
+        let Some(entry) = raw_entry.as_table() else {
+            continue;
+        };
+        match entry.get("context_window_tokens") {
+            None => continue,
+            Some(Value::Integer(value)) if *value > 0 => {
+                overrides.insert(role, *value);
+            }
+            Some(Value::Integer(value)) => {
+                return Err(ConfigError::new(format!(
+                    "配置项 subagents.models.{role_name}.context_window_tokens 必须大于 0，当前值：{value}。"
+                )))
+            }
+            Some(_) => {
+                return Err(ConfigError::new(format!(
+                    "配置项 subagents.models.{role_name}.context_window_tokens 必须是正整数。"
+                )))
+            }
+        }
     }
     Ok(overrides)
 }
@@ -330,5 +383,67 @@ fn toml_text(value: &Value) -> String {
         Value::Float(inner) => format!("{inner}"),
         Value::String(inner) => inner.clone(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section(text: &str) -> toml::Table {
+        toml::from_str::<toml::Table>(text).expect("合法 TOML")
+    }
+
+    #[test]
+    fn reads_context_window_per_role() {
+        let parsed = parse_context_window_overrides(&section(
+            "[models.explore]\nmodel = \"tiny\"\ncontext_window_tokens = 32000\n\
+             [models.PLAN]\ncontext_window_tokens = 128000\n",
+        ))
+        .expect("应成功");
+        // 角色名统一小写，与 model_overrides 的键口径一致。
+        assert_eq!(parsed.get("explore").copied(), Some(32_000));
+        assert_eq!(parsed.get("plan").copied(), Some(128_000));
+    }
+
+    /// 只声明窗口、不声明模型是合法用法：子代理沿用父模型但按更保守的上限走。
+    #[test]
+    fn window_without_model_is_allowed() {
+        let parsed = parse_context_window_overrides(&section(
+            "[models.verify]\ncontext_window_tokens = 64000\n",
+        ))
+        .expect("应成功");
+        assert_eq!(parsed.get("verify").copied(), Some(64_000));
+    }
+
+    #[test]
+    fn absent_models_section_yields_empty() {
+        assert!(parse_context_window_overrides(&section("enabled = true\n"))
+            .expect("应成功")
+            .is_empty());
+        assert!(parse_context_window_overrides(&section("models = \"\"\n"))
+            .expect("应成功")
+            .is_empty());
+    }
+
+    #[test]
+    fn rejects_non_positive_and_non_integer() {
+        let zero = parse_context_window_overrides(&section(
+            "[models.explore]\ncontext_window_tokens = 0\n",
+        ))
+        .expect_err("0 应被拒");
+        assert_eq!(
+            zero.message(),
+            "配置项 subagents.models.explore.context_window_tokens 必须大于 0，当前值：0。"
+        );
+
+        let text = parse_context_window_overrides(&section(
+            "[models.explore]\ncontext_window_tokens = \"32000\"\n",
+        ))
+        .expect_err("字符串应被拒");
+        assert_eq!(
+            text.message(),
+            "配置项 subagents.models.explore.context_window_tokens 必须是正整数。"
+        );
     }
 }
